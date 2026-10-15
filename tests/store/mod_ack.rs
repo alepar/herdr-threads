@@ -33,16 +33,15 @@ impl Clock for TestClock {
 fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
     let clock = Arc::new(TestClock(AtomicI64::new(1000)));
     let path = std::env::temp_dir().join(format!("mod-ack-test-{}.db", uuid::Uuid::new_v4()));
-    let context = StoreContext::new(path, clock.clone());
+    let context = StoreContext::new(path, clock.clone()).with_test_host();
     let conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
-        [],
+    conn.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
     )
     .unwrap();
     for (seat, target) in [("a", "pa"), ("b", "pb"), ("c", "pc")] {
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)", params![seat,target]).unwrap();
-        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1)", params![seat,target]).unwrap();
+        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
     }
     for (seat, target, session, execution) in [
         ("a", "pa", "n", "00000000-0000-4000-8000-0000000000aa"),
@@ -51,7 +50,7 @@ fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
     ] {
         conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,?2,'b',1,1,'claude',?3,?4,'cooperative_top_level',0,'term-'||?2,'inc')", params![seat,target,session,execution]).unwrap();
     }
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
     for seat in ["a", "b"] {
         conn.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
@@ -65,7 +64,7 @@ fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
 
 fn claim() -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("b"),
         binding_generation: 1,
         role: CallerRole::TopLevel,
@@ -122,7 +121,7 @@ fn outcomes(report: &ModAckReport) -> Vec<(&str, ModAckOutcome, Option<ModAckRea
 }
 /// Adds an ordinary message from `a` with a pending receipt for `b`.
 fn pending(conn: &Connection, id: &str, sequence: i64, body: &str) {
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','a',?3,0,?4)", params![id,sequence,body,sequence+1]).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','a',?3,0,?4)", params![id,sequence,body,sequence+1]).unwrap();
     conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t','b','pending',300000)", [id]).unwrap();
     conn.execute(
         "UPDATE threads SET next_sequence=?1 WHERE id='t'",
@@ -130,7 +129,7 @@ fn pending(conn: &Connection, id: &str, sequence: i64, body: &str) {
     )
     .unwrap();
     conn.execute(
-        "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=?1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [sequence + 1],
     )
     .unwrap();
@@ -140,9 +139,9 @@ fn pending(conn: &Connection, id: &str, sequence: i64, body: &str) {
 fn receivable_pending(conn: &Connection, id: &str, sequence: i64, body: &str) {
     pending(conn, id, sequence, body);
     conn.execute_batch(&format!(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('prep-{id}','i','actor','prep-{id}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('prep-{id}','34750f98bd59fcfc946da45aaabe933b','actor','prep-{id}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
          INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('prep-{id}','t','b',1,300000,1);
-         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-{id}','{id}','i','t',{},0,{sequence},0,1,0);",
+         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-{id}','{id}','34750f98bd59fcfc946da45aaabe933b','t',{},0,{sequence},0,1,0);",
         sequence + 1
     ))
     .unwrap();
@@ -205,17 +204,17 @@ fn manifest_receipt_state(conn: &Connection, id: &str) -> String {
 /// A published lazy message `m<id>` addressed to `b` (state `pending`).
 fn lazy(conn: &Connection, prep: &str, sequence: i64, body: &str) -> String {
     let message = format!("m{}", &prep[1..]);
-    conn.execute_batch(&format!("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('{prep}','i','actor','o-{prep}',zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy');")).unwrap();
+    conn.execute_batch(&format!("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('{prep}','34750f98bd59fcfc946da45aaabe933b','actor','o-{prep}',zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy');")).unwrap();
     conn.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,'t','b')", params![prep,message]).unwrap();
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,delivery_mode) VALUES (?1,'i','t',?2,'ordinary','a',?3,0,?4,'lazy')", params![message,sequence,body,sequence+1]).unwrap();
-    conn.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,'t',?3,0,?4,0,1,0)", params![prep,message,sequence+1,sequence]).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','a',?3,0,?4,'lazy')", params![message,sequence,body,sequence+1]).unwrap();
+    conn.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,'t',?3,0,?4,0,1,0)", params![prep,message,sequence+1,sequence]).unwrap();
     conn.execute(
         "UPDATE threads SET next_sequence=?1 WHERE id='t'",
         [sequence + 1],
     )
     .unwrap();
     conn.execute(
-        "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=?1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [sequence + 1],
     )
     .unwrap();
@@ -316,12 +315,15 @@ fn unknown_id_refused_terminal_unknown_others_still_settle() {
 #[test]
 fn unaddressed_id_refused_terminal_not_addressed() {
     let (context, mut conn, _) = setup();
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('foreign','i','t',1,'ordinary','a','other',0,2)", []).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('foreign','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','a','other',0,2)", []).unwrap();
     conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('foreign','t','c','pending',300000)", []).unwrap();
     conn.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
         .unwrap();
-    conn.execute("UPDATE host_instances SET decision_seq=2 WHERE id='i'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=2 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let report = run(&context, &mut conn, &request(&["foreign"])).unwrap();
     assert_eq!(
         outcomes(&report),
@@ -441,11 +443,14 @@ fn replay_same_operation_returns_identical_report() {
 #[test]
 fn warning_or_notice_id_refused_not_addressed() {
     let (context, mut conn, _) = setup();
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES ('notice','i','t',1,'info','k-notice','{}',0,2),('warning','i','t',2,'warn','k-warn','{}',0,3)", []).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES ('notice','34750f98bd59fcfc946da45aaabe933b','t',1,'info','k-notice','{}',0,2),('warning','34750f98bd59fcfc946da45aaabe933b','t',2,'warn','k-warn','{}',0,3)", []).unwrap();
     conn.execute("UPDATE threads SET next_sequence=3 WHERE id='t'", [])
         .unwrap();
-    conn.execute("UPDATE host_instances SET decision_seq=3 WHERE id='i'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=3 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let report = run(&context, &mut conn, &request(&["notice", "warning"])).unwrap();
     assert_eq!(
         outcomes(&report),
@@ -531,7 +536,7 @@ fn mod_ack_of_ordinary_and_lazy_advances_the_cursor_past_both() {
     assert_eq!(
         lazy_delivery::lazy_completion_state(
             &conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &SeatId::new("b"),
             Some(&binding),
             &MessageId::new(lazy_id.as_str())

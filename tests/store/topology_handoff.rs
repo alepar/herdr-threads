@@ -8,7 +8,7 @@ use rusqlite::Connection;
 
 pub(super) fn namespace() -> HandoffNamespace {
     HandoffNamespace {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: "/state".into(),
         host_endpoint: "/host.sock".into(),
     }
@@ -19,7 +19,7 @@ pub(super) fn identity() -> BootstrapIdentity {
     let mut identity = BootstrapIdentity {
         compound: OperationId::new("bootstrap"),
         scope: IntentScope::Cooperative {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: claim.seat.clone(),
         },
         claim,
@@ -66,9 +66,13 @@ pub(super) fn identity() -> BootstrapIdentity {
 }
 
 fn setup(db: &Connection) {
-    schema::initialize(db, || UtcMillis(0)).unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
-        .unwrap();
+    schema::initialize(
+        db,
+        || UtcMillis(0),
+        &herdr_threads::test_support::test_node_seed(),
+    )
+    .unwrap();
+    herdr_threads::test_support::attach_test_host_to_connection(db);
     thread(db);
     joined_agent(db);
 }
@@ -117,6 +121,7 @@ pub(super) fn fixture() -> Connection {
         );
         assert_eq!(rc, ffi::SQLITE_OK, "deserialize the fixture schema");
     }
+    herdr_threads::test_support::bind_test_host(&db);
     db
 }
 
@@ -132,7 +137,7 @@ fn file_fixture() -> (
     let path = directory.0.join("store.db");
     // A serialized image is a complete database file.
     std::fs::write(&path, image()).unwrap();
-    let db = Connection::open(&path).unwrap();
+    let db = herdr_threads::test_support::open_test_connection(&path);
     (directory, path, db)
 }
 
@@ -246,7 +251,7 @@ fn live_begin_and_replay_recheck_a2_archive_and_membership() {
             ErrorCode::CallerUnverified,
         ),
         (
-            "UPDATE host_instances SET host_epoch=2",
+            "UPDATE herdr_hosts SET host_epoch=2",
             ErrorCode::CallerUnverified,
         ),
         ("UPDATE threads SET archived=1", ErrorCode::Archived),
@@ -404,7 +409,13 @@ fn replay_and_thread_protection_queries_use_keys_instead_of_table_scans() {
     for (sql, args) in [
         (
             "EXPLAIN QUERY PLAN SELECT id FROM bootstrap_handoffs WHERE instance_id=?1 AND state_dir=?2 AND host_endpoint=?3 AND actor_scope=?4 AND compound=?5",
-            vec!["i", "/state", "/host.sock", "seat:s", "bootstrap"],
+            vec![
+                "34750f98bd59fcfc946da45aaabe933b",
+                "/state",
+                "/host.sock",
+                "seat:s",
+                "bootstrap",
+            ],
         ),
         (
             "EXPLAIN QUERY PLAN SELECT compound FROM bootstrap_handoffs WHERE thread_id=?1 AND state NOT IN ('completed','cancelled')",
@@ -514,7 +525,13 @@ fn cancelled_replay_preserves_original_identity_without_current_live_authority()
     tx.commit().unwrap();
     drop(db);
     let db = Connection::open(path).unwrap();
-    schema::initialize(&db, || UtcMillis(4)).unwrap();
+    schema::initialize(
+        &db,
+        || UtcMillis(4),
+        &herdr_threads::test_support::test_node_seed(),
+    )
+    .unwrap();
+    herdr_threads::test_support::attach_test_host_to_connection(&db);
     assert_eq!(
         topology_handoff::current(&db, &namespace(), &id).unwrap(),
         Some(result)
@@ -749,7 +766,13 @@ fn full_completed_report_with_large_json_escaping_replays_and_rejects_tamper() {
     tx.commit().unwrap();
     drop(db);
     let db = Connection::open(path).unwrap();
-    schema::initialize(&db, || UtcMillis(4)).unwrap();
+    schema::initialize(
+        &db,
+        || UtcMillis(4),
+        &herdr_threads::test_support::test_node_seed(),
+    )
+    .unwrap();
+    herdr_threads::test_support::attach_test_host_to_connection(&db);
     assert_eq!(
         topology_handoff::current(&db, &namespace(), &id).unwrap(),
         Some(replay)
@@ -940,7 +963,13 @@ fn recovery_cancelled_reopen_refuses_invalid_foreign_or_unrecorded_creation() {
         tx.commit().unwrap();
         drop(db);
         let mut db = Connection::open(path).unwrap();
-        schema::initialize(&db, || UtcMillis(2)).unwrap();
+        schema::initialize(
+            &db,
+            || UtcMillis(2),
+            &herdr_threads::test_support::test_node_seed(),
+        )
+        .unwrap();
+        herdr_threads::test_support::attach_test_host_to_connection(&db);
         let before = counts(&db);
         results.push(
             topology_handoff::current(&db, &namespace(), &id)
@@ -974,7 +1003,13 @@ fn recovery_cancelled_reopen_refuses_an_older_attempt_decision() {
     tx.commit().unwrap();
     drop(db);
     let db = Connection::open(path).unwrap();
-    schema::initialize(&db, || UtcMillis(2)).unwrap();
+    schema::initialize(
+        &db,
+        || UtcMillis(2),
+        &herdr_threads::test_support::test_node_seed(),
+    )
+    .unwrap();
+    herdr_threads::test_support::attach_test_host_to_connection(&db);
     assert_eq!(
         topology_handoff::current(&db, &namespace(), &id)
             .unwrap_err()
@@ -1021,7 +1056,13 @@ fn recovery_historical_noncreation_before_later_prepared_attempt_remains_valid()
             tx.commit().unwrap();
             drop(db);
             let mut db = Connection::open(path).unwrap();
-            schema::initialize(&db, || UtcMillis(2)).unwrap();
+            schema::initialize(
+                &db,
+                || UtcMillis(2),
+                &herdr_threads::test_support::test_node_seed(),
+            )
+            .unwrap();
+            herdr_threads::test_support::attach_test_host_to_connection(&db);
             let status = topology_handoff::current(&db, &namespace(), &id)
                 .unwrap()
                 .unwrap();
@@ -1200,7 +1241,13 @@ fn recovery_matching_created_and_cancelled_evidence_survive_reopen() {
         tx.commit().unwrap();
         drop(db);
         let db = Connection::open(path).unwrap();
-        schema::initialize(&db, || UtcMillis(2)).unwrap();
+        schema::initialize(
+            &db,
+            || UtcMillis(2),
+            &herdr_threads::test_support::test_node_seed(),
+        )
+        .unwrap();
+        herdr_threads::test_support::attach_test_host_to_connection(&db);
         let result = topology_handoff::current(&db, &namespace(), &id)
             .unwrap()
             .unwrap();
@@ -1244,7 +1291,13 @@ fn maximum_escaped_body_recovery_survives_reopen() {
         tx.commit().unwrap();
         drop(db);
         let db = Connection::open(path).unwrap();
-        schema::initialize(&db, || UtcMillis(2)).unwrap();
+        schema::initialize(
+            &db,
+            || UtcMillis(2),
+            &herdr_threads::test_support::test_node_seed(),
+        )
+        .unwrap();
+        herdr_threads::test_support::attach_test_host_to_connection(&db);
         let result = topology_handoff::current(&db, &namespace(), &id)
             .unwrap()
             .unwrap();

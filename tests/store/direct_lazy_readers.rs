@@ -34,9 +34,15 @@ impl Drop for Q4Readers {
 impl Q4Readers {
     fn new() -> Self {
         let (context, db, path, clock) = fixture(100);
-        let store: Arc<dyn StorePort> =
-            Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
-        let service = DomainService::new("i".into(), store, clock)
+        let store: Arc<dyn StorePort> = Arc::new(
+            SqliteStore::new(
+                context,
+                "34750f98bd59fcfc946da45aaabe933b",
+                StoreSettings::default(),
+            )
+            .unwrap(),
+        );
+        let service = DomainService::new("34750f98bd59fcfc946da45aaabe933b".into(), store, clock)
             .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
         let sender = Self::enroll(&service, "s1", "q4-sender", 1, 101);
         let a = Self::enroll(&service, "s2", "q4-a", 1, 202);
@@ -143,7 +149,7 @@ impl Q4Readers {
             panic!("SETUP: canonical addressed Lazy send")
         };
         let row: (String,i64,String,String) = self.db.query_row(
-            "SELECT r.state,r.legacy_pending,m.delivery_mode,r.seat_id FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=sm.message_id AND m.instance_id=sm.instance_id AND m.thread_id=sm.thread_id WHERE m.id=?1 AND sm.instance_id='i'",
+            "SELECT r.state,r.legacy_pending,m.delivery_mode,r.seat_id FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=sm.message_id AND m.instance_id=sm.instance_id AND m.thread_id=sm.thread_id WHERE m.id=?1 AND sm.instance_id='34750f98bd59fcfc946da45aaabe933b'",
             [id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
         ).unwrap();
         assert_eq!(row, ("pending".into(), 0, "lazy".into(), "s2".into()));

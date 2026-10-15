@@ -531,7 +531,7 @@ fn validate_guard(
         .ok_or_else(conflict)?;
     let lifecycle: i64 = tx
         .query_row(
-            "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
+            "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
             [&ns.instance],
             |r| r.get(0),
         )
@@ -801,7 +801,7 @@ fn apply(
             }
             let lifecycle: i64 = tx
                 .query_row(
-                    "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
+                    "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                     [&ns.instance],
                     |r| r.get(0),
                 )

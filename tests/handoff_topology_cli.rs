@@ -98,51 +98,6 @@ fn install_helper(path: &Path, body: &str) {
         executable(path, body);
     }
 }
-/// Seed a not-yet-created store with this binary's fresh-schema template, as
-/// the library's own tests do: creating the schema replays every migration
-/// (~0.1 s per fixture), while `open_writer` on the copy still runs the full
-/// schema audit. Any failure leaves ordinary creation to `open_writer`.
-fn seed_fresh_schema(database: &Path) {
-    if fs::symlink_metadata(database).is_err()
-        && let Some(template) = fresh_schema_template()
-    {
-        let _ = fs::copy(template, database);
-    }
-}
-/// Keyed by this binary's identity, so a rebuild never reuses a template
-/// produced by different schema code.
-fn fresh_schema_template() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let meta = fs::metadata(&exe).ok()?;
-    let built = meta
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?;
-    let path = exe.with_file_name(format!(
-        "handoff-topology-cli-schema-{}-{}.db",
-        meta.len(),
-        built.as_nanos()
-    ));
-    if !path.is_file() {
-        let staging = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
-        let clock_read = std::cell::Cell::new(false);
-        let built = Connection::open(&staging).ok().and_then(|db| {
-            herdr_threads::store::schema::initialize(&db, || {
-                clock_read.set(true);
-                herdr_threads::protocol::time::UtcMillis(0)
-            })
-            .ok()
-        });
-        // A creation path that reads the clock is not reproducible from a
-        // template; never replaces a template another process published.
-        if built.is_some() && !clock_read.get() {
-            let _ = fs::hard_link(&staging, &path);
-        }
-        let _ = fs::remove_file(&staging);
-    }
-    path.is_file().then_some(path)
-}
 fn finish(mut child: OwnedChild) -> Output {
     wait("owned CLI/helper exit", || {
         child.try_wait().unwrap().is_some()
@@ -439,7 +394,7 @@ impl Fixture {
                 return false;
             }
             let db = Connection::open(&paths.database_path).unwrap();
-            db.query_row("SELECT count(*) FROM host_instances WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",[],|r|r.get::<_,i64>(0)).unwrap_or(0)>0
+            db.query_row("SELECT count(*) FROM herdr_hosts WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",[],|r|r.get::<_,i64>(0)).unwrap_or(0)>0
         });
         println!(
             "fixture instance={instance} root={} host={} daemon={}",
@@ -476,14 +431,16 @@ impl Fixture {
             )
             .unwrap();
         let observation = observed.observation();
-        seed_fresh_schema(&paths.database_path);
-        let store_context = StoreContext::new(paths.database_path.clone(), clock.clone());
+        let store_context = StoreContext::new(paths.database_path.clone(), clock.clone())
+            .with_node_seed(herdr_threads::store::schema::NodeSeed {
+                uuid: instance,
+                tag: herdr_threads::node::tag_for(instance, 0),
+                tag_k: 0,
+            });
+        store_context
+            .attach_host(&context.host_endpoint.clone().unwrap().to_string_lossy())
+            .unwrap();
         let db = store_context.open_writer().unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at) VALUES(?1,0)",
-            [instance.to_string()],
-        )
-        .unwrap();
         let store = SqliteStore::new(
             store_context,
             instance.to_string(),

@@ -113,15 +113,10 @@ pub fn begin_host_observation(
     context.execute_budgeted_decision(
         conn, budget,
         |_| Ok(()),
-        |tx, at, ()| {
-            tx.execute(
-                "INSERT INTO host_instances(id,created_at) VALUES (?1,?2) ON CONFLICT(id) DO NOTHING",
-                params![instance, at.utc.0],
-            )
-            .map_err(store_error)?;
+        |tx, _at, ()| {
             let changed = tx
                 .execute(
-                    "UPDATE host_instances SET observation_admission_sequence=observation_admission_sequence+1 WHERE id=?1 AND observation_admission_sequence<?2",
+                    "UPDATE herdr_hosts SET observation_admission_sequence=observation_admission_sequence+1 WHERE host_id=primary_host() AND node_id=?1 AND observation_admission_sequence<?2",
                     params![instance, i64::MAX],
                 )
                 .map_err(store_error)?;
@@ -132,7 +127,7 @@ pub fn begin_host_observation(
                 i64, Option<String>, Option<String>, i64, i64, i64,
             ) = tx
                 .query_row(
-                    "SELECT observation_admission_sequence,active_snapshot_id,host_boot,host_epoch,lifecycle_revision,invalidation_revision FROM host_instances WHERE id=?1",
+                    "SELECT observation_admission_sequence,active_snapshot_id,host_boot,host_epoch,lifecycle_revision,invalidation_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                     [instance],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
                 )
@@ -153,7 +148,7 @@ pub fn begin_host_observation(
 pub fn persisted_host_epoch(conn: &Connection, instance: &str) -> Result<u64, ApiError> {
     let epoch: Option<i64> = conn
         .query_row(
-            "SELECT host_epoch FROM host_instances WHERE id=?1",
+            "SELECT host_epoch FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
             [instance],
             |r| r.get(0),
         )
@@ -213,7 +208,7 @@ pub fn publish_current_target_observation(
         |tx| {
             type HostColumns = Option<(Option<String>, i64, i64, Option<String>, i64, i64, i64, i64)>;
             let host: HostColumns = tx.query_row(
-                "SELECT host_boot,host_epoch,observation_sequence,active_snapshot_id,lifecycle_revision,invalidation_revision,observation_admission_sequence,observation_decided_sequence FROM host_instances WHERE id=?1",
+                "SELECT host_boot,host_epoch,observation_sequence,active_snapshot_id,lifecycle_revision,invalidation_revision,observation_admission_sequence,observation_decided_sequence FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                 [admission.instance()],
                 |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
             ).optional().map_err(store_error)?;
@@ -268,7 +263,7 @@ pub fn publish_current_target_observation(
                     observation.terminal.as_ref().map(TerminalId::as_str),occupancy,ui,execution,top_level],
             ).map_err(store_error)?;
             tx.execute(
-                "UPDATE host_instances SET observation_decided_sequence=?1 WHERE id=?2 AND observation_decided_sequence<?1",
+                "UPDATE herdr_hosts SET observation_decided_sequence=?1 WHERE host_id=primary_host() AND node_id=?2 AND observation_decided_sequence<?1",
                 params![admission_sequence,admission.instance()],
             ).map_err(store_error)?;
             let current_seat: Option<(String, bool)> = tx.query_row(
@@ -300,7 +295,7 @@ pub fn invalidate_host_observation(
         |tx| {
             let state: Option<(i64, i64)> = tx
                 .query_row(
-                    "SELECT observation_admission_sequence,observation_decided_sequence FROM host_instances WHERE id=?1",
+                    "SELECT observation_admission_sequence,observation_decided_sequence FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                     [admission.instance()],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
@@ -317,7 +312,7 @@ pub fn invalidate_host_observation(
             }
             let changed = tx
                 .execute(
-                    "UPDATE host_instances SET observation_decided_sequence=?1,invalidation_revision=invalidation_revision+1 WHERE id=?2 AND observation_decided_sequence<?1 AND invalidation_revision<?3",
+                    "UPDATE herdr_hosts SET observation_decided_sequence=?1,invalidation_revision=invalidation_revision+1 WHERE host_id=primary_host() AND node_id=?2 AND observation_decided_sequence<?1 AND invalidation_revision<?3",
                     params![sequence, admission.instance(), i64::MAX],
                 )
                 .map_err(store_error)?;
@@ -327,7 +322,7 @@ pub fn invalidate_host_observation(
             schema::apply_eligibility_transition(tx, admission.instance(), |_| Ok(true))?;
             let revision: i64 = tx
                 .query_row(
-                    "SELECT invalidation_revision FROM host_instances WHERE id=?1",
+                    "SELECT invalidation_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                     [admission.instance()],
                     |r| r.get(0),
                 )
@@ -372,7 +367,7 @@ pub fn begin_snapshot_stage(
             type OldColumns = Option<(Option<String>, i64, i64, Option<String>, i64, i64, Option<i64>, i64, i64)>;
             let old: OldColumns = tx
                 .query_row(
-                    "SELECT host_boot,host_epoch,observation_sequence,active_snapshot_id,lifecycle_revision,invalidation_revision,recovery_epoch,observation_admission_sequence,observation_decided_sequence FROM host_instances WHERE id=?1",
+                    "SELECT host_boot,host_epoch,observation_sequence,active_snapshot_id,lifecycle_revision,invalidation_revision,recovery_epoch,observation_admission_sequence,observation_decided_sequence FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                     [&header.instance],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)),
                 )
@@ -668,7 +663,7 @@ pub fn publish_snapshot_stage(
             );
             let current: CurrentColumns = tx
                 .query_row(
-                    "SELECT active_snapshot_id,host_boot,host_epoch,observation_sequence,recovery_boot,recovery_epoch,recovery_baseline_generation_id,baseline_hold_unclaimed,lifecycle_revision,invalidation_revision,observation_admission_sequence,observation_decided_sequence FROM host_instances WHERE id=?1",
+                    "SELECT active_snapshot_id,host_boot,host_epoch,observation_sequence,recovery_boot,recovery_epoch,recovery_baseline_generation_id,baseline_hold_unclaimed,lifecycle_revision,invalidation_revision,observation_admission_sequence,observation_decided_sequence FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                     [&instance],
                     |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?)),
                 )
@@ -768,7 +763,7 @@ pub fn publish_snapshot_stage(
                 return Err(api_error(ErrorCode::StaleHostObservation, "snapshot stage changed"));
             }
             tx.execute(
-                "UPDATE host_instances SET host_boot=?1,host_epoch=?2,observation_sequence=?3,recovery_boot=?1,recovery_epoch=?2,active_snapshot_id=?4,recovery_baseline_generation_id=?5,baseline_hold_unclaimed=?6,observation_decided_sequence=?7 WHERE id=?8",
+                "UPDATE herdr_hosts SET host_boot=?1,host_epoch=?2,observation_sequence=?3,recovery_boot=?1,recovery_epoch=?2,active_snapshot_id=?4,recovery_baseline_generation_id=?5,baseline_hold_unclaimed=?6,observation_decided_sequence=?7 WHERE host_id=primary_host() AND node_id=?8",
                 params![boot,epoch,sequence,stage.as_str(),baseline,hold,admission_sequence,instance],
             )
             .map_err(store_error)?;
@@ -803,7 +798,7 @@ fn active_publication(
     type RowColumns = Option<(String, String, i64, i64, String, i64, i64, i64)>;
     let row: RowColumns = conn
         .query_row(
-            "SELECT g.instance_id,g.host_boot,g.epoch,g.observation_sequence,g.incarnation,g.expected_targets,g.published_invalidation_revision,h.invalidation_revision FROM snapshot_generations g JOIN host_instances h ON h.id=g.instance_id AND h.active_snapshot_id=g.id WHERE g.id=?1 AND g.status='published'",
+            "SELECT g.instance_id,g.host_boot,g.epoch,g.observation_sequence,g.incarnation,g.expected_targets,g.published_invalidation_revision,h.invalidation_revision FROM snapshot_generations g JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=g.instance_id AND h.active_snapshot_id=g.id WHERE g.id=?1 AND g.status='published'",
             [stage.as_str()],
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
         )
@@ -1408,7 +1403,7 @@ pub fn saved_seats_page_for_invalidation(
     let after = checked_host_number(after_ordinal)?;
     let current: Option<(i64, i64)> = conn
         .query_row(
-            "SELECT invalidation_revision,observation_decided_sequence FROM host_instances WHERE id=?1",
+            "SELECT invalidation_revision,observation_decided_sequence FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
             [fence.instance()],
             |r| Ok((r.get(0)?,r.get(1)?)),
         )
@@ -1523,7 +1518,7 @@ pub fn discard_snapshot_stage(
     if status == "published" {
         let retained: bool = tx
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM host_instances WHERE id=?1 AND (active_snapshot_id=?2 OR recovery_baseline_generation_id=?2)) OR EXISTS(SELECT 1 FROM seats WHERE unresolved_from_generation_id=?2)",
+                "SELECT EXISTS(SELECT 1 FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1 AND (active_snapshot_id=?2 OR recovery_baseline_generation_id=?2)) OR EXISTS(SELECT 1 FROM seats WHERE unresolved_from_generation_id=?2)",
                 params![instance, stage.as_str()],
                 |r| r.get(0),
             )
@@ -1656,7 +1651,7 @@ pub(crate) fn lift_baseline_hold_if_clear(
     )>;
     let row: Marker = tx
         .query_row(
-            "SELECT recovery_boot,recovery_epoch,reconciled_boot,reconciled_epoch,baseline_hold_unclaimed FROM host_instances WHERE id=?1",
+            "SELECT recovery_boot,recovery_epoch,reconciled_boot,reconciled_epoch,baseline_hold_unclaimed FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
             [instance],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
@@ -1689,7 +1684,7 @@ pub(crate) fn lift_baseline_hold_if_clear(
         return Ok(false);
     }
     tx.execute(
-        "UPDATE host_instances SET baseline_hold_unclaimed=0 WHERE id=?1",
+        "UPDATE herdr_hosts SET baseline_hold_unclaimed=0 WHERE host_id=primary_host() AND node_id=?1",
         [instance],
     )
     .map_err(store_error)?;
@@ -1732,7 +1727,7 @@ pub fn record_reconciliation_pass(
             }
             let recovery: Option<(Option<String>, Option<i64>)> = tx
                 .query_row(
-                    "SELECT recovery_boot,recovery_epoch FROM host_instances WHERE id=?1",
+                    "SELECT recovery_boot,recovery_epoch FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                     [published.instance.as_str()],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
@@ -1754,7 +1749,7 @@ pub fn record_reconciliation_pass(
             // complete pass changes nothing and stays quiet.
             let moves = tx
                 .execute(
-                    "UPDATE host_instances SET reconciled_boot=?1,reconciled_epoch=?2 WHERE id=?3 AND (reconciled_boot IS NOT ?1 OR reconciled_epoch IS NOT ?2)",
+                    "UPDATE herdr_hosts SET reconciled_boot=?1,reconciled_epoch=?2 WHERE host_id=primary_host() AND node_id=?3 AND (reconciled_boot IS NOT ?1 OR reconciled_epoch IS NOT ?2)",
                     params![published.boot.as_str(), epoch, published.instance],
                 )
                 .map_err(store_error)?
@@ -1786,7 +1781,7 @@ fn mark_seat_unresolved(
     }
     let prior_generation: Option<String> = if reason == UnresolvedReason::HostInvalidation {
         tx.query_row(
-        "SELECT g.id FROM seats s JOIN host_instances h ON h.id=s.instance_id JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.status='published' AND g.staged_targets=g.expected_targets JOIN snapshot_targets t ON t.generation_id=g.id AND t.target_id=s.target_id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=?3 AND t.terminal_id IS NOT NULL",
+        "SELECT g.id FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.status='published' AND g.staged_targets=g.expected_targets JOIN snapshot_targets t ON t.generation_id=g.id AND t.target_id=s.target_id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=?3 AND t.terminal_id IS NOT NULL",
         params![seat.as_str(), instance, generation],
         |r| r.get(0),
     ).optional().map_err(store_error)?
@@ -1827,7 +1822,7 @@ fn mark_seat_unresolved(
     .map_err(store_error)?;
     schema::ensure_unavailability_episode(tx, seat)?;
     tx.execute(
-        "UPDATE host_instances SET baseline_hold_unclaimed=1 WHERE id=?1 AND recovery_baseline_generation_id IS NOT NULL",
+        "UPDATE herdr_hosts SET baseline_hold_unclaimed=1 WHERE host_id=primary_host() AND node_id=?1 AND recovery_baseline_generation_id IS NOT NULL",
         [instance],
     )
     .map_err(store_error)?;
@@ -1850,7 +1845,7 @@ pub fn mark_unresolved_from_invalidation(
             let instance = transition.fence.instance();
             let current: Option<(i64, i64, Option<String>)> = tx
                 .query_row(
-                    "SELECT invalidation_revision,observation_decided_sequence,active_snapshot_id FROM host_instances WHERE id=?1",
+                    "SELECT invalidation_revision,observation_decided_sequence,active_snapshot_id FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                     [instance],
                     |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
                 )
@@ -2465,7 +2460,7 @@ pub fn record_snapshot(
         |tx| {
             type OldColumns = Option<(Option<String>, i64, i64, Option<String>, Option<i64>)>;
             let old: OldColumns = tx.query_row(
-                "SELECT host_boot,host_epoch,observation_sequence,recovery_boot,recovery_epoch FROM host_instances WHERE id=?1", [instance],
+                "SELECT host_boot,host_epoch,observation_sequence,recovery_boot,recovery_epoch FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1", [instance],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             ).optional().map_err(store_error)?;
             if let Some((Some(boot), epoch, sequence, _, _)) = &old
@@ -2483,9 +2478,12 @@ pub fn record_snapshot(
             let new_baseline = old.as_ref().is_none_or(|(_, _, _, boot, _)| boot.as_deref() != Some(snapshot.boot.as_str()));
             let mut eligibility_changed = old.as_ref().is_some_and(|(boot,epoch,_,_,_)|
                 boot.as_deref() != Some(snapshot.boot.as_str()) || *epoch != snapshot.epoch as i64);
-            tx.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,observation_sequence,recovery_boot,recovery_epoch) VALUES (?1,?2,?3,?4,?5,?3,?4) \
-                ON CONFLICT(id) DO UPDATE SET host_boot=excluded.host_boot,host_epoch=excluded.host_epoch,observation_sequence=excluded.observation_sequence,recovery_boot=excluded.recovery_boot,recovery_epoch=CASE WHEN ?6 THEN excluded.recovery_epoch ELSE host_instances.recovery_epoch END",
-                params![instance, decision.utc.0, snapshot.boot.as_str(), snapshot.epoch as i64, snapshot.observation_sequence as i64, new_baseline]).map_err(store_error)?;
+            // The attached host's row exists from attach (never created here).
+            let attached = tx.execute("UPDATE herdr_hosts SET host_boot=?2,host_epoch=?3,observation_sequence=?4,recovery_boot=?2,recovery_epoch=CASE WHEN ?5 THEN ?3 ELSE recovery_epoch END WHERE host_id=primary_host() AND node_id=?1",
+                params![instance, snapshot.boot.as_str(), snapshot.epoch as i64, snapshot.observation_sequence as i64, new_baseline]).map_err(store_error)?;
+            if attached != 1 {
+                return Err(api_error(ErrorCode::HostUnavailable, "no Herdr server attached"));
+            }
             let unresolved: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND state='unresolved')", [instance], |r| r.get(0)).map_err(store_error)?;
             for target in &snapshot.targets {
                 let prior:Option<(String,i64,i64,i64,i64,String)>=tx.query_row(
@@ -2593,7 +2591,7 @@ fn structural_proof_matches_current(
         return Ok(false);
     }
     let incarnation_matches: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM host_instances h JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.status='published' WHERE h.id=?1 AND h.host_boot=?2 AND h.host_epoch=?3 AND g.incarnation=?4)",
+        "SELECT EXISTS(SELECT 1 FROM herdr_hosts h JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.status='published' WHERE h.host_id=primary_host() AND h.node_id=?1 AND h.host_boot=?2 AND h.host_epoch=?3 AND g.incarnation=?4)",
         params![instance, proof.host_boot().as_str(), epoch, proof.incarnation()],
         |r| r.get(0),
     ).map_err(store_error)?;
@@ -2690,7 +2688,7 @@ fn validate_resolution_evidence(
     let generation = checked_host_number(proof.target_generation())?;
     let connection_epoch = checked_host_number(proof.connection_epoch())?;
     let admitted: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM host_instances h JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.instance_id=h.id AND g.status='published' AND g.staged_targets=g.expected_targets WHERE h.id=?1 AND h.host_boot=?2 AND h.host_epoch=?3 AND h.observation_admission_sequence=?4 AND h.observation_decided_sequence=?4 AND h.invalidation_revision=?5 AND h.active_snapshot_id=?6 AND g.incarnation=?7 AND g.published_invalidation_revision=h.invalidation_revision)",
+        "SELECT EXISTS(SELECT 1 FROM herdr_hosts h JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.instance_id=h.node_id AND g.status='published' AND g.staged_targets=g.expected_targets WHERE h.host_id=primary_host() AND h.node_id=?1 AND h.host_boot=?2 AND h.host_epoch=?3 AND h.observation_admission_sequence=?4 AND h.observation_decided_sequence=?4 AND h.invalidation_revision=?5 AND h.active_snapshot_id=?6 AND g.incarnation=?7 AND g.published_invalidation_revision=h.invalidation_revision)",
         params![instance,proof.host_boot().as_str(),epoch,sequence,checked_host_number(admission.invalidation_revision)?,admission.expected_active.as_ref().map(SnapshotGenerationId::as_str),proof.incarnation()],
         |r| r.get(0),
     ).map_err(store_error)?;
@@ -2781,7 +2779,7 @@ fn validate_resolution_allocation(
 ) -> Result<(), ApiError> {
     let recovery: Option<(Option<String>, Option<i64>)> = tx
         .query_row(
-            "SELECT recovery_boot,recovery_epoch FROM host_instances WHERE id=?1",
+            "SELECT recovery_boot,recovery_epoch FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
             [instance],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -2817,7 +2815,7 @@ pub(crate) fn validate_bootstrap_creation(
     if owner.is_none() {
         let lifecycle: i64 = tx
             .query_row(
-                "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
+                "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                 [instance],
                 |r| r.get(0),
             )
@@ -2999,7 +2997,7 @@ fn resolve_bootstrap_seat_impl(
             })?;
         let lifecycle: i64 = tx
             .query_row(
-                "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
+                "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                 [&canonical.instance],
                 |r| r.get(0),
             )
@@ -3126,7 +3124,7 @@ pub fn check_resolved_target(
             }
             let lifecycle: i64 = tx
                 .query_row(
-                    "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
+                    "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                     [instance],
                     |r| r.get(0),
                 )
@@ -3361,7 +3359,7 @@ pub fn mutate_operator(
                 // serializes behind this writer and sees OLD.
                 let (boot, epoch, new_generation): (Option<String>, i64, i64) = tx
                     .query_row(
-                        "SELECT h.host_boot,h.host_epoch,s.generation FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+                        "SELECT h.host_boot,h.host_epoch,s.generation FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
                         params![replace.as_str(), instance],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                     )
@@ -3484,7 +3482,7 @@ fn release_claimed_target(
         params![at.0,instance,target]).map_err(store_error)?;
     let baseline: Option<String> = tx
         .query_row(
-            "SELECT recovery_baseline_generation_id FROM host_instances WHERE id=?1",
+            "SELECT recovery_baseline_generation_id FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
             [instance],
             |r| r.get(0),
         )
@@ -3520,7 +3518,7 @@ fn release_claimed_target(
 fn reconciliation_lags(tx: &Transaction<'_>, instance: &str) -> Result<bool, ApiError> {
     Ok(tx
         .query_row(
-            "SELECT recovery_boot IS NOT reconciled_boot OR recovery_epoch IS NOT reconciled_epoch FROM host_instances WHERE id=?1",
+            "SELECT recovery_boot IS NOT reconciled_boot OR recovery_epoch IS NOT reconciled_epoch FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
             [instance],
             |r| r.get(0),
         )
@@ -4031,7 +4029,7 @@ fn operator_retire(
         |tx, at| {
             let (boot, epoch): (Option<String>, i64) = tx
                 .query_row(
-                    "SELECT host_boot,host_epoch FROM host_instances WHERE id=?1",
+                    "SELECT host_boot,host_epoch FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
                     [instance],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
@@ -4169,7 +4167,7 @@ pub(crate) fn eligible_delivery_recipient(
         Option<i64>,
         Option<i64>,
     );
-    let row: Option<Row> = db.query_row("SELECT s.state,s.target_id,s.target_generation,h.host_boot,h.host_epoch,s.retired_at,s.retired_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2", params![seat.as_str(), instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
+    let row: Option<Row> = db.query_row("SELECT s.state,s.target_id,s.target_generation,h.host_boot,h.host_epoch,s.retired_at,s.retired_seq FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2", params![seat.as_str(), instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
     let Some((state, Some(target), generation, boot, epoch, retired_at, retired_seq)) = row else {
         return Err(api_error(
             ErrorCode::TargetUnresolved,
@@ -4212,7 +4210,7 @@ pub(crate) fn cooperative_mapping(
     }
     type RowColumns = Option<(String, Option<String>, i64, i64, Option<String>, i64, i64)>;
     let row: RowColumns = db.query_row(
-        "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch,h.invalidation_revision FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+        "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch,h.invalidation_revision FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1",
         [claim.seat.as_str()], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
     let Some((state, target, generation, revision, boot, epoch, invalidation)) = row else {
         return Err(api_error(
@@ -4874,7 +4872,7 @@ pub fn record_managed_launch(
             type SeatColumns = Option<(String, Option<String>, i64, i64, Option<String>, i64)>;
             let row: SeatColumns = tx
                 .query_row(
-                    "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+                    "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
                     params![command.seat.as_str(), instance],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
                 )

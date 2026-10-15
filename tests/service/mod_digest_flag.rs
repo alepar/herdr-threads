@@ -77,22 +77,19 @@ fn service(channels: Arc<dyn ModChannels>) -> (DomainService, Directory) {
         .create(&path)
         .unwrap();
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
-    let context = StoreContext::new(path.join("store.db"), clock.clone());
+    let context = StoreContext::new(path.join("store.db"), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-        [],
-    )
-    .unwrap();
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
     for seat in ["s", "other"] {
         db.execute(
-            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1||'-target',0,0,0)",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1||'-target',0,0,0)",
             [seat],
         )
         .unwrap();
     }
     db.execute(
-        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','s-target','b',1,0,0,'fresh','term','inc','coherent_enumeration',1)",
+        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','s-target','b',1,0,0,'fresh','term','inc','coherent_enumeration',1)",
         [],
     )
     .unwrap();
@@ -105,10 +102,17 @@ fn service(channels: Arc<dyn ModChannels>) -> (DomainService, Directory) {
         .unwrap();
     }
     drop(db);
-    let store: Arc<dyn StorePort> =
-        Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
+    let store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
     (
-        DomainService::new("i".into(), store, clock).with_mod_channels(channels),
+        DomainService::new("34750f98bd59fcfc946da45aaabe933b".into(), store, clock)
+            .with_mod_channels(channels),
         Directory(path),
     )
 }
@@ -180,7 +184,7 @@ fn domain_leaves_mod_channel_live_false_without_a_channel() {
 /// A non-human claim for `session` of seat `s` (the SessionStart / hook caller).
 fn claim(session: &str) -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: 0,
         role: CallerRole::TopLevel,

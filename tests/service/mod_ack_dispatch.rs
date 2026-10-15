@@ -115,18 +115,17 @@ fn fixture() -> Fixture {
         .create(&directory)
         .unwrap();
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
-    let context = StoreContext::new(directory.join("store.db"), clock.clone());
+    let context = StoreContext::new(directory.join("store.db"), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,3)",
-        [],
+    db.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=3",
     )
     .unwrap();
     for (seat, target) in [("s", "p"), ("x", "px"), ("none", "pn")] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?2,0,0,0)", [seat, target]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,0,0,0)", [seat, target]).unwrap();
+        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
     }
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,3)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,3)", []).unwrap();
     db.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','joined')",
         [],
@@ -134,14 +133,20 @@ fn fixture() -> Fixture {
     .unwrap();
     db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1)", []).unwrap();
     for (n, id) in ["m1", "m2"].into_iter().enumerate() {
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','hello',0,?3)", rusqlite::params![id, n as i64 + 1, n as i64 + 2]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','hello',0,?3)", rusqlite::params![id, n as i64 + 1, n as i64 + 2]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t','s','pending',300000)", [id]).unwrap();
     }
-    let store: Arc<dyn StorePort> =
-        Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
+    let store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
     let channels = Arc::new(FakeModChannels::default());
     channels.set_live(true);
-    let service = DomainService::new("i".into(), store, clock)
+    let service = DomainService::new("34750f98bd59fcfc946da45aaabe933b".into(), store, clock)
         .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
         .with_mod_channels(channels.clone());
     Fixture {
@@ -160,7 +165,7 @@ fn claim(
     generation: u64,
 ) -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new(seat),
         binding_generation: generation,
         role: CallerRole::TopLevel,
@@ -585,17 +590,17 @@ fn hint_lazy_message(f: &Fixture, id: &str) {
         send_message_id_for_preparation(&preparation).as_deref(),
         Some(id)
     );
-    f.db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy')", [&preparation]).unwrap();
+    f.db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy')", [&preparation]).unwrap();
     f.db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,'t','s')", rusqlite::params![preparation, id]).unwrap();
-    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode) VALUES (?1,'i','t',?2,'ordinary','quiet',0,?3,'lazy')", rusqlite::params![id, sequence, sequence + 2]).unwrap();
-    f.db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,'t',?3,0,?4,0,1,0)", rusqlite::params![preparation, id, sequence + 2, sequence]).unwrap();
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','quiet',0,?3,'lazy')", rusqlite::params![id, sequence, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,'t',?3,0,?4,0,1,0)", rusqlite::params![preparation, id, sequence + 2, sequence]).unwrap();
     f.db.execute(
         "UPDATE threads SET next_sequence=?1 WHERE id='t'",
         [sequence + 1],
     )
     .unwrap();
     f.db.execute(
-        "UPDATE host_instances SET decision_seq=MAX(decision_seq,?1) WHERE id='i'",
+        "UPDATE local_node SET decision_seq=MAX(decision_seq,?1) WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [sequence + 3],
     )
     .unwrap();

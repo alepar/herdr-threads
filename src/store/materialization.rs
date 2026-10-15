@@ -551,7 +551,7 @@ fn actionable(tx: &Connection, warning: &str, seat: &str) -> Result<bool, ApiErr
                 return Ok(false);
             }
             let episode:Option<i64>=tx.query_row("SELECT unavailability_episode FROM prepared_unavailable_warnings WHERE warning_id=?1",[warning],|r|r.get(0)).optional().map_err(store_error)?;
-            let (current,open,available):(i64,i64,bool)=tx.query_row("SELECT s.unavailability_episode,s.unavailability_open,EXISTS(SELECT 1 FROM occupant_bindings b JOIN host_instances h ON h.id=s.instance_id WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.host_boot=h.host_boot AND b.host_epoch=h.host_epoch) FROM seats s WHERE s.id=?1",[owner.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(store_error)?;
+            let (current,open,available):(i64,i64,bool)=tx.query_row("SELECT s.unavailability_episode,s.unavailability_open,EXISTS(SELECT 1 FROM occupant_bindings b JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.host_boot=h.host_boot AND b.host_epoch=h.host_epoch) FROM seats s WHERE s.id=?1",[owner.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(store_error)?;
             Ok(episode == Some(current) && open == 1 && !available && !condition.is_empty())
         }
         _ => Err(api_error(

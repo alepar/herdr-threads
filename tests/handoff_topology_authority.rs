@@ -27,16 +27,28 @@ impl Fixture {
         );
         std::fs::create_dir(&directory.0).unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-        let context = StoreContext::new(directory.0.join("store.db"), clock.clone());
+        let context =
+            StoreContext::new(directory.0.join("store.db"), clock.clone()).with_test_host();
         let db = rusqlite::Connection::open(directory.0.join("store.db")).unwrap();
-        herdr_threads::store::schema::initialize(&db, || clock.utc_now()).unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
-            .unwrap();
+        herdr_threads::store::schema::initialize(
+            &db,
+            || clock.utc_now(),
+            &herdr_threads::test_support::test_node_seed(),
+        )
+        .unwrap();
+        herdr_threads::test_support::attach_test_host_to_connection(&db);
         super::channel_archival::thread(&db);
         super::channel_archival::joined_agent(&db);
         drop(db);
         let db = context.open_writer().unwrap();
-        let concrete = Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
+        let concrete = Arc::new(
+            SqliteStore::new(
+                context,
+                "34750f98bd59fcfc946da45aaabe933b",
+                StoreSettings::default(),
+            )
+            .unwrap(),
+        );
         let store: Arc<dyn StorePort> = concrete.clone();
         let host = Arc::new(herdr_threads::host::native::NativeCli::new(
             "/host.sock".into(),
@@ -44,17 +56,22 @@ impl Fixture {
         ));
         let writer = Arc::new(FairWriter::new(32));
         let identity = Arc::new(herdr_threads::identity::repair::OrdinaryIdentity::new(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             store.clone(),
             host.clone(),
             clock.clone(),
             writer.clone(),
         ));
-        let service = DomainService::with_identity("i".into(), store, clock.clone(), identity)
-            .with_operator_owner(501)
-            .with_cooperative_owner(501, writer)
-            .with_bootstrap_runtime(super::topology_handoff::namespace(), host, concrete.clone())
-            .unwrap();
+        let service = DomainService::with_identity(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            store,
+            clock.clone(),
+            identity,
+        )
+        .with_operator_owner(501)
+        .with_cooperative_owner(501, writer)
+        .with_bootstrap_runtime(super::topology_handoff::namespace(), host, concrete.clone())
+        .unwrap();
         Self {
             service,
             store: concrete,
@@ -408,7 +425,7 @@ fn public_delivery_scoped_status_and_prepublication_admission_are_read_only() {
     let live_status = f
         .call(Command::HandoffDelivery(Box::new(request.clone())))
         .unwrap();
-    f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','p','b',1,'pure Status control')", []).unwrap();
+    f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','p','b',1,'pure Status control')", []).unwrap();
     assert_eq!(
         f.call(Command::HandoffDelivery(Box::new(request.clone())))
             .unwrap(),
@@ -483,7 +500,7 @@ fn public_delivery_current_recipient_hold_refuses_live_begin_and_send_preparatio
     let mut request = delivery();
     f.call(Command::HandoffDelivery(Box::new(request.clone())))
         .unwrap();
-    f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','p','b',1,'repair')", []).unwrap();
+    f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','p','b',1,'repair')", []).unwrap();
     assert!(
         f.call(Command::HandoffDelivery(Box::new(request.clone())))
             .is_err()
@@ -594,7 +611,7 @@ fn live_cached_replay(phase: &str) {
                 .unwrap();
         match change {
             "hold" => {
-                f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','p','b',1,'repair')", []).unwrap();
+                f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','p','b',1,'repair')", []).unwrap();
             }
             "binding" => {
                 f.db.execute("UPDATE seats SET generation=generation+1 WHERE id='s'", [])
@@ -803,8 +820,8 @@ fn ordinary_unlinked_direct_ensure_send_reaches_selected_bootstrap_runtime() {
     };
     let f = Fixture::new();
     let caller = super::topology_handoff::identity().claim;
-    f.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('peer','i','resolved','native','peer-pane',1,1,0)",[]).unwrap();
-    f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
+    f.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('peer','34750f98bd59fcfc946da45aaabe933b','resolved','native','peer-pane',1,1,0)",[]).unwrap();
+    f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('34750f98bd59fcfc946da45aaabe933b','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
     let ensure = Command::EnsureDirectThread(EnsureDirectThread {
         creation_policy: None,
         recipient: SeatId::new("peer"),
@@ -858,7 +875,11 @@ fn ordinary_unlinked_direct_ensure_send_reaches_selected_bootstrap_runtime() {
 fn automatic_contract_public_dispatch_refuses_every_phase_without_effects() {
     use herdr_threads::{cli::journal::IntentScope, protocol::ids::*};
     let mut f = Fixture::new();
-    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone());
+    f.service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        f.store.clone(),
+        f.clock.clone(),
+    );
     let claim = super::handoff_fences::identity().claim;
     let payload = AutomaticHandoffPayload::new(
         super::topology_handoff::namespace(),
@@ -910,8 +931,8 @@ fn automatic_contract_public_dispatch_refuses_every_phase_without_effects() {
 
 fn automatic_request(f: &Fixture) -> AutomaticDeliveryMutation {
     use herdr_threads::{cli::journal::IntentScope, protocol::ids::*};
-    f.db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('peer','i','resolved','native','peer-pane',1,1,0)").unwrap();
-    f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
+    f.db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('peer','34750f98bd59fcfc946da45aaabe933b','resolved','native','peer-pane',1,1,0)").unwrap();
+    f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('34750f98bd59fcfc946da45aaabe933b','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
     let claim = super::handoff_fences::identity().claim;
     AutomaticDeliveryMutation::new(
         IntentScope::Cooperative {
@@ -1043,7 +1064,14 @@ fn automatic_canonical_companion_is_immutable_retained_foreign_keyed_and_audited
     assert!(f.db.execute("INSERT INTO automatic_handoff_companions SELECT instance_id,actor_scope,'missing',state_dir,host_endpoint,original_json,begin_key,ensure_key,send_key,complete_key FROM automatic_handoff_companions",[]).is_err());
     f.db.execute_batch("DROP TRIGGER automatic_handoff_immutable")
         .unwrap();
-    assert!(herdr_threads::store::schema::initialize(&f.db, || f.clock.utc_now()).is_err());
+    assert!(
+        herdr_threads::store::schema::initialize(
+            &f.db,
+            || f.clock.utc_now(),
+            &herdr_threads::test_support::test_node_seed()
+        )
+        .is_err()
+    );
 }
 #[test]
 fn automatic_canonical_namespace_requires_exact_frozen_path_spelling() {
@@ -2063,9 +2091,13 @@ fn automatic_canonical_parent_blocks_archival_before_child_registration() {
             legacy_source: Some("covered".into()),
         };
         for _ in 0..20 {
-            if !herdr_threads::store::archival::advance(&f.db, "i", &rt)
-                .unwrap()
-                .has_more
+            if !herdr_threads::store::archival::advance(
+                &f.db,
+                "34750f98bd59fcfc946da45aaabe933b",
+                &rt,
+            )
+            .unwrap()
+            .has_more
             {
                 break;
             }

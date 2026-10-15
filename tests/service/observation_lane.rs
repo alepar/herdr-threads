@@ -186,7 +186,9 @@ impl Rig {
         let instance = crate::node::NodeUuid::new_v4().to_string();
         let db = dir.0.join("db");
         let store = SqliteStore::new(
-            StoreContext::new(db.clone(), clock.clone()),
+            StoreContext::new(db.clone(), clock.clone())
+                .with_test_host()
+                .with_node_seed(crate::test_support::node_seed_for(&instance)),
             instance.clone(),
             StoreSettings::default(),
         )

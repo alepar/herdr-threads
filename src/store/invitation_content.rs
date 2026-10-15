@@ -21,7 +21,7 @@ pub(super) fn record_context_change(
 ) -> Result<(), ApiError> {
     let sequence = i64::try_from(sequence)
         .map_err(|_| api_error(ErrorCode::SequenceExhausted, "context sequence exhausted"))?;
-    let valid:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM threads t JOIN host_instances h ON h.id=t.instance_id WHERE t.id=?1 AND t.instance_id=?2 AND h.decision_seq>=?3 AND ?3>0)",params![thread.as_str(),instance,sequence],|r|r.get(0)).map_err(store_error)?;
+    let valid:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM threads t JOIN local_node h ON h.id=t.instance_id WHERE t.id=?1 AND t.instance_id=?2 AND h.decision_seq>=?3 AND ?3>0)",params![thread.as_str(),instance,sequence],|r|r.get(0)).map_err(store_error)?;
     if !valid {
         return Err(api_error(
             ErrorCode::StoreCorrupt,

@@ -14,6 +14,116 @@ pub mod search_barrier;
 pub mod server_completion;
 pub mod spawn;
 
+use crate::{
+    node::{NodeUuid, tag_for},
+    store::{
+        connection::StoreContext,
+        schema::{NodeSeed, UNNAMED_HOST_ENDPOINT},
+    },
+};
+use rusqlite::Connection;
+use std::sync::{Arc, OnceLock};
+
+/// The ed25519 seed of the node every fixture store is created with.
+pub const TEST_NODE_SEED: [u8; 32] = [1; 32];
+
+/// The node a test store belongs to: the uuid of [`TEST_NODE_SEED`]'s key,
+/// its tag at `k = 0`. A `StoreContext` built in a test build is created with
+/// it, so a fixture's `instance` string is [`test_node`].
+pub fn test_node_seed() -> NodeSeed {
+    let key = ed25519_dalek::SigningKey::from_bytes(&TEST_NODE_SEED);
+    let uuid = NodeUuid::from_public_key(&key.verifying_key().to_bytes());
+    NodeSeed {
+        uuid,
+        tag: tag_for(uuid, 0),
+        tag_k: 0,
+    }
+}
+
+/// The seed of an arbitrary node, for a fixture whose store belongs to a node
+/// other than the fixed test node (a daemon fixture that owns its own key).
+pub fn node_seed_for(uuid: impl std::fmt::Display) -> NodeSeed {
+    let uuid: NodeUuid = uuid.to_string().parse().expect("a 32-hex node uuid");
+    NodeSeed {
+        uuid,
+        tag: tag_for(uuid, 0),
+        tag_k: 0,
+    }
+}
+
+/// [`test_node_seed`]'s uuid in its 32-hex form: the `instance` string and the
+/// `instance_id` value of fixture rows.
+pub fn test_node() -> String {
+    test_node_seed().uuid.to_string()
+}
+
+/// The endpoint of the host row a fixture attaches; it is also the endpoint a
+/// daemon records for a host composed without a socket path, so a fixture row
+/// is the row such a daemon attaches.
+pub const TEST_HOST_ENDPOINT: &str = UNNAMED_HOST_ENDPOINT;
+
+fn upsert_test_host(conn: &Connection) -> i64 {
+    crate::store::connection::upsert_host(conn, TEST_HOST_ENDPOINT, 0)
+        .expect("attach the test host row")
+}
+
+/// Attaches the fixture Herdr host to a store: upserts its `herdr_hosts` row
+/// through `conn`, makes it `ctx`'s primary host and binds `conn` to it.
+/// Idempotent. Returns the host id.
+pub fn attach_test_host(ctx: &StoreContext, conn: &Connection) -> i64 {
+    let host_id = upsert_test_host(conn);
+    ctx.set_primary_host(host_id);
+    ctx.bind_connection(conn).expect("bind the primary host");
+    host_id
+}
+
+/// [`attach_test_host`] for a bare connection that has no `StoreContext`
+/// (`schema::initialize` on `:memory:`): the connection alone is bound.
+pub fn attach_test_host_to_connection(conn: &Connection) -> i64 {
+    let host_id = upsert_test_host(conn);
+    let primary = Arc::new(OnceLock::new());
+    let _ = primary.set(host_id);
+    crate::store::connection::register_primary_host(conn, primary).expect("bind the primary host");
+    host_id
+}
+
+/// Opens a raw connection to an existing store file the way a fixture reads or
+/// repairs it, bound to the fixture host (see [`attach_test_host`]) so store
+/// functions that read Herdr-scope columns run on it. The host row is not
+/// created here: a store opened through `StoreContext::with_test_host` has it.
+pub fn open_test_connection(path: &std::path::Path) -> Connection {
+    let conn = Connection::open(path).expect("open the store file");
+    bind_test_host(&conn);
+    conn
+}
+
+/// Binds a connection whose database already holds the fixture host row (an
+/// opened store file, a deserialized image) to that host, so store functions
+/// that read Herdr-scope columns run on it.
+pub fn bind_test_host(conn: &Connection) {
+    let host_id: i64 = conn
+        .query_row(
+            "SELECT host_id FROM herdr_hosts WHERE endpoint=?1",
+            [TEST_HOST_ENDPOINT],
+            |row| row.get(0),
+        )
+        .unwrap_or(1);
+    let primary = Arc::new(OnceLock::new());
+    let _ = primary.set(host_id);
+    crate::store::connection::register_primary_host(conn, primary).expect("bind the primary host");
+}
+
+impl StoreContext {
+    /// Test hook: attaches the fixture Herdr host through a short-lived writer
+    /// (see [`attach_test_host`]).
+    pub fn attach_test_host(&self) -> i64 {
+        let conn = self
+            .open_writer()
+            .expect("open a writer to attach the host");
+        attach_test_host(self, &conn)
+    }
+}
+
 /// A short real temp root for fixtures that bind Unix sockets (macOS caps
 /// socket paths at 104 bytes and its default TMPDIR is long). macOS uses the
 /// canonical `/private/tmp`, so paths match what the kernel reports back.

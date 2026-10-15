@@ -555,7 +555,7 @@ pub fn query_operation_status(
         .map_err(|e| db.map_error(e))?;
     let owned: bool = db
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM host_instances WHERE id=?1)",
+            "SELECT EXISTS(SELECT 1 FROM local_node WHERE id=?1)",
             [instance],
             |r| r.get(0),
         )
@@ -861,7 +861,7 @@ fn thread_details(
     // The embedded participants page overflows the details envelope: cut it
     // back through the page fit, each cut page continuing from its last item.
     let filter = digest(&q.thread.as_str())?;
-    let (member_rev,lifecycle_rev):(i64,i64)=db.query_row("SELECT t.membership_revision,h.lifecycle_revision FROM threads t JOIN host_instances h ON h.id=t.instance_id WHERE t.id=?1",[q.thread.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|db.map_error(e))?;
+    let (member_rev,lifecycle_rev):(i64,i64)=db.query_row("SELECT t.membership_revision,h.lifecycle_revision FROM threads t JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=t.instance_id WHERE t.id=?1",[q.thread.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|db.map_error(e))?;
     let start_after = q
         .page
         .cursor
@@ -1554,7 +1554,7 @@ fn participants(
     q: &ParticipantsQuery,
     output: &OutputSpec,
 ) -> Result<CommandResult, ApiError> {
-    let scope:(i64,i64)=db.query_row("SELECT t.membership_revision,h.lifecycle_revision FROM threads t JOIN host_instances h ON h.id=t.instance_id WHERE t.id=?1 AND t.instance_id=?2",params![q.thread.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|db.map_error(e))?.ok_or_else(||api_error(ErrorCode::NotFound,"thread not found"))?;
+    let scope:(i64,i64)=db.query_row("SELECT t.membership_revision,h.lifecycle_revision FROM threads t JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=t.instance_id WHERE t.id=?1 AND t.instance_id=?2",params![q.thread.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|db.map_error(e))?.ok_or_else(||api_error(ErrorCode::NotFound,"thread not found"))?;
     let filter = digest(&q.thread.as_str())?;
     let cursor = decode_cursor(
         &q.page,
@@ -1812,7 +1812,7 @@ fn directory(
     };
     let lifecycle_revision: i64 = if member_relevant {
         db.query_row(
-            "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
+            "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
             [instance],
             |r| r.get(0),
         )
@@ -2128,7 +2128,7 @@ fn search(
             .map_err(|e| db.map_error(e))?;
         let body_high: i64 = db
             .query_row(
-                "SELECT decision_seq FROM host_instances WHERE id=?1",
+                "SELECT decision_seq FROM local_node WHERE id=?1",
                 [instance],
                 |r| r.get(0),
             )
@@ -5353,7 +5353,7 @@ fn inbox_batch(
         None => {
             let decision: i64 = db
                 .query_row(
-                    "SELECT decision_seq FROM host_instances WHERE id=?1",
+                    "SELECT decision_seq FROM local_node WHERE id=?1",
                     [instance],
                     |r| r.get(0),
                 )
@@ -6016,7 +6016,7 @@ fn hot_threads_in(
     let seat = q.seat.as_str();
     let decision_seq: i64 = db
         .query_row(
-            "SELECT h.decision_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+            "SELECT h.decision_seq FROM seats s JOIN local_node h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
             params![seat, instance],
             |r| r.get(0),
         )
@@ -6452,7 +6452,7 @@ mod inbox_v2 {
                     .map_err(store_error)?,
                 publication_decision: db
                     .query_row(
-                        "SELECT decision_seq FROM host_instances WHERE id=?1",
+                        "SELECT decision_seq FROM local_node WHERE id=?1",
                         [instance],
                         |r| r.get(0),
                     )
@@ -7191,7 +7191,7 @@ mod inbox_v2 {
         }
         let decision: i64 = db
             .query_row(
-                "SELECT decision_seq FROM host_instances WHERE id=?1",
+                "SELECT decision_seq FROM local_node WHERE id=?1",
                 [instance],
                 |r| r.get(0),
             )
@@ -7532,7 +7532,7 @@ pub(super) fn ordinary_due_context(
     work.ordinary_due_key_probes += 3;
     let head = db
         .query_row(
-            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            "SELECT decision_seq FROM local_node WHERE id=?1",
             [instance],
             |r| r.get(0),
         )

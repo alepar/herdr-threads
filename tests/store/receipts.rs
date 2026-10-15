@@ -27,20 +27,19 @@ fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
     let clock = Arc::new(TestClock(AtomicI64::new(1000)));
     let path: PathBuf =
         std::env::temp_dir().join(format!("receipt-test-{}.db", uuid::Uuid::new_v4()));
-    let context = StoreContext::new(path, clock.clone());
+    let context = StoreContext::new(path, clock.clone()).with_test_host();
     let conn = context.open_writer().unwrap();
     seed_discovery_database(&conn);
     (context, conn, clock)
 }
 fn seed_discovery_database(conn: &Connection) {
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
-        [],
+    conn.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
     )
     .unwrap();
     for (seat, target) in [("a", "pa"), ("b", "pb"), ("c", "pc"), ("d", "pd")] {
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)", params![seat,target]).unwrap();
-        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1)", params![seat,target]).unwrap();
+        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
     }
     // The acting seats hold a live, not-yet-registered cooperative binding.
     for (seat, target, session, execution) in [
@@ -49,7 +48,7 @@ fn seed_discovery_database(conn: &Connection) {
     ] {
         conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,?2,'b',1,1,'codex',?3,?4,'cooperative_top_level',0,'term-'||?2,'inc')", params![seat,target,session,execution]).unwrap();
     }
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
     for (seat, state) in [("a", "joined"), ("b", "joined"), ("c", "invited")] {
         conn.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,?2)",
@@ -71,7 +70,7 @@ fn send_request(explicit: Vec<&str>) -> SendMessage {
         deadline_millis: None,
         operation: OperationId::new("op"),
         claim: CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("a"),
             binding_generation: 1,
             role: crate::protocol::authority::CallerRole::TopLevel,
@@ -134,7 +133,7 @@ fn human_recipient_gets_message_without_an_ack_expectation() {
 #[test]
 fn overdue_scan_does_not_warn_for_a_waived_legacy_human_receipt() {
     let (context, mut conn, _) = setup();
-    conn.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('legacy','i','t',1,'ordinary','old message',100,2); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('legacy','t','b','pending',800,100,900); UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='b'; INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('b',2,1,100);").unwrap();
+    conn.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('legacy','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','old message',100,2); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('legacy','t','b','pending',800,100,900); UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='b'; INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('b',2,1,100);").unwrap();
     let mut cursor = receipts::ReceiptDueCursor::default();
     let scan = receipts::scan_due(&context, &mut conn, 10, &mut cursor).unwrap();
     assert_eq!(scan.warnings, 0);
@@ -158,8 +157,8 @@ fn overdue_scan_does_not_warn_for_a_waived_legacy_human_receipt() {
 #[test]
 fn human_may_explicitly_ack_waived_older_receipt_without_new_overdue_warning() {
     let (context, mut conn, _) = setup();
-    conn.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('legacy','i','t',1,'ordinary','old message',100,2); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_required) VALUES ('legacy','t','b','pending',800,100,900,0); UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='b'; INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('b',2,1,100);").unwrap();
-    conn.execute_batch("UPDATE threads SET next_sequence=2 WHERE id='t'; UPDATE host_instances SET decision_seq=2 WHERE id='i';").unwrap();
+    conn.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('legacy','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','old message',100,2); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_required) VALUES ('legacy','t','b','pending',800,100,900,0); UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='b'; INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('b',2,1,100);").unwrap();
+    conn.execute_batch("UPDATE threads SET next_sequence=2 WHERE id='t'; UPDATE local_node SET decision_seq=2 WHERE id='34750f98bd59fcfc946da45aaabe933b';").unwrap();
     assert_eq!(conn.query_row(
         "SELECT state,acked_at,ack_actor_seat_id,ack_observation FROM receipts WHERE message_id='legacy' AND seat_id='b'",
         [], |r| Ok((r.get::<_, String>(0)?,r.get::<_, Option<i64>>(1)?,r.get::<_, Option<String>>(2)?,r.get::<_, Option<String>>(3)?)),
@@ -269,7 +268,7 @@ fn human_may_explicitly_ack_waived_older_receipt_without_new_overdue_warning() {
 #[test]
 fn persisted_waivers_leave_pending_and_due_windows_for_agent_mail() {
     let (context, mut conn, _) = setup();
-    conn.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1001) INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) SELECT 'human-'||x,'i','t',x,'ordinary','old human mail',100,x+1 FROM n; INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_required) SELECT id,'t','b','pending',10,100,110,0 FROM messages WHERE id LIKE 'human-%'; INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('agent-mail','i','t',1002,'ordinary','agent mail',1000,1003); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('agent-mail','t','b','pending',1000,1000,2000);").unwrap();
+    conn.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1001) INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) SELECT 'human-'||x,'34750f98bd59fcfc946da45aaabe933b','t',x,'ordinary','old human mail',100,x+1 FROM n; INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_required) SELECT id,'t','b','pending',10,100,110,0 FROM messages WHERE id LIKE 'human-%'; INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('agent-mail','34750f98bd59fcfc946da45aaabe933b','t',1002,'ordinary','agent mail',1000,1003); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('agent-mail','t','b','pending',1000,1000,2000);").unwrap();
     let pending = attention::pending_receipts(&conn, "b", None).unwrap();
     assert_eq!(pending.count(), (1, false));
     assert_eq!(pending.items[0].id, "agent-mail");
@@ -341,7 +340,7 @@ fn ack_request(ids: Vec<MessageId>) -> Ack {
         messages: ids,
         operation: OperationId::new("ack-op"),
         claim: CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("b"),
             binding_generation: 1,
             role: crate::protocol::authority::CallerRole::TopLevel,
@@ -367,7 +366,7 @@ fn ack_permit(request: &Ack) -> MutationPermit {
 
 fn filter_revision(conn: &Connection, kind: &str, key: &str) -> i64 {
     conn.query_row(
-        "SELECT COALESCE((SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind=?1 AND scope_key=?2),0)",
+        "SELECT COALESCE((SELECT revision FROM filter_revisions WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND scope_kind=?1 AND scope_key=?2),0)",
         params![kind, key],
         |r| r.get(0),
     )
@@ -521,11 +520,8 @@ fn persisted_legacy_preparation_publishes_beside_a_new_compact_message() {
 #[test]
 fn publication_uses_preparation_instance_for_message_and_manifest() {
     let (context, mut conn, _) = setup();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('other',0,'other-boot',1,1)",
-        [],
-    )
-    .unwrap();
+    // Rows of another instance reference no node row (a store has one).
+    conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
     let request = send_request(vec![]);
     let first = send_prepared(
         &context,
@@ -546,8 +542,8 @@ fn publication_uses_preparation_instance_for_message_and_manifest() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .unwrap();
-    assert_eq!(published.0, "i");
-    assert_eq!(published.1, "i");
+    assert_eq!(published.0, "34750f98bd59fcfc946da45aaabe933b");
+    assert_eq!(published.1, "34750f98bd59fcfc946da45aaabe933b");
     assert_eq!(published.2, published.3);
     assert!(conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('wrong-instance','other','t',999,'ordinary','a','x',0,99)", []).is_err());
     assert!(
@@ -645,7 +641,7 @@ fn availability_uses_frozen_duration_and_scan_warns_once_at_equality() {
     let deadline = effective.deadline_at.unwrap();
     assert_eq!((duration, deadline), (50, 1050));
     conn.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES (?1,'b','pending',1100,1050)",[id.as_str()]).unwrap();
-    let before_revision: i64 = conn.query_row("SELECT COALESCE((SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='b'),0)", [], |r| r.get(0)).unwrap();
+    let before_revision: i64 = conn.query_row("SELECT COALESCE((SELECT revision FROM filter_revisions WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND scope_kind='inbox' AND scope_key='b'),0)", [], |r| r.get(0)).unwrap();
     clock.0.store(1050, Ordering::SeqCst);
     let mut cursor = receipts::ReceiptDueCursor::default();
     assert_eq!(
@@ -654,7 +650,7 @@ fn availability_uses_frozen_duration_and_scan_warns_once_at_equality() {
             .warnings,
         1
     );
-    let after_revision: i64 = conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='b'", [], |r| r.get(0)).unwrap();
+    let after_revision: i64 = conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND scope_kind='inbox' AND scope_key='b'", [], |r| r.get(0)).unwrap();
     assert_eq!(after_revision, before_revision + 1);
     assert_eq!(
         receipts::scan_due(&context, &mut conn, 10, &mut cursor)
@@ -875,10 +871,10 @@ fn one_ack_batch_can_settle_messages_from_two_threads() {
         crate::protocol::results::CommandResult::MessageSent(id) => id,
         _ => panic!(),
     };
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','i','second','goal',0,0)", []).unwrap();
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('m2','i','u',1,'ordinary','a','other',0,100000)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','second','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('m2','34750f98bd59fcfc946da45aaabe933b','u',1,'ordinary','a','other',0,100000)", []).unwrap();
     conn.execute(
-        "UPDATE host_instances SET decision_seq=100000 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=100000 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -1109,7 +1105,7 @@ fn current_binding_with_bumped_snapshot_generation_is_unavailable_and_warns_once
         Some("cooperative_top_level".into())
     );
     conn.execute(
-        "UPDATE observed_targets SET generation=2 WHERE instance_id='i' AND target_id='pb'",
+        "UPDATE observed_targets SET generation=2 WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND target_id='pb'",
         [],
     )
     .unwrap();
@@ -1168,14 +1164,14 @@ fn due_cursor_progresses_in_bounded_physical_slices_past_warned_rows() {
     let (context, mut conn, _) = setup();
     for n in 0..205 {
         let id = format!("m{n}");
-        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','a','x',0,?3)", params![id,n+1,100000+n]).unwrap();
+        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','a','x',0,?3)", params![id,n+1,100000+n]).unwrap();
         conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','b','pending',1,0,500)", [id.as_str()]).unwrap();
         let key = format!("overdue:receipt:{}:{}:b", id.len(), id);
-        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,source_message_id,decision_seq) VALUES (?1,'i','t',?2,'warn',?3,'{}',500,?4,?5)", params![format!("w{n}"),n+1001,key,id,200000+n]).unwrap();
+        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,source_message_id,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'warn',?3,'{}',500,?4,?5)", params![format!("w{n}"),n+1001,key,id,200000+n]).unwrap();
     }
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('last','i','t',500,'ordinary','a','x',0,300000)", []).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('last','34750f98bd59fcfc946da45aaabe933b','t',500,'ordinary','a','x',0,300000)", []).unwrap();
     conn.execute(
-        "UPDATE host_instances SET decision_seq=300000 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=300000 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -1218,12 +1214,12 @@ fn maximum_ack_batch_with_long_ids_fits_compact_info_event() {
     let mut ids = Vec::new();
     for n in 0..100 {
         let id = MessageId::new(format!("m{n:03}{}", "x".repeat(115)));
-        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','a','x',0,?3)", params![id.as_str(),n+1,100000+n]).unwrap();
+        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','a','x',0,?3)", params![id.as_str(),n+1,100000+n]).unwrap();
         conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t','b','pending',300000)", [id.as_str()]).unwrap();
         ids.push(id);
     }
     conn.execute(
-        "UPDATE host_instances SET decision_seq=100099 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=100099 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -1258,7 +1254,7 @@ fn wide_send_publishes_one_manifest_with_all_logical_recipients() {
     let (context, mut conn, _) = setup();
     for n in 0..205 {
         let seat = format!("wide-{n:03}");
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)", params![seat, format!("pane-{n:03}")]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1)", params![seat, format!("pane-{n:03}")]).unwrap();
         conn.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
             [seat.as_str()],
@@ -1392,15 +1388,15 @@ fn manifest_receipt_can_be_acked_before_physical_projection() {
 #[test]
 fn due_scan_ignores_large_already_warned_history() {
     let (context, mut conn, _) = setup();
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES ('old-warning','i','t',207,'warn','old-warning','{}',0,200000)",[]).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES ('old-warning','34750f98bd59fcfc946da45aaabe933b','t',207,'warn','old-warning','{}',0,200000)",[]).unwrap();
     for n in 0..205 {
         let id = format!("old-{n}");
-        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','a','x',0,?3)",params![id,n+1,100000+n]).unwrap();
+        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','a','x',0,?3)",params![id,n+1,100000+n]).unwrap();
         conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,warning_message_id) VALUES (?1,'t','b','pending',1,0,500,'old-warning')",[id.as_str()]).unwrap();
     }
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('new','i','t',208,'ordinary','a','x',0,300000)",[]).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('new','34750f98bd59fcfc946da45aaabe933b','t',208,'ordinary','a','x',0,300000)",[]).unwrap();
     conn.execute(
-        "UPDATE host_instances SET decision_seq=300000 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=300000 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -1659,7 +1655,7 @@ fn manifest_warning_is_visible_before_worker_projection() {
         other => panic!("{other:?}"),
     };
     let key = crate::store::effective::UnavailableWarningKey {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         thread_id: "t".into(),
         affected_seat_id: "b".into(),
         unavailability_episode: 1,
@@ -1751,7 +1747,7 @@ fn publish_rechecks_scalar_eligibility_after_decision_callback() {
         admission,
     )
     .unwrap();
-    conn.execute("UPDATE host_instances SET send_eligibility_revision=send_eligibility_revision+1 WHERE id='i'",[]).unwrap();
+    conn.execute("UPDATE local_node SET send_eligibility_revision=send_eligibility_revision+1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",[]).unwrap();
     let result = messages::publish_send(
         &context,
         &mut conn,
@@ -1815,9 +1811,9 @@ fn ack_records_binding_generation_separately_from_target_generation() {
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('m','i','t',1,'ordinary','a','x',0,100000)",[]).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','a','x',0,100000)",[]).unwrap();
     conn.execute(
-        "UPDATE host_instances SET decision_seq=100000 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=100000 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -1825,7 +1821,7 @@ fn ack_records_binding_generation_separately_from_target_generation() {
     conn.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
         .unwrap();
     conn.execute(
-        "UPDATE observed_targets SET generation=2 WHERE instance_id='i' AND target_id='pb'",
+        "UPDATE observed_targets SET generation=2 WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND target_id='pb'",
         [],
     )
     .unwrap();
@@ -1868,12 +1864,15 @@ fn ack_records_binding_generation_separately_from_target_generation() {
 #[test]
 fn inbox_display_ack_records_claim_and_only_settles_addressed_pending_agent_receipt() {
     let (context, mut conn, _) = setup();
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('displayed','i','t',1,'ordinary','a','read body',0,2),('foreign','i','t',2,'ordinary','a','other body',0,3)", []).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('displayed','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','a','read body',0,2),('foreign','34750f98bd59fcfc946da45aaabe933b','t',2,'ordinary','a','other body',0,3)", []).unwrap();
     conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('displayed','t','b','pending',300000),('foreign','t','c','pending',300000)", []).unwrap();
     conn.execute("UPDATE threads SET next_sequence=3 WHERE id='t'", [])
         .unwrap();
-    conn.execute("UPDATE host_instances SET decision_seq=3 WHERE id='i'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=3 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let request = ack_request(vec![MessageId::new("displayed")]);
     let digest =
         crate::store::schema::canonical_digest(&receipts::ack_displayed_payload(&request)).unwrap();
@@ -1983,7 +1982,7 @@ fn published_send_freezes_available_recipient_duration() {
         crate::protocol::results::CommandResult::MessageSent(id) => id,
         other => panic!("{other:?}"),
     };
-    conn.execute("UPDATE host_instances SET duration_config_revision=duration_config_revision+1 WHERE id='i'",[]).unwrap();
+    conn.execute("UPDATE local_node SET duration_config_revision=duration_config_revision+1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",[]).unwrap();
     let receipt = crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
         .unwrap()
         .unwrap();
@@ -2036,7 +2035,7 @@ fn later_send_reuses_first_published_unavailability_warning() {
         .unwrap();
     }
     let key = crate::store::effective::UnavailableWarningKey {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         thread_id: "t".into(),
         affected_seat_id: "b".into(),
         unavailability_episode: 1,
@@ -2350,7 +2349,7 @@ fn publication_rechecks_reduced_body_limit_and_replay_keeps_committed_result() {
     );
     assert_eq!(
         conn.query_row(
-            "SELECT decision_seq FROM host_instances WHERE id='i'",
+            "SELECT decision_seq FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get::<_, i64>(0)
         )
@@ -2459,9 +2458,9 @@ fn failed_ack_event_rolls_back_settlement_warning_and_scoped_revisions() {
 #[test]
 fn ack_last_pending_receipt_for_left_seat_invalidates_thread_directory() {
     let (context, mut conn, _) = setup();
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('left-message','i','t',1,'ordinary','a','x',0,100000)",[]).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('left-message','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','a','x',0,100000)",[]).unwrap();
     conn.execute(
-        "UPDATE host_instances SET decision_seq=100000 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=100000 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -2599,7 +2598,7 @@ fn foreground_write_between_preparation_quanta_and_failed_publication_stays_hidd
     let (context, mut conn, _) = setup();
     for n in 0..34 {
         let seat = format!("interleave-{n:02}");
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)", params![seat, format!("pane-{n:02}")]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1)", params![seat, format!("pane-{n:02}")]).unwrap();
         conn.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
             [seat.as_str()],
@@ -2630,7 +2629,7 @@ fn foreground_write_between_preparation_quanta_and_failed_publication_stays_hidd
         }
     ));
     let foreground = context.open_writer().unwrap();
-    foreground.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('foreground','i','fg','goal',0,0)",[]).unwrap();
+    foreground.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('foreground','34750f98bd59fcfc946da45aaabe933b','fg','goal',0,0)",[]).unwrap();
     let prep_id = loop {
         match messages::prepare_send_step(
             &context,
@@ -2663,7 +2662,7 @@ fn foreground_write_between_preparation_quanta_and_failed_publication_stays_hidd
             .unwrap()
             .is_none()
     );
-    conn.execute("UPDATE host_instances SET send_eligibility_revision=send_eligibility_revision+1 WHERE id='i'",[]).unwrap();
+    conn.execute("UPDATE local_node SET send_eligibility_revision=send_eligibility_revision+1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",[]).unwrap();
     assert_eq!(
         messages::publish_send(
             &context,
@@ -2856,7 +2855,7 @@ fn pending_only_thread_candidates_cover_every_canonical_pending_receipt() {
     // b's first ordered availability anchor after the sends, then a later one.
     let seq: i64 = conn
         .query_row(
-            "SELECT decision_seq FROM host_instances WHERE id='i'",
+            "SELECT decision_seq FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -2864,7 +2863,7 @@ fn pending_only_thread_candidates_cover_every_canonical_pending_receipt() {
     conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',?1,1500,1,'verified')",[seq+1]).unwrap();
     conn.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES ('b',?1,9000,1,'verified')",[seq+2]).unwrap();
     conn.execute(
-        "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=?1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [seq + 2],
     )
     .unwrap();
@@ -3136,7 +3135,7 @@ fn entry_sets_entry_plus_p99_never_lowering() {
 #[test]
 fn progress_extends_every_active_seat_on_the_thread() {
     let (_context, mut conn, _clock) = setup();
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
     catch_up_row(&conn, "a", "t", true, Some(150));
     catch_up_row(&conn, "b", "t", true, None);
     catch_up_row(&conn, "c", "t", false, Some(40));
@@ -3173,9 +3172,9 @@ fn exit_sets_now_plus_grace() {
 /// A pending physical receipt for seat `b` on thread `t`: message `id`,
 /// frozen deadline `deadline`.
 fn legacy_receipt(conn: &Connection, id: &str, thread: &str, sequence: i64, deadline: i64) {
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i',?2,?3,'ordinary','a','x',0,(SELECT COALESCE(MAX(decision_seq),1)+1 FROM messages))", params![id, thread, sequence]).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,?3,'ordinary','a','x',0,(SELECT COALESCE(MAX(decision_seq),1)+1 FROM messages))", params![id, thread, sequence]).unwrap();
     conn.execute(
-        "UPDATE host_instances SET decision_seq=MAX(decision_seq,(SELECT MAX(decision_seq) FROM messages))",
+        "UPDATE local_node SET decision_seq=MAX(decision_seq,(SELECT MAX(decision_seq) FROM messages))",
         [],
     )
     .unwrap();
@@ -3353,7 +3352,7 @@ fn recheck_walks_the_extension_index_in_bounded_pages_with_a_watermark() {
     // matters is the 101st by extension_until.
     for n in 0..100 {
         let thread = format!("x{n}");
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [&thread]).unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", [&thread]).unwrap();
         catch_up_row(&conn, "a", &thread, false, Some(100 + n));
     }
     legacy_receipt(&conn, "ml", "t", 1, 1500);
@@ -3404,7 +3403,7 @@ fn many_ended_rows_stop_reporting_more() {
     let (context, mut conn, clock) = setup();
     for n in 0..250 {
         let thread = format!("x{n:03}");
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [&thread]).unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", [&thread]).unwrap();
         catch_up_row(&conn, "a", &thread, false, Some(100 + n));
     }
     clock.0.store(2000, Ordering::SeqCst);
@@ -3449,7 +3448,7 @@ fn keyset_pages_through_rows_sharing_one_extension_until() {
     let (context, mut conn, clock) = setup();
     for n in 0..150 {
         let thread = format!("x{n:03}");
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [&thread]).unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", [&thread]).unwrap();
         catch_up_row(&conn, "a", &thread, false, Some(1800));
     }
     legacy_receipt(&conn, "ml", "t", 1, 1500);
@@ -3468,7 +3467,7 @@ fn keyset_pages_through_rows_sharing_one_extension_until() {
 fn record_overdue_uses_effective_for_both_bases() {
     use crate::ports::TimeBasis;
     let (context, mut conn, _clock) = setup();
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
     legacy_receipt(&conn, "ext", "t", 1, 1500);
     legacy_receipt(&conn, "plain", "t2", 1, 1500);
     catch_up_row(&conn, "b", "t", true, Some(5000));
@@ -3532,7 +3531,7 @@ fn record_overdue_uses_effective_for_both_bases() {
 fn retirement_cutover_is_classified_against_the_effective_deadline() {
     use crate::ports::TimeBasis;
     let (context, mut conn, _clock) = setup();
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
     legacy_receipt(&conn, "ext", "t", 1, 1500);
     legacy_receipt(&conn, "plain", "t2", 1, 1500);
     catch_up_row(&conn, "b", "t", true, Some(5000));
@@ -3605,7 +3604,7 @@ fn adapter_display_ack_rechecks_exact_binding_and_cooperative_provenance() {
         "generation=2",
     ] {
         let (context, mut db, _) = setup();
-        db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('displayed','i','t',1,'ordinary','body',0,2); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('displayed','t','b','pending',300000); UPDATE threads SET next_sequence=2 WHERE id='t'; UPDATE host_instances SET decision_seq=2 WHERE id='i';").unwrap();
+        db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('displayed','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','body',0,2); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('displayed','t','b','pending',300000); UPDATE threads SET next_sequence=2 WHERE id='t'; UPDATE local_node SET decision_seq=2 WHERE id='34750f98bd59fcfc946da45aaabe933b';").unwrap();
         db.execute(
             &format!("UPDATE occupant_bindings SET {change} WHERE seat_id='b'"),
             [],
@@ -3655,7 +3654,7 @@ fn adapter_display_ack_rechecks_exact_binding_and_cooperative_provenance() {
 }
 
 fn discovery_receipt(db: &Connection, id: &str, sequence: i64, deadline: i64) {
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native','a','x',0,?2)",params![id,sequence]).unwrap();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','native','a','x',0,?2)",params![id,sequence]).unwrap();
     db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','b','pending',1,0,?2)",params![id,deadline]).unwrap();
 }
 
@@ -3668,7 +3667,7 @@ fn receipt_discovery_snapshot_excludes_earlier_deadline_arrivals_before_limit() 
     db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
         .unwrap();
     db.execute(
-        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=10000 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -3706,7 +3705,7 @@ fn receipt_discovery_lends_empty_sparse_half_to_physical_snapshot() {
     db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
         .unwrap();
     db.execute(
-        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=10000 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -3746,7 +3745,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
     )
     .unwrap();
     for (n, author) in [(1, "a"), (2, "a"), (3, "b")] {
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native',?3,'x',0,?2)",params![format!("origin-{n}"),n,author]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','native',?3,'x',0,?2)",params![format!("origin-{n}"),n,author]).unwrap();
         if n < 3 {
             db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','c','pending',1,0,500)",[format!("origin-{n}")]).unwrap();
         } else {
@@ -3756,7 +3755,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
     db.execute("UPDATE threads SET next_sequence=1000 WHERE id='t'", [])
         .unwrap();
     db.execute(
-        "UPDATE host_instances SET decision_seq=1000 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=1000 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -3818,7 +3817,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
         let tx = db.transaction().unwrap();
         let binding = crate::protocol::ids::BindingId::new(tx.query_row("SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND execution_id=?2 AND ended_at IS NULL",params![seat,execution],|r|r.get::<_,String>(0)).unwrap());
         attention::settle_carried_notices(&tx, seat, &binding, &carried).unwrap();
-        tx.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT ?1,?2,decision_seq FROM host_instances WHERE id='i'",params![binding.as_str(),seat]).unwrap();
+        tx.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT ?1,?2,decision_seq FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",params![binding.as_str(),seat]).unwrap();
         tx.commit().unwrap();
     }
     assert_eq!(
@@ -3860,7 +3859,15 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
     let high = db
         .query_row("SELECT max(ordinal) FROM seats", [], |r| r.get::<_, i64>(0))
         .unwrap() as u64;
-    let found = crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
+    let found = crate::store::discover_wake_candidates(
+        &db,
+        "34750f98bd59fcfc946da45aaabe933b",
+        0,
+        high,
+        100,
+        &|| Ok(()),
+    )
+    .unwrap();
     for seat in ["a", "b"] {
         let candidate = found
             .items
@@ -3873,7 +3880,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
         assert_eq!(
             crate::store::seats::mod_binding_view(
                 &db,
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 &SeatId::new(seat),
                 crate::ports::ModBindingRef::Id(&discovery_sender_binding(&db, seat))
             )
@@ -3883,17 +3890,30 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
             .other_pending,
             1
         );
-        let refreshed =
-            crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
+        let refreshed = crate::store::discover_wake_candidates(
+            &db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            0,
+            high,
+            100,
+            &|| Ok(()),
+        )
+        .unwrap();
         let refreshed = refreshed
             .items
             .iter()
             .find(|c| c.seat.as_str() == seat)
             .unwrap();
         let daemon_boot = uuid::Uuid::new_v4();
-        let reservation =
-            crate::store::wake::reserve(&context, &mut db, "i", refreshed, daemon_boot, 30000)
-                .unwrap();
+        let reservation = crate::store::wake::reserve(
+            &context,
+            &mut db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            refreshed,
+            daemon_boot,
+            30000,
+        )
+        .unwrap();
         assert!(
             reservation.is_some(),
             "each actual discovered original sender must reserve independently"
@@ -4005,8 +4025,15 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
             messages_before,
             "ACK{n} preserves every preexisting message column"
         );
-        let found =
-            crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
+        let found = crate::store::discover_wake_candidates(
+            &db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            0,
+            high,
+            100,
+            &|| Ok(()),
+        )
+        .unwrap();
         for seat in ["a", "b"] {
             let waking = attention::wake_seat_attention(&db, seat).unwrap();
             assert!(
@@ -4016,7 +4043,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
             assert_eq!(waking.attention.latest_warning_seq.is_some(), remaining > 0);
             let loaded = crate::store::wake::load_candidate(
                 &db,
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 &SeatId::new(seat),
                 &waking.attention,
                 waking.decision_seq,
@@ -4038,7 +4065,7 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
             );
             let view = crate::store::seats::mod_binding_view(
                 &db,
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 &SeatId::new(seat),
                 crate::ports::ModBindingRef::Id(&discovery_sender_binding(&db, seat)),
             )
@@ -4080,7 +4107,7 @@ fn receipt_discovery_deadline_arrivals_do_not_inflate_sqlite_walk_work() {
     db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
         .unwrap();
     db.execute(
-        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=10000 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -4190,16 +4217,19 @@ fn receipt_discovery_driver_fixture(
     db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
         .unwrap();
     db.execute(
-        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=10000 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
     // Every native wake is blocked: the store does not claim availability.
     db.execute("UPDATE observed_targets SET observed_at=-999999", [])
         .unwrap();
-    let store =
-        crate::store::SqliteStore::new(context, "i", crate::store::StoreSettings::default())
-            .unwrap();
+    let store = crate::store::SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::store::StoreSettings::default(),
+    )
+    .unwrap();
     (ReceiptDiscoveryPort { store, clock }, db)
 }
 
@@ -4385,21 +4415,21 @@ fn discovery_manifest(
     duration: i64,
     sequence: i64,
 ) {
-    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'sealed')",[preparation]).unwrap();
+    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'sealed')",[preparation]).unwrap();
     db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES (?1,'t',?2,1,?3,0)",params![preparation,seat,duration]).unwrap();
-    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,'i','t',?3,0,?3,0,1,0)",params![preparation,message,sequence]).unwrap();
+    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,'34750f98bd59fcfc946da45aaabe933b','t',?3,0,?3,0,1,0)",params![preparation,message,sequence]).unwrap();
     db.execute("INSERT INTO receipt_state(message_id,seat_id,state,deadline_at,ack_required) VALUES (?1,?2,'pending',?3,1)",params![message,seat,duration]).unwrap();
 }
 
 #[test]
 fn receipt_discovery_orphan_wrong_audience_and_service_markers_cannot_invent_origins() {
     let (context, mut db, _) = setup();
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('valid-source','i','t',1,'ordinary','native','a','x',0,1)",[]).unwrap();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('valid-source','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','native','a','x',0,1)",[]).unwrap();
     db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('valid-source','t','c','pending',1,0,500)",[]).unwrap();
     db.execute("UPDATE threads SET next_sequence=100 WHERE id='t'", [])
         .unwrap();
     db.execute(
-        "UPDATE host_instances SET decision_seq=100 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=100 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -4418,7 +4448,7 @@ fn receipt_discovery_orphan_wrong_audience_and_service_markers_cannot_invent_ori
         )
         .unwrap();
     for (n, id) in [(2, "orphan"), (3, "wrong-audience")] {
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native','b','x',0,?2)",params![id,n]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','native','b','x',0,?2)",params![id,n]).unwrap();
         if id == "wrong-audience" {
             discovery_manifest(&db, id, "wrong-audience-preparation", "d", 500, 3);
         }
@@ -4431,7 +4461,7 @@ fn receipt_discovery_orphan_wrong_audience_and_service_markers_cannot_invent_ori
         );
     }
     db.execute(
-        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('service','i',0)",
+        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('service','34750f98bd59fcfc946da45aaabe933b',0)",
         [],
     )
     .unwrap();
@@ -4441,13 +4471,21 @@ fn receipt_discovery_orphan_wrong_audience_and_service_markers_cannot_invent_ori
         (6, Some("built_in"), None, None),
     ] {
         let id = format!("unknown-service-{n}");
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,author_service_id,actor_label,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary',?3,?4,?5,'b','x',0,?2)",params![id,n,kind,actor,service]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,author_service_id,actor_label,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,?4,?5,'b','x',0,?2)",params![id,n,kind,actor,service]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,deadline_at,warning_message_id) VALUES (?1,'t','c','pending',500,500,?2)",params![id,warning]).unwrap();
     }
     let high = db
         .query_row("SELECT max(ordinal) FROM seats", [], |r| r.get::<_, i64>(0))
         .unwrap() as u64;
-    let found = crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
+    let found = crate::store::discover_wake_candidates(
+        &db,
+        "34750f98bd59fcfc946da45aaabe933b",
+        0,
+        high,
+        100,
+        &|| Ok(()),
+    )
+    .unwrap();
     assert!(
         !found
             .items
@@ -4484,8 +4522,8 @@ fn receipt_origin_actual_ordinary_send_with_null_native_author_notifies_sender()
         )
         .unwrap();
     let store = crate::store::SqliteStore::new(
-        StoreContext::new(path.into(), clock.clone()),
-        "i",
+        StoreContext::new(path.into(), clock.clone()).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap();
@@ -4830,12 +4868,15 @@ fn display_ack_for_b_with(
     conn: &mut Connection,
     liveness: Option<crate::protocol::authority::LivenessFingerprint>,
 ) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError> {
-    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('displayed','i','t',1,'ordinary','a','read body',0,2)", []).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('displayed','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','a','read body',0,2)", []).unwrap();
     conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('displayed','t','b','pending',300000)", []).unwrap();
     conn.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
         .unwrap();
-    conn.execute("UPDATE host_instances SET decision_seq=2 WHERE id='i'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=2 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let mut request = ack_request(vec![MessageId::new("displayed")]);
     request.claim.liveness = liveness;
     let digest =

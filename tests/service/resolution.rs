@@ -139,7 +139,7 @@ impl HostPort for ResolutionHost {
             .expect("host I/O was called under SQLite writer");
         let issued: i64 = db
             .query_row(
-                "SELECT observation_admission_sequence FROM host_instances",
+                "SELECT observation_admission_sequence FROM herdr_hosts",
                 [],
                 |r| r.get(0),
             )
@@ -154,7 +154,7 @@ impl HostPort for ResolutionHost {
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
         {
-            db.execute_batch("UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1")
+            db.execute_batch("UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1")
                 .unwrap();
         }
         let _ = self.entered.try_send(());
@@ -339,7 +339,9 @@ impl Fixture {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(paths.database_path.clone(), Arc::clone(&clock)),
+                StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
+                    .with_test_host()
+                    .with_node_seed(herdr_threads::test_support::node_seed_for(instance)),
                 instance.to_string(),
                 StoreSettings::default(),
             )
@@ -367,11 +369,6 @@ impl Fixture {
         });
         if hold_baseline {
             let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-            db.execute(
-                "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-                [instance.to_string()],
-            )
-            .unwrap();
             db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('saved',?1,'unresolved','native',1,0)", [instance.to_string()]).unwrap();
         }
         if seed {
@@ -511,7 +508,7 @@ impl Fixture {
         )
     }
     fn db(&self) -> rusqlite::Connection {
-        rusqlite::Connection::open(&self.paths.database_path).unwrap()
+        herdr_threads::test_support::open_test_connection(&self.paths.database_path)
     }
 }
 impl Drop for Fixture {
@@ -632,7 +629,7 @@ fn first_contact_read_waits_for_the_lane_capture_it_needs() {
         .expect("service did not admit target read");
     let published: Option<String> = fixture
         .db()
-        .query_row("SELECT active_snapshot_id FROM host_instances", [], |r| {
+        .query_row("SELECT active_snapshot_id FROM herdr_hosts", [], |r| {
             r.get(0)
         })
         .unwrap();
@@ -685,7 +682,7 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
         db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,?2,?3,1,'pending',0,?4,9223372036854775807,300000)", rusqlite::params![invitation, thread, seat.as_str(), n+1]).unwrap();
     }
     db.execute(
-        "UPDATE host_instances SET decision_seq=25 WHERE id=?1",
+        "UPDATE local_node SET decision_seq=25 WHERE id=?1",
         [fixture.descriptor.node_uuid.to_string()],
     )
     .unwrap();
@@ -971,11 +968,9 @@ fn real_ipc_resolve_preserves_retained_recovery_hold() {
         .unwrap();
     assert_eq!(count, 0);
     let hold: i64 = db
-        .query_row(
-            "SELECT baseline_hold_unclaimed FROM host_instances",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT baseline_hold_unclaimed FROM herdr_hosts", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(hold, 1);
 }
@@ -1046,7 +1041,7 @@ fn real_ipc_failed_target_read_freezes_effective_snapshot_without_allocating() {
         ErrorCode::HostUnavailable
     );
     let db = fixture.db();
-    let frozen: (i64,i64) = db.query_row("SELECT invalidation_revision,(SELECT count(*) FROM allocation_decisions) FROM host_instances", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+    let frozen: (i64,i64) = db.query_row("SELECT invalidation_revision,(SELECT count(*) FROM allocation_decisions) FROM herdr_hosts", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
     assert_eq!(frozen, (0, 0));
     // The frozen view is still effective: once Herdr answers, the same target
     // resolves against it.
@@ -1071,7 +1066,7 @@ fn real_ipc_incoherent_target_read_invalidates_effective_snapshot_without_alloca
         ErrorCode::StaleHostObservation
     );
     let db = fixture.db();
-    let invalidated: (i64,i64) = db.query_row("SELECT invalidation_revision,(SELECT count(*) FROM allocation_decisions) FROM host_instances", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+    let invalidated: (i64,i64) = db.query_row("SELECT invalidation_revision,(SELECT count(*) FROM allocation_decisions) FROM herdr_hosts", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
     assert_eq!(invalidated, (1, 0));
 }
 
@@ -1115,7 +1110,7 @@ fn real_ipc_exact_resolution_replay_after_retirement_and_hold_is_historical_with
     // hold protects. One transaction: a pass between the two writes would
     // see the hold with no unresolved seat and lift it.
     let hold = db.unchecked_transaction().unwrap();
-    hold.execute("UPDATE host_instances SET baseline_hold_unclaimed=1", [])
+    hold.execute("UPDATE herdr_hosts SET baseline_hold_unclaimed=1", [])
         .unwrap();
     hold.execute(
         "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at) SELECT 'still-unresolved',instance_id,'unresolved','other','native',1,0 FROM seats WHERE id=?1",
@@ -1819,7 +1814,7 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         [fixture.descriptor.node_uuid.to_string()],
     ).unwrap();
     db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq)
-        SELECT 'search-message',id,'search-thread',1,'ordinary','sender','hello',0,1000 FROM host_instances;
+        SELECT 'search-message',id,'search-thread',1,'ordinary','sender','hello',0,1000 FROM local_node;
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at)
         VALUES ('search-message','search-thread','checkin-seat','pending',300000,0,9223372036854775807);
         UPDATE threads SET next_sequence=2 WHERE id='search-thread';").unwrap();
@@ -2098,7 +2093,7 @@ fn elected_snapshot_driver_establishes_baseline_before_real_ipc_resolution() {
         let baseline: Option<String> = fixture
             .db()
             .query_row(
-                "SELECT recovery_baseline_generation_id FROM host_instances",
+                "SELECT recovery_baseline_generation_id FROM herdr_hosts",
                 [],
                 |r| r.get(0),
             )
@@ -2187,7 +2182,7 @@ fn elected_failed_partial_unknown_captures_cannot_create_allocation_baseline() {
         assert!(fixture.resolve("denied-baseline").is_err());
         let baseline: Option<String> = db
             .query_row(
-                "SELECT recovery_baseline_generation_id FROM host_instances",
+                "SELECT recovery_baseline_generation_id FROM herdr_hosts",
                 [],
                 |r| r.get(0),
             )
@@ -2260,7 +2255,7 @@ fn elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join() 
     fixture.host.snapshot_held.store(false, Ordering::SeqCst);
     assert!(fixture.daemon.take().unwrap().join().unwrap().unwrap());
     let active: Option<String> = db
-        .query_row("SELECT active_snapshot_id FROM host_instances", [], |r| {
+        .query_row("SELECT active_snapshot_id FROM herdr_hosts", [], |r| {
             r.get(0)
         })
         .unwrap();
@@ -2353,7 +2348,7 @@ fn elected_driver_reconciles_multiple_saved_pages_and_reopens_with_fresh_capture
         "missing structural proof supplied absence authority"
     );
     let previous: String = db
-        .query_row("SELECT active_snapshot_id FROM host_instances", [], |r| {
+        .query_row("SELECT active_snapshot_id FROM herdr_hosts", [], |r| {
             r.get(0)
         })
         .unwrap();
@@ -2363,7 +2358,7 @@ fn elected_driver_reconciles_multiple_saved_pages_and_reopens_with_fresh_capture
     let until = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let current: Option<String> = db
-            .query_row("SELECT active_snapshot_id FROM host_instances", [], |r| {
+            .query_row("SELECT active_snapshot_id FROM herdr_hosts", [], |r| {
                 r.get(0)
             })
             .unwrap();
@@ -2394,7 +2389,15 @@ fn elected_driver_periodically_refreshes_without_target_requests() {
     let fixture = Fixture::start(false, false, 0);
     let until = std::time::Instant::now() + Duration::from_secs(30);
     loop {
-        let published: Option<i64> = fixture.db().query_row("SELECT observation_sequence FROM host_instances WHERE active_snapshot_id IS NOT NULL", [], |r| r.get(0)).optional().unwrap();
+        let published: Option<i64> = fixture
+            .db()
+            .query_row(
+                "SELECT observation_sequence FROM herdr_hosts WHERE active_snapshot_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
         if published.is_some_and(|sequence| sequence >= 3) {
             break;
         }
@@ -2496,11 +2499,9 @@ fn queued_incoherent_compensation<'w>(
 fn invalidation_revision(fixture: &Fixture) -> i64 {
     fixture
         .db()
-        .query_row(
-            "SELECT invalidation_revision FROM host_instances",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT invalidation_revision FROM herdr_hosts", [], |r| {
+            r.get(0)
+        })
         .unwrap()
 }
 

@@ -60,24 +60,18 @@ impl Fx {
         let clock = Arc::new(TestClock(AtomicI64::new(T0)));
         let path = iso.state_root().join("store.db");
         let store = SqliteStore::new(
-            StoreContext::new(path.clone(), clock.clone()),
-            "i",
+            StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap();
-        let fx = Self {
+
+        Self {
             _iso: iso,
             path,
             store: Arc::new(store),
             clock,
-        };
-        fx.db()
-            .execute(
-                "INSERT INTO host_instances(id,created_at) VALUES ('i',0) ON CONFLICT(id) DO NOTHING",
-                [],
-            )
-            .unwrap();
-        fx
+        }
     }
 
     /// The domain writer connection (foreign keys on, every trigger live).
@@ -143,7 +137,7 @@ impl Fx {
 fn add_generation(db: &Connection, n: i64, status: &str, admission: i64, targets: usize) -> String {
     let id = format!("g{n}");
     db.execute(
-        "INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,admission_sequence,created_at) VALUES (?1,'i','b',1,?2,'inc',?3,?3,?4,0,0,?5,0)",
+        "INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,admission_sequence,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','b',1,?2,'inc',?3,?3,?4,0,0,?5,0)",
         params![id, n, targets as i64, status, admission],
     )
     .unwrap();
@@ -158,7 +152,7 @@ fn add_generation(db: &Connection, n: i64, status: &str, admission: i64, targets
 
 fn set_host(db: &Connection, decided: i64, issued: i64) {
     db.execute(
-        "UPDATE host_instances SET observation_admission_sequence=?2,observation_decided_sequence=?1 WHERE id='i'",
+        "UPDATE herdr_hosts SET observation_admission_sequence=?2,observation_decided_sequence=?1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         params![decided, issued],
     )
     .unwrap();
@@ -166,7 +160,7 @@ fn set_host(db: &Connection, decided: i64, issued: i64) {
 
 fn set_pointers(db: &Connection, active: Option<&str>, baseline: Option<&str>) {
     db.execute(
-        "UPDATE host_instances SET active_snapshot_id=?1,recovery_baseline_generation_id=?2 WHERE id='i'",
+        "UPDATE herdr_hosts SET active_snapshot_id=?1,recovery_baseline_generation_id=?2 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         params![active, baseline],
     )
     .unwrap();
@@ -174,7 +168,7 @@ fn set_pointers(db: &Connection, active: Option<&str>, baseline: Option<&str>) {
 
 fn pin_by_unresolved_seat(db: &Connection, seat: &str, generation: &str) {
     db.execute(
-        "INSERT INTO seats(id,instance_id,state,unresolved_reason,unresolved_from_generation_id,unresolved_prior_binding_generation,role,target_id,generation,created_at) VALUES (?1,'i','unresolved','host_invalidation',?2,1,'native','p',1,0)",
+        "INSERT INTO seats(id,instance_id,state,unresolved_reason,unresolved_from_generation_id,unresolved_prior_binding_generation,role,target_id,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','unresolved','host_invalidation',?2,1,'native','p',1,0)",
         params![seat, generation],
     )
     .unwrap();
@@ -232,7 +226,9 @@ fn stage(
     sequence: u64,
     panes: usize,
 ) -> (crate::ports::HostObservationAdmission, SnapshotGenerationId) {
-    let admission = StorePort::begin_host_observation(store, "i", &budget()).unwrap();
+    let admission =
+        StorePort::begin_host_observation(store, "34750f98bd59fcfc946da45aaabe933b", &budget())
+            .unwrap();
     let snap = snapshot(sequence, panes);
     let header = SnapshotHeader::from_captured(admission.clone(), &snap).unwrap();
     let stage = StorePort::begin_snapshot_stage(store, header, &budget()).unwrap();
@@ -261,7 +257,7 @@ fn publish(store: &SqliteStore, sequence: u64, panes: usize) -> SnapshotGenerati
 fn active(fx: &Fx) -> String {
     fx.db()
         .query_row(
-            "SELECT active_snapshot_id FROM host_instances WHERE id='i'",
+            "SELECT active_snapshot_id FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -315,7 +311,7 @@ fn every_pin_survives() {
         set_pointers(&db, Some("g5"), Some("g2"));
         pin_by_unresolved_seat(&db, "s", "g3");
         db.execute_batch(
-            "INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES ('i','g2','t0',1),('i','g1','t0',1)",
+            "INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','g2','t0',1),('34750f98bd59fcfc946da45aaabe933b','g1','t0',1)",
         )
         .unwrap();
     }
@@ -471,7 +467,7 @@ fn backlog_of_10k_drains_while_a_request_write_completes_within_one_batch() {
         db.execute_batch("BEGIN").unwrap();
         for n in 1..=10_000 {
             db.execute(
-                "INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,admission_sequence,created_at) VALUES (?1,'i','b',1,?2,'inc',0,0,'discarded',0,0,?2,0)",
+                "INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,admission_sequence,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','b',1,?2,'inc',0,0,'discarded',0,0,?2,0)",
                 params![format!("g{n}"), n],
             )
             .unwrap();
@@ -517,7 +513,7 @@ fn backlog_of_10k_drains_while_a_request_write_completes_within_one_batch() {
             .unwrap();
         fx.db()
             .execute(
-                "UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1 WHERE id='i'",
+                "UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
                 [],
             )
             .unwrap();
@@ -611,13 +607,13 @@ fn cooperative_fx(label: &str, seats: &[&str], bound: bool) -> Fx {
     {
         let db = fx.db();
         db.execute(
-            "UPDATE host_instances SET host_boot='b',host_epoch=1 WHERE id='i'",
+            "UPDATE herdr_hosts SET host_boot='b',host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
         )
         .unwrap();
         for seat in seats {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1,1,1,0)", [seat]).unwrap();
-            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0)", [seat]).unwrap();
+            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
             if !bound {
                 continue;
             }
@@ -649,7 +645,7 @@ fn kind_count(fx: &Fx, kind: &str) -> i64 {
 fn fixture_claim(seat: &str) -> crate::protocol::authority::CallerClaim {
     use crate::protocol::{authority::*, ids::*};
     CallerClaim {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new(seat),
         binding_generation: 1,
         role: CallerRole::TopLevel,
@@ -751,8 +747,8 @@ fn rerunning_warning_attribution_producer_does_not_reenqueue() {
     let fx = Fx::new("producer-warning");
     {
         let db = fx.db();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2','i','resolved','native',1,0)",[]).unwrap();
-        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)",[]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[]).unwrap();
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)",[]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s2','invited')",
             [],
@@ -813,7 +809,7 @@ fn rerunning_receipt_timer_producer_does_not_reenqueue() {
             RegisterAvailableRequest {
                 command: command.clone(),
                 read: ReadContext {
-                    instance: "i".into(),
+                    instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                     output: OutputSpec::default(),
                     operation_scope: None,
                 },
@@ -1024,7 +1020,7 @@ fn triggers_allow_discard_then_delete() {
         assert!(
             triggers
                 .iter()
-                .any(|(name, table)| name == pointer && table == "host_instances")
+                .any(|(name, table)| name == pointer && table == "herdr_hosts")
         );
     }
     // And a real superseded generation is discarded then deleted with every
@@ -1039,17 +1035,17 @@ fn triggers_allow_discard_then_delete() {
         .collect();
     let pruned = generations[1].as_str();
     fx.db().execute(
-        "INSERT INTO archival_instances(instance_id,runtime_boot) VALUES ('i','test-retention')",
+        "INSERT INTO archival_instances(instance_id,runtime_boot) VALUES ('34750f98bd59fcfc946da45aaabe933b','test-retention')",
         [],
     ).unwrap();
     fx.db().execute(
-        "INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES ('i',?1,'p0',1),('i',?2,'p0',1)",
+        "INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'p0',1),('34750f98bd59fcfc946da45aaabe933b',?2,'p0',1)",
         params![generations[0].as_str(), pruned],
     ).unwrap();
     let revision = || -> i64 {
         fx.db()
             .query_row(
-                "SELECT mutation_revision FROM archival_instances WHERE instance_id='i'",
+                "SELECT mutation_revision FROM archival_instances WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'",
                 [],
                 |r| r.get(0),
             )
@@ -1199,9 +1195,9 @@ fn abandoned_preparations_expire_but_keep_exact_key_headers() {
     let fx = Fx::new("preparation-retention");
     let db = fx.db();
     assert!(db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('send_preparations') WHERE name='prepared_at')", [], |r| r.get::<_, bool>(0)).unwrap(), "preparation progress must be persisted");
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
     for (id, status) in [("building", "building"), ("sealed", "sealed")] {
-        db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,prepared_at) VALUES (?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,?2,?3)", params![id,status,T0]).unwrap();
+        db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,prepared_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,?2,?3)", params![id,status,T0]).unwrap();
     }
     drop(db);
     fx.advance(24 * HOUR_MS - 1);
@@ -1228,13 +1224,13 @@ fn abandoned_preparations_expire_but_keep_exact_key_headers() {
 }
 
 fn seed_preparation(db: &Connection, id: &str, at: i64) {
-    db.execute("INSERT OR IGNORE INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
-    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,prepared_at) VALUES (?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'sealed',?2)",params![id,at]).unwrap();
+    db.execute("INSERT OR IGNORE INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
+    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,prepared_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'sealed',?2)",params![id,at]).unwrap();
 }
 
 fn publish_preparation(db: &Connection, id: &str) {
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,event_offset) VALUES (?1,'i','t',1,'ordinary','body',0,1,0)", [id]).unwrap();
-    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?1,'i','t',1,0,1,0,0,0)", [id]).unwrap();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,event_offset) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','body',0,1,0)", [id]).unwrap();
+    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?1,'34750f98bd59fcfc946da45aaabe933b','t',1,0,1,0,0,0)", [id]).unwrap();
 }
 
 #[test]

@@ -2794,7 +2794,9 @@ async fn operator_disconnect_reports_real_writer_failure_after_revocation() {
     let database = root.join("recovery-audit.db");
     let store = Arc::new(
         crate::store::SqliteStore::new(
-            crate::store::connection::StoreContext::new(database.clone(), Arc::new(TestClock)),
+            crate::store::connection::StoreContext::new(database.clone(), Arc::new(TestClock))
+                .with_test_host()
+                .with_node_seed(crate::test_support::node_seed_for(instance)),
             instance.to_string(),
             crate::store::StoreSettings {
                 daemon_boot: Some(boot),
@@ -2931,7 +2933,8 @@ fn health_lock_store(
     let root = std::env::temp_dir().join(format!("herdr-health-lock-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     let database = root.join("threads.sqlite3");
-    let context = crate::store::connection::StoreContext::new(database.clone(), clock);
+    let context =
+        crate::store::connection::StoreContext::new(database.clone(), clock).with_test_host();
     context.use_rollback_journal();
     let (busy_tx, busy) = std::sync::mpsc::channel();
     context.signal_next_query_busy(busy_tx);

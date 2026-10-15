@@ -1060,7 +1060,7 @@ impl Topology {
                 return false;
             }
             let db = Connection::open(&paths.database_path).unwrap();
-            db.query_row("SELECT count(*) FROM host_instances WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",[],|r|r.get::<_,i64>(0)).unwrap_or(0)>0
+            db.query_row("SELECT count(*) FROM herdr_hosts WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",[],|r|r.get::<_,i64>(0)).unwrap_or(0)>0
         });
         Self {
             daemon,
@@ -1102,17 +1102,17 @@ impl Topology {
             )
             .unwrap();
         let observation = observed.observation();
-        let store_context = StoreContext::new(paths.database_path.clone(), store_clock.clone());
+        let store_context = StoreContext::new(paths.database_path.clone(), store_clock.clone())
+            .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
         let budget = CallBudget {
             deadline: MonoInstant(store_clock.monotonic_now().0 + 5000),
             cancellation: Cancellation::default(),
         };
+        // The host row the elected daemon will attach (same endpoint).
+        store_context
+            .attach_host(&context.host_endpoint.clone().unwrap().to_string_lossy())
+            .unwrap();
         let db = store_context.open_writer().unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at) VALUES(?1,0)",
-            [instance.to_string()],
-        )
-        .unwrap();
         let store = SqliteStore::new(
             store_context,
             instance.to_string(),

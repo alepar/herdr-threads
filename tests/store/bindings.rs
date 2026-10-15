@@ -4,13 +4,15 @@ use rusqlite::Connection;
 
 pub(crate) fn db() -> Connection {
     let db = Connection::open_in_memory().unwrap();
-    crate::store::schema::initialize(&db, || UtcMillis(0)).unwrap();
+    crate::store::schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed())
+        .unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
     db.execute_batch("PRAGMA foreign_keys=ON;
-        INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('i',0,30);
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',4,0);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);
+        UPDATE local_node SET decision_seq=30;
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',4,0);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);
         INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s','joined',1);
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m1','t',1,'ordinary','b',1,1),('i','m2','t',2,'ordinary','b',2,2);").unwrap();
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m1','t',1,'ordinary','b',1,1),('34750f98bd59fcfc946da45aaabe933b','m2','t',2,'ordinary','b',2,2);").unwrap();
     db
 }
 pub(crate) fn placement() -> BindingPlacement {
@@ -344,7 +346,7 @@ fn fingerprint_start_beyond_i64_is_refused() {
 fn binding_key_from_claim_reads_seat_harness_session_and_agent() {
     use crate::protocol::authority::{CallerClaim, CallerRole, Harness};
     let claim = CallerClaim {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: 4,
         role: CallerRole::Subagent,
@@ -390,7 +392,7 @@ mod resolution {
 
     fn claim(session: &str, agent: Option<&str>) -> CallerClaim {
         CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),
             binding_generation: 4,
             role: if agent.is_some() {
@@ -458,7 +460,7 @@ mod resolution {
         )
         .unwrap();
         // Mail that arrived while the binding was disconnected: a re-seed at head would skip it.
-        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m3','t',3,'ordinary','b',3,3)", []).unwrap();
+        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m3','t',3,'ordinary','b',3,3)", []).unwrap();
         let r = resolve(&db, &claim("sess-A", None), false).unwrap();
         let Resolution::Existing {
             binding,
@@ -751,7 +753,7 @@ mod resolution {
         assert_eq!(state(&a).disconnect_reason.as_deref(), Some("superseded"));
         let seen_before = SEEN.lock().unwrap().len();
         db.execute(
-            "INSERT OR IGNORE INTO archival_instances(instance_id,runtime_boot) VALUES ('i','boot')",
+            "INSERT OR IGNORE INTO archival_instances(instance_id,runtime_boot) VALUES ('34750f98bd59fcfc946da45aaabe933b','boot')",
             [],
         )
         .unwrap();
@@ -1254,10 +1256,16 @@ mod resolution {
         let path = dir.join("db.sqlite");
         {
             let seed = Connection::open(&path).unwrap();
-            crate::store::schema::initialize(&seed, || UtcMillis(0)).unwrap();
+            crate::store::schema::initialize(
+                &seed,
+                || UtcMillis(0),
+                &crate::test_support::test_node_seed(),
+            )
+            .unwrap();
+            crate::test_support::attach_test_host_to_connection(&seed);
             seed.execute_batch(
-                "INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('i',0,30);
-                 INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',4,0);",
+                "UPDATE local_node SET decision_seq=30;
+                 INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',4,0);",
             )
             .unwrap();
         }
@@ -1266,7 +1274,7 @@ mod resolution {
             .map(|_| {
                 let (path, barrier) = (path.clone(), barrier.clone());
                 std::thread::spawn(move || {
-                    let db = Connection::open(&path).unwrap();
+                    let db = crate::test_support::open_test_connection(&path);
                     db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
                     let c = claim("sess-A", None);
                     barrier.wait();
@@ -1363,7 +1371,7 @@ mod resolution {
     fn cross_pane_session_enrolls_on_the_new_seat_and_supersedes_the_old_row() {
         let db = db();
         db.execute_batch(
-            "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2','i','resolved','native',4,0);",
+            "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',4,0);",
         )
         .unwrap();
         let on_a = resolve(&db, &claim("sess-A", None), true).unwrap();
@@ -1395,7 +1403,7 @@ mod exclusivity {
 
     fn claim(harness: Harness, session: &str, pid: u32) -> CallerClaim {
         CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),
             binding_generation: 4,
             role: CallerRole::TopLevel,
@@ -1947,8 +1955,8 @@ mod availability {
         let db = db();
         db.execute_batch(
             "UPDATE seats SET target_id='p', target_generation=1, unavailability_open=0 WHERE id='s'; \
-             UPDATE host_instances SET host_boot='b', host_epoch=1 WHERE id='i'; \
-             INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('i','p','b',1,1,1,'fresh');",
+             UPDATE herdr_hosts SET host_boot='b', host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'; \
+             INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,1,'fresh');",
         )
         .unwrap();
         db
@@ -2126,7 +2134,7 @@ mod lineage {
 
     fn claim(session: &str, pid: u32) -> CallerClaim {
         CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),
             binding_generation: 4,
             role: CallerRole::TopLevel,
@@ -2221,7 +2229,7 @@ mod lineage {
         other_harness.harness = Harness::Codex;
         assert!(!validate_lineage(&db, &other_harness, &predecessor.binding_id).unwrap());
         // Another seat.
-        db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2','i','resolved','native',4,0);").unwrap();
+        db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',4,0);").unwrap();
         let mut other_seat = same_process.clone();
         other_seat.seat = SeatId::new("s2");
         assert!(!validate_lineage(&db, &other_seat, &predecessor.binding_id).unwrap());

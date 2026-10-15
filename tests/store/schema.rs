@@ -36,13 +36,13 @@ fn db_path() -> PathBuf {
 #[test]
 fn snapshot_generations_are_hidden_until_one_active_pointer_switch() {
     let (_context, db, _clock) = seeded_db(0);
-    db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g1','i','b',1,1,'inc',2,0,'building',0,0,0)", []).unwrap();
+    db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g1','34750f98bd59fcfc946da45aaabe933b','b',1,1,'inc',2,0,'building',0,0,0)", []).unwrap();
     db.execute("INSERT INTO snapshot_targets(generation_id,target_id,terminal_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES ('g1','p1','t1',1,1,'empty_shell','idle',0)", []).unwrap();
     db.execute("INSERT INTO snapshot_targets(generation_id,target_id,terminal_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES ('g1','p2','t2',1,1,'occupied','idle',0)", []).unwrap();
     assert!(db.execute("INSERT INTO snapshot_targets(generation_id,target_id,terminal_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES ('g1','p3','t2',1,1,'unknown','unknown',0)", []).is_err());
     let active: Option<String> = db
         .query_row(
-            "SELECT active_snapshot_id FROM host_instances WHERE id='i'",
+            "SELECT active_snapshot_id FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -50,7 +50,7 @@ fn snapshot_generations_are_hidden_until_one_active_pointer_switch() {
     assert_eq!(active, None);
     assert!(
         db.execute(
-            "UPDATE host_instances SET active_snapshot_id='g1' WHERE id='i'",
+            "UPDATE herdr_hosts SET active_snapshot_id='g1' WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             []
         )
         .is_err()
@@ -60,10 +60,10 @@ fn snapshot_generations_are_hidden_until_one_active_pointer_switch() {
         [],
     )
     .unwrap();
-    db.execute("UPDATE host_instances SET active_snapshot_id='g1',recovery_baseline_generation_id='g1',baseline_hold_unclaimed=1 WHERE id='i'", []).unwrap();
+    db.execute("UPDATE herdr_hosts SET active_snapshot_id='g1',recovery_baseline_generation_id='g1',baseline_hold_unclaimed=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'", []).unwrap();
     let active: String = db
         .query_row(
-            "SELECT active_snapshot_id FROM host_instances WHERE id='i'",
+            "SELECT active_snapshot_id FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -71,7 +71,7 @@ fn snapshot_generations_are_hidden_until_one_active_pointer_switch() {
     assert_eq!(active, "g1");
     assert!(
         db.execute(
-            "UPDATE host_instances SET active_snapshot_id='missing' WHERE id='i'",
+            "UPDATE herdr_hosts SET active_snapshot_id='missing' WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             []
         )
         .is_err()
@@ -109,7 +109,7 @@ fn unresolved_origin_is_explicit_and_cannot_attach_to_a_resolved_seat() {
         )
         .is_err()
     );
-    db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('prior','i','boot',1,1,'inc',0,0,'published',0,0,0)", []).unwrap();
+    db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('prior','34750f98bd59fcfc946da45aaabe933b','boot',1,1,'inc',0,0,'published',0,0,0)", []).unwrap();
     db.execute("UPDATE seats SET unresolved_from_generation_id='prior',unresolved_prior_binding_generation=1 WHERE id='s'", []).unwrap();
     assert!(
         db.execute("DELETE FROM snapshot_generations WHERE id='prior'", [])
@@ -178,15 +178,10 @@ fn seat_s_binding(db: &Connection) -> String {
 
 fn seeded_db(utc: i64) -> (StoreContext, Connection, Arc<TestClock>) {
     let clock = Arc::new(TestClock::new(utc));
-    let context = StoreContext::new(db_path(), clock.clone());
+    let context = StoreContext::new(db_path(), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id, created_at) VALUES ('i', 0)",
-        [],
-    )
-    .unwrap();
-    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', 'i', 'resolved', 'native', 1, 0)", []).unwrap();
-    db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t', 'i', 'topic', 'purpose', 0, 0)", []).unwrap();
+    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0)", []).unwrap();
+    db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0)", []).unwrap();
     (context, db, clock)
 }
 
@@ -277,7 +272,7 @@ fn fresh_db() -> Connection {
     let image = IMAGE.get_or_init(|| {
         let store = ScratchStore::fresh("ht-fresh-image");
         let db = Connection::open(store.path()).unwrap();
-        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
         image_of(&db)
     });
     let db = from_image(image);
@@ -301,7 +296,12 @@ fn startup_rejects_missing_or_altered_digest_index() {
     ] {
         let db = from_image(&snapshot);
         db.execute_batch(tamper).unwrap();
-        let error = schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap_err();
+        let error = schema::initialize(
+            &db,
+            || crate::protocol::time::UtcMillis(0),
+            &crate::test_support::test_node_seed(),
+        )
+        .unwrap_err();
         assert_eq!(error.code, ErrorCode::IncompatibleSchema, "{tamper}");
         assert!(error.detail.contains("_thread_warning"), "{}", error.detail);
     }
@@ -328,7 +328,12 @@ fn startup_rejects_missing_or_altered_digest_projection() {
     ] {
         let db = from_image(&snapshot);
         db.execute_batch(tamper).unwrap();
-        let error = schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap_err();
+        let error = schema::initialize(
+            &db,
+            || crate::protocol::time::UtcMillis(0),
+            &crate::test_support::test_node_seed(),
+        )
+        .unwrap_err();
         assert_eq!(error.code, ErrorCode::IncompatibleSchema, "{tamper}");
         assert!(
             error.detail.contains("digest_"),
@@ -342,18 +347,23 @@ fn startup_rejects_missing_or_altered_digest_projection() {
 fn service_requirement_substrate_enforces_owner_link_and_one_effective_episode() {
     let (_context, mut db, _clock) = seeded_db(100);
     let tx = db.transaction().unwrap();
-    let author =
-        crate::store::service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(100)).unwrap();
+    let author = crate::store::service_substrate::ensure_reserved_author(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        UtcMillis(100),
+    )
+    .unwrap();
     assert_eq!(
-        crate::store::service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(200)).unwrap(),
+        crate::store::service_substrate::ensure_reserved_author(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            UtcMillis(200)
+        )
+        .unwrap(),
         author
     );
     tx.commit().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('other',0)",
-        [],
-    )
-    .unwrap();
+    db.execute("PRAGMA foreign_keys=OFF", []).unwrap();
     let other_tx = db.transaction().unwrap();
     let other_author =
         crate::store::service_substrate::ensure_reserved_author(&other_tx, "other", UtcMillis(100))
@@ -471,8 +481,12 @@ fn service_requirement_substrate_enforces_owner_link_and_one_effective_episode()
 fn service_author_and_requirement_acceptance_keep_explicit_provenance() {
     let (_context, mut db, _clock) = seeded_db(100);
     let tx = db.transaction().unwrap();
-    let author =
-        crate::store::service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(100)).unwrap();
+    let author = crate::store::service_substrate::ensure_reserved_author(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        UtcMillis(100),
+    )
+    .unwrap();
     tx.commit().unwrap();
     db.execute(
         "UPDATE threads SET managed_owner_author_id=?1 WHERE id='t'",
@@ -498,7 +512,7 @@ fn service_author_and_requirement_acceptance_keep_explicit_provenance() {
     assert_eq!(required.accepted_at, Some(UtcMillis(150)));
     assert_eq!(required.revision, 2);
 
-    let service_message = "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,event_json,decision_at,author_kind,author_service_id) VALUES (?1,'i','t',?2,'info',?3,'{}',200,?4,?5)";
+    let service_message = "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,event_json,decision_at,author_kind,author_service_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'info',?3,'{}',200,?4,?5)";
     assert!(
         db.execute(
             service_message,
@@ -515,7 +529,7 @@ fn service_author_and_requirement_acceptance_keep_explicit_provenance() {
         crate::store::service_substrate::message_author(&db, &MessageId::new("notice")).unwrap(),
         crate::protocol::service::EventAuthor::Programmatic(author)
     );
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at) VALUES ('native2','i','t',2,'ordinary','s',3,'hello',201)", []).unwrap();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at) VALUES ('native2','34750f98bd59fcfc946da45aaabe933b','t',2,'ordinary','s',3,'hello',201)", []).unwrap();
     assert_eq!(
         crate::store::service_substrate::message_author(&db, &MessageId::new("native2")).unwrap(),
         crate::protocol::service::EventAuthor::Native(SeatId::new("s"))
@@ -553,8 +567,12 @@ fn v2_verification_rejects_a_weakened_effective_requirement_index() {
 fn pending_requirement_fixture() -> Connection {
     let (_context, mut db, _clock) = seeded_db(100);
     let tx = db.transaction().unwrap();
-    let author =
-        crate::store::service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(100)).unwrap();
+    let author = crate::store::service_substrate::ensure_reserved_author(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        UtcMillis(100),
+    )
+    .unwrap();
     tx.commit().unwrap();
     db.execute(
         "UPDATE threads SET managed_owner_author_id=?1 WHERE id='t'",
@@ -577,7 +595,7 @@ fn acceptance_tuple(db: &Connection) -> (i64, String, i64, String, i64) {
 #[test]
 fn accepted_requirement_provenance_cannot_be_rewritten_on_revision_or_terminal_change() {
     let db = pending_requirement_fixture();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('other','i','resolved','native',1,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('other','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
     db.execute("UPDATE requirement_episodes SET state='accepted',revision=2,accepted_by_seat_id='s',accepted_generation=1,accepted_observation='native:original',accepted_at=150 WHERE id='req'", []).unwrap();
     let original = acceptance_tuple(&db);
     for change in [
@@ -675,9 +693,13 @@ fn startup_rejects_missing_or_weakened_acceptance_guard_without_history_changes(
         }
         let before: Option<String> = db.query_row("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='requirement_episodes_acceptance_provenance'", [], |row| row.get(0)).optional().unwrap();
         assert_eq!(
-            schema::initialize(&db, || crate::protocol::time::UtcMillis(0))
-                .unwrap_err()
-                .code,
+            schema::initialize(
+                &db,
+                || crate::protocol::time::UtcMillis(0),
+                &crate::test_support::test_node_seed()
+            )
+            .unwrap_err()
+            .code,
             ErrorCode::IncompatibleSchema
         );
         assert_eq!(
@@ -719,9 +741,13 @@ fn startup_rejects_weakened_requirement_table_constraint() {
     .unwrap();
     db.execute_batch("PRAGMA writable_schema=OFF").unwrap();
     assert_eq!(
-        schema::initialize(&db, || crate::protocol::time::UtcMillis(0))
-            .unwrap_err()
-            .code,
+        schema::initialize(
+            &db,
+            || crate::protocol::time::UtcMillis(0),
+            &crate::test_support::test_node_seed()
+        )
+        .unwrap_err()
+        .code,
         ErrorCode::IncompatibleSchema
     );
     assert_eq!(
@@ -803,7 +829,12 @@ fn startup_rejects_missing_or_weakened_actor_presence_checks() {
         ),
     ] {
         let db = pending_requirement_fixture();
-        schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+        schema::initialize(
+            &db,
+            || crate::protocol::time::UtcMillis(0),
+            &crate::test_support::test_node_seed(),
+        )
+        .unwrap();
         let original: String = db
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='requirement_episodes'",
@@ -826,9 +857,13 @@ fn startup_rejects_missing_or_weakened_actor_presence_checks() {
         .unwrap();
         db.execute_batch("PRAGMA writable_schema=OFF").unwrap();
         assert_eq!(
-            schema::initialize(&db, || crate::protocol::time::UtcMillis(0))
-                .unwrap_err()
-                .code,
+            schema::initialize(
+                &db,
+                || crate::protocol::time::UtcMillis(0),
+                &crate::test_support::test_node_seed()
+            )
+            .unwrap_err()
+            .code,
             ErrorCode::IncompatibleSchema
         );
         let after: (String, i64, Option<String>) = db.query_row("SELECT state,revision,accepted_by_seat_id FROM requirement_episodes WHERE id='req'", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
@@ -1024,9 +1059,9 @@ fn structural_seat_proof_is_all_or_none_and_keeps_provenance() {
 #[test]
 fn target_observation_provenance_requires_complete_qualified_tuple() {
     let (_, db, _) = seeded_db(0);
-    assert!(db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,incarnation) VALUES ('i','p','b',1,1,2,0,'fresh','inc')",[]).is_err());
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,connection_epoch,incarnation,incarnation_source_kind) VALUES ('i','p','b',1,1,2,0,'fresh','term',3,'inc','native_current_target')",[]).unwrap();
-    db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g','i','b',1,2,'inc',1,1,'published',0,0,0)",[]).unwrap();
+    assert!(db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,incarnation) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,2,0,'fresh','inc')",[]).is_err());
+    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,connection_epoch,incarnation,incarnation_source_kind) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,2,0,'fresh','term',3,'inc','native_current_target')",[]).unwrap();
+    db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g','34750f98bd59fcfc946da45aaabe933b','b',1,2,'inc',1,1,'published',0,0,0)",[]).unwrap();
     assert!(db.execute("INSERT INTO snapshot_targets(generation_id,target_id,generation,observation_sequence,connection_epoch,occupancy,ui_state,observed_at) VALUES ('g','p',1,2,3,'empty_shell','idle',0)",[]).is_err());
     db.execute("INSERT INTO snapshot_targets(generation_id,target_id,generation,observation_sequence,connection_epoch,incarnation_source_kind,terminal_id,occupancy,ui_state,observed_at) VALUES ('g','p',1,2,3,'coherent_enumeration','term','empty_shell','idle',0)",[]).unwrap();
 }
@@ -1094,9 +1129,9 @@ fn relaxed_commit_durability_is_a_per_context_test_hook() {
     };
     // Unit-test stores start relaxed; both start from FULL here, so the
     // relax hook must actually move one, and only that one.
-    let relaxed = StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let relaxed = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     relaxed.require_commit_durability();
-    let durable = StoreContext::new(path, Arc::new(FixedClock));
+    let durable = StoreContext::new(path, Arc::new(FixedClock)).with_test_host();
     durable.require_commit_durability();
     assert_eq!(
         synchronous(&relaxed.open_writer().unwrap()),
@@ -1111,7 +1146,7 @@ fn relaxed_commit_durability_is_a_per_context_test_hook() {
 #[test]
 fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
     let path = db_path();
-    let store = StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let store = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     store.require_commit_durability();
     let db = store.open_writer().unwrap();
     assert_eq!(
@@ -1135,13 +1170,8 @@ fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
         schema::NODE_SCHEMA_VERSION
     );
     assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', 'missing', 'resolved', 'native', 1, 0)", []).is_err());
-    db.execute(
-        "INSERT INTO host_instances(id, created_at) VALUES ('i', 0)",
-        [],
-    )
-    .unwrap();
-    db.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, created_at) VALUES ('s1', 'i', 'resolved', 'native', 'pane', 1, 0)", []).unwrap();
-    assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, created_at) VALUES ('s2', 'i', 'resolved', 'native', 'pane', 1, 0)", []).is_err());
+    db.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, created_at) VALUES ('s1', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 'pane', 1, 0)", []).unwrap();
+    assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, created_at) VALUES ('s2', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 'pane', 1, 0)", []).is_err());
     let query = store
         .open_query(CallBudget {
             deadline: MonoInstant(200),
@@ -1150,10 +1180,7 @@ fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
         .unwrap();
     assert!(
         query
-            .execute(
-                "INSERT INTO host_instances(id, created_at) VALUES ('i', 0)",
-                []
-            )
+            .execute("UPDATE local_node SET decision_seq=decision_seq+1", [])
             .is_err()
     );
     drop(query);
@@ -1166,6 +1193,7 @@ fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
 #[test]
 fn amended_v1_has_provenance_and_hidden_publication_tables() {
     let db = StoreContext::new(db_path(), Arc::new(FixedClock))
+        .with_test_host()
         .open_writer()
         .unwrap();
     for table in [
@@ -1191,8 +1219,8 @@ fn amended_v1_has_provenance_and_hidden_publication_tables() {
         assert_eq!(found, 1, "missing {table}");
     }
     for (table, column) in [
-        ("host_instances", "decision_seq"),
-        ("host_instances", "send_eligibility_revision"),
+        ("local_node", "decision_seq"),
+        ("local_node", "send_eligibility_revision"),
         ("threads", "membership_revision"),
         ("threads", "timeline_revision"),
         ("seats", "retired_seq"),
@@ -1213,6 +1241,7 @@ fn amended_v1_has_provenance_and_hidden_publication_tables() {
 #[test]
 fn writer_audit_rejects_missing_amended_v1_objects() {
     let db = StoreContext::new(db_path(), Arc::new(FixedClock))
+        .with_test_host()
         .open_writer()
         .unwrap();
     db.execute_batch("DROP TABLE work_jobs").unwrap();
@@ -1226,9 +1255,12 @@ fn writer_audit_rejects_missing_amended_v1_objects() {
 fn decision_and_eligibility_revisions_commit_and_rollback_together() {
     let (_, mut db, _) = seeded_db(0);
     let tx = db.transaction().unwrap();
-    assert_eq!(schema::next_decision_seq(&tx, "i").unwrap(), 1);
+    assert_eq!(
+        schema::next_decision_seq(&tx, "34750f98bd59fcfc946da45aaabe933b").unwrap(),
+        1
+    );
     assert!(
-        schema::apply_eligibility_transition(&tx, "i", |tx| {
+        schema::apply_eligibility_transition(&tx, "34750f98bd59fcfc946da45aaabe933b", |tx| {
             tx.execute("UPDATE seats SET generation=2 WHERE id='s'", [])
                 .map_err(super::store_error)?;
             Ok(true)
@@ -1238,11 +1270,14 @@ fn decision_and_eligibility_revisions_commit_and_rollback_together() {
     schema::bump_membership_revision(&tx, &ThreadId::new("t")).unwrap();
     schema::bump_timeline_revision(&tx, &ThreadId::new("t")).unwrap();
     tx.commit().unwrap();
-    let revisions: (i64, i64, i64, i64) = db.query_row("SELECT h.decision_seq, h.send_eligibility_revision, t.membership_revision, t.timeline_revision FROM host_instances h JOIN threads t ON t.instance_id=h.id WHERE h.id='i'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    let revisions: (i64, i64, i64, i64) = db.query_row("SELECT h.decision_seq, h.send_eligibility_revision, t.membership_revision, t.timeline_revision FROM local_node h JOIN threads t ON t.instance_id=h.id WHERE h.id='34750f98bd59fcfc946da45aaabe933b'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
     assert_eq!(revisions, (1, 1, 1, 1));
     let tx = db.transaction().unwrap();
-    assert_eq!(schema::next_decision_seq(&tx, "i").unwrap(), 2);
-    schema::apply_eligibility_transition(&tx, "i", |tx| {
+    assert_eq!(
+        schema::next_decision_seq(&tx, "34750f98bd59fcfc946da45aaabe933b").unwrap(),
+        2
+    );
+    schema::apply_eligibility_transition(&tx, "34750f98bd59fcfc946da45aaabe933b", |tx| {
         tx.execute("UPDATE seats SET generation=3 WHERE id='s'", [])
             .map_err(super::store_error)?;
         Ok(true)
@@ -1251,7 +1286,7 @@ fn decision_and_eligibility_revisions_commit_and_rollback_together() {
     tx.rollback().unwrap();
     let revisions: (i64, i64) = db
         .query_row(
-            "SELECT decision_seq, send_eligibility_revision FROM host_instances WHERE id='i'",
+            "SELECT decision_seq, send_eligibility_revision FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -1274,19 +1309,22 @@ fn epoch_loss_opens_one_episode_and_later_registration_allows_a_new_one() {
     )
     .unwrap();
     db.execute(
-        "UPDATE host_instances SET host_boot='b', host_epoch=1 WHERE id='i'",
+        "UPDATE herdr_hosts SET host_boot='b', host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('i','p','b',1,1,1,'fresh')", []).unwrap();
+    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,1,'fresh')", []).unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id, generation, target_generation, target_id, host_boot, host_epoch, harness, native_session, execution_id, observation_provenance, observed_at, registered_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','e','verified',1,1,'term-'||'p','inc')", []).unwrap();
     db.execute("UPDATE seats SET unavailability_open=0 WHERE id='s'", [])
         .unwrap();
     let tx = db.transaction().unwrap();
     assert!(schema::ensure_unavailability_episode(&tx, &SeatId::new("s")).is_err());
     tx.rollback().unwrap();
-    db.execute("UPDATE host_instances SET host_epoch=2 WHERE id='i'", [])
-        .unwrap();
+    db.execute(
+        "UPDATE herdr_hosts SET host_epoch=2 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let tx = db.transaction().unwrap();
     assert_eq!(
         schema::ensure_unavailability_episode(&tx, &SeatId::new("s")).unwrap(),
@@ -1299,8 +1337,11 @@ fn epoch_loss_opens_one_episode_and_later_registration_allows_a_new_one() {
     tx.commit().unwrap();
     db.execute("UPDATE seats SET unavailability_open=0 WHERE id='s'", [])
         .unwrap();
-    db.execute("UPDATE host_instances SET host_epoch=3 WHERE id='i'", [])
-        .unwrap();
+    db.execute(
+        "UPDATE herdr_hosts SET host_epoch=3 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let tx = db.transaction().unwrap();
     assert_eq!(
         schema::ensure_unavailability_episode(&tx, &SeatId::new("s")).unwrap(),
@@ -1312,7 +1353,7 @@ fn epoch_loss_opens_one_episode_and_later_registration_allows_a_new_one() {
 #[test]
 fn target_generation_change_opens_episode_before_binding_reconciliation() {
     let (_, mut db, _) = seeded_db(10);
-    db.execute_batch("UPDATE seats SET target_id='p', target_generation=1, unavailability_open=0 WHERE id='s'; UPDATE host_instances SET host_boot='b', host_epoch=1 WHERE id='i'; INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('i','p','b',1,1,1,'fresh'); INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','e','verified',1,1,'term-'||'p','inc');").unwrap();
+    db.execute_batch("UPDATE seats SET target_id='p', target_generation=1, unavailability_open=0 WHERE id='s'; UPDATE herdr_hosts SET host_boot='b', host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'; INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,1,'fresh'); INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','e','verified',1,1,'term-'||'p','inc');").unwrap();
     let tx = db.transaction().unwrap();
     assert!(schema::ensure_unavailability_episode(&tx, &SeatId::new("s")).is_err());
     tx.rollback().unwrap();
@@ -1332,9 +1373,9 @@ fn target_generation_change_opens_episode_before_binding_reconciliation() {
 #[test]
 fn invalidated_observation_opens_episode_even_with_stale_fresh_target_row() {
     let (_, mut db, _) = seeded_db(10);
-    db.execute_batch("UPDATE seats SET target_id='p', target_generation=1, unavailability_open=0 WHERE id='s'; UPDATE host_instances SET host_boot='b', host_epoch=1 WHERE id='i'; INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('i','p','b',1,1,1,'fresh'); INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','e','verified',1,1,'term-'||'p','inc');").unwrap();
+    db.execute_batch("UPDATE seats SET target_id='p', target_generation=1, unavailability_open=0 WHERE id='s'; UPDATE herdr_hosts SET host_boot='b', host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'; INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,1,'fresh'); INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','e','verified',1,1,'term-'||'p','inc');").unwrap();
     db.execute(
-        "UPDATE host_instances SET invalidation_revision=1 WHERE id='i'",
+        "UPDATE herdr_hosts SET invalidation_revision=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -1411,7 +1452,7 @@ fn overdue_source_marker_event_and_job_commit_or_rollback_as_one() {
         &mut db,
         |_| Ok(()),
         |tx, at, _| {
-            let seq = schema::next_decision_seq(tx, "i")?;
+            let seq = schema::next_decision_seq(tx, "34750f98bd59fcfc946da45aaabe933b")?;
             let outcome = schema::record_overdue_with_decision_seq(
                 tx,
                 &obligation,
@@ -1425,7 +1466,7 @@ fn overdue_source_marker_event_and_job_commit_or_rollback_as_one() {
     );
     assert!(failed.is_err());
     let empty: (Option<String>, i64, i64, i64) = db.query_row(
-        "SELECT warning_message_id, (SELECT count(*) FROM messages), (SELECT count(*) FROM warning_jobs), (SELECT decision_seq FROM host_instances WHERE id='i') FROM invitations WHERE id='v1'",
+        "SELECT warning_message_id, (SELECT count(*) FROM messages), (SELECT count(*) FROM warning_jobs), (SELECT decision_seq FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b') FROM invitations WHERE id='v1'",
         [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     ).unwrap();
     assert_eq!(empty, (None, 0, 0, 0));
@@ -1434,7 +1475,7 @@ fn overdue_source_marker_event_and_job_commit_or_rollback_as_one() {
             &mut db,
             |_| Ok(()),
             |tx, at, _| {
-                let seq = schema::next_decision_seq(tx, "i")?;
+                let seq = schema::next_decision_seq(tx, "34750f98bd59fcfc946da45aaabe933b")?;
                 schema::record_overdue_with_decision_seq(
                     tx,
                     &obligation,
@@ -1612,7 +1653,7 @@ fn receipt_cutover_skips_unstarted_future_and_terminal_rows() {
         ("m3", 3, None, "pending"),
         ("m4", 4, Some(100), "acked"),
     ] {
-        db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at,decision_seq) VALUES ('i',?1, 't', ?2, 'ordinary', 'body', 0,?2)", params![id, sequence]).unwrap();
+        db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1, 't', ?2, 'ordinary', 'body', 0,?2)", params![id, sequence]).unwrap();
         db.execute("INSERT INTO receipts(message_id, thread_id, seat_id, state, frozen_duration_ms, available_at, deadline_at) VALUES (?1, 't', 's', ?2, 300000, ?3, ?4)",
             params![id, state, deadline.map(|_| 0), deadline]).unwrap();
     }
@@ -1713,7 +1754,7 @@ fn retirement_cursor_and_warning_roll_back_as_one_quantum() {
 #[test]
 fn unknown_version_and_non_database_files_are_preserved() {
     let path = db_path();
-    let store = StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let store = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = store.open_writer().unwrap();
     db.pragma_update(None, "user_version", 99).unwrap();
     drop(db);
@@ -1731,7 +1772,7 @@ fn unknown_version_and_non_database_files_are_preserved() {
     let broken_path = db_path();
     let bytes = b"this is not sqlite";
     std::fs::write(&broken_path, bytes).unwrap();
-    let broken = StoreContext::new(broken_path.clone(), Arc::new(FixedClock));
+    let broken = StoreContext::new(broken_path.clone(), Arc::new(FixedClock)).with_test_host();
     assert_eq!(
         broken.open_writer().unwrap_err().code,
         ErrorCode::StoreCorrupt
@@ -1752,7 +1793,7 @@ fn query_cancellation_interrupts_only_its_connection() {
     cancellation.cancel();
     let error = query.query_row("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT sum(x) FROM n", [], |r| r.get::<_, i64>(0)).unwrap_err();
     assert!(matches!(error, rusqlite::Error::SqliteFailure(_, _)));
-    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('other', 'i', 'resolved', 'native', 1, 0)", []).unwrap();
+    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('other', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0)", []).unwrap();
 }
 
 #[test]
@@ -1797,7 +1838,7 @@ fn canonical_digest_ignores_object_insertion_order() {
 #[test]
 fn duplicate_event_key_cannot_suppress_another_threads_event() {
     let (context, mut db, _) = seeded_db(50);
-    db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t2', 'i', 'topic', 'purpose', 0, 0)", []).unwrap();
+    db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t2', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0)", []).unwrap();
     let t1 = ThreadId::new("t");
     let t2 = ThreadId::new("t2");
     context
@@ -1846,9 +1887,9 @@ fn duplicate_event_key_cannot_suppress_another_threads_event() {
 #[test]
 fn one_decision_batch_allocates_distinct_global_event_offsets() {
     let (_, mut db, _) = seeded_db(50);
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic','goal',0,0)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
     let tx = db.transaction().unwrap();
-    let seq = schema::next_decision_seq(&tx, "i").unwrap();
+    let seq = schema::next_decision_seq(&tx, "34750f98bd59fcfc946da45aaabe933b").unwrap();
     for (thread, key) in [("t", "first"), ("t2", "second")] {
         schema::append_event_once_with_decision_seq(
             &tx,
@@ -1866,7 +1907,7 @@ fn one_decision_batch_allocates_distinct_global_event_offsets() {
         .unwrap();
     }
     tx.commit().unwrap();
-    let offsets:Vec<i64>=db.prepare("SELECT event_offset FROM messages WHERE instance_id='i' AND decision_seq=?1 ORDER BY event_offset")
+    let offsets:Vec<i64>=db.prepare("SELECT event_offset FROM messages WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND decision_seq=?1 ORDER BY event_offset")
         .unwrap().query_map([seq as i64],|r|r.get(0)).unwrap().map(Result::unwrap).collect();
     assert_eq!(offsets, vec![0, 1]);
 }
@@ -1874,17 +1915,13 @@ fn one_decision_batch_allocates_distinct_global_event_offsets() {
 #[test]
 fn logical_message_keys_are_instance_scoped_and_thread_bound() {
     let (_, db, _) = seeded_db(0);
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('other',0)",
-        [],
-    )
-    .unwrap();
+    db.execute("PRAGMA foreign_keys=OFF", []).unwrap();
     db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('other-thread','other','topic','goal',0,0)", []).unwrap();
-    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m1','t',1,'ordinary','body',0,1)", []).unwrap();
+    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m1','t',1,'ordinary','body',0,1)", []).unwrap();
     db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('other','m2','other-thread',1,'ordinary','body',0,1)", []).unwrap();
-    assert!(db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','bad','other-thread',2,'ordinary','body',0,2)", []).is_err());
-    assert!(db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','collision','t',2,'ordinary','body',0,1)", []).is_err());
-    assert!(db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at) VALUES ('i','null-key','t',2,'ordinary','body',0)", []).is_err());
+    assert!(db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','bad','other-thread',2,'ordinary','body',0,2)", []).is_err());
+    assert!(db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','collision','t',2,'ordinary','body',0,1)", []).is_err());
+    assert!(db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at) VALUES ('34750f98bd59fcfc946da45aaabe933b','null-key','t',2,'ordinary','body',0)", []).is_err());
 }
 
 #[test]
@@ -1953,8 +1990,8 @@ fn creation_ordinals_and_retirement_cutover_are_immutable() {
 #[test]
 fn message_contents_and_history_are_immutable() {
     let (_, db, _) = seeded_db(50);
-    db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at,decision_seq) VALUES ('i','m', 't', 1, 'ordinary', 'original', 10,1)", []).unwrap();
-    db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, event_key, event_json, decision_at,decision_seq) VALUES ('i','e', 't', 2, 'info', 'key', '{}', 10,2)", []).unwrap();
+    db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m', 't', 1, 'ordinary', 'original', 10,1)", []).unwrap();
+    db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, event_key, event_json, decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','e', 't', 2, 'info', 'key', '{}', 10,2)", []).unwrap();
     for sql in [
         "UPDATE messages SET body='rewritten' WHERE id='m'",
         "UPDATE messages SET decision_at=11 WHERE id='m'",
@@ -1979,8 +2016,8 @@ fn message_contents_and_history_are_immutable() {
 #[test]
 fn receipt_thread_must_match_its_message_thread() {
     let (_, db, _) = seeded_db(50);
-    db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('other', 'i', 'topic', 'purpose', 0, 0)", []).unwrap();
-    db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at,decision_seq) VALUES ('i','m', 't', 1, 'ordinary', 'body', 0,1)", []).unwrap();
+    db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('other', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0)", []).unwrap();
+    db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m', 't', 1, 'ordinary', 'body', 0,1)", []).unwrap();
     assert!(db.execute("INSERT INTO receipts(message_id, thread_id, seat_id, state, frozen_duration_ms) VALUES ('m', 'other', 's', 'pending', 300000)", []).is_err());
     db.execute("INSERT INTO receipts(message_id, thread_id, seat_id, state, frozen_duration_ms) VALUES ('m', 't', 's', 'pending', 300000)", []).unwrap();
     assert!(
@@ -2223,7 +2260,7 @@ fn query_setup_preserves_schema_and_corruption_errors() {
 
     let broken_path = db_path();
     std::fs::write(&broken_path, b"not a sqlite database").unwrap();
-    let broken = StoreContext::new(broken_path, clock);
+    let broken = StoreContext::new(broken_path, clock).with_test_host();
     let result = broken.open_query(CallBudget {
         deadline: MonoInstant(200),
         cancellation: Cancellation::default(),
@@ -2263,7 +2300,7 @@ fn writer_lock_wait_precedes_decision_sample() {
 #[test]
 fn missing_v1_index_is_rejected_without_replacement() {
     let path = db_path();
-    let store = StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let store = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = store.open_writer().unwrap();
     db.execute_batch("DROP INDEX receipts_seat_thread_state_ordinal")
         .unwrap();
@@ -2286,8 +2323,8 @@ fn missing_v1_index_is_rejected_without_replacement() {
 #[test]
 fn recovery_baseline_survives_new_target_observations_without_allocating_a_seat() {
     let (_, db, _) = seeded_db(50);
-    db.execute("INSERT INTO recovery_baseline_targets(instance_id, target_id, baseline_boot, baseline_epoch, captured_at, disposition) VALUES ('i', 'pane', 'old', 1, 10, 'held_for_repair')", []).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id, target_id, host_boot, epoch, generation, observed_at, provenance) VALUES ('i', 'pane', 'old', 1, 1, 10, 'enumeration')", []).unwrap();
+    db.execute("INSERT INTO recovery_baseline_targets(instance_id, target_id, baseline_boot, baseline_epoch, captured_at, disposition) VALUES ('34750f98bd59fcfc946da45aaabe933b', 'pane', 'old', 1, 10, 'held_for_repair')", []).unwrap();
+    db.execute("INSERT INTO observed_targets(instance_id, target_id, host_boot, epoch, generation, observed_at, provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b', 'pane', 'old', 1, 1, 10, 'enumeration')", []).unwrap();
     db.execute("UPDATE observed_targets SET host_boot='new', epoch=2, generation=2, observed_at=20 WHERE target_id='pane'", []).unwrap();
     let baseline: (String, i64) = db.query_row("SELECT baseline_boot, baseline_epoch FROM recovery_baseline_targets WHERE target_id='pane'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
     assert_eq!(baseline, ("old".to_owned(), 1));
@@ -2301,12 +2338,12 @@ fn recovery_baseline_survives_new_target_observations_without_allocating_a_seat(
 #[test]
 fn receipt_warning_keys_distinguish_ids_containing_colons() {
     let (context, mut db, _) = seeded_db(300_000);
-    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('b:c', 'i', 'resolved', 'native', 1, 0)", []).unwrap();
+    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('b:c', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0)", []).unwrap();
     for (id, sequence, seat) in [("a:b", 1, "c"), ("a", 2, "b:c")] {
         if seat == "c" {
-            db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('c', 'i', 'resolved', 'native', 1, 0)", []).unwrap();
+            db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('c', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0)", []).unwrap();
         }
-        db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at,decision_seq) VALUES ('i',?1, 't', ?2, 'ordinary', 'body', 0,?2)", params![id, sequence]).unwrap();
+        db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1, 't', ?2, 'ordinary', 'body', 0,?2)", params![id, sequence]).unwrap();
         db.execute("INSERT INTO receipts(message_id, thread_id, seat_id, state, frozen_duration_ms, available_at, deadline_at) VALUES (?1, 't', ?2, 'pending', 300000, 0, 300000)", params![id, seat]).unwrap();
     }
     db.execute("UPDATE threads SET next_sequence=3 WHERE id='t'", [])
@@ -2341,7 +2378,7 @@ fn receipt_warning_keys_distinguish_ids_containing_colons() {
 fn receipt_warning_condition_is_quiet_for_second_pending_source() {
     let (context, mut db, _) = seeded_db(300_000);
     for (id, sequence) in [("m1", 1), ("m2", 2)] {
-        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','body',0,?2)", params![id,sequence]).unwrap();
+        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'t',?2,'ordinary','body',0,?2)", params![id,sequence]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','s','pending',300000,0,300000)", [id]).unwrap();
     }
     db.execute("UPDATE threads SET next_sequence=3 WHERE id='t'", [])
@@ -2380,7 +2417,7 @@ fn receipt_warning_condition_is_quiet_for_second_pending_source() {
 fn receipt_warning_condition_survives_writer_reopen() {
     let (context, mut db, _) = seeded_db(300_000);
     for (id, sequence) in [("m1", 1), ("m2", 2)] {
-        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','body',0,?2)", params![id,sequence]).unwrap();
+        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'t',?2,'ordinary','body',0,?2)", params![id,sequence]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','s','pending',300000,0,300000)", [id]).unwrap();
     }
     db.execute("UPDATE threads SET next_sequence=3 WHERE id='t'", [])
@@ -2448,7 +2485,7 @@ fn unavailable_recovery_records_one_bounded_close_job_for_many_threads() {
     for number in 0..CONDITIONS {
         let thread = format!("u{number}");
         let warning = format!("e{number}");
-        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [&thread]).unwrap();
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", [&thread]).unwrap();
         db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,episode,open_warning_id,opened_seq) VALUES ('unavailable',?1,'1:s:1','s',1,?2,1)", params![thread,warning]).unwrap();
     }
     let before: i64 = db
@@ -2562,7 +2599,7 @@ fn overlapping_waiver_sweeps_keep_each_conditions_first_close_time() {
     let (context, mut db, clock) = seeded_db(300_000);
     for (thread, warning) in [("t", "eold"), ("t2", "enew")] {
         if thread == "t2" {
-            db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic','goal',0,0)", []).unwrap();
+            db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
         }
         db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt',?1,'s','s',?2,1)", params![thread, warning]).unwrap();
         if thread == "t" {
@@ -2647,11 +2684,14 @@ fn overlapping_waiver_sweeps_keep_each_conditions_first_close_time() {
 fn deferred_clear_recipient_snapshot_excludes_member_joining_after_close() {
     let (context, mut db, clock) = seeded_db(300_000);
     for seat in ["early", "late"] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)", [seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", [seat]).unwrap();
     }
     db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','early',1,1)", []).unwrap();
-    db.execute("UPDATE host_instances SET decision_seq=2 WHERE id='i'", [])
-        .unwrap();
+    db.execute(
+        "UPDATE local_node SET decision_seq=2 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt','t','s','s','eopen',1)", []).unwrap();
     context
         .execute_decision(
@@ -2664,8 +2704,11 @@ fn deferred_clear_recipient_snapshot_excludes_member_joining_after_close() {
         )
         .unwrap();
     db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','late',1,3)", []).unwrap();
-    db.execute("UPDATE host_instances SET decision_seq=3 WHERE id='i'", [])
-        .unwrap();
+    db.execute(
+        "UPDATE local_node SET decision_seq=3 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let job: String = db
         .query_row(
             "SELECT id FROM work_jobs WHERE kind='warning_condition_close'",
@@ -2730,7 +2773,7 @@ fn deferred_clear_recipient_snapshot_excludes_member_joining_after_close() {
 #[test]
 fn receipt_reopen_publishes_queued_clear_before_new_open() {
     let (context, mut db, _) = seeded_db(300_000);
-    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m1','t',1,'ordinary','first',0,1)", []).unwrap();
+    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m1','t',1,'ordinary','first',0,1)", []).unwrap();
     db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m1','t','s','pending',300000,0,300000)", []).unwrap();
     db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
         .unwrap();
@@ -2753,7 +2796,7 @@ fn receipt_reopen_publishes_queued_clear_before_new_open() {
         )
         .unwrap();
     context.execute_decision(&mut db, |_| Ok(()), |tx, at, _| {
-        let cutoff = schema::next_decision_seq(tx, "i")?;
+        let cutoff = schema::next_decision_seq(tx, "34750f98bd59fcfc946da45aaabe933b")?;
         tx.execute("INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('s',?1,1,?2)", params![cutoff as i64,at.utc.0]).unwrap();
         schema::clear_waived_receipt_conditions_for_seat(tx, "s", at.utc)?;
         Ok(())
@@ -2766,10 +2809,10 @@ fn receipt_reopen_publishes_queued_clear_before_new_open() {
         )
         .unwrap();
     let next_seq = cutoff + 1;
-    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m2','t',3,'ordinary','second',0,?1)", [next_seq]).unwrap();
+    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m2','t',3,'ordinary','second',0,?1)", [next_seq]).unwrap();
     db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m2','t','s','pending',300000,0,300000)", []).unwrap();
     db.execute(
-        "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=?1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [next_seq],
     )
     .unwrap();
@@ -2806,7 +2849,7 @@ fn receipt_reopen_publishes_queued_clear_before_new_open() {
 #[test]
 fn human_waiver_closes_warned_receipt_without_acking_it() {
     let (context, mut db, clock) = seeded_db(300_000);
-    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',0,1)", []).unwrap();
+    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',0,1)", []).unwrap();
     db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m','t','s','pending',300000,0,300000)", []).unwrap();
     db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
         .unwrap();
@@ -2829,7 +2872,7 @@ fn human_waiver_closes_warned_receipt_without_acking_it() {
         )
         .unwrap();
     context.execute_decision(&mut db, |_| Ok(()), |tx, at, _| {
-        let cutoff = schema::next_decision_seq(tx, "i")?;
+        let cutoff = schema::next_decision_seq(tx, "34750f98bd59fcfc946da45aaabe933b")?;
         tx.execute("INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('s',?1,1,?2)", params![cutoff as i64,at.utc.0]).unwrap();
         assert_eq!(schema::clear_waived_receipt_conditions_for_seat(tx, "s", at.utc)?, 1);
         Ok(())
@@ -2910,7 +2953,7 @@ fn invitation_warning_clear_is_recorded_once_after_terminal_settlement() {
 fn receipt_warning_condition_clears_once_and_reopens_with_new_source() {
     let (context, mut db, _) = seeded_db(300_000);
     for (id, sequence) in [("m1", 1), ("m2", 2), ("m3", 3)] {
-        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','body',0,?2)", params![id,sequence]).unwrap();
+        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'t',?2,'ordinary','body',0,?2)", params![id,sequence]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','s','pending',300000,0,300000)", [id]).unwrap();
     }
     db.execute("UPDATE threads SET next_sequence=4 WHERE id='t'", [])
@@ -2986,7 +3029,7 @@ fn receipt_warning_condition_clears_once_and_reopens_with_new_source() {
 #[test]
 fn delayed_warning_attribution_keeps_open_and_clear_actionable_in_order() {
     let (context, mut db, clock) = seeded_db(300_000);
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('p','i','resolved','native',1,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('p','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
     for seat in ["s", "p"] {
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
@@ -2995,7 +3038,7 @@ fn delayed_warning_attribution_keeps_open_and_clear_actionable_in_order() {
         .unwrap();
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)", [seat]).unwrap();
     }
-    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',0,1)", []).unwrap();
+    db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',0,1)", []).unwrap();
     db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m','t','s','pending',300000,0,300000)", []).unwrap();
     db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
         .unwrap();
@@ -3106,7 +3149,7 @@ fn effective_retirement_fences_pending_rows_but_preserves_settled_provenance() {
     add_invitation(&db, "v1", 300_000, "pending");
     add_invitation(&db, "v2", 300_000, "accepted");
     for (id, sequence, state) in [("m1", 1, "pending"), ("m2", 2, "acked")] {
-        db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at,decision_seq) VALUES ('i',?1, 't', ?2, 'ordinary', 'body', 0,?2)", params![id, sequence]).unwrap();
+        db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1, 't', ?2, 'ordinary', 'body', 0,?2)", params![id, sequence]).unwrap();
         db.execute("INSERT INTO receipts(message_id, thread_id, seat_id, state, frozen_duration_ms) VALUES (?1, 't', 's', ?2, 300000)", params![id, state]).unwrap();
     }
     db.execute(
@@ -3151,14 +3194,24 @@ fn filter_revision_updates_only_its_scope_in_the_transaction() {
             &mut db,
             |_| Ok(()),
             |tx, _, _| {
-                schema::bump_filter_revision(tx, "i", "directory", "t")?;
-                schema::bump_filter_revision(tx, "i", "directory", "t")?;
-                schema::bump_filter_revision(tx, "i", "topic", "t")?;
+                schema::bump_filter_revision(
+                    tx,
+                    "34750f98bd59fcfc946da45aaabe933b",
+                    "directory",
+                    "t",
+                )?;
+                schema::bump_filter_revision(
+                    tx,
+                    "34750f98bd59fcfc946da45aaabe933b",
+                    "directory",
+                    "t",
+                )?;
+                schema::bump_filter_revision(tx, "34750f98bd59fcfc946da45aaabe933b", "topic", "t")?;
                 Ok(())
             },
         )
         .unwrap();
-    let revisions: (i64, i64) = db.query_row("SELECT (SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='directory' AND scope_key='t'), (SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='topic' AND scope_key='t')", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let revisions: (i64, i64) = db.query_row("SELECT (SELECT revision FROM filter_revisions WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND scope_kind='directory' AND scope_key='t'), (SELECT revision FROM filter_revisions WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND scope_kind='topic' AND scope_key='t')", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
     assert_eq!(revisions, (2, 1));
 }
 
@@ -3233,16 +3286,13 @@ fn writer_guard_rejects_live_bindings_without_reconfirmation_evidence() {
 fn writer_startup_backfills_legacy_binding_evidence_only_from_matching_structural_proof() {
     let path = db_path();
     let clock = Arc::new(TestClock::new(0));
-    let context = StoreContext::new(path.clone(), clock.clone());
+    let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
     drop(context.open_writer().unwrap());
     {
         // A pre-invariant store: raw connection, no guard installed.
         let db = Connection::open(&path).unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-            [],
-        )
-        .unwrap();
+        db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
         let proof = "structural_terminal_id='term',structural_incarnation='inc',structural_incarnation_kind='coherent_enumeration',structural_host_boot='b',structural_host_epoch=1,structural_connection_epoch=1,structural_observation_sequence=1";
         for (seat, state, reason) in [
             ("ok", "resolved", "NULL"),
@@ -3254,7 +3304,7 @@ fn writer_startup_backfills_legacy_binding_evidence_only_from_matching_structura
             ("noproof", "resolved", "NULL"),
         ] {
             db.execute(
-                &format!("INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at) VALUES ('{seat}','i','{state}',{reason},'native','p-{seat}',2,1,0)"),
+                &format!("INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at) VALUES ('{seat}','34750f98bd59fcfc946da45aaabe933b','{state}',{reason},'native','p-{seat}',2,1,0)"),
                 [],
             )
             .unwrap();
@@ -3326,7 +3376,12 @@ fn writer_startup_backfills_legacy_binding_evidence_only_from_matching_structura
 #[test]
 fn fresh_store_lands_at_latest_with_the_evidence_tables() {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+    schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
@@ -3346,7 +3401,12 @@ fn fresh_store_lands_at_latest_with_the_evidence_tables() {
 #[test]
 fn v12_audit_rejects_a_missing_or_altered_evidence_table() {
     let db = fresh_db();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+    schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
     db.execute_batch("DROP TABLE harness_unattributed").unwrap();
     assert_eq!(
         schema::verify_baseline(&db).unwrap_err().code,
@@ -3366,9 +3426,19 @@ fn v12_audit_rejects_a_missing_or_altered_evidence_table() {
 #[test]
 fn startup_verification_rejects_a_tampered_b1_index() {
     let db = fresh_db();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+    schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
     db.execute_batch("DROP INDEX work_jobs_live; CREATE INDEX work_jobs_live ON work_jobs(ordinal) WHERE status='pending';").unwrap();
-    let error = schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap_err();
+    let error = schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap_err();
     assert_eq!(error.code, ErrorCode::IncompatibleSchema);
     assert!(error.detail.contains("work_jobs_live"), "{}", error.detail);
 }
@@ -3379,7 +3449,12 @@ fn startup_verification_rejects_a_tampered_b1_index() {
 #[test]
 fn b1_indexes_are_usable_by_name() {
     let db = fresh_db();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+    schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
     for probe in [
         "SELECT ordinal FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' AND ordinal>?2 ORDER BY ordinal LIMIT 1",
         "SELECT ordinal FROM work_jobs INDEXED BY work_jobs_live WHERE status IN ('pending','failed') AND ordinal>?1 ORDER BY ordinal LIMIT 1",
@@ -3403,7 +3478,12 @@ fn b1_indexes_are_usable_by_name() {
 #[test]
 fn v11_survivors_recorded() {
     let db = fresh_db();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+    schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
     let mut statement = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE '%baseline%' OR name LIKE '%recovery%' OR name='allocation_decisions') ORDER BY name")
         .unwrap();
@@ -3429,15 +3509,15 @@ fn v11_survivors_recorded() {
 #[test]
 fn v10_allocation_decisions_accepts_b5_kinds() {
     let db = fresh_db();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-        [],
+    schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
     )
     .unwrap();
     let insert = |kind: &str, diagnostic: Option<&str>| {
         db.execute(
-            "INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,continuity_diagnostic) VALUES ('i','t','s',?1,1,'b',0,1,?2)",
+            "INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,continuity_diagnostic) VALUES ('34750f98bd59fcfc946da45aaabe933b','t','s',?1,1,'b',0,1,?2)",
             params![kind, diagnostic],
         )
     };
@@ -3512,7 +3592,7 @@ fn fresh_database_has_thread_summary_schema() {
     }
     let block = |id: &str, idx: i64| {
         db.execute(
-            "INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES (?1,'i','t','c1',0,?2,1,2,'h','n','s','m','p',0)",
+            "INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t','c1',0,?2,1,2,'h','n','s','m','p',0)",
             params![id, idx],
         )
     };
@@ -3551,13 +3631,13 @@ fn fresh_database_has_thread_summary_schema() {
 fn new_message_rows_cannot_claim_backfill_or_service_relay() {
     let (_context, db, _clock) = seeded_db(0);
     db.execute(
-        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','i',0)",
+        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','34750f98bd59fcfc946da45aaabe933b',0)",
         [],
     )
     .unwrap();
     let ordinary = |id: &str, seq: i64, backfilled: i64| {
         db.execute(
-            "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind,author_role,author_role_backfilled) VALUES ('i',?1,'t',?2,'ordinary','s',?2,'b',1,'native','agent',?3)",
+            "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind,author_role,author_role_backfilled) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'t',?2,'ordinary','s',?2,'b',1,'native','agent',?3)",
             params![id, seq, backfilled],
         )
     };
@@ -3570,7 +3650,7 @@ fn new_message_rows_cannot_claim_backfill_or_service_relay() {
     );
     let service = |id: &str, seq: i64, relays: i64| {
         db.execute(
-            "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,decision_seq,body,decision_at,author_kind,author_service_id,author_role,relays_user) VALUES ('i',?1,'t',?2,'ordinary',?2,'b',1,'programmatic','svc','service',?3)",
+            "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,decision_seq,body,decision_at,author_kind,author_service_id,author_role,relays_user) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'t',?2,'ordinary',?2,'b',1,'programmatic','svc','service',?3)",
             params![id, seq, relays],
         )
     };
@@ -3636,7 +3716,9 @@ fn invitation_rejection_schema_audit_rejects_projection_guard_tampering() {
         if let Some(sql) = replacement {
             db.execute_batch(sql).unwrap();
         }
-        let error = schema::initialize(&db, || UtcMillis(1)).unwrap_err();
+        let error =
+            schema::initialize(&db, || UtcMillis(1), &crate::test_support::test_node_seed())
+                .unwrap_err();
         assert_eq!(error.code, ErrorCode::IncompatibleSchema);
         assert!(
             error
@@ -3651,7 +3733,12 @@ fn invitation_rejection_schema_audit_rejects_projection_guard_tampering() {
 #[test]
 fn recent_activity_writer_rejects_missing_or_null_default() {
     let verified = ScratchStore::fresh("ht-activity-default");
-    schema::initialize(&Connection::open(verified.path()).unwrap(), || UtcMillis(0)).unwrap();
+    schema::initialize(
+        &Connection::open(verified.path()).unwrap(),
+        || UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
     for replacement in [
         "last_activity INTEGER NOT NULL",
         "last_activity INTEGER NOT NULL DEFAULT NULL",
@@ -3685,7 +3772,8 @@ fn recent_activity_writer_rejects_missing_or_null_default() {
             )
             .unwrap();
         assert!(default.is_none() || default.as_deref() == Some("NULL"));
-        let result = schema::initialize(&db, || UtcMillis(1));
+        let result =
+            schema::initialize(&db, || UtcMillis(1), &crate::test_support::test_node_seed());
         drop(db);
         assert!(
             matches!(result,Err(ref error) if error.code==ErrorCode::IncompatibleSchema),
@@ -3700,7 +3788,7 @@ fn recent_activity_writer_rejects_missing_or_null_default() {
 fn adapter_migration_v2_tables_enforce_bounded_keys_and_references() {
     let db = fresh_db();
     db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
     let runtime = "INSERT INTO harness_runtime_identities(harness,identity_key,descriptor_json,last_seen_at) VALUES (?1,'release:1.2.3','{}',0)";
     for invalid in [
         "",
@@ -3783,7 +3871,9 @@ fn adapter_migration_reopen_rejects_weakened_lexical_tables_and_missing_indexes(
         let db = fresh_db();
         db.execute_batch(statement).unwrap();
         assert_eq!(
-            schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+            schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed())
+                .unwrap_err()
+                .code,
             ErrorCode::IncompatibleSchema
         );
     }
@@ -3811,21 +3901,20 @@ fn archival_commit_counter_origin_does_not_collide_with_requests() {
 }
 
 fn user_intent_seed(db: &Connection) {
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0);
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',11,12);
-        INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES ('b','i','t','c1',0,0,1,2,'hash','old summary','s','m1','p1',15);
-        INSERT INTO summary_jobs(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,fetched_at,created_at) VALUES ('j','i','t','c1',0,0,1,2,42,14);").unwrap();
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',11,12);
+        INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES ('b','34750f98bd59fcfc946da45aaabe933b','t','c1',0,0,1,2,'hash','old summary','s','m1','p1',15);
+        INSERT INTO summary_jobs(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,fetched_at,created_at) VALUES ('j','34750f98bd59fcfc946da45aaabe933b','t','c1',0,0,1,2,42,14);").unwrap();
 }
 
 // Catches a CHECK weakened to accept unknown claims or SQL NULL bypassing attribution.
 #[test]
 fn user_intent_schema22_checks_and_eligibility() {
     let db = fresh_db();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
     user_intent_seed(&db);
     db.execute(
-        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','i',0)",
+        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','34750f98bd59fcfc946da45aaabe933b',0)",
         [],
     )
     .unwrap();
@@ -3836,7 +3925,7 @@ fn user_intent_schema22_checks_and_eligibility() {
                 for intent in [Some("query"), Some("request"), Some("rule"), None] {
                     seq += 1;
                     // Use canonical programmatic author shape for services.
-                    let result=db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,event_json,decision_at,decision_seq,author_role,relays_user,user_intent,author_kind,author_service_id,actor_label) VALUES (?1,'i','t',?2,?3,?9,?4,?5,0,?2,?6,?7,?8,?10,?11,?12)",params![format!("m{seq}"),seq,kind,if kind=="ordinary"{Some("body")}else{None},if kind=="ordinary"{None}else{Some("{}")},role,relay,intent,if role==Some("service"){None}else{Some("s")},if role==Some("service"){"programmatic"}else{"native"},if role==Some("service"){Some("svc")}else{None},if role==Some("service"){Some("herdr-graph")}else{None}]);
+                    let result=db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,event_json,decision_at,decision_seq,author_role,relays_user,user_intent,author_kind,author_service_id,actor_label) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,?3,?9,?4,?5,0,?2,?6,?7,?8,?10,?11,?12)",params![format!("m{seq}"),seq,kind,if kind=="ordinary"{Some("body")}else{None},if kind=="ordinary"{None}else{Some("{}")},role,relay,intent,if role==Some("service"){None}else{Some("s")},if role==Some("service"){"programmatic"}else{"native"},if role==Some("service"){Some("svc")}else{None},if role==Some("service"){Some("herdr-graph")}else{None}]);
                     let eligible = kind == "ordinary"
                         && (role == Some("human") || (role == Some("agent") && relay == 1));
                     assert_eq!(
@@ -3868,7 +3957,7 @@ fn user_intent_schema22_checks_and_eligibility() {
             }
         }
     }
-    assert!(db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES ('bad','i','t',1000,'ordinary','s','body',0,1000,'human','instruction')",[]).is_err());
+    assert!(db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES ('bad','34750f98bd59fcfc946da45aaabe933b','t',1000,'ordinary','s','body',0,1000,'human','instruction')",[]).is_err());
     for (ordinal, change) in [None, Some("withdrawn"), Some("replaced")]
         .into_iter()
         .enumerate()
@@ -3895,7 +3984,12 @@ fn user_intent_schema22_rejects_column_or_guard_tampering() {
     // loads: each case starts from a file copy of one fresh store verified
     // here once.
     let verified = ScratchStore::fresh("ht-intent-tamper");
-    schema::initialize(&Connection::open(verified.path()).unwrap(), || UtcMillis(0)).unwrap();
+    schema::initialize(
+        &Connection::open(verified.path()).unwrap(),
+        || UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
     for replacement in [
         None,
         Some(
@@ -3909,7 +4003,9 @@ fn user_intent_schema22_rejects_column_or_guard_tampering() {
             db.execute_batch(sql).unwrap();
         }
         assert_eq!(
-            schema::initialize(&db, || UtcMillis(1)).unwrap_err().code,
+            schema::initialize(&db, || UtcMillis(1), &crate::test_support::test_node_seed())
+                .unwrap_err()
+                .code,
             ErrorCode::IncompatibleSchema
         );
     }
@@ -3983,7 +4079,8 @@ fn user_intent_schema22_rejects_column_or_guard_tampering() {
             db.execute_batch("PRAGMA writable_schema=OFF").unwrap();
             drop(db);
             let db = Connection::open(path).unwrap();
-            let result = schema::initialize(&db, || UtcMillis(1));
+            let result =
+                schema::initialize(&db, || UtcMillis(1), &crate::test_support::test_node_seed());
             assert!(
                 matches!(result,Err(ref e) if e.code==ErrorCode::IncompatibleSchema),
                 "{table}/{replacement}: {result:?}"
@@ -4002,7 +4099,7 @@ fn archival_schema_refuses_missing_or_weakened_guards_before_writing() {
         let db = fresh_db();
         db.execute_batch(change).unwrap();
         assert!(
-            matches!(schema::initialize(&db, || UtcMillis(1)), Err(e) if e.code == ErrorCode::IncompatibleSchema)
+            matches!(schema::initialize(&db, || UtcMillis(1), &crate::test_support::test_node_seed()), Err(e) if e.code == ErrorCode::IncompatibleSchema)
         );
     }
 }
@@ -4010,7 +4107,7 @@ fn archival_schema_refuses_missing_or_weakened_guards_before_writing() {
 #[test]
 fn archival_schema_audit_preserves_case_sensitive_terminal_state_literals() {
     let db = fresh_db();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
     let sql: String = db
         .query_row(
             "SELECT sql FROM sqlite_master WHERE name='channel_handoff_terminal'",
@@ -4023,7 +4120,7 @@ fn archival_schema_audit_preserves_case_sensitive_terminal_state_literals() {
     db.execute_batch(&sql.replace("OLD.state='completed'", "OLD.state='COMPLETED'"))
         .unwrap();
     assert!(
-        matches!(schema::initialize(&db,||UtcMillis(1)),Err(e) if e.code==ErrorCode::IncompatibleSchema),
+        matches!(schema::initialize(&db,||UtcMillis(1), &crate::test_support::test_node_seed()),Err(e) if e.code==ErrorCode::IncompatibleSchema),
         "uppercasing the state literal disables absorbing completion and must fail the audit"
     );
 }
@@ -4040,7 +4137,9 @@ fn v32_startup_rejects_missing_or_altered_binding_objects() {
         let db = fresh_db();
         db.execute_batch(alteration).unwrap();
         assert_eq!(
-            schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+            schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed())
+                .unwrap_err()
+                .code,
             ErrorCode::IncompatibleSchema,
             "{alteration}"
         );
@@ -4063,7 +4162,7 @@ fn v33_startup_rejects_an_altered_archival_trigger() {
         let db = fresh_db();
         db.execute_batch(&alteration).unwrap();
         assert_eq!(
-            schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+            schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap_err().code,
             ErrorCode::IncompatibleSchema,
             "{alteration}"
         );
@@ -4086,7 +4185,9 @@ fn v34_startup_rejects_altered_catch_up_and_lazy_objects() {
         let db = fresh_db();
         db.execute_batch(alteration).unwrap();
         assert_eq!(
-            schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+            schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed())
+                .unwrap_err()
+                .code,
             ErrorCode::IncompatibleSchema,
             "{alteration}"
         );
@@ -4107,7 +4208,9 @@ fn v35_startup_rejects_altered_attention_frontier_objects() {
         let db = fresh_db();
         db.execute_batch(alteration).unwrap();
         assert_eq!(
-            schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+            schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed())
+                .unwrap_err()
+                .code,
             ErrorCode::IncompatibleSchema,
             "{alteration}"
         );
@@ -4122,18 +4225,23 @@ fn task3_versionless_schema24_rejects_altered_table_and_missing_index() {
     ] {
         let db = fresh_db();
         db.execute_batch(alteration).unwrap();
-        assert!(schema::initialize(&db, || UtcMillis(2)).is_err());
+        assert!(
+            schema::initialize(&db, || UtcMillis(2), &crate::test_support::test_node_seed())
+                .is_err()
+        );
     }
 }
 
 #[test]
 fn invitation_confirmation_schema_refuses_missing_policy_guard() {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
     db.execute_batch("DROP TRIGGER invitations_confirmation_immutable")
         .unwrap();
     assert_eq!(
-        schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+        schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed())
+            .unwrap_err()
+            .code,
         ErrorCode::IncompatibleSchema
     );
 }
@@ -4147,13 +4255,13 @@ fn incompatible_detail(result: Result<(), crate::protocol::results::ApiError>) -
 }
 
 fn reinitialize(db: &Connection) -> Result<(), crate::protocol::results::ApiError> {
-    schema::initialize(db, || UtcMillis(0))
+    schema::initialize(db, || UtcMillis(0), &crate::test_support::test_node_seed())
 }
 
 #[test]
 fn fresh_initialize_sets_node_application_id_and_version() {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
     let application_id: i64 = db
         .pragma_query_value(None, "application_id", |r| r.get(0))
         .unwrap();
@@ -4174,10 +4282,10 @@ fn fresh_initialize_sets_node_application_id_and_version() {
 fn second_open_verifies() {
     let store = ScratchStore::new("ht-second-open");
     let db = Connection::open(store.path()).unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
     drop(db);
     let db = Connection::open(store.path()).unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
     schema::verify_baseline(&db).unwrap();
 }
 
@@ -4286,101 +4394,245 @@ fn query_connection_accepts_node_store_and_rejects_wrong_marker() {
     );
 }
 
-type Catalog = Vec<(String, String, String, String)>;
+fn seed_with_retag(k: u32) -> schema::NodeSeed {
+    let uuid = crate::node::NodeUuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
+    schema::NodeSeed {
+        uuid,
+        tag: crate::node::tag_for(uuid, k),
+        tag_k: k,
+    }
+}
 
-fn catalog(db: &Connection) -> Catalog {
-    let mut statement = db
-        .prepare(
-            "SELECT type, name, tbl_name, sql FROM sqlite_master
-             WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+#[test]
+fn initialize_inserts_local_node_and_self_directory_row() {
+    let db = Connection::open_in_memory().unwrap();
+    let seed = seed_with_retag(3);
+    schema::initialize(&db, || UtcMillis(1234), &seed).unwrap();
+    let node: (String, i64, i64, String, i64, i64) = db
+        .query_row(
+            "SELECT id, singleton, created_at, tag, tag_k, decision_seq FROM local_node",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )
         .unwrap();
-    statement
-        .query_map([], |r| {
-            let sql: Option<String> = r.get(3)?;
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                sql.unwrap_or_default()
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            ))
-        })
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
-}
-
-fn table_rows(db: &Connection, table: &str) -> Vec<String> {
-    let columns: Vec<String> = {
-        let mut statement = db
-            .prepare("SELECT name FROM pragma_table_info(?1)")
-            .unwrap();
-        statement
-            .query_map([table], |r| r.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
-    };
-    let quoted = columns
-        .iter()
-        .map(|c| format!("quote(\"{c}\")"))
-        .collect::<Vec<_>>()
-        .join("||','||");
-    let mut statement = db
-        .prepare(&format!("SELECT {quoted} FROM \"{table}\" ORDER BY 1"))
-        .unwrap();
-    statement
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
-}
-
-/// TRANSIENT (removed with the legacy chain in ht-5fr.1.8): the node baseline
-/// creates exactly the objects, and a fresh store holds exactly the rows, of the
-/// v46 migration chain, apart from the identity marker and the two receipt
-/// backfill singletons the baseline starts at `completed = 1`.
-#[test]
-fn baseline_matches_legacy_chain_v46() {
-    let chain = Connection::open_in_memory().unwrap();
-    schema::legacy_chain::legacy_initialize(&chain, || UtcMillis(0)).unwrap();
-    let baseline = Connection::open_in_memory().unwrap();
-    baseline.execute_batch(schema::NODE_BASELINE).unwrap();
-
-    let mut expected = catalog(&chain);
-    for object in &mut expected {
-        object.3 = object
-            .3
-            .replace("herdr-threads-shared-v1-r7", "herdr-threads-node-v1");
-    }
-    let actual = catalog(&baseline);
-    assert!(actual.len() > 100, "{} objects", actual.len());
     assert_eq!(
-        actual.iter().map(|o| (&o.0, &o.1)).collect::<Vec<_>>(),
-        expected.iter().map(|o| (&o.0, &o.1)).collect::<Vec<_>>()
+        node,
+        (seed.uuid.to_string(), 1, 1234, seed.tag.to_string(), 3, 0)
     );
-    for (a, e) in actual.iter().zip(&expected) {
-        assert_eq!(a, e, "object {} {}", a.0, a.1);
-    }
+    let directory: (String, String, i64, Option<String>, i64, Option<i64>) = db
+        .query_row(
+            "SELECT node_uuid, tag, tag_k, host_label, first_seen_at, tag_hlc FROM node_directory",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        directory,
+        (
+            seed.uuid.to_string(),
+            seed.tag.to_string(),
+            3,
+            None,
+            1234,
+            None
+        )
+    );
+    let hosts: i64 = db
+        .query_row("SELECT count(*) FROM herdr_hosts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(hosts, 0, "no host exists until one is attached");
+    // An existing store keeps its own identity: a different seed changes nothing.
+    schema::initialize(&db, || UtcMillis(9), &crate::test_support::test_node_seed()).unwrap();
+    let id: String = db
+        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(id, seed.uuid.to_string());
+}
 
-    for (kind, name, _, _) in &actual {
-        if kind != "table" {
-            continue;
-        }
-        let (a, e) = (table_rows(&baseline, name), table_rows(&chain, name));
-        match name.as_str() {
-            "schema_identity" => {
-                assert_eq!(a, ["'herdr-threads-node-v1'"]);
-                assert_eq!(e, ["'herdr-threads-shared-v1-r7'"]);
-            }
-            "receipt_deadline_backfill" | "receipt_discovery_backfill" => {
-                assert_eq!(a, ["1,0,0,0,0,1"]);
-                assert_eq!(e, ["1,0,0,0,0,0"]);
-            }
-            _ => assert_eq!(a, e, "rows of {name}"),
-        }
+#[test]
+fn fresh_store_without_a_node_seed_is_refused() {
+    let db = Connection::open_in_memory().unwrap();
+    let error = schema::initialize_with(&db, || UtcMillis(0), None).unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+    assert!(error.detail.contains("node seed missing"), "{error:?}");
+    let objects: i64 = db
+        .query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(objects, 0, "nothing is created without an identity");
+}
+
+#[test]
+fn second_local_node_row_aborts() {
+    let db = fresh_db();
+    let error = db
+        .execute(
+            "INSERT INTO local_node(id,created_at,tag,tag_k) VALUES ('00000000000000000000000000000001',0,'abc',0)",
+            [],
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("UNIQUE"), "{error}");
+    let rows: i64 = db
+        .query_row("SELECT count(*) FROM local_node", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 1);
+}
+
+#[test]
+fn local_node_id_must_be_hex32() {
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch(schema::NODE_BASELINE).unwrap();
+    for bad in [
+        "ABCDEF0123456789ABCDEF0123456789",
+        "0123456789abcdef0123456789abcde",
+        "0123456789abcdef0123456789abcdef0",
+        "0123456789abcdef0123456789abcdeg",
+    ] {
+        let error = db
+            .execute(
+                "INSERT INTO local_node(id,created_at,tag,tag_k) VALUES (?1,0,'abc',0)",
+                [bad],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("CHECK"), "{bad}: {error}");
     }
+    for bad_tag in ["ab", "abcd", "ab-"] {
+        assert!(
+            db.execute(
+                "INSERT INTO local_node(id,created_at,tag,tag_k) VALUES ('0123456789abcdef0123456789abcdef',0,?1,0)",
+                [bad_tag],
+            )
+            .is_err(),
+            "tag {bad_tag:?}"
+        );
+    }
+    db.execute(
+        "INSERT INTO local_node(id,created_at,tag,tag_k) VALUES ('0123456789abcdef0123456789abcdef',0,'aZ9',0)",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn herdr_hosts_endpoint_unique_and_bounded() {
+    let db = fresh_db();
+    let node = crate::test_support::test_node();
+    let insert = |endpoint: &str| {
+        db.execute(
+            "INSERT INTO herdr_hosts(node_id,endpoint,created_at) VALUES (?1,?2,0)",
+            params![node, endpoint],
+        )
+    };
+    insert("/run/herdr.sock").unwrap();
+    assert!(
+        insert("/run/herdr.sock")
+            .unwrap_err()
+            .to_string()
+            .contains("UNIQUE")
+    );
+    assert!(insert("").unwrap_err().to_string().contains("CHECK"));
+    assert!(
+        insert(&"x".repeat(4097))
+            .unwrap_err()
+            .to_string()
+            .contains("CHECK")
+    );
+    insert(&"x".repeat(4096)).unwrap();
+    // The bound counts bytes, not characters.
+    assert!(insert(&"é".repeat(2049)).is_err());
+    let hosts: i64 = db
+        .query_row("SELECT count(*) FROM herdr_hosts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(hosts, 2);
+}
+
+#[test]
+fn host_scope_write_without_primary_host_is_host_unavailable() {
+    let clock = Arc::new(TestClock::new(0));
+    // No `with_test_host`: nothing is attached.
+    let context = StoreContext::new(db_path(), clock);
+    let mut conn = context.open_writer().unwrap();
+    let node = crate::test_support::test_node();
+    let budget = CallBudget {
+        deadline: MonoInstant(1_000_000),
+        cancellation: Cancellation::default(),
+    };
+    let error = crate::store::seats::begin_host_observation(&context, &mut conn, &node, &budget)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::HostUnavailable, "{error:?}");
+    assert_eq!(
+        context.primary_host().unwrap_err().code,
+        ErrorCode::HostUnavailable
+    );
+    // A read of a Herdr-scope column through the same seam fails the same way.
+    let read = conn.query_row(
+        "SELECT host_epoch FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
+        [&node],
+        |r| r.get::<_, i64>(0),
+    );
+    assert_eq!(
+        crate::store::connection::store_error(read.unwrap_err()).code,
+        ErrorCode::HostUnavailable
+    );
+    // Node-scope state is untouched by the refusal and still writable.
+    assert_eq!(
+        schema::next_decision_seq(&conn, &node).unwrap(),
+        1,
+        "node-scope counters do not need a host"
+    );
+    // Attaching makes the same write succeed.
+    let host_id = context.attach_host("/run/herdr.sock").unwrap();
+    assert_eq!(context.primary_host().unwrap(), host_id);
+    let admission =
+        crate::store::seats::begin_host_observation(&context, &mut conn, &node, &budget).unwrap();
+    assert_eq!(admission.sequence, 1);
+}
+
+#[test]
+fn attach_host_is_idempotent_and_stamps_last_attached_at() {
+    let clock = Arc::new(TestClock::new(5_000));
+    let context = StoreContext::new(db_path(), clock.clone());
+    let first = context.attach_host("/run/herdr-a.sock").unwrap();
+    assert_eq!(context.primary_host().unwrap(), first);
+    clock.utc.store(9_000, Ordering::SeqCst);
+    assert_eq!(context.attach_host("/run/herdr-a.sock").unwrap(), first);
+    let db = context.open_writer().unwrap();
+    let row: (String, i64, Option<i64>) = db
+        .query_row(
+            "SELECT node_id, created_at, last_attached_at FROM herdr_hosts WHERE host_id=?1",
+            [first],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (crate::test_support::test_node(), 5_000, Some(9_000)),
+        "a re-attach stamps last_attached_at and keeps the row"
+    );
+    // The AUTOINCREMENT sequence is not advanced by the re-attach.
+    let next: i64 = db
+        .query_row(
+            "INSERT INTO herdr_hosts(node_id,endpoint,created_at) SELECT id,'/run/herdr-b.sock',0 FROM local_node RETURNING host_id",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(next, first + 1);
 }

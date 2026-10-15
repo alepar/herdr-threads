@@ -24,7 +24,7 @@ pub(super) fn source() -> (Temp, NodePaths, Source) {
     std::fs::create_dir_all(&paths.node_dir).unwrap();
     let source = Source::new(
         &paths,
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         ContinuationContext {
             state_dir: Some(context.state_dir.to_string_lossy().into()),
             host: Some(
@@ -182,7 +182,7 @@ fn legacy_compound_with_body(
         .unwrap()
         .record(
             IntentScope::Cooperative {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: id.claim.seat.clone(),
             },
             SemanticMutation::freeze(SemanticMutation::Handoff(Box::new(plan)), id.claim).unwrap(),
@@ -226,7 +226,10 @@ fn archival_legacy_aliases_preserve_frozen_bytes_and_digest() {
         .unwrap()
         .header;
     // Exercise normalization with canonical and aliased current contexts.
-    for scanner in [&mut source, &mut Source::new(&paths, "i".into(), aliased)] {
+    for scanner in [
+        &mut source,
+        &mut Source::new(&paths, "34750f98bd59fcfc946da45aaabe933b".into(), aliased),
+    ] {
         let scan = complete_scan(scanner);
         assert!(scan.coverage.is_some());
         assert_eq!(scan.hints.len(), 1);
@@ -289,7 +292,8 @@ fn archival_legacy_unknown_or_distinct_full_namespaces_veto() {
         journal.complete(&reference).unwrap();
         let reference = compound(&paths);
         // Current uncertainty cannot be repaired by the frozen record either.
-        let mut unknown_current = Source::new(&paths, "i".into(), frozen);
+        let mut unknown_current =
+            Source::new(&paths, "34750f98bd59fcfc946da45aaabe933b".into(), frozen);
         assert!(complete_scan(&mut unknown_current).coverage.is_none());
         journal.complete(&reference).unwrap();
     }
@@ -304,7 +308,7 @@ fn archival_legacy_valid_noncompound_is_a_transient_coverage_veto() {
     let reference = journal
         .record(
             IntentScope::Cooperative {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: id.claim.seat.clone(),
             },
             SemanticMutation::freeze(
@@ -472,7 +476,7 @@ fn modern_compound_with_body(
     id.payload.handoff.body = body;
     let current = context(paths);
     id.payload.handoff.namespace = HandoffNamespace {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: current.state_dir.unwrap().into(),
         host_endpoint: current.host.unwrap().into(),
     };
@@ -591,17 +595,13 @@ pub(super) fn scanner_store(
         StoreContext::new(
             paths.database_path.clone(),
             std::sync::Arc::new(herdr_threads::app::SystemClock::default()),
-        ),
-        "i",
+        )
+        .with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap();
-    let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES('i',0)",
-        [],
-    )
-    .unwrap();
+    let db = herdr_threads::test_support::open_test_connection(&paths.database_path);
     super::channel_archival::thread(&db);
     super::channel_archival::joined_agent(&db);
     (store, db)
@@ -688,8 +688,9 @@ fn archival_legacy_cancelled_bootstrap_dominates_delayed_scan_and_restart() {
             herdr_threads::store::connection::StoreContext::new(
                 paths.database_path.clone(),
                 std::sync::Arc::new(herdr_threads::app::SystemClock::default()),
-            ),
-            "i",
+            )
+            .with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             Default::default(),
         )
         .unwrap(),
@@ -697,7 +698,7 @@ fn archival_legacy_cancelled_bootstrap_dominates_delayed_scan_and_restart() {
         import_scan(active, &scan).unwrap();
         assert!(
             !db.query_row(
-                "SELECT bootstrap_veto FROM archival_instances WHERE instance_id='i'",
+                "SELECT bootstrap_veto FROM archival_instances WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'",
                 [],
                 |r| r.get::<_, bool>(0)
             )
@@ -1044,7 +1045,7 @@ fn linked_archival_fixture(
     let mut id = super::topology_handoff::identity();
     let ctx = context(paths);
     id.payload.handoff.namespace = HandoffNamespace {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: ctx.state_dir.unwrap().into(),
         host_endpoint: ctx.host.unwrap().into(),
     };
@@ -1196,13 +1197,14 @@ fn archival_legacy_cancelled_attached_child_suppresses_delayed_not_yet_live_hint
         herdr_threads::store::connection::StoreContext::new(
             paths.database_path.clone(),
             std::sync::Arc::new(herdr_threads::app::SystemClock::default()),
-        ),
-        "i",
+        )
+        .with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap();
     import_scan(&store, &complete_scan(&mut source)).unwrap();
-    let db = rusqlite::Connection::open(&paths.database_path).unwrap();
+    let db = herdr_threads::test_support::open_test_connection(&paths.database_path);
     assert_eq!(
         db.query_row("SELECT count(*) FROM channel_handoff_fences", [], |r| r
             .get::<_, i64>(0))
@@ -1383,12 +1385,13 @@ fn archival_legacy_atomic_completed_parent_and_child_dominate_delay_restart_and_
         herdr_threads::store::connection::StoreContext::new(
             paths.database_path.clone(),
             std::sync::Arc::new(herdr_threads::app::SystemClock::default()),
-        ),
-        "i",
+        )
+        .with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap();
-    let db = rusqlite::Connection::open(&paths.database_path).unwrap();
+    let db = herdr_threads::test_support::open_test_connection(&paths.database_path);
     import_scan(&store, &complete_scan(&mut source)).unwrap();
     assert_eq!(
         handoff::current(&db, &a.handoff).unwrap().unwrap().state,
@@ -1442,7 +1445,7 @@ fn archival_legacy_new_thread_hint_resolves_only_exact_atomic_created_key() {
     topology_handoff::attach_created(
         &tx,
         &id.payload.handoff.namespace,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         "seat:s",
         "unrelated",
         &ThreadId::new("t"),
@@ -1458,7 +1461,7 @@ fn archival_legacy_new_thread_hint_resolves_only_exact_atomic_created_key() {
     topology_handoff::attach_created(
         &tx,
         &id.payload.handoff.namespace,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         "seat:s",
         id.payload.handoff.keys.create.as_str(),
         &ThreadId::new("t"),
@@ -1932,7 +1935,7 @@ fn archival_legacy_main539_join_intent_vetoes_without_authorizing_or_rewriting()
     let reference = journal
         .record(
             IntentScope::Cooperative {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: id.claim.seat.clone(),
             },
             SemanticMutation::freeze(

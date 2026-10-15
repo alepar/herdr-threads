@@ -284,7 +284,7 @@ fn prepare_send_step_impl(
         return Err(api_error(ErrorCode::Unauthorized, "sender is not joined"));
     }
     let (lifecycle_revision, eligibility_revision, config_revision): (i64,i64,i64) = tx.query_row(
-        "SELECT lifecycle_revision,send_eligibility_revision,duration_config_revision FROM host_instances WHERE id=?1",
+        "SELECT h.lifecycle_revision,n.send_eligibility_revision,n.duration_config_revision FROM local_node n JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=n.id WHERE n.id=?1",
         [instance.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
     ).map_err(store_error)?;
     type PriorPrepColumns = Option<(
@@ -964,7 +964,7 @@ pub fn publish_send(
                     "send preparation incomplete",
                 ));
             }
-            let live:(i64,i64,i64,i64,i64,bool)=tx.query_row("SELECT t.membership_revision,h.lifecycle_revision,h.send_eligibility_revision,t.timeline_revision,h.duration_config_revision,t.archived FROM threads t JOIN host_instances h ON h.id=t.instance_id WHERE t.id=?1 AND h.id=?2",params![request.thread.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).map_err(store_error)?;
+            let live:(i64,i64,i64,i64,i64,bool)=tx.query_row("SELECT t.membership_revision,h.lifecycle_revision,n.send_eligibility_revision,t.timeline_revision,n.duration_config_revision,t.archived FROM threads t JOIN local_node n ON n.id=t.instance_id JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=n.id WHERE t.id=?1 AND n.id=?2",params![request.thread.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).map_err(store_error)?;
             if live.5 {
                 return Err(api_error(ErrorCode::Archived, "thread archived"));
             }
@@ -998,7 +998,7 @@ pub fn publish_send(
             // recipient, so a bump it causes cannot stale the staged recipient set.
             let eligibility_before_author: i64 = tx
                 .query_row(
-                    "SELECT h.send_eligibility_revision FROM threads t JOIN host_instances h ON h.id=t.instance_id WHERE t.id=?1",
+                    "SELECT h.send_eligibility_revision FROM threads t JOIN local_node h ON h.id=t.instance_id WHERE t.id=?1",
                     [request.thread.as_str()],
                     |r| r.get(0),
                 )
@@ -1014,7 +1014,7 @@ pub fn publish_send(
                 &digest,
             )?;
             let revisions_match:bool=tx.query_row(
-                "SELECT p.captured_membership_revision=t.membership_revision AND p.captured_lifecycle_revision=h.lifecycle_revision AND p.captured_eligibility_revision=?4 AND p.captured_timeline_revision=t.timeline_revision AND p.captured_config_revision=h.duration_config_revision AND t.archived=0 FROM send_preparations p JOIN threads t ON t.id=p.thread_id JOIN host_instances h ON h.id=t.instance_id WHERE p.operation_scope=?1 AND p.operation_key=?2 AND p.digest=?3",
+                "SELECT p.captured_membership_revision=t.membership_revision AND p.captured_lifecycle_revision=h.lifecycle_revision AND p.captured_eligibility_revision=?4 AND p.captured_timeline_revision=t.timeline_revision AND p.captured_config_revision=n.duration_config_revision AND t.archived=0 FROM send_preparations p JOIN threads t ON t.id=p.thread_id JOIN local_node n ON n.id=t.instance_id JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=n.id WHERE p.operation_scope=?1 AND p.operation_key=?2 AND p.digest=?3",
                 params![scope,request.operation.as_str(),digest.as_slice(),eligibility_before_author],|r|r.get(0),
             ).map_err(store_error)?;
             if !revisions_match {

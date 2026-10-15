@@ -114,14 +114,18 @@ impl Q3Channel {
         let registry = Arc::new(ModChannelRegistry::new(
             f.clock.clone(),
             Arc::new(GuardModStoreReads(f.store.clone())),
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             Arc::new(|| {}),
             ModDeliverySetting::On,
         ));
-        f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
-            .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-            .with_delivery_pull(f.state.clone())
-            .with_mod_channels(registry.clone());
+        f.service = DomainService::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            f.store.clone(),
+            f.clock.clone(),
+        )
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+        .with_delivery_pull(f.state.clone())
+        .with_mod_channels(registry.clone());
         let sink = Arc::new(Q3Sink::default());
         let (channel, _) = f
             .service
@@ -248,7 +252,7 @@ impl Q3Channel {
             .f
             .db
             .query_row(
-                "SELECT count(*) FROM send_manifests WHERE instance_id='i'",
+                "SELECT count(*) FROM send_manifests WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'",
                 [],
                 |row| row.get(0),
             )
@@ -601,7 +605,7 @@ fn presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibli
         assert_eq!(initial.2, "{}");
         let cursor = crate::protocol::pagination::InboxBatchV2CursorState::decode_for(
             initial.0.as_deref().expect("SETUP: continued cursor"),
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &q.window.recipient.seat,
         )
         .unwrap();
@@ -703,7 +707,7 @@ fn q3_consume_frames_to_quiet(q: &Q3Channel) {
         .f
         .db
         .query_row(
-            "SELECT count(*) FROM send_manifests WHERE instance_id='i'",
+            "SELECT count(*) FROM send_manifests WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |row| row.get(0),
         )
@@ -1496,71 +1500,14 @@ fn presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable() {
     }
 }
 
-// Kills invalidation that repairs old scope headers, ignores a current
-// refresh-only owner, or treats a foreign instance as this binding's state.
-fn q3_foreign_consumer(f: &Fixture) -> CallerClaim {
-    // A foreign consumer must satisfy its composite canonical binding FK;
-    // changing an own row's instance would manufacture impossible state.
-    f.db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('foreign-instance',0,'b',1,3)", []).unwrap();
-    f.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('foreign-seat','foreign-instance','resolved','native','foreign-p',1,0,0)", []).unwrap();
-    f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('foreign-instance','foreign-p','b',1,0,1,'fresh','unknown','unknown',0,0,'foreign-term','inc','coherent_enumeration',1)", []).unwrap();
-    let store: Arc<dyn StorePort> = Arc::new(
-        SqliteStore::new(
-            StoreContext::new(f.directory.join("store.db"), f.clock.clone()),
-            "foreign-instance",
-            StoreSettings::default(),
-        )
-        .unwrap(),
-    );
-    let service = DomainService::new("foreign-instance".into(), store.clone(), f.clock.clone())
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
-    let mut foreign = fresh_execution(
-        claim("foreign-seat", "foreign-p", fourth(), "foreign-session", 1),
-        77,
-    );
-    foreign.instance = "foreign-instance".into();
-    foreign.liveness.as_mut().unwrap().pid = 31337;
-    let CommandResult::CheckedIn(result) = service
-        .handle(
-            Command::CheckIn(CheckIn {
-                mode: CheckInMode::Lifecycle {
-                    expected_binding_generation: foreign.binding_generation,
-                },
-                claim: foreign,
-                operation: OperationId::new("q3-foreign-ci"),
-                lineage_parent: None,
-            }),
-            peer(),
-            &budget(),
-        )
-        .unwrap()
-    else {
-        panic!("SETUP: foreign canonical binding")
-    };
-    let foreign = result.context;
-    store
-        .presentation_refresh(
-            &foreign.seat,
-            &binding_for_claim(f, &foreign),
-            foreign.binding_generation,
-            foreign.native_session.as_str(),
-            &budget(),
-        )
-        .unwrap()
-        .expect("SETUP: foreign canonical consumer");
-    assert_eq!(q3_consumer_snapshot(f, &foreign).len(), 1);
-    foreign
-}
-
+// Kills invalidation that repairs old scope headers or ignores a current
+// refresh-only owner. (A foreign-instance consumer cannot exist any more: a
+// store holds exactly one node.)
 #[test]
 fn presentation_q3_reader_change_respects_current_primary_or_refresh_scope() {
-    for scope in ["primary", "refresh_only", "both_stale", "foreign_instance"] {
+    for scope in ["primary", "refresh_only", "both_stale"] {
         let (f, a, b, message) = q3_reader_fixture(2);
         let binding = binding_for_claim(&f, &a);
-        let foreign = (scope == "foreign_instance").then(|| q3_foreign_consumer(&f));
-        let foreign_before = foreign
-            .as_ref()
-            .map(|claim| q3_consumer_snapshot(&f, claim));
         match scope {
             "primary" => {
                 f.db.execute(
@@ -1580,7 +1527,6 @@ fn presentation_q3_reader_change_respects_current_primary_or_refresh_scope() {
                 [binding.as_str()],
             ).unwrap();
             }
-            "foreign_instance" => {}
             _ => unreachable!(),
         }
         let counter = || {
@@ -1593,20 +1539,10 @@ fn presentation_q3_reader_change_respects_current_primary_or_refresh_scope() {
         let preserved = q3_preserved_reader_state(&f, &a);
         let sibling = q3_consumer_snapshot(&f, &b);
         reclamation_advance_displayed(&f, &a, std::slice::from_ref(&message), "q3-scoped-reader");
-        let delta = i64::from(matches!(
-            scope,
-            "primary" | "refresh_only" | "foreign_instance"
-        ));
+        let delta = i64::from(matches!(scope, "primary" | "refresh_only"));
         assert_eq!(counter(), (before.0 + delta, before.1 + delta), "{scope}");
         assert_eq!(q3_preserved_reader_state(&f, &a), preserved);
         assert_eq!(q3_consumer_snapshot(&f, &b), sibling);
-        assert_eq!(
-            foreign
-                .as_ref()
-                .map(|claim| q3_consumer_snapshot(&f, claim)),
-            foreign_before,
-            "own current rows change once; a genuine foreign-instance consumer stays untouched"
-        );
     }
 }
 
@@ -1711,18 +1647,17 @@ fn fixture(ordinary: usize) -> Fixture {
         .unwrap();
     let clock = Arc::new(TestClock(AtomicI64::new(1_000_000)));
     let shared: Arc<dyn Clock> = clock.clone();
-    let context = StoreContext::new(directory.join("store.db"), shared.clone());
+    let context = StoreContext::new(directory.join("store.db"), shared.clone()).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,3)",
-        [],
+    db.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=3",
     )
     .unwrap();
     for (seat, target) in [("s", "p"), ("x", "px"), ("c", "pc")] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?2,1,0,0)", [seat, target]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,0,0)", [seat, target]).unwrap();
+        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
     }
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,1)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1)", []).unwrap();
     for seat in ["s", "x", "c"] {
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
@@ -1731,12 +1666,22 @@ fn fixture(ordinary: usize) -> Fixture {
         .unwrap();
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)", [seat]).unwrap();
     }
-    let store: Arc<dyn StorePort> =
-        Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
+    let store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
     let state = Arc::new(DeliveryPullState::default());
-    let service = DomainService::new("i".into(), Arc::clone(&store), shared)
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-        .with_delivery_pull(Arc::clone(&state));
+    let service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        Arc::clone(&store),
+        shared,
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+    .with_delivery_pull(Arc::clone(&state));
     let f = Fixture {
         service,
         store,
@@ -1755,9 +1700,13 @@ fn fixture(ordinary: usize) -> Fixture {
 fn restart(f: &mut Fixture) {
     let shared: Arc<dyn Clock> = f.clock.clone();
     f.state = Arc::new(DeliveryPullState::default());
-    f.service = DomainService::new("i".into(), Arc::clone(&f.store), shared)
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-        .with_delivery_pull(Arc::clone(&f.state));
+    f.service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        Arc::clone(&f.store),
+        shared,
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+    .with_delivery_pull(Arc::clone(&f.state));
 }
 /// The seat's wake attention counter (the store bumps it for every new pending source; 0 without a row).
 fn wake_attention(f: &Fixture) -> u64 {
@@ -1795,14 +1744,14 @@ fn bump(db: &Connection, sequence: i64) {
     )
     .unwrap();
     db.execute(
-        "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=?1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [sequence + 3],
     )
     .unwrap();
 }
 fn ordinary_message(f: &Fixture, id: &str, body: &str) {
     let sequence = next_sequence(&f.db);
-    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary',?3,0,?4)", params![id, sequence, body, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,0,?4)", params![id, sequence, body, sequence + 2]).unwrap();
     f.db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t','s','pending',300000)", [id]).unwrap();
     bump(&f.db, sequence);
 }
@@ -1811,13 +1760,13 @@ fn lazy_message(f: &Fixture, id: &str, body: &str) {
     let sequence = next_sequence(&f.db);
     let prep = format!("prep-{}", id.trim_start_matches("msg-"));
     f.db.execute(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy')",
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy')",
         [&prep],
     )
     .unwrap();
     f.db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,'t','s')", params![prep, id]).unwrap();
-    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode) VALUES (?1,'i','t',?2,'ordinary',?3,0,?4,'lazy')", params![id, sequence, body, sequence + 2]).unwrap();
-    f.db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,'t',?3,0,?4,0,1,0)", params![prep, id, sequence + 2, sequence]).unwrap();
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,0,?4,'lazy')", params![id, sequence, body, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,'t',?3,0,?4,0,1,0)", params![prep, id, sequence + 2, sequence]).unwrap();
     bump(&f.db, sequence);
 }
 
@@ -1829,7 +1778,7 @@ fn claim(
     generation: u64,
 ) -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new(seat),
         binding_generation: generation,
         role: CallerRole::TopLevel,
@@ -1855,7 +1804,7 @@ fn fixture_claim(
     session: &str,
 ) -> CallerClaim {
     let generation: i64 = f.db.query_row(
-        "SELECT generation FROM seats WHERE id=?1 AND instance_id='i' AND target_id=?2 AND state='resolved'",
+        "SELECT generation FROM seats WHERE id=?1 AND instance_id='34750f98bd59fcfc946da45aaabe933b' AND target_id=?2 AND state='resolved'",
         params![seat, target],
         |row| row.get(0),
     ).unwrap();
@@ -2266,7 +2215,7 @@ fn session_mismatch_subagent_held_and_unresolved_seats_are_refused() {
     f.db.execute("UPDATE seats SET state='resolved' WHERE id='s'", [])
         .unwrap();
 
-    f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','p','b',1,'repair')", []).unwrap();
+    f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','p','b',1,'repair')", []).unwrap();
     assert_eq!(refusal(pull(&f, &context, None)), Refusal::Held);
 }
 
@@ -2465,12 +2414,12 @@ fn the_marker_prefix_reaches_the_truncation_marker() {
 fn pending_invitation(f: &Fixture) {
     let decision: i64 =
         f.db.query_row(
-            "SELECT decision_seq+1 FROM host_instances WHERE id='i'",
+            "SELECT decision_seq+1 FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    f.db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t2','i','topic','goal',0,0,1)", []).unwrap();
+    f.db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1)", []).unwrap();
     f.db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES('inv','t2','s',1,'pending',0,?1,300,300)", [decision]).unwrap();
     bump_wake_attention(f);
 }
@@ -3092,7 +3041,7 @@ fn leftover_notices_do_not_bring_a_held_wake_forward() {
 /// another seat (`x`), which never wakes `s` (TRUST-POLICY A7).
 fn service_notice(f: &Fixture, id: &str) {
     let sequence = next_sequence(&f.db);
-    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES (?1,'i','t',?2,'warn','{}',0,?3,1)", params![id, sequence, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'warn','{}',0,?3,1)", params![id, sequence, sequence + 2]).unwrap();
     f.db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt','t',?1,'x',?1,?2)", params![id, sequence + 2]).unwrap();
     f.db.execute("INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s',?1,'t',?2,1)", params![id, sequence + 2]).unwrap();
     bump(&f.db, sequence);
@@ -3108,7 +3057,7 @@ fn rejection_notice(f: &Fixture, id: &str) {
     f.db.execute("INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) VALUES (?1,'outside role',100,'x',1,'cooperative_top_level:test')", [&inv]).unwrap();
     let json =
         format!(r#"{{"action":"reject","seat":"x","invitation":"{inv}","reason":"outside role"}}"#);
-    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,source_invitation_id,event_key,event_json,decision_at,decision_seq,event_offset) VALUES (?1,'i','t',?2,'warn','native','x',?3,'reject:'||?3,?4,100,?5,1)", params![id, sequence, inv, json, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,source_invitation_id,event_key,event_json,decision_at,decision_seq,event_offset) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'warn','native','x',?3,'reject:'||?3,?4,100,?5,1)", params![id, sequence, inv, json, sequence + 2]).unwrap();
     f.db.execute("INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s',?1,'t',?2,1)", params![id, sequence + 2]).unwrap();
     bump(&f.db, sequence);
 }
@@ -3748,20 +3697,20 @@ fn departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
     );
     for (n, author) in [(1, "s"), (2, "s"), (3, "x")] {
         let id = format!("origin-{n}");
-        f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native',?3,'origin body',0,?2)", params![id,n,author]).unwrap();
+        f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','native',?3,'origin body',0,?2)", params![id,n,author]).unwrap();
         if n < 3 {
             f.db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','c','pending',1,0,500)", [&id]).unwrap();
         } else {
-            f.db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('origin-p','i','actor','origin-p',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed')", []).unwrap();
+            f.db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('origin-p','34750f98bd59fcfc946da45aaabe933b','actor','origin-p',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed')", []).unwrap();
             f.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('origin-p','t','c',1,1001000,0)", []).unwrap();
-            f.db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('origin-p',?1,'i','t',3,0,3,0,1,0)", [&id]).unwrap();
+            f.db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('origin-p',?1,'34750f98bd59fcfc946da45aaabe933b','t',3,0,3,0,1,0)", [&id]).unwrap();
             f.db.execute("INSERT INTO receipt_state(message_id,seat_id,state,deadline_at,ack_required) VALUES (?1,'c','pending',1001000,1)", [&id]).unwrap();
         }
     }
     f.db.execute("UPDATE threads SET next_sequence=1000 WHERE id='t'", [])
         .unwrap();
     f.db.execute(
-        "UPDATE host_instances SET decision_seq=1000 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=1000 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -3779,7 +3728,7 @@ fn departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
             .unwrap();
     }
     let shared: Arc<dyn Clock> = f.clock.clone();
-    let context = StoreContext::new(f.directory.join("store.db"), shared);
+    let context = StoreContext::new(f.directory.join("store.db"), shared).with_test_host();
     crate::store::receipts::scan_due(
         &context,
         &mut f.db,
@@ -3837,8 +3786,8 @@ fn departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
     let elected_boot = uuid::Uuid::new_v4();
     let wake_store: Arc<dyn StorePort> = Arc::new(
         SqliteStore::new(
-            StoreContext::new(f.directory.join("store.db"), f.clock.clone()),
-            "i",
+            StoreContext::new(f.directory.join("store.db"), f.clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings {
                 daemon_boot: Some(elected_boot),
                 ..StoreSettings::default()
@@ -3850,7 +3799,7 @@ fn departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
         crate::service::workers::ScheduledStore::new(wake_store, Arc::new(FairWriter::new(32)));
     let notifier = OriginNotifier(std::sync::Mutex::new(Vec::new()));
     let scheduler = crate::scheduler::Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &scheduled,
         &scheduled,
         &notifier,
@@ -3973,8 +3922,8 @@ fn canonical_lazy_invitation_signals_a_passive_channel_drain_without_attention_h
     );
     let reads = Arc::new(
         SqliteStore::new(
-            StoreContext::new(f.directory.join("store.db"), f.clock.clone()),
-            "i",
+            StoreContext::new(f.directory.join("store.db"), f.clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
@@ -3982,13 +3931,17 @@ fn canonical_lazy_invitation_signals_a_passive_channel_drain_without_attention_h
     let registry = Arc::new(ModChannelRegistry::new(
         f.clock.clone(),
         reads,
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         Arc::new(|| {}),
         ModDeliverySetting::On,
     ));
-    let service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-        .with_mod_channels(registry.clone());
+    let service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        f.store.clone(),
+        f.clock.clone(),
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+    .with_mod_channels(registry.clone());
     let sink = Arc::new(Sink(std::sync::Mutex::new(Vec::new())));
     service
         .watch_register(
@@ -4427,11 +4380,17 @@ fn presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_ex
     let f = fixture(0);
     let recipient = pull_seat(&f);
     let tx = f.db.unchecked_transaction().unwrap();
-    let author =
-        crate::store::service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(0)).unwrap();
+    let author = crate::store::service_substrate::ensure_reserved_author(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        UtcMillis(0),
+    )
+    .unwrap();
     tx.commit().unwrap();
     let gate = Gate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
     let operate = |operation| {
         f.service
             .service_operation(operation, &connection, &gate, &budget())
@@ -5015,7 +4974,7 @@ fn a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acce
         .unwrap();
     let _ = pull(&f, &inviter, None);
     f.clock.0.store(1_001_001, Ordering::SeqCst);
-    let context = StoreContext::new(f.directory.join("store.db"), f.clock.clone());
+    let context = StoreContext::new(f.directory.join("store.db"), f.clock.clone()).with_test_host();
     let expired =
         crate::store::invitation_due::scan_invitation_due_batch(&context, &mut f.db, None, 100)
             .unwrap();
@@ -5231,7 +5190,7 @@ fn canonical_invitation_context_coalesces_topic_changes_without_recipient_fanout
             )
             .unwrap();
     }
-    let projection = f.db.prepare("SELECT c.context_revision,c.last_change_seq,t.topic,t.topic_revision FROM invitation_context_latest c JOIN threads t ON t.id=c.thread_id WHERE c.instance_id='i' AND c.thread_id=?1");
+    let projection = f.db.prepare("SELECT c.context_revision,c.last_change_seq,t.topic,t.topic_revision FROM invitation_context_latest c JOIN threads t ON t.id=c.thread_id WHERE c.instance_id='34750f98bd59fcfc946da45aaabe933b' AND c.thread_id=?1");
     assert!(
         projection.is_ok(),
         "canonical mutations need a durable latest-context projection: {:?}",
@@ -5587,14 +5546,18 @@ fn presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_r
     let registry = Arc::new(ModChannelRegistry::new(
         f.clock.clone(),
         reads,
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         Arc::new(|| {}),
         ModDeliverySetting::On,
     ));
-    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-        .with_delivery_pull(f.state.clone())
-        .with_mod_channels(registry.clone());
+    f.service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        f.store.clone(),
+        f.clock.clone(),
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+    .with_delivery_pull(f.state.clone())
+    .with_mod_channels(registry.clone());
     let refresh = f
         .store
         .presentation_refresh(
@@ -5967,14 +5930,18 @@ fn presentation_registry_pass_drives_bounded_passive_refresh_before_full_pull() 
     let registry = Arc::new(ModChannelRegistry::new(
         f.clock.clone(),
         reads,
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         Arc::new(|| {}),
         ModDeliverySetting::On,
     ));
-    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-        .with_delivery_pull(f.state.clone())
-        .with_mod_channels(registry.clone());
+    f.service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        f.store.clone(),
+        f.clock.clone(),
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+    .with_delivery_pull(f.state.clone())
+    .with_mod_channels(registry.clone());
     let sink = Arc::new(Sink::default());
     let (channel, _) = f
         .service
@@ -6965,11 +6932,20 @@ fn presentation_handler_published_warn_reopens_at_unchanged_native_version() {
     };
     let before = native_version();
     let tx = f.db.unchecked_transaction().unwrap();
-    let author =
-        crate::store::service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(0)).unwrap();
+    let author = crate::store::service_substrate::ensure_reserved_author(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        UtcMillis(0),
+    )
+    .unwrap();
     tx.commit().unwrap();
     let gate = Gate(author.clone());
-    let connection = ServiceConnectionAuthority::new("i".into(), "boot".into(), 1, author);
+    let connection = ServiceConnectionAuthority::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        "boot".into(),
+        1,
+        author,
+    );
     let ServiceResult::Notification(published) = f
         .store
         .service_operation(
@@ -7066,14 +7042,18 @@ fn presentation_quiet_channel_observes_new_lazy_ordinary_without_wake() {
     let registry = Arc::new(ModChannelRegistry::new(
         f.clock.clone(),
         reads,
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         Arc::new(|| {}),
         ModDeliverySetting::On,
     ));
-    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-        .with_delivery_pull(f.state.clone())
-        .with_mod_channels(registry.clone());
+    f.service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        f.store.clone(),
+        f.clock.clone(),
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+    .with_delivery_pull(f.state.clone())
+    .with_mod_channels(registry.clone());
     let sink = Arc::new(Sink::default());
     let (_channel, _) = f
         .service
@@ -7488,14 +7468,18 @@ fn presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_
     let registry = Arc::new(ModChannelRegistry::new(
         f.clock.clone(),
         reads,
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         Arc::new(|| {}),
         ModDeliverySetting::On,
     ));
-    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-        .with_delivery_pull(f.state.clone())
-        .with_mod_channels(registry.clone());
+    f.service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        f.store.clone(),
+        f.clock.clone(),
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+    .with_delivery_pull(f.state.clone())
+    .with_mod_channels(registry.clone());
     let (channel, _) = f
         .service
         .watch_register(
@@ -7759,7 +7743,7 @@ fn presentation_publication_walk_counts_foreign_prefix_before_filter_and_progres
     send(ThreadId::new("t"), 101);
     assert_eq!(
         f.db.query_row(
-            "SELECT count(*) FROM send_manifests WHERE instance_id='i'",
+            "SELECT count(*) FROM send_manifests WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get::<_, i64>(0)
         )
@@ -7994,7 +7978,8 @@ fn presentation_publication_refresh_and_pull_rebind_preserve_each_others_progres
         assert_eq!(second.1, first.1);
         assert_eq!(second.2, 2);
         // Reopen the canonical store and continue the same finite frontier.
-        let context = StoreContext::new(f.directory.join("store.db"), f.clock.clone());
+        let context =
+            StoreContext::new(f.directory.join("store.db"), f.clock.clone()).with_test_host();
         let _reopened = context.open_writer().unwrap();
         refresh(&next);
         let done = scalar(&next);
@@ -8310,14 +8295,18 @@ fn presentation_registered_channel_materializes_each_published_warn_before_drain
     let registry = Arc::new(ModChannelRegistry::new(
         f.clock.clone(),
         reads,
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         Arc::new(|| {}),
         ModDeliverySetting::On,
     ));
-    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-        .with_delivery_pull(f.state.clone())
-        .with_mod_channels(registry.clone());
+    f.service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        f.store.clone(),
+        f.clock.clone(),
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+    .with_delivery_pull(f.state.clone())
+    .with_mod_channels(registry.clone());
     let sink = Arc::new(Sink::default());
     let (channel, _) = f
         .service
@@ -8342,11 +8331,20 @@ fn presentation_registered_channel_materializes_each_published_warn_before_drain
         .unwrap()
     };
     let tx = f.db.unchecked_transaction().unwrap();
-    let author =
-        crate::store::service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(0)).unwrap();
+    let author = crate::store::service_substrate::ensure_reserved_author(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        UtcMillis(0),
+    )
+    .unwrap();
     tx.commit().unwrap();
     let gate = Gate(author.clone());
-    let connection = ServiceConnectionAuthority::new("i".into(), "boot".into(), 1, author);
+    let connection = ServiceConnectionAuthority::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        "boot".into(),
+        1,
+        author,
+    );
     for n in 0..2 {
         sink.0.lock().unwrap().clear();
         let before = native();
@@ -8506,11 +8504,20 @@ fn presentation_notice_settles_current_execution(watch: bool, remaining_conditio
         recipient.native_session.as_str()
     );
     let tx = f.db.unchecked_transaction().unwrap();
-    let author =
-        crate::store::service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(0)).unwrap();
+    let author = crate::store::service_substrate::ensure_reserved_author(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        UtcMillis(0),
+    )
+    .unwrap();
     tx.commit().unwrap();
     let gate = Gate(author.clone());
-    let connection = ServiceConnectionAuthority::new("i".into(), "boot".into(), 1, author);
+    let connection = ServiceConnectionAuthority::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        "boot".into(),
+        1,
+        author,
+    );
     let notify = |operation: &str| {
         let ServiceResult::Notification(notification) = f
             .store
@@ -8855,14 +8862,18 @@ impl OfferWindowFixture {
             let registry = Arc::new(ModChannelRegistry::new(
                 f.clock.clone(),
                 reads,
-                "i".into(),
+                "34750f98bd59fcfc946da45aaabe933b".into(),
                 Arc::new(|| {}),
                 ModDeliverySetting::On,
             ));
-            f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
-                .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-                .with_delivery_pull(f.state.clone())
-                .with_mod_channels(registry.clone());
+            f.service = DomainService::new(
+                "34750f98bd59fcfc946da45aaabe933b".into(),
+                f.store.clone(),
+                f.clock.clone(),
+            )
+            .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+            .with_delivery_pull(f.state.clone())
+            .with_mod_channels(registry.clone());
             let (channel, _) = f
                 .service
                 .watch_register(
@@ -10298,11 +10309,7 @@ fn presentation_publication_foreign_refresh_refuses_without_touching_hook_or_wat
         before_hook,
         "Watch maintenance is independent of Hook presentation"
     );
-    f.db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('foreign-instance',0)",
-        [],
-    )
-    .unwrap();
+    f.db.execute("PRAGMA foreign_keys=OFF", []).unwrap();
     f.db.execute("UPDATE invitation_presentation_consumers SET instance_id='foreign-instance' WHERE seat_id='s' AND consumer='watch'",[]).unwrap();
     let watch = || {
         f.db.query_row("SELECT instance_id,mod_generation,mod_execution,ordinary_publication_after,ordinary_passive_generation FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='watch'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap()
@@ -10418,14 +10425,18 @@ fn presentation_publication_watch_reconnect_keeps_positive_frontier_without_nati
     let registry = Arc::new(ModChannelRegistry::new(
         f.clock.clone(),
         reads,
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         Arc::new(|| {}),
         ModDeliverySetting::On,
     ));
-    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-        .with_delivery_pull(f.state.clone())
-        .with_mod_channels(registry.clone());
+    f.service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        f.store.clone(),
+        f.clock.clone(),
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+    .with_delivery_pull(f.state.clone())
+    .with_mod_channels(registry.clone());
     let request = WatchRequest {
         presentation_v2: true,
         claim: recipient.clone(),
@@ -10597,14 +10608,18 @@ fn presentation_quiet_channel_observes_new_ordinary_ack_message() {
     let registry = Arc::new(ModChannelRegistry::new(
         f.clock.clone(),
         reads,
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         Arc::new(|| {}),
         ModDeliverySetting::On,
     ));
-    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-        .with_delivery_pull(f.state.clone())
-        .with_mod_channels(registry.clone());
+    f.service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        f.store.clone(),
+        f.clock.clone(),
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+    .with_delivery_pull(f.state.clone())
+    .with_mod_channels(registry.clone());
     let sink = Arc::new(Sink::default());
     let (channel, _) = f
         .service
@@ -12879,7 +12894,7 @@ fn presentation_owner_replay_accepts_actual_v1_count_four_and_nonordinary_work()
     let registry = ModChannelRegistry::new(
         window.f.clock.clone(),
         reads,
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         Arc::new(|| {}),
         ModDeliverySetting::On,
     );
@@ -13825,15 +13840,18 @@ fn presentation_owner_replay_restart_discards_lease_and_recovers_canonical_pendi
     let registry = Arc::new(ModChannelRegistry::new(
         window.f.clock.clone(),
         reads,
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         Arc::new(|| {}),
         ModDeliverySetting::On,
     ));
-    window.f.service =
-        DomainService::new("i".into(), window.f.store.clone(), window.f.clock.clone())
-            .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-            .with_delivery_pull(window.f.state.clone())
-            .with_mod_channels(registry.clone());
+    window.f.service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        window.f.store.clone(),
+        window.f.clock.clone(),
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+    .with_delivery_pull(window.f.state.clone())
+    .with_mod_channels(registry.clone());
     window.watch = Some((registry, window.watch.as_ref().unwrap().1, String::new()));
     window.replace_watch();
     assert!(matches!(

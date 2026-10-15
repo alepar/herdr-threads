@@ -25,21 +25,17 @@ impl Clock for TestClock {
 fn setup(now: i64) -> (StoreContext, Connection, Arc<TestClock>, PathBuf) {
     let path = std::env::temp_dir().join(format!("invitation-due-{}.db", uuid::Uuid::new_v4()));
     let clock = Arc::new(TestClock(AtomicI64::new(now)));
-    let context = StoreContext::new(path.clone(), clock.clone());
+    let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
     let conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id, created_at) VALUES ('host', 0)",
-        [],
-    )
-    .unwrap();
-    conn.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('seat', 'host', 'resolved', 'native', 1, 0)", []).unwrap();
-    conn.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('thread', 'host', 'topic', 'purpose', 0, 0)", []).unwrap();
+    conn.execute("PRAGMA foreign_keys=OFF", []).unwrap();
+    conn.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('seat', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('thread', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0)", []).unwrap();
     (context, conn, clock, path)
 }
 
 fn invitation(conn: &Connection, id: &str, episode: i64, deadline: i64, state: &str) {
     let decision_seq: i64 = conn.query_row(
-        "UPDATE host_instances SET decision_seq=decision_seq+1 WHERE id='host' RETURNING decision_seq",
+        "UPDATE local_node SET decision_seq=decision_seq+1 WHERE id='34750f98bd59fcfc946da45aaabe933b' RETURNING decision_seq",
         [], |row| row.get(0),
     ).unwrap();
     conn.execute("INSERT INTO invitations(id, thread_id, seat_id, episode, state, created_decision_seq, created_at, frozen_duration_ms, deadline_at, accepted_at, accepted_actor_seat_id, accepted_generation, accepted_observation) VALUES (?1, 'thread', 'seat', ?2, ?3, ?6, 0, ?4, ?5, CASE WHEN ?3='accepted' THEN 0 END, CASE WHEN ?3='accepted' THEN 'seat' END, CASE WHEN ?3='accepted' THEN 1 END, CASE WHEN ?3='accepted' THEN 'test-observation' END)",
@@ -67,7 +63,10 @@ fn pending_warns_once_at_equality_across_reopened_scans() {
     assert_eq!(warnings(&conn), 1);
     scan_invitation_due_batch(&context, &mut conn, None, 2).unwrap();
     drop(conn);
-    let mut reopened = StoreContext::new(path, clock).open_writer().unwrap();
+    let mut reopened = StoreContext::new(path, clock)
+        .with_test_host()
+        .open_writer()
+        .unwrap();
     scan_invitation_due_batch(&context, &mut reopened, None, 2).unwrap();
     assert_eq!(warnings(&reopened), 1);
     let (marker, warning_id): (Option<String>, String) = reopened
@@ -133,7 +132,7 @@ fn accepted_after_advisory_selection_gets_no_retrospective_warning() {
     assert_eq!(warnings(&conn), 0);
     let decision_seq: i64 = conn
         .query_row(
-            "SELECT decision_seq FROM host_instances WHERE id='host'",
+            "SELECT decision_seq FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -158,7 +157,10 @@ fn advisory_candidate_fenced_before_decision_never_gains_late_warning() {
     assert_eq!(result.warnings_added, 0);
     assert_eq!(warnings(&conn), 0);
     drop(conn);
-    let mut reopened = StoreContext::new(path, clock).open_writer().unwrap();
+    let mut reopened = StoreContext::new(path, clock)
+        .with_test_host()
+        .open_writer()
+        .unwrap();
     assert_eq!(
         scan_invitation_due_batch(&context, &mut reopened, None, 1)
             .unwrap()
@@ -217,26 +219,6 @@ fn warnings_in_one_scan_share_the_transaction_decision_sequence() {
 }
 
 #[test]
-fn one_scan_allocates_decision_sequences_per_host_instance() {
-    let (context, mut conn, _, _) = setup(100);
-    invitation(&conn, "first", 1, 100, "pending");
-    conn.execute_batch("INSERT INTO host_instances(id, created_at, decision_seq) VALUES ('other-host', 0, 1); INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('other-seat', 'other-host', 'resolved', 'native', 1, 0); INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('other-thread', 'other-host', 'topic', 'purpose', 0, 0); INSERT INTO invitations(id, thread_id, seat_id, episode, state, created_decision_seq, created_at, frozen_duration_ms, deadline_at) VALUES ('second', 'other-thread', 'other-seat', 1, 'pending', 1, 0, 100, 100);").unwrap();
-    let batch = scan_invitation_due_batch(&context, &mut conn, None, 2).unwrap();
-    assert_eq!((batch.inspected, batch.warnings_added), (2, 2));
-    let sequences: Vec<(String, i64)> = conn
-        .prepare("SELECT id, decision_seq FROM host_instances ORDER BY id")
-        .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    assert_eq!(
-        sequences,
-        vec![("host".into(), 2), ("other-host".into(), 2)]
-    );
-}
-
-#[test]
 fn bounded_continuation_reaches_later_due_rows() {
     let (context, mut conn, _, _) = setup(300);
     invitation(&conn, "first", 1, 100, "pending");
@@ -284,7 +266,7 @@ fn thirty_thousand_settled_rows_do_not_delay_a_new_due_invitation() {
         }
     }
     tx.execute(
-        "UPDATE host_instances SET decision_seq=30000 WHERE id='host'",
+        "UPDATE local_node SET decision_seq=30000 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -307,7 +289,7 @@ fn due_slice_accepts_the_full_hundred_candidate_admission() {
         }
     }
     tx.execute(
-        "UPDATE host_instances SET decision_seq=101 WHERE id='host'",
+        "UPDATE local_node SET decision_seq=101 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -415,7 +397,7 @@ fn lazy_invitation_is_discoverable_but_never_due_or_waking() {
         |row| row.get::<_, String>(0),
     ).unwrap());
 
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','host','resolved','native',1,0)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
     conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('lazy','thread','seat',1,'pending',1,0,100,100,'lazy','origin')", []).unwrap();
     let batch = scan_invitation_due_batch(&context, &mut conn, None, 100).unwrap();
     assert_eq!((batch.inspected, batch.warnings_added), (0, 0));
@@ -434,7 +416,7 @@ fn lazy_invitation_is_discoverable_but_never_due_or_waking() {
     tx.commit().unwrap();
     let mod_view = crate::store::seats::mod_binding_view(
         &conn,
-        "host",
+        "34750f98bd59fcfc946da45aaabe933b",
         &crate::protocol::ids::SeatId::new("seat"),
         crate::ports::ModBindingRef::Id(&binding),
     )
@@ -501,7 +483,7 @@ fn invitation_snapshot_finishes_with_250_initial_rows_despite_continuing_arrival
 #[test]
 fn timed_invitation_warns_original_inviter_after_leaving_and_clear_is_passive() {
     let (context, mut conn, _, _) = setup(100);
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','host','resolved','native',1,0)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
     conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('timed','thread','seat',1,'pending',1,0,100,100,'require_ack','origin')", []).unwrap();
     assert_eq!(
         scan_invitation_due_batch(&context, &mut conn, None, 100)
@@ -549,7 +531,7 @@ fn timed_invitation_warns_original_inviter_after_leaving_and_clear_is_passive() 
 #[test]
 fn invitation_due_index_bounds_physical_work_across_lazy_and_future_backlogs() {
     let (context, mut conn, _, _) = setup(100);
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','host','resolved','native',1,0)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
     conn.execute("WITH RECURSIVE n(v) AS (SELECT 1 UNION ALL SELECT v+1 FROM n WHERE v<2000) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) SELECT 'lazy-'||v,'thread','seat',v,'pending',1,0,1,1,'lazy','origin' FROM n",[]).unwrap();
     for i in 0..250 {
         invitation(&conn, &format!("future-{i}"), 2001 + i, 1_000, "pending");
@@ -598,7 +580,7 @@ fn invitation_backlog_restart_reconstructs_progress_without_recipient_activity()
         100
     );
     drop(conn);
-    let restarted = StoreContext::new(path, clock);
+    let restarted = StoreContext::new(path, clock).with_test_host();
     let mut reopened = restarted.open_writer().unwrap();
     for i in 0..250 {
         invitation(&reopened, &format!("future-{i}"), 251 + i, 2_000, "pending");

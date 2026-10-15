@@ -34,17 +34,16 @@ fn budget() -> CallBudget {
 /// A store with one joined cooperative sender `a` in thread `t`, rooted in a
 /// private isolation directory.
 fn setup(iso: &TestIsolation) -> (StoreContext, Connection) {
-    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
     let conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
-        [],
+    conn.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
     )
     .unwrap();
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('a','i','resolved','native','pa',1,1,0,1)", []).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pa','b',1,1,0,'fresh','term-pa','inc','coherent_enumeration',1)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native','pa',1,1,0,1)", []).unwrap();
+    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','pa','b',1,1,0,'fresh','term-pa','inc','coherent_enumeration',1)", []).unwrap();
     conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('a',1,'pa','b',1,1,'codex','n','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',0,'term-pa','inc')", []).unwrap();
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','a','joined')",
         [],
@@ -68,7 +67,7 @@ fn send_request() -> SendMessage {
         deadline_millis: None,
         operation: OperationId::new("op"),
         claim: CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("a"),
             binding_generation: 1,
             role: CallerRole::TopLevel,
@@ -87,8 +86,8 @@ fn send_request() -> SendMessage {
 fn permit(iso: &TestIsolation, request: &SendMessage) -> MutationPermit {
     use herdr_threads::ports::StorePort;
     let store = herdr_threads::store::SqliteStore::new(
-        StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)),
-        "i",
+        StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap();
@@ -139,8 +138,8 @@ fn ready(context: &StoreContext, conn: &mut Connection, request: &SendMessage) {
 fn fixture(name: &str) -> (TestIsolation, StoreContext, Connection) {
     let iso = TestIsolation::new(name);
     let (context, conn) = setup(&iso);
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('b','i','resolved','native','pb',1,1,0)", []).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','pb','b',1,1,0,'fresh','term-pb','inc','coherent_enumeration',1)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('b','34750f98bd59fcfc946da45aaabe933b','resolved','native','pb',1,1,0)", []).unwrap();
+    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('34750f98bd59fcfc946da45aaabe933b','pb','b',1,1,0,'fresh','term-pb','inc','coherent_enumeration',1)", []).unwrap();
     conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('b',1,'pb','b',1,1,'codex','n','00000000-0000-4000-8000-0000000000bb','cooperative_top_level',0,0,'term-pb','inc')", []).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES('t','b','joined')",
@@ -185,7 +184,7 @@ fn query(
 ) -> herdr_threads::protocol::pagination::Page<InboxBatchV2Item> {
     let result = herdr_threads::store::queries::query_with_output(
         context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
             thread: None,
             claim: None,
@@ -214,8 +213,8 @@ fn complete(
 ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
     use herdr_threads::ports::StorePort;
     let store = herdr_threads::store::SqliteStore::new(
-        StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)),
-        "i",
+        StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap();
@@ -399,7 +398,7 @@ fn lazy_inbox_v2_snapshot_restart_concurrent_traversals() {
         DeliveryMode::Lazy,
     );
     drop(conn);
-    let restarted = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+    let restarted = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
     let next = query(
         &restarted,
         PageRequest {
@@ -557,7 +556,7 @@ fn lazy_inbox_addressed_leave_retire_archive() {
     );
     let err = herdr_threads::store::queries::query(
         &context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
             thread: None,
             claim: None,
@@ -597,7 +596,7 @@ fn lazy_inbox_v2_rejects_changed_binding_foreign_and_bad_body_cursor() {
     let issue = |raw: String| {
         herdr_threads::store::queries::query(
             &context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &Command::InboxBatchV2(InboxQuery {
                 thread: None,
                 claim: None,
@@ -620,7 +619,9 @@ fn lazy_inbox_v2_rejects_changed_binding_foreign_and_bad_body_cursor() {
             _ => state.binding_generation = Some(2),
         }
         assert_eq!(
-            issue(state.encode("i").unwrap()).unwrap_err().code,
+            issue(state.encode("34750f98bd59fcfc946da45aaabe933b").unwrap())
+                .unwrap_err()
+                .code,
             ErrorCode::InvalidCursor
         );
     }
@@ -633,7 +634,9 @@ fn lazy_inbox_v2_rejects_changed_binding_foreign_and_bad_body_cursor() {
     let mut foreign = captured.clone();
     foreign.seat = SeatId::new("a");
     assert_eq!(
-        issue(foreign.encode("i").unwrap()).unwrap_err().code,
+        issue(foreign.encode("34750f98bd59fcfc946da45aaabe933b").unwrap())
+            .unwrap_err()
+            .code,
         ErrorCode::InvalidCursor
     );
     conn.execute(
@@ -757,7 +760,7 @@ fn lazy_inbox_v2_small_budget_and_read_only_queries() {
         );
         let result = herdr_threads::store::queries::query_with_output(
             &context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &Command::InboxBatchV2(InboxQuery {
                 thread: None,
                 claim: None,
@@ -803,16 +806,16 @@ fn lazy_inbox_v2_preserves_invitations_warnings_and_ordinary_candidates() {
     );
     let decision = conn
         .query_row(
-            "SELECT decision_seq+1 FROM host_instances WHERE id='i'",
+            "SELECT decision_seq+1 FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get::<_, i64>(0),
         )
         .unwrap();
     conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES('inv','t','b',2,'pending',0,?1,300,300)",[decision]).unwrap();
-    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES('i','warning','t',100,'warn','{}',?1,0)",[decision+1]).unwrap();
+    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES('34750f98bd59fcfc946da45aaabe933b','warning','t',100,'warn','{}',?1,0)",[decision+1]).unwrap();
     conn.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES('warning',?1,'t',100,'b','invitation','inv')",[decision+1]).unwrap();
     conn.execute(
-        "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+        "UPDATE local_node SET decision_seq=?1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [decision + 1],
     )
     .unwrap();
@@ -1010,8 +1013,8 @@ fn lazy_inbox_completion_mismatched_permit_is_write_free() {
         DeliveryMode::Lazy,
     );
     let store = herdr_threads::store::SqliteStore::new(
-        StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)),
-        "i",
+        StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap();
@@ -1158,8 +1161,8 @@ fn lazy_inbox_fix_partial_concurrent_ack() {
     {
         use herdr_threads::ports::StorePort;
         let store = herdr_threads::store::SqliteStore::new(
-            StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)),
-            "i",
+            StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             Default::default(),
         )
         .unwrap();
@@ -1236,7 +1239,7 @@ fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() 
     ] {
         let result = herdr_threads::store::queries::query_with_output(
             &context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &command,
             &OutputSpec::default(),
             &budget(),
@@ -1318,8 +1321,8 @@ fn lazy_inbox_wakes_follows_wake_on_and_mod_ack_completes_it() {
     claim.harness = Harness::Claude;
     use herdr_threads::ports::StorePort;
     let store = herdr_threads::store::SqliteStore::new(
-        StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)),
-        "i",
+        StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap();

@@ -47,7 +47,7 @@ required-features = ["test-support"]
 shlex = "=2.0.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["raw_value"] }
-rusqlite = { version = "=0.39.0", features = ["bundled"] }
+rusqlite = { version = "=0.39.0", features = ["bundled", "functions"] }
 clap = { version = "=4.6.4", features = ["derive"] }
 uuid = { version = "=1.24.0", features = ["v4", "serde"] }
 sha2 = "=0.10.9"

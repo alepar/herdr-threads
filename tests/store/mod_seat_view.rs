@@ -95,7 +95,7 @@ fn view_reports_held_unresolved_retired() {
     let (store, conn, _) = fixture();
     assert!(!view(&store).held);
     conn.execute(
-        "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','p','b',1,'hold')",
+        "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,'hold')",
         [],
     )
     .unwrap();
@@ -123,9 +123,9 @@ fn view_reports_held_unresolved_retired() {
 /// threads, host decision sequence 100.
 fn base(conn: &Connection) {
     conn.execute_batch(
-        "UPDATE host_instances SET decision_seq=100;\
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('o','i','resolved','native','po',1,1,0);\
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t1','i','a','g',0,0),('t2','i','b','g',0,0),('t4','i','d','g',0,0);",
+        "UPDATE local_node SET decision_seq=100;\
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('o','34750f98bd59fcfc946da45aaabe933b','resolved','native','po',1,1,0);\
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0),('t2','34750f98bd59fcfc946da45aaabe933b','b','g',0,0),('t4','34750f98bd59fcfc946da45aaabe933b','d','g',0,0);",
     )
     .unwrap();
 }
@@ -162,7 +162,7 @@ fn fingerprint_changes_on_each_call_site() {
         &store,
         &conn,
         "ordinary send",
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m1','i','t2',1,'ordinary','b',0,5);\
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m1','34750f98bd59fcfc946da45aaabe933b','t2',1,'ordinary','b',0,5);\
          INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m1','t2','s','pending',100);",
     );
     let sent = fp(&store);
@@ -196,7 +196,7 @@ fn fingerprint_changes_on_each_call_site() {
     conn.execute_batch(
         "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv-o','t1','o',1,'pending',0,30,100,100);\
          INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t4','s',1,1),('t4','o',1,1);\
-         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w-member','i','t4',1,'warn','{}',0,12,1);",
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w-member','34750f98bd59fcfc946da45aaabe933b','t4',1,'warn','{}',0,12,1);",
     )
     .unwrap();
     changes(
@@ -218,7 +218,7 @@ fn fingerprint_changes_on_each_call_site() {
     base(&conn);
     conn.execute_batch(
         "INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t4','s',1,1);\
-         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w-notice','i','t4',1,'warn','{}',0,12,1);",
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w-notice','34750f98bd59fcfc946da45aaabe933b','t4',1,'warn','{}',0,12,1);",
     )
     .unwrap();
     changes(
@@ -233,7 +233,7 @@ fn fingerprint_changes_on_each_call_site() {
     let (store, conn, _) = fixture();
     base(&conn);
     conn.execute_batch(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m9','i','t2',2,'ordinary','b',0,6);\
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m9','34750f98bd59fcfc946da45aaabe933b','t2',2,'ordinary','b',0,6);\
          INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m9','t2','s','pending',100);\
          INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) SELECT binding_id,'s','t2',0,0,'active' FROM occupant_bindings WHERE seat_id='s';",
     )
@@ -269,7 +269,7 @@ fn other_seat_transition_notice_is_not_mod_attention() {
     base(&conn);
     conn.execute_batch(
         "INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t4','s',1,1),('t4','o',1,1);\
-         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w-open','i','t4',1,'warn','{}',0,12,1),('w-clear','i','t4',2,'warn','{}',0,13,1);",
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w-open','34750f98bd59fcfc946da45aaabe933b','t4',1,'warn','{}',0,12,1),('w-clear','34750f98bd59fcfc946da45aaabe933b','t4',2,'warn','{}',0,13,1);",
     )
     .unwrap();
     let before = fp(&store);
@@ -282,11 +282,16 @@ fn other_seat_transition_notice_is_not_mod_attention() {
         .unwrap();
     }
     let digest = |seat: &str| {
-        crate::store::attention::seat_digest(&conn, "i", &SeatId::new(seat), &|| Ok(()))
-            .unwrap()
-            .digest
-            .warnings
-            .count
+        crate::store::attention::seat_digest(
+            &conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &SeatId::new(seat),
+            &|| Ok(()),
+        )
+        .unwrap()
+        .digest
+        .warnings
+        .count
     };
     assert_eq!(digest("s"), 1, "the notice is still delivered to s");
     assert_eq!(fp(&store), before, "another seat's open is not attention");
@@ -328,7 +333,7 @@ fn lazy_row_changes_the_fingerprint_when_it_publishes_not_when_it_stages() {
         "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',0,'p','b',0,'codex','lazy-session','e','cooperative_top_level',0,'tm','inc');\
          INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t2','s','joined');\
          INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t2','s',1,1);\
-         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t2',0,0,0,0,0,0,0,'building','lazy');",
+         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','34750f98bd59fcfc946da45aaabe933b','scope','prep-1',zeroblob(32),'t2',0,0,0,0,0,0,0,'building','lazy');",
     )
     .unwrap();
     let staged_from = fp(&store);
@@ -342,8 +347,8 @@ fn lazy_row_changes_the_fingerprint_when_it_publishes_not_when_it_stages() {
         &store,
         &conn,
         "lazy row publication",
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('msg-1','i','t2',1,'ordinary',7,'passive',0,'lazy');\
-         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-1','msg-1','i','t2',7,0,1,0,1,0);",
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('msg-1','34750f98bd59fcfc946da45aaabe933b','t2',1,'ordinary',7,'passive',0,'lazy');\
+         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-1','msg-1','34750f98bd59fcfc946da45aaabe933b','t2',7,0,1,0,1,0);",
     );
     let published = fp(&store);
     assert_eq!(published.lazy_pending, 1);
@@ -383,10 +388,10 @@ fn fingerprint_changes_when_a_lifecycle_check_in_rebinds() {
 /// An ordinary message `id` (sequence `seq` of thread `t2`) published to seat `s` as a recipient.
 fn deliver(conn: &Connection, id: &str, seq: u32) {
     conn.execute_batch(&format!(
-        "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','{id}','t2',{seq},'ordinary','b',{seq},{seq}) ON CONFLICT DO NOTHING;
-         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p-{id}','i','actor','{id}',zeroblob(32),'t2',0,0,0,0,0,0,1,'sealed');
+        "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','{id}','t2',{seq},'ordinary','b',{seq},{seq}) ON CONFLICT DO NOTHING;
+         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p-{id}','34750f98bd59fcfc946da45aaabe933b','actor','{id}',zeroblob(32),'t2',0,0,0,0,0,0,1,'sealed');
          INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p-{id}','t2','s',1,300,0);
-         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p-{id}','{id}','i','t2',decision_seq,{seq},{seq},0,1,0 FROM messages WHERE id='{id}';"
+         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p-{id}','{id}','34750f98bd59fcfc946da45aaabe933b','t2',decision_seq,{seq},{seq},0,1,0 FROM messages WHERE id='{id}';"
     ))
     .unwrap();
 }
@@ -537,7 +542,7 @@ fn seed_stall_receipt(
     body_len: usize,
 ) {
     conn.execute(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'i','t2',?2,'ordinary',?3,?4,?5)",
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t2',?2,'ordinary',?3,?4,?5)",
         rusqlite::params![id, sequence, "x".repeat(body_len), decision_at, decision_seq],
     )
     .unwrap();
@@ -611,7 +616,7 @@ fn commit_notifies_the_mod_observer_for_attention_sources_only() {
     assert_eq!(count.load(Ordering::SeqCst), 2);
     // Only an unlisted table (a topic change) stays silent.
     write(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('tx','i','topic','goal',0,0);",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('tx','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);",
     );
     write("UPDATE threads SET topic='renamed' WHERE id='tx';");
     assert_eq!(count.load(Ordering::SeqCst), 2);
@@ -661,7 +666,7 @@ fn view_reports_the_newest_pending_notice_outside_the_fingerprint() {
     base(&conn);
     conn.execute_batch(
         "INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t4','s',1,1),('t4','o',1,1);\
-         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w-1','i','t4',1,'warn','{}',0,12,1),('w-2','i','t4',2,'warn','{}',0,13,1);\
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w-1','34750f98bd59fcfc946da45aaabe933b','t4',1,'warn','{}',0,12,1),('w-2','34750f98bd59fcfc946da45aaabe933b','t4',2,'warn','{}',0,13,1);\
          INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt','t4','c-1','o','w-1',12),('receipt','t4','c-2','o','w-2',13);",
     )
     .unwrap();

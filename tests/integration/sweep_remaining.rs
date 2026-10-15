@@ -681,7 +681,7 @@ impl WakeTarget {
             !competing,
             "measured recipient {seat} has prior attempts or competing attention"
         );
-        let after_seq = db.query_row("SELECT decision_seq FROM host_instances WHERE id=(SELECT instance_id FROM seats WHERE id=?1)", [seat], |row| row.get(0)).unwrap();
+        let after_seq = db.query_row("SELECT decision_seq FROM local_node WHERE id=(SELECT instance_id FROM seats WHERE id=?1)", [seat], |row| row.get(0)).unwrap();
         Self {
             seat: seat.into(),
             thread: thread.into(),
@@ -1664,13 +1664,13 @@ fn producer_ordering_control(
         deadline: MonoInstant(clock.monotonic_now().0 + 3000),
         cancellation: Cancellation::default(),
     };
-    let context = StoreContext::new(iso.path("store.db"), clock.clone());
+    let context = StoreContext::new(iso.path("store.db"), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'b',1,1);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','ordering','ordering',0,0);").unwrap();
+    db.execute_batch("UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','34750f98bd59fcfc946da45aaabe933b','ordering','ordering',0,0);").unwrap();
     for seat in ["a", "b", "c"] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES(?1,'i','resolved','native',?2,1,1,0)", rusqlite::params![seat,format!("p-{seat}")]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i',?1,'b',1,1,1,'fresh',0,?2,'inc','coherent_enumeration',1)",rusqlite::params![format!("p-{seat}"),format!("term-{seat}")]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0)", rusqlite::params![seat,format!("p-{seat}")]).unwrap();
+        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,1,'fresh',0,?2,'inc','coherent_enumeration',1)",rusqlite::params![format!("p-{seat}"),format!("term-{seat}")]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES(?1,1,?2,'b',1,1,'codex',?3,?5,'cooperative_top_level',0,0,?4,'inc')",rusqlite::params![seat,format!("p-{seat}"),format!("session-{seat}"),format!("term-{seat}"),format!("00000000-0000-4000-8000-0000000000{seat}1")]).unwrap();
         if seat != "c" {
             db.execute(
@@ -1686,7 +1686,7 @@ fn producer_ordering_control(
     let store = Arc::new(
         SqliteStore::new(
             context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings {
                 daemon_boot: Some(control_boot),
                 wake_batch_delay_ms: 0,
@@ -1715,7 +1715,7 @@ fn producer_ordering_control(
         relays_user: false,
         operation: OperationId::new("send"),
         claim: CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("a"),
             target: HostTargetId::new("p-a"),
             binding_generation: 1,

@@ -36,16 +36,21 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!("operator-{}.db", uuid::Uuid::new_v4()));
-        let context = StoreContext::new(path.clone(), Arc::new(Fixed));
+        let context = StoreContext::new(path.clone(), Arc::new(Fixed)).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0),('foreign',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','unresolved','native',1,0),('foreign-seat','foreign','unresolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0),('foreign-thread','foreign','topic','goal',0,0);").unwrap();
+        db.execute_batch("PRAGMA foreign_keys=OFF; INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0),('foreign-seat','foreign','unresolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0),('foreign-thread','foreign','topic','goal',0,0);").unwrap();
         Self {
             path,
-            store: SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
+            store: SqliteStore::new(
+                context,
+                "34750f98bd59fcfc946da45aaabe933b",
+                StoreSettings::default(),
+            )
+            .unwrap(),
         }
     }
     fn db(&self) -> rusqlite::Connection {
-        rusqlite::Connection::open(&self.path).unwrap()
+        crate::test_support::open_test_connection(&self.path)
     }
     // Literal legacy JSON is independent of the production digest tuple helper.
     fn seed(&self, scope: &str, literal: &str, result: &CommandResult) {
@@ -113,12 +118,12 @@ fn replay_reads_legacy_literal_digests_and_original_typed_results_without_live_s
     for (command, literal, result) in [
         (
             fresh(),
-            r#"["operator_fresh","i","p",null]"#,
+            r#"["operator_fresh","34750f98bd59fcfc946da45aaabe933b","p",null]"#,
             CommandResult::OperatorFreshSeat(SeatId::new("old")),
         ),
         (
             rebind(),
-            r#"["operator_rebind","i","p","s"]"#,
+            r#"["operator_rebind","34750f98bd59fcfc946da45aaabe933b","p","s"]"#,
             CommandResult::OperatorRebound(SeatId::new("s")),
         ),
         (
@@ -128,8 +133,12 @@ fn replay_reads_legacy_literal_digests_and_original_typed_results_without_live_s
         ),
     ] {
         let f = Fixture::new();
-        f.seed("operator:i:local-user:501", literal, &result);
-        f.db().execute_batch("UPDATE seats SET state='retired',retired_at=100; UPDATE host_instances SET host_epoch=5;").unwrap();
+        f.seed(
+            "operator:34750f98bd59fcfc946da45aaabe933b:local-user:501",
+            literal,
+            &result,
+        );
+        f.db().execute_batch("UPDATE seats SET state='retired',retired_at=100; UPDATE herdr_hosts SET host_epoch=5;").unwrap();
         assert_eq!(
             f.store
                 .replay_operator(command.clone(), actor(501), &budget())
@@ -148,8 +157,8 @@ fn replay_reads_legacy_literal_digests_and_original_typed_results_without_live_s
 fn replay_rejects_payload_reuse_wrong_result_and_exhausted_budget() {
     let f = Fixture::new();
     f.seed(
-        "operator:i:local-user:501",
-        r#"["operator_fresh","i","p",null]"#,
+        "operator:34750f98bd59fcfc946da45aaabe933b:local-user:501",
+        r#"["operator_fresh","34750f98bd59fcfc946da45aaabe933b","p",null]"#,
         &CommandResult::OperatorFreshSeat(SeatId::new("old")),
     );
     for command in [
@@ -298,7 +307,7 @@ fn guarded_repair_cannot_choose_foreign_replay_scope() {
 fn orphan_replay_binds_source_target_and_explicit_deadline() {
     let f = Fixture::new();
     f.seed(
-        "operator:i:local-user:501",
+        "operator:34750f98bd59fcfc946da45aaabe933b:local-user:501",
         r#"["operator_orphan_invite","t","s",90]"#,
         &CommandResult::OperatorInvited(InvitationId::new("inv")),
     );
@@ -396,8 +405,8 @@ fn replay_bounds_encoded_records_and_accepts_maximum_escaped_legacy_id() {
     let maximum = SeatId::new(format!("{}{}", "\"".repeat(64), "\\".repeat(64)));
     let result = CommandResult::OperatorFreshSeat(maximum);
     f.seed(
-        "operator:i:local-user:501",
-        r#"["operator_fresh","i","p",null]"#,
+        "operator:34750f98bd59fcfc946da45aaabe933b:local-user:501",
+        r#"["operator_fresh","34750f98bd59fcfc946da45aaabe933b","p",null]"#,
         &result,
     );
     assert_eq!(
@@ -426,8 +435,8 @@ fn replay_bounds_encoded_records_and_accepts_maximum_escaped_legacy_id() {
 fn replay_bounds_digest_shape_before_decoding_record() {
     let f = Fixture::new();
     f.seed(
-        "operator:i:local-user:501",
-        r#"["operator_fresh","i","p",null]"#,
+        "operator:34750f98bd59fcfc946da45aaabe933b:local-user:501",
+        r#"["operator_fresh","34750f98bd59fcfc946da45aaabe933b","p",null]"#,
         &CommandResult::OperatorFreshSeat(SeatId::new("old")),
     );
     f.db()

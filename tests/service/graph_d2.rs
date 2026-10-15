@@ -231,11 +231,13 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
     drop(owner);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let db = StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
+        .with_test_host()
+        .with_node_seed(herdr_threads::test_support::node_seed_for(instance))
         .open_writer()
         .unwrap();
     db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'fixture-host',1)",
-        [instance.to_string()],
+        "UPDATE herdr_hosts SET host_boot='fixture-host',host_epoch=1",
+        [],
     )
     .unwrap();
     drop(db);

@@ -998,7 +998,7 @@ pub(crate) mod topology_contract_tests {
     use super::*;
     pub(crate) fn claim() -> CallerClaim {
         CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("sender"),
             binding_generation: 1,
             role: crate::protocol::authority::CallerRole::TopLevel,
@@ -1015,7 +1015,7 @@ pub(crate) mod topology_contract_tests {
             handoff: HandoffPayload {
                 policy: None,
                 namespace: HandoffNamespace {
-                    instance: "i".into(),
+                    instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                     state_dir: "/state".into(),
                     host_endpoint: "/host.sock".into(),
                 },
@@ -1402,7 +1402,7 @@ pub(crate) mod topology_contract_tests {
             .unwrap()
             .remove("expected_attempt");
         assert!(serde_json::from_value::<crate::protocol::commands::Command>(missing).is_err());
-        const LEGACY_CHILD: &str = r#"{"identity":{"compound":"child","digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","claim":{"instance":"i","seat":"sender","binding_generation":1,"role":"top_level","harness":"codex","native_session":"session","execution":"exec","target":"w1:p1"},"thread":"thread","recipient":"peer","create_key":"create","invite_key":"invite","send_key":"send"},"operation":"complete"}"#;
+        const LEGACY_CHILD: &str = r#"{"identity":{"compound":"child","digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","seat":"sender","binding_generation":1,"role":"top_level","harness":"codex","native_session":"session","execution":"exec","target":"w1:p1"},"thread":"thread","recipient":"peer","create_key":"create","invite_key":"invite","send_key":"send"},"operation":"complete"}"#;
         assert_eq!(
             serde_json::to_string(&completion().legacy_completion).unwrap(),
             LEGACY_CHILD
@@ -1418,7 +1418,7 @@ pub(crate) mod topology_contract_tests {
                     .unwrap()
                 )
             ),
-            "c9722e3662c4af0d69f1da919f03984d14d8ae9bbddca3a69f63fea9ace15524"
+            "0da0865cd9b58f8ac28d9884dc8837675a69f8dd67ba95cadf55f78114dbfee9"
         );
         assert_eq!(
             crate::store::control::cooperative_payload_hash(
@@ -1696,7 +1696,7 @@ mod automatic_contract_tests {
     use super::*;
     use crate::cli::journal::IntentScope;
     use crate::protocol::{commands::Command, ids::OperationId};
-    const PLAN: &str = r#"{"version":2,"payload":{"namespace":{"instance":"i","state_dir":"/state","host_endpoint":"/host.sock"},"keys":{"compound":"compound","begin":"begin","ensure":"ensure","send":"send","complete":"complete"},"channel":{"kind":"automatic"},"body":"work"},"recipient":"peer"}"#;
+    const PLAN: &str = r#"{"version":2,"payload":{"namespace":{"instance":"34750f98bd59fcfc946da45aaabe933b","state_dir":"/state","host_endpoint":"/host.sock"},"keys":{"compound":"compound","begin":"begin","ensure":"ensure","send":"send","complete":"complete"},"channel":{"kind":"automatic"},"body":"work"},"recipient":"peer"}"#;
     fn request() -> AutomaticDeliveryMutation {
         let claim = topology_contract_tests::claim();
         AutomaticDeliveryMutation::new(
@@ -1711,7 +1711,7 @@ mod automatic_contract_tests {
     }
     #[test]
     fn automatic_v2_keys_have_ensure_and_no_legacy_invite() {
-        let json = r#"{"version":2,"payload":{"namespace":{"instance":"i","state_dir":"/state","host_endpoint":"/host.sock"},"keys":{"compound":"compound","begin":"begin","ensure":"ensure","send":"send","complete":"complete"},"channel":{"kind":"automatic"},"body":"work"},"recipient":"peer"}"#;
+        let json = r#"{"version":2,"payload":{"namespace":{"instance":"34750f98bd59fcfc946da45aaabe933b","state_dir":"/state","host_endpoint":"/host.sock"},"keys":{"compound":"compound","begin":"begin","ensure":"ensure","send":"send","complete":"complete"},"channel":{"kind":"automatic"},"body":"work"},"recipient":"peer"}"#;
         assert!(
             serde_json::from_str::<crate::cli::journal::DeliveryPlan>(json).is_err(),
             "legacy payload must reject Ensure keys"
@@ -1735,7 +1735,7 @@ mod automatic_contract_tests {
         let request = request();
         assert_eq!(
             request.digest,
-            "8a9d2f46e0b4786658b9ee4ad9aa011cc91110e9ea9cf932479810c2f0998f71"
+            "f66de1592634ec54b0ebb17cc01f3cf2f71d0ef73bc008cc2b594b9d32e131ef"
         );
         for phase in [
             request.clone(),
@@ -1781,7 +1781,7 @@ mod automatic_contract_tests {
         let historical = request();
         assert_eq!(
             historical.digest,
-            "8a9d2f46e0b4786658b9ee4ad9aa011cc91110e9ea9cf932479810c2f0998f71"
+            "f66de1592634ec54b0ebb17cc01f3cf2f71d0ef73bc008cc2b594b9d32e131ef"
         );
         let AutomaticOriginal::Delivery(original) = &historical.original else {
             unreachable!()

@@ -56,7 +56,7 @@ pub fn begin_retirement(
     }
     let current: Option<(String,String,i64,i64,Option<String>,i64)> = tx.query_row(
         "SELECT s.instance_id,s.state,s.generation,s.target_generation,h.host_boot,h.host_epoch \
-         FROM seats s JOIN host_instances h ON h.id=s.instance_id \
+         FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id \
          WHERE s.id=?1 AND s.target_id=?2",
         params![seat.as_str(),proof.target.as_str()],
         |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),

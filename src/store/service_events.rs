@@ -261,7 +261,7 @@ pub(crate) fn prepare_notify_step_internal(
         return Ok(PrepareProgress::Step(PreparationStep::Committed(result)));
     }
     let (instance,membership_revision,lifecycle_revision): (String,i64,i64) = tx.query_row(
-        "SELECT t.instance_id,t.membership_revision,h.lifecycle_revision FROM threads t JOIN host_instances h ON h.id=t.instance_id WHERE t.id=?1",
+        "SELECT t.instance_id,t.membership_revision,h.lifecycle_revision FROM threads t JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=t.instance_id WHERE t.id=?1",
         [request.thread.as_str()],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))
         .optional().map_err(store_error)?.ok_or_else(||api_error(ErrorCode::NotFound,"thread not found"))?;
     if instance != connection.instance() {
@@ -495,7 +495,7 @@ pub(crate) fn publish_notify_internal(
         ));
     }
     let (instance,current_mr,current_lr,next_sequence): (String,i64,i64,i64)=tx.query_row(
-        "SELECT t.instance_id,t.membership_revision,h.lifecycle_revision,t.next_sequence FROM threads t JOIN host_instances h ON h.id=t.instance_id WHERE t.id=?1",
+        "SELECT t.instance_id,t.membership_revision,h.lifecycle_revision,t.next_sequence FROM threads t JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=t.instance_id WHERE t.id=?1",
         [request.thread.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(store_error)?;
     if instance != connection.instance() {
         return Err(api_error(
@@ -716,14 +716,23 @@ mod tests {
         PathBuf,
     ) {
         let path = std::env::temp_dir().join(format!("service-notify-{}.db", uuid::Uuid::new_v4()));
-        let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+        let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);").unwrap();
+        db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);").unwrap();
         let tx = db.unchecked_transaction().unwrap();
-        let author = service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(0)).unwrap();
+        let author = service_substrate::ensure_reserved_author(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            UtcMillis(0),
+        )
+        .unwrap();
         tx.commit().unwrap();
-        let connection =
-            ServiceConnectionAuthority::new("i".into(), "boot".into(), 1, author.clone());
+        let connection = ServiceConnectionAuthority::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            "boot".into(),
+            1,
+            author.clone(),
+        );
         (context, db, connection, Gate(author), path)
     }
     fn budget() -> CallBudget {
@@ -797,7 +806,7 @@ mod tests {
         }
     }
     fn seed_joined(db: &Connection, seat: &str) {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES(?1,'i','resolved','native',1,0)",[seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[seat]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('t',?1,'joined',1)",
             [seat],
@@ -806,7 +815,7 @@ mod tests {
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t',?1,1,1)",[seat]).unwrap();
     }
     fn seed_pending(db: &Connection, seat: &str, author: &ServiceAuthorId) {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES(?1,'i','resolved','native',1,0)",[seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[seat]).unwrap();
         let invitation = format!("inv-{seat}");
         let requirement = format!("req-{seat}");
         db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES(?1,'t',?2,1,'pending',1,1,100,101)",params![invitation,seat]).unwrap();
@@ -826,7 +835,7 @@ mod tests {
             "messages",
             "work_jobs",
             "threads",
-            "host_instances",
+            "herdr_hosts",
             "sqlite_sequence",
         ]
         .into_iter()
@@ -853,9 +862,12 @@ mod tests {
         seed_joined(&db, "seat");
         let before = notification_state(&db);
         drop(db);
-        let store =
-            crate::store::SqliteStore::new(context, "i", crate::store::StoreSettings::default())
-                .unwrap();
+        let store = crate::store::SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::store::StoreSettings::default(),
+        )
+        .unwrap();
         let wrong_gate = Gate(ServiceAuthorId::new("other"));
         assert_eq!(
             store
@@ -883,10 +895,14 @@ mod tests {
         }
         let gate = GenerationGate::new();
         let active = gate
-            .register("i", "boot", original.author().clone())
+            .register(
+                "34750f98bd59fcfc946da45aaabe933b",
+                "boot",
+                original.author().clone(),
+            )
             .unwrap();
         let wrong = ServiceConnectionAuthority::new(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             "boot".into(),
             99,
             original.author().clone(),
@@ -913,9 +929,12 @@ mod tests {
         );
         assert_eq!(notification_state(&db), prefix);
         drop(db);
-        let store =
-            crate::store::SqliteStore::new(context, "i", crate::store::StoreSettings::default())
-                .unwrap();
+        let store = crate::store::SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::store::StoreSettings::default(),
+        )
+        .unwrap();
         assert_eq!(
             store
                 .service_notify(&request, &active, &gate, &budget())
@@ -927,7 +946,11 @@ mod tests {
         assert_eq!(notification_state(&db), prefix);
         drop(db);
         let reconnected = gate
-            .register("i", "new-boot", original.author().clone())
+            .register(
+                "34750f98bd59fcfc946da45aaabe933b",
+                "new-boot",
+                original.author().clone(),
+            )
             .unwrap();
         let result = store
             .service_notify(&request, &reconnected, &gate, &budget())
@@ -1311,7 +1334,7 @@ mod tests {
             Some(1)
         );
         let reconnected = ServiceConnectionAuthority::new(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             "new-boot".into(),
             2,
             connection.author().clone(),
@@ -1362,7 +1385,7 @@ mod tests {
         db.execute_batch("BEGIN DEFERRED").unwrap();
         let run = crate::store::attention::seat_digest(
             db,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &crate::protocol::ids::SeatId::new(seat),
             &|| Ok(()),
         )
@@ -1657,7 +1680,7 @@ mod tests {
             drop(db);
             let store = crate::store::SqliteStore::new(
                 context,
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 crate::store::StoreSettings::default(),
             )
             .unwrap();
@@ -1704,9 +1727,12 @@ mod tests {
         let (context, db, connection, gate, path) = fixture();
         seed_joined(&db, "seat");
         drop(db);
-        let store =
-            crate::store::SqliteStore::new(context, "i", crate::store::StoreSettings::default())
-                .unwrap();
+        let store = crate::store::SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::store::StoreSettings::default(),
+        )
+        .unwrap();
         let mut changes = 0;
         let error = store.service_notify_with_observer(
             &request("repeated-drift", NotificationSeverity::Warn),
@@ -1738,9 +1764,12 @@ mod tests {
         let (context, db, connection, gate, path) = fixture();
         seed_joined(&db, "seat");
         drop(db);
-        let store =
-            crate::store::SqliteStore::new(context, "i", crate::store::StoreSettings::default())
-                .unwrap();
+        let store = crate::store::SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::store::StoreSettings::default(),
+        )
+        .unwrap();
         let call_budget = budget();
         let mut observations = 0;
         let error = store.service_notify_with_observer(
@@ -1843,11 +1872,14 @@ mod tests {
         let ServiceResult::Notification(notice) = notice else {
             panic!()
         };
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at) VALUES('native-message','i','t',2,'ordinary','native','hello',2,101)",[]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at) VALUES('native-message','34750f98bd59fcfc946da45aaabe933b','t',2,'ordinary','native','hello',2,101)",[]).unwrap();
         db.execute("UPDATE threads SET next_sequence=3 WHERE id='t'", [])
             .unwrap();
-        db.execute("UPDATE host_instances SET decision_seq=2 WHERE id='i'", [])
-            .unwrap();
+        db.execute(
+            "UPDATE local_node SET decision_seq=2 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+            [],
+        )
+        .unwrap();
         let page = PageRequest {
             cursor: None,
             limit: 20,
@@ -1855,7 +1887,7 @@ mod tests {
         };
         let CommandResult::History(history) = queries::query(
             &context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &Command::History(HistoryQuery {
                 thread: ThreadId::new("t"),
                 page: page.clone(),
@@ -1910,7 +1942,7 @@ mod tests {
         );
         let CommandResult::Directory(directory) = queries::query(
             &context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &Command::Directory(DirectoryQuery {
                 recent: false,
                 membership: None,
@@ -1929,7 +1961,7 @@ mod tests {
         );
         let CommandResult::Participants(participants) = queries::query(
             &context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &Command::Participants(ParticipantsQuery {
                 thread: ThreadId::new("t"),
                 page,

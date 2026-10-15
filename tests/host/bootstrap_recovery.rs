@@ -136,19 +136,15 @@ mod bootstrap_recovery {
         let path = std::env::temp_dir().join(format!("ht-bootstrap-{}.db", uuid::Uuid::new_v4()));
         let _files = DatabaseFiles(path.clone());
         let mut db = Connection::open(&path).unwrap();
-        schema::initialize(&db, || UtcMillis(0)).unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at) VALUES('i',0)",
-            [],
-        )
-        .unwrap();
-        let store = SqliteStore::new(
-            StoreContext::new(path.clone(), cli.clock.clone()),
-            "i",
+        schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
+        crate::test_support::attach_test_host_to_connection(&db);
+                let store = SqliteStore::new(
+            StoreContext::new(path.clone(), cli.clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap();
-        let admission = store.begin_host_observation("i", &context.budget).unwrap();
+        let admission = store.begin_host_observation("34750f98bd59fcfc946da45aaabe933b", &context.budget).unwrap();
         let snapshot = cli.enumerate_targets(&context).unwrap();
         let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
         let stage = store.begin_snapshot_stage(header, &context.budget).unwrap();
@@ -178,7 +174,7 @@ mod bootstrap_recovery {
             goal: "goal".into(),
         };
         id.digest = id.semantic_digest().unwrap();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('sender','i','resolved','native','w4:p1',1,1,'term_1',?1,?1,3,'native_current_target',3,1,0)", [evidence.host_incarnation.as_str()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('sender','34750f98bd59fcfc946da45aaabe933b','resolved','native','w4:p1',1,1,'term_1',?1,?1,3,'native_current_target',3,1,0)", [evidence.host_incarnation.as_str()]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w4:p1',?1,3,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0,'term_1',?1)", [evidence.host_incarnation.as_str()]).unwrap();
         {
             let tx = db.transaction().unwrap();
@@ -202,7 +198,7 @@ mod bootstrap_recovery {
         let store = Arc::new(store);
         let fair_writer = Arc::new(crate::service::fair_writer::FairWriter::new(8));
         let identity = crate::identity::repair::OrdinaryIdentity::new(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             store.clone(),
             cli.clone(),
             cli.clock.clone(),
@@ -285,7 +281,7 @@ mod bootstrap_recovery {
                 last: std::sync::Mutex::new(None),
             });
             let service = crate::service::dispatch::DomainService::with_identity(
-                "i".into(),
+                "34750f98bd59fcfc946da45aaabe933b".into(),
                 store.clone(),
                 cli.clock.clone(),
                 Arc::new(identity),
@@ -328,7 +324,7 @@ mod bootstrap_recovery {
                 tx.execute("INSERT INTO bootstrap_recovery_decisions(parent_id,attempt,operation,result_json,decision_kind) VALUES(1,1,?1,?2,'recovery')", rusqlite::params![request.operation.as_str(),serde_json::to_vec(&saved).unwrap()]).unwrap();
                 tx.execute("UPDATE bootstrap_handoffs SET state='created',latest_recovery_operation=?1,administrative_revision=1 WHERE id=1", [request.operation.as_str()]).unwrap();
                 tx.commit().unwrap();
-                db.execute_batch("UPDATE host_instances SET lifecycle_revision=lifecycle_revision+7; DELETE FROM observed_targets").unwrap();
+                db.execute_batch("UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+7; DELETE FROM observed_targets").unwrap();
                 let raw: Vec<u8> = db
                     .query_row(
                         "SELECT result_json FROM bootstrap_recovery_decisions",
@@ -424,7 +420,7 @@ mod bootstrap_recovery {
                     |r| r.get(0),
                 )
                 .unwrap();
-            db.execute_batch("UPDATE host_instances SET lifecycle_revision=lifecycle_revision+7; DELETE FROM observed_targets").unwrap();
+            db.execute_batch("UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+7; DELETE FROM observed_targets").unwrap();
             // The socket is gone: replay must precede any host read.
             assert_eq!(
                 service.handle(
@@ -479,14 +475,14 @@ mod bootstrap_recovery {
                     );
                 }
                 let sql = match change {
-                    "admission" => "UPDATE host_instances SET observation_admission_sequence=observation_admission_sequence+1",
-                    "lifecycle" => "UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1",
+                    "admission" => "UPDATE herdr_hosts SET observation_admission_sequence=observation_admission_sequence+1",
+                    "lifecycle" => "UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1",
                     "owner" => "UPDATE seats SET structural_terminal_id='changed' WHERE id='sender'",
                     "current_terminal" => "UPDATE observed_targets SET terminal_id='changed'",
                     "current_incarnation" => "UPDATE observed_targets SET incarnation='changed'",
-                    "hold" => "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) SELECT 'i','w4:p1',host_boot,3,'held' FROM host_instances",
-                    "invalidation" => "UPDATE host_instances SET invalidation_revision=invalidation_revision+1",
-                    "epoch" => "UPDATE host_instances SET host_epoch=host_epoch+1",
+                    "hold" => "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) SELECT '34750f98bd59fcfc946da45aaabe933b','w4:p1',host_boot,3,'held' FROM herdr_hosts",
+                    "invalidation" => "UPDATE herdr_hosts SET invalidation_revision=invalidation_revision+1",
+                    "epoch" => "UPDATE herdr_hosts SET host_epoch=host_epoch+1",
                     _ => "SELECT 1",
                 };
                 db.execute_batch(sql).unwrap();
@@ -523,7 +519,7 @@ mod bootstrap_recovery {
                     |r| r.get(0),
                 )
                 .unwrap();
-            tx.execute_batch("UPDATE host_instances SET lifecycle_revision=lifecycle_revision+7; DELETE FROM observed_targets").unwrap();
+            tx.execute_batch("UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+7; DELETE FROM observed_targets").unwrap();
             assert_eq!(
                 topology_handoff::attempts::recover(
                     &tx,

@@ -400,7 +400,7 @@ pub fn capture_high_water(
 ) -> Result<HighWater, ApiError> {
     let publication_decision = conn
         .query_row(
-            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            "SELECT decision_seq FROM local_node WHERE id=?1",
             [instance],
             |r| r.get(0),
         )

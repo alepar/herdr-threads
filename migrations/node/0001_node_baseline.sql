@@ -16,6 +16,14 @@
 -- allocation_decisions, archival_instances) stay keyed by instance_id until
 -- ht-5fr.2 re-keys them to host_id.
 --
+-- Node row delta (ht-5fr.1.5): v46's host_instances is split into `local_node`
+-- (the node's own identity, tag and the node-scope counters decision_seq,
+-- send_eligibility_revision, duration_config_revision) and `herdr_hosts` (one row
+-- per attached Herdr server, holding every Herdr-scope epoch, sequence and
+-- snapshot pointer); `node_directory` is the node-name table (this store writes
+-- only the self row at initialization). Every instance_id column keeps its name
+-- and now references local_node(id).
+--
 -- A fresh store has no legacy rows, so the two receipt backfill singletons start
 -- with completed = 1 (the v46 chain started them at 0 for its backfill workers).
 --
@@ -26,29 +34,53 @@ CREATE TABLE schema_identity (
     marker TEXT PRIMARY KEY CHECK(marker = 'herdr-threads-node-v1')
 ) STRICT;
 
-CREATE TABLE host_instances (
-    id TEXT PRIMARY KEY,
+CREATE TABLE local_node (
+    id TEXT PRIMARY KEY CHECK(length(id) = 32 AND id NOT GLOB '*[^0-9a-f]*'),
+    singleton INTEGER NOT NULL DEFAULT 1 UNIQUE CHECK(singleton = 1),
     created_at INTEGER NOT NULL,
+    tag TEXT NOT NULL CHECK(length(tag) = 3 AND tag NOT GLOB '*[^0-9A-Za-z]*'),
+    tag_k INTEGER NOT NULL DEFAULT 0 CHECK(tag_k >= 0),
+    decision_seq INTEGER NOT NULL DEFAULT 0 CHECK(decision_seq >= 0),
+    send_eligibility_revision INTEGER NOT NULL DEFAULT 0 CHECK(send_eligibility_revision >= 0),
+    duration_config_revision INTEGER NOT NULL DEFAULT 0 CHECK(duration_config_revision >= 0)
+) STRICT;
+
+CREATE TABLE herdr_hosts (
+    host_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id TEXT NOT NULL REFERENCES local_node(id),
+    endpoint TEXT NOT NULL UNIQUE CHECK(length(CAST(endpoint AS BLOB)) BETWEEN 1 AND 4096),
+    created_at INTEGER NOT NULL,
+    last_attached_at INTEGER,
     host_boot TEXT,
     host_epoch INTEGER NOT NULL DEFAULT 0 CHECK(host_epoch >= 0),
     observation_sequence INTEGER NOT NULL DEFAULT 0 CHECK(observation_sequence >= 0),
     recovery_boot TEXT,
     recovery_epoch INTEGER,
     lifecycle_revision INTEGER NOT NULL DEFAULT 0 CHECK(lifecycle_revision >= 0),
-    decision_seq INTEGER NOT NULL DEFAULT 0 CHECK(decision_seq >= 0),
-    send_eligibility_revision INTEGER NOT NULL DEFAULT 0 CHECK(send_eligibility_revision >= 0),
-    duration_config_revision INTEGER NOT NULL DEFAULT 0 CHECK(duration_config_revision >= 0),
     active_snapshot_id TEXT REFERENCES snapshot_generations(id),
     recovery_baseline_generation_id TEXT REFERENCES snapshot_generations(id),
     baseline_hold_unclaimed INTEGER NOT NULL DEFAULT 0 CHECK(baseline_hold_unclaimed IN (0,1)),
     invalidation_revision INTEGER NOT NULL DEFAULT 0 CHECK(invalidation_revision >= 0),
     observation_admission_sequence INTEGER NOT NULL DEFAULT 0 CHECK(observation_admission_sequence >= 0),
-    observation_decided_sequence INTEGER NOT NULL DEFAULT 0 CHECK(observation_decided_sequence >= 0 AND observation_decided_sequence <= observation_admission_sequence)
-, reconciled_boot TEXT, reconciled_epoch INTEGER CHECK(reconciled_epoch IS NULL OR reconciled_epoch >= 0)) STRICT;
+    observation_decided_sequence INTEGER NOT NULL DEFAULT 0 CHECK(observation_decided_sequence >= 0 AND observation_decided_sequence <= observation_admission_sequence),
+    reconciled_boot TEXT,
+    reconciled_epoch INTEGER CHECK(reconciled_epoch IS NULL OR reconciled_epoch >= 0)
+) STRICT;
+
+CREATE TABLE node_directory (
+    node_uuid TEXT PRIMARY KEY CHECK(length(node_uuid) = 32 AND node_uuid NOT GLOB '*[^0-9a-f]*'),
+    tag TEXT NOT NULL CHECK(length(tag) = 3 AND tag NOT GLOB '*[^0-9A-Za-z]*'),
+    tag_k INTEGER NOT NULL CHECK(tag_k >= 0),
+    host_label TEXT CHECK(host_label IS NULL OR length(CAST(host_label AS BLOB)) <= 255),
+    first_seen_at INTEGER NOT NULL,
+    tag_hlc INTEGER
+) STRICT;
+
+CREATE INDEX node_directory_tag ON node_directory(tag);
 
 CREATE TABLE snapshot_generations (
     id TEXT PRIMARY KEY,
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     host_boot TEXT NOT NULL,
     epoch INTEGER NOT NULL CHECK(epoch > 0),
     observation_sequence INTEGER NOT NULL CHECK(observation_sequence > 0),
@@ -86,7 +118,7 @@ CREATE TABLE snapshot_targets (
 ) STRICT;
 
 CREATE TABLE recovery_baseline_releases (
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     baseline_generation_id TEXT NOT NULL REFERENCES snapshot_generations(id),
     target_id TEXT NOT NULL,
     decision_seq INTEGER NOT NULL CHECK(decision_seq > 0),
@@ -94,7 +126,7 @@ CREATE TABLE recovery_baseline_releases (
 ) STRICT;
 
 CREATE TABLE observed_targets (
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     target_id TEXT NOT NULL,
     host_boot TEXT NOT NULL,
     epoch INTEGER NOT NULL CHECK(epoch >= 0),
@@ -117,7 +149,7 @@ CREATE TABLE observed_targets (
 ) STRICT;
 
 CREATE TABLE recovery_baseline_targets (
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     target_id TEXT NOT NULL,
     baseline_boot TEXT NOT NULL,
     baseline_epoch INTEGER NOT NULL CHECK(baseline_epoch >= 0),
@@ -129,7 +161,7 @@ CREATE TABLE recovery_baseline_targets (
 ) STRICT;
 
 CREATE TABLE recovery_holds (
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     target_id TEXT NOT NULL,
     baseline_boot TEXT NOT NULL,
     baseline_epoch INTEGER NOT NULL CHECK(baseline_epoch >= 0),
@@ -141,7 +173,7 @@ CREATE TABLE recovery_holds (
 CREATE TABLE seats (
     ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     state TEXT NOT NULL CHECK(state IN ('resolved', 'unresolved', 'retired')),
     unresolved_reason TEXT CHECK(unresolved_reason IN ('host_invalidation','other')),
     unresolved_from_generation_id TEXT REFERENCES snapshot_generations(id),
@@ -173,7 +205,7 @@ CREATE TABLE seats (
 CREATE TABLE threads (
     ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     topic TEXT NOT NULL CHECK(length(CAST(topic AS BLOB)) BETWEEN 1 AND 1024),
     goal TEXT NOT NULL CHECK(length(CAST(goal AS BLOB)) <= 1024),
     archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0, 1)),
@@ -243,7 +275,7 @@ CREATE TABLE invitations (
 CREATE TABLE messages (
     ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     thread_id TEXT NOT NULL REFERENCES threads(id),
     sequence INTEGER NOT NULL CHECK(sequence > 0),
     kind TEXT NOT NULL CHECK(kind IN ('ordinary', 'info', 'warn')),
@@ -271,7 +303,7 @@ CREATE TABLE messages (
 
 CREATE TABLE send_preparations (
     id TEXT PRIMARY KEY,
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     operation_scope TEXT NOT NULL,
     operation_key TEXT NOT NULL,
     digest BLOB NOT NULL CHECK(length(digest)=32),
@@ -321,7 +353,7 @@ CREATE TABLE prepared_unavailable_warnings (
 CREATE TABLE send_manifests (
     preparation_id TEXT PRIMARY KEY REFERENCES send_preparations(id),
     message_id TEXT NOT NULL UNIQUE REFERENCES messages(id),
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     thread_id TEXT NOT NULL REFERENCES threads(id),
     decision_seq INTEGER NOT NULL CHECK(decision_seq > 0),
     decision_at INTEGER NOT NULL,
@@ -421,7 +453,7 @@ CREATE TABLE retirement_audits (
 ) STRICT;
 
 CREATE TABLE filter_revisions (
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     scope_kind TEXT NOT NULL CHECK(scope_kind IN ('directory', 'inbox', 'topic')),
     scope_key TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
@@ -440,7 +472,7 @@ CREATE TABLE delivery_observations (
 
 CREATE TABLE service_authors (
     id TEXT PRIMARY KEY CHECK(length(CAST(id AS BLOB)) BETWEEN 1 AND 128),
-    instance_id TEXT NOT NULL UNIQUE REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL UNIQUE REFERENCES local_node(id),
     reserved_name TEXT NOT NULL DEFAULT 'herdr-graph' CHECK(reserved_name = 'herdr-graph'),
     created_at INTEGER NOT NULL
 ) STRICT;
@@ -490,7 +522,7 @@ CREATE TABLE invitation_cancellations (
 CREATE TABLE service_notification_preparations (
     ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     author_id TEXT NOT NULL REFERENCES service_authors(id),
     operation_key TEXT NOT NULL,
     digest BLOB NOT NULL CHECK(length(digest)=32),
@@ -570,7 +602,7 @@ CREATE TABLE digest_programmatic_warnings (
 
 CREATE TABLE "allocation_decisions" (
     ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     target_id TEXT NOT NULL,
     seat_id TEXT NOT NULL,
     kind TEXT NOT NULL CHECK(kind IN ('ordinary', 'operator_fresh', 'operator_rebind', 'operator_retire', 'operator_human_override', 'cooperative_continuity')),
@@ -584,7 +616,7 @@ CREATE TABLE "allocation_decisions" (
 
 CREATE TABLE summary_blocks (
     id TEXT PRIMARY KEY,
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     thread_id TEXT NOT NULL REFERENCES threads(id),
     chunking_version TEXT NOT NULL CHECK(length(chunking_version) BETWEEN 1 AND 64),
     level INTEGER NOT NULL CHECK(level >= 0),
@@ -629,7 +661,7 @@ CREATE TABLE summary_transitions (
 
 CREATE TABLE summary_jobs (
     id TEXT PRIMARY KEY,
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     thread_id TEXT NOT NULL REFERENCES threads(id),
     chunking_version TEXT NOT NULL,
     level INTEGER NOT NULL CHECK(level >= 0),
@@ -654,7 +686,7 @@ CREATE TABLE summary_jobs (
 
 CREATE TABLE summary_job_durations (
     ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     job_id TEXT NOT NULL REFERENCES summary_jobs(id),
     duration_ms INTEGER NOT NULL CHECK(duration_ms >= 0),
     recorded_at INTEGER NOT NULL
@@ -689,7 +721,7 @@ CREATE TABLE warning_conditions (
     open_warning_id TEXT NOT NULL UNIQUE,
     opened_seq INTEGER NOT NULL CHECK(opened_seq > 0),
     clear_warning_id TEXT UNIQUE,
-    cleared_seq INTEGER, invitation_originator_instance_id TEXT REFERENCES host_instances(id), invitation_originator_seat_id TEXT REFERENCES seats(id)
+    cleared_seq INTEGER, invitation_originator_instance_id TEXT REFERENCES local_node(id), invitation_originator_seat_id TEXT REFERENCES seats(id)
     CHECK((invitation_originator_instance_id IS NULL) = (invitation_originator_seat_id IS NULL)),
     CHECK((clear_warning_id IS NULL) = (cleared_seq IS NULL))
 ) STRICT;
@@ -733,7 +765,7 @@ CREATE TABLE invitation_rejections (
 ) STRICT;
 
 CREATE TABLE archival_instances (
-    instance_id TEXT PRIMARY KEY REFERENCES host_instances(id),
+    instance_id TEXT PRIMARY KEY REFERENCES local_node(id),
     runtime_boot TEXT NOT NULL,
     evidence_epoch INTEGER NOT NULL DEFAULT 0,
     mutation_revision INTEGER NOT NULL DEFAULT 0,
@@ -753,7 +785,7 @@ CREATE TABLE archival_instances (
 
 CREATE TABLE channel_archival (
     thread_id TEXT PRIMARY KEY REFERENCES threads(id),
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     activity_revision INTEGER NOT NULL DEFAULT 1,
     quiet_mono INTEGER,
     quiet_utc INTEGER,
@@ -775,7 +807,7 @@ CREATE TABLE channel_archival (
 
 CREATE TABLE seat_archival (
     seat_id TEXT PRIMARY KEY REFERENCES seats(id),
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     activity_revision INTEGER NOT NULL DEFAULT 0,
     runtime_boot TEXT,
     evidence_epoch INTEGER,
@@ -799,7 +831,7 @@ CREATE TABLE seat_archival (
 ) STRICT;
 
 CREATE TABLE channel_handoff_fences (
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     actor_scope TEXT NOT NULL,
     compound TEXT NOT NULL,
     digest TEXT NOT NULL CHECK(length(digest)=64),
@@ -946,7 +978,7 @@ CREATE TABLE bootstrap_reports (
 ) STRICT;
 
 CREATE TABLE direct_threads (
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     seat_a TEXT NOT NULL REFERENCES seats(id),
     seat_b TEXT NOT NULL REFERENCES seats(id),
     thread_id TEXT NOT NULL UNIQUE REFERENCES threads(id),
@@ -1109,7 +1141,7 @@ CREATE TABLE receipt_send_time_cutovers (instance_id TEXT PRIMARY KEY, historica
 
 CREATE TABLE bootstrap_handoffs (
     id INTEGER PRIMARY KEY,
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     state_dir TEXT NOT NULL,
     host_endpoint TEXT NOT NULL,
     actor_scope TEXT NOT NULL,
@@ -1156,7 +1188,7 @@ CREATE TABLE receipt_deadline_backfill (
 
 CREATE TABLE receipt_warning_origins (
     ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     seat_id TEXT NOT NULL REFERENCES seats(id),
     warning_id TEXT NOT NULL REFERENCES messages(id),
     source_message_id TEXT NOT NULL REFERENCES messages(id),
@@ -1199,7 +1231,7 @@ CREATE TABLE automatic_handoff_companions (
 
 CREATE TABLE automatic_bootstrap_parents (
     id INTEGER PRIMARY KEY,
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     actor_scope TEXT NOT NULL,
     compound TEXT NOT NULL,
     state_dir TEXT NOT NULL,
@@ -1233,7 +1265,7 @@ CREATE TABLE automatic_bootstrap_recoveries (
 
 CREATE TABLE invitation_context_latest (
     thread_id TEXT PRIMARY KEY REFERENCES threads(id),
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     last_change_seq INTEGER NOT NULL CHECK(last_change_seq > 0),
     context_revision INTEGER NOT NULL CHECK(context_revision > 0)
 ) STRICT;
@@ -1242,7 +1274,7 @@ CREATE TABLE invitation_presentation_consumers (
     binding_id TEXT NOT NULL REFERENCES occupant_bindings(binding_id),
     seat_id TEXT NOT NULL REFERENCES seats(id),
     consumer TEXT NOT NULL CHECK(consumer IN ('hook','watch')),
-    instance_id TEXT NOT NULL REFERENCES host_instances(id),
+    instance_id TEXT NOT NULL REFERENCES local_node(id),
     generation INTEGER NOT NULL CHECK(generation>=0),
     execution TEXT NOT NULL CHECK(length(CAST(execution AS BLOB)) BETWEEN 1 AND 128),
     render_key TEXT NOT NULL CHECK(length(render_key) IN (0,64)),
@@ -1698,22 +1730,22 @@ CREATE INDEX presentation_membership_history ON membership_intervals(thread_id,s
 
 CREATE INDEX presentation_prepared_warning ON prepared_unavailable_warnings(warning_id,ordinal);
 
-CREATE TRIGGER host_active_snapshot_published BEFORE UPDATE OF active_snapshot_id ON host_instances
+CREATE TRIGGER host_active_snapshot_published BEFORE UPDATE OF active_snapshot_id ON herdr_hosts
 WHEN NEW.active_snapshot_id IS NOT NULL
 BEGIN
     SELECT CASE WHEN NOT EXISTS (
         SELECT 1 FROM snapshot_generations g
-        WHERE g.id=NEW.active_snapshot_id AND g.instance_id=NEW.id
+        WHERE g.id=NEW.active_snapshot_id AND g.instance_id=NEW.node_id
           AND g.status='published' AND g.staged_targets=g.expected_targets
     ) THEN RAISE(ABORT,'active snapshot is not complete and published') END;
 END;
 
-CREATE TRIGGER host_baseline_snapshot_published BEFORE UPDATE OF recovery_baseline_generation_id ON host_instances
+CREATE TRIGGER host_baseline_snapshot_published BEFORE UPDATE OF recovery_baseline_generation_id ON herdr_hosts
 WHEN NEW.recovery_baseline_generation_id IS NOT NULL
 BEGIN
     SELECT CASE WHEN NOT EXISTS (
         SELECT 1 FROM snapshot_generations g
-        WHERE g.id=NEW.recovery_baseline_generation_id AND g.instance_id=NEW.id
+        WHERE g.id=NEW.recovery_baseline_generation_id AND g.instance_id=NEW.node_id
           AND g.status='published' AND g.staged_targets=g.expected_targets
     ) THEN RAISE(ABORT,'baseline snapshot is not complete and published') END;
 END;
@@ -2299,9 +2331,9 @@ CREATE TRIGGER archival_seat_activity AFTER UPDATE OF state,generation,target_ge
  UPDATE seat_archival SET activity_revision=activity_revision+1,idle_mono=NULL,samples=0,next_mono=0 WHERE seat_id=NEW.id;
 END;
 
-CREATE TRIGGER archival_host_invalidation AFTER UPDATE OF host_boot,host_epoch,invalidation_revision,baseline_hold_unclaimed ON host_instances
+CREATE TRIGGER archival_host_invalidation AFTER UPDATE OF host_boot,host_epoch,invalidation_revision,baseline_hold_unclaimed ON herdr_hosts
 WHEN NEW.host_boot IS NOT OLD.host_boot OR NEW.host_epoch!=OLD.host_epoch OR NEW.invalidation_revision!=OLD.invalidation_revision OR NEW.baseline_hold_unclaimed!=OLD.baseline_hold_unclaimed BEGIN
- UPDATE archival_instances SET evidence_epoch=evidence_epoch+1,coherent_since=NULL,mutation_revision=mutation_revision+1 WHERE instance_id=NEW.id;
+ UPDATE archival_instances SET evidence_epoch=evidence_epoch+1,coherent_since=NULL,mutation_revision=mutation_revision+1 WHERE instance_id=NEW.node_id;
 END;
 
 CREATE TRIGGER archival_current_negative_insert AFTER INSERT ON observed_targets WHEN NEW.ui_state!='idle' BEGIN

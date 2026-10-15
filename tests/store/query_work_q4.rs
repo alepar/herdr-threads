@@ -76,17 +76,17 @@ fn seeded_body(
     for n in 0..candidates {
         let thread = format!("q4-t{n}");
         let sender = format!("a-q4-{n}");
-        rows.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)", [&sender]).unwrap();
-        rows.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES (?1,'i','q4','q4',0,0,100001)", [&thread]).unwrap();
+        rows.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", [&sender]).unwrap();
+        rows.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','q4','q4',0,0,100001)", [&thread]).unwrap();
         if !(50..75).contains(&n) {
-            rows.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i',?1,'s',?2)", params![sender,thread]).unwrap();
+            rows.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'s',?2)", params![sender,thread]).unwrap();
         }
         let voluntary = if n >= 75 { "left" } else { "invited" };
         rows.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,'s',10000,'invited',?2)", params![thread,voluntary]).unwrap();
         rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES (?1,?2,'s',10000,'pending',0,1000000,300,300,'lazy',?3)", params![format!("q4-inv{n}"),thread,sender]).unwrap();
         let prep = format!("prep-q4-{n}");
         let message = format!("msg-q4-{n}");
-        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'i','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')", params![prep,thread]).unwrap();
+        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')", params![prep,thread]).unwrap();
         rows.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,'s')", params![prep,message,thread]).unwrap();
         let decision = if (25..50).contains(&n) {
             100000 + n
@@ -98,20 +98,20 @@ fn seeded_body(
         } else {
             "q4-body".into()
         };
-        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode) VALUES (?1,'i',?2,100000,'ordinary',?3,?5,?4,0,'lazy')", params![message,thread,sender,decision,body]).unwrap();
+        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,100000,'ordinary',?3,?5,?4,0,'lazy')", params![message,thread,sender,decision,body]).unwrap();
         rows.execute(
             "UPDATE send_preparations SET status='sealed' WHERE id=?1",
             [&prep],
         )
         .unwrap();
-        rows.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,?3,?4,0,100000,0,1,0)", params![prep,message,thread,decision]).unwrap();
+        rows.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,?3,?4,0,100000,0,1,0)", params![prep,message,thread,decision]).unwrap();
     }
     for n in 0..retained {
         let sender = format!("a-noise-{n}");
         let thread = format!("noise-t{n}");
-        rows.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)", [&sender]).unwrap();
-        rows.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','noise','noise',0,0)", [&thread]).unwrap();
-        rows.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i',?1,'s',?2)", params![sender,thread]).unwrap();
+        rows.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", [&sender]).unwrap();
+        rows.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','noise','noise',0,0)", [&thread]).unwrap();
+        rows.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'s',?2)", params![sender,thread]).unwrap();
         rows.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,'s',1,'invited','invited')", [&thread]).unwrap();
         rows.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,?2,1,'joined','joined')",params![thread,sender]).unwrap();
         rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES (?1,?2,'s',1,'pending',0,?3,300,300)", params![format!("noise-inv{n}"),thread,n+1]).unwrap();
@@ -137,22 +137,22 @@ fn seeded_body(
         // selected-seat high-water and exhaustion branch identical.
         let prep = format!("prep-noise-{n}");
         let message = format!("msg-noise-{n}");
-        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'i','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')",params![prep,thread]).unwrap();
+        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')",params![prep,thread]).unwrap();
         rows.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,?4)",params![prep,message,thread,sender]).unwrap();
         if same_seat_recipients {
             rows.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,'s')",params![prep,message,thread]).unwrap();
         }
-        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode) VALUES (?1,'i',?2,1,'ordinary',?3,'noise',?4,0,'lazy')",params![message,thread,sender,600000+n]).unwrap();
+        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,1,'ordinary',?3,'noise',?4,0,'lazy')",params![message,thread,sender,600000+n]).unwrap();
         rows.execute(
             "UPDATE send_preparations SET status='sealed' WHERE id=?1",
             [&prep],
         )
         .unwrap();
-        rows.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,?3,?4,0,1,0,?5,0)",params![prep,message,thread,600000+n,if same_seat_recipients {2} else {1}]).unwrap();
+        rows.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,?3,?4,0,1,0,?5,0)",params![prep,message,thread,600000+n,if same_seat_recipients {2} else {1}]).unwrap();
         // Exact current episode is fixed at10000 in both populations. Older
         // retained episodes and event history grow without moving that boundary.
         rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,retired_at) VALUES (?1,'q4-t0','s',?2,'recipient_retired',0,?2,300,300,1)", params![format!("old-inv{n}"),n+1]).unwrap();
-        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_seq,decision_at) VALUES (?1,'i','q4-t0',?2,'info',?1,'{}',?3,0)", params![format!("noise-event{n}"),n+1,500000+n]).unwrap();
+        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_seq,decision_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','q4-t0',?2,'info',?1,'{}',?3,0)", params![format!("noise-event{n}"),n+1,500000+n]).unwrap();
     }
     drop(rows);
     for (key, sequence, decision) in [
@@ -160,7 +160,7 @@ fn seeded_body(
         ("operator_invite:q4-inv0", 90001, 1000002),
         ("service_invite:q4-inv0:ordinary", 90002, 1000003),
     ] {
-        tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,source_invitation_id,decision_seq,decision_at) VALUES (?1,'i','q4-t0',?2,'info',?1,'{}','q4-inv0',?3,0)", params![key,sequence,decision]).unwrap();
+        tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,source_invitation_id,decision_seq,decision_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','q4-t0',?2,'info',?1,'{}','q4-inv0',?3,0)", params![key,sequence,decision]).unwrap();
     }
     // Cardinality bookends run outside all measured regions and prove that
     // every relation accessed by the composed points actually grows.
@@ -354,7 +354,7 @@ fn indexed(
 
 fn claim() -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: 1,
         role: CallerRole::TopLevel,
@@ -386,7 +386,7 @@ fn q4_episode_private_and_reconciliation_points_have_constant_sqlite_work() {
                     text("s"),
                     text(&id),
                     text(binding.as_str()),
-                    text("i"),
+                    text("34750f98bd59fcfc946da45aaabe933b"),
                     Value::Integer(2100000),
                 ],
                 &["r", "sm", "m", "b", "lc", "lc", "lm", "ld", "ls", "li"],
@@ -395,7 +395,7 @@ fn q4_episode_private_and_reconciliation_points_have_constant_sqlite_work() {
             let canonical = indexed(
                 &tx,
                 invitation_content::OFFER_RECONCILIATION_MESSAGE_SQL,
-                vec![text(&id), text("i")],
+                vec![text(&id), text("34750f98bd59fcfc946da45aaabe933b")],
                 &["messages"],
             );
             assert_eq!(canonical.0.len(), 1);
@@ -408,7 +408,7 @@ fn q4_episode_private_and_reconciliation_points_have_constant_sqlite_work() {
                     text("s"),
                     text(&id),
                     text(binding.as_str()),
-                    text("i"),
+                    text("34750f98bd59fcfc946da45aaabe933b"),
                     row[1].clone(),
                     row[2].clone(),
                     row[3].clone(),
@@ -419,7 +419,12 @@ fn q4_episode_private_and_reconciliation_points_have_constant_sqlite_work() {
             let continuation = indexed(
                 &tx,
                 queries::LAZY_CONTINUATION_SCOPE_SQL,
-                vec![text("s"), text(&id), text(binding.as_str()), text("i")],
+                vec![
+                    text("s"),
+                    text(&id),
+                    text(binding.as_str()),
+                    text("34750f98bd59fcfc946da45aaabe933b"),
+                ],
                 &["m", "lc", "lm", "ld", "ls", "li"],
             );
             assert_eq!(continuation.0, want, "continued scope candidate={n}");
@@ -451,7 +456,7 @@ fn q4_scalar_agreement_and_strict_retirement_use_exact_scope() {
     let canonical: (String, String, i64, i64) = tx
         .query_row(
             invitation_content::OFFER_RECONCILIATION_MESSAGE_SQL,
-            params!["msg-q4-0", "i"],
+            params!["msg-q4-0", "34750f98bd59fcfc946da45aaabe933b"],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .unwrap();
@@ -460,7 +465,7 @@ fn q4_scalar_agreement_and_strict_retirement_use_exact_scope() {
         text("s"),
         text("msg-q4-0"),
         text(binding.as_str()),
-        text("i"),
+        text("34750f98bd59fcfc946da45aaabe933b"),
         text(&canonical.1),
         Value::Integer(canonical.2),
         Value::Integer(canonical.3),
@@ -508,7 +513,11 @@ fn q4_scalar_agreement_and_strict_retirement_use_exact_scope() {
     let episode = indexed(
         &tx,
         lazy_delivery::ACTIVE_DIRECT_EPISODE_SQL,
-        vec![text("q4-t0"), text("s"), text("i")],
+        vec![
+            text("q4-t0"),
+            text("s"),
+            text("34750f98bd59fcfc946da45aaabe933b"),
+        ],
         &["lm", "ld", "ls", "li"],
     );
     assert!(
@@ -522,7 +531,7 @@ fn q4_scalar_agreement_and_strict_retirement_use_exact_scope() {
             text("s"),
             text("msg-q4-0"),
             text(binding.as_str()),
-            text("i"),
+            text("34750f98bd59fcfc946da45aaabe933b"),
         ],
         &["m", "lc", "lm", "ld", "ls", "li"],
     );
@@ -554,7 +563,7 @@ fn q4_three_event_keys_and_actual_floor_have_constant_sqlite_work() {
             assert_eq!(
                 event.0,
                 [vec![
-                    text("i"),
+                    text("34750f98bd59fcfc946da45aaabe933b"),
                     text("q4-t0"),
                     text("info"),
                     text("q4-inv0"),
@@ -568,7 +577,7 @@ fn q4_three_event_keys_and_actual_floor_have_constant_sqlite_work() {
         let floor = count_vm_units(&tx, &counter, || {
             lazy_delivery::direct_acceptance_floor(
                 &tx,
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 &SeatId::new("s"),
                 &ThreadId::new("q4-t0"),
                 &InvitationId::new("q4-inv0"),
@@ -612,7 +621,7 @@ fn q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers() {
                 let page = queries::ordinary_presentation_page(
                     &tx,
                     &store,
-                    "i",
+                    "34750f98bd59fcfc946da45aaabe933b",
                     &claim(),
                     cursor.take(),
                     &budget(),
@@ -667,7 +676,7 @@ fn q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers() {
         let item = count_vm_units(&tx, &due_counter, || {
             queries::ordinary_presentation_message_by_id(
                 &tx,
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 &SeatId::new("s"),
                 &binding,
                 &MessageId::new("msg-q4-0"),
@@ -767,11 +776,11 @@ fn seeded_warning_history(retained: i64) -> (crate::store::connection::StoreCont
     }
     // Every retained episode ended before the warning. No recipient projection
     // hides the negative frozen-audience lookup behind a positive point result.
-    tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES ('q4-negative-warning','i','t',1,'warn','{}',10,0)", []).unwrap();
+    tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES ('q4-negative-warning','34750f98bd59fcfc946da45aaabe933b','t',1,'warn','{}',10,0)", []).unwrap();
     tx.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('q4-negative-warning',10,'t',?1,'a-q4-0','invitation','negative-invitation')", [retained]).unwrap();
-    tx.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES ('q4-origin-warning','i','q4-t0',100001,'warn','{}',2000002,0);
+    tx.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES ('q4-origin-warning','34750f98bd59fcfc946da45aaabe933b','q4-t0',100001,'warn','{}',2000002,0);
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('q4-origin-warning',2000002,'q4-t0',0,'s','invitation','q4-inv0');
-        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,episode,open_warning_id,opened_seq,invitation_originator_instance_id,invitation_originator_seat_id) VALUES ('invitation','q4-t0','q4-inv0','s',10000,'q4-origin-warning',2000002,'i','a-q4-0');").unwrap();
+        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,episode,open_warning_id,opened_seq,invitation_originator_instance_id,invitation_originator_seat_id) VALUES ('invitation','q4-t0','q4-inv0','s',10000,'q4-origin-warning',2000002,'34750f98bd59fcfc946da45aaabe933b','a-q4-0');").unwrap();
     let intervals: i64 = tx.query_row("SELECT count(*) FROM membership_intervals WHERE thread_id='t' AND seat_id='s' AND left_seq=2", [], |r| r.get(0)).unwrap();
     assert_eq!(
         intervals, retained,
@@ -794,7 +803,7 @@ fn public_warning_page(
     let result = queries::inbox_v2::query(
         db,
         store,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &crate::protocol::commands::InboxQuery {
             thread: None,
             seat: Some(SeatId::new("s")),
@@ -827,8 +836,15 @@ fn q4_private_fresh_excludes_warning_history() {
         let trace = ScopeTrace::install(&tx);
         let counter = CostCounter::default();
         let page = count_vm_units(&tx, &counter, || {
-            queries::ordinary_presentation_page(&tx, &store, "i", &claim(), None, &budget())
-                .unwrap()
+            queries::ordinary_presentation_page(
+                &tx,
+                &store,
+                "34750f98bd59fcfc946da45aaabe933b",
+                &claim(),
+                None,
+                &budget(),
+            )
+            .unwrap()
         });
         assert_eq!(
             trace.warning_audience_probes(),
@@ -884,8 +900,15 @@ fn q4_private_resumed_excludes_warning_history() {
         let trace = ScopeTrace::install(&tx);
         let counter = CostCounter::default();
         let page = count_vm_units(&tx, &counter, || {
-            queries::ordinary_presentation_page(&tx, &store, "i", &claim(), Some(cursor), &budget())
-                .unwrap()
+            queries::ordinary_presentation_page(
+                &tx,
+                &store,
+                "34750f98bd59fcfc946da45aaabe933b",
+                &claim(),
+                Some(cursor),
+                &budget(),
+            )
+            .unwrap()
         });
         assert_eq!(
             trace.warning_audience_probes(),
@@ -969,9 +992,15 @@ fn q4_actual_continued_tail_checks_scope_once_and_charges_retirement() {
         let (store, mut db, binding) = seeded_body(128, true, 1, false);
         let tx = db.transaction().unwrap();
         let trace = ScopeTrace::install(&tx);
-        let first =
-            queries::ordinary_presentation_page(&tx, &store, "i", &claim(), None, &budget())
-                .unwrap();
+        let first = queries::ordinary_presentation_page(
+            &tx,
+            &store,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &claim(),
+            None,
+            &budget(),
+        )
+        .unwrap();
         assert_eq!(trace.counts(), [1, 0]);
         drop(trace);
         assert_eq!((first.visited, first.lazy_scope_probes), (1, 3));
@@ -995,7 +1024,7 @@ fn q4_actual_continued_tail_checks_scope_once_and_charges_retirement() {
         let continued = queries::ordinary_presentation_page(
             &tx,
             &store,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &claim(),
             Some(cursor),
             &budget(),

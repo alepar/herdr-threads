@@ -30,17 +30,16 @@ fn budget() -> CallBudget {
 /// A store with one joined cooperative sender `a` in thread `t`, rooted in a
 /// private isolation directory.
 fn setup(iso: &TestIsolation) -> (StoreContext, Connection) {
-    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
     let conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
-        [],
+    conn.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
     )
     .unwrap();
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('a','i','resolved','native','pa',1,1,0,1)", []).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pa','b',1,1,0,'fresh','term-pa','inc','coherent_enumeration',1)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native','pa',1,1,0,1)", []).unwrap();
+    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','pa','b',1,1,0,'fresh','term-pa','inc','coherent_enumeration',1)", []).unwrap();
     conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('a',1,'pa','b',1,1,'codex','n','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',0,'term-pa','inc')", []).unwrap();
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','a','joined')",
         [],
@@ -64,7 +63,7 @@ fn send_request() -> SendMessage {
         deadline_millis: None,
         operation: OperationId::new("op"),
         claim: CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("a"),
             binding_generation: 1,
             role: CallerRole::TopLevel,
@@ -184,7 +183,7 @@ fn native_preparation_quantum_refreshes_inactivity_and_sealed_retry_does_not() {
     let iso = TestIsolation::new("native-preparation-progress");
     let (_, mut db) = setup(&iso);
     for seat in ["b", "c"] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','unresolved','native',0,0)", [seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0)", [seat]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
             [seat],
@@ -193,7 +192,7 @@ fn native_preparation_quantum_refreshes_inactivity_and_sealed_retry_does_not() {
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)", [seat]).unwrap();
     }
     let clock = Arc::new(ProgressClock(AtomicI64::new(1000)));
-    let context = StoreContext::new(iso.path("store.db"), clock.clone());
+    let context = StoreContext::new(iso.path("store.db"), clock.clone()).with_test_host();
     let request = send_request();
     let mut ready = false;
     let mut last = 0;
@@ -527,7 +526,7 @@ fn user_intent_send_rechecks_live_role() {
             }
             "revision_changed" => {
                 conn.execute(
-                    "UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1",
+                    "UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1",
                     [],
                 )
                 .unwrap();
@@ -581,8 +580,8 @@ fn user_intent_send_priority_and_receipts_unchanged() {
                 ("b", "codex", "cooperative_top_level"),
                 ("c", "human", "operator_human"),
             ] {
-                conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1,1,1,0)", [seat]).unwrap();
-                conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh',?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
+                conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0)", [seat]).unwrap();
+                conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,0,'fresh',?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
                 conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,1,?1,'b',1,1,?2,'n',?1,?3,0,0,?1,'inc')", rusqlite::params![seat,harness,provenance]).unwrap();
                 conn.execute(
                     "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
@@ -724,7 +723,12 @@ fn direct_recipient_nonpair_store_refuses_preparation_and_publication() {
     };
     let iso = TestIsolation::new("direct-nonpair-store");
     let (context, db) = setup(&iso);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let mut request = send_request();
     request.direct_recipient = Some(SeatId::new("b"));
     assert_eq!(

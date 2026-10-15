@@ -349,14 +349,19 @@ fn every_advertised_capability_has_a_handler() {
                 let context = crate::store::connection::StoreContext::new(
                     isolation.path("store.db"),
                     Arc::new(FixedClock),
-                );
+                )
+                .with_test_host();
                 context.open_writer().unwrap();
-                let outcome =
-                    crate::store::queries::query(&context, "probe-instance", &command, &budget());
+                let outcome = crate::store::queries::query(
+                    &context,
+                    "34750f98bd59fcfc946da45aaabe933b",
+                    &command,
+                    &budget(),
+                );
                 assert_eq!(outcome.unwrap_err().code, ErrorCode::NotFound);
             }
             LAZY_SEND | SEND_TIME_RECEIPTS_V1 => {
-                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":if *name == LAZY_SEND { "lazy" } else { "ordinary" },"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":if *name == LAZY_SEND { "lazy" } else { "ordinary" },"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
                 let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 assert_eq!(
@@ -382,7 +387,7 @@ fn every_advertised_capability_has_a_handler() {
                         recipient: crate::protocol::ids::SeatId::new("peer"),
                         operation: crate::protocol::ids::OperationId::new("direct-probe"),
                         claim: crate::protocol::authority::CallerClaim {
-                            instance: "i".into(),
+                            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                             seat: crate::protocol::ids::SeatId::new("sender"),
                             binding_generation: 1,
                             role: crate::protocol::authority::CallerRole::TopLevel,
@@ -436,7 +441,7 @@ fn every_advertised_capability_has_a_handler() {
                 // The command decodes and routes to the domain service (served by
                 // `service::delivery_pull`, tested there); this daemon has none.
                 let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
-                let command: Command = serde_json::from_value(serde_json::json!({"kind":"delivery_pull","args":{"claim":{"instance":"i","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                let command: Command = serde_json::from_value(serde_json::json!({"kind":"delivery_pull","args":{"claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
                 assert_eq!(
                     handler
@@ -495,7 +500,7 @@ fn every_advertised_capability_has_a_handler() {
                 let command = Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
                     in_turn: true,
                     claim: crate::protocol::authority::CallerClaim {
-                        instance: "probe-instance".into(),
+                        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                         seat: crate::protocol::ids::SeatId::new("s"),
                         binding_generation: 1,
                         role: crate::protocol::authority::CallerRole::TopLevel,
@@ -508,7 +513,9 @@ fn every_advertised_capability_has_a_handler() {
                     },
                     operation: crate::protocol::ids::OperationId::new("op"),
                     displayed: vec![crate::protocol::ids::MessageId::new("m")],
-                    invitations: vec![crate::protocol::ids::InvitationId::new("i")],
+                    invitations: vec![crate::protocol::ids::InvitationId::new(
+                        "34750f98bd59fcfc946da45aaabe933b",
+                    )],
                 });
                 assert!(command.validate().is_ok());
                 let json = serde_json::to_value(&command).unwrap();
@@ -524,7 +531,7 @@ fn every_advertised_capability_has_a_handler() {
                         seat: crate::protocol::ids::SeatId::new("s"),
                         lazy: false,
                         claim: Some(crate::protocol::authority::CallerClaim {
-                            instance: "probe-instance".into(),
+                            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                             seat: crate::protocol::ids::SeatId::new("s"),
                             binding_generation: 1,
                             role: crate::protocol::authority::CallerRole::Subagent,
@@ -570,7 +577,7 @@ fn probe_binding_cursors() {
         in_turn: false,
         invitations: Vec::new(),
         claim: CallerClaim {
-            instance: "probe-instance".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("nobody"),
             binding_generation: 1,
             role: CallerRole::Subagent,
@@ -594,8 +601,8 @@ fn probe_binding_cursors() {
     let isolation = crate::test_support::isolation::TestIsolation::new("cursors-capability");
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store = SqliteStore::new(
-        StoreContext::new(isolation.path("store.db"), clock),
-        "probe-instance",
+        StoreContext::new(isolation.path("store.db"), clock).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap();
@@ -629,17 +636,17 @@ fn probe_mod_watch(presentation_v2: bool) {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store: Arc<dyn StorePort> = Arc::new(
         SqliteStore::new(
-            StoreContext::new(isolation.path("store.db"), clock.clone()),
-            "probe-instance",
+            StoreContext::new(isolation.path("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
     );
-    let domain = DomainService::new("probe-instance".into(), store, clock);
+    let domain = DomainService::new("34750f98bd59fcfc946da45aaabe933b".into(), store, clock);
     let request = WatchRequest {
         presentation_v2,
         claim: CallerClaim {
-            instance: "probe-instance".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("nobody"),
             binding_generation: 1,
             role: CallerRole::TopLevel,
@@ -937,19 +944,23 @@ fn probe_service_send_v1() {
     };
     let dir = std::env::temp_dir().join(format!("htcap-send-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    let context = StoreContext::new(dir.join("probe.db"), Arc::new(FixedClock));
+    let context = StoreContext::new(dir.join("probe.db"), Arc::new(FixedClock)).with_test_host();
     {
         let conn = context.open_writer().unwrap();
-        conn.execute(
-            "INSERT INTO host_instances(id, created_at, host_boot, host_epoch) VALUES ('i', 0, 'b', 1)",
-            [],
-        )
-        .unwrap();
+        conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
     }
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let author = ServiceAuthorId::new("graph:probe");
     let gate = ProbeGate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
     let operations = [
         ServiceOperation::Send(ServiceSend {
             thread: ThreadId::new("absent"),
@@ -1006,8 +1017,8 @@ fn probe_harness_evidence() {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
@@ -1066,8 +1077,8 @@ fn probe_harness_states() {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
@@ -1347,7 +1358,7 @@ fn probe_invitation_reject() {
         reason: "Outside assigned role".into(),
         operation: OperationId::new("reject-probe"),
         claim: CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s1"),
             binding_generation: 1,
             role: CallerRole::TopLevel,
@@ -1432,8 +1443,8 @@ fn v2_capability_is_negotiated_only_with_recorder() {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
@@ -1554,8 +1565,8 @@ fn health_v2_capability_is_negotiated_only_with_cached_provider() {
     let clock = Arc::new(FixedClock);
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
@@ -1663,16 +1674,14 @@ fn probe_picker_directory() {
         test_support::isolation::TestIsolation,
     };
     let iso = TestIsolation::new("cap-picker-directory");
-    let context = StoreContext::new(iso.state_root().join("store.db"), Arc::new(FixedClock));
-    context
-        .open_writer()
-        .unwrap()
-        .execute(
-            "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-            [],
-        )
-        .unwrap();
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let context =
+        StoreContext::new(iso.state_root().join("store.db"), Arc::new(FixedClock)).with_test_host();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let command = Command::PickerDirectory(PickerDirectoryQuery {
         page: PageRequest::default(),
     });
@@ -1684,7 +1693,7 @@ fn probe_picker_directory() {
         .query(
             &command,
             &ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: OutputSpec::default(),
                 operation_scope: None,
             },
@@ -1769,9 +1778,14 @@ fn directory_search_generated_continuation_preserves_literal_scope_order_and_out
         test_support::isolation::TestIsolation,
     };
     let iso = TestIsolation::new("directory-search-continuation");
-    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
-    context.open_writer().unwrap().execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t1','i','雪''s %_.* topic','goal',0,0),('t2','i','雪''s %_.* topic','goal',0,0);").unwrap();
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
+    context.open_writer().unwrap().execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t1','34750f98bd59fcfc946da45aaabe933b','雪''s %_.* topic','goal',0,0),('t2','34750f98bd59fcfc946da45aaabe933b','雪''s %_.* topic','goal',0,0);").unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let original = parse_argv([
         "ht",
         "--state-dir",
@@ -1798,7 +1812,7 @@ fn directory_search_generated_continuation_preserves_literal_scope_order_and_out
         .query(
             command,
             &ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: original.output.clone(),
                 operation_scope: None,
             },
@@ -1831,9 +1845,14 @@ fn probe_message_delivery_modes() {
         test_support::isolation::TestIsolation,
     };
     let iso = TestIsolation::new("cap-message-delivery-modes");
-    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
-    context.open_writer().unwrap().execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('m','i','t',1,'ordinary',1,'ordinary body',0,'lazy');").unwrap();
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
+    context.open_writer().unwrap().execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',1,'ordinary body',0,'lazy');").unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let command = Command::MessageDeliveryModes(MessageDeliveryModesQuery {
         messages: vec![MessageId::new("m")],
     });
@@ -1845,7 +1864,7 @@ fn probe_message_delivery_modes() {
         .query(
             &command,
             &ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: OutputSpec::default(),
                 operation_scope: None,
             },
@@ -1870,7 +1889,7 @@ fn probe_thread_join() {
         thread: crate::protocol::ids::ThreadId::new("t1"),
         operation: crate::protocol::ids::OperationId::new("join-probe"),
         claim: crate::protocol::authority::CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: crate::protocol::ids::SeatId::new("s1"),
             binding_generation: 1,
             role: crate::protocol::authority::CallerRole::TopLevel,
@@ -1949,13 +1968,13 @@ fn public_operation_status_cannot_bypass_send_time_capability_guard() {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store: Arc<dyn StorePort> = Arc::new(
         SqliteStore::new(
-            StoreContext::new(isolation.path("store.db"), clock.clone()),
-            "probe-instance",
+            StoreContext::new(isolation.path("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
     );
-    let domain = DomainService::new("probe-instance".into(), store, clock);
+    let domain = DomainService::new("34750f98bd59fcfc946da45aaabe933b".into(), store, clock);
     let error = domain
         .handle(
             Command::OperationStatus(OperationStatusQuery {
@@ -2035,15 +2054,14 @@ fn presentation_capability_routes_use_configured_domain() {
     };
     let isolated = TestIsolation::new("presentation-capability-route");
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
-    let context = StoreContext::new(isolated.path("store.db"), clock.clone());
-    let db = context.open_writer().unwrap();
     let instance = crate::node::NodeUuid::new_v4();
+    let context = StoreContext::new(isolated.path("store.db"), clock.clone())
+        .with_test_host()
+        .with_node_seed(crate::test_support::node_seed_for(instance));
+    let db = context.open_writer().unwrap();
     let boot = Uuid::new_v4();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
-        [instance.to_string()],
-    )
-    .unwrap();
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
     for seat in ["origin", "recipient"] {
         db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?1,0,0,0)", rusqlite::params![seat, instance.to_string()]).unwrap();
         db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc-'||?2,'coherent_enumeration',1)", rusqlite::params![instance.to_string(),seat]).unwrap();

@@ -2,6 +2,7 @@
 //! transaction primitives used by store handlers.
 
 use crate::{
+    node::{NodeTag, NodeUuid},
     ports::TimeBasis,
     protocol::{
         authority::{CARRIED_BINDING_PROVENANCES, ObligationRef},
@@ -184,10 +185,41 @@ pub(crate) fn binding_evidence_lacking(conn: &Connection, seat: &str) -> rusqlit
     )
 }
 
+/// The endpoint recorded for an attached Herdr host that was composed without
+/// a socket path (an in-process host given directly). Interim: ht-5fr.1.7's
+/// `HostChoice` replaces the single-host composition that needs it.
+pub const UNNAMED_HOST_ENDPOINT: &str = "unnamed-host";
+
+/// The identity a fresh node store is created with: the `local_node` row and
+/// the self row of `node_directory`. An existing store keeps its own rows; the
+/// seed is only read when the database is empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeSeed {
+    pub uuid: NodeUuid,
+    pub tag: NodeTag,
+    pub tag_k: u32,
+}
+
 /// Open or create the node store. An empty database gets `NODE_BASELINE` in one
-/// `BEGIN IMMEDIATE` plus the application id and version; an existing node store
-/// is audited by `verify_baseline`; anything else is `IncompatibleSchema`.
-pub fn initialize(conn: &Connection, _now: impl FnOnce() -> UtcMillis) -> Result<(), ApiError> {
+/// `BEGIN IMMEDIATE` plus the application id, the version, the `local_node` row
+/// and the self `node_directory` row from `node`; an existing node store is
+/// audited by `verify_baseline`; anything else is `IncompatibleSchema`.
+pub fn initialize(
+    conn: &Connection,
+    now: impl FnOnce() -> UtcMillis,
+    node: &NodeSeed,
+) -> Result<(), ApiError> {
+    initialize_with(conn, now, Some(node))
+}
+
+/// [`initialize`] for a caller that may have no seed (a store context that was
+/// never given one): a fresh database then fails instead of inventing an
+/// identity.
+pub(crate) fn initialize_with(
+    conn: &Connection,
+    now: impl FnOnce() -> UtcMillis,
+    node: Option<&NodeSeed>,
+) -> Result<(), ApiError> {
     check_integrity(conn)?;
     let application_id: i64 = conn
         .pragma_query_value(None, "application_id", |r| r.get(0))
@@ -205,11 +237,19 @@ pub fn initialize(conn: &Connection, _now: impl FnOnce() -> UtcMillis) -> Result
         if objects != 0 {
             return Err(incompatible("unversioned nonempty database".into()));
         }
+        let node = node.ok_or_else(|| {
+            api_error(
+                ErrorCode::InvalidRequest,
+                "node seed missing: a new store needs the node identity",
+            )
+        })?;
+        let created_at = now().0;
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let created = conn
             .execute_batch(NODE_BASELINE)
             .and_then(|()| conn.pragma_update(None, "application_id", NODE_APPLICATION_ID))
-            .and_then(|()| conn.pragma_update(None, "user_version", NODE_SCHEMA_VERSION));
+            .and_then(|()| conn.pragma_update(None, "user_version", NODE_SCHEMA_VERSION))
+            .and_then(|()| insert_node_rows(conn, node, created_at));
         match created {
             Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
             Err(error) => {
@@ -236,6 +276,22 @@ pub fn initialize(conn: &Connection, _now: impl FnOnce() -> UtcMillis) -> Result
     Err(incompatible(format!(
         "not a herdr-threads node store (application_id {application_id:#x})"
     )))
+}
+
+/// The creating transaction's node rows: `local_node` and the self row of
+/// `node_directory`, before anything mints an ID. (ht-5fr.1.10 moves the self
+/// row behind `store::node_directory`.)
+fn insert_node_rows(conn: &Connection, node: &NodeSeed, created_at: i64) -> rusqlite::Result<()> {
+    let (uuid, tag) = (node.uuid.to_string(), node.tag.to_string());
+    conn.execute(
+        "INSERT INTO local_node(id,created_at,tag,tag_k) VALUES (?1,?2,?3,?4)",
+        params![uuid, created_at, tag, node.tag_k],
+    )?;
+    conn.execute(
+        "INSERT INTO node_directory(node_uuid,tag,tag_k,first_seen_at) VALUES (?1,?2,?3,?4)",
+        params![uuid, tag, node.tag_k, created_at],
+    )?;
+    Ok(())
 }
 
 /// Name prefix of a fault-injection trigger that `verify_baseline` tolerates in
@@ -430,7 +486,7 @@ pub fn checked_deadline(start: UtcMillis, duration_ms: i64) -> Result<UtcMillis,
 pub fn next_decision_seq(tx: &Connection, instance: &str) -> Result<u64, ApiError> {
     let changed = tx
         .execute(
-            "UPDATE host_instances SET decision_seq=decision_seq+1 WHERE id=?1 AND decision_seq<?2",
+            "UPDATE local_node SET decision_seq=decision_seq+1 WHERE id=?1 AND decision_seq<?2",
             params![instance, i64::MAX],
         )
         .map_err(store_error)?;
@@ -442,7 +498,7 @@ pub fn next_decision_seq(tx: &Connection, instance: &str) -> Result<u64, ApiErro
     }
     let value: i64 = tx
         .query_row(
-            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            "SELECT decision_seq FROM local_node WHERE id=?1",
             [instance],
             |r| r.get(0),
         )
@@ -466,7 +522,7 @@ pub fn apply_eligibility_transition(
 
 fn bump_send_eligibility(db: &Connection, instance: &str) -> Result<(), ApiError> {
     let rows = db.execute(
-        "UPDATE host_instances SET send_eligibility_revision=send_eligibility_revision+1 WHERE id=?1 AND send_eligibility_revision<?2",
+        "UPDATE local_node SET send_eligibility_revision=send_eligibility_revision+1 WHERE id=?1 AND send_eligibility_revision<?2",
         params![instance, i64::MAX],
     ).map_err(store_error)?;
     if rows != 1 {
@@ -551,7 +607,7 @@ fn bump_thread_revision(tx: &Connection, thread: &ThreadId, column: &str) -> Res
 }
 
 pub fn bump_lifecycle_revision(tx: &Transaction<'_>, instance: &str) -> Result<(), ApiError> {
-    let changed = tx.execute("UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1 WHERE id=?1 AND lifecycle_revision<?2", params![instance, i64::MAX]).map_err(store_error)?;
+    let changed = tx.execute("UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1 WHERE host_id=primary_host() AND node_id=?1 AND lifecycle_revision<?2", params![instance, i64::MAX]).map_err(store_error)?;
     if changed != 1 {
         return Err(api_error(
             ErrorCode::SequenceExhausted,
@@ -584,12 +640,12 @@ pub fn effective_registered_availability(
     let binding: BindingColumns = db
         .query_row(
             "SELECT s.instance_id, s.target_id, s.target_generation, h.host_boot, h.host_epoch, b.observation_provenance \
-             FROM seats s JOIN host_instances h ON h.id=s.instance_id JOIN occupant_bindings b ON b.seat_id=s.id \
+             FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id JOIN occupant_bindings b ON b.seat_id=s.id \
              WHERE s.id=?1 AND s.state='resolved' AND s.target_id IS NOT NULL \
                AND b.ended_at IS NULL AND b.liveness='connected' AND b.registered_at IS NOT NULL AND b.target_id=s.target_id \
                AND b.generation=s.generation AND b.target_generation=s.target_generation \
                AND b.host_boot=h.host_boot AND b.host_epoch=h.host_epoch \
-               AND (?2 IS NULL OR h.id=?2) \
+               AND (?2 IS NULL OR h.node_id=?2) \
              ORDER BY (b.role='top_level') DESC, b.ordinal LIMIT 1",
             params![seat, instance],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
@@ -625,9 +681,9 @@ pub fn effective_registered_availability(
 /// open the episode.
 pub fn carry_pending(db: &Connection, seat: &str, instance: &str) -> Result<bool, ApiError> {
     db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM seats s JOIN host_instances h ON h.id=s.instance_id \
+        "SELECT EXISTS(SELECT 1 FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id \
          JOIN occupant_bindings b ON b.seat_id=s.id \
-         WHERE s.id=?1 AND h.id=?2 AND s.state='resolved' \
+         WHERE s.id=?1 AND h.node_id=?2 AND s.state='resolved' \
            AND (h.reconciled_boot IS NOT h.recovery_boot OR h.reconciled_epoch IS NOT h.recovery_epoch) \
            AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.liveness='connected' \
            AND b.observation_provenance IN (?3,?4,?5,?6) AND b.target_id=s.target_id \
@@ -889,7 +945,7 @@ fn append_event_once_at_seq(
         Some(seq) if seq > 0 && seq <= i64::MAX as u64 => {
             let current: i64 = tx
                 .query_row(
-                    "SELECT decision_seq FROM host_instances WHERE id=?1",
+                    "SELECT decision_seq FROM local_node WHERE id=?1",
                     [&instance],
                     |r| r.get(0),
                 )
@@ -1306,7 +1362,7 @@ fn enqueue_warning_close_sweep(
         return Ok(0);
     }
     let close_decision_seq: i64 = tx.query_row(
-        "SELECT h.decision_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+        "SELECT h.decision_seq FROM seats s JOIN local_node h ON h.id=s.instance_id WHERE s.id=?1",
         [seat], |r| r.get(0),
     ).map_err(store_error)?;
     let interval_high_water: i64 = tx

@@ -75,19 +75,18 @@ fn insert_binding(
 
 fn fx(name: &str) -> Fx {
     let iso = TestIsolation::new(name);
-    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
     let conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
-        [],
+    conn.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
     )
     .unwrap();
     for seat in ["a", "b", "c"] {
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)", rusqlite::params![seat, format!("p{seat}")]).unwrap();
-        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh',?2,'inc','coherent_enumeration',1)", rusqlite::params![format!("p{seat}"), format!("term-p{seat}")]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1)", rusqlite::params![seat, format!("p{seat}")]).unwrap();
+        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,0,'fresh',?2,'inc','coherent_enumeration',1)", rusqlite::params![format!("p{seat}"), format!("term-p{seat}")]).unwrap();
     }
     conn.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)",
         [],
     )
     .unwrap();
@@ -112,7 +111,7 @@ fn fx(name: &str) -> Fx {
 
 fn claim(seat: &str, session: &str, execution: &str, agent: Option<&str>) -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new(seat),
         binding_generation: 1,
         role: if agent.is_some() {
@@ -140,8 +139,8 @@ fn claim_b2() -> CallerClaim {
 
 fn store(fx: &Fx) -> crate::store::SqliteStore {
     crate::store::SqliteStore::new(
-        StoreContext::new(fx.iso.path("store.db"), Arc::new(FixedClock)),
-        "i",
+        StoreContext::new(fx.iso.path("store.db"), Arc::new(FixedClock)).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap()
@@ -242,7 +241,7 @@ fn page(fx: &Fx, claim: Option<&CallerClaim>) -> Vec<Row> {
 fn page_in(fx: &Fx, claim: Option<&CallerClaim>, thread: Option<&str>) -> Vec<Row> {
     let CommandResult::InboxBatchV2(page) = query_with_output(
         &fx.context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
             thread: thread.map(ThreadId::new),
             claim: claim.cloned(),
@@ -449,7 +448,7 @@ fn invitations_are_listed_per_seat() {
     let fx = fx("bi-invitations");
     fx.conn
         .execute_batch(
-            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','i','other','goal',0,0);
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','other','goal',0,0);
              INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES ('u','b',1,'invited','invited');
              INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv1','u','b',1,'pending',1,0,300,99999999);",
         )
@@ -487,7 +486,7 @@ fn unknown_session_inbox_shows_no_backlog_past_the_seat_maximum() {
     let m3 = send(&mut fx, "three");
     fx.conn
         .execute_batch(
-            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','i','other','goal',0,0);
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','other','goal',0,0);
              INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES ('u','b',1,'invited','invited');
              INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv1','u','b',1,'pending',1,0,300,99999999);",
         )
@@ -639,7 +638,7 @@ fn binding_enrolled_after_leave_gets_no_old_lazy_history() {
 fn warning_refs(fx: &Fx, claim: &CallerClaim) -> Vec<String> {
     let CommandResult::InboxBatchV2(page) = query_with_output(
         &fx.context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
             thread: None,
             claim: Some(claim.clone()),
@@ -678,18 +677,18 @@ fn bound_warning_cutoff_is_the_reading_bindings_own_offer_frontier() {
     let decision: i64 = fx
         .conn
         .query_row(
-            "SELECT decision_seq+1 FROM host_instances WHERE id='i'",
+            "SELECT decision_seq+1 FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
         .unwrap();
     fx.conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES('inv','t','b',2,'pending',0,?1,300,300)", [decision]).unwrap();
     let warned = decision + 1;
-    fx.conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES('i','warning','t',100,'warn','{}',?1,0)", [warned]).unwrap();
+    fx.conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES('34750f98bd59fcfc946da45aaabe933b','warning','t',100,'warn','{}',?1,0)", [warned]).unwrap();
     fx.conn.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES('warning',?1,'t',100,'b','invitation','inv')", [warned]).unwrap();
     fx.conn
         .execute(
-            "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+            "UPDATE local_node SET decision_seq=?1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [warned],
         )
         .unwrap();
@@ -729,7 +728,7 @@ fn thread_scoped_page_lists_only_that_threads_lazy_rows() {
     let mut fx = fx("binding-inbox-thread-scope");
     fx.conn
         .execute(
-            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic2','goal',0,0)",
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic2','goal',0,0)",
             [],
         )
         .unwrap();
@@ -763,7 +762,7 @@ fn thread_scoped_page_lists_only_that_threads_lazy_rows() {
     }
     let refused = query_with_output(
         &fx.context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
             thread: Some(ThreadId::new("t2")),
             claim: Some(b1),

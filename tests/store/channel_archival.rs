@@ -11,9 +11,13 @@ pub(super) fn fixture() -> Connection {
     static IMAGE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     let image = IMAGE.get_or_init(|| {
         let db = Connection::open_in_memory().unwrap();
-        schema::initialize(&db, || UtcMillis(0)).unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0);")
-            .unwrap();
+        schema::initialize(
+            &db,
+            || UtcMillis(0),
+            &herdr_threads::test_support::test_node_seed(),
+        )
+        .unwrap();
+        herdr_threads::test_support::attach_test_host_to_connection(&db);
         let mut size: ffi::sqlite3_int64 = 0;
         // SAFETY: serialize the live main schema of our own open connection;
         // the returned sqlite3_malloc buffer is copied and freed here.
@@ -43,13 +47,14 @@ pub(super) fn fixture() -> Connection {
         );
         assert_eq!(rc, ffi::SQLITE_OK, "deserialize the fixture schema");
     }
+    herdr_threads::test_support::bind_test_host(&db);
     db
 }
 
 #[test]
 fn archival_schema_new_channel_gets_dirty_grace_without_historical_backdating() {
     let db = fixture();
-    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',-999999,-999999)").unwrap();
+    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',-999999,-999999)").unwrap();
     let row = db.query_row("SELECT activity_revision,quiet_mono,due_mono FROM channel_archival WHERE thread_id='t'", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,i64>(2)?))).expect("new channels need explicit fresh archival grace");
     assert_eq!(row, (1, None, 0));
 }
@@ -57,7 +62,7 @@ fn archival_schema_new_channel_gets_dirty_grace_without_historical_backdating() 
 #[test]
 fn archival_schema_channel_activity_invalidates_certificate() {
     let db = fixture();
-    db.execute_batch("INSERT INTO archival_instances(instance_id,runtime_boot) VALUES('i','boot'); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); UPDATE channel_archival SET quiet_mono=10,scan_revision=3 WHERE thread_id='t'; UPDATE threads SET topic='changed' WHERE id='t';").unwrap();
+    db.execute_batch("INSERT INTO archival_instances(instance_id,runtime_boot) VALUES('34750f98bd59fcfc946da45aaabe933b','boot'); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0); UPDATE channel_archival SET quiet_mono=10,scan_revision=3 WHERE thread_id='t'; UPDATE threads SET topic='changed' WHERE id='t';").unwrap();
     let row = db
         .query_row(
             "SELECT quiet_mono,scan_revision FROM channel_archival WHERE thread_id='t'",
@@ -68,7 +73,7 @@ fn archival_schema_channel_activity_invalidates_certificate() {
     assert_eq!(row, (None, None));
     assert!(
         db.query_row(
-            "SELECT mutation_revision FROM archival_instances WHERE instance_id='i'",
+            "SELECT mutation_revision FROM archival_instances WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get::<_, i64>(0)
         )
@@ -91,7 +96,7 @@ fn runtime(at: i64) -> Runtime {
     }
 }
 pub(super) fn thread(db: &Connection) {
-    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',-999999999,-999999999)").unwrap();
+    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',-999999999,-999999999)").unwrap();
 }
 fn archived(db: &Connection) -> bool {
     db.query_row("SELECT archived FROM threads WHERE id='t'", [], |r| {
@@ -103,7 +108,10 @@ fn tick(db: &mut Connection, rt: &Runtime) {
     // Continuations are independently bounded transactions. Cap protects tests
     // against an accidental worker busy loop.
     for _ in 0..20 {
-        if !archival::advance(db, "i", rt).unwrap().has_more {
+        if !archival::advance(db, "34750f98bd59fcfc946da45aaabe933b", rt)
+            .unwrap()
+            .has_more
+        {
             return;
         }
     }
@@ -198,10 +206,10 @@ fn archival_disabled_policy_never_archives() {
 }
 
 pub(super) fn joined_agent(db: &Connection) {
-    db.execute_batch("UPDATE host_instances SET host_boot='b',host_epoch=1 WHERE id='i';
-INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','i','resolved','native','p',1,0,0);
+    db.execute_batch("UPDATE herdr_hosts SET host_boot='b',host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b';
+INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,0,0);
 INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('s',1,'p','b',1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0);
-INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES('i','p','b',1,0,1,'fresh',0,'term','inc','native_current_target',1,'idle');
+INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES('34750f98bd59fcfc946da45aaabe933b','p','b',1,0,1,'fresh',0,'term','inc','native_current_target',1,'idle');
 INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('t','s','joined',0);").unwrap();
 }
 pub(super) fn sample(
@@ -287,10 +295,15 @@ fn archival_joined_agent_needs_repeated_composer_reads_then_preserves_membership
     let before = authority_snapshot(&db);
     for at in (0..=3_600_000).step_by(60_000) {
         // Runtime admission precedes capturing evidence; final scan follows it.
-        archival::advance(&db, "i", &runtime(at)).unwrap();
-        let ticket = archival::observation_ticket(&db, "i", "s", &runtime(at))
-            .unwrap()
-            .unwrap();
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &runtime(at)).unwrap();
+        let ticket = archival::observation_ticket(
+            &db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            "s",
+            &runtime(at),
+        )
+        .unwrap()
+        .unwrap();
         archival::record_sample(
             &mut db,
             &ticket,
@@ -322,10 +335,15 @@ fn archival_idle_sampling_counts_a_plain_call_enrolled_binding() {
     joined_agent(&db);
     db.execute_batch("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',liveness='connected' WHERE seat_id='s'").unwrap();
     for at in (0..=3_600_000).step_by(60_000) {
-        archival::advance(&db, "i", &runtime(at)).unwrap();
-        let ticket = archival::observation_ticket(&db, "i", "s", &runtime(at))
-            .unwrap()
-            .expect("a connected top-level binding is sampled whatever its enrollment provenance");
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &runtime(at)).unwrap();
+        let ticket = archival::observation_ticket(
+            &db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            "s",
+            &runtime(at),
+        )
+        .unwrap()
+        .expect("a connected top-level binding is sampled whatever its enrollment provenance");
         archival::record_sample(
             &mut db,
             &ticket,
@@ -347,19 +365,21 @@ fn archival_current_structure_change_after_member_scan_invalidates_final_decisio
         joined_agent(&db);
         let mut rt = runtime(0);
         rt.after_ms = 60_000;
-        archival::advance(&db, "i", &rt).unwrap();
-        let ticket = archival::observation_ticket(&db, "i", "s", &rt)
-            .unwrap()
-            .unwrap();
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
+        let ticket =
+            archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
+                .unwrap()
+                .unwrap();
         archival::record_sample(&mut db, &ticket, &rt, &sample(0, HostUiState::Idle)).unwrap();
         rt.mono = 60_000;
         rt.utc = UtcMillis(60_000);
-        let ticket = archival::observation_ticket(&db, "i", "s", &rt)
-            .unwrap()
-            .unwrap();
+        let ticket =
+            archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
+                .unwrap()
+                .unwrap();
         archival::record_sample(&mut db, &ticket, &rt, &sample(60_000, HostUiState::Idle)).unwrap();
-        archival::advance(&db, "i", &rt).unwrap(); // capture certificate
-        archival::advance(&db, "i", &rt).unwrap(); // scan member
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap(); // capture certificate
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap(); // scan member
         assert_eq!(
             db.query_row(
                 "SELECT scan_phase FROM channel_archival WHERE thread_id='t'",
@@ -372,11 +392,11 @@ fn archival_current_structure_change_after_member_scan_invalidates_final_decisio
         if race == "current" {
             db.execute_batch("UPDATE observed_targets SET terminal_id='different',observation_sequence=99 WHERE target_id='p'").unwrap();
         } else {
-            db.execute_batch("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES('snap','i','b',1,100,'inc',0,'published',0,0,60000)").unwrap();
+            db.execute_batch("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES('snap','34750f98bd59fcfc946da45aaabe933b','b',1,100,'inc',0,'published',0,0,60000)").unwrap();
             if race == "matching_snapshot" {
                 db.execute_batch("UPDATE snapshot_generations SET expected_targets=1,staged_targets=1 WHERE id='snap'; INSERT INTO snapshot_targets(generation_id,target_id,terminal_id,generation,observation_sequence,connection_epoch,incarnation_source_kind,occupancy,ui_state,observed_at) VALUES('snap','p','term',0,100,1,'coherent_enumeration','unknown','unknown',60000)").unwrap();
             }
-            db.execute_batch("UPDATE host_instances SET active_snapshot_id='snap',observation_sequence=100 WHERE id='i'").unwrap();
+            db.execute_batch("UPDATE herdr_hosts SET active_snapshot_id='snap',observation_sequence=100 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'").unwrap();
         }
         tick(&mut db, &rt);
         assert_eq!(
@@ -459,10 +479,10 @@ fn channel_archival_production_store_admission_cancels_without_mutation() {
     );
 }
 fn preparation(db: &Connection, id: &str, status: &str) {
-    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES(?1,'i','seat:s',?1,zeroblob(32),'t',0,0,0,0,0,0,0,?2)",rusqlite::params![id,status]).unwrap();
+    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','seat:s',?1,zeroblob(32),'t',0,0,0,0,0,0,0,?2)",rusqlite::params![id,status]).unwrap();
 }
 fn ordinary(db: &Connection) {
-    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind) VALUES('m','i','t',1,'ordinary','s',1,'work',0,'native')").unwrap();
+    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind) VALUES('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','s',1,'work',0,'native')").unwrap();
 }
 #[test]
 fn archival_protected_occupants_and_work_remain_unchanged() {
@@ -500,7 +520,7 @@ fn archival_protected_occupants_and_work_remain_unchanged() {
                     .unwrap();
             }
             "held" => {
-                db.execute_batch("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','p','b',1,'repair')").unwrap();
+                db.execute_batch("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','p','b',1,'repair')").unwrap();
             }
             "unknown" => ui = HostUiState::Unknown,
             "draft" => ui = HostUiState::HumanInput,
@@ -509,9 +529,9 @@ fn archival_protected_occupants_and_work_remain_unchanged() {
             "invitation" | "requirement" => {
                 // The invitee is an active seat (a connected binding); a pending invitation to an
                 // inactive seat does not block (see the inactive-seat tests below).
-                db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('q','i','resolved','native','q',1,0,0); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('q',1,'q','b',1,'codex','qsession','00000000-0000-4000-8000-000000000002','cooperative_top_level',0,0); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('inv','t','q',1,'pending',1,0,300000,300000)").unwrap();
+                db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('q','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',1,0,0); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('q',1,'q','b',1,'codex','qsession','00000000-0000-4000-8000-000000000002','cooperative_top_level',0,0); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('inv','t','q',1,'pending',1,0,300000,300000)").unwrap();
                 if case == "requirement" {
-                    db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES('service','i',0); UPDATE threads SET managed_owner_author_id='service'; INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES('req','t','q','service','inv','pending',1,0)").unwrap();
+                    db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES('service','34750f98bd59fcfc946da45aaabe933b',0); UPDATE threads SET managed_owner_author_id='service'; INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES('req','t','q','service','inv','pending',1,0)").unwrap();
                 }
             }
             "physical_receipt" => {
@@ -521,20 +541,20 @@ fn archival_protected_occupants_and_work_remain_unchanged() {
             "logical_receipt" => {
                 ordinary(&db);
                 preparation(&db, "prep", "sealed");
-                db.execute_batch("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('prep','t','s',1,300000,1); INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep','m','i','t',1,0,1,0,1,0)").unwrap();
+                db.execute_batch("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('prep','t','s',1,300000,1); INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep','m','34750f98bd59fcfc946da45aaabe933b','t',1,0,1,0,1,0)").unwrap();
             }
             "preparation" => preparation(&db, "prep", "building"),
             "service_preparation" => {
-                db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES('service','i',0); INSERT INTO service_notification_preparations(id,instance_id,author_id,operation_key,digest,thread_id,membership_revision,lifecycle_revision,interval_high_water,requirement_high_water,status) VALUES('prep','i','service','op',zeroblob(32),'t',0,0,0,0,'building')").unwrap();
+                db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES('service','34750f98bd59fcfc946da45aaabe933b',0); INSERT INTO service_notification_preparations(id,instance_id,author_id,operation_key,digest,thread_id,membership_revision,lifecycle_revision,interval_high_water,requirement_high_water,status) VALUES('prep','34750f98bd59fcfc946da45aaabe933b','service','op',zeroblob(32),'t',0,0,0,0,'building')").unwrap();
             }
             "catchup" => {
                 db.execute_batch("INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) SELECT binding_id,'s','t',0,0,'active' FROM occupant_bindings WHERE seat_id='s'").unwrap();
             }
             "summary_lease" => {
-                db.execute_batch("INSERT INTO summary_jobs(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,lease_seat_id,lease_token,lease_until,created_at) VALUES('job','i','t','v1',0,0,1,2,'s','token',300000,0)").unwrap();
+                db.execute_batch("INSERT INTO summary_jobs(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,lease_seat_id,lease_token,lease_until,created_at) VALUES('job','34750f98bd59fcfc946da45aaabe933b','t','v1',0,0,1,2,'s','token',300000,0)").unwrap();
             }
             "managed" => {
-                db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES('service','i',0); UPDATE threads SET managed_owner_author_id='service'").unwrap();
+                db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES('service','34750f98bd59fcfc946da45aaabe933b',0); UPDATE threads SET managed_owner_author_id='service'").unwrap();
             }
             "live_handoff" => {
                 let tx = db.transaction().unwrap();
@@ -552,8 +572,11 @@ fn archival_protected_occupants_and_work_remain_unchanged() {
         for at in [0, 60_000, 120_000] {
             let mut rt = runtime(at);
             rt.after_ms = 60_000;
-            archival::advance(&db, "i", &rt).unwrap();
-            if let Some(ticket) = archival::observation_ticket(&db, "i", "s", &rt).unwrap() {
+            archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
+            if let Some(ticket) =
+                archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
+                    .unwrap()
+            {
                 archival::record_sample(&mut db, &ticket, &rt, &sample(at, ui)).unwrap();
             }
             tick(&mut db, &rt);
@@ -615,7 +638,7 @@ fn archival_preparation_history_pages_have_flat_vm_cost_and_never_imply_exhausti
         db.execute_batch("COMMIT").unwrap();
         let mut rt = runtime(0);
         rt.after_ms = 60_000;
-        archival::advance(&db, "i", &rt).unwrap();
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
         rt.mono = 60_000;
         rt.utc = UtcMillis(60_000);
         for _ in 0..8 {
@@ -629,7 +652,7 @@ fn archival_preparation_history_pages_have_flat_vm_cost_and_never_imply_exhausti
             if phase == 3 {
                 break;
             }
-            archival::advance(&db, "i", &rt).unwrap();
+            archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
         }
         assert_eq!(
             db.query_row(
@@ -641,7 +664,9 @@ fn archival_preparation_history_pages_have_flat_vm_cost_and_never_imply_exhausti
             3
         );
         let counter = CostCounter::default();
-        let progress = count_vm_units(&db, &counter, || archival::advance(&db, "i", &rt).unwrap());
+        let progress = count_vm_units(&db, &counter, || {
+            archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap()
+        });
         assert_eq!(progress.visited, archival::PAGE);
         assert!(progress.has_more);
         assert!(!archived(&db));
@@ -666,15 +691,15 @@ fn archival_delayed_sample_cannot_erase_accountable_activity_or_count_duplicates
     thread(&db);
     joined_agent(&db);
     let rt = runtime(0);
-    archival::advance(&db, "i", &rt).unwrap();
-    let ticket = archival::observation_ticket(&db, "i", "s", &rt)
+    archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
+    let ticket = archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
         .unwrap()
         .unwrap();
     db.execute_batch("INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES('seat:s','accepted-action',zeroblob(32),'{}',0)").unwrap();
     assert!(
         !archival::record_sample(&mut db, &ticket, &rt, &sample(0, HostUiState::Idle)).unwrap()
     );
-    let fresh = archival::observation_ticket(&db, "i", "s", &rt)
+    let fresh = archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
         .unwrap()
         .unwrap();
     assert!(archival::record_sample(&mut db, &fresh, &rt, &sample(0, HostUiState::Idle)).unwrap());
@@ -698,16 +723,16 @@ fn archival_restart_accepts_new_producer_order_then_requires_fresh_grace() {
     joined_agent(&db);
     let mut rt = runtime(0);
     rt.after_ms = 60_000;
-    archival::advance(&db, "i", &rt).unwrap();
-    let old = archival::observation_ticket(&db, "i", "s", &rt)
+    archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
+    let old = archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
         .unwrap()
         .unwrap();
     let mut observation = sample(0, HostUiState::Idle);
     observation.0.observation_sequence = 1_000_000;
     assert!(archival::record_sample(&mut db, &old, &rt, &observation).unwrap());
     rt.boot = "restarted".into();
-    archival::advance(&db, "i", &rt).unwrap();
-    let new = archival::observation_ticket(&db, "i", "s", &rt)
+    archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
+    let new = archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
         .unwrap()
         .unwrap();
     observation.0.observation_sequence = 2;
@@ -743,15 +768,16 @@ fn archival_recurring_observation_work_excludes_retained_inactive_history() {
         thread(&db);
         joined_agent(&db);
         for n in 0..size {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at) VALUES(?1,'i',?2,'native',1,0,CASE WHEN ?2='retired' THEN 0 END)",rusqlite::params![format!("a{n:08}"),if n%2==0 {"retired"}else{"unresolved"}]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b',?2,'native',1,0,CASE WHEN ?2='retired' THEN 0 END)",rusqlite::params![format!("a{n:08}"),if n%2==0 {"retired"}else{"unresolved"}]).unwrap();
         }
         let rt = runtime(0);
         for _ in 0..size / archival::PAGE + 3 {
-            archival::advance(&db, "i", &rt).unwrap();
+            archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
         }
         // Initial discovery may visit each retained row once. Drain bounded pages.
         for _ in 0..size / archival::PAGE + 3 {
-            let _ = archival::next_observation(&db, "i", &rt).unwrap();
+            let _ =
+                archival::next_observation(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
         }
         // Retired seats may retain the last sampled target. New target evidence
         // must not requeue that history on every observer publication.
@@ -765,7 +791,7 @@ fn archival_recurring_observation_work_excludes_retained_inactive_history() {
         let counter = CostCounter::default();
         let ticket = count_vm_units(&db, &counter, || {
             db.execute_batch("UPDATE observed_targets SET ui_state='human_input'; UPDATE observed_targets SET ui_state='idle'").unwrap();
-            archival::next_observation(&db, "i", &rt).unwrap()
+            archival::next_observation(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap()
         });
         assert_eq!(ticket.as_ref().map(|t| t.seat()), Some("s"));
         assert!(
@@ -774,13 +800,13 @@ fn archival_recurring_observation_work_excludes_retained_inactive_history() {
         );
         let due = db
             .query_row(
-                "SELECT count(*) FROM seat_archival WHERE instance_id='i' AND next_mono<=60000",
+                "SELECT count(*) FROM seat_archival WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND next_mono<=60000",
                 [],
                 |r| r.get::<_, i64>(0),
             )
             .unwrap();
         assert_eq!(due, 0, "only the eligible seat was due");
-        let plan=db.prepare("EXPLAIN QUERY PLAN SELECT seat_id FROM seat_archival WHERE instance_id='i' AND next_mono<=60000 ORDER BY next_mono,seat_id LIMIT 32").unwrap().query_map([],|r|r.get::<_,String>(3)).unwrap().collect::<Result<Vec<_>,_>>().unwrap().join("; ");
+        let plan=db.prepare("EXPLAIN QUERY PLAN SELECT seat_id FROM seat_archival WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND next_mono<=60000 ORDER BY next_mono,seat_id LIMIT 32").unwrap().query_map([],|r|r.get::<_,String>(3)).unwrap().collect::<Result<Vec<_>,_>>().unwrap().join("; ");
         assert!(plan.contains("seat_archival_due"), "{plan}");
         assert!(!plan.contains("TEMP B-TREE"), "{plan}");
         counter.units()
@@ -800,7 +826,7 @@ fn archival_parked_seat_requeues_after_canonical_membership_binding_and_state_ch
     thread(&db);
     joined_agent(&db);
     let rt = runtime(0);
-    archival::advance(&db, "i", &rt).unwrap();
+    archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
     for (deactivate, reactivate) in [
         (
             "UPDATE memberships SET state='left'",
@@ -816,7 +842,11 @@ fn archival_parked_seat_requeues_after_canonical_membership_binding_and_state_ch
         ),
     ] {
         db.execute_batch(deactivate).unwrap();
-        assert!(archival::next_observation(&db, "i", &rt).unwrap().is_none());
+        assert!(
+            archival::next_observation(&db, "34750f98bd59fcfc946da45aaabe933b", &rt)
+                .unwrap()
+                .is_none()
+        );
         assert!(
             db.query_row(
                 "SELECT next_mono IS NULL FROM seat_archival WHERE seat_id='s'",
@@ -827,7 +857,7 @@ fn archival_parked_seat_requeues_after_canonical_membership_binding_and_state_ch
         );
         db.execute_batch(reactivate).unwrap();
         assert_eq!(
-            archival::next_observation(&db, "i", &rt)
+            archival::next_observation(&db, "34750f98bd59fcfc946da45aaabe933b", &rt)
                 .unwrap()
                 .unwrap()
                 .seat(),
@@ -843,8 +873,8 @@ fn archival_connection_epoch_change_accepts_new_order_but_rejects_delayed_old_ep
     thread(&db);
     joined_agent(&db);
     let mut rt = runtime(0);
-    archival::advance(&db, "i", &rt).unwrap();
-    let ticket = archival::observation_ticket(&db, "i", "s", &rt)
+    archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
+    let ticket = archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
         .unwrap()
         .unwrap();
     let mut observation = sample(0, HostUiState::Idle);
@@ -1088,15 +1118,15 @@ mod archival_actual_producer_base_fixture {
             "ordinary read cannot prove idle"
         );
         db.execute(
-            "UPDATE host_instances SET host_boot=?1,host_epoch=?2 WHERE id='i'",
+            "UPDATE herdr_hosts SET host_boot=?1,host_epoch=?2 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             params![proof.host_boot().as_str(), proof.host_epoch() as i64],
         )
         .unwrap();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','i','resolved','native',?1,1,?2,0)",
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,?2,0)",
             params![proof.target().as_str(), proof.target_generation() as i64]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('s',1,?1,?2,?3,?4,'session','00000000-0000-4000-8000-000000000001','cooperative_top_level',1000,1000)",
             params![proof.target().as_str(), proof.host_boot().as_str(), proof.host_epoch() as i64, harness]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES('i',?1,?2,?3,?4,?5,'fresh',1000,?6,?7,'native_current_target',?8,'unknown')",
+        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES('34750f98bd59fcfc946da45aaabe933b',?1,?2,?3,?4,?5,'fresh',1000,?6,?7,'native_current_target',?8,'unknown')",
             params![proof.target().as_str(), proof.host_boot().as_str(), proof.host_epoch() as i64,
                 proof.target_generation() as i64, observation.observation_sequence as i64,
                 proof.terminal().as_str(), proof.incarnation(), proof.connection_epoch() as i64]).unwrap();
@@ -1138,12 +1168,13 @@ mod archival_actual_producer_base_fixture {
         };
         super::tick(&mut db, &rt); // Actual advance initializes runtime and seat certificate rows.
         assert!(!super::archived(&db), "fresh joined channel cannot archive");
-        let captured: (String, i64, i64) = db.query_row("SELECT ai.runtime_boot,ai.evidence_epoch,a.activity_revision FROM archival_instances ai JOIN seat_archival a ON a.instance_id=ai.instance_id WHERE ai.instance_id='i' AND a.seat_id='s'", [],
+        let captured: (String, i64, i64) = db.query_row("SELECT ai.runtime_boot,ai.evidence_epoch,a.activity_revision FROM archival_instances ai JOIN seat_archival a ON a.instance_id=ai.instance_id WHERE ai.instance_id='34750f98bd59fcfc946da45aaabe933b' AND a.seat_id='s'", [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
         assert_eq!(captured.0, rt.boot);
-        let ticket = archival::observation_ticket(&db, "i", "s", &rt)
-            .unwrap()
-            .expect("prerequisite: canonical registered cooperative C/C ticket exists");
+        let ticket =
+            archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
+                .unwrap()
+                .expect("prerequisite: canonical registered cooperative C/C ticket exists");
         assert_eq!(ticket.target(), &target);
         assert_eq!(ticket.seat(), "s");
         let sample = cli
@@ -1176,9 +1207,13 @@ mod archival_actual_producer_base_fixture {
         let proof = observed
             .verified_structural_proof()
             .expect("prerequisite: actual archival structural proof");
-        let current = effective::effective_observation(&db, "i", target.as_str())
-            .unwrap()
-            .unwrap();
+        let current = effective::effective_observation(
+            &db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            target.as_str(),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(proof.target().as_str(), current.target_id);
         assert_eq!(proof.host_boot().as_str(), current.host_boot);
         assert_eq!(proof.host_epoch() as i64, current.epoch);
@@ -1195,7 +1230,7 @@ mod archival_actual_producer_base_fixture {
         assert_eq!(proof.connection_epoch(), cli.epoch());
         assert!(observed.completed_at_mono.0 <= rt.mono as u64);
         assert!(observed.started_at_mono.0 >= rt.mono.saturating_sub(5_000).max(0) as u64);
-        let deciding: (String, i64, i64) = db.query_row("SELECT ai.runtime_boot,ai.evidence_epoch,a.activity_revision FROM archival_instances ai JOIN seat_archival a ON a.instance_id=ai.instance_id WHERE ai.instance_id='i' AND a.seat_id='s'", [],
+        let deciding: (String, i64, i64) = db.query_row("SELECT ai.runtime_boot,ai.evidence_epoch,a.activity_revision FROM archival_instances ai JOIN seat_archival a ON a.instance_id=ai.instance_id WHERE ai.instance_id='34750f98bd59fcfc946da45aaabe933b' AND a.seat_id='s'", [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
         assert_eq!(
             captured, deciding,
@@ -1226,10 +1261,10 @@ mod archival_actual_producer_base_fixture {
         ["seats","occupant_bindings","memberships","membership_intervals","receipts","receipt_state",
          "invitations","invitation_rejections","invitation_cancellations","requirement_episodes",
          "send_preparations","prepared_recipients","prepared_unavailable_warnings","send_manifests",
-         "service_notification_preparations","catch_up","summary_jobs","channel_handoff_fences","host_instances"]
+         "service_notification_preparations","catch_up","summary_jobs","channel_handoff_fences","herdr_hosts","local_node"]
         .into_iter().map(|table| {
-            let projection=if table=="host_instances" {
-                let mut fields=db.prepare("SELECT name FROM pragma_table_info('host_instances') WHERE name<>'decision_seq' ORDER BY cid").unwrap();
+            let projection=if table=="local_node" {
+                let mut fields=db.prepare("SELECT name FROM pragma_table_info('local_node') WHERE name<>'decision_seq' ORDER BY cid").unwrap();
                 fields.query_map([],|r|r.get::<_,String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap().join(",")
             } else { "*".into() };
             let mut st=db.prepare(&format!("SELECT {projection} FROM {table} ORDER BY rowid")).unwrap();let n=st.column_count();
@@ -1328,8 +1363,9 @@ mod archival_actual_producer_base_fixture {
                 valid_until_mono: None,
                 legacy_source: Some("covered-source".into()),
             };
-            injected::advance(&db, "i", &rt, r).unwrap();
-            let ticket = injected::ticket(&db, "i", "s", &rt, r).unwrap();
+            injected::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt, r).unwrap();
+            let ticket =
+                injected::ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt, r).unwrap();
             let sample = cli
                 .observe_current_target_for_archival(&target, &context)
                 .unwrap();
@@ -1454,7 +1490,7 @@ mod archival_actual_producer_base_fixture {
             let authority = complete_authority(&db);
             let before_decision: i64 = db
                 .query_row(
-                    "SELECT decision_seq FROM host_instances WHERE id='i'",
+                    "SELECT decision_seq FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
                     [],
                     |r| r.get(0),
                 )
@@ -1471,8 +1507,10 @@ mod archival_actual_producer_base_fixture {
                     valid_until_mono: None,
                     legacy_source: Some("covered-source".into()),
                 };
-                injected::advance(&db, "i", &rt, r).unwrap();
-                let ticket = injected::ticket(&db, "i", "s", &rt, r).unwrap().unwrap();
+                injected::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt, r).unwrap();
+                let ticket = injected::ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt, r)
+                    .unwrap()
+                    .unwrap();
                 let sample = cli
                     .observe_current_target_for_archival(
                         &target,
@@ -1491,7 +1529,10 @@ mod archival_actual_producer_base_fixture {
                     "real unchanged {binding} envelope at {at}"
                 );
                 for _ in 0..20 {
-                    if !injected::advance(&db, "i", &rt, r).unwrap().has_more {
+                    if !injected::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt, r)
+                        .unwrap()
+                        .has_more
+                    {
                         break;
                     }
                 }
@@ -1523,7 +1564,7 @@ mod archival_actual_producer_base_fixture {
             );
             assert_eq!(
                 db.query_row(
-                    "SELECT decision_seq FROM host_instances WHERE id='i'",
+                    "SELECT decision_seq FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
                     [],
                     |r| r.get::<_, i64>(0)
                 )
@@ -1687,9 +1728,10 @@ mod archival_actual_producer_base_fixture {
                 legacy_source: Some("covered-source".into()),
             };
             super::tick(&mut db, &rt);
-            let ticket = archival::observation_ticket(&db, "i", "s", &rt)
-                .unwrap()
-                .unwrap();
+            let ticket =
+                archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
+                    .unwrap()
+                    .unwrap();
             let sample = cli
                 .observe_current_target_for_archival(&target, &ticket.host_context(context.budget))
                 .unwrap();
@@ -1768,20 +1810,22 @@ fn archival_registry_scaffold_builtin_semantics_are_equal() {
     let rt = runtime(0);
     let r = registry::builtins();
     assert_eq!(
-        archival::advance(&a, "i", &rt).unwrap(),
-        injected::advance(&b, "i", &rt, r).unwrap()
+        archival::advance(&a, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap(),
+        injected::advance(&b, "34750f98bd59fcfc946da45aaabe933b", &rt, r).unwrap()
     );
-    let ta = archival::observation_ticket(&a, "i", "s", &rt)
+    let ta = archival::observation_ticket(&a, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
         .unwrap()
         .unwrap();
-    let tb = injected::ticket(&b, "i", "s", &rt, r).unwrap().unwrap();
+    let tb = injected::ticket(&b, "34750f98bd59fcfc946da45aaabe933b", "s", &rt, r)
+        .unwrap()
+        .unwrap();
     assert_eq!((ta.target(), ta.seat()), (tb.target(), tb.seat()));
     assert_eq!(
         archival::record_sample(&mut a, &ta, &rt, &sample(0, HostUiState::Idle)).unwrap(),
         injected::sample(&b, &tb, &rt, &sample(0, HostUiState::Idle), r).unwrap()
     );
-    let na = archival::next_observation(&a, "i", &rt).unwrap();
-    let nb = injected::next(&b, "i", &rt, r).unwrap();
+    let na = archival::next_observation(&a, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
+    let nb = injected::next(&b, "34750f98bd59fcfc946da45aaabe933b", &rt, r).unwrap();
     assert_eq!(
         na.as_ref().map(|t| (t.target(), t.seat())),
         nb.as_ref().map(|t| (t.target(), t.seat()))
@@ -1835,9 +1879,9 @@ fn registered_composer_archival_ticket_and_scheduler_preserve_identity() {
             .composer_policy()
             .is_some()
     );
-    injected::advance(&db, "i", &rt, r).unwrap();
-    let ticket = injected::ticket(&db, "i", "s", &rt, r).unwrap();
-    let scheduled = injected::next(&db, "i", &rt, r).unwrap();
+    injected::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt, r).unwrap();
+    let ticket = injected::ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt, r).unwrap();
+    let scheduled = injected::next(&db, "34750f98bd59fcfc946da45aaabe933b", &rt, r).unwrap();
     let next: Option<i64> = db
         .query_row(
             "SELECT next_mono FROM seat_archival WHERE seat_id='s'",
@@ -1899,10 +1943,11 @@ fn archival_registered_binding_and_composer_evidence_neighbors_refuse() {
         joined_agent(&db);
         ordinary(&db);
         let rt = runtime(0);
-        archival::advance(&db, "i", &rt).unwrap();
-        let ticket = archival::observation_ticket(&db, "i", "s", &rt)
-            .unwrap()
-            .unwrap();
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
+        let ticket =
+            archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
+                .unwrap()
+                .unwrap();
         let mut value = sample(0, HostUiState::Idle);
         match bad {
             "no evidence" => value.1 = None,
@@ -1936,7 +1981,7 @@ fn archival_registered_binding_and_composer_evidence_neighbors_refuse() {
                 .unwrap();
             }
             "held" => {
-                db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','p','b',1,'fixture hold')",[]).unwrap();
+                db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','p','b',1,'fixture hold')",[]).unwrap();
             }
             "unresolved" => {
                 db.execute("UPDATE seats SET state='unresolved'", [])
@@ -1987,13 +2032,17 @@ fn archival_registered_binding_and_composer_evidence_neighbors_refuse() {
         db.execute("UPDATE occupant_bindings SET harness=?1", [absent])
             .unwrap();
         let rt = runtime(0);
-        archival::advance(&db, "i", &rt).unwrap();
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
         assert!(
-            archival::observation_ticket(&db, "i", "s", &rt)
+            archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
                 .unwrap()
                 .is_none()
         );
-        assert!(archival::next_observation(&db, "i", &rt).unwrap().is_none());
+        assert!(
+            archival::next_observation(&db, "34750f98bd59fcfc946da45aaabe933b", &rt)
+                .unwrap()
+                .is_none()
+        );
     }
     // The same overlay identity is eligible only with its optional provider.
     assert!(
@@ -2016,8 +2065,8 @@ fn archival_stale_sample_harness_cannot_pass_final_member_scan() {
     for at in [0, 60000] {
         rt.mono = at;
         rt.utc = UtcMillis(at);
-        archival::advance(&db, "i", &rt).unwrap();
-        let t = archival::observation_ticket(&db, "i", "s", &rt)
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
+        let t = archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
             .unwrap()
             .unwrap();
         assert!(archival::record_sample(&mut db, &t, &rt, &sample(at, HostUiState::Idle)).unwrap());
@@ -2071,9 +2120,15 @@ fn archival_registered_alias_family_canonical_sample() {
         )
         .unwrap();
         let rt = runtime(0);
-        injected::advance(&db, "i", &rt, r).unwrap();
-        let ticket = injected::ticket(&db, "i", "s", &rt, r).unwrap().unwrap();
-        assert!(injected::next(&db, "i", &rt, r).unwrap().is_some());
+        injected::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt, r).unwrap();
+        let ticket = injected::ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt, r)
+            .unwrap()
+            .unwrap();
+        assert!(
+            injected::next(&db, "34750f98bd59fcfc946da45aaabe933b", &rt, r)
+                .unwrap()
+                .is_some()
+        );
         let mut value = sample(0, HostUiState::Idle);
         let e = value.1.as_mut().unwrap();
         e.parser = if wrong_parser {
@@ -2104,25 +2159,28 @@ fn archival_registered_alias_family_canonical_sample() {
 fn archival_startup_waits_for_canonical_host_instance() {
     let db = Connection::open_in_memory().unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    schema::initialize(
+        &db,
+        || UtcMillis(0),
+        &herdr_threads::test_support::test_node_seed(),
+    )
+    .unwrap();
+    herdr_threads::test_support::bind_test_host(&db);
     let mut rt = runtime(0);
     rt.coherent = false;
     assert_eq!(
-        archival::advance(&db, "i", &rt).unwrap(),
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap(),
         archival::Progress::default()
     );
     let count: i64 = db
         .query_row("SELECT count(*) FROM archival_instances", [], |r| r.get(0))
         .unwrap();
     assert_eq!(count, 0, "archival cannot manufacture canonical host state");
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES('i',0)",
-        [],
-    )
-    .unwrap();
+    // Canonical host admission: the attached host's row appears.
+    herdr_threads::test_support::attach_test_host_to_connection(&db);
     thread(&db);
     assert!(
-        archival::advance(&db, "i", &rt)
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt)
             .unwrap()
             .archived
             .is_empty()
@@ -2141,7 +2199,13 @@ fn archival_registered_decision_waits_for_canonical_host_instance() {
     };
     let db = Connection::open_in_memory().unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    schema::initialize(
+        &db,
+        || UtcMillis(0),
+        &herdr_threads::test_support::test_node_seed(),
+    )
+    .unwrap();
+    herdr_threads::test_support::bind_test_host(&db);
     let r = injected::registry();
     assert!(
         r.by_host_kind("synthetic_fourth_alias")
@@ -2152,7 +2216,9 @@ fn archival_registered_decision_waits_for_canonical_host_instance() {
     let mut rt = runtime(0);
     rt.mono = -1;
     assert_eq!(
-        injected::advance(&db, "i", &rt, r).unwrap_err().code,
+        injected::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt, r)
+            .unwrap_err()
+            .code,
         ErrorCode::InvalidRequest,
         "timing validation still precedes missing-host refusal"
     );
@@ -2160,11 +2226,11 @@ fn archival_registered_decision_waits_for_canonical_host_instance() {
     // This helper calls advance_in_with_registry directly, bypassing the
     // builtin advance_in wrapper. A wrapper-only guard cannot satisfy it.
     assert_eq!(
-        injected::advance(&db, "i", &rt, r).unwrap(),
+        injected::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt, r).unwrap(),
         archival::Progress::default()
     );
     for table in [
-        "host_instances",
+        "herdr_hosts",
         "archival_instances",
         "channel_archival",
         "seat_archival",
@@ -2179,11 +2245,8 @@ fn archival_registered_decision_waits_for_canonical_host_instance() {
             "direct registered decision must not synthesize {table} before host admission"
         );
     }
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES('i',0)",
-        [],
-    )
-    .unwrap();
+    // Canonical host admission: the attached host's row appears.
+    herdr_threads::test_support::attach_test_host_to_connection(&db);
     thread(&db);
     joined_agent(&db);
     ordinary(&db);
@@ -2193,7 +2256,7 @@ fn archival_registered_decision_waits_for_canonical_host_instance() {
     )
     .unwrap();
     assert!(
-        injected::advance(&db, "i", &rt, r)
+        injected::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt, r)
             .unwrap()
             .archived
             .is_empty()
@@ -2206,7 +2269,11 @@ fn archival_registered_decision_waits_for_canonical_host_instance() {
         1,
         "canonical admission permits the ordinary registered retry"
     );
-    assert!(injected::ticket(&db, "i", "s", &rt, r).unwrap().is_some());
+    assert!(
+        injected::ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt, r)
+            .unwrap()
+            .is_some()
+    );
     assert!(!archived(&db));
 }
 
@@ -2226,7 +2293,7 @@ fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
             path.clone(),
             std::sync::Arc::new(herdr_threads::app::SystemClock::default()),
         ),
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap();
@@ -2261,7 +2328,7 @@ fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
     assert!(next.ticket.is_none());
     assert!(!next.has_more);
     assert_eq!(
-        db.query_row("SELECT count(*) FROM host_instances", [], |r| r
+        db.query_row("SELECT count(*) FROM herdr_hosts", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         0
@@ -2272,11 +2339,11 @@ fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
             .unwrap(),
         0
     );
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES('i',0)",
-        [],
-    )
-    .unwrap();
+    // Canonical host admission: the host attaches and its row appears.
+    store
+        .context()
+        .attach_host(herdr_threads::test_support::TEST_HOST_ENDPOINT)
+        .unwrap();
     thread(&db);
     assert!(
         store
@@ -2349,8 +2416,10 @@ fn a_connected_busy_member_still_blocks() {
     joined_agent(&db);
     for at in (0..=3_720_000).step_by(60_000) {
         let rt = runtime(at);
-        archival::advance(&db, "i", &rt).unwrap();
-        if let Some(ticket) = archival::observation_ticket(&db, "i", "s", &rt).unwrap() {
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
+        if let Some(ticket) =
+            archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt).unwrap()
+        {
             archival::record_sample(&mut db, &ticket, &rt, &sample(at, HostUiState::ActiveTurn))
                 .unwrap();
         }
@@ -2385,7 +2454,7 @@ fn retired_and_unresolved_member_seats_do_not_block() {
 fn pending_invitation_to_an_inactive_seat_does_not_block() {
     let mut db = fixture();
     thread(&db);
-    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('q','i','resolved','native','q',1,0,0); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('inv','t','q',1,'pending',1,0,300000,300000)").unwrap();
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('q','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',1,0,0); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('inv','t','q',1,'pending',1,0,300000,300000)").unwrap();
     assert_eq!(
         archived_at(&mut db, 3_600_000),
         Some(3_600_000),
@@ -2456,7 +2525,7 @@ fn human_seat_with_a_live_pane_blocks_like_an_active_member() {
 
 fn mutation_revision(db: &Connection) -> i64 {
     db.query_row(
-        "SELECT mutation_revision FROM archival_instances WHERE instance_id='i'",
+        "SELECT mutation_revision FROM archival_instances WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
         |r| r.get(0),
     )
@@ -2465,7 +2534,7 @@ fn mutation_revision(db: &Connection) -> i64 {
 fn scan_scope_fixture() -> Connection {
     let db = fixture();
     db.execute_batch(
-        "INSERT INTO archival_instances(instance_id,runtime_boot) VALUES('i','boot');",
+        "INSERT INTO archival_instances(instance_id,runtime_boot) VALUES('34750f98bd59fcfc946da45aaabe933b','boot');",
     )
     .unwrap();
     thread(&db);
@@ -2476,7 +2545,7 @@ fn scan_scope_fixture() -> Connection {
 #[test]
 fn unrelated_seat_and_binding_writes_do_not_bump_the_mutation_revision() {
     let db = scan_scope_fixture();
-    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('z','i','resolved','native','z',1,0,0);").unwrap();
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('z','34750f98bd59fcfc946da45aaabe933b','resolved','native','z',1,0,0);").unwrap();
     let before = mutation_revision(&db);
     for (what, sql) in [
         (
@@ -2509,7 +2578,7 @@ fn unrelated_seat_and_binding_writes_do_not_bump_the_mutation_revision() {
         ),
         (
             "new seat",
-            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('y','i','resolved','native','y',1,0,0)",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('y','34750f98bd59fcfc946da45aaabe933b','resolved','native','y',1,0,0)",
         ),
     ] {
         db.execute_batch(sql).unwrap();
@@ -2527,7 +2596,7 @@ fn membership_and_liveness_changes_bump_it() {
     for (what, sql) in [
         (
             "membership insert",
-            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('m','i','resolved','native','m',1,0,0); INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('t','m','joined',0)",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('m','34750f98bd59fcfc946da45aaabe933b','resolved','native','m',1,0,0); INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('t','m','joined',0)",
         ),
         (
             "binding disconnect",

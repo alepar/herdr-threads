@@ -266,7 +266,7 @@ fn topology_composition_confirmed_creation_never_bypasses_fresh_restore_or_owner
         let guard = attachment_guard(&store, &observation, &budget, &a.resolve_operation, 3);
         match changed {
             "hold" => {
-                db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','w1:p2',?1,1,'held')", [a.created.host_incarnation.as_str()]).unwrap();
+                db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','w1:p2',?1,1,'held')", [a.created.host_incarnation.as_str()]).unwrap();
             }
             "stale" => {
                 let _ = attachment_guard(&store, &observation, &budget, &a.resolve_operation, 4);

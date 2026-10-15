@@ -23,22 +23,21 @@ impl Clock for TestClock {
 
 fn setup() -> (StoreContext, Connection) {
     let path = std::env::temp_dir().join(format!("wake-on-test-{}.db", uuid::Uuid::new_v4()));
-    let context = StoreContext::new(path, Arc::new(TestClock));
+    let context = StoreContext::new(path, Arc::new(TestClock)).with_test_host();
     let conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
-        [],
+    conn.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
     )
     .unwrap();
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('s','i','resolved','native','ps',1,1,0,1)", []).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','ps','b',1,1,0,'fresh','term-ps','inc','coherent_enumeration',1)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','ps',1,1,0,1)", []).unwrap();
+    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','ps','b',1,1,0,'fresh','term-ps','inc','coherent_enumeration',1)", []).unwrap();
     conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,'ps','b',1,1,'claude','ns','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',0,'term-ps','inc')", []).unwrap();
     (context, conn)
 }
 
 fn claim(role: CallerRole, generation: u64) -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: generation,
         role,
@@ -242,7 +241,13 @@ fn a_database_missing_a_wake_on_column_is_incompatible() {
     conn.execute_batch("ALTER TABLE seats DROP COLUMN wake_on")
         .unwrap();
     assert_eq!(
-        schema::initialize(&conn, || UtcMillis(0)).unwrap_err().code,
+        schema::initialize(
+            &conn,
+            || UtcMillis(0),
+            &crate::test_support::test_node_seed()
+        )
+        .unwrap_err()
+        .code,
         ErrorCode::IncompatibleSchema
     );
 }

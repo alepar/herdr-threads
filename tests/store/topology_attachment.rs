@@ -82,7 +82,7 @@ fn deciding_create_attaches_exact_new_thread_to_both_fences() {
     topology_handoff::attach_created(
         &tx,
         &namespace(),
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         "seat:s",
         "unrelated",
         &ThreadId::new("t"),
@@ -114,7 +114,7 @@ fn deciding_create_attaches_exact_new_thread_to_both_fences() {
     topology_handoff::attach_created(
         &tx,
         &namespace(),
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         "seat:s",
         "create",
         &ThreadId::new("t"),
@@ -165,7 +165,10 @@ fn existing_thread_bootstrap_vetoes_archival_before_topology_effects() {
             legacy_source: Some("covered".into()),
         };
         for _ in 0..20 {
-            if !archival::advance(&db, "i", &rt).unwrap().has_more {
+            if !archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt)
+                .unwrap()
+                .has_more
+            {
                 break;
             }
         }
@@ -311,7 +314,7 @@ fn new_thread_completion_preserves_original_child_none_through_create_and_replay
     topology_handoff::attach_created(
         &tx,
         &namespace(),
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         "seat:s",
         "create",
         &ThreadId::new("t"),
@@ -468,12 +471,21 @@ fn foreign_selected_namespace_and_bare_begin_create_refuse_even_only_copied_inst
     foreign.state_dir = "/foreign".into();
     assert!(handoff::begin_pending(&tx, &a.handoff, UtcMillis(2)).is_err());
     assert!(handoff::begin_linked_pending(&tx, &foreign, &a.handoff, UtcMillis(2)).is_err());
-    assert!(handoff::attach_created(&tx, "i", "seat:s", "create", &ThreadId::new("t")).is_err());
+    assert!(
+        handoff::attach_created(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            "seat:s",
+            "create",
+            &ThreadId::new("t")
+        )
+        .is_err()
+    );
     assert!(
         topology_handoff::attach_created(
             &tx,
             &foreign,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             "seat:s",
             "create",
             &ThreadId::new("t")

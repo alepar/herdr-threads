@@ -2,7 +2,7 @@
 //!
 //! The 5 s observation lane republishes the host namespace even when nothing
 //! changed. A publication that changes no send eligibility must not bump
-//! `host_instances.send_eligibility_revision` (shared contract amendment §8:
+//! `local_node.send_eligibility_revision` (shared contract amendment §8:
 //! "A new evidence observation that changes no eligibility/proof/binding does
 //! not require a bump"; "A stable finite snapshot remains resumable"), or every
 //! send whose preparation spans one is refused with "send preparation snapshot
@@ -152,7 +152,9 @@ fn publish_from(
 ) -> crate::ports::PublishedSnapshot {
     let context = staging;
     let budget = budget();
-    let admission = seats::begin_host_observation(context, conn, "i", &budget).unwrap();
+    let admission =
+        seats::begin_host_observation(context, conn, "34750f98bd59fcfc946da45aaabe933b", &budget)
+            .unwrap();
     let snapshot = host_snapshot(capture, sequence);
     let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
     let stage = seats::begin_snapshot_stage(context, conn, header, &budget).unwrap();
@@ -178,7 +180,7 @@ fn publish_from(
 
 fn revision(conn: &Connection) -> i64 {
     conn.query_row(
-        "SELECT send_eligibility_revision FROM host_instances WHERE id='i'",
+        "SELECT send_eligibility_revision FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
         |r| r.get(0),
     )
@@ -186,11 +188,10 @@ fn revision(conn: &Connection) -> i64 {
 }
 
 fn host_store(iso: &TestIsolation) -> (StoreContext, Connection) {
-    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
     let conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
-        [],
+    conn.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
     )
     .unwrap();
     (context, conn)
@@ -375,11 +376,11 @@ fn reconciliation_marker_that_lifts_the_hold_bumps_once() {
     let iso = TestIsolation::new("snapshot-eligibility-marker-lift");
     let (context, mut conn) = host_store(&iso);
     // A nonretired seat makes the first publication hold the baseline.
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('h','i','resolved','native','p0',1,1,0)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('h','34750f98bd59fcfc946da45aaabe933b','resolved','native','p0',1,1,0)", []).unwrap();
     let published = publish(&context, &mut conn, &capture(&["p0", "p1"]), 1);
     let flag = |conn: &Connection| -> i64 {
         conn.query_row(
-            "SELECT baseline_hold_unclaimed FROM host_instances WHERE id='i'",
+            "SELECT baseline_hold_unclaimed FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -387,7 +388,7 @@ fn reconciliation_marker_that_lifts_the_hold_bumps_once() {
     };
     let lifecycle = |conn: &Connection| -> i64 {
         conn.query_row(
-            "SELECT lifecycle_revision FROM host_instances WHERE id='i'",
+            "SELECT lifecycle_revision FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -432,7 +433,7 @@ fn baseline_hold_change_bumps_once() {
         |_, conn| {
             // An unresolved saved seat makes the next publication hold the
             // unclaimed baseline targets (hold 0 -> 1).
-            conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('u','i','unresolved','native',0,0)", []).unwrap();
+            conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0)", []).unwrap();
         },
         Capture::clone,
     );
@@ -444,7 +445,13 @@ fn recovery_after_invalidation_bumps_once() {
         "invalidation",
         |context, conn| {
             let budget = budget();
-            let admission = seats::begin_host_observation(context, conn, "i", &budget).unwrap();
+            let admission = seats::begin_host_observation(
+                context,
+                conn,
+                "34750f98bd59fcfc946da45aaabe933b",
+                &budget,
+            )
+            .unwrap();
             assert!(
                 seats::invalidate_host_observation(
                     context,
@@ -469,7 +476,13 @@ fn publication_after_a_current_target_read_bumps_once() {
             // A fresh current-target read newer than the active publication
             // decides the target until a later publication supersedes it.
             let budget = budget();
-            let admission = seats::begin_host_observation(context, conn, "i", &budget).unwrap();
+            let admission = seats::begin_host_observation(
+                context,
+                conn,
+                "34750f98bd59fcfc946da45aaabe933b",
+                &budget,
+            )
+            .unwrap();
             let mut observation = host_snapshot(&capture(&["p2"]), 2).targets.remove(0);
             observation.provenance = ObservationProvenance::FreshCurrentTarget;
             observation.generation = 7;
@@ -497,7 +510,13 @@ fn publication_after_a_read_of_an_unpublished_target_bumps_once() {
             // The read target is in neither publication: only the read's
             // lifecycle transition shows that this publication supersedes it.
             let budget = budget();
-            let admission = seats::begin_host_observation(context, conn, "i", &budget).unwrap();
+            let admission = seats::begin_host_observation(
+                context,
+                conn,
+                "34750f98bd59fcfc946da45aaabe933b",
+                &budget,
+            )
+            .unwrap();
             let mut observation = host_snapshot(&capture(&["p7"]), 2).targets.remove(0);
             observation.provenance = ObservationProvenance::FreshCurrentTarget;
             observation.observation_sequence = 3;
@@ -526,7 +545,7 @@ fn publication_without_staging_evidence_bumps() {
     publish(&context, &mut conn, &base, 1);
     publish(&context, &mut conn, &base, 2);
     assert_eq!(revision(&conn), 1);
-    let other = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+    let other = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
     publish_from(&context, &other, &mut conn, &base, 3);
     assert_eq!(revision(&conn), 2, "unproven content bumps");
     publish(&context, &mut conn, &base, 4);
@@ -537,7 +556,9 @@ fn publication_without_staging_evidence_bumps() {
 /// sequence `sequence`.
 fn fresh_read(context: &StoreContext, conn: &mut Connection, id: &str, sequence: u64) {
     let budget = budget();
-    let admission = seats::begin_host_observation(context, conn, "i", &budget).unwrap();
+    let admission =
+        seats::begin_host_observation(context, conn, "34750f98bd59fcfc946da45aaabe933b", &budget)
+            .unwrap();
     let mut observation = host_snapshot(&capture(&[id]), sequence).targets.remove(0);
     observation.provenance = ObservationProvenance::FreshCurrentTarget;
     observation.generation = 7;
@@ -548,7 +569,7 @@ fn fresh_read(context: &StoreContext, conn: &mut Connection, id: &str, sequence:
 }
 
 fn effective_generation(conn: &Connection, id: &str) -> Option<i64> {
-    crate::store::effective::effective_observation(conn, "i", id)
+    crate::store::effective::effective_observation(conn, "34750f98bd59fcfc946da45aaabe933b", id)
         .unwrap()
         .map(|observation| observation.structural_generation)
 }
@@ -665,10 +686,10 @@ fn send_store(iso: &TestIsolation) -> (StoreContext, Connection) {
         ("a", "pa", "00000000-0000-4000-8000-0000000000aa"),
         ("r", "pr", "00000000-0000-4000-8000-0000000000bb"),
     ] {
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)", [seat, target]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1)", [seat, target]).unwrap();
         conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,registered_at) VALUES (?1,1,?2,'b',1,1,'codex','n',?3,'cooperative_top_level',0,'term-'||?2,'inc',0)", [seat, target, execution]).unwrap();
     }
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
     for seat in ["a", "r"] {
         conn.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
@@ -690,7 +711,7 @@ fn send_request() -> SendMessage {
         deadline_millis: None,
         operation: OperationId::new("op"),
         claim: CallerClaim {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("a"),
             binding_generation: 1,
             role: CallerRole::TopLevel,
@@ -812,7 +833,7 @@ fn multi_step_preparation_completes_across_unchanged_publications() {
     let iso = TestIsolation::new("snapshot-eligibility-multistep");
     let (context, mut conn) = send_store(&iso);
     for seat in ["x", "y"] {
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','unresolved','native',0,0)", [seat]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0)", [seat]).unwrap();
         conn.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
             [seat],

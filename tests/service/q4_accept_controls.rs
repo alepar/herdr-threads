@@ -211,7 +211,7 @@ fn quiet_header(f: &Fixture, claim: &CallerClaim, consumer: &str) {
     ).unwrap();
     let head: i64 =
         f.db.query_row(
-            "SELECT COALESCE(MAX(decision_seq),0) FROM send_manifests WHERE instance_id='i'",
+            "SELECT COALESCE(MAX(decision_seq),0) FROM send_manifests WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -362,7 +362,7 @@ impl AcceptRig {
         // Clear all prior publication, ACK hint and invitation frames by actual passes/pulls.
         let manifests: i64 =
             f.db.query_row(
-                "SELECT count(*) FROM send_manifests WHERE instance_id='i'",
+                "SELECT count(*) FROM send_manifests WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'",
                 [],
                 |r| r.get(0),
             )
@@ -757,7 +757,12 @@ fn presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_wi
             [binding.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
         ).unwrap();
         let capture = encoded.as_ref().map(|value| {
-            InboxBatchV2CursorState::decode_for(value, "i", &rig.q.window.recipient.seat).unwrap()
+            InboxBatchV2CursorState::decode_for(
+                value,
+                "34750f98bd59fcfc946da45aaabe933b",
+                &rig.q.window.recipient.seat,
+            )
+            .unwrap()
         });
         let carry: serde_json::Value = serde_json::from_str(&pending).unwrap();
         let carry_ids = carry["items"]

@@ -129,14 +129,14 @@ impl Seam {
             mono: AtomicU64::new(0),
             utc: AtomicI64::new(0),
         });
-        let context = StoreContext::new(path.clone(), clock.clone());
+        let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
         let db = context.open_writer().unwrap();
         db.execute_batch("\
-            INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat','i','resolved','native','target',1,1,0);\
-            INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','target','host',1,1,0,'fresh','occupied','idle','execution',1,'term-'||'target','inc','coherent_enumeration',1);\
+            UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;\
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','target',1,1,0);\
+            INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','target','host',1,1,0,'fresh','occupied','idle','execution',1,'term-'||'target','inc','coherent_enumeration',1);\
             INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('seat',1,1,'target','host',1,'codex','session','execution','fresh',0,0,'term-'||'target','inc');\
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread','i','topic','goal',0,0);\
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);\
             INSERT INTO memberships(thread_id,seat_id,state) VALUES ('thread','seat','invited');\
             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq) VALUES ('invite','thread','seat',1,'pending',0,100000000,100000000,1);\
         ").unwrap();
@@ -177,8 +177,8 @@ impl Seam {
     fn run<T>(&self, body: impl FnOnce(&dyn Fn() -> WakeDriveOutcome) -> T) -> T {
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(self.path.clone(), self.clock.clone()),
-                "i",
+                StoreContext::new(self.path.clone(), self.clock.clone()).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings {
                     daemon_boot: Some(daemon_boot()),
                     wake_batch_delay_ms: 0,
@@ -194,7 +194,7 @@ impl Seam {
             due_calls: AtomicU64::new(0),
         };
         let scheduler = Scheduler::new(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             &due,
             &ports,
             &dispatch,

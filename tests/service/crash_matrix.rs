@@ -87,10 +87,7 @@ struct Matrix {
 
 impl Matrix {
     fn new() -> Self {
-        Self::with_instance(format!(
-            "crash-{}",
-            &uuid::Uuid::new_v4().simple().to_string()[..12]
-        ))
+        Self::with_instance(crate::node::NodeUuid::new_v4().to_string())
     }
 
     /// The shipped CLI names instances by UUID (its private context journal
@@ -110,13 +107,12 @@ impl Matrix {
             mono: AtomicU64::new(1_000),
         });
         let db_path = root.join("store.db");
-        let context = StoreContext::new(db_path.clone(), clock.clone());
+        let context = StoreContext::new(db_path.clone(), clock.clone())
+            .with_test_host()
+            .with_node_seed(crate::test_support::node_seed_for(&instance));
         let db = context.open_writer().unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
-            [&instance],
-        )
-        .unwrap();
+        db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
         drop(db);
         let boot = uuid::Uuid::new_v4();
         let (store, service) = Self::compose(&clock, &instance, &db_path, boot);
@@ -142,7 +138,7 @@ impl Matrix {
         let clock: Arc<dyn Clock> = clock.clone();
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(db_path.to_path_buf(), clock.clone()),
+                StoreContext::new(db_path.to_path_buf(), clock.clone()).with_test_host(),
                 instance,
                 StoreSettings {
                     daemon_boot: Some(boot),
@@ -176,7 +172,7 @@ impl Matrix {
     }
 
     fn db(&self) -> Connection {
-        Connection::open(&self.db_path).unwrap()
+        crate::test_support::open_test_connection(&self.db_path)
     }
 
     fn count(&self, sql: &str, args: impl rusqlite::Params) -> i64 {
@@ -712,7 +708,7 @@ fn configured_batching_retains_first_attention_without_self_kicks() {
     let sent = m.send(&s, &thread, "first", &[], "batch-first").unwrap();
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(m.db_path.clone(), m.clock.clone()),
+            StoreContext::new(m.db_path.clone(), m.clock.clone()).with_test_host(),
             m.instance.clone(),
             StoreSettings {
                 daemon_boot: Some(m.boot),
@@ -1493,7 +1489,7 @@ fn corrupt_or_unknown_schema_fails_explicitly_and_never_rewrites_history() {
         let before = hash(&path);
         let clock: Arc<dyn Clock> = clock.clone();
         let error = match SqliteStore::new(
-            StoreContext::new(path.clone(), clock),
+            StoreContext::new(path.clone(), clock).with_test_host(),
             instance.clone(),
             StoreSettings::default(),
         ) {
@@ -2081,7 +2077,7 @@ fn socket_denial_freezes_seats_and_bindings_until_reconnect() {
         assert_eq!(m.seat_generation(&pair.r.seat), generation);
         assert_eq!(open_bindings(), bindings);
         assert_eq!(
-            m.count("SELECT invalidation_revision FROM host_instances", []),
+            m.count("SELECT invalidation_revision FROM herdr_hosts", []),
             0
         );
     }

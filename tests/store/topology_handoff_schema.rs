@@ -6,7 +6,13 @@ use rusqlite::Connection;
 #[test]
 fn registered28_identity_lookup_is_absent_without_a_begin() {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    schema::initialize(
+        &db,
+        || UtcMillis(0),
+        &herdr_threads::test_support::test_node_seed(),
+    )
+    .unwrap();
+    herdr_threads::test_support::attach_test_host_to_connection(&db);
     assert_eq!(
         herdr_threads::store::topology_handoff::current(&db, &namespace(), &identity()).unwrap(),
         None
@@ -40,7 +46,7 @@ fn legacy_key_index_retains_foreign_namespaces_with_bounded_lookup_after_1000_at
     )
     .unwrap();
     tx.commit().unwrap();
-    let sql = "SELECT state_dir,host_endpoint FROM bootstrap_child_keys INDEXED BY bootstrap_keys_legacy_lookup WHERE instance_id='i' AND actor_scope='seat:s' AND operation_key='invite' LIMIT 2";
+    let sql = "SELECT state_dir,host_endpoint FROM bootstrap_child_keys INDEXED BY bootstrap_keys_legacy_lookup WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND actor_scope='seat:s' AND operation_key='invite' LIMIT 2";
     let plan = db
         .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
         .unwrap()

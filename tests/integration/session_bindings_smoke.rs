@@ -1639,10 +1639,10 @@ fn config7_herdr_restart_keeps_seats_in_restore_hold() {
     );
     assert!(!smoke.archived(&thread), "no archival");
     assert_eq!(
-        smoke.count("SELECT baseline_hold_unclaimed FROM host_instances", &[]),
+        smoke.count("SELECT baseline_hold_unclaimed FROM herdr_hosts", &[]),
         1,
         "{}",
-        smoke.dump("host_instances")
+        smoke.dump("herdr_hosts")
     );
     // While held, nothing re-enrolls on the old pane id (the binding rows stay for a restore):
     // a resume is told the mapping is unresolved and opens no binding, and a new claim of the
@@ -1877,7 +1877,7 @@ fn config9_foreground_and_background_agents_in_one_pane() {
         + 1;
     let authority = herdr_threads::ports::ReservedWakeAuthority::Cooperative {
         terminal: herdr_threads::protocol::ids::TerminalId::new("t"),
-        incarnation: "i".into(),
+        incarnation: "34750f98bd59fcfc946da45aaabe933b".into(),
         binding_generation: None,
         harness: None,
         targets,

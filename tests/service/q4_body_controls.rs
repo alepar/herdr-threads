@@ -57,9 +57,14 @@ impl BodyFixture {
             .unwrap();
         let clock = Arc::new(TestClock(AtomicI64::new(1_000_000)));
         let shared: Arc<dyn Clock> = clock.clone();
-        let context = StoreContext::new(directory.join("store.db"), shared.clone());
+        let context = StoreContext::new(directory.join("store.db"), shared.clone())
+            .with_test_host()
+            .with_node_seed(crate::test_support::node_seed_for(instance));
         let db = context.open_writer().unwrap();
-        db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES(?1,0,'b',1,3)", [instance.to_string()]).unwrap();
+        db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
+        db.execute("UPDATE local_node SET decision_seq=3", [])
+            .unwrap();
         for (seat, target) in [("sender", "px"), ("reader", "pc")] {
             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES(?1,?2,'resolved','native',?3,1,0,0)", params![seat,instance.to_string(),target]).unwrap();
             db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES(?1,?2,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc','coherent_enumeration',1)", params![instance.to_string(),target]).unwrap();

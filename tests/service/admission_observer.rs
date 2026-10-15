@@ -215,8 +215,8 @@ fn idle_observer_makes_no_commits_and_one_pass_per_tick() {
     });
     let kick_registry = Arc::new(CommitKicks::default());
     let store = SqliteStore::new(
-        StoreContext::new(iso.state_root().join("store.db"), clock_for_store),
-        "i",
+        StoreContext::new(iso.state_root().join("store.db"), clock_for_store).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap()

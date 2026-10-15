@@ -1848,7 +1848,7 @@ fn operator_bootstrap_recovery_has_own_actor_without_reclassifying_reference() {
     assert_eq!(
         classify_original_actor(
             &IntentScope::Operator {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 local_user_uid: 42
             },
             &semantic
@@ -1859,7 +1859,7 @@ fn operator_bootstrap_recovery_has_own_actor_without_reclassifying_reference() {
     assert!(
         classify_original_actor(
             &IntentScope::Operator {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 local_user_uid: 43
             },
             &semantic

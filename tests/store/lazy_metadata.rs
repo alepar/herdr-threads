@@ -29,22 +29,27 @@ fn budget() -> CallBudget {
     }
 }
 fn setup(iso: &TestIsolation) -> (SqliteStore, Connection) {
-    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0),('foreign',0);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0),('ft','foreign','foreign','foreign',0,0);
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('s','i','unresolved','native',1,0);").unwrap();
+    db.execute_batch("PRAGMA foreign_keys=OFF;
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0),('ft','foreign','foreign','foreign',0,0);
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('s','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0);").unwrap();
     for n in 1..=100 {
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES(?1,'i','t',?2,'ordinary',?2,?3,0,?4)",params![format!("msg-{n}"),n,if n%2==0 {"ordinary message"} else {"[lazy] alleged passive message"},if n%2==0 {"lazy"} else {"ordinary"}]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?2,?3,0,?4)",params![format!("msg-{n}"),n,if n%2==0 {"ordinary message"} else {"[lazy] alleged passive message"},if n%2==0 {"lazy"} else {"ordinary"}]).unwrap();
     }
     db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('fm','foreign','ft',1,'ordinary',1,'foreign',0,'lazy');
-        INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES('block','i','t','v1',0,0,1,2,'hash','cached narrative','s','model','prompt',0);
-        INSERT INTO summary_jobs(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,created_at,lease_seat_id,lease_token,lease_until) VALUES('summary-job','i','t','v1',0,1,3,4,0,'s','lease',9000);
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-2','i','scope','op',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');
+        INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES('block','34750f98bd59fcfc946da45aaabe933b','t','v1',0,0,1,2,'hash','cached narrative','s','model','prompt',0);
+        INSERT INTO summary_jobs(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,created_at,lease_seat_id,lease_token,lease_until) VALUES('summary-job','34750f98bd59fcfc946da45aaabe933b','t','v1',0,1,3,4,0,'s','lease',9000);
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-2','34750f98bd59fcfc946da45aaabe933b','scope','op',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');
         INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-2','msg-2','t','s');
-        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-2','msg-2','i','t',2,0,2,0,1,0);").unwrap();
+        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-2','msg-2','34750f98bd59fcfc946da45aaabe933b','t',2,0,2,0,1,0);").unwrap();
     (
-        SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
+        SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings::default(),
+        )
+        .unwrap(),
         db,
     )
 }
@@ -56,7 +61,7 @@ fn read(
     store.query(
         &Command::MessageDeliveryModes(MessageDeliveryModesQuery { messages: ids }),
         &ReadContext {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             output: OutputSpec::default(),
             operation_scope: None,
         },
