@@ -165,6 +165,10 @@ const DEADLINE_TABLES: &[&str] = &[
 pub const KNOWN_UNMAPPED: &[&str] = &[
     // Pair identity is passive; its ordinary invitation/membership writes kick their own lanes.
     "direct_threads",
+    // Fork repair state (ht-5fr.6.4): freezes kick Lane::Sync through the sync_logs mapping.
+    "sync_forks",
+    "sync_branches",
+    "sync_reissues",
     // Immutable automatic identities accompany the archival fence parent.
     "automatic_handoff_companions",
     "automatic_bootstrap_parents",

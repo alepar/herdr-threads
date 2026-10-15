@@ -11,6 +11,7 @@ pub mod first_contact;
 pub mod handoff;
 pub mod harness_evidence;
 pub mod hosts;
+pub mod incarnations;
 pub mod invitation_content;
 pub mod invitation_due;
 pub mod journal;

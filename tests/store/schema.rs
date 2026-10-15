@@ -5199,3 +5199,73 @@ fn live_target_unique_per_host() {
     .unwrap_err();
     assert!(error.to_string().contains("UNIQUE"), "{error}");
 }
+
+#[test]
+fn fork_tables_verify() {
+    let db = journal_db();
+    schema::verify_baseline(&db).unwrap();
+    db.execute(
+        "INSERT INTO sync_forks(log_ix,origin,proof_counter,held_counter,held_hash,conflicting_counter,conflicting_hash,frozen_at,detected_at) \
+         VALUES (2,'evidence',3,3,zeroblob(32),3,zeroblob(32),2,0)",
+        [],
+    )
+    .unwrap();
+    // origin='declared' carries no proof columns; 'evidence' requires them.
+    db.execute(
+        "INSERT INTO sync_forks(log_ix,origin,frozen_at,detected_at) VALUES (2,'declared',2,0)",
+        [],
+    )
+    .unwrap();
+    assert!(
+        db.execute(
+            "INSERT INTO sync_forks(log_ix,origin,frozen_at,detected_at) VALUES (2,'evidence',2,0)",
+            [],
+        )
+        .is_err()
+    );
+    db.execute(
+        "INSERT INTO sync_branches(log_ix,tip_counter,tip_hash,next_from,state,first_seen_at,updated_at) \
+         VALUES (2,3,zeroblob(32),1,'pulling',0,0)",
+        [],
+    )
+    .unwrap();
+    assert!(
+        db.execute(
+            "INSERT INTO sync_branches(log_ix,tip_counter,tip_hash,next_from,state,first_seen_at,updated_at) \
+             VALUES (2,3,zeroblob(32),1,'done',0,0)",
+            [],
+        )
+        .is_err()
+    );
+    insert_journal(&db, 1, "pending", None, None).unwrap();
+    db.execute(
+        "INSERT INTO sync_reissues(source_log_ix,source_counter,source_hash,target_ingest_seq,reissued_at) \
+         VALUES (2,3,zeroblob(32),1,0)",
+        [],
+    )
+    .unwrap();
+    let message = abort_message(db.execute("DELETE FROM sync_forks", []));
+    assert!(message.contains("sync_forks_append_only"), "{message}");
+    let message = abort_message(db.execute("DELETE FROM sync_reissues", []));
+    assert!(message.contains("sync_reissues_append_only"), "{message}");
+    let message = abort_message(db.execute("UPDATE sync_reissues SET reissued_at=1", []));
+    assert!(message.contains("sync_reissues_immutable"), "{message}");
+    db.execute(
+        "UPDATE sync_logs SET state='frozen', frozen_at_counter=3 WHERE log_ix=2",
+        [],
+    )
+    .unwrap();
+    let message = abort_message(db.execute(
+        "UPDATE sync_logs SET frozen_at_counter=4 WHERE log_ix=2",
+        [],
+    ));
+    assert!(
+        message.contains("sync_logs_freeze_lowers_only"),
+        "{message}"
+    );
+    db.execute(
+        "UPDATE sync_logs SET frozen_at_counter=2 WHERE log_ix=2",
+        [],
+    )
+    .unwrap();
+}
