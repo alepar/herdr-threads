@@ -284,7 +284,7 @@ fn membership_row(
 /// The ordinal of the seat's next transition in the thread
 /// (`home_transition + 1`; 1 without a row). A command on the seat's home node
 /// computes it inside its transaction.
-fn next_transition(
+pub(super) fn next_transition(
     tx: &Transaction<'_>,
     thread: &ThreadId,
     seat: &SeatId,
@@ -296,14 +296,15 @@ fn next_transition(
         .ok_or_else(|| api_error(ErrorCode::SequenceExhausted, "membership ordinal exhausted"))
 }
 
-/// The route of a membership transition in `thread`. A journaled thread no
-/// fact created yet (transitional: a pair thread `ensure_direct_thread` still
-/// inserts directly until ht-5fr.4.10, or a fixture whose journal never
-/// opened) would park the fact on its `needs`, so it keeps the node-local
-/// write it always had.
-fn membership_route(tx: &Transaction<'_>, thread: &ThreadId) -> Result<FactRoute, ApiError> {
+/// The route of a membership or invitation fact in `thread`. A journaled
+/// thread no fact created yet (a fixture whose journal never opened) would
+/// park the fact on its `needs`, so it keeps the node-local write it always had.
+pub(super) fn membership_route(
+    tx: &Transaction<'_>,
+    thread: &ThreadId,
+) -> Result<FactRoute, ApiError> {
     let route = FactRoute::for_thread(tx, thread)?;
-    if route == FactRoute::Journal && !has_creating_fact(tx, thread)? {
+    if route == FactRoute::Journal && !has_creating_fact(tx, thread.as_str())? {
         return Ok(FactRoute::LocalOnly);
     }
     Ok(route)
@@ -353,6 +354,10 @@ pub fn materialize_membership(
                 n: payload.n,
                 at: payload.at,
                 join_event: true,
+                seq: m.decision_seq,
+                episode: None,
+                direct_floor: None,
+                settle: true,
             },
         ),
         Transition::Left => materialize_left(tx, m, payload),
@@ -368,6 +373,19 @@ pub(crate) struct JoinedTransition<'a> {
     /// Whether to append the derived `join` event (a `membership.joined`
     /// does; an accepted invitation appends its own `accept` event).
     pub join_event: bool,
+    /// The position the transition takes: the entry's `decision_seq`, or the
+    /// later one an accept allocated after a late-overdue warning.
+    pub seq: u64,
+    /// The episode the transition opens; `None` allocates the next one. An
+    /// accepted invitation opens the invitation's own episode.
+    pub episode: Option<i64>,
+    /// The read-cursor floor of an accepted direct-pair invitation for a local
+    /// seat; `None` initializes the cursors as an ordinary join does.
+    pub direct_floor: Option<u64>,
+    /// Whether to settle the seat's other pending invitations `already_joined`
+    /// (the one rule, on journaled threads). A node-local managed thread keeps
+    /// its independent invitation episodes and requirements pending.
+    pub settle: bool,
 }
 
 fn ordinal(n: u64) -> Result<i64, ApiError> {
@@ -430,8 +448,10 @@ pub(crate) fn materialize_joined(
         )
         .map_err(store_error)?;
     } else {
-        let episode =
-            crate::store::service_controls::next_invitation_episode(tx, t.thread, t.seat)?;
+        let episode = match t.episode {
+            Some(episode) => episode,
+            None => crate::store::service_controls::next_invitation_episode(tx, t.thread, t.seat)?,
+        };
         if row.is_some() {
             tx.execute(
                 "UPDATE memberships SET state='joined',voluntary_state='joined',episode=?1,joined_at=?2,left_at=NULL,home_transition=?3,last_joined_n=?4 WHERE thread_id=?5 AND seat_id=?6",
@@ -451,12 +471,17 @@ pub(crate) fn materialize_joined(
                 t.thread.as_str(),
                 t.seat.as_str(),
                 episode,
-                creator_seq.unwrap_or(m.decision_seq as i64)
+                creator_seq.unwrap_or(ordinal(t.seq)?)
             ],
         )
         .map_err(store_error)?;
         if crate::store::seats::is_local_seat(tx, t.seat)? {
-            crate::store::read_cursors::init_for_join(tx, t.seat, t.thread)?;
+            match t.direct_floor {
+                Some(floor) => {
+                    crate::store::read_cursors::init_for_direct_accept(tx, t.seat, t.thread, floor)?
+                }
+                None => crate::store::read_cursors::init_for_join(tx, t.seat, t.thread)?,
+            };
         }
         // The creator's own first join is implied by the `create:<thread>`
         // event, which names the actor: it appends no second event.
@@ -479,13 +504,15 @@ pub(crate) fn materialize_joined(
                     source_message: None,
                     source_invitation: None,
                 },
-                m.decision_seq,
+                t.seq,
                 crate::protocol::service::EventAuthor::Native(t.seat.clone()),
             )?;
         }
         bump_membership(tx, t.thread, t.seat)?;
     }
-    settle_superseded_invitations(tx, t.thread, t.seat, t.n)?;
+    if t.settle {
+        settle_superseded_invitations(tx, t.thread, t.seat, t.n)?;
+    }
     Ok(())
 }
 
@@ -494,14 +521,21 @@ pub(crate) fn materialize_joined(
 /// (so it sees the creation) and the join appends no event of its own. The
 /// event is replicated state every node holds before `membership.joined`
 /// applies, so every node decides alike.
+///
+/// A pair thread's `create:` event names no actor (either member's node may
+/// have created it, and crossed creates make both), and a pair member's first
+/// transition is always its creating join (the other way in is an accepted
+/// invitation, which is not a `membership.joined`), so there the event counts
+/// as the creator's for either seat.
 fn creator_create_seq(
     tx: &Transaction<'_>,
     thread: &ThreadId,
     seat: &SeatId,
 ) -> Result<Option<i64>, ApiError> {
     tx.query_row(
-        "SELECT decision_seq FROM messages WHERE event_key=?1 AND json_extract(event_json,'$.actor_seat')=?2",
-        params![format!("create:{}", thread.as_str()), seat.as_str()],
+        "SELECT decision_seq FROM messages WHERE event_key=?1 AND (json_extract(event_json,'$.actor_seat')=?2 \
+         OR EXISTS(SELECT 1 FROM direct_threads WHERE thread_id=?3))",
+        params![format!("create:{}", thread.as_str()), seat.as_str(), thread.as_str()],
         |r| r.get(0),
     )
     .optional()

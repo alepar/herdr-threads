@@ -244,6 +244,8 @@ impl FactRegistry {
                 .with::<thread::ThreadCreated>()
                 .with::<thread::ThreadRegister>()
                 .with::<thread::ThreadDirect>()
+                .with::<invitation::InvitationCreated>()
+                .with::<invitation::InvitationAnswered>()
                 .with::<membership::MembershipJoined>()
                 .with::<membership::MembershipLeft>()
                 .with::<message::MessageSent>()

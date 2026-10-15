@@ -648,8 +648,9 @@ impl Fixture {
         assert_eq!(seats.len(), 1);
         let mut seat = seats.pop().unwrap();
         // The first fact that names a local seat publishes it (`seat.created`,
-        // fact-kinds design section 4): a delivery's `message.sent` flips
-        // `published`, which is replication bookkeeping, not identity.
+        // fact-kinds design section 4): a delivery's `message.sent` or the
+        // invitation of a direct pair flips `published`, which is replication
+        // bookkeeping, not identity.
         seat.retain(|(name, _)| name != "published");
         RecipientIdentity {
             seat,

@@ -1485,7 +1485,7 @@ fn send_route(
 ) -> Result<FactRoute, ApiError> {
     let route = FactRoute::for_thread(tx, thread)?;
     if route == FactRoute::Journal
-        && (!context.journal_open() || !super::control::has_creating_fact(tx, thread)?)
+        && (!context.journal_open() || !super::control::has_creating_fact(tx, thread.as_str())?)
     {
         return Ok(FactRoute::LocalOnly);
     }

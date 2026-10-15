@@ -3,7 +3,8 @@
 //! Responsibility
 //! - Owns: [`sync`], which moves every log between two seeded `SqliteStore`s
 //!   through `JournalPort::serve` -> `ingest` -> `apply_pending` until both
-//!   vectors agree, and drains both stores' apply passes.
+//!   vectors agree, and drains both stores' apply passes; and [`pull`], the
+//!   one-way form that leaves its source untouched.
 //! - Hides: batching (`BatchLimits::default()`), the call budget, and the
 //!   round loop that picks up logs a store only learns of mid-exchange.
 //! - Must not: spawn a daemon or dial a peer, touch the journal tables
@@ -83,6 +84,15 @@ fn drain(store: &SqliteStore) {
         }
     }
     panic!("a store never drained its apply passes");
+}
+
+/// One-way [`sync`]: ships every entry `to` lacks from `from`, then drains
+/// `to`'s apply pass. `from` is not changed, so a test can feed two fresh
+/// stores the same concurrent logs in opposite orders without either store
+/// relaying the other's facts back into a source.
+pub fn pull(to: &SqliteStore, from: &SqliteStore) {
+    ship_missing(from, to);
+    drain(to);
 }
 
 /// Brings `a` and `b` to equal vectors with everything applied.

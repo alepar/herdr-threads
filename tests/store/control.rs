@@ -63,6 +63,88 @@ fn create_thread(
     let _guard = crate::test_support::write_guard::arm(conn);
     super::create_thread(context, conn, budget, command, permit)
 }
+/// `invite`, `accept`, `reject`, `accept_required`, `operator_orphan_invite`
+/// author invitation facts (or write through the
+/// local-only route), so every call in this suite runs (in test-support builds)
+/// with the write guard armed: they reach `invitations`,
+/// `invitation_rejections`, `memberships` and `membership_intervals` only
+/// through a materializer (ht-5fr.4.10).
+fn invite(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &Invite,
+    permit: MutationPermit,
+    installation_default_ms: Option<u64>,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::invite(
+        context,
+        conn,
+        budget,
+        command,
+        permit,
+        installation_default_ms,
+    )
+}
+
+fn accept(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &Accept,
+    permit: MutationPermit,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::accept(context, conn, budget, command, permit)
+}
+
+fn reject(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &crate::protocol::commands::Reject,
+    permit: MutationPermit,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::reject(context, conn, budget, command, permit)
+}
+
+fn accept_required(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &AcceptRequired,
+    permit: MutationPermit,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::accept_required(context, conn, budget, command, permit)
+}
+
+fn operator_orphan_invite(
+    context: &StoreContext,
+    conn: &mut Connection,
+    instance: &str,
+    command: &OperatorOrphanInvite,
+    actor: OperatorActor,
+    installation_default_ms: Option<u64>,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::operator_orphan_invite(
+        context,
+        conn,
+        instance,
+        command,
+        actor,
+        installation_default_ms,
+    )
+}
+
 use std::{
     path::PathBuf,
     sync::{
@@ -1717,6 +1799,87 @@ impl crate::ports::ServiceAuthorityGate for GraphGate {
     fn revoke_exact(&self, _connection: &crate::ports::ServiceConnectionAuthority) -> bool {
         true
     }
+}
+
+// Kills: a service invitation (ordinary or required) of a remote seat on a
+// managed thread, which is node-local and never holds a remote seat
+// (ht-5fr.4.10). Neither writes an invitation, a membership or a journal entry.
+#[test]
+fn managed_thread_refuses_a_remote_invitee_for_both_service_constraints() {
+    use crate::ports::ServiceAuthorityGate;
+    use crate::protocol::service::*;
+    use sha2::Digest;
+    let (context, mut conn, _path, _clock) = bound_fixture(100);
+    conn.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+         VALUES ('rseat','34750f98bd59fcfc946da45aaabe933b','remote','native',0,0,?1,0,'agent',1)",
+        [&"ab".repeat(16)],
+    )
+    .unwrap();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let author = ServiceAuthorId::new(format!(
+        "graph:{:x}",
+        sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+    ));
+    let gate = GraphGate(author.clone());
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
+    let operate = |conn: &mut Connection, operation: ServiceOperation| {
+        crate::store::service_controls::operate(
+            &context,
+            conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            operation,
+            &connection,
+            &gate,
+            &budget,
+            None,
+        )
+    };
+    let thread = ThreadId::new("managed-remote-refusal");
+    operate(
+        &mut conn,
+        ServiceOperation::EnsureThread(EnsureManagedThread {
+            thread: thread.clone(),
+            topic: "topic".into(),
+            goal: "goal".into(),
+            operation: OperationId::new("ensure-remote-refusal"),
+        }),
+    )
+    .unwrap();
+    let journal_before: i64 = conn
+        .query_row("SELECT count(*) FROM journal", [], |r| r.get(0))
+        .unwrap();
+    for (constraint, key) in [
+        (InvitationConstraint::Ordinary, "ordinary-remote-refusal"),
+        (InvitationConstraint::Required, "required-remote-refusal"),
+    ] {
+        let error = operate(
+            &mut conn,
+            ServiceOperation::Invite(ServiceInvite {
+                thread: thread.clone(),
+                seat: SeatId::new("rseat"),
+                constraint,
+                deadline_millis: Some(500),
+                operation: OperationId::new(key),
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported, "{constraint:?}");
+        assert_eq!(error.detail, "service threads are node-local");
+    }
+    let rows: (i64, i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM invitations WHERE seat_id='rseat'),(SELECT count(*) FROM memberships WHERE seat_id='rseat'),(SELECT count(*) FROM journal)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(rows, (0, 0, journal_before));
 }
 
 #[test]

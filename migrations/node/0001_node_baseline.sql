@@ -524,6 +524,7 @@ CREATE TABLE invitations (
     retired_at INTEGER, reject_recorded INTEGER NOT NULL DEFAULT 0 CHECK(reject_recorded IN (0,1)), confirmation TEXT CHECK(confirmation IN ('lazy','require_ack')), inviter_seat_id TEXT REFERENCES seats(id), command_context_epoch INTEGER NOT NULL DEFAULT 0,
     origin_node TEXT NOT NULL CHECK(length(origin_node)=32 AND origin_node NOT GLOB '*[^0-9a-f]*'),
     invitee_n INTEGER NOT NULL DEFAULT 0 CHECK(invitee_n >= 0),
+    inviter_kind TEXT NOT NULL DEFAULT 'seat' CHECK(inviter_kind IN ('seat','service','operator')),
     UNIQUE(thread_id, seat_id, episode),
     CHECK(state <> 'accepted' OR (accepted_at IS NOT NULL AND accepted_actor_seat_id IS NOT NULL AND accepted_generation IS NOT NULL AND accepted_observation IS NOT NULL))
 ) STRICT;
@@ -2862,6 +2863,11 @@ END;
 CREATE TRIGGER invitations_confirmation_origin BEFORE INSERT ON invitations
 WHEN NEW.confirmation IS NOT NULL AND NEW.inviter_seat_id IS NULL
 BEGIN SELECT RAISE(ABORT, 'modern invitation requires original inviter'); END;
+
+CREATE TRIGGER invitations_inviter_required BEFORE INSERT ON invitations
+WHEN NEW.inviter_seat_id IS NULL AND NEW.inviter_kind='seat'
+  AND (SELECT journaled FROM threads WHERE id=NEW.thread_id)=1
+BEGIN SELECT RAISE(ABORT, 'journaled invitation requires its inviter seat'); END;
 
 CREATE TRIGGER invitations_confirmation_immutable BEFORE UPDATE OF confirmation,inviter_seat_id ON invitations
 WHEN NEW.confirmation IS NOT OLD.confirmation OR NEW.inviter_seat_id IS NOT OLD.inviter_seat_id
