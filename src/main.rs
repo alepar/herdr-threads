@@ -87,6 +87,17 @@ fn main() {
     if let Some(parsed) = cli::hook::parse_hook_argv(&args) {
         std::process::exit(cli::hook::run_process(parsed));
     }
+    // `peer --stdio`: the stateless ssh-side pump, kept off the clap path.
+    if let Some(peer) = cli::peer::parse_peer_stdio_argv(&args) {
+        let code = match RuntimeContext::from_environment(peer.state_dir, peer.host_endpoint) {
+            Ok(context) => cli::peer::run_stdio(&context),
+            Err(error) => {
+                eprintln!("herdr-threads peer: daemon unavailable: {error}");
+                cli::peer::EXIT_DAEMON_UNAVAILABLE
+            }
+        };
+        std::process::exit(code);
+    }
     let terminal = io::stdout().is_terminal();
     if let Err(error) = cli::run_terminal(args, &mut io::stdout().lock(), terminal) {
         match &error {

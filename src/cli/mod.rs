@@ -26,6 +26,7 @@ pub mod lazy_display;
 pub mod me;
 pub mod output;
 pub mod panes;
+pub mod peer;
 pub(crate) mod peer_locations;
 mod picker;
 pub mod retry;
