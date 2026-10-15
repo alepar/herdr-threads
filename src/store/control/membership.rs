@@ -24,7 +24,7 @@ pub(super) fn joined_in_thread(
     .map_err(store_error)
 }
 
-pub(super) fn bump_member_directory(
+pub(crate) fn bump_member_directory(
     tx: &Transaction<'_>,
     instance: &str,
     seat: &SeatId,

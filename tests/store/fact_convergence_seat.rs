@@ -2,10 +2,15 @@
 //! the remote row, discovery without prior interaction, and own-seat restore
 //! after a wipe.
 
+use herdr_threads::ports::{ClosureEvidence, RetirementJob, WorkAdmission};
+use herdr_threads::protocol::ids::{HostBootId, HostTargetId, RetirementJobId, SeatId};
+use herdr_threads::protocol::results::{ApiError, ErrorCode};
+use herdr_threads::store::control;
+use herdr_threads::sync::facts::seat::SeatRetiredPayload;
 use herdr_threads::sync::hlc::HlcStamp;
-use herdr_threads::test_support::fact_exchange;
+use herdr_threads::test_support::{fact_exchange, write_guard};
 
-use crate::facts_seat::{Node, registry};
+use crate::facts_seat::{Node, budget, hold_off, hold_on, registry, retirement_rows};
 
 fn seat_created_ms(node: &Node) -> i64 {
     let hlc: i64 = node.query(
@@ -167,4 +172,219 @@ fn own_seat_restore_without_host_failed() {
         created[0].2
     );
     assert!(fresh.seat(&seat).is_none(), "no row inserted");
+}
+
+// ---- seat.retired ------------------------------------------------------------
+
+/// Makes the closure proof of `seat` current on `node`'s host (what an
+/// absent-target enumeration leaves) and returns it.
+fn closure_proof(node: &Node, seat: &SeatId) -> ClosureEvidence {
+    let target = format!("p-{}", seat.as_str());
+    node.raw()
+        .execute_batch(&format!(
+            "UPDATE herdr_hosts SET host_boot='boot-1',host_epoch=1; \
+             INSERT OR IGNORE INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance) \
+               SELECT host_id,'{target}','boot-1',1,1,1,0,'fresh' FROM herdr_hosts;"
+        ))
+        .unwrap();
+    ClosureEvidence {
+        host_boot: HostBootId::new("boot-1"),
+        epoch: 1,
+        target: HostTargetId::new(target),
+        generation: 1,
+    }
+}
+
+/// Starts the retirement of `seat` on its home node, with the write guard
+/// armed on the writer.
+fn begin_retirement(node: &Node, seat: &SeatId) -> Result<RetirementJob, ApiError> {
+    let proof = closure_proof(node, seat);
+    let mut conn = node.raw();
+    let _guard = write_guard::arm(&conn);
+    control::begin_retirement(node.ctx(), &mut conn, seat.clone(), proof)
+}
+
+fn retired_payloads(node: &Node) -> Vec<SeatRetiredPayload> {
+    node.query(
+        "SELECT payload FROM journal WHERE kind='seat.retired' ORDER BY ingest_seq",
+        |r| r.get::<_, Vec<u8>>(0),
+    )
+    .into_iter()
+    .map(|b| serde_json::from_slice(&b).expect("a seat.retired payload"))
+    .collect()
+}
+
+/// A remote seat's obligations on `a`: a joined thread with a pending ACK
+/// receipt and a thread it is invited to with a pending invitation.
+fn add_obligations(a: &Node, seat: &SeatId) {
+    let s = seat.as_str();
+    a.raw()
+        .execute_batch(&format!(
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled,next_sequence) \
+               VALUES('tRetire0001',(SELECT id FROM local_node),'t','',1,1,1,2), \
+                     ('tRetire0002',(SELECT id FROM local_node),'t','',1,1,1,1); \
+             INSERT INTO memberships(thread_id,seat_id,episode,state,joined_at,voluntary_state) \
+               VALUES('tRetire0001','{s}',1,'joined',1,'joined'); \
+             INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) \
+               VALUES('tRetire0001','{s}',1,1); \
+             INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) \
+               VALUES('tRetire0002','{s}',1,'invited','invited'); \
+             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) \
+               VALUES('iRetire00001','tRetire0002','{s}',1,'pending',1,1,1000,2000,(SELECT id FROM local_node)); \
+             INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq,origin_node) \
+               VALUES((SELECT id FROM local_node),'mRetire00001','tRetire0001',1,'ordinary','b',0,1,(SELECT id FROM local_node)); \
+             INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) \
+               VALUES('mRetire00001','tRetire0001','{s}','pending',90,0,90);"
+        ))
+        .unwrap();
+}
+
+#[test]
+fn published_seat_retired_on_b_retires_on_a_and_settles() {
+    let reg = registry();
+    let (a, b) = (Node::with(47, reg), Node::with(48, reg));
+    let seat = b.mint_seat(0);
+    b.add_local_seat(&seat);
+    b.enroll(&seat, "codex", "session-1").unwrap();
+    fact_exchange::sync(&a.store, &b.store);
+    add_obligations(&a, &seat);
+
+    let job = begin_retirement(&b, &seat).unwrap();
+    assert_eq!(b.seat(&seat).unwrap().0, "retired", "B's fence retired it");
+    assert_eq!(b.count_kind("seat.retired"), 1);
+    assert_eq!(retired_payloads(&b).len(), 1);
+    let authored = &retired_payloads(&b)[0];
+    assert_eq!(authored.seat, seat);
+    assert_eq!(authored.retired_at, job.retired_at.0, "the cutover");
+    fact_exchange::sync(&a.store, &b.store);
+
+    // The replicated part: the row and a `replicated` job row without closure columns.
+    assert_eq!(a.seat(&seat).unwrap().0, "retired");
+    assert_eq!(
+        retirement_rows(&a),
+        vec![(
+            seat.as_str().to_owned(),
+            "replicated".to_owned(),
+            job.retired_at.0,
+            None
+        )]
+    );
+    assert_eq!(
+        retirement_rows(&b)[0].1,
+        "local",
+        "B keeps its closure-backed row"
+    );
+    // Nothing settled yet: that is the job's work, in the deadline lane.
+    let pending = |sql: &str| a.query(sql, |r| r.get::<_, String>(0));
+    assert_eq!(
+        pending("SELECT state FROM invitations"),
+        vec!["pending".to_owned()]
+    );
+
+    let job_id = RetirementJobId::new(
+        pending("SELECT id FROM retirements WHERE origin='replicated'").remove(0),
+    );
+    let mut conn = a.raw();
+    let mut turns = 0;
+    loop {
+        let progress = control::advance_retirement(
+            a.ctx(),
+            &mut conn,
+            job_id.clone(),
+            WorkAdmission::Background,
+            &budget(),
+        )
+        .unwrap();
+        turns += 1;
+        assert!(turns < 50, "the job must finish");
+        if progress.complete {
+            break;
+        }
+    }
+    drop(conn);
+    assert_eq!(
+        pending("SELECT state FROM invitations"),
+        vec!["recipient_retired".to_owned()]
+    );
+    assert_eq!(
+        pending("SELECT state FROM receipts"),
+        vec!["recipient_retired".to_owned()]
+    );
+    assert_eq!(
+        pending("SELECT state FROM memberships ORDER BY thread_id"),
+        vec!["retired".to_owned(), "retired".to_owned()],
+        "memberships closed"
+    );
+    assert_eq!(
+        a.query(
+            "SELECT count(*) FROM membership_intervals WHERE left_seq IS NULL",
+            |r| r.get::<_, i64>(0)
+        ),
+        vec![0],
+        "the open interval closed"
+    );
+    assert_eq!(
+        pending("SELECT status FROM retirements"),
+        vec!["complete".to_owned()]
+    );
+    assert_eq!(
+        a.query("SELECT count(*) FROM retirement_audits", |r| r
+            .get::<_, i64>(0)),
+        vec![2],
+        "one audit event per membership thread"
+    );
+}
+
+#[test]
+fn unpublished_seat_retirement_authors_nothing() {
+    let reg = registry();
+    let (a, b) = (Node::with(49, reg), Node::with(50, reg));
+    let seat = b.mint_seat(0);
+    b.add_local_seat(&seat);
+    // Never enrolled, so never published.
+    begin_retirement(&b, &seat).unwrap();
+    assert_eq!(b.seat(&seat).unwrap().0, "retired");
+    assert_eq!(retirement_rows(&b).len(), 1);
+    assert_eq!(b.count_kind("seat.retired"), 0);
+    assert_eq!(
+        b.count_kind("seat.created"),
+        0,
+        "retirement does not publish"
+    );
+    fact_exchange::sync(&a.store, &b.store);
+    assert!(a.seat(&seat).is_none());
+}
+
+#[test]
+fn retirement_waits_for_own_history_hold_then_authors_once() {
+    let reg = registry();
+    let b = Node::with(63, reg);
+    let seat = b.mint_seat(0);
+    b.add_local_seat(&seat);
+    b.enroll(&seat, "codex", "session-1").unwrap();
+    assert_eq!(b.count_kind("seat.created"), 1);
+
+    hold_on(&b);
+    let error = begin_retirement(&b, &seat).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ServiceBusy, "retryable");
+    assert_eq!(error.detail, "own history catching up");
+    assert_eq!(b.count_kind("seat.retired"), 0, "no seat.retired authored");
+    assert_eq!(
+        b.seat(&seat).unwrap().0,
+        "resolved",
+        "the fence did not half apply"
+    );
+    assert!(retirement_rows(&b).is_empty(), "no job row to retry from");
+
+    hold_off(&b);
+    begin_retirement(&b, &seat).unwrap();
+    assert_eq!(
+        b.count_kind("seat.retired"),
+        1,
+        "exactly one after the hold"
+    );
+    assert_eq!(b.seat(&seat).unwrap().0, "retired");
+    // The job already exists: a repeated start authors nothing more.
+    begin_retirement(&b, &seat).unwrap();
+    assert_eq!(b.count_kind("seat.retired"), 1);
 }

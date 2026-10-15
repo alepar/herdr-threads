@@ -1,9 +1,10 @@
-//! Fact kinds of the seat entity: `seat.created` (`seat.retired` lands in its
-//! own leaf task).
+//! Fact kinds of the seat entity: `seat.created` and `seat.retired`.
 //!
 //! `seat.created` publishes a local seat so other nodes list it (fact-kinds
 //! design section 4). The handler checks the origin owns the seat ID's tag,
-//! then calls the one materializer in `store::seats`.
+//! then calls the one materializer in `store::seats`. `seat.retired` retires a
+//! published seat on every node; its handler checks the origin is the seat's
+//! home, then calls `seats::materialize_seat_retired`.
 
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
@@ -55,6 +56,64 @@ impl FactKind for SeatCreated {
         with_input(cx, |m| {
             require_author(tx, m, Self::NAME, &AuthorRule::OwnTag(payload.seat.clone()))?;
             seats::materialize_seat_created(tx, m, &payload)
+        })
+    }
+}
+
+/// Why a seat was retired. Closed set: the pane went away (`closed`) or an
+/// operator retired it (`operator`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetireReason {
+    Closed,
+    Operator,
+}
+
+/// The `seat.retired` v1 payload. `retired_at` is the cutover in Unix ms.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatRetiredPayload {
+    pub seat: SeatId,
+    pub reason: RetireReason,
+    pub retired_at: i64,
+}
+
+impl ReferencedSeats for SeatRetiredPayload {
+    fn referenced_seats(&self) -> Vec<SeatId> {
+        vec![self.seat.clone()]
+    }
+}
+
+/// The `seat.retired` v1 kind. It is a held kind (`materialize::HELD_KINDS`):
+/// `FactRoute::Journal` refuses it for a local seat during the restore-window
+/// authoring hold.
+pub struct SeatRetired;
+
+impl FactKind for SeatRetired {
+    const NAME: &'static str = "seat.retired";
+    const MAJOR: u32 = 1;
+    type Payload = SeatRetiredPayload;
+
+    fn creates(_: &SeatRetiredPayload) -> Option<EntityKey> {
+        None
+    }
+
+    fn needs(payload: &SeatRetiredPayload) -> Vec<EntityKey> {
+        seat_key(&payload.seat).into_iter().collect()
+    }
+
+    fn apply(
+        tx: &Transaction<'_>,
+        cx: &mut ApplyContext<'_>,
+        payload: SeatRetiredPayload,
+    ) -> Result<(), FactError> {
+        with_input(cx, |m| {
+            require_author(
+                tx,
+                m,
+                Self::NAME,
+                &AuthorRule::SeatHome(payload.seat.clone()),
+            )?;
+            seats::materialize_seat_retired(tx, m, &payload)
         })
     }
 }

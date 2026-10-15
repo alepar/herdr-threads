@@ -237,6 +237,7 @@ impl FactRegistry {
                 .with::<NodeGenesis>()
                 .with::<NodeRetag>()
                 .with::<seat::SeatCreated>()
+                .with::<seat::SeatRetired>()
                 .build()
         })
     }

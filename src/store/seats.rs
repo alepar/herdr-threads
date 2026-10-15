@@ -33,7 +33,7 @@ use crate::{
     },
     sync::facts::{
         payload::SeatKind,
-        seat::{SeatCreated, SeatCreatedPayload},
+        seat::{RetireReason, SeatCreated, SeatCreatedPayload, SeatRetiredPayload},
     },
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -281,6 +281,78 @@ pub fn materialize_seat_created(
             .map_err(store_error)?;
         }
     }
+    Ok(())
+}
+
+/// Materializes `seat.retired` (fact-kinds design section 4), shared by the
+/// handler for both the authoring node and every other node.
+///
+/// - Local origin: a no-op. The authoring node's retirement fence already
+///   retired the row, and its job writes the audit; an own old incarnation or
+///   a re-issued copy changes nothing, and a local-origin fact never retires a
+///   remote seat (it is not the seat's home).
+/// - Remote seat, not yet retired: `state = 'retired'`, `retired_at` from the
+///   payload, `retired_seq = decision_seq`; the send-eligibility and directory
+///   revisions move and a `retirements` row with `origin = 'replicated'` lets
+///   the retirement job (`advance_retirement`) settle the seat's pending
+///   invitations and receipts as `recipient_retired` and close its memberships.
+/// - Remote seat already retired: a no-op (no second row).
+/// - Unknown seat: `InvalidRequest` (`needs` makes this the overflow case).
+pub fn materialize_seat_retired(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    payload: &SeatRetiredPayload,
+) -> Result<(), ApiError> {
+    if m.local_origin {
+        return Ok(());
+    }
+    let id = payload.seat.as_str();
+    let row: Option<bool> = tx
+        .query_row("SELECT is_local FROM seats WHERE id=?1", [id], |r| r.get(0))
+        .optional()
+        .map_err(store_error)?;
+    match row {
+        None => {
+            return Err(api_error(ErrorCode::InvalidRequest, "unknown seat"));
+        }
+        // `require_author` already refused a non-home origin; a local seat is
+        // retired by its own fence.
+        Some(true) => return Ok(()),
+        Some(false) => {}
+    }
+    let instance: String = tx
+        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+        .map_err(store_error)?;
+    let retired_seq = i64::try_from(m.decision_seq)
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "decision_seq out of range"))?;
+    let changed = schema::apply_eligibility_transition(tx, &instance, |tx| {
+        let changed = tx
+            .execute(
+                "UPDATE seats SET state='retired',retired_at=?1,retired_seq=?2 WHERE id=?3 AND state!='retired'",
+                params![payload.retired_at, retired_seq, id],
+            )
+            .map_err(store_error)?;
+        Ok(changed == 1)
+    })?;
+    if !changed {
+        return Ok(());
+    }
+    schema::bump_filter_revision(tx, &instance, "directory", "all")?;
+    crate::store::control::bump_member_directory(tx, &instance, &payload.seat)?;
+    let job = crate::protocol::ids::RetirementJobId::new(crate::store::public_ids::fresh(
+        tx,
+        crate::protocol::ids::prefix::RETIREMENT,
+        &[(
+            "retirements",
+            "id",
+            crate::protocol::ids::prefix::RETIREMENT,
+        )],
+    )?);
+    tx.execute(
+        "INSERT INTO retirements(id,seat_id,cutover_at,origin) VALUES (?1,?2,?3,'replicated')",
+        params![job.as_str(), id, payload.retired_at],
+    )
+    .map_err(store_error)?;
     Ok(())
 }
 
@@ -2668,9 +2740,11 @@ pub fn apply_reconciliation_transition(
                     ReconciliationOutcome::Applied
                 }
                 ReconciliationAction::BeginRetirement { absent_target } => {
-                    let job = control::begin_retirement_fence(
+                    let job = control::begin_retirement_authored(
                         tx,
-                        at.utc,
+                        context,
+                        at,
+                        RetireReason::Closed,
                         seat.clone(),
                         instance,
                         transition.publication.boot.as_str(),
@@ -3683,9 +3757,11 @@ pub fn mutate_operator(
                     ));
                 }
                 let boot = boot.unwrap_or_default();
-                control::begin_retirement_fence(
+                control::begin_retirement_authored(
                     tx,
-                    at.utc,
+                    context,
+                    at,
+                    RetireReason::Operator,
                     replace.clone(),
                     &instance,
                     &boot,
@@ -4384,9 +4460,11 @@ fn operator_retire(
                     .unwrap_or_default(),
             };
             let boot = boot.unwrap_or_default();
-            control::begin_retirement_fence(
+            control::begin_retirement_authored(
                 tx,
-                at.utc,
+                context,
+                at,
+                RetireReason::Operator,
                 seat.clone(),
                 instance,
                 &boot,
@@ -4597,6 +4675,28 @@ pub(crate) fn eligible_delivery_recipient(
         Option<i64>,
         i64,
     );
+    // A remote seat has no host, target or observation: it is eligible iff its
+    // row is `remote` (a retired one is not). Local seats keep the check below.
+    let remote_state: Option<String> = db
+        .query_row(
+            &format!(
+                "SELECT state FROM seats WHERE id=?1 AND instance_id=?2 AND NOT ({LOCAL_SEAT})"
+            ),
+            params![seat.as_str(), instance],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if let Some(state) = remote_state {
+        return if state == "remote" {
+            Ok(())
+        } else {
+            Err(api_error(
+                ErrorCode::TargetUnresolved,
+                "delivery recipient unresolved, held or invalidated",
+            ))
+        };
+    }
     let row: Option<Row> = db.query_row("SELECT s.state,s.target_id,s.target_generation,h.host_boot,h.host_epoch,s.retired_at,s.retired_seq,h.host_id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND s.instance_id=?2", params![seat.as_str(), instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
     let Some((state, Some(target), generation, boot, epoch, retired_at, retired_seq, host_id)) =
         row

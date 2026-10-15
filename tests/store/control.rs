@@ -10,6 +10,20 @@ use crate::{
     store::connection::StoreContext,
 };
 use rusqlite::Connection;
+
+/// Every retirement start in this suite runs (in test-support builds) with the
+/// write guard armed on its connection: the fence's replicated seat write goes through its own scope
+/// and nothing else in it touches a replicated table (ht-5fr.4.7).
+fn begin_retirement(
+    context: &StoreContext,
+    conn: &mut Connection,
+    seat: SeatId,
+    proof: crate::ports::ClosureEvidence,
+) -> Result<crate::ports::RetirementJob, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::begin_retirement(context, conn, seat, proof)
+}
 use std::{
     path::PathBuf,
     sync::{

@@ -9,9 +9,11 @@ use crate::protocol::authority::ObligationRef;
 use crate::protocol::ids::{InvitationId, MessageId, RetirementJobId, SeatId, ThreadId, prefix};
 use crate::protocol::results::{ApiError, BoundedError, ErrorCode, MAX_LAST_ERROR_BYTES};
 use crate::protocol::time::{CallBudget, UtcMillis};
-use crate::store::connection::{StoreContext, api_error, store_error};
+use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
 use crate::store::effective::{self, EffectiveObservationSource};
+use crate::store::materialize::FactRoute;
 use crate::store::schema::{self, EventInput};
+use crate::sync::facts::seat::{RetireReason, SeatRetired, SeatRetiredPayload};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 pub fn begin_retirement(
@@ -87,9 +89,14 @@ pub fn begin_retirement(
             "seat binding generation exhausted",
         ));
     }
-    let result = begin_retirement_fence(
+    let result = begin_retirement_authored(
         &tx,
-        context.clock().utc_now(),
+        context,
+        DecisionInstant {
+            utc: context.clock().utc_now(),
+            monotonic: context.clock().monotonic_now(),
+        },
+        RetireReason::Closed,
         seat,
         &instance,
         proof.host_boot.as_str(),
@@ -101,9 +108,76 @@ pub fn begin_retirement(
     Ok(result)
 }
 
+/// [`begin_retirement_fence`], then `seat.retired` for a published seat.
+///
+/// Responsibility
+/// - Owns: the one place a retirement reaches other nodes: after the fence's
+///   local writes it authors `seat.retired` through `FactRoute::Journal` when
+///   the seat is local and published. An unpublished seat authors nothing (no
+///   other node knows it).
+/// - Must not: author for an unpublished seat, or record a failure when the
+///   restore-window hold refuses the fact. The refusal is the retryable
+///   `ServiceBusy "own history catching up"`: it aborts the caller's
+///   transaction, so the fence is not half applied, and the caller retries
+///   after the hold (the operator retire command returns it unchanged).
+/// - Role: every production retirement decision (closure proof, snapshot
+///   reconciliation, operator retire and `--replace`) calls this, never the
+///   bare fence.
+// Allowed: fence inputs mirror the retirement row's columns.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn begin_retirement_authored(
+    tx: &Transaction<'_>,
+    context: &StoreContext,
+    at: DecisionInstant,
+    reason: RetireReason,
+    seat: SeatId,
+    instance: &str,
+    boot: &str,
+    epoch: i64,
+    target: &str,
+    generation: i64,
+) -> Result<RetirementJob, ApiError> {
+    let job = begin_retirement_fence(
+        tx,
+        at.utc,
+        seat.clone(),
+        instance,
+        boot,
+        epoch,
+        target,
+        generation,
+    )?;
+    let published: bool = tx
+        .query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND {} AND published=1)",
+                crate::store::seats::LOCAL_SEAT
+            ),
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if published {
+        FactRoute::Journal.emit::<SeatRetired>(
+            tx,
+            context,
+            at,
+            &SeatRetiredPayload {
+                seat,
+                reason,
+                retired_at: at.utc.0,
+            },
+            None,
+            |_, _, _| Ok(()),
+        )?;
+    }
+    Ok(job)
+}
+
 /// Complete the already validated constant-size terminal fence in the caller's
 /// writer transaction. Snapshot reconciliation uses this without a gap between
-/// its active-generation CAS and the retirement decision.
+/// its active-generation CAS and the retirement decision. Production callers
+/// go through [`begin_retirement_authored`]; this is its local half.
 // Allowed: fence inputs mirror the retirement row's columns.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn begin_retirement_fence(
@@ -119,6 +193,11 @@ pub(crate) fn begin_retirement_fence(
     let cutover_seq = schema::next_decision_seq(tx, instance)?;
     schema::apply_eligibility_transition(tx, instance, |tx| {
         schema::clear_open_unavailability_for_seat(tx, seat.as_str(), cutover)?;
+        // The fence is the retirement decision itself: this UPDATE is the
+        // replicated seat state of the authoring node (`seat.retired` then
+        // applies as a no-op on it), so it is a legal replicated write.
+        #[cfg(feature = "test-support")]
+        let _scope = crate::test_support::write_guard::enter_replicated_write_scope();
         let changed = tx.execute("UPDATE seats SET state='retired',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,generation=generation+1,retired_at=?1,retired_seq=?2 WHERE id=?3 AND state!='retired'",
             params![cutover.0,cutover_seq as i64,seat.as_str()]).map_err(store_error)?;
         // Every open binding disconnects (`seat_retired`, side-effect hooks run) and ends through

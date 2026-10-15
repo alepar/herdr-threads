@@ -33,12 +33,14 @@ pub(crate) use invitation::current_invitation_for_accept;
 pub use invitation::invite;
 pub use invitation::operator_orphan_invite;
 pub use invitation::reject;
-use membership::bump_member_directory;
+pub(crate) use membership::bump_member_directory;
 pub use membership::join;
 use membership::joined_in_thread;
 pub use membership::leave;
 pub use retirement::advance_retirement;
 pub use retirement::begin_retirement;
+pub(crate) use retirement::begin_retirement_authored;
+#[cfg(test)]
 pub(crate) use retirement::begin_retirement_fence;
 pub use thread::archive;
 pub use thread::create_thread;
