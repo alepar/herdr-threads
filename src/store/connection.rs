@@ -129,7 +129,9 @@ pub struct SyncState {
     /// lane before each kicked pass. Authoring leaves it clear: it applies
     /// inline, so a lane kick it causes finds nothing to do and takes no
     /// writer turn.
-    pub(crate) apply_hint: AtomicBool,
+    pub(crate) apply_hint: Arc<AtomicBool>,
+    /// While active, `apply_pass` applies only the active self log.
+    pub(crate) own_history_hold: Arc<OwnHistoryHold>,
 }
 
 impl SyncState {
@@ -144,6 +146,11 @@ impl SyncState {
         self.branch_walk_bound.load(Ordering::Relaxed)
     }
 
+    /// The hold SyncCoordinator and IncarnationsWorker set; shared by `Arc`.
+    pub fn own_history_hold(&self) -> &Arc<OwnHistoryHold> {
+        &self.own_history_hold
+    }
+
     /// Marks entries as possibly waiting to apply.
     pub fn set_apply_hint(&self) {
         self.apply_hint.store(true, Ordering::Release);
@@ -152,6 +159,139 @@ impl SyncState {
     /// Clears the hint and returns whether it was set.
     pub fn take_apply_hint(&self) -> bool {
         self.apply_hint.swap(false, Ordering::AcqRel)
+    }
+}
+
+/// Longest the own-history hold filters: 5 minutes, in monotonic ms.
+pub const OWN_HISTORY_HOLD_MAX: u64 = 5 * 60 * 1000;
+
+/// Who holds the own-history hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldSource {
+    /// SyncCoordinator: this node's links have not all been tried yet.
+    Links,
+    /// IncarnationsWorker: pulling back this node's own old incarnations.
+    Branches,
+}
+
+#[derive(Default)]
+struct HoldState {
+    links: bool,
+    branches: bool,
+    started: Option<MonoInstant>,
+    expiry_logged: bool,
+}
+
+impl HoldState {
+    fn any(&self) -> bool {
+        self.links || self.branches
+    }
+}
+
+/// Makes `apply_pass` wait with every log but the active self log.
+///
+/// Responsibility: owns the two hold flags ([`HoldSource`]), the hold's start
+/// instant and the 5-minute cap ([`OWN_HISTORY_HOLD_MAX`]). Why: catch-up
+/// suppression ([`crate::store::apply::ApplyContext::delivery_suppressed`]) is settled-only, so a
+/// message may be offered only after the settlement that would suppress it
+/// has been ingested. After a wipe or restore this node's own settlements sit
+/// in its own old incarnations, which it pulls back from peers; applying a
+/// foreign or own-old head before that pull finishes would redeliver settled
+/// history (root spec section 7, journal-core step 3a). So while a flag is set
+/// and the hold is younger than the cap, those heads stay `pending` (no
+/// `blocked_on` write). Guarantees: a fresh node with no flag set never waits,
+/// and no hold outlasts 5 minutes, so a silent peer cannot stall apply
+/// forever (a settlement arriving after the cap cannot suppress; accepted
+/// limit in TRUST-POLICY). The start instant is set when the first flag sets
+/// while both are clear and re-arms only after both have cleared. Must not:
+/// touch the store. Role: set by SyncCoordinator and IncarnationsWorker,
+/// read by `apply_pass` and by the FactRoute restore-window authoring hold
+/// ([`active`](Self::active)). When the last flag clears or the cap expires
+/// it sets the shared apply hint and runs the kick hook (a `Lane::Apply`
+/// kick), so held entries apply without waiting for the safety tick.
+pub struct OwnHistoryHold {
+    state: std::sync::Mutex<HoldState>,
+    apply_hint: Arc<AtomicBool>,
+    kick: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    expiry_logs: AtomicU64,
+}
+
+impl OwnHistoryHold {
+    pub(crate) fn new(apply_hint: Arc<AtomicBool>) -> Self {
+        Self {
+            state: std::sync::Mutex::default(),
+            apply_hint,
+            kick: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            expiry_logs: AtomicU64::new(0),
+        }
+    }
+
+    /// Installs the callback that kicks `Lane::Apply` when the hold lifts.
+    pub fn set_release_kick(&self, kick: Arc<dyn Fn() + Send + Sync>) {
+        if let Ok(mut slot) = self.kick.lock() {
+            *slot = Some(kick);
+        }
+    }
+
+    /// Sets or clears `source`'s flag at `now`.
+    pub fn set(&self, source: HoldSource, on: bool, now: MonoInstant) {
+        let released = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let was = state.any();
+            match source {
+                HoldSource::Links => state.links = on,
+                HoldSource::Branches => state.branches = on,
+            }
+            if !was && state.any() {
+                state.started = Some(now);
+                state.expiry_logged = false;
+            }
+            let released = was && !state.any();
+            if released {
+                state.started = None;
+            }
+            released
+        };
+        if released {
+            self.release();
+        }
+    }
+
+    /// True while a flag is set and the hold is younger than the cap. The
+    /// call that first sees the cap passed logs once and kicks the Apply lane.
+    pub fn active(&self, now: MonoInstant) -> bool {
+        let expired = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(started) = state.started.filter(|_| state.any()) else {
+                return false;
+            };
+            if now.0.saturating_sub(started.0) < OWN_HISTORY_HOLD_MAX {
+                return true;
+            }
+            !std::mem::replace(&mut state.expiry_logged, true)
+        };
+        if expired {
+            eprintln!("sync: own-history hold expired after 5 min; applying foreign entries");
+            #[cfg(test)]
+            self.expiry_logs.fetch_add(1, Ordering::SeqCst);
+            self.release();
+        }
+        false
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expiry_logs(&self) -> u64 {
+        self.expiry_logs.load(Ordering::SeqCst)
+    }
+
+    fn release(&self) {
+        self.apply_hint.store(true, Ordering::Release);
+        let kick = self.kick.lock().ok().and_then(|slot| slot.clone());
+        if let Some(kick) = kick {
+            kick();
+        }
     }
 }
 
