@@ -41,6 +41,7 @@ fn input(local_origin: bool, provenance: &'static str) -> MaterializeInput<'stat
         origin_node: crate::test_support::test_node_seed().uuid,
         origin_ms: 1234,
         local_origin,
+        own_history: local_origin,
         provenance,
         suppress: &|_, _| Ok(false),
     }

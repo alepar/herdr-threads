@@ -365,7 +365,12 @@ fn msg(id: &str) -> Msg {
 }
 
 fn delivery() -> &'static FactRegistry {
-    FactRegistry::builtins_plus(|b| b.with::<PutKind>().with::<MsgKind>().with::<SettleKind>())
+    FactRegistry::builtins_plus(|b| {
+        b.with::<PutKind>()
+            .with::<MsgKind>()
+            .with::<SettleKind>()
+            .with::<HistKind>()
+    })
 }
 
 // ---- nodes ------------------------------------------------------------------
@@ -1394,4 +1399,196 @@ fn own_old_settled_message_not_delivered_even_with_later_settlement_batch() {
     assert_eq!(b2.delivered("done"), (0, 0));
     assert_eq!(b2.seen("open"), Some(false));
     assert_eq!(b2.delivered("open"), (1, 1), "the unsettled one is offered");
+}
+
+// ---- re-issue and own history -------------------------------------------------
+
+/// Records what the apply context said about the entry's history and what
+/// `attribution::take` fell back to, into `test_hist`.
+struct HistKind;
+impl FactKind for HistKind {
+    const NAME: &'static str = "test.hist";
+    const MAJOR: u32 = 1;
+    type Payload = Msg;
+    fn creates(_: &Msg) -> Option<EntityKey> {
+        None
+    }
+    fn needs(_: &Msg) -> Vec<EntityKey> {
+        Vec::new()
+    }
+    fn apply(tx: &Transaction<'_>, cx: &mut ApplyContext<'_>, p: Msg) -> Result<(), FactError> {
+        let fail = |e: rusqlite::Error| FactError::from_api(store_error(e));
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS test_hist(id TEXT, own INTEGER, provenance TEXT, observation TEXT);",
+        )
+        .map_err(fail)?;
+        let taken = crate::sync::facts::with_input(cx, |m| {
+            crate::store::attribution::take(tx, m, "send:hist")
+        })?;
+        tx.execute(
+            "INSERT INTO test_hist(id,own,provenance,observation) VALUES (?1,?2,?3,?4)",
+            params![
+                p.id,
+                cx.is_own_history(),
+                cx.provenance().as_str(),
+                taken.observation
+            ],
+        )
+        .map_err(fail)?;
+        Ok(())
+    }
+}
+
+impl Node {
+    fn reissue(&mut self, source: &crate::sync::envelope::Envelope) -> Authored {
+        let ctx = &self.ctx;
+        ctx.execute_decision(
+            &mut self.conn,
+            |_| Ok(()),
+            |tx, d, ()| jr::reissue(tx, ctx, d, source, jr::ReissueSource::Forked),
+        )
+        .unwrap()
+    }
+
+    fn entry(&self, log: &LogKey, counter: u64) -> crate::sync::envelope::Envelope {
+        jr::serve(&self.conn, log, counter, BatchLimits::default())
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+    }
+
+    /// A `journal_forked` row creating `creates` in `log` (a log of this node).
+    fn forked_settlement(&self, log: &LogKey, creates: &str) {
+        self.conn
+            .execute(
+                "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,payload,signature,received_at) \
+                 SELECT log_ix,9,zeroblob(32),zeroblob(32),1,'test.settle',1,x'',?3,x'',zeroblob(64),0 \
+                 FROM sync_logs WHERE node_uuid=?1 AND incarnation=?2",
+                params![log.node.to_string(), log.incarnation, creates],
+            )
+            .unwrap();
+    }
+
+    /// `(own_history, provenance, observation provenance)` the `HistKind` saw.
+    fn hist(&self, id: &str) -> (bool, String, String) {
+        let (own, prov, obs): (bool, String, String) = self
+            .conn
+            .query_row(
+                "SELECT own,provenance,observation FROM test_hist WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        let obs: serde_json::Value = serde_json::from_str(&obs).unwrap();
+        (own, prov, obs["provenance"].as_str().unwrap().to_owned())
+    }
+}
+
+// Kills: a reissue-mode suppression that ignores `journal_forked` (the
+// settlement of a lost branch usually sits there).
+#[test]
+fn reissue_settlement_only_in_journal_forked_suppresses() {
+    let mut x1 = Node::new(80, delivery());
+    x1.author::<MsgKind>(&msg("r1"));
+    let mut x2 = Node::with_incarnations(80, 510, delivery());
+    let own = x2.log;
+    x2.forked_settlement(&own, "s:r1");
+    let source = x1.entry(&x1.log, 2);
+    let authored = x2.reissue(&source);
+    assert_eq!(x2.state(&x2.log, authored.counter), "applied");
+    assert_eq!(x2.seen("r1"), Some(true), "settled in journal_forked only");
+    assert_eq!(x2.delivered("r1"), (0, 0));
+}
+
+// Kills: a reissue that suppresses every re-issued fact (an open obligation
+// from a lost branch would never be offered).
+#[test]
+fn reissue_unsettled_message_like_not_suppressed() {
+    let mut x1 = Node::new(81, delivery());
+    x1.author::<MsgKind>(&msg("r2"));
+    let mut x2 = Node::with_incarnations(81, 511, delivery());
+    let source = x1.entry(&x1.log, 2);
+    x2.reissue(&source);
+    assert_eq!(x2.seen("r2"), Some(false));
+    assert_eq!(x2.delivered("r2"), (1, 1), "offered normally");
+}
+
+// Kills: an is_own_history that is true for a foreign or live-self entry, or
+// false for a re-issue; and a provenance that stops being Local under Reissue.
+#[test]
+fn is_own_history_true_for_reissue_and_own_old() {
+    let mut a = Node::new(82, delivery());
+    a.author::<HistKind>(&msg("foreign"));
+    let mut x1 = Node::new(83, delivery());
+    x1.author::<HistKind>(&msg("re"));
+    let mut x2 = Node::with_incarnations(83, 512, delivery());
+    x2.author::<HistKind>(&msg("live"));
+    x2.ship(&a, a.log, 2);
+    x2.pass();
+    let source = x1.entry(&x1.log, 2);
+    x2.reissue(&source);
+
+    let foreign_prov = format!("replicated_from:{}", a.log.node);
+    assert_eq!(
+        x2.hist("foreign"),
+        (false, foreign_prov.clone(), foreign_prov)
+    );
+    let local = "local_journal".to_owned();
+    let live = x2.hist("live");
+    assert!(!live.0, "an entry of the live self log is not history");
+    assert_eq!(live.1, local);
+    assert_eq!(x2.hist("re"), (true, local.clone(), local), "Reissue mode");
+}
+
+#[test]
+fn own_old_incarnation_is_own_history_in_normal_mode() {
+    let mut x1 = Node::new(84, delivery());
+    x1.author::<HistKind>(&msg("old"));
+    let mut x2 = Node::with_incarnations(84, 513, delivery());
+    x2.ship(&x1, x1.log, 2);
+    x2.pass();
+    assert_eq!(x2.state(&x1.log, 2), "applied");
+    let local = "local_journal".to_owned();
+    assert_eq!(x2.hist("old"), (true, local.clone(), local));
+}
+
+// Kills: a take that records `replicated_from` or `local` for a re-issued or
+// own-old entry with nothing staged, or that ignores a staged row in Reissue.
+#[test]
+fn take_returns_local_journal_for_own_history() {
+    let mut x1 = Node::new(85, delivery());
+    x1.author::<HistKind>(&msg("old"));
+    let mut x2 = Node::with_incarnations(85, 514, delivery());
+    let source = x1.entry(&x1.log, 2);
+    x2.reissue(&source);
+    let (own, prov, obs) = x2.hist("old");
+    assert!(own);
+    assert_eq!(
+        (prov.as_str(), obs.as_str()),
+        ("local_journal", "local_journal")
+    );
+}
+
+// Kills: a suppression that reads only `journal` (a pulled branch's
+// settlement lives in `journal_forked`) or only reissue mode.
+#[test]
+fn fork_then_pull_forked_settlement_suppresses_foreign_normal_mode() {
+    let mut p = Node::new(86, delivery());
+    p.author::<MsgKind>(&msg("f1"));
+    p.author::<MsgKind>(&msg("f2"));
+    let mut x1 = Node::new(87, delivery());
+    let mut x2 = Node::with_incarnations(87, 515, delivery());
+    x2.ship(&x1, x1.log, 1);
+    x2.freeze(&x1.log, 1);
+    x2.forked_settlement(&x1.log, "s:f1");
+    x2.ship(&p, p.log, 3);
+    x2.pass();
+    assert_eq!(x2.state(&p.log, 2), "applied");
+    assert_eq!(x2.state(&p.log, 3), "applied");
+    assert_eq!(x2.seen("f1"), Some(true), "settled by the lost branch");
+    assert_eq!(x2.delivered("f1"), (0, 0), "a peer's message wakes nobody");
+    assert_eq!(x2.seen("f2"), Some(false), "key absent: not suppressed");
+    assert_eq!(x2.delivered("f2"), (1, 1));
+    let _ = &mut x1;
 }

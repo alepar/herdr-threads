@@ -103,6 +103,8 @@ pub struct ApplyContext<'a> {
     pub local_node: NodeUuid,
     follow_ups: Vec<QueuedFact>,
     self_tag_k: Option<u32>,
+    own_old_incarnation: bool,
+    reissue_of: Option<LogKey>,
     _entry: PhantomData<&'a ()>,
 }
 
@@ -127,6 +129,8 @@ impl ApplyContext<'_> {
             local_node,
             follow_ups: Vec::new(),
             self_tag_k: None,
+            own_old_incarnation: false,
+            reissue_of: None,
             _entry: PhantomData,
         }
     }
@@ -151,6 +155,30 @@ impl ApplyContext<'_> {
         } else {
             Provenance::ReplicatedFrom(self.origin.node)
         }
+    }
+
+    /// Marks the entry as read from one of this node's older incarnations
+    /// (a local-origin log other than the active self log). ApplyEngine sets
+    /// it; a bare `new` context is not own-old.
+    pub(crate) fn with_own_old_incarnation(mut self, own_old: bool) -> Self {
+        self.own_old_incarnation = own_old;
+        self
+    }
+
+    /// Marks the entry as running under [`ApplyMode::Reissue`] for the source
+    /// log `of`.
+    pub(crate) fn with_reissue_of(mut self, of: Option<LogKey>) -> Self {
+        self.reissue_of = of;
+        self
+    }
+
+    /// True when the entry is this node's own earlier history: an entry of an
+    /// own old incarnation, or one being re-issued into the active log
+    /// ([`ApplyMode::Reissue`]). Attribution reads it to record
+    /// `local_journal` when no local attribution was staged. Provenance is
+    /// unaffected: both cases stay [`Provenance::Local`].
+    pub fn is_own_history(&self) -> bool {
+        self.own_old_incarnation || self.reissue_of.is_some()
     }
 
     /// Whether `seat` exists and its home is this node (delegates to
@@ -230,6 +258,15 @@ pub enum ApplyMode {
     Head,
     /// A re-attempt of an entry already counted in `applied_through`.
     Replay,
+    /// Journal's `reissue`: the entry was just authored as the head of the
+    /// active self log from an entry of the log `of` (a frozen own log or one
+    /// of its branches). Readiness is not checked (its deps may exceed the
+    /// owner's applied vector) and `needs` parking applies as usual; like a
+    /// head, any recorded outcome counts as processed. Suppression is the same
+    /// settled-only rule as every other origin
+    /// ([`ApplyContext::delivery_suppressed`]): this mode adds none of its
+    /// own, so an unsettled obligation from a lost branch is still offered.
+    Reissue { of: LogKey },
 }
 
 /// What applying one entry did.
@@ -393,7 +430,7 @@ fn record_unapplied(
 }
 
 fn advance_head(tx: &Transaction<'_>, row: &EntryRow, mode: ApplyMode) -> Result<(), ApiError> {
-    if mode == ApplyMode::Head {
+    if matches!(mode, ApplyMode::Head | ApplyMode::Reissue { .. }) {
         tx.execute(
             "UPDATE sync_logs SET applied_through=?2, blocked_on=NULL WHERE log_ix=?1 AND applied_through<?2",
             params![row.log_ix, row.counter as i64],
@@ -438,9 +475,12 @@ fn run_handler(
     decision: DecisionInstant,
     ingest_seq: i64,
     row: &EntryRow,
+    mode: ApplyMode,
 ) -> Result<Result<Handled, FactError>, ApiError> {
-    let local: String = tx
-        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+    let (local, active_log_ix): (String, Option<i64>) = tx
+        .query_row("SELECT id,active_log_ix FROM local_node", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .map_err(store_error)?;
     let local_node: NodeUuid = local
         .parse()
@@ -461,7 +501,12 @@ fn run_handler(
         decision,
         decision_seq,
         local_node,
-    );
+    )
+    .with_own_old_incarnation(row.origin.node == local_node && Some(row.log_ix) != active_log_ix)
+    .with_reissue_of(match mode {
+        ApplyMode::Reissue { of } => Some(of),
+        _ => None,
+    });
     if let Err(error) = handler(tx, &mut cx, &row.payload) {
         return Ok(Err(error));
     }
@@ -531,7 +576,7 @@ fn apply_entry(
 
     tx.execute_batch("SAVEPOINT apply_entry")
         .map_err(store_error)?;
-    let handled = match run_handler(tx, sync, decision, ingest_seq, &row) {
+    let handled = match run_handler(tx, sync, decision, ingest_seq, &row, mode) {
         Ok(handled) => handled,
         Err(error) => {
             rollback_savepoint(tx)?;

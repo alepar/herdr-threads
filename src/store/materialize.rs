@@ -46,6 +46,10 @@ pub struct MaterializeInput<'a> {
     pub origin_ms: i64,
     /// The origin node is this node, in any incarnation.
     pub local_origin: bool,
+    /// The entry is this node's own earlier history (`ApplyContext::is_own_history`):
+    /// an own old incarnation, or a re-issue. `attribution::take` records
+    /// `local_journal` for it when nothing was staged.
+    pub own_history: bool,
     pub provenance: &'a str,
     /// Catch-up suppression for a settlement key (`ApplyContext::delivery_suppressed`).
     pub suppress: &'a SuppressFn<'a>,
@@ -81,6 +85,9 @@ pub fn local_only(
         origin_node,
         origin_ms: decision.utc.0,
         local_origin: true,
+        // `local` is never a stored value: with nothing staged this write is
+        // recorded as `local_journal` too.
+        own_history: true,
         provenance: "local",
         suppress: &never_suppress,
     })

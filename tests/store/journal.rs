@@ -1769,3 +1769,175 @@ fn seeded_variant_gives_distinct_node_and_self_log() {
     };
     assert_ne!(log_node(&default_store.path), log_node(&seeded_store.path));
 }
+
+// ---- reissue ---------------------------------------------------------------
+
+fn peer_log() -> LogKey {
+    LogKey {
+        node: PEER.parse().unwrap(),
+        incarnation: 1,
+    }
+}
+
+/// A source envelope as a frozen own log's tail would hold it; `reissue`
+/// reads only its fields, so hash and signature are placeholders.
+fn source_envelope(payload: &str, creates: Option<&str>, needs: &[&str], deps: Deps) -> Envelope {
+    Envelope {
+        log: LogKey {
+            node: identity().uuid(),
+            incarnation: 777,
+        },
+        counter: 9,
+        prev_hash: [7; 32],
+        hlc: HlcStamp::from_u64(5),
+        kind: "test.put".into(),
+        kind_version: 1,
+        deps,
+        creates: creates.map(|k| EntityKey::new(k).unwrap()),
+        needs: needs.iter().map(|k| EntityKey::new(*k).unwrap()).collect(),
+        payload: payload.as_bytes().to_vec(),
+        hash: [8; 32],
+        signature: [9; 64],
+    }
+}
+
+fn do_reissue(
+    ctx: &StoreContext,
+    conn: &mut Connection,
+    source: &Envelope,
+) -> Result<Authored, ApiError> {
+    ctx.execute_decision(
+        conn,
+        |_| Ok(()),
+        |tx, d, ()| reissue(tx, ctx, d, source, ReissueSource::Forked),
+    )
+}
+
+// Kills: a reissue that re-encodes the payload, ticks the HLC, drops
+// creates/needs or leaves the copy unsigned or unapplied.
+#[test]
+fn reissue_copies_fields_byte_for_byte() {
+    let store = Store::new();
+    let (ctx, mut conn, report) = opened(&store);
+    author_put(&ctx, &mut conn, &put("c")).unwrap();
+    // Odd spacing: a re-encode through serde would change these bytes.
+    let source = source_envelope(
+        r#"{ "id":"s1",  "need":"e:c" }"#,
+        Some("e:s1"),
+        &["e:c"],
+        Deps::empty(),
+    );
+    let authored = do_reissue(&ctx, &mut conn, &source).unwrap();
+    assert_eq!(authored.counter, 3);
+    assert_eq!(authored.hlc, source.hlc);
+    let copy = load_envelope(&conn, 3);
+    assert_eq!(copy.log, report.self_log);
+    assert_eq!(copy.kind, source.kind);
+    assert_eq!(copy.kind_version, source.kind_version);
+    assert_eq!(copy.hlc, source.hlc, "the HLC is not ticked");
+    assert_eq!(copy.creates, source.creates);
+    assert_eq!(copy.needs, source.needs);
+    assert_eq!(copy.payload, source.payload);
+    assert_eq!(copy.hash, authored.hash);
+    copy.verify(&identity().public_key()).unwrap();
+    copy.validate_shape().unwrap();
+    let (state, applied_through, contiguous): (String, i64, i64) = conn
+        .query_row(
+            "SELECT j.apply_state,l.applied_through,l.contiguous_counter FROM journal j \
+             JOIN sync_logs l USING(log_ix) WHERE j.ingest_seq=?1",
+            [authored.ingest_seq],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "applied");
+    assert_eq!(applied_through, contiguous);
+}
+
+// Kills: deps that are the owner's vector alone, the source's alone, a sum
+// instead of a maximum, or that list the active log.
+#[test]
+fn reissue_deps_elementwise_max_without_active_log() {
+    let store = Store::new();
+    let (ctx, mut conn, report) = opened(&store);
+    let seq = insert_foreign(&conn, 1, "test.put", r#"{"id":"p"}"#, "", Some("e:p"));
+    apply_foreign(&ctx, &mut conn, seq, apply::ApplyMode::Head).unwrap();
+    conn.execute(
+        "UPDATE sync_logs SET contiguous_counter=3, applied_through=3 WHERE node_uuid=?1",
+        [PEER],
+    )
+    .unwrap();
+    let other = LogKey {
+        node: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".parse().unwrap(),
+        incarnation: 2,
+    };
+    let source_log = LogKey {
+        node: identity().uuid(),
+        incarnation: 777,
+    };
+    let mut entries = vec![(peer_log(), 2), (other, 7), (report.self_log, 99)];
+    entries.sort();
+    let deps = Deps::new(entries, &source_log).unwrap();
+    let source = source_envelope(r#"{"id":"s2"}"#, Some("e:s2"), &[], deps);
+    do_reissue(&ctx, &mut conn, &source).unwrap();
+    let copy = load_envelope(&conn, 2);
+    let mut expected = vec![(peer_log(), 3), (other, 7)];
+    expected.sort();
+    assert_eq!(copy.deps.entries(), expected.as_slice());
+}
+
+// Kills: a reissue that aborts on a handler rejection (as `author` does), one
+// that leaves the handler's writes behind, or one that leaves the head
+// unaccounted so the commit guard trips.
+#[test]
+fn reissue_rejection_recorded_not_aborted_commit_guard_holds() {
+    let store = Store::new();
+    let (ctx, mut conn, _) = opened(&store);
+    let before = revision(&conn);
+    let source = source_envelope(
+        r#"{"id":"x","fail":"nope"}"#,
+        Some("e:x"),
+        &[],
+        Deps::empty(),
+    );
+    // execute_decision runs the commit guard; Ok means it held.
+    let authored = do_reissue(&ctx, &mut conn, &source).unwrap();
+    let (state, error): (String, Option<String>) = conn
+        .query_row(
+            "SELECT apply_state,apply_error FROM journal WHERE ingest_seq=?1",
+            [authored.ingest_seq],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "failed");
+    assert!(error.unwrap().contains("nope"));
+    assert_eq!(revision(&conn), before, "the handler's write rolled back");
+    check_self_applied(&conn).unwrap();
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT contiguous_counter FROM sync_logs l JOIN local_node n ON n.active_log_ix=l.log_ix"
+        ),
+        2
+    );
+}
+
+// Kills: a reissue that applies past a missing `needs` creator, or aborts on
+// the park.
+#[test]
+fn reissue_parked_dep_parks() {
+    let store = Store::new();
+    let (ctx, mut conn, _) = opened(&store);
+    let source = source_envelope(
+        r#"{"id":"d","need":"e:missing"}"#,
+        Some("e:d"),
+        &["e:missing"],
+        Deps::empty(),
+    );
+    let authored = do_reissue(&ctx, &mut conn, &source).unwrap();
+    let (state, on, error) = row_state(&conn, authored.ingest_seq);
+    assert_eq!(state, "parked_dep");
+    assert_eq!(on.as_deref(), Some("e:missing"));
+    assert_eq!(error.as_deref(), Some("needs e:missing: creator absent"));
+    check_self_applied(&conn).unwrap();
+    assert_eq!(revision(&conn), 0, "the handler did not run");
+}
