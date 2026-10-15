@@ -1445,6 +1445,14 @@ struct ComposedSync {
     join: tokio::task::JoinHandle<()>,
 }
 
+/// The incarnations repair thread (ht-5fr.6.13) and the token that ends it.
+/// Shutdown cancels `stop` only after the coordinator has stopped, so the
+/// coordinator never feeds a sink whose worker is gone.
+struct ComposedIncarnations {
+    stop: Cancellation,
+    join: std::thread::JoinHandle<()>,
+}
+
 /// How long shutdown waits for the coordinator to close its links.
 const SYNC_STOP_BOUND: Duration = Duration::from_secs(3);
 
@@ -1540,6 +1548,8 @@ where
     // The intake and gauge reach the accept loop through `peers`.
     let sync_slot: Arc<Mutex<Option<ComposedSync>>> = Arc::new(Mutex::new(None));
     let factory_sync_slot = Arc::clone(&sync_slot);
+    let incarnations_slot: Arc<Mutex<Option<ComposedIncarnations>>> = Arc::new(Mutex::new(None));
+    let factory_incarnations_slot = Arc::clone(&incarnations_slot);
     let peers = crate::daemon::transport::PeerWiring::default();
     let factory_peers = peers.clone();
     let factory_sessions = Arc::clone(&sessions_slot);
@@ -1970,6 +1980,15 @@ where
                     })?
                     .own_history_hold(),
             );
+            // The incarnations sink is the coordinator's fork sink; its
+            // worker starts right after the coordinator, because it needs the
+            // coordinator's `SyncSignals` and jobs queue until then.
+            let incarnations_sink = Arc::new(crate::sync::incarnations::IncarnationsSink::new(
+                sync_store.clone(),
+                Arc::clone(&factory_clock),
+                sync_log.clone(),
+            ));
+            let incarnations_store = sync_store.clone();
             let (sync_handle, peer_intake, sync_join) = crate::sync::coordinator::SyncCoordinator::start(
                 crate::sync::coordinator::CoordinatorDeps {
                     journal: sync_store.clone(),
@@ -1981,16 +2000,37 @@ where
                     pacer: sync_pacer,
                     status: Arc::clone(&factory_sync_status),
                     log: sync_log.clone(),
-                    fork_sink: Arc::new(crate::sync::coordinator::LogOnlyForkSink::new(
-                        sync_log,
-                        Arc::clone(&factory_clock),
-                    )),
-                    own_history,
+                    fork_sink: incarnations_sink.clone(),
+                    own_history: Arc::clone(&own_history),
                     dial: crate::sync::dialer::DialConfig::from(&config),
                     cancel: factory_stop.clone(),
                 },
             );
             factory_peers.set_intake(peer_intake);
+            let incarnations_stop = Cancellation::default();
+            let incarnations_join = crate::sync::incarnations::IncarnationsWorker::start(
+                crate::sync::incarnations::WorkerDeps {
+                    sink: incarnations_sink,
+                    journal: incarnations_store.clone(),
+                    store: incarnations_store,
+                    writer: Arc::clone(&writer),
+                    status: Arc::clone(&factory_sync_status),
+                    own_history,
+                    signals: sync_handle.signals(),
+                    clock: Arc::clone(&factory_clock),
+                    log: sync_log.clone(),
+                    cancel: incarnations_stop.clone(),
+                },
+            )
+            .map_err(|error| io::Error::other(format!("incarnations worker: {error}")))?;
+            sync_log("sync: incarnations worker started");
+            *factory_incarnations_slot
+                .lock()
+                .map_err(|_| io::Error::other("incarnations slot poisoned"))? =
+                Some(ComposedIncarnations {
+                    stop: incarnations_stop,
+                    join: incarnations_join,
+                });
             // Idle exit (spec §15): a store-only daemon with no host, link,
             // target or client stops through the same shutdown as `Stop`.
             {
@@ -2286,6 +2326,24 @@ where
                         "sync: coordinator still running after {} s; aborted",
                         SYNC_STOP_BOUND.as_secs()
                     );
+                }
+            }
+            // The worker ends after the coordinator, joined within the same
+            // bound; a thread still running at the bound is detached.
+            let incarnations = incarnations_slot
+                .lock()
+                .map_err(|_| io::Error::other("incarnations slot poisoned"))?
+                .take();
+            if let Some(ComposedIncarnations { stop, join }) = incarnations {
+                stop.cancel();
+                let joined = tokio::task::spawn_blocking(move || join.join());
+                match tokio::time::timeout(SYNC_STOP_BOUND, joined).await {
+                    Ok(Ok(Ok(()))) => eprintln!("sync: incarnations worker stopped"),
+                    Ok(_) => eprintln!("sync: incarnations worker panicked"),
+                    Err(_) => eprintln!(
+                        "sync: incarnations worker still running after {} s; detached",
+                        SYNC_STOP_BOUND.as_secs()
+                    ),
                 }
             }
             let sessions = sessions_slot

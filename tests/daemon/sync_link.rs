@@ -536,3 +536,31 @@ fn daemon_with_enabled_target_stays() {
     assert!(solo.endpoint().exists(), "endpoint withdrawn");
     assert_eq!(boot_id(&solo.iso, &solo.state), before, "same daemon boot");
 }
+
+#[test]
+fn incarnations_worker_starts_and_stops_within_bound() {
+    let solo = Solo::start("sync-incarnations", true);
+    let log_path = solo.state.join("node").join("daemon.log");
+    let log = || fs::read_to_string(&log_path).unwrap_or_default();
+    wait_until(
+        "the incarnations worker to start",
+        || {
+            log()
+                .contains("sync: incarnations worker started")
+                .then_some(())
+        },
+        &[&solo.state],
+    );
+    stop_daemon(&solo.iso, &solo.state);
+    wait_until(
+        "the incarnations worker to be joined",
+        || {
+            log()
+                .contains("sync: incarnations worker stopped")
+                .then_some(())
+        },
+        &[&solo.state],
+    );
+    let log = log();
+    assert!(!log.contains("incarnations worker still running"), "{log}");
+}
