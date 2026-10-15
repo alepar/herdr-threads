@@ -2,9 +2,11 @@
 //! clocks that order them.
 //!
 //! Core and harness-neutral: nothing here names a harness, and nothing in this
-//! tree touches SQLite directly: store access goes through the narrow ports
-//! (`journal_port`, `sync_store`). The Dialer (`dialer`) is the only place
-//! that spawns sync child processes. Store-facing code lives in `src/store/`.
+//! tree touches SQLite directly except `resync`, whose restart-time step 0
+//! backs up a store file before any store exists: store access goes through
+//! the narrow ports (`journal_port`, `sync_store`, `resync::ResyncStore`). The
+//! Dialer (`dialer`) is the only place that spawns sync child processes.
+//! Store-facing code lives in `src/store/`.
 
 pub mod chain;
 pub mod coordinator;
@@ -18,6 +20,7 @@ pub mod journal_port;
 pub mod link;
 #[cfg(any(test, feature = "test-support"))]
 pub mod memory_journal;
+pub mod resync;
 pub mod signals;
 pub mod sync_store;
 
