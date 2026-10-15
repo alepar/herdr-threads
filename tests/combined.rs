@@ -57,6 +57,12 @@ mod local_endpoint;
 mod read_picker_pty;
 #[path = "setup_cli.rs"]
 mod setup_cli;
+#[path = "store/sync_contacts.rs"]
+mod sync_contacts;
+
+#[path = "store/sync_dial_targets.rs"]
+mod sync_dial_targets;
+
 #[path = "store/topology_handoff.rs"]
 mod topology_handoff;
 #[path = "view.rs"]

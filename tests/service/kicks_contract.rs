@@ -175,6 +175,19 @@ fn sync_logs_kicks_sync() {
 }
 
 #[test]
+fn sync_dial_targets_kick_sync_and_node_contact_kicks_nothing() {
+    assert_eq!(
+        lanes_for_table("sync_dial_targets"),
+        LaneSet::EMPTY.with(Lane::Sync)
+    );
+    assert!(!KNOWN_UNMAPPED.contains(&"sync_dial_targets"));
+    assert!(mapped_tables().any(|table| table == "sync_dial_targets"));
+    assert_eq!(lanes_for_table("sync_node_contact"), LaneSet::EMPTY);
+    assert!(KNOWN_UNMAPPED.contains(&"sync_node_contact"));
+    assert!(!mapped_tables().any(|table| table == "sync_node_contact"));
+}
+
+#[test]
 fn sync_and_apply_origin_keep_sync() {
     let sealed = LaneSet::EMPTY.with(Lane::Apply).with(Lane::Sync);
     assert_eq!(

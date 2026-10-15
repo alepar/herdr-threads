@@ -118,8 +118,9 @@ impl LaneSet {
 /// Tables whose commits wake the apply lane: journal rows await materialization.
 const APPLY_TABLES: &[&str] = &["journal"];
 /// Tables whose commits wake the sync lane: new journal rows and sync-log
-/// changes alter the Have deltas pushed to peers.
-const SYNC_TABLES: &[&str] = &["journal", "sync_logs"];
+/// changes alter the Have deltas pushed to peers, and a dial-target change
+/// makes the Dialer reload its targets.
+const SYNC_TABLES: &[&str] = &["journal", "sync_logs", "sync_dial_targets"];
 const ARCHIVAL_TABLES: &[&str] = &[
     "archival_instances",
     "channel_archival",
@@ -223,6 +224,8 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "node_directory",
     // Journal core (ht-5fr.3.4): `journal` maps to Apply and Sync, `sync_logs` to Sync.
     "journal_forked",
+    // Reachability is read by queries, never by a lane (ht-5fr.5.4).
+    "sync_node_contact",
     "thread_registers",
     // Passive inbox progress never schedules attention or deadlines.
     "lazy_recipients",

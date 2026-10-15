@@ -14,6 +14,8 @@ pub mod journal_port;
 pub mod link;
 #[cfg(any(test, feature = "test-support"))]
 pub mod memory_journal;
+pub mod signals;
+pub mod sync_store;
 
 use std::collections::BTreeMap;
 
