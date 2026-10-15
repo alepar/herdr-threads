@@ -68,8 +68,8 @@ impl Drop for Fixture {
 fn seed_seats(db: &Connection, count: u64) {
     db.execute_batch(&format!(
         "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{count}) \
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) \
-         SELECT 'seat-'||x,'34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-'||x,1,1,0 FROM n"
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) \
+         SELECT 'seat-'||x,'34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-'||x,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM n"
     ))
     .unwrap();
 }

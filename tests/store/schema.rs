@@ -180,7 +180,7 @@ fn seeded_db(utc: i64) -> (StoreContext, Connection, Arc<TestClock>) {
     let clock = Arc::new(TestClock::new(utc));
     let context = StoreContext::new(db_path(), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0)", []).unwrap();
+    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('s', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0)", []).unwrap();
     (context, db, clock)
 }
@@ -595,7 +595,7 @@ fn acceptance_tuple(db: &Connection) -> (i64, String, i64, String, i64) {
 #[test]
 fn accepted_requirement_provenance_cannot_be_rewritten_on_revision_or_terminal_change() {
     let db = pending_requirement_fixture();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('other','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('other','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     db.execute("UPDATE requirement_episodes SET state='accepted',revision=2,accepted_by_seat_id='s',accepted_generation=1,accepted_observation='native:original',accepted_at=150 WHERE id='req'", []).unwrap();
     let original = acceptance_tuple(&db);
     for change in [
@@ -1169,9 +1169,9 @@ fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
             .unwrap(),
         schema::NODE_SCHEMA_VERSION
     );
-    assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', 'missing', 'resolved', 'native', 1, 0)", []).is_err());
-    db.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, created_at) VALUES ('s1', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 'pane', 1, 0)", []).unwrap();
-    assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, created_at) VALUES ('s2', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 'pane', 1, 0)", []).is_err());
+    assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('s', 'missing', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).is_err());
+    db.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, created_at,home_node,is_local,host_id) VALUES ('s1', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 'pane', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+    assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, created_at,home_node,is_local,host_id) VALUES ('s2', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 'pane', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).is_err());
     let query = store
         .open_query(CallBudget {
             deadline: MonoInstant(200),
@@ -1793,7 +1793,7 @@ fn query_cancellation_interrupts_only_its_connection() {
     cancellation.cancel();
     let error = query.query_row("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT sum(x) FROM n", [], |r| r.get::<_, i64>(0)).unwrap_err();
     assert!(matches!(error, rusqlite::Error::SqliteFailure(_, _)));
-    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('other', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0)", []).unwrap();
+    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('other', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
 }
 
 #[test]
@@ -2338,10 +2338,10 @@ fn recovery_baseline_survives_new_target_observations_without_allocating_a_seat(
 #[test]
 fn receipt_warning_keys_distinguish_ids_containing_colons() {
     let (context, mut db, _) = seeded_db(300_000);
-    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('b:c', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0)", []).unwrap();
+    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('b:c', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     for (id, sequence, seat) in [("a:b", 1, "c"), ("a", 2, "b:c")] {
         if seat == "c" {
-            db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('c', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0)", []).unwrap();
+            db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('c', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
         }
         db.execute("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1, 't', ?2, 'ordinary', 'body', 0,?2)", params![id, sequence]).unwrap();
         db.execute("INSERT INTO receipts(message_id, thread_id, seat_id, state, frozen_duration_ms, available_at, deadline_at) VALUES (?1, 't', ?2, 'pending', 300000, 0, 300000)", params![id, seat]).unwrap();
@@ -2684,7 +2684,7 @@ fn overlapping_waiver_sweeps_keep_each_conditions_first_close_time() {
 fn deferred_clear_recipient_snapshot_excludes_member_joining_after_close() {
     let (context, mut db, clock) = seeded_db(300_000);
     for seat in ["early", "late"] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", [seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat]).unwrap();
     }
     db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','early',1,1)", []).unwrap();
     db.execute(
@@ -3029,7 +3029,7 @@ fn receipt_warning_condition_clears_once_and_reopens_with_new_source() {
 #[test]
 fn delayed_warning_attribution_keeps_open_and_clear_actionable_in_order() {
     let (context, mut db, clock) = seeded_db(300_000);
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('p','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('p','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     for seat in ["s", "p"] {
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
@@ -3304,7 +3304,7 @@ fn writer_startup_backfills_legacy_binding_evidence_only_from_matching_structura
             ("noproof", "resolved", "NULL"),
         ] {
             db.execute(
-                &format!("INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at) VALUES ('{seat}','34750f98bd59fcfc946da45aaabe933b','{state}',{reason},'native','p-{seat}',2,1,0)"),
+                &format!("INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('{seat}','34750f98bd59fcfc946da45aaabe933b','{state}',{reason},'native','p-{seat}',2,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))"),
                 [],
             )
             .unwrap();
@@ -3901,7 +3901,7 @@ fn archival_commit_counter_origin_does_not_collide_with_requests() {
 }
 
 fn user_intent_seed(db: &Connection) {
-    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0);
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',11,12);
         INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES ('b','34750f98bd59fcfc946da45aaabe933b','t','c1',0,0,1,2,'hash','old summary','s','m1','p1',15);
         INSERT INTO summary_jobs(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,fetched_at,created_at) VALUES ('j','34750f98bd59fcfc946da45aaabe933b','t','c1',0,0,1,2,42,14);").unwrap();
@@ -4930,4 +4930,272 @@ fn parked_dep_without_parked_on_refused() {
     let message = abort_message(insert_journal(&db, 2, "pending", None, Some("k")));
     assert!(message.contains("CHECK constraint failed"), "{message}");
     insert_journal(&db, 3, "parked_dep", None, Some("k")).unwrap();
+}
+
+const FOREIGN_NODE: &str = "abababababababababababababababab";
+
+/// A fresh store with two attached host rows; the local node is the fixture
+/// node.
+fn seat_home_db() -> (Connection, String, i64, i64) {
+    let db = fresh_db();
+    let node = crate::test_support::test_node();
+    let first = crate::store::connection::upsert_host(&db, "host-a", 0).unwrap();
+    let second = crate::store::connection::upsert_host(&db, "host-b", 0).unwrap();
+    (db, node, first, second)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_seat(
+    db: &Connection,
+    id: &str,
+    node: &str,
+    state: &str,
+    home: &str,
+    is_local: i64,
+    remote_kind: Option<&str>,
+    host: Option<i64>,
+    target: Option<&str>,
+) -> rusqlite::Result<usize> {
+    db.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,host_id,target_id,retired_at) \
+         VALUES (?1,?2,?3,'native',1,0,?4,?5,?6,?7,?8,CASE WHEN ?3='retired' THEN 1 END)",
+        params![id, node, state, home, is_local, remote_kind, host, target],
+    )
+}
+
+// Kills: a seat flagged remote whose home is this node (locality disagreeing
+// with `home_node`).
+#[test]
+fn remote_seat_with_local_home_aborts() {
+    let (db, node, _, _) = seat_home_db();
+    let error = insert_seat(
+        &db,
+        "r",
+        &node,
+        "remote",
+        &node,
+        0,
+        Some("agent"),
+        None,
+        None,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("seat home mismatch"), "{error}");
+}
+
+// Kills: a seat flagged local whose home is another node.
+#[test]
+fn resolved_seat_with_foreign_home_aborts() {
+    let (db, node, host, _) = seat_home_db();
+    let error = insert_seat(
+        &db,
+        "l",
+        &node,
+        "resolved",
+        FOREIGN_NODE,
+        1,
+        None,
+        Some(host),
+        Some("p1"),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("seat home mismatch"), "{error}");
+}
+
+// Kills: moving a seat to another home, or flipping its locality, after insert.
+#[test]
+fn home_node_update_aborts() {
+    let (db, node, host, _) = seat_home_db();
+    insert_seat(
+        &db,
+        "l",
+        &node,
+        "resolved",
+        &node,
+        1,
+        None,
+        Some(host),
+        Some("p1"),
+    )
+    .unwrap();
+    insert_seat(
+        &db,
+        "r",
+        &node,
+        "remote",
+        FOREIGN_NODE,
+        0,
+        Some("human"),
+        None,
+        None,
+    )
+    .unwrap();
+    for update in [
+        format!("UPDATE seats SET home_node='{FOREIGN_NODE}' WHERE id='l'"),
+        "UPDATE seats SET is_local=0,remote_kind='agent' WHERE id='l'".to_owned(),
+        format!("UPDATE seats SET home_node='{node}' WHERE id='r'"),
+        "UPDATE seats SET is_local=1,remote_kind=NULL WHERE id='r'".to_owned(),
+    ] {
+        let error = db.execute(&update, []).unwrap_err();
+        assert!(
+            error.to_string().contains("seat home mismatch"),
+            "{update}: {error}"
+        );
+    }
+    let (home, local): (String, i64) = db
+        .query_row(
+            "SELECT home_node,is_local FROM seats WHERE id='l'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((home, local), (node, 1));
+}
+
+// Kills: a remote row shape the baseline must accept, and the CHECKs that keep
+// a remote seat free of host, target and a local state.
+#[test]
+fn valid_remote_seat_row_inserts() {
+    let (db, node, host, _) = seat_home_db();
+    insert_seat(
+        &db,
+        "r",
+        &node,
+        "remote",
+        FOREIGN_NODE,
+        0,
+        Some("agent"),
+        None,
+        None,
+    )
+    .unwrap();
+    let (state, local, kind, host_id, target): (String, i64, String, Option<i64>, Option<String>) =
+        db.query_row(
+            "SELECT state,is_local,remote_kind,host_id,target_id FROM seats WHERE id='r'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (state.as_str(), local, kind.as_str(), host_id, target),
+        ("remote", 0, "agent", None, None)
+    );
+    // A remote seat carries no host, no target and only the remote/retired states.
+    assert!(
+        insert_seat(
+            &db,
+            "r2",
+            &node,
+            "remote",
+            FOREIGN_NODE,
+            0,
+            Some("agent"),
+            Some(host),
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        insert_seat(
+            &db,
+            "r3",
+            &node,
+            "resolved",
+            FOREIGN_NODE,
+            0,
+            Some("agent"),
+            None,
+            None
+        )
+        .is_err()
+    );
+    // A local seat is never remote-kinded, a remote seat always is; a target needs a host.
+    assert!(
+        insert_seat(
+            &db,
+            "r4",
+            &node,
+            "remote",
+            FOREIGN_NODE,
+            0,
+            None,
+            None,
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        insert_seat(
+            &db,
+            "l1",
+            &node,
+            "resolved",
+            &node,
+            1,
+            Some("agent"),
+            Some(host),
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        insert_seat(
+            &db,
+            "l2",
+            &node,
+            "resolved",
+            &node,
+            1,
+            None,
+            None,
+            Some("p9")
+        )
+        .is_err()
+    );
+    // A local state is not a remote seat's.
+    assert!(insert_seat(&db, "l3", &node, "remote", &node, 1, None, Some(host), None).is_err());
+}
+
+// Kills: a live-target index still keyed by the node alone (two hosts could not
+// share a pane id) or by the target alone (one host could bind it twice).
+#[test]
+fn live_target_unique_per_host() {
+    let (db, node, first, second) = seat_home_db();
+    insert_seat(
+        &db,
+        "a",
+        &node,
+        "resolved",
+        &node,
+        1,
+        None,
+        Some(first),
+        Some("p1"),
+    )
+    .unwrap();
+    insert_seat(
+        &db,
+        "b",
+        &node,
+        "resolved",
+        &node,
+        1,
+        None,
+        Some(second),
+        Some("p1"),
+    )
+    .unwrap();
+    let error = insert_seat(
+        &db,
+        "c",
+        &node,
+        "resolved",
+        &node,
+        1,
+        None,
+        Some(first),
+        Some("p1"),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("UNIQUE"), "{error}");
 }

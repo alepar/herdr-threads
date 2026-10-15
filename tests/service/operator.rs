@@ -211,7 +211,7 @@ impl Fixture {
             .unwrap(),
         );
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('saved',?1,'unresolved','native',1,0)",[&instance]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('saved',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[&instance]).unwrap();
         drop(db);
         let host = Arc::new(Host {
             path: paths.database_path.clone(),

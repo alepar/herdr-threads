@@ -806,7 +806,7 @@ mod tests {
         }
     }
     fn seed_joined(db: &Connection, seat: &str) {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[seat]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('t',?1,'joined',1)",
             [seat],
@@ -815,7 +815,7 @@ mod tests {
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t',?1,1,1)",[seat]).unwrap();
     }
     fn seed_pending(db: &Connection, seat: &str, author: &ServiceAuthorId) {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[seat]).unwrap();
         let invitation = format!("inv-{seat}");
         let requirement = format!("req-{seat}");
         db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES(?1,'t',?2,1,'pending',1,1,100,101)",params![invitation,seat]).unwrap();

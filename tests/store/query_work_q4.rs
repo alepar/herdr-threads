@@ -76,7 +76,7 @@ fn seeded_body(
     for n in 0..candidates {
         let thread = format!("q4-t{n}");
         let sender = format!("a-q4-{n}");
-        rows.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", [&sender]).unwrap();
+        rows.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&sender]).unwrap();
         rows.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','q4','q4',0,0,100001)", [&thread]).unwrap();
         if !(50..75).contains(&n) {
             rows.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'s',?2)", params![sender,thread]).unwrap();
@@ -109,7 +109,7 @@ fn seeded_body(
     for n in 0..retained {
         let sender = format!("a-noise-{n}");
         let thread = format!("noise-t{n}");
-        rows.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", [&sender]).unwrap();
+        rows.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&sender]).unwrap();
         rows.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','noise','noise',0,0)", [&thread]).unwrap();
         rows.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'s',?2)", params![sender,thread]).unwrap();
         rows.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,'s',1,'invited','invited')", [&thread]).unwrap();

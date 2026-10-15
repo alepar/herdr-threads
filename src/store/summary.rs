@@ -1812,7 +1812,7 @@ mod loader_tests {
         db.execute_batch(
             "\
             UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=40;\
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0);\
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t1','34750f98bd59fcfc946da45aaabe933b','a','g',0,0,4),('t3','34750f98bd59fcfc946da45aaabe933b','c','g',0,0,3);\
             INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,relays_user) VALUES ('m1','34750f98bd59fcfc946da45aaabe933b','t1',1,'ordinary','s','hello',60000,1,'human',0);\
             INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,relays_user) VALUES ('m2','34750f98bd59fcfc946da45aaabe933b','t1',2,'ordinary','s','second',120000,2,'agent',1);\

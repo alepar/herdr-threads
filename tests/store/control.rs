@@ -36,7 +36,7 @@ fn fixture(at: i64) -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
     conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
         .unwrap();
     for seat in ["s1", "s2"] {
-        conn.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, target_generation, created_at) VALUES (?1, '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', ?1, 1, 1, 0)", [seat]).unwrap();
+        conn.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, target_generation, created_at,home_node,is_local,host_id) VALUES (?1, '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', ?1, 1, 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat]).unwrap();
         conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
     }
     (context, conn, path, clock)
@@ -232,7 +232,7 @@ fn saved_seats_page_counts_physical_rows_and_uses_published_index() {
     for index in 3..=18 {
         let seat = format!("s{index}");
         conn.execute(
-            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0)",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
             [&seat],
         )
         .unwrap();
@@ -4688,6 +4688,17 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
     .unwrap() else {
         panic!("seat missing")
     };
+    // The ordinary-allocation insert writes the local home, the local flag and
+    // the primary host.
+    assert_eq!(
+        conn.query_row(
+            "SELECT home_node=(SELECT id FROM local_node), is_local, host_id=primary_host() FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+        )
+        .unwrap(),
+        (1, 1, 1)
+    );
     conn.execute(
         "UPDATE seats SET state='retired',retired_at=100 WHERE id=?1",
         [seat.as_str()],
@@ -8643,7 +8654,7 @@ fn operator_replace_retires_new_and_rebinds_old_atomically() {
 fn operator_replace_refuses_when_new_does_not_own_the_pane_and_writes_nothing() {
     use crate::store::seats;
     let (context, mut conn, path, _) = b5_replace_fixture();
-    conn.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, target_generation, created_at) VALUES ('s3', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 's3', 1, 1, 0)", []).unwrap();
+    conn.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, target_generation, created_at,home_node,is_local,host_id) VALUES ('s3', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 's3', 1, 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     for (new, operation) in [("s3", "replace-wrong-owner"), ("s1", "replace-self")] {
         let error = seats::mutate_operator(
             &context,
@@ -8734,7 +8745,7 @@ fn c1_bind(conn: &Connection, seat: &str, generation: i64, harness: &str, sessio
 }
 
 fn c1_unresolved_seat(conn: &Connection, seat: &str, harness: &str, session: &str) {
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','unresolved','native',NULL,1,1,0)", [seat]).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','unresolved','native',NULL,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat]).unwrap();
     c1_bind(conn, seat, 1, harness, session);
 }
 
@@ -9078,7 +9089,7 @@ fn continuity_never_matches_retired_sentinel_human_or_empty_sessions() {
     use crate::store::seats::continuity_candidates;
     let (_context, mut conn, path) = c1_fixture();
     // Retired seat with the session.
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq) VALUES ('s-retired','34750f98bd59fcfc946da45aaabe933b','retired','native',NULL,1,1,0,5,1)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES ('s-retired','34750f98bd59fcfc946da45aaabe933b','retired','native',NULL,1,1,0,5,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     c1_bind(&conn, "s-retired", 1, "claude", "sess-r");
     // Sentinel, human and empty values on unresolved seats.
     c1_unresolved_seat(&conn, "s-sentinel", "claude", "plugin_context:abc");
@@ -10704,7 +10715,7 @@ fn invitation_rejection_frozen_members_and_binding_scoped_prefix() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('later','34750f98bd59fcfc946da45aaabe933b','resolved','native','later',1,1,100)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('later','34750f98bd59fcfc946da45aaabe933b','resolved','native','later',1,1,100,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,'later',1,?2)", params![thread.as_str(),seq+1]).unwrap();
     conn.execute(
         "UPDATE membership_intervals SET left_seq=?1 WHERE thread_id=?2 AND seat_id='s1'",
@@ -12262,7 +12273,7 @@ fn invitation_confirmation_duplicate_caller_cannot_change_origin_policy_deadline
     use crate::protocol::commands::{InvitationConfirmation, Join};
     let (context, mut conn, path, _, thread, invitation) =
         rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::RequireAck));
-    conn.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s3','34750f98bd59fcfc946da45aaabe933b','resolved','native','s3',1,1,0);
+    conn.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s3','34750f98bd59fcfc946da45aaabe933b','resolved','native','s3',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','s3','b',1,1,0,'fresh','term-s3','inc','coherent_enumeration',1);
         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s3',1,'s3','b',1,1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-s3','inc');").unwrap();
     let budget = crate::protocol::time::CallBudget {

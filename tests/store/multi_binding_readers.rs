@@ -132,7 +132,7 @@ fn fixture() -> Fixture {
     let db = store.open_writer().unwrap();
     db.execute_batch(
         "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=30;
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',4,1,0);
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',4,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
          INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);
          INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s','joined',1);
          INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m1','t',1,'ordinary','b',1,1),('34750f98bd59fcfc946da45aaabe933b','m2','t',2,'ordinary','b',2,2);
@@ -360,7 +360,7 @@ fn open_binding_role_reports_agent_for_a_multi_binding_seat() {
         .unwrap();
     assert_eq!(schema::open_binding_role(&f.db, &seat).unwrap(), None);
     f.db.execute_batch(
-        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('h','34750f98bd59fcfc946da45aaabe933b','resolved','native','ph',1,1,0);
+        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('h','34750f98bd59fcfc946da45aaabe933b','resolved','native','ph',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
          INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('h',1,1,'ph','b',1,'human','','e','cooperative_top_level',0,0,'term','inc');",
     )
     .unwrap();
@@ -748,7 +748,7 @@ fn effective_non_human_reader_handles_multiple_bindings() {
     assert!(!effective::human_receipt_waived(&f.db, "s", Some(6)).unwrap());
     // A human binding alone waives (the human branch itself is ht-54r.4's).
     f.db.execute_batch(
-        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('h','34750f98bd59fcfc946da45aaabe933b','resolved','native','ph',1,1,0);
+        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('h','34750f98bd59fcfc946da45aaabe933b','resolved','native','ph',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
          INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('h',1,1,'ph','b',1,'human','','e','cooperative_top_level',0,0,'term','inc');",
     )
     .unwrap();

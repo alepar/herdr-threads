@@ -278,20 +278,20 @@ pub(crate) fn initialize_with(
     )))
 }
 
-/// The creating transaction's node rows: `local_node` and the self row of
-/// `node_directory`, before anything mints an ID. (ht-5fr.1.10 moves the self
-/// row behind `store::node_directory`.)
+/// The creating transaction's node rows: `local_node`, then the self row of
+/// `node_directory` (written by `store::node_directory`), before anything mints
+/// an ID.
 fn insert_node_rows(conn: &Connection, node: &NodeSeed, created_at: i64) -> rusqlite::Result<()> {
-    let (uuid, tag) = (node.uuid.to_string(), node.tag.to_string());
     conn.execute(
         "INSERT INTO local_node(id,created_at,tag,tag_k) VALUES (?1,?2,?3,?4)",
-        params![uuid, created_at, tag, node.tag_k],
+        params![
+            node.uuid.to_string(),
+            created_at,
+            node.tag.to_string(),
+            node.tag_k
+        ],
     )?;
-    conn.execute(
-        "INSERT INTO node_directory(node_uuid,tag,tag_k,first_seen_at) VALUES (?1,?2,?3,?4)",
-        params![uuid, tag, node.tag_k, created_at],
-    )?;
-    Ok(())
+    super::node_directory::insert_self(conn, node, created_at)
 }
 
 /// Name prefix of a fault-injection trigger that `verify_baseline` tolerates in

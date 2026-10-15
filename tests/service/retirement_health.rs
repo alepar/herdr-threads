@@ -50,10 +50,10 @@ fn elected_health_sees_late_retirement_and_keeps_exact_error_on_seat_inspect() {
     for n in 0..25 {
         let seat = format!("old-retired-seat-{n}");
         let job = format!("old-retirement-job-{n}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES (?1,?2,'retired','native',1,0,1,1)",rusqlite::params![seat,instance.to_string()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES (?1,?2,'retired','native',1,0,1,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",rusqlite::params![seat,instance.to_string()]).unwrap();
         db.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,status) VALUES (?1,?2,1,'boot',1,'target',1,'complete')",rusqlite::params![job,seat]).unwrap();
     }
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES ('late-retired-seat',?1,'retired','native',1,0,1,1)",[instance.to_string()]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES ('late-retired-seat',?1,'retired','native',1,0,1,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[instance.to_string()]).unwrap();
     db.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,last_error) VALUES ('late-retirement-job','late-retired-seat',1,'boot',1,'target',1,'private cleanup failure')",[]).unwrap();
     // Keep the worker from settling this row before Health observes it.
     db.execute_batch("CREATE TRIGGER ht_test_fault_hold_retirement_health BEFORE UPDATE ON retirements BEGIN SELECT RAISE(IGNORE); END;").unwrap();

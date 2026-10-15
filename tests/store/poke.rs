@@ -27,7 +27,7 @@ fn fixture() -> (StoreContext, Connection, RemoveOnDrop) {
     let conn = context.open_writer().unwrap();
     conn.execute_batch("\
         UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,unavailability_open) VALUES ('snd','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-snd',1,1,0,1,0),('rcv','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-rcv',1,1,0,1,0);\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,unavailability_open,home_node,is_local,host_id) VALUES ('snd','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-snd',1,1,0,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('rcv','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-rcv',1,1,0,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at) VALUES ('34750f98bd59fcfc946da45aaabe933b','p-rcv','b',1,1,1,'fresh','unknown','unknown',0,0);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('rcv',1,1,'p-rcv','b',1,'codex','hist-rcv','hist-rcv','fresh',0,0,'term-rcv','inc');\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('ta','34750f98bd59fcfc946da45aaabe933b','a','g',0,0),('tb','34750f98bd59fcfc946da45aaabe933b','b','g',0,0);\
@@ -283,7 +283,7 @@ fn bound_store() -> (crate::store::SqliteStore, PathBuf) {
     let db = context.open_writer().unwrap();
     db.execute_batch("\
         UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0);\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane','host',0,'codex','session','self-reported','cooperative_top_level',0,0,'term-pane','inc');\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);\
@@ -499,7 +499,7 @@ fn never_reservable_seats_do_not_displace_a_pokeable_seat() {
         let target = format!("p-{seat}");
         let message = format!("m-{seat}");
         conn.execute(
-            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,unavailability_open) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1,0)",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,unavailability_open,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
             rusqlite::params![seat, target],
         )
         .unwrap();

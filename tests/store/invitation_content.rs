@@ -199,7 +199,7 @@ mod binding_presentation {
             let context = StoreContext::new(directory.join("store.db"), clock).with_test_host();
             let db = context.open_writer().unwrap();
             db.execute_batch("UPDATE herdr_hosts SET host_boot='boot',host_epoch=1; UPDATE local_node SET decision_seq=100;
-                INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,0,0);
+                INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
                 INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('34750f98bd59fcfc946da45aaabe933b','p','boot',1,0,0,'fresh','term','inc','coherent_enumeration',1);
                 INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1);
                 INSERT INTO memberships(thread_id,seat_id,state,voluntary_state) VALUES('t','s','joined','joined');

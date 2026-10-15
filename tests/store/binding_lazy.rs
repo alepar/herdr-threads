@@ -35,7 +35,7 @@ fn enroll_binding(db: &Connection, session: &str, subagent_of: Option<&BindingId
 /// published. Sequences 1 and 2 are taken by the fixture's ordinary messages, so use n >= 3.
 fn lazy(db: &Connection, n: i64) {
     db.execute(
-        "INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",
+        "INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
         [],
     )
     .unwrap();
@@ -203,7 +203,7 @@ fn a_seat_without_a_connected_top_level_binding_counts_only_legacy_rows() {
 
 /// An ordinary message `n` to seat `s` (a receipt), or from `s` itself, or to nobody.
 fn ordinary(db: &Connection, n: i64, actor: Option<&str>, receipt_for_s: bool) {
-    db.execute_batch("INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)").unwrap();
+    db.execute_batch("INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))").unwrap();
     db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,actor_seat_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?2,'b',0,?3)",params![format!("ord-{n}"),n,actor]).unwrap();
     if receipt_for_s {
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES(?1,'t','s','pending',100)",[format!("ord-{n}")]).unwrap();

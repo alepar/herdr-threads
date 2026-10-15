@@ -917,7 +917,7 @@ mod domain {
             let db = rusqlite::Connection::open(&path).unwrap();
             db.execute_batch(
                 "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;\
-                 INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,1,0);\
+                 INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
                  INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,0,'fresh','term-p','inc','coherent_enumeration',1);\
                  INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,'p','b',1,1,'claude','native','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',0,'term-p','inc');\
                  INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES ('s',1,5);",

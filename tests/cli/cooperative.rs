@@ -4432,7 +4432,7 @@ mod main539_composition {
             let db = context.open_writer().unwrap();
             db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
                 .unwrap();
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![claim.seat.as_str(),claim.instance,claim.target.as_str()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![claim.seat.as_str(),claim.instance,claim.target.as_str()]).unwrap();
             db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,1,?3,'fresh','term','inc','coherent_enumeration',1)", rusqlite::params![claim.instance,claim.target.as_str(),clock.utc_now().0]).unwrap();
             db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,1,?2,'b',1,?3,?4,?5,?6,?7,'term','inc')", rusqlite::params![claim.seat.as_str(),claim.target.as_str(),if human {"human"} else {"codex"},claim.native_session.as_str(),claim.execution.as_str(),if human {"operator_human"} else {"cooperative_top_level"},clock.utc_now().0]).unwrap();
             db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [&claim.instance]).unwrap();
@@ -4509,7 +4509,7 @@ mod main539_composition {
             let f = Fixture::new(false);
             let db = rusqlite::Connection::open(f.root.join("state.db")).unwrap();
             db.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t',?1,'joined',0)", [f.claim.seat.as_str()]).unwrap();
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient',?1,'resolved','native','w1:p2',1,1,0)", [&f.claim.instance]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient',?1,'resolved','native','w1:p2',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&f.claim.instance]).unwrap();
             let mut argv = vec!["ht", "invite", "t", "--seat", "recipient"];
             argv.extend(flags);
             f.run(
@@ -4707,7 +4707,7 @@ mod main539_composition {
             [f.claim.seat.as_str()],
         )
         .unwrap();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient',?1,'resolved','native','w1:p2',1,1,0)",[&f.claim.instance]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient',?1,'resolved','native','w1:p2',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[&f.claim.instance]).unwrap();
         let legacy: SemanticMutation = serde_json::from_str(
             r#"{"kind":"invite","thread":"t","seat":"recipient","deadline_millis":7000}"#,
         )
@@ -5232,7 +5232,7 @@ impl OrdinaryHumanRetryFixture {
         let conn = context.open_writer().unwrap();
         conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
             .unwrap();
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat',?1,'resolved','native','w:p1',0,0,0)", [&instance.to_string()]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('seat',?1,'resolved','native','w:p1',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&instance.to_string()]).unwrap();
         conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'w:p1','b',1,0,1,'fresh','unknown','unknown',0,0,'term','inc','coherent_enumeration',1)", [&instance.to_string()]).unwrap();
         drop(conn);
         let store = std::sync::Arc::new(

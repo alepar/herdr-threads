@@ -105,7 +105,7 @@ impl Fx {
         let db = self.raw();
         let target = format!("p-{id}");
         db.execute(
-            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_open) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,0,1,0,0)",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_open,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,0,1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
             rusqlite::params![id, target],
         )
         .unwrap();

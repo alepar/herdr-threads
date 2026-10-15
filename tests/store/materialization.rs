@@ -32,7 +32,7 @@ fn fixture() -> Connection {
     db.execute_batch("\
         \
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('s1','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0),('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0),('s3','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0);\
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES('s1','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('s3','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
     ").unwrap();
     db
 }
@@ -601,7 +601,7 @@ fn cleanup_job_cannot_delete_published_logical_receipts() {
 fn wide_warning_resumes_after_reopen_without_skipping_or_duplicate_rows() {
     let (mut db, path) = file_fixture();
     for n in 0..40 {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[format!("member{n}")]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[format!("member{n}")]).unwrap();
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t',?1,1,2)",[format!("member{n}")]).unwrap();
     }
     db.execute_batch("\

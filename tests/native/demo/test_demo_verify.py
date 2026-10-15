@@ -73,7 +73,7 @@ class DbFixture(unittest.TestCase):
         for (name,) in self.db.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall():
             self.db.execute(f'DROP TRIGGER "{name}"')
         for seat in (SEAT, COORD):
-            self.db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?,?,?,?,?,?)",
+            self.db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?,?,?,?,?,?,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
                             (seat, "i", "resolved", "operator_fresh", 1, 0))
         self.db.execute("INSERT INTO send_manifests VALUES ('prep-1',?, 'i', ?, 5, 0, 3, 1, 1, 0)", (MSG, THREAD))
         self.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) "
@@ -1664,7 +1664,7 @@ class ClaudeDemo3VerifyTests(unittest.TestCase):
         seat, message = DEMO3_SQLITE["seat"], DEMO3_SQLITE["message"]
         receipt, invitation = DEMO3_SQLITE["receipts"][0], DEMO3_SQLITE["invitations"][0]
         self.thread = "thread-d8ad9d0a-a8c0-4b1f-818f-f354b76e7414"
-        self.db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?,?,?,?,?,?)",
+        self.db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?,?,?,?,?,?,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
                         (seat, "i", "resolved", "operator_fresh", 2, 0))
         self.db.execute("INSERT INTO send_manifests VALUES ('prep-3',?, 'i', ?, 6, 0, 3, 1, 1, 0)", (message, self.thread))
         self.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) "

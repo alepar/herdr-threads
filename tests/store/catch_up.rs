@@ -45,7 +45,7 @@ fn db() -> Connection {
     crate::test_support::attach_test_host_to_connection(&db);
     db.execute_batch(
         "UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=40;\
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0),('p','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-p',1,1,0),('q','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-q',1,1,0);\
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('p','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-p',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('q','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-q',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
          INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,'pane-s','host',1,'codex','n','exec-s','cooperative_top_level',0,'tm','inc'),('p',1,'pane-p','host',1,'codex','n','exec-p','cooperative_top_level',0,'tm','inc'),('q',1,'pane-q','host',1,'codex','n','exec-q','cooperative_top_level',0,'tm','inc');\
          INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0),('u','34750f98bd59fcfc946da45aaabe933b','other','goal',0,0);",
     )
@@ -885,7 +885,7 @@ fn store() -> Store {
     let conn = context.open_writer().unwrap();
     conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
         .unwrap();
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',0,0,0)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'p','inc','coherent_enumeration',1)", []).unwrap();
     conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
     Store {

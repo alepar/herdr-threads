@@ -16,6 +16,7 @@ pub mod invitation_due;
 pub mod lazy_delivery;
 pub mod materialization;
 pub mod messages;
+pub mod node_directory;
 pub mod operator;
 pub mod page_fit;
 pub mod poke;

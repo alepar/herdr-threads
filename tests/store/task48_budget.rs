@@ -262,7 +262,7 @@ fn prepare(kind: &str) -> (Fixture, Input) {
     let initial = stage(&mut f, 1);
     let publication =
         seats::publish_snapshot_stage(&f.context, &mut f.connection, &initial, &budget()).unwrap();
-    f.connection.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,1,0)",[]).unwrap();
+    f.connection.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
     let input = match kind {
         "target" => {
             let a = seats::begin_host_observation(

@@ -83,7 +83,7 @@ fn service(channels: Arc<dyn ModChannels>) -> (DomainService, Directory) {
         .unwrap();
     for seat in ["s", "other"] {
         db.execute(
-            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1||'-target',0,0,0)",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1||'-target',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
             [seat],
         )
         .unwrap();

@@ -28,7 +28,7 @@ fn setup(now: i64) -> (StoreContext, Connection, Arc<TestClock>, PathBuf) {
     let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
     let conn = context.open_writer().unwrap();
     conn.execute("PRAGMA foreign_keys=OFF", []).unwrap();
-    conn.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('seat', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0)", []).unwrap();
+    conn.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('seat', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     conn.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('thread', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'purpose', 0, 0)", []).unwrap();
     (context, conn, clock, path)
 }
@@ -397,7 +397,7 @@ fn lazy_invitation_is_discoverable_but_never_due_or_waking() {
         |row| row.get::<_, String>(0),
     ).unwrap());
 
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('origin','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('lazy','thread','seat',1,'pending',1,0,100,100,'lazy','origin')", []).unwrap();
     let batch = scan_invitation_due_batch(&context, &mut conn, None, 100).unwrap();
     assert_eq!((batch.inspected, batch.warnings_added), (0, 0));
@@ -483,7 +483,7 @@ fn invitation_snapshot_finishes_with_250_initial_rows_despite_continuing_arrival
 #[test]
 fn timed_invitation_warns_original_inviter_after_leaving_and_clear_is_passive() {
     let (context, mut conn, _, _) = setup(100);
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('origin','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('timed','thread','seat',1,'pending',1,0,100,100,'require_ack','origin')", []).unwrap();
     assert_eq!(
         scan_invitation_due_batch(&context, &mut conn, None, 100)
@@ -531,7 +531,7 @@ fn timed_invitation_warns_original_inviter_after_leaving_and_clear_is_passive() 
 #[test]
 fn invitation_due_index_bounds_physical_work_across_lazy_and_future_backlogs() {
     let (context, mut conn, _, _) = setup(100);
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('origin','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     conn.execute("WITH RECURSIVE n(v) AS (SELECT 1 UNION ALL SELECT v+1 FROM n WHERE v<2000) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) SELECT 'lazy-'||v,'thread','seat',v,'pending',1,0,1,1,'lazy','origin' FROM n",[]).unwrap();
     for i in 0..250 {
         invitation(&conn, &format!("future-{i}"), 2001 + i, 1_000, "pending");

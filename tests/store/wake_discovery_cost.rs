@@ -82,13 +82,13 @@ fn fixture(live: u64, history: History) -> Connection {
     each(
         history.retired_seats,
         &[
-            "INSERT INTO seats(id,instance_id,state,role,generation,target_generation,created_at,retired_at,retired_seq) SELECT 'r'||x,'34750f98bd59fcfc946da45aaabe933b','retired','native',1,1,0,1,1 FROM n",
+            "INSERT INTO seats(id,instance_id,state,role,generation,target_generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) SELECT 'r'||x,'34750f98bd59fcfc946da45aaabe933b','retired','native',1,1,0,1,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM n",
         ],
     );
     each(
         live,
         &[
-            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) SELECT 'l'||x,'34750f98bd59fcfc946da45aaabe933b','resolved','native','p'||x,1,1,0 FROM n",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) SELECT 'l'||x,'34750f98bd59fcfc946da45aaabe933b','resolved','native','p'||x,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM n",
         ],
     );
     db.execute_batch(

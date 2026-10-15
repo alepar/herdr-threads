@@ -723,7 +723,7 @@ fn seed(paths: &NodePaths) -> herdr_threads::node::NodeUuid {
         ("peer", "w9:p2", 2),
         ("cx", "w9:p3", 3),
     ] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", [seat, &instance.to_string(), pane]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat, &instance.to_string(), pane]).unwrap();
         db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,1,?3,'fresh','unknown','unknown',0,0,'term-'||?2,'inc','coherent_enumeration',1)", [instance.to_string(), pane.to_owned(), seq.to_string()]).unwrap();
     }
     db.execute("UPDATE seats SET structural_terminal_id='term-'||target_id, structural_incarnation='inc', structural_incarnation_kind='coherent_enumeration', structural_host_boot='b', structural_host_epoch=1, structural_connection_epoch=1, structural_observation_sequence=1", []).unwrap();
@@ -5865,7 +5865,7 @@ mod continuity {
         harness: &str,
         session: &str,
     ) {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,?2,'unresolved','native',1,0)", [seat, instance]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat, instance]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at) VALUES (?1,1,'old-pane','old-boot',1,?2,?3,?4,'cooperative_top_level',1,1,2)",
             rusqlite::params![seat, harness, session, Uuid::new_v4().to_string()]).unwrap();
     }

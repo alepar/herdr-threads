@@ -54,7 +54,7 @@ impl Fx {
         db.execute_batch(
             "\
             UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=100000;\
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-a',1,1,0),('b','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-b',1,1,0),('x','o','resolved','native','pane-x',1,1,0);\
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-a',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('b','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-b',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('x','o','resolved','native','pane-x',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
             INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES ('a',1,1,'pane-a','term-a','inc-a','host',1,'codex','na','ea','cooperative_top_level',0,0),('b',1,1,'pane-b','term-b','inc-b','host',1,'codex','nb','eb','cooperative_top_level',0,0);\
             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1);",
         )

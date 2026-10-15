@@ -156,7 +156,7 @@ const INSERTS: &[(&str, &str)] = &[
     ),
     (
         "seats",
-        "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0)",
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
     ),
     (
         "occupant_bindings",
@@ -233,7 +233,7 @@ const INSERTS: &[(&str, &str)] = &[
 ];
 
 const WAKE_INSERT: &str = "INSERT INTO wake_work(seat_id) VALUES ('s1')";
-const SEAT_INSERT: &str = "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0)";
+const SEAT_INSERT: &str = "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))";
 const JOB_INSERT: &str =
     "INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES ('j','send_attention','sub',0)";
 const GENERATION_INSERT: &str = "INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g','34750f98bd59fcfc946da45aaabe933b','b',1,1,'x',0,'building',0,0,0)";
@@ -411,7 +411,7 @@ fn rejection_kicks_with_guards(insert: &str) {
     for batched in [false, true] {
         let fixture = Fixture::with_guards("kicks-rejection", true);
         fixture.run("BEGIN;
-            INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0);
+            INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);
             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv','t','s1',1,'pending',1,0,30000,30000);
             INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('w',2,'t',0,'s1','invitation','inv');

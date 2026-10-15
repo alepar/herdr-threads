@@ -52,7 +52,7 @@ fn fixture_with_temp_store(
         db.execute_batch(super::super::schema::BINDING_EVIDENCE_GUARD)
             .unwrap();
     }
-    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0)", []).unwrap();
+    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('s', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     db.execute("INSERT INTO threads(id, instance_id, topic, goal, created_at, updated_at) VALUES ('t', '34750f98bd59fcfc946da45aaabe933b', 'topic', 'goal', 0, 0)", []).unwrap();
     // Raw fixture publications use the same instance decision high-water as
     // real producers. The trigger exists only on this test connection.
@@ -410,7 +410,7 @@ fn warning_recipients_page_205_historical_members() {
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
     for n in 1..=205 {
         let seat = format!("member-{n:03}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[&seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[&seat]).unwrap();
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)",[&seat]).unwrap();
     }
     db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p','34750f98bd59fcfc946da45aaabe933b','actor','o',zeroblob(32),'t',0,0,0,0,0,205,0,'sealed');
@@ -529,7 +529,7 @@ fn warning_recipient_scan_stops_at_100_visits_without_end_probe() {
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
     for n in 1..=100 {
         let seat = format!("s-{n:03}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", [&seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&seat]).unwrap();
         db.execute(
             "INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('warn',?1,1)",
             [&seat],
@@ -578,7 +578,7 @@ fn ledger_only_warning_cursor_holds_high_water_across_append() {
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
     for n in 1..=205 {
         let seat = format!("ledger-{n:03}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[&seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[&seat]).unwrap();
         db.execute(
             "INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('warn',?1,1)",
             [&seat],
@@ -605,7 +605,7 @@ fn ledger_only_warning_cursor_holds_high_water_across_append() {
         seats.extend(result.items.iter().map(|v| v.seat.as_str().to_owned()));
         if first {
             first = false;
-            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('ledger-206','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('ledger-206','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
             db.execute("INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('warn','ledger-206',1)",[]).unwrap();
         }
         if !result.has_more {
@@ -1041,7 +1041,7 @@ fn inbox_batch_defers_later_arrivals_to_next_traversal() {
 #[test]
 fn inbox_batch_finds_unprojected_active_warning_for_frozen_member() {
     let (store, db) = fixture();
-    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('invitee','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0);
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('invitee','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1);
         INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at)
             VALUES ('invitee-invitation','t','invitee',1,'pending',2,0,300,300);
@@ -1083,7 +1083,7 @@ fn inbox_batch_finds_unprojected_active_warning_for_frozen_member() {
 #[test]
 fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projection() {
     let (store, db) = fixture();
-    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('invitee','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0);
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('invitee','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1);
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at)
             VALUES ('warning-open-full','34750f98bd59fcfc946da45aaabe933b','t',1,'warn','{}',2,0);
@@ -1187,7 +1187,7 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
 #[test]
 fn active_warnings_union_open_ledger_and_actionable_legacy_without_clear_fabrication() {
     let (store, db) = fixture();
-    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('invitee','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0);
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('invitee','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
         INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at)
             VALUES ('inv-open','t','invitee',1,'pending',1,0,300,300);
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,decision_at)
@@ -1465,8 +1465,8 @@ fn unavailable_close_sweep_matches_exact_episode() {
 #[test]
 fn inbox_clear_recipient_is_frozen_at_close_decision_before_projection() {
     let (store, db) = fixture();
-    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at)
-            VALUES ('early','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0),('late','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0);
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id)
+            VALUES ('early','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('late','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq)
             VALUES ('t','early',1,1),('t','late',1,3);
         INSERT INTO warning_close_sweeps(id,condition_kind,affected_seat_id,after_ordinal,through_ordinal,close_decision_seq,interval_high_water,decision_at)
@@ -1789,7 +1789,7 @@ fn inbox_continuation_stales_at_committed_retirement_fence() {
 #[test]
 fn inbox_validation_pages_unrelated_publications_before_advancing() {
     let (store, db) = fixture();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     db.execute_batch("BEGIN").unwrap();
     for n in 0..100 {
         db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','other','goal',0,0)", [format!("empty-{n:03}")]).unwrap();
@@ -3004,7 +3004,7 @@ fn directory_stale_restart_keeps_selected_context_and_filters() {
 #[test]
 fn participant_stale_restart_uses_typed_thread_route() {
     let (store, db) = fixture();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     for seat in ["s", "s2"] {
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t',?1,'joined',0)",
@@ -3209,7 +3209,7 @@ fn directory_pages_205_threads_with_fixed_high_water() {
 fn directory_default_pages_quiet_joined_invited_and_archived_memberships() {
     let (store, db) = fixture();
     let database_path = db.path().map(str::to_owned);
-    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     for (id, topic) in [
         ("ta", "archived topic"),
         ("ti", "invited topic"),
@@ -3490,7 +3490,7 @@ fn participants_page_all_rows_and_expose_effective_retirement() {
     db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         let id = format!("s{n:03}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[&id]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[&id]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t',?1,'joined',0)",
             [&id],
@@ -3543,7 +3543,7 @@ fn thread_show_repeats_metadata_and_pages_participants() {
     db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         let id = format!("s{n:03}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[&id]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[&id]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t',?1,'joined',0)",
             [&id],
@@ -3581,7 +3581,7 @@ fn seat_directory_pages_205_rows_without_offset() {
     let (store, db) = fixture();
     db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0)",[format!("s{n:03}")]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[format!("s{n:03}")]).unwrap();
     }
     db.execute_batch("COMMIT").unwrap();
     let mut cursor = None;
@@ -3612,7 +3612,7 @@ fn seat_directory_pages_205_rows_without_offset() {
 fn seat_directory_excludes_retired_and_freezes_newest_first_page() {
     let (store, db) = fixture();
     for (id, state) in [("a", "resolved"), ("b", "retired"), ("c", "unresolved")] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,'native',0,0,CASE WHEN ?2='retired' THEN 1 END)", params![id,state]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,'native',0,0,CASE WHEN ?2='retired' THEN 1 END,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", params![id,state]).unwrap();
     }
     let ask = |cursor: Option<String>, include_retired: bool| {
         let q = Command::Seats(SeatsQuery {
@@ -3633,7 +3633,7 @@ fn seat_directory_excludes_retired_and_freezes_newest_first_page() {
     };
     let first = ask(None, false);
     assert_eq!(first.items[0].seat.as_str(), "c");
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('new','34750f98bd59fcfc946da45aaabe933b','resolved','native',0,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('new','34750f98bd59fcfc946da45aaabe933b','resolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     let second = ask(first.next_cursor, false);
     assert_eq!(second.items[0].seat.as_str(), "a");
     let third = ask(second.next_cursor, false);
@@ -3688,12 +3688,12 @@ fn seat_target_filter_finds_live_seat_after_many_retired_seats_in_one_request() 
     let (store, db) = fixture();
     db.execute_batch("BEGIN").unwrap();
     for n in 1..=900 {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at,retired_at,retired_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','retired','native','pane',0,0,1,?2)",params![format!("r{n:04}"),n]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','retired','native','pane',0,0,1,?2,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![format!("r{n:04}"),n]).unwrap();
     }
     db.execute_batch("COMMIT").unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at) VALUES ('live','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',0,0)",[]).unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at) VALUES ('other','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane2',0,0)",[]).unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at) VALUES ('unres','34750f98bd59fcfc946da45aaabe933b','unresolved','native','pane3',0,0)",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at,home_node,is_local,host_id) VALUES ('live','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at,home_node,is_local,host_id) VALUES ('other','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane2',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at,home_node,is_local,host_id) VALUES ('unres','34750f98bd59fcfc946da45aaabe933b','unresolved','native','pane3',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
     let ask = |target: &str| {
         let q = Command::Seats(SeatsQuery {
             page: page(None),
@@ -3790,7 +3790,7 @@ fn retirement_jobs_page_205_scalar_rows() {
     for n in 1..=205 {
         let seat = format!("retired-{n:03}");
         let job = format!("job-{n:03}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,1,1)",[&seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,1,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[&seat]).unwrap();
         db.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation) VALUES (?1,?2,1,'boot',1,'target',1)",params![job,seat]).unwrap();
     }
     db.execute_batch("COMMIT").unwrap();
@@ -3826,7 +3826,7 @@ fn retirement_summary_finds_late_pending_failure_and_clears_after_completion() {
     for n in 0..25 {
         let seat = format!("old-seat-{n}");
         let job = format!("old-job-{n}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,1,1)",[&seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,1,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[&seat]).unwrap();
         db.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,status) VALUES (?1,?2,1,'boot',1,'target',1,'complete')",params![job,seat]).unwrap();
     }
     assert_eq!(
@@ -3836,7 +3836,7 @@ fn retirement_summary_finds_late_pending_failure_and_clears_after_completion() {
             degraded: false
         }
     );
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES ('late-seat','34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,1,1)",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES ('late-seat','34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,1,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
     db.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,last_error) VALUES ('late-job','late-seat',1,'boot',1,'target',1,'private failure')",[]).unwrap();
     assert_eq!(
         retirement_summary(&store, "34750f98bd59fcfc946da45aaabe933b", &budget()).unwrap(),
@@ -3874,7 +3874,7 @@ fn retirement_summary_finds_late_pending_failure_and_clears_after_completion() {
 #[test]
 fn retirement_summary_uses_one_snapshot_when_writer_commits_between_probes() {
     let (store, db) = fixture();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES ('crossing-seat','34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,1,1)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES ('crossing-seat','34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,1,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     let summary = retirement_summary_with_observer(&store, "34750f98bd59fcfc946da45aaabe933b", &budget(), || {
         db.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,last_error) VALUES ('crossing-job','crossing-seat',1,'boot',1,'target',1,'private writer error')", []).unwrap();
     }).unwrap();
@@ -3956,7 +3956,7 @@ fn retirement_summary_rejects_deadline_after_commit() {
 #[test]
 fn operation_status_requires_trusted_actor_scope() {
     let (store, db) = fixture();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('other','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('other','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
     let result = serde_json::to_string(&CommandResult::MessageSent(MessageId::new("m"))).unwrap();
     db.execute("INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES ('seat:s','op',zeroblob(32),?1,0)",[result]).unwrap();
     let q = OperationStatusQuery {
@@ -4022,7 +4022,7 @@ fn operation_status_isolates_same_operator_key_by_instance() {
         };
         assert_eq!(status.result_id.as_deref(), Some(want));
     }
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('foreign','i2','resolved','native',1,0)",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('foreign','i2','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
     let error = query_operation_status(
         &store,
         "34750f98bd59fcfc946da45aaabe933b",
@@ -4037,7 +4037,7 @@ fn operation_status_isolates_same_operator_key_by_instance() {
 #[test]
 fn thread_pending_receipts_reaches_multiple_seats() {
     let (store, db) = fixture();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('34750f98bd59fcfc946da45aaabe933b',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'),1),'m','t',1,'ordinary','s','body',0)", []).unwrap();
     for seat in ["s", "s2"] {
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t',?1,'pending',300)", [seat]).unwrap();
@@ -4138,7 +4138,7 @@ fn recipients_page_205_rows_and_show_effective_retirement() {
     db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         let seat = format!("s{n:03}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[&seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[&seat]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t',?1,'pending',300)",[&seat]).unwrap();
     }
     db.execute_batch("COMMIT").unwrap();
@@ -4188,7 +4188,7 @@ fn delivery_inspect_pages_recipients_with_exact_committed_count() {
     db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         let seat = format!("s{n:03}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[&seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[&seat]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t',?1,'pending',300)",[&seat]).unwrap();
     }
     db.execute_batch("COMMIT").unwrap();
@@ -4222,7 +4222,7 @@ fn delivery_inspect_pages_recipients_with_exact_committed_count() {
 fn participants_and_thread_show_mark_the_caller_seat() {
     let (store, db) = fixture();
     for id in ["s-coordinator", "s-agent"] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)",[id]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[id]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t',?1,'joined',0)",
             [id],
@@ -5048,7 +5048,7 @@ fn thread_names_actual_caller_beats_inherited_target_and_foreign_target_is_ignor
     let (store, db) = fixture();
     db.execute_batch("PRAGMA foreign_keys=OFF;
         UPDATE seats SET target_id='own' WHERE id='s';
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at,target_id) VALUES ('inherited','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,'inherited-pane'),('foreign','other','resolved','native',1,0,'foreign-pane');").unwrap();
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,target_id,home_node,is_local,host_id) VALUES ('inherited','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,'inherited-pane',(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('foreign','other','resolved','native',1,0,'foreign-pane',(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));").unwrap();
     named_thread(&db, "own-joined", true, Some("joined"));
     named_thread(&db, "inherited-joined", true, None);
     named_thread(&db, "foreign-joined", true, None);
@@ -5625,7 +5625,7 @@ fn picker_directory_counts_only_effective_joined_nonretired_members() {
         ("released-left", "invited", Some("left")),
         ("released-joined", "joined", None),
     ] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,'native',1,0)",params![seat,if seat=="unresolved" {"unresolved"} else {"resolved"}]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,'native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![seat,if seat=="unresolved" {"unresolved"} else {"resolved"}]).unwrap();
         db.execute("INSERT INTO memberships(thread_id,seat_id,state,episode,joined_at,voluntary_state) VALUES ('t',?1,?2,1,0,?3)",params![seat,state,voluntary]).unwrap();
     }
     for (seat, state) in [
@@ -6057,7 +6057,7 @@ fn human_guidance_canonical_requesting_caller_before_page_fit() {
 fn presence_fixture() -> (super::super::connection::StoreContext, rusqlite::Connection) {
     let (store, db) = fixture();
     for seat in ["d", "h"] {
-        db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES (?1, '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0)", [seat]).unwrap();
+        db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES (?1, '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat]).unwrap();
     }
     for seat in ["s", "d", "h"] {
         db.execute(
@@ -6899,7 +6899,7 @@ fn presentation_q3_reader_helper_exact_keys_have_constant_sqlite_work() {
         )
         .unwrap()
         .unwrap();
-        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO seats(id,instance_id,state,role,generation,created_at) SELECT 'retained-'||n,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0 FROM n", [retained]).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) SELECT 'retained-'||n,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM n", [retained]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,terminal_id,incarnation) SELECT id,1,1,'w:p1','host',1,'codex',id,'exec','cooperative_top_level',0,0,1,'term','inc' FROM seats WHERE id<>'s'", []).unwrap();
         // Copy the real bounded consumer shape, changing only canonical owner
         // fields. Include retained ended bindings: no seat/history shortcut is safe.
@@ -6998,7 +6998,7 @@ fn presentation_q3_publication_recipient_keys_have_constant_sqlite_work() {
         // Keep the complete migrated canonical schema, foreign keys and triggers.
         // Valid building preparations own the staged recipient rows; only the
         // point-query workload below is measured, not this fixture's setup.
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('other','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0)", []).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('other','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
         db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) SELECT 'prep-'||n,'34750f98bd59fcfc946da45aaabe933b','actor','probe-'||n,zeroblob(32),'t',0,0,0,0,0,0,0,'building',CASE WHEN n%2=0 THEN 'lazy' ELSE 'ordinary' END FROM n", [retained]).unwrap();
         db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at,delivery_mode) SELECT 'msg-'||n,'34750f98bd59fcfc946da45aaabe933b','t',n,'ordinary','body',n,0,CASE WHEN n%2=0 THEN 'lazy' ELSE 'ordinary' END FROM n", [retained]).unwrap();
         db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) SELECT 'prep-'||n,'t','other',1,100,1 FROM n WHERE n%2=1", [retained]).unwrap();

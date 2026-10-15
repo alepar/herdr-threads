@@ -174,7 +174,7 @@ mod bootstrap_recovery {
             goal: "goal".into(),
         };
         id.digest = id.semantic_digest().unwrap();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('sender','34750f98bd59fcfc946da45aaabe933b','resolved','native','w4:p1',1,1,'term_1',?1,?1,3,'native_current_target',3,1,0)", [evidence.host_incarnation.as_str()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES('sender','34750f98bd59fcfc946da45aaabe933b','resolved','native','w4:p1',1,1,'term_1',?1,?1,3,'native_current_target',3,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [evidence.host_incarnation.as_str()]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w4:p1',?1,3,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0,'term_1',?1)", [evidence.host_incarnation.as_str()]).unwrap();
         {
             let tx = db.transaction().unwrap();
