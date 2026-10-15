@@ -257,3 +257,107 @@ fn order_deliveries_uses_the_same_key() {
     // plain (p0) and the invitation (p0) tie by arrival; the notice keeps slot 1.
     assert_eq!(names, ["plain", "notice", "invitation:inv", "lazy", "p2"]);
 }
+
+// ht-yha.65 (main review M4): an invitation replayed from its frozen descriptor keeps the deadline,
+// so a replayed page sorts exactly as the live one.
+#[test]
+fn a_replayed_frozen_invitation_sorts_as_the_live_one() {
+    use crate::delivery::invitation::{FrozenInvitation, InvitationContext, block_text};
+    use crate::protocol::{
+        commands::InvitationConfirmation,
+        delivery::PresentationItemV2 as Item,
+        watch::{WatchInvitation, WatchMessage},
+    };
+    let deadline = UtcMillis(5_000);
+    let context = InvitationContext {
+        id: InvitationId::new("inv"),
+        thread: ThreadId::new("t1"),
+        topic: "topic".into(),
+        goal: "goal".into(),
+        episode: 1,
+        topic_revision: 2,
+        command_epoch: 3,
+        confirmation: Some(InvitationConfirmation::RequireAck),
+        deadline: Some(deadline),
+        required: None,
+    };
+    let live = context.watch(&[], false);
+    assert_eq!(live.deadline_at, Some(deadline));
+    let text = block_text(&context.render(&[]));
+    let frozen = FrozenInvitation {
+        id: context.id.clone(),
+        key: context.key(),
+        thread: context.thread.clone(),
+        topic_revision: live.topic_revision.clone().unwrap(),
+        command_epoch: live.command_context_epoch.clone().unwrap(),
+        thread_name: live.thread_name.clone(),
+        truncated: false,
+        wakes: live.wakes,
+        deadline_at: context.deadline,
+        start: 0,
+        end: text.len(),
+    };
+    let replayed = frozen.watch(&text).unwrap();
+    let message = |id: &str, deadline_at: Option<i64>| Item::Message {
+        id: MessageId::new(id),
+        lazy: false,
+        content: WatchMessage {
+            thread: ThreadId::new("t1"),
+            thread_name: None,
+            sender: None,
+            sender_name: None,
+            author_role: None,
+            relays_user: false,
+            user_intent: None,
+            body: "b".into(),
+            body_len: 1,
+            truncated: false,
+            ack_required: false,
+            wakes: true,
+            priority: Some(DeliveryPriority::p0()),
+            deadline_at: deadline_at.map(UtcMillis),
+        },
+    };
+    let set = |invitation: WatchInvitation| {
+        let mut items = vec![
+            message("none", None),
+            message("later", Some(9_000)),
+            Item::Invitation {
+                id: InvitationId::new("inv"),
+                content: invitation,
+            },
+        ];
+        crate::delivery::presentation::order_deliveries(&mut items);
+        items
+            .iter()
+            .map(|item| match item {
+                Item::Message { id, .. } => id.as_str().to_owned(),
+                Item::Invitation { id, .. } => format!("invitation:{}", id.as_str()),
+                _ => "other".to_owned(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let live_order = set(live.clone());
+    assert_eq!(live_order, ["invitation:inv", "later", "none"]);
+    assert_eq!(set(replayed.clone()), live_order);
+    assert_eq!(replayed, live);
+}
+
+// ht-yha.65: frozen descriptors written before the deadline field still deserialize.
+#[test]
+fn a_frozen_invitation_without_a_deadline_field_still_deserializes() {
+    let frozen: crate::delivery::invitation::FrozenInvitation =
+        serde_json::from_value(serde_json::json!({
+            "id": "inv", "key": "k", "thread": "t1", "topic_revision": "2", "command_epoch": "3",
+            "thread_name": null, "truncated": false, "wakes": true, "start": 0, "end": 1
+        }))
+        .unwrap();
+    assert_eq!(frozen.deadline_at, None);
+    assert!(
+        !serde_json::to_value(&frozen)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("deadline_at")
+    );
+}

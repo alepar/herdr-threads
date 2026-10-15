@@ -1271,6 +1271,63 @@ fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() 
     }
 }
 
+/// ht-yha.65 (main review M1): a stored pre-upgrade lazy invitation keeps its no-wake shape. It is
+/// listed at p0 (ahead of an older p1 row) but is never in the confirming set the wake readers use.
+#[test]
+fn a_pre_upgrade_lazy_invitation_is_listed_at_p0_and_never_wakes() {
+    let (iso, context, mut conn) = fixture("pre-upgrade-lazy-invitation");
+    let p1 = send_priority(&iso, &context, &mut conn, "p1", Some(1), None);
+    let after: i64 = conn
+        .query_row(
+            "SELECT decision_seq+1 FROM host_instances WHERE id='i'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES('inv-lazy','t','b',2,'pending',0,?1,300,300,'lazy','a')", [after]).unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES('inv-ack','t','b',3,'pending',0,?1,300,300,'require_ack','a')", [after]).unwrap();
+    conn.execute(
+        "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+        [after],
+    )
+    .unwrap();
+    let page = query(
+        &context,
+        PageRequest {
+            limit: 50,
+            max_bytes: 65536,
+            ..Default::default()
+        },
+        &OutputSpec::default(),
+    );
+    let ids: Vec<_> = page.items.iter().map(item_id).collect();
+    let position = |id: &str| ids.iter().position(|x| x == id).unwrap();
+    assert!(
+        position("inv-lazy") < position(p1.as_str()),
+        "the lazy invitation sorts as p0, ahead of the older p1 row: {ids:?}"
+    );
+    let lazy = page
+        .items
+        .iter()
+        .find(|item| item_id(item) == "inv-lazy")
+        .unwrap();
+    let InboxBatchV2Item::Invitation { confirmation, .. } = lazy else {
+        panic!("expected an invitation, got {lazy:?}")
+    };
+    assert_eq!(
+        *confirmation,
+        Some(herdr_threads::protocol::commands::InvitationConfirmation::Lazy)
+    );
+    let confirming: Vec<String> =
+        herdr_threads::store::attention::pending_confirming_invitations(&conn, "b", None, after)
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+    assert_eq!(confirming, ["inv-ack"], "the lazy invitation never wakes");
+}
+
 /// Delivery-policy DP8: the InboxBatchV2 query marks a lazy row `wakes` only
 /// when the reading seat's `wake_on` is `all`, and a push-channel ACK completes
 /// the promoted row as a lazy row.
