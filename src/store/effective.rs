@@ -1767,6 +1767,22 @@ pub fn effective_receipt(
     message_id: &str,
     seat_id: &str,
 ) -> Result<Option<EffectiveReceipt>, ApiError> {
+    Ok(effective_receipt_with_key_deadline(db, message_id, seat_id)?.map(|(receipt, _)| receipt))
+}
+
+/// `effective_receipt` plus the receipt's order-key deadline (ht-yha.71).
+///
+/// Owns: the deadline a presentation order key uses, the receipt's stored deadline, else its
+/// send-time projection, whatever the receipt's state; both inputs are fixed once the receipt is
+/// published, so the key never moves between pages. Does not own the deadline any obligation,
+/// warning or display uses: that stays `EffectiveReceipt::deadline_at`, which for a settled
+/// receipt without a stored deadline follows the availability rule instead. A projection that
+/// cannot be computed (a non-positive frozen duration) gives no key deadline, never an error.
+pub(crate) fn effective_receipt_with_key_deadline(
+    db: &Connection,
+    message_id: &str,
+    seat_id: &str,
+) -> Result<Option<(EffectiveReceipt, Option<i64>)>, ApiError> {
     type LogicalColumns = Option<(
         String,
         i64,
@@ -1847,6 +1863,10 @@ pub fn effective_receipt(
         } else {
             send_at
         };
+        // The send-time projection: the pending deadline, and the order key's when none is stored.
+        // Evaluated only where used, so `deadline_at` fails exactly where it always did.
+        let projection = || checked_deadline(UtcMillis(original_start), duration).map(|d| d.0);
+        let key_deadline = stored_deadline_at.or_else(|| projection().ok());
         let deadline = match stored_deadline_at {
             Some(deadline) => Some(deadline),
             None if state.as_deref().is_some_and(|s| s != "pending")
@@ -1862,7 +1882,7 @@ pub fn effective_receipt(
                     .map(|at| checked_deadline(UtcMillis(at), duration).map(|d| d.0))
                     .transpose()?
             }
-            None => Some(checked_deadline(UtcMillis(original_start), duration)?.0),
+            None => Some(projection()?),
         };
         let waived = if state.as_deref().is_none_or(|status| status == "pending") {
             ack_required == 0
@@ -1871,7 +1891,7 @@ pub fn effective_receipt(
         } else {
             false
         };
-        return Ok(Some(EffectiveReceipt {
+        let receipt = EffectiveReceipt {
             source: ReceiptSource::Manifest,
             message_id: message_id.to_owned(),
             thread_id,
@@ -1890,7 +1910,8 @@ pub fn effective_receipt(
             ack_observation,
             acked_at,
             retired_at,
-        }));
+        };
+        return Ok(Some((receipt, key_deadline)));
     }
     type PhysicalColumns = Option<(
         String,
@@ -1948,13 +1969,13 @@ pub fn effective_receipt(
                 // Physical legacy receipts have no manifest timer worker. Their
                 // logical deadline agrees with the bounded upgrade projection,
                 // while terminal/waived evidence and stored running clocks win.
+                let projection = || checked_deadline(UtcMillis(decision_at), duration).map(|d| d.0);
+                let key_deadline = deadline_at.or_else(|| projection().ok());
                 let deadline_at = match deadline_at {
-                    None if state == EffectiveReceiptState::Pending => {
-                        Some(checked_deadline(UtcMillis(decision_at), duration)?.0)
-                    }
+                    None if state == EffectiveReceiptState::Pending => Some(projection()?),
                     deadline => deadline,
                 };
-                Ok(EffectiveReceipt {
+                let receipt = EffectiveReceipt {
                     source: ReceiptSource::Physical,
                     message_id: message_id.to_owned(),
                     thread_id,
@@ -1973,7 +1994,8 @@ pub fn effective_receipt(
                     ack_observation,
                     acked_at,
                     retired_at,
-                })
+                };
+                Ok((receipt, key_deadline))
             },
         )
         .transpose()

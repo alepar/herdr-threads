@@ -3,7 +3,8 @@
 //!
 //! Owns: window collection from the three existing walks, key building (`DeliveryOrderKey`) for
 //! each item from immutable facts only (an item's key never changes between pages: an unread
-//! row's deadline is its receipt's whatever the receipt's state), the sort, and the
+//! row's key deadline is its receipt's stored deadline, else its send-time projection, whatever
+//! the receipt's state; ht-yha.71), the sort, and the
 //! re-collected-vs-fresh skip rule (a re-collected window skips keys <= the last key emitted from
 //! that same window, `DeadlineCursor::window_last`; a fresh window skips nothing; ht-yha.63),
 //! bounded by `DEADLINE_WINDOW` items and
@@ -194,9 +195,17 @@ impl DeadlineWindow {
                         continue;
                     }
                 }
-                // The key's deadline is the receipt's whatever its state, so an item ACKed between
-                // pages keeps its key; only the ACK offer needs a pending receipt.
-                let receipt = crate::store::effective::effective_receipt(db, &id, seat.as_str())?;
+                // The key's deadline is the receipt's stored deadline, else its send-time
+                // projection, whatever its state (not its effective deadline, which a settle can
+                // move), so an item ACKed between pages keeps its key; only the ACK offer needs a
+                // pending receipt.
+                let (receipt, key_deadline) =
+                    crate::store::effective::effective_receipt_with_key_deadline(
+                        db,
+                        &id,
+                        seat.as_str(),
+                    )?
+                    .map_or((None, None), |(r, key)| (Some(r), key));
                 let pending = receipt.as_ref().is_some_and(|r| {
                     r.state == EffectiveReceiptState::Pending
                         && r.decision_seq.unwrap_or(0) <= decision as i64
@@ -204,7 +213,7 @@ impl DeadlineWindow {
                 items.push(DeadlineItem {
                     key: DeliveryOrderKey {
                         priority: DeliveryPriority::p0(),
-                        deadline: receipt.as_ref().and_then(|r| r.deadline_at).map(UtcMillis),
+                        deadline: key_deadline.map(UtcMillis),
                         decision_seq: decision_seq.max(0) as u64,
                         rank: SourceRank::Unread,
                         ordinal: ordinal.max(0) as u64,

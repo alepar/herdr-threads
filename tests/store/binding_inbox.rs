@@ -1351,6 +1351,84 @@ fn an_item_display_acked_mid_window_is_not_shown_again() {
     );
 }
 
+// ht-yha.71 (final review wf_b9b4d982-1c2 [rare-rekey-duplicate]): an unread row whose receipt has
+// no stored deadline, for a dormant recipient, settles between two pages of one window. Its
+// effective deadline then switches from the send-time projection to the availability rule
+// (`None`, which sorts last), so a key built from it moves past the window's last key and the row
+// is shown again. Kills: keying an unread row by the receipt's state-dependent effective deadline.
+#[test]
+fn a_receipt_without_a_stored_deadline_is_shown_once_across_a_settle() {
+    let mut fx = fx("bi-rekey-no-stored-deadline");
+    let low = send_ack(&mut fx, "older, due late", 900_000);
+    let m = send_ack(&mut fx, "newer, due early", 100_000);
+    // m's recipient row for b is dormant at the send, and m has no stored deadline.
+    fx.conn
+        .execute(
+            "UPDATE prepared_recipients SET eligible_at_snapshot=0 WHERE seat_id='b' AND preparation_id=(SELECT preparation_id FROM send_manifests WHERE message_id=?1)",
+            [m.as_str()],
+        )
+        .unwrap();
+    fx.conn
+        .execute(
+            "UPDATE receipt_state SET deadline_at=NULL, available_at=NULL WHERE message_id=?1 AND seat_id='b'",
+            [m.as_str()],
+        )
+        .unwrap();
+    // No availability after the send: a settled dormant receipt then has no deadline at all.
+    fx.conn
+        .execute(
+            "DELETE FROM seat_availability WHERE seat_id='b' AND decision_seq>=(SELECT decision_seq FROM send_manifests WHERE message_id=?1)",
+            [m.as_str()],
+        )
+        .unwrap();
+    let send_at: i64 = fx
+        .conn
+        .query_row(
+            "SELECT decision_at FROM send_manifests WHERE message_id=?1",
+            [m.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let before = crate::store::effective::effective_receipt(&fx.conn, m.as_str(), "b")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (before.state, before.deadline_at),
+        (EffectiveReceiptState::Pending, Some(send_at + 100_000)),
+        "a pending dormant receipt is due at its send-time projection"
+    );
+    let mut settled = false;
+    let pages = traverse(&fx, &claim_b1(), 1, 60_000, |page| {
+        if settled || !page.iter().any(|p| p.item == m.as_str() && p.end == p.len) {
+            return;
+        }
+        settled = true;
+        // A legacy settle that stores no deadline (a v38-copied or warning-inserted row ACKed
+        // while not pending keeps `deadline_at` NULL); written directly, as no current writer of
+        // a pending receipt leaves it NULL.
+        fx.conn
+            .execute(
+                "INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES(?1,'b','acked','b',1,'proof',2000) ON CONFLICT(message_id,seat_id) DO UPDATE SET state='acked',deadline_at=NULL,available_at=NULL,ack_actor_seat_id='b',ack_generation=1,ack_observation='proof',acked_at=2000",
+                [m.as_str()],
+            )
+            .unwrap();
+        let after = crate::store::effective::effective_receipt(&fx.conn, m.as_str(), "b")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (after.state, after.deadline_at),
+            (EffectiveReceiptState::Acknowledged, None),
+            "the settle moves the effective deadline (the re-key this test is about)"
+        );
+    });
+    assert!(settled, "m was shown");
+    assert_eq!(
+        shown_items(&pages),
+        [m.as_str().to_owned(), low.as_str().to_owned()],
+        "m is shown once"
+    );
+}
+
 // ht-yha.63 I6 (main review), the marks: a receipt-bearing message displayed above a blocked
 // cursor gets this binding's display mark and is not offered again on a fresh traversal; the
 // mark is pruned when the cursor passes it. Kills: marking only rows with a delivery row

@@ -374,6 +374,58 @@ fn unpublished_staging_is_invisible_and_send_deadline_survives_availability() {
     assert_eq!(after.state, EffectiveReceiptState::Pending);
 }
 
+// ht-yha.71: the order key's deadline is the stored deadline, else the send-time projection,
+// whatever the receipt's state, while the effective deadline of a settled dormant receipt without
+// a stored deadline follows the availability rule (here none). Kills: a key deadline taken from
+// `deadline_at`, which moves from `Some(1300)` to `None` with the settle.
+#[test]
+fn the_key_deadline_is_the_send_time_projection_whatever_the_state() {
+    let db = fixture();
+    db.execute_batch("INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at, decision_seq) VALUES ('i','m', 't', 1, 'ordinary', 'body', 1000, 10); INSERT INTO send_manifests(instance_id,preparation_id, message_id, thread_id, decision_seq, decision_at, base_sequence, interval_high_water, recipient_count, warning_count) VALUES ('i','p', 'm', 't', 10, 1000, 1, 0, 1, 0);").unwrap();
+    let read = |db: &Connection| {
+        let (receipt, key) = effective_receipt_with_key_deadline(db, "m", "s")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            effective_receipt(db, "m", "s").unwrap().as_ref(),
+            Some(&receipt),
+            "effective_receipt is the same receipt"
+        );
+        (receipt.state, receipt.deadline_at, key)
+    };
+    assert_eq!(
+        read(&db),
+        (EffectiveReceiptState::Pending, Some(1300), Some(1300)),
+        "pending: the key is the effective deadline, the send-time projection"
+    );
+    db.execute("INSERT INTO receipt_state(message_id, seat_id, state, ack_actor_seat_id, ack_generation, ack_observation, acked_at) VALUES ('m', 's', 'acked', 's', 1, 'proof', 1200)", []).unwrap();
+    assert_eq!(
+        read(&db),
+        (EffectiveReceiptState::Acknowledged, None, Some(1300)),
+        "settled without a stored deadline: the effective deadline moves, the key does not"
+    );
+    db.execute(
+        "UPDATE receipt_state SET deadline_at=5000 WHERE message_id='m'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        read(&db),
+        (EffectiveReceiptState::Acknowledged, Some(5000), Some(5000)),
+        "settled with a stored deadline: the key is the stored deadline"
+    );
+    db.execute(
+        "UPDATE receipt_state SET state='pending',ack_actor_seat_id=NULL,ack_generation=NULL,ack_observation=NULL,acked_at=NULL WHERE message_id='m'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        read(&db),
+        (EffectiveReceiptState::Pending, Some(5000), Some(5000)),
+        "pending with a stored deadline: the key is the stored deadline"
+    );
+}
+
 #[test]
 fn sparse_ack_and_retirement_preserve_logical_receipt_provenance() {
     let db = fixture();
