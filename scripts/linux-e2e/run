@@ -6,6 +6,7 @@
   scripts/linux-e2e/run doctor        [--hide-harnesses] [common options]
   scripts/linux-e2e/run wake-e2e      [--codex-auth-file F] [--claude-oauth-token-file F | --anthropic-api-key-file F]
                                       [--live [--allow-dirty]] [--timeout S] [common options] [-- DRIVER ARGS...]
+  scripts/linux-e2e/run real-ssh      [common options] [-- scripts/linux-e2e/real-ssh-e2e.py ARGS...]
   scripts/linux-e2e/run clean         [--all [--keep-image]]
   scripts/linux-e2e/run --self-test   # this script's own parsing/cleanup paths, with a fake docker (no Docker)
 
@@ -331,6 +332,8 @@ def parse(argv):
     we.add_argument("--allow-dirty", action="store_true", help="--live with uncommitted changes (they are not tested)")
     we.add_argument("--timeout", type=int, default=3600, help="seconds to wait for the driver (default %(default)s)")
     we.add_argument("driver_args", nargs=argparse.REMAINDER, help="-- then scripts/wake-e2e.py arguments")
+    rssh = common(parser("real-ssh", help="pre-release: two nodes link over the default ssh transport (Docker network)"))
+    rssh.add_argument("driver_args", nargs=argparse.REMAINDER, help="-- then scripts/linux-e2e/real-ssh-e2e.py arguments")
     cl = parser("clean", help="remove this worktree's containers, volumes and stale credential dirs, and dangling "
                               "runner images (--all: every object labelled " + LABEL + ")")
     cl.add_argument("--all", action="store_true", help="every labelled container, volume and image, any worktree")
@@ -823,6 +826,27 @@ class Runner:
                   flush=True)
             return EXIT_REFUSED
         return EXIT_OK if rc == 0 else EXIT_FAIL
+
+    def run_real_ssh(self):
+        """Build the Linux binary in the runner container, copy it out, and hand it and the image to
+        scripts/linux-e2e/real-ssh-e2e.py on the host, which starts its own containers on a private network."""
+        rest = list(self.args.driver_args)
+        if rest[:1] == ["--"]:
+            rest = rest[1:]
+        self.prepared()
+        if self.step("build-bin") != 0:
+            return EXIT_FAIL
+        out = self.evidence / "real-ssh"
+        out.mkdir(parents=True, exist_ok=True)
+        binary = out / "herdr-threads"
+        if self.call([self.docker, "cp", f"{self.name}:{SRC}/bin/herdr-threads", str(binary)], "copy-bin") != 0:
+            return EXIT_FAIL
+        arch = self.platform()
+        driver = [sys.executable, str(self.repo / "scripts/linux-e2e/real-ssh-e2e.py"), "--docker", self.docker,
+                  "--image", self.facts["image"]["id"], "--bin", str(binary), "--platform", f"linux/{arch}",
+                  "--evidence-dir", str(out / "evidence"), *rest]
+        rc = self.call(driver, "real-ssh-e2e")
+        return rc if rc in (EXIT_OK, EXIT_REFUSED) else EXIT_FAIL
 
     def run(self):
         self.warn_leftovers()
