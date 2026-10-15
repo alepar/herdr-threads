@@ -107,7 +107,7 @@ impl FactError {
 /// `ApiError` with [`FactError::from_api`].
 ///
 /// Owns: the one translation from `ApplyContext` (`decision`, `decision_seq`,
-/// `origin.node`, `origin_ms()`, `is_local_origin()`, `provenance()`,
+/// `origin.node`, `origin_ms()`, `is_local_origin()`, `is_own_history()`, `provenance()`,
 /// `delivery_suppressed`) to the store-side input. Must not: decide anything
 /// itself (suppression is the context's rule) or write tables. Every kind
 /// handler goes through it, so `src/store` never reads `ApplyContext`.
@@ -131,6 +131,7 @@ pub fn with_input<R>(
         origin_node: cx.origin.node,
         origin_ms,
         local_origin: cx.is_local_origin(),
+        own_history: cx.is_own_history(),
         provenance: &provenance,
         suppress: &suppress,
     };

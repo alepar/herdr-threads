@@ -5,7 +5,8 @@
 //!   In this file that is startup ([`open`]: invariants, HLC resume, genesis
 //!   bootstrap through [`begin_incarnation`]), local authoring ([`author`],
 //!   [`author_above`]: tick, next counter, `prev_hash`, deps, seal, insert,
-//!   then hand to ApplyEngine in the same transaction), the applied vector
+//!   then hand to ApplyEngine in the same transaction; [`reissue`], the second
+//!   entry point, which copies a frozen log's entry into the active log), the applied vector
 //!   ([`applied_vector`]) and the commit guard ([`check_self_applied`]);
 //!   verified batch ingest of other nodes' entries ([`ingest`]) and the
 //!   committed-range read side ([`serve`], [`vector`], [`stored_hash`]); and
@@ -655,6 +656,94 @@ fn author_encoded(
         hlc,
         hash: envelope.hash,
         self_tag_k,
+    })
+}
+
+/// Where the envelope handed to [`reissue`] was held: the `journal` chain of
+/// its log, or `journal_forked` (a lost branch). Recorded by the caller's
+/// `sync_reissues` row; the copy itself is the same either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReissueSource {
+    Journal,
+    Forked,
+}
+
+/// Journal's second authoring entry point: re-authors `source`, an entry of a
+/// frozen own log or of one of its branches, as the next entry of the active
+/// self log, and applies it under [`apply::ApplyMode::Reissue`].
+///
+/// The steps: read the active self log (next counter, previous hash), take
+/// `deps` as the element-wise maximum of the applied vector and the source's
+/// own deps without the active log (so a receiver never applies the copy
+/// before facts the original causally followed), copy `kind`, `kind_version`,
+/// `hlc`, `creates`, `needs` and the payload bytes unchanged, seal, insert
+/// `pending`, advance the head, then `apply_one`.
+///
+/// The HLC is not ticked: a re-issued register fact keeps its `(hlc, node)`
+/// and so loses last-writer-wins to itself rather than beating concurrent
+/// later writes it never saw, and `sent_at` stays stable.
+///
+/// Unlike [`author`], a handler rejection (or a park) never aborts: the fact
+/// was validly authored once and other nodes need the copy, so the outcome is
+/// recorded (`failed`, `parked_*`) and the commit guard still holds, because
+/// every recorded outcome counts the head as processed. Only a store error
+/// returns `Err`.
+pub fn reissue(
+    tx: &Transaction<'_>,
+    ctx: &StoreContext,
+    decision: DecisionInstant,
+    source: &Envelope,
+    _source_where: ReissueSource,
+) -> Result<Authored, ApiError> {
+    let sync = ctx.sync()?;
+    let active = active_self_log(tx)?;
+    let counter = active.contiguous + 1;
+    let mut merged: BTreeMap<LogKey, u64> = applied_vector(tx)?.into_iter().collect();
+    for (log, at) in source.deps.entries() {
+        let slot = merged.entry(*log).or_insert(0);
+        *slot = (*slot).max(*at);
+    }
+    merged.remove(&active.key);
+    let deps = Deps::new(merged.into_iter().collect(), &active.key)
+        .map_err(|e| api_error(ErrorCode::InvalidRequest, format!("reissue deps: {e}")))?;
+    let unsigned = UnsignedEnvelope {
+        log: active.key,
+        counter,
+        prev_hash: active.head_hash,
+        hlc: source.hlc,
+        kind: source.kind.clone(),
+        kind_version: source.kind_version,
+        deps,
+        creates: source.creates.clone(),
+        needs: source.needs.clone(),
+        payload: source.payload.clone(),
+    };
+    unsigned.validate_shape().map_err(|e| {
+        api_error(
+            ErrorCode::InvalidRequest,
+            format!("reissue {}: {e}", source.kind),
+        )
+    })?;
+    let envelope = unsigned.seal(&sync.identity);
+    let ingest_seq = insert_pending(tx, active.log_ix, &envelope, decision)?;
+    tx.execute(
+        "UPDATE sync_logs SET contiguous_counter=?2, head_hash=?3 WHERE log_ix=?1",
+        params![active.log_ix, counter as i64, envelope.hash.as_slice()],
+    )
+    .map_err(store_error)?;
+    apply::apply_one(
+        tx,
+        ctx,
+        decision,
+        ingest_seq,
+        apply::ApplyMode::Reissue { of: source.log },
+    )?;
+    Ok(Authored {
+        ingest_seq,
+        counter,
+        hlc: source.hlc,
+        hash: envelope.hash,
+        self_tag_k: None,
     })
 }
 

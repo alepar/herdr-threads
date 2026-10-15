@@ -90,11 +90,11 @@ pub(crate) fn stage(
 /// `{"provenance":"<provenance>","decided_at":<origin_ms>}`.
 ///
 /// The fallback provenance is the input's own (`replicated_from:<uuid>` for
-/// another node's fact, `local_journal` for this node's own journal). A
-/// local-origin input with nothing staged is an own old incarnation's entry
-/// (local authoring always stages first), so its provenance is
-/// `local_journal` even when the input says `local`, which TRUST-POLICY does
-/// not define as a stored value.
+/// another node's fact). An own-history input with nothing staged (an own old
+/// incarnation's entry or a re-issue, `ApplyContext::is_own_history`; local
+/// authoring always stages first) is recorded as `local_journal` even when
+/// the input says `local`, which TRUST-POLICY does not define as a stored
+/// value.
 pub(crate) fn take(
     tx: &Transaction<'_>,
     m: &MaterializeInput<'_>,
@@ -118,7 +118,7 @@ pub(crate) fn take(
     if let Some(staged) = staged {
         return Ok(staged);
     }
-    let provenance = if m.local_origin && m.provenance == "local" {
+    let provenance = if m.own_history {
         "local_journal"
     } else {
         m.provenance
