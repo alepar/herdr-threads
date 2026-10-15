@@ -1424,16 +1424,26 @@ fn check_store_identity(
     identity: &NodeIdentity,
     key_path: &std::path::Path,
 ) -> io::Result<()> {
-    // A database without a node row is not this store's to judge: opening it
-    // reports the schema problem.
-    let Some((stored, tag_k)): Option<(String, u32)> = conn
-        .query_row("SELECT id, tag_k FROM local_node", [], |row| {
+    // A database without a node table or row (a file the store has not
+    // initialized yet) is not this store's to judge: opening it creates or
+    // reports it. Any other failure (busy, corrupt) fails the start.
+    let (stored, tag_k): (String, u32) =
+        match conn.query_row("SELECT id, tag_k FROM local_node", [], |row| {
             Ok((row.get(0)?, row.get(1)?))
-        })
-        .ok()
-    else {
-        return Ok(());
-    };
+        }) {
+            Ok(found) => found,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                if message.starts_with("no such table: local_node") =>
+            {
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(io::Error::other(format!(
+                    "store startup: identity check: {error}"
+                )));
+            }
+        };
     let stored_uuid: crate::node::NodeUuid = stored.parse().map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1571,6 +1581,8 @@ where
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                 )
                 .map_err(|error| io::Error::other(format!("store startup: {error}")))?;
+                conn.busy_timeout(std::time::Duration::from_secs(5))
+                    .map_err(|error| io::Error::other(format!("store startup: {error}")))?;
                 check_store_identity(&conn, &identity, &identity_key_path)?;
             }
             publish_node_json(&identity_paths, &identity)?;
@@ -2907,6 +2919,26 @@ mod store_identity_tests {
         assert!(text.contains(&key.uuid().to_string()), "{text}");
         assert!(text.contains("/node/node.key"), "{text}");
         assert_eq!(key.tag_k(), 0, "a refused start adopts nothing");
+    }
+
+    // Kills: an identity check that swallows a real read failure (here a
+    // missing column) as "nothing to check".
+    #[test]
+    fn unreadable_node_row_fails_start_but_absent_table_or_row_skips() {
+        let key = NodeIdentity::from_seed([7; 32]);
+        let path = std::path::Path::new("/node/node.key");
+        let empty = rusqlite::Connection::open_in_memory().unwrap();
+        check_store_identity(&empty, &key, path).unwrap();
+        empty
+            .execute_batch("CREATE TABLE local_node (id TEXT, tag_k INTEGER)")
+            .unwrap();
+        check_store_identity(&empty, &key, path).unwrap();
+        let broken = rusqlite::Connection::open_in_memory().unwrap();
+        broken
+            .execute_batch("CREATE TABLE local_node (other TEXT)")
+            .unwrap();
+        let error = check_store_identity(&broken, &key, path).unwrap_err();
+        assert!(error.to_string().contains("identity check"), "{error}");
     }
 
     // Kills: a daemon that keeps `tag_k = 0` after a retag, or leaves node.json
