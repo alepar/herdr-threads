@@ -417,13 +417,14 @@ model open work, and summary closure never changes receipt state or installs glo
   that process's composer: the item reaches whichever of its bindings takes the turn, so no binding is
   chosen. Like a single target it is not held to the several-targets idle condition (an ordinary wake
   reads no composer before that point); the adapter's final composer read immediately before submission
-  still refuses typed input and a busy agent. It is owed only while every binding of the process is owed (one served in its turn served the
-  process), and a binding whose mod channel woke it takes its process's other bindings off the composer
+  still refuses typed input and a busy agent. For a receipt or invitation it is owed only while every binding of the process is
+  unserved (one served in its turn served the process), and a binding whose mod channel woke it takes its process's other bindings off the composer
   targets. Seat-level attention includes a delivery row the seat's nudge threshold admitted (reason `lazy`,
   the lazy frontier admitted by `NudgeThreshold`): under message priority delivery (D9) a bare `--nudge`
-  (p0, no `--require-ack`) makes no receipt, so this row is what wakes the seat, and it counts exactly as
-  `pending_receipt` does for the one-process rule (orchestrator decision at the ht-327 merge; the item is shown
-  to whichever binding of the process takes the turn, as before). A wake whose reasons name no such item still
+  (p0, no `--require-ack`) makes no receipt, so this row is what wakes the seat, and it takes the one-process
+  composer wake as `pending_receipt` does (orchestrator decision at the ht-327 merge; the item is shown
+  to whichever binding of the process takes the turn, as before). Unlike a receipt, a delivery row is each
+  binding's own stream, so its owedness is decided per binding (below). A wake whose reasons name no such item still
   needs a unique match, and a threshold-silent row (priority above T) never reserves a wake at all. Only a reservation that names no targets
   (a legacy source) keeps the single-harness rule. A soft poke follows the same targets and rule.
   *Served in-turn* (ht-705, A8): a target that was shown every pending receipt (or invitation) the wake is
@@ -435,7 +436,13 @@ model open work, and summary closure never changes receipt state or installs glo
   stays owed for a later attempt. A target that already displayed the threshold-admitted frontier delivery row the
   wake is reserved for (reason `lazy`: its cursor passed the row or its displayed mark holds it, decided from that binding's own records, never the
   seat-wide delivery-row state) is owed no wake for
-  it, so a one-process composer wake for that row is refused once any binding of the process displayed it.
+  it, but a one-process composer wake for that row stays owed while any binding of the process still finds it
+  unread, and is refused (pre-send, nothing typed) only once every reached binding displayed it (main review I4,
+  ht-yha.62; this reverses the ht-yha.45 wording, under which a `/side` sibling's display refused the idle main
+  binding's wake on every retry). The accepted cost is at most one composer wake after a sibling's display: a
+  submitted wake keeps the frontier reserved, so it is not retried until a newer row is admitted. A wake
+  reserved for several reasons is owed while any of them is (receipts and invitations by the every-binding
+  rule, the row by the any-binding rule).
   Verified 2026-10-11 (`evidence/ht-54r.89/summary.md`, derived fingerprints, no harness logged in): the
   fingerprint pid is a foreground process for Claude 2.1.296 (live: `CLAUDE_PID` among seven foreground
   processes), Codex 0.162.1 native and via npm (node launcher plus native child), Hermes v0.21.5 and

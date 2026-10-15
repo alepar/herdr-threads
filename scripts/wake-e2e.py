@@ -95,7 +95,10 @@ ITEM_PRIORITY = {"send-p1": 1, "send-p0": 0, "send-p3": 3, "send-ack": 0, "invit
 MIXED_DEADLINE_S = 90
 # Opt-in Codex cases (ht-327), never in the default matrix: before the send the recipient's one Codex process holds
 # extra session bindings from two `/side` conversations (ephemeral in-process forks) that each made one
-# herdr-threads `inbox` call. side-nudge: a p0 send (`--nudge`, no ACK) still wakes an idle recipient at T=0. side-draft: a typed composer draft is never typed
+# herdr-threads `inbox` call. side-nudge: a p0 send (`--nudge`, no ACK) still wakes an idle recipient at T=0; then, in
+# its sibling-displayed phase (ht-yha.62), a second p0 sent while a third `/side` turn is busy and displayed by that
+# side's own `inbox` still wakes the idle main session afterwards (a sibling's display never blocks the process's
+# wake; inconclusive, not failed, when the side binding never displayed it). side-draft: a typed composer draft is never typed
 # into (busy-input guard) and the sender's overdue warning names the refused wake. They also run on `co-plain`, a
 # Codex with its hooks feature off, so every session binds by a plain CLI call only (as Main's seat did on
 # 2026-10-13): no lifecycle claim ranks the group, the same-process rule leaves all three connected.
@@ -103,6 +106,11 @@ SIDE_CASES = ("side-nudge/group", "side-draft/group")
 SIDE_FORKS = 2
 SIDE_DEADLINE_S = 45
 SIDE_DRAFT = "draft-kept-by-wake-e2e"
+# The sibling-displayed side turn: long enough that the p0 is sent while it is busy (a wake then is refused), then the
+# side's own `inbox` displays it to the side binding.
+SIBLING_SIDE_PROMPT = ("Side sibling of wake-e2e {tag}: run the shell command `sleep 10`, then run the shell command "
+                       "`{shim} inbox` once, then print SIDE-SIB-DONE. Do not act on anything it shows.")
+SIBLING_SIDE_DONE = re.compile(r"^[^\w\n]*SIDE-SIB-DONE", re.M)
 # Codex runs with its shell snapshot off (launch_line, ht-l16), so the candidate's bin dir stays first on PATH; a plain
 # recipient is still given the shim's exact path, since it has no hook context naming the run's --state-dir.
 PLAIN_HINT = (" Your herdr-threads hooks are off: always run herdr-threads by the exact path `{shim}` (never a bare "
@@ -123,6 +131,17 @@ WAKE_WINDOW_S = 6.0     # a woken agent leaves idle well inside this (observed 0
 SPACING_S = 35.0        # the per-seat wake retry guard is 30 s after each reservation (src/notification/policy.rs)
 TURN_TIMEOUT_MS = 240_000
 IDLE = ("idle", "done")
+
+
+def side_nudge_passed(setup_ok, woke, checks):
+    """side-nudge's verdict: the first phase woke the idle recipient and its message arrived; and when the sibling
+    phase's side binding displayed its p0 (`sibling_displayed`), the idle main session was still woken for it and
+    the message arrived (ht-yha.62). A sibling phase whose side binding never displayed the p0 is inconclusive and
+    does not decide the verdict."""
+    first = bool(setup_ok and woke and checks.get("delivered"))
+    if not checks.get("sibling_displayed"):
+        return first
+    return first and checks.get("sibling_wake_s") is not None and bool(checks.get("sibling_delivered"))
 # Session variables and agent env markers (every `AgentEnvMarker` the built-in adapters declare; the self-test
 # checks this list against src/harness) of whatever runs this script: never inherited by the commands it runs.
 CALLER_SESSION_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SESSION_ID",
@@ -1145,6 +1164,56 @@ class Recipient:
             "FROM occupant_bindings WHERE seat_id=? AND role='top_level' AND ended_at IS NULL ORDER BY ordinal",
             (self.seat,))]
 
+    def binding_ids(self):
+        return {row[0] for row in self.store_rows(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id=? AND role='top_level'", (self.seat,))}
+
+    def displayed_by(self, bindings, mid):
+        """Which of `bindings` displayed message `mid`: its cursor on the thread passed the message's sequence, or
+        a displayed mark holds it (the store's own per-binding view, `binding_lazy_unread_sql!`)."""
+        found = set()
+        for binding in bindings:
+            found |= {row[0] for row in self.store_rows(
+                "SELECT b.binding_id FROM occupant_bindings b JOIN messages m ON m.id=? WHERE b.binding_id=? AND "
+                "(EXISTS(SELECT 1 FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=m.thread_id "
+                "AND c.seq>=m.sequence) OR EXISTS(SELECT 1 FROM binding_row_displays d WHERE "
+                "d.binding_id=b.binding_id AND d.message_id=m.id))", (mid, binding))}
+        return sorted(found)
+
+    def sibling_phase(self, checks, ref, tag):
+        """side-nudge, sibling-displayed (ht-yha.62): a third `/side` turn is busy when a second p0 is sent, then
+        its own `inbox` displays it; back on the idle main thread the process must still be woken for it."""
+        before = self.binding_ids()
+        self.wait_idle()
+        self.run.herdr("agent", "prompt", self.pane, "/side", check=False)
+        time.sleep(2)
+        shim = self.run.bindir / "herdr-threads"
+        self.run.herdr("agent", "prompt", self.pane, SIBLING_SIDE_PROMPT.format(tag=tag, shim=shim), check=False)
+        end = time.time() + 15
+        while self.status() in IDLE and time.time() < end:
+            time.sleep(0.25)
+        checks["sibling_side_busy"] = self.status() not in IDLE
+        ref["sibling_message"] = mid = self.send("p0", tag + " sibling", direct=False)
+        end = time.time() + 120
+        while not SIBLING_SIDE_DONE.search(self.screen()) and time.time() < end:
+            time.sleep(1)
+        self.wait_idle()
+        side = sorted(self.binding_ids() - before)
+        checks["sibling_side_bindings"] = side
+        checks["sibling_displayed_by"] = self.displayed_by(side, mid)
+        checks["sibling_displayed"] = bool(checks["sibling_displayed_by"])
+        self.run.herdr("agent", "send-keys", self.pane, "ctrl+c", check=False)
+        time.sleep(2)
+        self.wait_idle()
+        # A wake attempted while the side turn was busy is refused and retried after the per-seat guard.
+        checks["sibling_wake_s"] = self.watch_for_wake(SPACING_S + WAKE_WINDOW_S)
+        checks["sibling_wake_state"] = self.wake_state()
+        if checks["sibling_wake_s"] is None:
+            checks["sibling_hello_sent"] = True
+            self.prompt(self.follow_up())
+        self.wait_idle()
+        checks["sibling_delivered"] = self.on_screen(mid)
+
     def wake_state(self):
         rows = self.store_rows("SELECT last_outcome,completed_at_utc,retry_step FROM wake_work WHERE seat_id=?",
                                (self.seat,))
@@ -1206,7 +1275,12 @@ class Recipient:
                 self.prompt(self.follow_up())
             self.wait_idle()
             checks["delivered"] = self.on_screen(ref["message"])
-            passed = setup_ok and woke and checks["delivered"]
+            self.settled()
+            gap = SPACING_S - (time.time() - self.last_wake)
+            if gap > 0:
+                self.run.stopping.wait(gap)
+            self.sibling_phase(checks, ref, tag)
+            passed = side_nudge_passed(setup_ok, woke, checks)
         else:
             # Busy-input guard: a typed draft is never typed into or submitted; the sender sees the refused wake.
             expect_wake = False
