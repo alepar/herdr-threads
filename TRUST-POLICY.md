@@ -1604,6 +1604,15 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   cooperative like every other seat claim (A1): a same-user process that supplies the seat's claim can set it to
   any value -1..=9. The effect is bounded to wake eligibility (which pending messages may wake an idle seat); it creates no receipt, ACK evidence,
   attention or authority, and the daemon records only the seat's own current top-level binding as the actor.
+- **A disconnected binding's own reads show no delivery rows.** A binding holds a pending view only while it is
+  connected (A8, ht-yha.54, ht-yha.57). A process that still calls on a disconnected binding (a superseded
+  session's stale process, say; plain calls never reconnect it) sees no delivery rows in its own reads until a
+  lifecycle check-in reconnects it. Nothing is lost: the reconnect re-seeds the view from the binding's own
+  cursors and display marks, so it is offered exactly the rows it has not displayed.
+- **A 1:1 pair joins both seats without an invitation.** Pair creation is the consent an invitation would
+  collect (D7, `direct.auto_join_v1`; A5 "Automatic pair reservation"): the peer seat is joined in the creating
+  transaction, and its first session is offered the opener and every later send. Explicit leave still applies.
+  A pair created before the upgrade with a pending invitation keeps it.
 
 ## Decision record
 
@@ -1709,6 +1718,22 @@ for side agents.
 | ht-5n6 Codex launched without a prompt never checks in, so no lost-prompt wake | `managed_launch` binding after a correlated launch | A3, A4, A5, Accepted limits |
 | W6-R2 "mark it self" wording | "when run in this pane" | A1 |
 | Waves 29/19 identifier sizes | accepted; fix the 104-bit comment (it is 112) | Accepted limits |
+
+### Message delivery priority (2026-10-13, ht-yha)
+
+User decisions D1-D11 of
+`docs/superpowers/runs/2026-10-13-message-priority-delivery/2026-10-13-message-priority-delivery-design.md`.
+Two of them bear on this policy:
+
+- **D7 pair auto-join.** A 1:1 pair is a reserved two-seat channel, so its creation joins both seats with no
+  invitation; the consent an invitation would collect is given by pair creation itself (A5 "Automatic pair
+  reservation", `direct.auto_join_v1`). It also fixes the mismatch between the docs, which described pairs as
+  automatic, and the behaviour, where the peer had to `accept`.
+- **Per-session views exist only while connected** (ht-yha.44, ht-yha.54, ht-yha.57; user decision at
+  ht-yha.57). Every disconnect, process exit included, drops the binding's view and its next connected
+  transition re-seeds it, so a disconnected session costs only its cursors and display marks. The accepted cost
+  is that a stale process calling on a disconnected binding sees no delivery rows until a lifecycle check-in
+  reconnects it (Accepted limits).
 
 ## Bootstrap creation attempts and administrative recovery (2026-10-08)
 

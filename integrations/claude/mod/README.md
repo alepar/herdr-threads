@@ -47,7 +47,7 @@ One object per line, `schema: 1`; consumers ignore unknown keys.
 | `kind` | `id` | notes |
 |---|---|---|
 | `message` | message id | ordinary message; `ack_required: true` while its receipt is pending, `false` when another binding of the seat already settled it. Both are acked: the second answers `already_settled` and only moves this session's read position |
-| `lazy` | message id | legacy: an older daemon's lazy message; `ack_required: false`, framed as `message` |
+| `lazy` | message id | a delivery row (any priority) the seat's nudge threshold did not admit, so `wakes: false`; `ack_required: false`, framed as `message` |
 | `attention` | `attention:<version>` | never acked; re-sent once per version and after each (re)start |
 | `attention_cleared` | `attention_cleared:<version>` | after an attention line, nothing it pointed at is still pending; the mod drops unsent attention items |
 | `status` | `status:<n>` | `state` connected, refused or closing; optional `reason`, `exit` |
@@ -100,7 +100,7 @@ builds `io` from `$`. Rules (spec D5, D6):
   append is awaited before the submit, so the order is append, then submit. A denied append submits no wake
   (items stay queued, ledger `refused` via `append`, 30 s backoff). The submit is never awaited in a hook and
   never issued while a main turn is open (re-checked right before the call). Rows the daemon
-  marks `wakes: false` (priority above the seat's nudge threshold; legacy `lazy`) go to
+  marks `wakes: false` (priority above the seat's nudge threshold; streamed as `lazy`) go to
   `$.session.append` at once. Each context or append delivery logs one dim `$.ui.log` line
   (`delivered N message(s)`; Claude Code adds the plugin-name prefix).
 - **Attention freshness.** A queued attention item is dropped (ledger `refused`, `attention_cleared`) when
@@ -119,8 +119,8 @@ builds `io` from `$`. Rules (spec D5, D6):
   append in flight at the loss that succeeds counts as delivered and is acked. One that is
   dropped or denied is discarded, unless the new run re-streamed it. The delivered-but-unacked
   set is kept and re-acked after the next `connected`.
-- **Acks.** After a resolved delivery the mod runs `watch ack --via <path> <ids>` for message
-  items (any priority) only; never attention items, never truncated items. Per-id results: `settled`,
+- **Acks.** After a resolved delivery the mod runs `watch ack --via <path> <ids>` for `message`
+  and `lazy` items (any priority) only; never attention items, never truncated items. Per-id results: `settled`,
   `already_settled`, `refused_terminal` and `stale_generation` leave the set (the last also
   forgets the delivery so a re-stream is delivered); `retryable`, a non-zero exit or a missing
   line stay and are retried on every new stream line, after `status connected` and every 30 s
