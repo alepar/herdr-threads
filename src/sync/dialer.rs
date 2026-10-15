@@ -9,7 +9,8 @@
 //!   `remote_command`: restart). Each task owns its child process end to end:
 //!   spawn with piped stdio, stderr in a 4 KiB ring, its own process group,
 //!   `kill_on_drop`, and on every exit path (link ended, cancellation, daemon
-//!   shutdown) `killpg(TERM)`, at most 2 s, `killpg(KILL)`, reap. It also owns
+//!   shutdown) `killpg(TERM)` (whether or not the leader is still alive), at most 2 s,
+//!   `killpg(KILL)`, reap. It also owns
 //!   the one place a `LinkError` or child exit becomes a `DialTransition`
 //!   (`classify`), [`FullJitter`] and the enabled-target count idle exit reads.
 //! - [`TransportCommand::build`] is the one place a transport argv is built:
@@ -358,8 +359,10 @@ impl ChildGuard {
         ))
     }
 
-    /// `SIGTERM` to the group, up to [`TERM_GRACE`] for the leader to exit,
-    /// `SIGKILL` to the group, reap. Idempotent.
+    /// `SIGTERM` to the group whether or not the leader is still alive, up to
+    /// [`TERM_GRACE`] (for the leader to exit, or, when it already has, for
+    /// the stderr pipe its descendants inherit to close), `SIGKILL` to the
+    /// group, reap. `ESRCH` (an empty group) is ignored. Idempotent.
     async fn teardown(&mut self) {
         if self.done {
             return;
@@ -370,14 +373,20 @@ impl ChildGuard {
         {
             self.status = Some(status);
         }
-        if self.status.is_none() && self.pgid > 0 {
+        if self.pgid > 0 {
             signal_group(self.pgid, libc::SIGTERM);
-            match timeout(TERM_GRACE, self.child.wait()).await {
-                Ok(waited) => self.status = waited.ok(),
-                Err(_) => {
-                    signal_group(self.pgid, libc::SIGKILL);
-                    self.status = self.child.wait().await.ok();
+            if self.status.is_none() {
+                match timeout(TERM_GRACE, self.child.wait()).await {
+                    Ok(waited) => self.status = waited.ok(),
+                    Err(_) => {
+                        signal_group(self.pgid, libc::SIGKILL);
+                        self.status = self.child.wait().await.ok();
+                    }
                 }
+            } else if let Some(reader) = self.reader.as_mut()
+                && timeout(TERM_GRACE, reader).await.is_ok()
+            {
+                self.reader = None;
             }
             // The leader is reaped, so the group id is held only by members
             // still running: sweep them.
@@ -1497,5 +1506,61 @@ mod tests {
         assert_eq!(rig.store.targets().len(), 2);
         rig.dialer.shutdown().await;
         assert!(rig.dialed.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn teardown_sweeps_the_group_after_the_leader_exited() {
+        /// Kills the orphan if the test panics before teardown did.
+        struct KillOnDrop(i32);
+        impl Drop for KillOnDrop {
+            fn drop(&mut self) {
+                if self.0 > 0 {
+                    // SAFETY: plain integers, no memory effects.
+                    unsafe {
+                        libc::kill(self.0, libc::SIGKILL);
+                    }
+                }
+            }
+        }
+
+        let pidfile = crate::test_support::scratch::temp_path(format!(
+            "dialer-orphan-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let command = TransportCommand {
+            program: "/bin/sh".into(),
+            argv: vec![
+                "-c".into(),
+                format!("sleep 600 & echo $! > '{}'; exit 0", pidfile.display()),
+            ],
+        };
+        let (mut guard, _stdout, _stdin) = ChildGuard::spawn(&command).unwrap();
+        guard.status = Some(
+            timeout(Duration::from_secs(10), guard.child.wait())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        until("the pid file", || {
+            std::fs::read_to_string(&pidfile).is_ok_and(|s| !s.trim().is_empty())
+        })
+        .await;
+        let orphan: i32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let _cleanup = KillOnDrop(orphan);
+        // SAFETY: plain integers, no memory effects.
+        assert_eq!(unsafe { libc::kill(orphan, 0) }, 0, "orphan is alive");
+        assert_eq!(unsafe { libc::getpgid(orphan) }, guard.pgid);
+
+        guard.teardown().await;
+
+        until(
+            "the group to be empty",
+            || unsafe { libc::killpg(guard.pgid, 0) } == -1,
+        )
+        .await;
     }
 }
