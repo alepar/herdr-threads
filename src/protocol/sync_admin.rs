@@ -211,6 +211,10 @@ pub struct StatusReply {
     pub headroom_until: Option<i64>,
     /// The coordinator did not answer; link rows are missing.
     pub coordinator_unavailable: bool,
+    /// The discovery worker's state token; `None` when the daemon runs no
+    /// discovery worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<String>,
 }
 
 /// One broken invariant, for `sync verify`.
@@ -266,6 +270,9 @@ pub enum SyncReply {
     },
     Peers {
         rows: Vec<PeerRow>,
+        /// The discovery worker's state token; `None` without a worker.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        discovery: Option<String>,
     },
     Status(Box<StatusReply>),
     Verified {

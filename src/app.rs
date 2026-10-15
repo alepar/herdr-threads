@@ -2115,6 +2115,7 @@ where
             );
             factory_peers.set_intake(peer_intake);
             let incarnations_stop = Cancellation::default();
+            let discovery_status = Arc::new(crate::sync::discovery::DiscoveryStatus::default());
             let sync_admin = Arc::new(crate::service::sync_admin::SyncAdmin {
                 store: Arc::clone(&incarnations_store),
                 sync: sync_handle.clone(),
@@ -2125,6 +2126,7 @@ where
                 writer: Arc::clone(&writer),
                 log: sync_log.clone(),
                 runtime: sync_admin_runtime.clone(),
+                discovery: Some(Arc::clone(&discovery_status)),
             });
             let incarnations_join = crate::sync::incarnations::IncarnationsWorker::start(
                 crate::sync::incarnations::WorkerDeps {
@@ -2211,7 +2213,7 @@ where
                         let log = Arc::clone(&rate_limited_log);
                         Arc::new(move |line: &str| log.write_line(line))
                     },
-                    status: Arc::default(),
+                    status: discovery_status,
                     period: discovery_period,
                     cancel: factory_stop.clone(),
                 },

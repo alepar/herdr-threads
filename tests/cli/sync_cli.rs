@@ -20,8 +20,32 @@ struct Fixture {
 impl Fixture {
     /// A fresh state directory with its daemon running.
     fn new(tag: &str) -> Self {
+        Self::start(tag, None)
+    }
+
+    /// As [`Fixture::new`], with `node/settings.json` written first.
+    fn with_settings(tag: &str, json: &str) -> Self {
+        Self::start(tag, Some(json))
+    }
+
+    fn start(tag: &str, settings: Option<&str>) -> Self {
         let iso = TestIsolation::new(tag);
         let state = iso.path("state");
+        if let Some(json) = settings {
+            use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(state.join("node"))
+                .unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(state.join("node").join("settings.json"))
+                .unwrap();
+            std::io::Write::write_all(&mut file, json.as_bytes()).unwrap();
+        }
         let fixture = Self { iso, state };
         let ensured = fixture
             .command(false)
@@ -92,7 +116,20 @@ fn refused(output: &Output) -> String {
 #[test]
 fn peer_add_list_forget_round_trip() {
     let fx = Fixture::new("sync-cli-peers");
-    assert_eq!(ok(&fx.run(&["peer", "list"])), "peers\nempty\n");
+    let first = ok(&fx.run(&["peer", "list"]));
+    let first_lines: Vec<_> = first.lines().collect();
+    assert_eq!(first_lines.len(), 3, "{first}");
+    assert_eq!(first_lines[0], "peers", "{first}");
+    assert!(
+        [
+            "discovery starting",
+            "discovery no_host",
+            "discovery running"
+        ]
+        .contains(&first_lines[1]),
+        "{first}"
+    );
+    assert_eq!(first_lines[2], "empty", "{first}");
 
     let added = ok(&fx.human(&[
         "peer",
@@ -139,7 +176,13 @@ fn peer_add_refuses_control_chars_and_options() {
     // `--` ends option parsing, so the dash reaches our own check.
     let option = refused(&fx.human(&["peer", "add", "--", "-oProxyCommand=x"]));
     assert!(option.contains("must not start with '-'"), "{option}");
-    assert_eq!(ok(&fx.run(&["peer", "list"])), "peers\nempty\n");
+    let listed = ok(&fx.run(&["peer", "list"]));
+    assert!(listed.starts_with("peers\n"), "{listed}");
+    assert!(listed.ends_with("empty\n"), "{listed}");
+    assert!(
+        listed.lines().all(|l| !l.starts_with("peer ")),
+        "no rows: {listed}"
+    );
 }
 
 // Kills: an operator command that an agent-form call can run, a refusal that
@@ -162,10 +205,10 @@ fn mutating_commands_operator_gated() {
             "{args:?}: {refusal}"
         );
     }
-    assert_eq!(
-        ok(&fx.run(&["peer", "list"])),
-        "peers\nempty\n",
-        "a refused add stored nothing"
+    let listed = ok(&fx.run(&["peer", "list"]));
+    assert!(
+        listed.starts_with("peers\n") && listed.ends_with("\nempty\n"),
+        "a refused add stored nothing: {listed}"
     );
     // The reads need no operator.
     for args in [
@@ -188,6 +231,7 @@ fn sync_status_compact_rows() {
     let status = ok(&fx.run(&["sync", "status"]));
     let lines: Vec<_> = status.lines().collect();
     assert_eq!(lines[0], "sync_status", "{status}");
+    assert!(lines[1].starts_with("discovery "), "{status}");
     let own = lines.iter().find(|l| l.starts_with("log ")).unwrap();
     assert!(own.contains(" self counter=1 head="), "{status}");
     assert!(own.split(' ').nth(1).unwrap().contains('/'), "{status}");
@@ -294,7 +338,7 @@ fn seed_foreign_log(fx: &Fixture, node: &str, entries: &[(&str, Option<&str>)]) 
         db.execute(
             "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,needs, \
              payload,signature,ingested_at,apply_state,parked_on,apply_error) \
-             VALUES (?1,?2,?3,?4,1,'unknown.kind',1,x'','',x'7b7d',zeroblob(64),0,?5,?6,?7)",
+             VALUES (?1,?2,?3,?4,1,'unknown.kind',1,x'0000','',x'7b7d',zeroblob(64),0,?5,?6,?7)",
             rusqlite::params![
                 log_ix,
                 n,
@@ -334,9 +378,52 @@ fn sync_verify_healthy_and_seeded_violation() {
     drop(db);
     let verify = ok(&fx.run(&["sync", "verify"]));
     assert!(
-        verify.starts_with("verify violations=1\nviolation I2 cccccccc/1 counter=1: "),
+        verify.starts_with("verify violations=2\nviolation I2 cccccccc/1 counter=1: "),
         "{verify}"
     );
+    assert!(
+        verify.contains("\nviolation J3 cccccccc/1 counter=1: hash does not match"),
+        "{verify}"
+    );
+}
+
+// Kills: a verify that checks only linkage and so passes an entry whose
+// stored hash is not the hash of its canonical bytes.
+#[test]
+fn sync_verify_reports_a_tampered_entry() {
+    let fx = Fixture::new("sync-cli-tamper");
+    seed_foreign_log(&fx, "dd", &[("failed", Some("x"))]);
+    assert_eq!(
+        ok(&fx.run(&["sync", "verify"])),
+        "verify violations=1\nviolation J3 dddddddd/1 counter=1: hash does not match the entry's canonical bytes\n"
+    );
+}
+
+// Kills: a peer list that hides a target whose remote lacks the binary.
+// Kills: a dial that exits 127 and is still shown as a plain candidate.
+#[test]
+fn peer_list_shows_a_not_installed_target() {
+    let fx = Fixture::with_settings(
+        "sync-cli-notinst",
+        r#"{"sync":{"dial_command":"exit 127 # {dest}"}}"#,
+    );
+    ok(&fx.human(&["peer", "add", "ghost"]));
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let listed = ok(&fx.run(&["peer", "list"]));
+        if let Some(row) = listed
+            .lines()
+            .find(|l| l.starts_with("peer ") && l.contains(" not_installed "))
+        {
+            assert!(row.ends_with(": ghost"), "{listed}");
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never not_installed: {listed}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 // Kills: a list that omits a parked or failed entry, one without the
@@ -415,7 +502,13 @@ fn sync_resync_no_path_refused() {
         "a refusal writes no resync marker"
     );
     // The daemon is still serving.
-    assert_eq!(ok(&fx.run(&["peer", "list"])), "peers\nempty\n");
+    let listed = ok(&fx.run(&["peer", "list"]));
+    assert!(listed.starts_with("peers\n"), "{listed}");
+    assert!(listed.ends_with("empty\n"), "{listed}");
+    assert!(
+        listed.lines().all(|l| !l.starts_with("peer ")),
+        "no rows: {listed}"
+    );
 }
 
 fn marker(state: &Path) -> PathBuf {

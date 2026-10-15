@@ -230,19 +230,38 @@ fn unapplied_page_bounded_and_ordered() {
     assert_eq!(third.next_after, None, "the last page has no continuation");
 }
 
+/// The seeds here carry made-up hashes, which J3 reports; the linkage and
+/// invariant checks under test are read without those rows.
+fn without_j3(
+    found: Vec<crate::protocol::sync_admin::ViolationRow>,
+) -> Vec<crate::protocol::sync_admin::ViolationRow> {
+    found.into_iter().filter(|v| v.invariant != "J3").collect()
+}
+
 // Kills: a verify that reports a healthy store as broken, one that misses a
 // journal_forked row at or below the freeze (I2), and one that misses an entry
 // whose prev_hash does not match the stored hash before it.
 #[test]
 fn verify_healthy_and_seeded_violations() {
     let mut fx = Fixture::new();
-    assert_eq!(verify(&fx.query()).unwrap(), Vec::new(), "a fresh store");
+    assert_eq!(
+        without_j3(verify(&fx.query()).unwrap()),
+        Vec::new(),
+        "a fresh store"
+    );
     fx.seed_log(0xaa, 1, &MIXED);
     assert_eq!(
-        verify(&fx.query()).unwrap(),
+        without_j3(verify(&fx.query()).unwrap()),
         Vec::new(),
         "a foreign log with unapplied entries is not a violation"
     );
+    // The seeded hashes are made up: only J3 (rehash) reports them.
+    let rehash = verify(&fx.query()).unwrap();
+    assert!(
+        rehash.iter().all(|v| v.invariant == "J3"),
+        "made-up hashes are J3 only: {rehash:?}"
+    );
+    assert!(!rehash.is_empty(), "J3 names the made-up hashes");
 
     // I2: a forked row at counter 2 of a log frozen at 2.
     let g = fx.seed_log(
@@ -264,7 +283,7 @@ fn verify_healthy_and_seeded_violations() {
             [g],
         )
         .unwrap();
-    let found = verify(&fx.query()).unwrap();
+    let found = without_j3(verify(&fx.query()).unwrap());
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].invariant, "I2");
     assert_eq!(found[0].counter, Some(2));
@@ -285,7 +304,7 @@ fn verify_healthy_and_seeded_violations() {
             params![h, vec![2u8; 32]],
         )
         .unwrap();
-    let found = verify(&fx.query()).unwrap();
+    let found = without_j3(verify(&fx.query()).unwrap());
     let chain: Vec<_> = found.iter().filter(|v| v.invariant == "J2").collect();
     assert_eq!(chain.len(), 1, "{found:?}");
     assert_eq!(chain[0].log.as_deref(), Some("cccccccc/1"));

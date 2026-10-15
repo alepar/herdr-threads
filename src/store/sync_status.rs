@@ -9,7 +9,8 @@
 //!   `peer list` rows, the node-name lookup (`uuid` or tag) the operator
 //!   commands share, and `sync verify` (the journal startup invariants, the
 //!   I2/I3 checks of `store::incarnations` and the hash-chain linkage of every
-//!   stored log). Also the two `SqliteStore` doors the operator commands need:
+//!   stored log, plus the J3 recomputation of each stored entry's hash).
+//!   Also the two `SqliteStore` doors the operator commands need:
 //!   an operator writer quantum and a bounded `ReplayScope::Unapplied` replay.
 //! - Hides: the table shapes behind those reads and the partial index
 //!   `journal_unapplied` they lean on.
@@ -28,8 +29,8 @@ use crate::protocol::time::CallBudget;
 use crate::store::apply::{self, ApplyLimits, ApplyState, ReplayScope};
 use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
 use crate::store::{node_directory, sync_contacts, sync_dial_targets};
-use crate::sync::LogKey;
 use crate::sync::journal_port::ApplyProgress;
+use crate::sync::{BatchLimits, LogKey};
 
 /// Violations `sync verify` lists per check before it stops listing.
 const MAX_VIOLATIONS: usize = 16;
@@ -276,12 +277,14 @@ pub fn peers(conn: &Connection, now_ms: u64) -> Result<Vec<PeerRow>, ApiError> {
     Ok(out)
 }
 
-/// `sync verify`: the journal startup invariants, the I2/I3 checks and the
-/// hash-chain linkage of every stored log. Empty means healthy.
+/// `sync verify`: the journal startup invariants, the I2/I3 checks, the
+/// hash-chain linkage of every stored log and (J3) a recomputation of each
+/// stored entry's hash from its canonical bytes. Empty means healthy.
 ///
 /// The linkage check compares each entry's `prev_hash` with the stored hash
-/// of the entry before it; it does not recompute the hashes from the payload
-/// bytes.
+/// of the entry before it. The J3 walk is linear in the journal size and runs
+/// only on this operator read; it covers the main chains (`sync_logs`), not
+/// `journal_forked` rows.
 pub fn verify(conn: &Connection) -> Result<Vec<ViolationRow>, ApiError> {
     let mut out = Vec::new();
     match crate::store::journal::verify_invariants(conn) {
@@ -336,7 +339,75 @@ pub fn verify(conn: &Connection) -> Result<Vec<ViolationRow>, ApiError> {
             ),
         });
     }
+    rehash_entries(conn, &mut out)?;
     Ok(out)
+}
+
+/// J3: recomputes every stored entry's hash; stops listing at
+/// [`MAX_VIOLATIONS`] rows.
+fn rehash_entries(conn: &Connection, out: &mut Vec<ViolationRow>) -> Result<(), ApiError> {
+    let mut logs = Vec::new();
+    {
+        let mut statement = conn
+            .prepare("SELECT node_uuid,incarnation FROM sync_logs ORDER BY log_ix")
+            .map_err(store_error)?;
+        let rows = statement
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)))
+            .map_err(store_error)?;
+        for row in rows {
+            logs.push(row.map_err(store_error)?);
+        }
+    }
+    let mut listed = 0usize;
+    'logs: for (node, incarnation) in logs {
+        let Ok(uuid) = node.parse::<NodeUuid>() else {
+            continue;
+        };
+        let log = LogKey {
+            node: uuid,
+            incarnation,
+        };
+        let name = format!("{}/{incarnation}", node.get(..8).unwrap_or(&node));
+        let mut from = 1u64;
+        loop {
+            let batch = match crate::store::journal::serve(conn, &log, from, BatchLimits::default())
+            {
+                Ok(batch) => batch,
+                Err(error) => {
+                    out.push(ViolationRow {
+                        invariant: "J3".to_owned(),
+                        log: Some(name),
+                        counter: Some(from),
+                        detail: error.detail,
+                    });
+                    listed += 1;
+                    if listed >= MAX_VIOLATIONS {
+                        break 'logs;
+                    }
+                    continue 'logs;
+                }
+            };
+            let Some(last) = batch.last().map(|envelope| envelope.counter) else {
+                break;
+            };
+            for envelope in &batch {
+                if envelope.compute_hash() != envelope.hash {
+                    out.push(ViolationRow {
+                        invariant: "J3".to_owned(),
+                        log: Some(name.clone()),
+                        counter: Some(envelope.counter),
+                        detail: "hash does not match the entry's canonical bytes".to_owned(),
+                    });
+                    listed += 1;
+                    if listed >= MAX_VIOLATIONS {
+                        break 'logs;
+                    }
+                }
+            }
+            from = last.saturating_add(1);
+        }
+    }
+    Ok(())
 }
 
 /// The store doors the operator commands use. Callers hold a `FairWriter`

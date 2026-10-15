@@ -250,6 +250,19 @@ pub enum DiscoveryState {
     Running,
 }
 
+impl DiscoveryState {
+    /// The compact token the read surfaces print.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Disabled => "disabled",
+            Self::NoHost => "no_host",
+            Self::NotAvailable => "not_available",
+            Self::Running => "running",
+        }
+    }
+}
+
 /// Shared view of the worker's state, for status surfaces.
 #[derive(Debug)]
 pub struct DiscoveryStatus(Mutex<DiscoveryState>);
@@ -263,6 +276,11 @@ impl Default for DiscoveryStatus {
 impl DiscoveryStatus {
     pub fn get(&self) -> DiscoveryState {
         *self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_for_test(&self, state: DiscoveryState) {
+        self.set(state);
     }
 
     fn set(&self, state: DiscoveryState) {

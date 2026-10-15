@@ -280,6 +280,7 @@ impl Rig {
             writer,
             log: Arc::new(move |line: &str| lines.lock().unwrap().push(line.to_owned())),
             runtime: runtime.handle().clone(),
+            discovery: None,
         };
         Self {
             node,
@@ -307,7 +308,7 @@ impl Rig {
 
     fn peers(&self) -> Vec<crate::protocol::sync_admin::PeerRow> {
         match self.read(SyncCommand::PeerList).unwrap() {
-            Reply::Peers { rows } => rows,
+            Reply::Peers { rows, .. } => rows,
             other => panic!("{other:?}"),
         }
     }
@@ -652,7 +653,7 @@ fn sync_verify_healthy_and_seeded_violation() {
     db.execute(
         "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,needs, \
          payload,signature,ingested_at,apply_state,applied_seq) \
-         VALUES (?1,1,zeroblob(32),zeroblob(32),1,'test.kind',1,x'','',x'7b7d',zeroblob(64),0,'applied',777777)",
+         VALUES (?1,1,zeroblob(32),zeroblob(32),1,'test.kind',1,x'0000','',x'7b7d',zeroblob(64),0,'applied',777777)",
         [log_ix],
     )
     .unwrap();
@@ -667,13 +668,73 @@ fn sync_verify_healthy_and_seeded_violation() {
     let Reply::Verified { violations } = rig.read(SyncCommand::Verify).unwrap() else {
         panic!()
     };
-    assert_eq!(violations.len(), 1, "{violations:?}");
+    // The seeded entry's hash is made up, so J3 reports it after I2.
+    assert_eq!(violations.len(), 2, "{violations:?}");
     assert_eq!(violations[0].invariant, "I2");
+    assert_eq!(violations[1].invariant, "J3");
+    assert_eq!(violations[1].log.as_deref(), Some("cccccccc/1"));
+    assert_eq!(violations[1].counter, Some(1));
     let rendered = text(Reply::Verified { violations });
     assert!(
-        rendered.starts_with("verify violations=1\nviolation I2 cccccccc/1 counter=1: "),
+        rendered.starts_with("verify violations=2\nviolation I2 cccccccc/1 counter=1: "),
         "{rendered}"
     );
+    assert!(
+        rendered.contains("\nviolation J3 cccccccc/1 counter=1: hash does not match"),
+        "{rendered}"
+    );
+}
+
+// Kills: a verify that checks only linkage and so passes an entry whose
+// stored hash is not the hash of its canonical bytes.
+#[test]
+fn sync_verify_reports_a_tampered_entry() {
+    let rig = Rig::new(Node::new(SEED_A, 1));
+    rig.node.put("x");
+    assert_eq!(text(rig.read(SyncCommand::Verify).unwrap()), "verify ok\n");
+    let db = rig.node.store.context().open_writer().unwrap();
+    db.execute(
+        "INSERT INTO sync_logs(node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter, \
+         head_hash,applied_through,state,first_seen_at) \
+         VALUES (?1,1,0,zeroblob(32),zeroblob(32),1,x'0909090909090909090909090909090909090909090909090909090909090909',0,'active',0)",
+        [&"ee".repeat(16)],
+    )
+    .unwrap();
+    let log_ix = db.last_insert_rowid();
+    db.execute(
+        "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,needs, \
+         payload,signature,ingested_at,apply_state) \
+         VALUES (?1,1,zeroblob(32),x'0909090909090909090909090909090909090909090909090909090909090909',1,'test.kind',1,x'0000','',x'7b7d',zeroblob(64),0,'failed')",
+        [log_ix],
+    )
+    .unwrap();
+    drop(db);
+    let Reply::Verified { violations } = rig.read(SyncCommand::Verify).unwrap() else {
+        panic!()
+    };
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert_eq!(violations[0].invariant, "J3");
+    assert_eq!(violations[0].log.as_deref(), Some("eeeeeeee/1"));
+    assert_eq!(violations[0].counter, Some(1));
+}
+
+// Kills: a peer list or status that drops the discovery worker's state.
+#[test]
+fn peer_list_and_status_carry_the_discovery_state() {
+    use crate::sync::discovery::{DiscoveryState, DiscoveryStatus};
+    let mut rig = Rig::new(Node::new(SEED_A, 1));
+    let status = Arc::new(DiscoveryStatus::default());
+    status.set_for_test(DiscoveryState::NotAvailable);
+    rig.admin.discovery = Some(status);
+    let peers = rig.read(SyncCommand::PeerList).unwrap();
+    let Reply::Peers { discovery, .. } = &peers else {
+        panic!("{peers:?}")
+    };
+    assert_eq!(discovery.as_deref(), Some("not_available"));
+    assert_eq!(text(peers).lines().nth(1), Some("discovery not_available"));
+    assert_eq!(rig.status().discovery.as_deref(), Some("not_available"));
+    let rendered = text(rig.read(SyncCommand::Status { log: None }).unwrap());
+    assert_eq!(rendered.lines().nth(1), Some("discovery not_available"));
 }
 
 fn seed_unknown_kind_entries(node: &Node) {

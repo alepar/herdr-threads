@@ -1022,8 +1022,11 @@ fn sync_reply(reply: &SyncReply, spec: &OutputSpec, out: &mut String) {
         SyncReply::PeerForgotten { disabled } => {
             let _ = writeln!(out, "peer_forgotten {disabled}");
         }
-        SyncReply::Peers { rows } => {
+        SyncReply::Peers { rows, discovery } => {
             out.push_str("peers\n");
+            if let Some(state) = discovery {
+                let _ = writeln!(out, "discovery {state}");
+            }
             if rows.is_empty() {
                 out.push_str("empty\n");
             }
@@ -1134,6 +1137,9 @@ fn sync_status(status: &StatusReply, out: &mut String) {
     use std::fmt::Write as _;
     let now = super::render_now().0;
     out.push_str("sync_status\n");
+    if let Some(state) = &status.discovery {
+        let _ = writeln!(out, "discovery {state}");
+    }
     for log in &status.logs {
         let _ = writeln!(
             out,
