@@ -202,6 +202,12 @@ pub struct PeerInfo {
     pub limits: PeerLimits,
     pub role: Role,
     pub nonce: [u8; 32],
+    /// The node that dialed this link: the peer when `role` is `Dialer`,
+    /// this node otherwise. Both ends derive the same value, so the
+    /// duplicate-link order (peer-link design section 8) needs no frame.
+    pub dialer_node: NodeUuid,
+    /// The dialer's hello nonce (this side's own nonce when it dialed).
+    pub dialer_nonce: [u8; 32],
 }
 
 /// A finished handshake: the peer and the two stream halves, ready for
@@ -379,6 +385,16 @@ where
         limits: effective_limits(&me.limits, &hello.limits),
         role: hello.role,
         nonce: peer_nonce,
+        dialer_node: if role == Role::Dialer {
+            me.identity.uuid()
+        } else {
+            hello.node
+        },
+        dialer_nonce: if role == Role::Dialer {
+            own_nonce
+        } else {
+            peer_nonce
+        },
     })
 }
 
@@ -487,6 +503,9 @@ struct Shared {
     outstanding: AtomicU64,
     credit_freed: Notify,
     unknown_frames: AtomicU64,
+    /// Frames decoded from the peer, of any kind (the coordinator's clone
+    /// probe reads it: any growth means the peer is alive).
+    inbound_frames: AtomicU64,
 }
 
 impl Shared {
@@ -556,6 +575,11 @@ impl LinkHandle {
     pub fn unknown_frames(&self) -> u64 {
         self.shared.unknown_frames.load(Ordering::Relaxed)
     }
+
+    /// Frames received from the peer so far, `pong` and `ping` included.
+    pub fn inbound_frames(&self) -> u64 {
+        self.shared.inbound_frames.load(Ordering::Relaxed)
+    }
 }
 
 fn map_try<T>(result: Result<(), mpsc::error::TrySendError<T>>) -> Result<(), SendError> {
@@ -589,6 +613,7 @@ where
         outstanding: AtomicU64::new(0),
         credit_freed: Notify::new(),
         unknown_frames: AtomicU64::new(0),
+        inbound_frames: AtomicU64::new(0),
     });
     let max_frame = peer.limits.max_frame as usize;
     let handle = LinkHandle {
@@ -667,6 +692,7 @@ async fn run_reader<R: AsyncRead + Unpin>(
                     Err(e) => return e.into(),
                 };
                 last_inbound = Instant::now();
+                shared.inbound_frames.fetch_add(1, Ordering::Relaxed);
                 pending = Box::pin(read_next(reader, max_frame));
                 let frame = match PeerFrame::decode(&body) {
                     Ok(frame) => frame,
