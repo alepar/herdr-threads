@@ -81,6 +81,11 @@ pub struct ClusterOptions {
     pub seeds: Vec<[u8; 32]>,
     /// `(dialer, dest)` pairs given an explicit target before the first start.
     pub links: Vec<(usize, usize)>,
+    /// Nodes that may discover peers (`sync.discover`). The others have it
+    /// off, so a machine's real `herdr --remote` clients never become targets.
+    pub discover: Vec<usize>,
+    /// `(node, name, value)` environment of a node's daemon.
+    pub env: Vec<(usize, String, String)>,
 }
 
 /// The seed of node `index` when the options give none: distinct per index,
@@ -98,6 +103,7 @@ struct Node {
     seed: [u8; 32],
     uuid: NodeUuid,
     up: bool,
+    env: Vec<(String, String)>,
     /// The node's fake Herdr servers, in the order [`Cluster::add_host`] gave them.
     hosts: Vec<FakeHerdr>,
 }
@@ -112,6 +118,50 @@ pub struct Seat {
     /// Index of the seat's server among the node's hosts.
     pub host: usize,
     session: String,
+}
+
+/// A copy of one node's `node/` directory (key, store, settings), taken with
+/// its daemon stopped: what [`Cluster::backup`] returns and
+/// [`Cluster::restore`] puts back.
+#[derive(Debug)]
+pub struct Backup {
+    dir: PathBuf,
+}
+
+/// Files of a node directory that belong to a running daemon, not to its
+/// state: never copied in a backup and never replaced by a restore.
+const RUNTIME_FILES: [&str; 3] = ["endpoint.json", "daemon.sock", "owner.lock"];
+
+fn copy_state(from: &Path, to: &Path) {
+    private_dir(to);
+    for entry in fs::read_dir(from).expect("read the node directory") {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        if RUNTIME_FILES.contains(&name.to_string_lossy().as_ref()) {
+            continue;
+        }
+        let kind = entry.file_type().unwrap();
+        if kind.is_dir() {
+            copy_state(&entry.path(), &to.join(&name));
+        } else if kind.is_file() {
+            fs::copy(entry.path(), to.join(&name)).expect("copy a state file");
+        }
+    }
+}
+
+fn clear_state(dir: &Path) {
+    for entry in fs::read_dir(dir).expect("read the node directory") {
+        let entry = entry.unwrap();
+        if RUNTIME_FILES.contains(&entry.file_name().to_string_lossy().as_ref()) {
+            continue;
+        }
+        let path = entry.path();
+        if entry.file_type().unwrap().is_dir() {
+            fs::remove_dir_all(&path).expect("remove a state directory");
+        } else {
+            fs::remove_file(&path).expect("remove a state file");
+        }
+    }
 }
 
 /// N linked daemons under one isolated root. Dropping it stops them all.
@@ -172,11 +222,14 @@ impl Cluster {
             0o700,
             format!(
                 "#!/bin/sh\n\
+                 base={}\n\
                  root=\"$1\"; from=\"$2\"; dest=\"$3\"; to=$(basename \"$dest\")\n\
+                 case \"$dest\" in \"$base\"/n[0-9]*) ;; *) echo \"not a cluster node: $dest\" >&2; exit 75;; esac\n\
                  [ -e \"$root/cut/$from-$to\" ] && {{ echo \"partitioned $from-$to\" >&2; exit 75; }}\n\
                  echo $$ > \"$root/pids/$from-$to\"\n\
                  [ -e \"$root/cut/$from-$to\" ] && {{ echo \"partitioned $from-$to\" >&2; exit 75; }}\n\
                  exec {} --state-dir \"$dest\" peer --stdio\n",
+                sh_quote(&iso.state_root().to_string_lossy()),
                 sh_quote(&bin.to_string_lossy()),
             )
             .as_bytes(),
@@ -201,7 +254,12 @@ impl Cluster {
             write_private(
                 &state.join("node").join("settings.json"),
                 0o600,
-                format!(r#"{{"sync":{{"dial_command":{}}}}}"#, json_string(&dial)).as_bytes(),
+                format!(
+                    r#"{{"sync":{{"dial_command":{},"discover":{}}}}}"#,
+                    json_string(&dial),
+                    options.discover.contains(&index)
+                )
+                .as_bytes(),
             );
             nodes.push(Node {
                 name,
@@ -209,6 +267,12 @@ impl Cluster {
                 seed,
                 uuid: NodeIdentity::from_seed(seed).uuid(),
                 up: false,
+                env: options
+                    .env
+                    .iter()
+                    .filter(|(n, _, _)| *n == index)
+                    .map(|(_, k, v)| (k.clone(), v.clone()))
+                    .collect(),
                 hosts: Vec::new(),
             });
         }
@@ -261,15 +325,37 @@ impl Cluster {
             .join(format!("{}-{}", self.nodes[from].name, self.nodes[to].name))
     }
 
-    /// Starts `node`'s daemon the way a peer does: a pump ensures it, prints
-    /// the preamble and is let go.
+    /// Starts `node`'s daemon. A node with a fake Herdr server starts it as a
+    /// user's command does (`daemon ensure` naming the server, so it attaches at
+    /// startup and a fresh store can restore its own seats); any other node
+    /// the way a peer does: a pump ensures it, prints the preamble and is let
+    /// go.
     pub fn start_node(&mut self, node: usize) {
         if self.nodes[node].up {
             return;
         }
-        let mut pump = self
-            .iso
-            .command(&self.bin)
+        if let Some(host) = self.nodes[node].hosts.first() {
+            let mut command = self.iso.command(&self.bin);
+            let output = command
+                .envs(self.nodes[node].env.iter().map(|(k, v)| (k, v)))
+                .arg("--state-dir")
+                .arg(&self.nodes[node].state)
+                .arg("--host-endpoint")
+                .arg(host.socket())
+                .args(["daemon", "ensure"])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "daemon ensure of node {}: {output:?}",
+                self.nodes[node].name
+            );
+            self.nodes[node].up = true;
+            return;
+        }
+        let mut command = self.iso.command(&self.bin);
+        command.envs(self.nodes[node].env.iter().map(|(k, v)| (k, v)));
+        let mut pump = command
             .arg("--state-dir")
             .arg(&self.nodes[node].state)
             .args(["peer", "--stdio"])
@@ -388,14 +474,55 @@ impl Cluster {
         node: usize,
         args: &[&str],
     ) -> (i32, serde_json::Value, String) {
+        let output = self
+            .seat_command(seat, host, node, true)
+            .args(args)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let value = serde_json::from_str(&stdout).unwrap_or(serde_json::Value::Null);
+        (output.status.code().unwrap_or(-1), value, stderr)
+    }
+
+    /// The compact text form (stdout is not a terminal) of `args` as `seat`:
+    /// exit code, stdout, stderr.
+    pub fn text_as(
+        &self,
+        seat: Option<&Seat>,
+        node: usize,
+        args: &[&str],
+    ) -> (i32, String, String) {
+        let output = self
+            .seat_command(seat, seat.map_or(0, |s| s.host), node, false)
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
+    /// The CLI of `node` against its `host`th server, as `seat` when given.
+    fn seat_command(
+        &self,
+        seat: Option<&Seat>,
+        host: usize,
+        node: usize,
+        json: bool,
+    ) -> std::process::Command {
         let hosts = &self.nodes[node].hosts;
         let endpoint = match hosts.get(host) {
             Some(host) => host.socket().to_path_buf(),
             None => self.iso.path("no-host.sock"),
         };
         let mut command = self.iso.command(&self.bin);
+        if json {
+            command.arg("--json");
+        }
         command
-            .arg("--json")
             .arg("--state-dir")
             .arg(&self.nodes[node].state)
             .arg("--host-endpoint")
@@ -413,11 +540,7 @@ impl Cluster {
                 "top-level",
             ]);
         }
-        let output = command.args(args).output().unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        let value = serde_json::from_str(&stdout).unwrap_or(serde_json::Value::Null);
-        (output.status.code().unwrap_or(-1), value, stderr)
+        command
     }
 
     /// Success of `args` as `seat`; returns `result.data`.
@@ -481,6 +604,91 @@ impl Cluster {
         self.stop_node(dialer);
         self.insert_target(dialer, dest);
         self.start_node(dialer);
+    }
+
+    /// The operator form of the CLI (`human ...`) against `node`.
+    pub fn human(&self, node: usize, args: &[&str]) -> Output {
+        self.iso
+            .command(&self.bin)
+            .arg("human")
+            .arg("--state-dir")
+            .arg(&self.nodes[node].state)
+            .arg("--host-endpoint")
+            .arg(self.iso.path("no-host.sock"))
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
+    /// Copies `node`'s state directory (daemon stopped around the copy).
+    pub fn backup(&mut self, node: usize) -> Backup {
+        let was_up = self.nodes[node].up;
+        self.stop_node(node);
+        let dir = self.iso.path(format!(
+            "backup-{}-{}",
+            self.nodes[node].name,
+            uuid::Uuid::new_v4().simple()
+        ));
+        copy_state(&self.nodes[node].state.join("node"), &dir);
+        if was_up {
+            self.start_node(node);
+        }
+        Backup { dir }
+    }
+
+    /// Replaces `node`'s state with `backup` and starts its daemon: the store
+    /// of the past, under the same key.
+    pub fn restore(&mut self, node: usize, backup: &Backup) {
+        self.stop_node(node);
+        let state = self.nodes[node].state.join("node");
+        clear_state(&state);
+        copy_state(&backup.dir, &state);
+        self.start_node(node);
+    }
+
+    /// `human sync resync --from <from>` on `node`: the command stops its
+    /// daemon, and the next start (here, at once) backs the store up and pulls
+    /// from `from`. Returns the command's output.
+    pub fn resync(&mut self, node: usize, from: &str) -> Output {
+        let out = self.human(node, &["sync", "resync", "--from", from]);
+        if out.status.success() {
+            let endpoint = self.nodes[node].state.join("node").join("endpoint.json");
+            self.wait_until(
+                &format!("node {} to stop for the resync", self.nodes[node].name),
+                Duration::from_secs(60),
+                || (!endpoint.exists()).then_some(()),
+            );
+            self.nodes[node].up = false;
+            self.start_node(node);
+        }
+        out
+    }
+
+    /// Pretends `node` last heard from `about` `ago` ago: restarts `node` around
+    /// a write of that contact time (the daemon is down for it). Under a
+    /// partition nothing refreshes it, so after the reach threshold the node
+    /// reads as unreachable without waiting real minutes.
+    pub fn age_contact(&mut self, node: usize, about: usize, ago: Duration) {
+        let was_up = self.nodes[node].up;
+        self.stop_node(node);
+        let conn = Connection::open(db_path(&self.nodes[node].state)).expect("open the store");
+        conn.busy_timeout(Duration::from_secs(5)).unwrap();
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .saturating_sub(ago)
+            .as_millis() as i64;
+        conn.execute(
+            "INSERT INTO sync_node_contact(node_uuid,last_contact_at,via,updated_at) \
+             VALUES (?1,?2,'direct',?2) \
+             ON CONFLICT(node_uuid) DO UPDATE SET last_contact_at = ?2, updated_at = ?2",
+            rusqlite::params![self.nodes[about].uuid.to_string(), at],
+        )
+        .expect("age the contact");
+        drop(conn);
+        if was_up {
+            self.start_node(node);
+        }
     }
 
     /// Cuts every link between `a` and `b` and refuses new dials until
@@ -584,10 +792,22 @@ impl Cluster {
     fn logs(&self) -> String {
         self.nodes
             .iter()
-            .map(|n| {
+            .enumerate()
+            .map(|(index, n)| {
                 let text =
                     fs::read_to_string(n.state.join("node").join("daemon.log")).unwrap_or_default();
-                format!("--- {} ({})\n{text}\n", n.name, n.state.display())
+                let status = if n.up {
+                    let out = self.cli(index, &["sync", "status"]);
+                    String::from_utf8_lossy(&out.stdout).into_owned()
+                } else {
+                    "(down)".into()
+                };
+                format!(
+                    "--- {} ({})\nvector {:?}\n{status}\n{text}\n",
+                    n.name,
+                    n.state.display(),
+                    self.vector(index)
+                )
             })
             .collect()
     }
@@ -611,6 +831,34 @@ impl Cluster {
             Value::Text(t) => t,
             Value::Blob(b) => format!("{b:?}"),
         })
+    }
+
+    /// Every row of `sql` on `node`'s store as text columns (empty for a busy
+    /// store). Read-only; for assertions over a few rows and for diagnostics.
+    pub fn rows(&self, node: usize, sql: &str) -> Vec<Vec<String>> {
+        use rusqlite::types::Value;
+        let Some(conn) = open_db(&self.nodes[node].state) else {
+            return Vec::new();
+        };
+        let Ok(mut stmt) = conn.prepare(sql) else {
+            return Vec::new();
+        };
+        let width = stmt.column_count();
+        stmt.query_map([], |row| {
+            (0..width)
+                .map(|i| {
+                    Ok(match row.get::<_, Value>(i)? {
+                        Value::Null => "NULL".to_owned(),
+                        Value::Integer(i) => i.to_string(),
+                        Value::Real(f) => f.to_string(),
+                        Value::Text(t) => t,
+                        Value::Blob(b) => b.iter().take(4).map(|x| format!("{x:02x}")).collect(),
+                    })
+                })
+                .collect()
+        })
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
     }
 
     /// `(kind, count)` of every journal row `node` holds.

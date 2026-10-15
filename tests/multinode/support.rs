@@ -9,10 +9,11 @@ use std::time::Duration;
 /// The pane every node's fake Herdr server offers first.
 pub const P1: &str = "w1:p1";
 pub const P2: &str = "w1:p2";
+pub const P3: &str = "w1:p3";
 
 /// A cluster of `n` nodes where each `(dialer, dest)` pair is an explicit
 /// dial target; every node in `hosted` gets a fake Herdr server with
-/// [`P1`] and [`P2`].
+/// [`P1`], [`P2`] and [`P3`].
 pub fn cluster(label: &str, n: usize, links: &[(usize, usize)], hosted: &[usize]) -> Cluster {
     let mut cluster = Cluster::start(
         label,
@@ -24,7 +25,7 @@ pub fn cluster(label: &str, n: usize, links: &[(usize, usize)], hosted: &[usize]
         },
     );
     for node in hosted {
-        cluster.add_host(*node, &[P1, P2]);
+        cluster.add_host(*node, &[P1, P2, P3]);
     }
     cluster
 }
@@ -86,20 +87,26 @@ pub fn wait_seats(cluster: &Cluster, node: usize, count: i64) {
     });
 }
 
-/// Waits until `host`'s pane has been typed `count` wake markers, then keeps
-/// watching a moment to prove it stays at `count`.
+/// Waits until `node`'s first host has typed `count` wake markers into
+/// `pane`, then watches a moment to prove it stays at `count`.
 pub fn wait_wakes(cluster: &Cluster, node: usize, pane: &str, count: usize) {
+    wait_wakes_at(cluster, node, 0, pane, count);
+}
+
+/// [`wait_wakes`] on the node's `host`th server.
+pub fn wait_wakes_at(cluster: &Cluster, node: usize, host: usize, pane: &str, count: usize) {
+    let fake = cluster.host_at(node, host);
     cluster.wait_until(
-        &format!("{count} wake marker(s) in {pane} on node {node}"),
+        &format!("{count} wake marker(s) in {pane} on node {node} host {host}"),
         WAIT,
-        || (cluster.host(node).prompts_for(pane) >= count).then_some(()),
+        || (fake.prompts_for(pane) >= count).then_some(()),
     );
     std::thread::sleep(Duration::from_millis(400));
     assert_eq!(
-        cluster.host(node).prompts_for(pane),
+        fake.prompts_for(pane),
         count,
-        "node {node}'s {pane} was woken more than {count} time(s): {:?}",
-        cluster.host(node).prompts()
+        "node {node} host {host}'s {pane} was woken more than {count} time(s): {:?}",
+        fake.prompts()
     );
 }
 

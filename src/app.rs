@@ -968,7 +968,15 @@ impl LaneProbe {
     fn discovery(&self) -> (Option<std::path::PathBuf>, Duration) {
         match self.state().discovery.clone() {
             Some((program, period)) => (Some(program), period),
-            None => (None, crate::sync::discovery::POLL_PERIOD),
+            // A spawned daemon of a cluster test (ht-5fr.11) cannot be handed a
+            // probe: its environment shortens the cadence instead.
+            None => (
+                None,
+                std::env::var("HT_TEST_DISCOVERY_PERIOD_MS")
+                    .ok()
+                    .and_then(|ms| ms.parse::<u64>().ok())
+                    .map_or(crate::sync::discovery::POLL_PERIOD, Duration::from_millis),
+            ),
         }
     }
     /// Runs peer discovery with `herdr` at `program` every `period`, and without
@@ -2115,7 +2123,7 @@ where
                     boot,
                     writer: Arc::clone(&writer),
                     clock: Arc::clone(&factory_clock),
-                    pacer: sync_pacer,
+                    pacer: Arc::clone(&sync_pacer),
                     status: Arc::clone(&factory_sync_status),
                     log: sync_log.clone(),
                     fork_sink: incarnations_sink.clone(),
@@ -2150,6 +2158,7 @@ where
                     status: Arc::clone(&factory_sync_status),
                     own_history,
                     signals: sync_handle.signals(),
+                    sync_pacer: Some(sync_pacer),
                     clock: Arc::clone(&factory_clock),
                     log: sync_log.clone(),
                     cancel: incarnations_stop.clone(),
