@@ -75,11 +75,7 @@ CREATE TABLE binding_row_displays (
     PRIMARY KEY(binding_id, message_id)
 ) STRICT;
 
--- ht-yha.44 per-binding pending views (also the repair tail of a pre-amendment v47 store).
-DROP INDEX IF EXISTS lazy_recipients_pending_order;
-
-DROP INDEX IF EXISTS lazy_recipients_pending_thread_order;
-
+-- ht-yha.44 per-binding pending views.
 CREATE TABLE binding_pending (
     binding_id TEXT NOT NULL REFERENCES occupant_bindings(binding_id),
     ordinal INTEGER NOT NULL REFERENCES lazy_recipients(ordinal),
