@@ -2177,8 +2177,10 @@ impl WakeReservation {
     /// receipt's soft-deadline poke, or a delivery row the seat's nudge threshold admitted: the
     /// `lazy` reason, which since priority delivery is what a bare `--nudge` leaves, as it makes
     /// no receipt), which is shown to whichever binding of the seat takes its next turn. A
-    /// binding that already displayed the frontier row is owed no `lazy` wake
-    /// (`wake_owed_to_binding`), so one served binding of a process takes its composer wake off.
+    /// binding that already displayed the frontier row is owed no `lazy` wake, but a one-process
+    /// wake stays owed while any of its bindings still has the row unread
+    /// (`wake_owed_to_reached`); one served binding of a process takes off the composer wake for
+    /// a receipt or invitation.
     pub fn for_seat_attention(&self) -> bool {
         self.reasons.iter().any(|reason| {
             matches!(
@@ -3576,6 +3578,18 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         &self,
         _reservation: &WakeReservation,
         _binding: Option<&crate::protocol::ids::BindingId>,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(true)
+    }
+    /// Whether the reserved wake is still owed to the process its prompt reaches (`reached`: the
+    /// composer's bindings, or `[None]` for the seat-level binding), checked like
+    /// `wake_owed_to_binding`: receipts and invitations while every reached binding is unserved,
+    /// the delivery-row frontier while any reached binding still has it unread (ht-yha.62).
+    fn wake_owed_to_reached(
+        &self,
+        _reservation: &WakeReservation,
+        _reached: &[Option<&crate::protocol::ids::BindingId>],
         _budget: &CallBudget,
     ) -> Result<bool, ApiError> {
         Ok(true)

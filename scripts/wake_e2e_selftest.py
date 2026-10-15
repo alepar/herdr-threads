@@ -1987,6 +1987,27 @@ class SideCases(unittest.TestCase):
                          {("cl-nudge", "send-nudge/group"), ("co-nudge", "send-nudge/group"),
                           ("co-nudge", "side-nudge/group"), ("co-plain", "side-nudge/group")})
 
+    def test_side_nudge_wakes_main_after_a_sibling_displayed_the_p0(self):
+        """ht-yha.62: once the side binding displayed the sibling p0, main must still be woken and shown it."""
+        first = {"delivered": True}
+        self.assertTrue(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=True, sibling_wake_s=31.2, sibling_delivered=True)))
+        self.assertFalse(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=True, sibling_wake_s=None, sibling_delivered=True)))
+        self.assertFalse(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=True, sibling_wake_s=31.2, sibling_delivered=False)))
+
+    def test_side_nudge_sibling_phase_is_inconclusive_when_the_side_never_displayed_it(self):
+        first = {"delivered": True}
+        self.assertTrue(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=False, sibling_wake_s=None, sibling_delivered=False)))
+        self.assertTrue(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=False, sibling_wake_s=2.0, sibling_delivered=True)))
+        self.assertFalse(W.side_nudge_passed(True, False, dict(
+            first, sibling_displayed=False, sibling_wake_s=2.0, sibling_delivered=True)),
+            "the first phase still decides")
+        self.assertFalse(W.side_nudge_passed(False, True, dict(first, sibling_displayed=False)))
+
     def test_plain_codex_launch_turns_its_hooks_off_and_only_then(self):
         run = W.Run.__new__(W.Run)
         run.bindir, run.cwd, run.codex_home = Path("/b"), "/repo", Path("/h")
