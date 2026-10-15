@@ -1893,6 +1893,25 @@ pub fn check_invariants(conn: &Connection) -> Result<Vec<InvariantViolation>, Ap
     Ok(out)
 }
 
+/// The one door through which IncarnationsWorker writes: a repair function of
+/// this module as one budgeted decision on the store's writer. The caller
+/// holds a `FairWriter` background turn.
+impl crate::store::SqliteStore {
+    pub fn incarnations_quantum<R>(
+        &self,
+        budget: &crate::protocol::time::CallBudget,
+        apply: impl FnOnce(&Transaction<'_>, &StoreContext, DecisionInstant) -> Result<R, ApiError>,
+    ) -> Result<R, ApiError> {
+        let mut writer = self.writer(budget)?;
+        self.context.execute_budgeted_decision(
+            &mut writer,
+            budget,
+            |_| Ok(()),
+            |tx, decision, ()| apply(tx, &self.context, decision),
+        )
+    }
+}
+
 #[cfg(test)]
 #[path = "../../tests/store/incarnations.rs"]
 mod tests;

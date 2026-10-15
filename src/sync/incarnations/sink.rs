@@ -1,6 +1,7 @@
 //! The incarnations sink: the non-blocking front of fork repair.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::requests::{BranchKey, Failover, RequestTable};
@@ -62,8 +63,13 @@ pub enum Job {
         proof: Box<Proof>,
         source: Option<NodeUuid>,
     },
-    /// An own log continued elsewhere (a restore).
-    Restore { log: LogKey, source: NodeUuid },
+    /// An own log continued elsewhere (a restore): `entry` is the peer's
+    /// entry that extends this node's head, which `restore_rotate` re-checks.
+    Restore {
+        log: LogKey,
+        source: NodeUuid,
+        entry: Box<Envelope>,
+    },
     /// Salvage a resync plan (handled by ht-5fr.6.14).
     Salvage,
     /// A clone suspicion to record.
@@ -147,8 +153,12 @@ struct State {
 ///
 /// The pair is the incarnations runtime. This type is the sink: the
 /// [`ForkSink`] implementation and the non-blocking front. The
-/// `IncarnationsWorker` (ht-5fr.6.13) is the `herdr-incarnations` std thread
-/// that pops [`Job`]s and runs repair one writer quantum at a time.
+/// [`IncarnationsWorker`](super::IncarnationsWorker) is the
+/// `herdr-incarnations` std thread that pops [`Job`]s, applies the queue
+/// policy (per-source `Have` coalescing, the 8 MiB branch-entry cap) and
+/// runs repair one writer quantum at a time. The sink only wakes it
+/// ([`jobs_ready`](Self::jobs_ready)) and carries the clone-clearance signal
+/// ([`notify_clone_cleared`](Self::notify_clone_cleared)).
 /// - Owns: the bounded [`Job`] queue, and one `Mutex`-guarded shared state:
 ///   the resumed set, the outbox, the `fork_refs`, the `tip -> sources` map,
 ///   the per-`(source, log)` Have memo and the [`RequestTable`] (one
@@ -176,6 +186,10 @@ pub struct IncarnationsSink {
     log: LogFn,
     jobs: Mutex<JobQueue>,
     state: Mutex<State>,
+    /// Wakes the worker when a job is queued.
+    job_ready: tokio::sync::Notify,
+    /// Set by the clone-clearing command path, taken by the worker.
+    clone_cleared: AtomicBool,
 }
 
 impl IncarnationsSink {
@@ -186,6 +200,8 @@ impl IncarnationsSink {
             log,
             jobs: Mutex::new(JobQueue::new()),
             state: Mutex::new(State::default()),
+            job_ready: tokio::sync::Notify::new(),
+            clone_cleared: AtomicBool::new(false),
         }
     }
 
@@ -207,6 +223,7 @@ impl IncarnationsSink {
             .unwrap_or_else(PoisonError::into_inner)
             .push(job);
         if pushed.is_ok() {
+            self.job_ready.notify_one();
             return true;
         }
         let now = self.now();
@@ -234,6 +251,24 @@ impl IncarnationsSink {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .pop()
+    }
+
+    /// Resolves when a job was queued since the worker last waited.
+    pub async fn jobs_ready(&self) {
+        self.job_ready.notified().await;
+    }
+
+    /// Tells the worker that `clear_clone_evidence` committed (called by the
+    /// operator command path, ht-5fr.8): it re-runs the re-issue pass, forgets
+    /// the Have memos and asks for a sync round.
+    pub fn notify_clone_cleared(&self) {
+        self.clone_cleared.store(true, Ordering::Release);
+        self.job_ready.notify_one();
+    }
+
+    /// Whether a clone clearance was signalled since the last call.
+    pub fn take_clone_cleared(&self) -> bool {
+        self.clone_cleared.swap(false, Ordering::AcqRel)
     }
 
     /// Let the coordinator want `log` again after its fork is handled.
@@ -424,7 +459,12 @@ impl IncarnationsSink {
         match class {
             AheadClass::Corrupt(_) => return ForkAck::Corrupt,
             AheadClass::Restore => {
-                self.enqueue_or_resume(Job::Restore { log, source }, log);
+                let job = Job::Restore {
+                    log,
+                    source,
+                    entry: Box::new(entry.clone()),
+                };
+                self.enqueue_or_resume(job, log);
             }
             AheadClass::Fork(proof) => {
                 let job = Job::OwnerFork {
@@ -751,7 +791,7 @@ mod tests {
         let jobs = rig.drain_jobs();
         assert_eq!(jobs.len(), 3, "{jobs:?}");
         assert!(
-            matches!(&jobs[0], Job::Restore { log: l, source: s } if *l == log && *s == source)
+            matches!(&jobs[0], Job::Restore { log: l, source: s, .. } if *l == log && *s == source)
         );
         match &jobs[1] {
             Job::OwnerFork { proof, source: s } => {
