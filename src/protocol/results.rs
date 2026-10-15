@@ -120,6 +120,7 @@ pub enum CommandResult {
     BootstrapRecovered(Box<crate::protocol::handoff::BootstrapRecoveryResult>),
     LinkedBootstrapCompleted(Box<crate::protocol::handoff::CompletedBootstrapResult>),
     HandoffDelivery(crate::protocol::handoff::DeliveryResult),
+    Sync(crate::protocol::sync_admin::SyncReply),
 }
 
 /// Canonical selection at Ensure time; replay never reinterprets the episode.

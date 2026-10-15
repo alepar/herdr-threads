@@ -598,14 +598,14 @@ fn marker_path(paths: &NodePaths) -> PathBuf {
 }
 
 /// Size of the database plus its WAL; absent files count as zero.
-fn database_bytes(paths: &NodePaths) -> u64 {
+pub(crate) fn database_bytes(paths: &NodePaths) -> u64 {
     let size =
         |name: String| fs::metadata(paths.node_dir.join(name)).map_or(0, |metadata| metadata.len());
     size(DB_FILE.to_owned()).saturating_add(size(format!("{DB_FILE}-wal")))
 }
 
 /// Bytes available to an unprivileged writer on the filesystem of `dir`.
-fn free_bytes(dir: &Path) -> io::Result<u64> {
+pub(crate) fn free_bytes(dir: &Path) -> io::Result<u64> {
     use std::os::unix::ffi::OsStrExt;
     let path = std::ffi::CString::new(dir.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path holds a NUL"))?;

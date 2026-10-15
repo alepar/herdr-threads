@@ -148,6 +148,41 @@ fn one_line(detail: &str) -> String {
     }
 }
 
+// ---- `peer add|forget|list` (ht-5fr.8) ------------------------------------------
+//
+// The operator commands build a wire `Command::Sync` from their arguments and
+// refuse a malformed one before any daemon call; the daemon decides.
+
+use crate::protocol::{commands::Command, results::ApiError, sync_admin::SyncCommand};
+
+fn checked(command: SyncCommand) -> Result<Command, ApiError> {
+    command.validate().map_err(ApiError::invalid_request)?;
+    Ok(Command::Sync(command))
+}
+
+/// `peer add SSH_DEST [--remote-command C]`: operator-gated.
+pub fn add(ssh_dest: String, remote_command: Option<String>) -> Result<Command, ApiError> {
+    if ssh_dest.starts_with('-') {
+        return Err(ApiError::invalid_request(
+            "dial target must not start with '-'",
+        ));
+    }
+    checked(SyncCommand::PeerAdd {
+        ssh_dest,
+        remote_command,
+    })
+}
+
+/// `peer forget DEST|NODE`: operator-gated; stops dialing and deletes nothing.
+pub fn forget(target: String) -> Result<Command, ApiError> {
+    checked(SyncCommand::PeerForget { target })
+}
+
+/// `peer list`: every dial target, read-only.
+pub fn list() -> Command {
+    Command::Sync(SyncCommand::PeerList)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

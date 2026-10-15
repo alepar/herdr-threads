@@ -1530,6 +1530,10 @@ where
     let database_path = paths.database_path.clone();
     let archival_paths = paths.clone();
     let identity_paths = paths.clone();
+    let sync_admin_paths = paths.clone();
+    // The operator handler runs on a blocking thread and awaits the sync
+    // coordinator through the daemon's runtime.
+    let sync_admin_runtime = tokio::runtime::Handle::current();
     let identity_db_path = paths.database_path.clone();
     let identity_key_path = paths.key_path.clone();
     let factory_log_path = crate::daemon::logs::daemon_log_path(paths);
@@ -2093,6 +2097,17 @@ where
             );
             factory_peers.set_intake(peer_intake);
             let incarnations_stop = Cancellation::default();
+            let sync_admin = Arc::new(crate::service::sync_admin::SyncAdmin {
+                store: Arc::clone(&incarnations_store),
+                sync: sync_handle.clone(),
+                sink: Arc::clone(&incarnations_sink),
+                clock: Arc::clone(&factory_clock),
+                paths: sync_admin_paths.clone(),
+                shutdown: cancellation.clone(),
+                writer: Arc::clone(&writer),
+                log: sync_log.clone(),
+                runtime: sync_admin_runtime.clone(),
+            });
             let incarnations_join = crate::sync::incarnations::IncarnationsWorker::start(
                 crate::sync::incarnations::WorkerDeps {
                     sink: incarnations_sink,
@@ -2331,6 +2346,7 @@ where
             .with_operator_owner(crate::daemon::paths::effective_uid())
             .with_cooperative_owner(crate::daemon::paths::effective_uid(), writer)
             .with_mod_channels(Arc::clone(&mod_channels))
+            .with_sync_admin(sync_admin)
             .with_delivery_pull(Arc::clone(&delivery_pull));
             // Guarded bootstrap needs an attached host with `HostGuardedStart`.
             let bootstrap = primary

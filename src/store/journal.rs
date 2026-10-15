@@ -194,8 +194,9 @@ pub fn applied_vector(conn: &Connection) -> Result<Vec<(LogKey, u64)>, ApiError>
     Ok(out)
 }
 
-/// Startup invariants over every log, in one pass.
-fn verify_invariants(tx: &Transaction<'_>) -> Result<(), ApiError> {
+/// Startup invariants over every log, in one pass. Read-only: `sync verify`
+/// runs it on a query connection.
+pub(crate) fn verify_invariants(tx: &Connection) -> Result<(), ApiError> {
     let mut statement = tx
         .prepare(
             "SELECT l.log_ix,l.node_uuid,l.incarnation,l.contiguous_counter,l.head_hash,l.applied_through, \

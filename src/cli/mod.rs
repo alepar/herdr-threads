@@ -34,6 +34,7 @@ pub mod retry;
 pub mod setup;
 pub mod skill;
 pub mod summary;
+pub mod sync;
 pub mod threads;
 pub mod topology_handoff;
 pub mod topology_recover;

@@ -13,6 +13,7 @@ pub mod live_gate;
 pub mod liveness;
 pub mod mod_channels;
 pub mod pacer;
+pub mod sync_admin;
 pub mod workers;
 
 #[cfg(test)]

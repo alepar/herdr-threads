@@ -142,6 +142,9 @@ pub enum Command {
     BootstrapStatus(Box<crate::protocol::handoff::BootstrapStatus>),
     ResolveBootstrapSeat(Box<crate::protocol::handoff::ResolveBootstrapSeat>),
     RecoverBootstrap(Box<crate::protocol::handoff::RecoverBootstrap>),
+    /// Operator and status commands for cross-node sync (ht-5fr.8). The mutating
+    /// ones are admitted only for the elected owner's peer UID.
+    Sync(crate::protocol::sync_admin::SyncCommand),
 }
 
 /// Longest detail a hook report may carry: the CLI truncates to it
@@ -1385,6 +1388,7 @@ impl Command {
             {
                 Err("invalid search candidate bound")
             }
+            Self::Sync(command) => command.validate(),
             Self::Message(query) => query.body.validate(&query.message),
             Self::Diagnostics(query) => {
                 if let Some(encoded) = &query.page.cursor

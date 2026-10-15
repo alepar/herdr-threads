@@ -551,7 +551,12 @@ async fn serve_connection(
     }
     let automatic_response = crate::protocol::wire::automatic_response_request(&request.command);
     let is_search = matches!(request.command, Command::Search(_));
-    let is_stop = matches!(request.command, Command::Stop(_));
+    // A resync request ends the daemon like `Stop`: the shutdown it triggers
+    // must not cancel the request that is answering it.
+    let is_stop = matches!(
+        request.command,
+        Command::Stop(_) | Command::Sync(crate::protocol::sync_admin::SyncCommand::Resync { .. })
+    );
     let is_service_control = matches!(
         request.command,
         Command::ServiceInspect | Command::ServiceDisconnect(_)
