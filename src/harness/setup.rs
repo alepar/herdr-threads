@@ -3882,12 +3882,14 @@ pub(crate) mod legacy {
             && let Some(readopted) =
                 lib::readopt_stale_record(kind, file, manifest, &argv).map_err(map)?
         {
-            report["superseded_record"] = json!({
-                "owner": readopted.stale_owner,
+            let mut superseded = json!({
                 "kept_at": readopted.stale_backup.display().to_string(),
-                "note": "the file no longer held the recorded groups; its herdr-threads groups \
-                         (owner marker in `adopted`) were adopted in place of that record",
+                "note": "record superseded; see `adopted`",
             });
+            if !readopted.stale_owner.is_empty() {
+                superseded["owner"] = json!(readopted.stale_owner);
+            }
+            report["superseded_record"] = superseded;
             return Ok(Some(readopted.manifest));
         }
         match read_settings_manifest(manifest).map_err(map)? {
@@ -3899,15 +3901,22 @@ pub(crate) mod legacy {
     /// The setup warning for a stale record superseded by [`lib::readopt_stale_record`].
     pub(crate) fn readopted_warning(file: &Path, readoption: &lib::Readoption) -> String {
         format!(
-            "{} no longer held the hook groups recorded for installation {} (the file was \
-             replaced, e.g. copied from another setup); its herdr-threads groups with owner marker \
-             {} were adopted in place of that record and upgraded. Other hooks were kept; the \
-             superseded record is kept at {}",
+            "{}: {} was no longer in the file; adopted its copied herdr-threads groups (owner {}) \
+             and upgraded them. Old record kept at {}",
             file.display(),
-            readoption.stale_owner,
+            stale_owner_label(&readoption.stale_owner),
             readoption.manifest.installation_id,
             readoption.stale_backup.display()
         )
+    }
+
+    /// A superseded record's owner for display: a v1 record has no installation id.
+    fn stale_owner_label(owner: &str) -> String {
+        if owner.is_empty() {
+            "an earlier recorded installation".into()
+        } else {
+            format!("recorded installation {owner}")
+        }
     }
 
     /// With no manifest for this file, adopt another setup's exact groups so `unsetup` can remove
