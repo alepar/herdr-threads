@@ -37,7 +37,6 @@ use std::{
 use serde::Deserialize;
 
 use crate::{
-    ports::ProcessRecord,
     protocol::{
         results::ApiError,
         time::{CallBudget, Cancellation, Clock, MonoInstant},
@@ -303,11 +302,19 @@ pub struct DiscoveryDeps {
 
 /// The process-table scan of the running daemon.
 pub fn scan_remote_clients() -> Vec<String> {
-    crate::host::process_table::remote_targets(&scan_rows())
+    use crate::host::process_table::{HostSource, my_uid};
+    remote_clients_from(&HostSource, my_uid())
 }
 
-fn scan_rows() -> Vec<ProcessRecord> {
-    crate::host::process_table::scan()
+/// The `herdr --remote` targets among the processes `my_uid` owns; other users' processes are
+/// skipped before their argv is read.
+pub(crate) fn remote_clients_from(
+    source: &dyn crate::host::process_table::ProcessSource,
+    my_uid: u32,
+) -> Vec<String> {
+    crate::host::process_table::remote_targets(&crate::host::process_table::scan_from(
+        source, my_uid,
+    ))
 }
 
 /// Runs the passes until `deps.cancel`. The first pass runs at once.
@@ -448,6 +455,7 @@ impl DiscoveryWorker {
 mod tests {
     use super::*;
     use crate::app::SystemClock;
+    use crate::ports::ProcessRecord;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[test]
@@ -561,6 +569,14 @@ mod tests {
     }
 
     fn rig(enabled: bool, outcome: ListOutcome, clients: Vec<String>) -> Rig {
+        rig_with(enabled, outcome, Arc::new(move || clients.clone()))
+    }
+
+    fn rig_with(
+        enabled: bool,
+        outcome: ListOutcome,
+        remote_clients: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    ) -> Rig {
         let store = Arc::new(RecordingStore::default());
         store.inserted.store(1, Ordering::SeqCst);
         let lister = Arc::new(FixedLister(Mutex::new(Some(outcome)), AtomicUsize::new(0)));
@@ -574,7 +590,7 @@ mod tests {
                 Arc::new(move || attached.load(Ordering::SeqCst))
             },
             machines: Arc::clone(&lister) as Arc<dyn MachineLister>,
-            remote_clients: Arc::new(move || clients.clone()),
+            remote_clients,
             store: Arc::clone(&store) as Arc<dyn DiscoveryStore>,
             reload: {
                 let reloads = Arc::clone(&reloads);
@@ -611,6 +627,51 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    struct FakeProcs(Mutex<Vec<u32>>);
+
+    impl crate::host::process_table::ProcessSource for FakeProcs {
+        fn pids(&self) -> Vec<u32> {
+            vec![20, 21]
+        }
+        fn owner(&self, pid: u32) -> Option<u32> {
+            Some(if pid == 20 { 501 } else { 777 })
+        }
+        fn record(&self, pid: u32) -> Option<ProcessRecord> {
+            self.0.lock().unwrap().push(pid);
+            let argv: &[&str] = if pid == 20 {
+                &["herdr", "--remote", "mine.example"]
+            } else {
+                &["/usr/local/bin/herdr", "--remote=theirs.example"]
+            };
+            Some(ProcessRecord {
+                pid,
+                parent: None,
+                start: 1,
+                argv: argv.iter().map(|a| (*a).to_owned()).collect(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn foreign_uid_remote_client_is_not_upserted() {
+        let fake = Arc::new(FakeProcs(Mutex::new(Vec::new())));
+        let source = Arc::clone(&fake);
+        let rig = rig_with(
+            true,
+            ListOutcome::Machines(vec![]),
+            Arc::new(move || remote_clients_from(&*source, 501)),
+        );
+        assert_eq!(rig.worker.pass().await, PassOutcome::Ran { changed: true });
+        assert_eq!(
+            rig.store.calls.lock().unwrap().as_slice(),
+            [vec![(
+                "mine.example".to_owned(),
+                DiscoverySource::HerdrRemoteProcess
+            )]]
+        );
+        assert_eq!(*fake.0.lock().unwrap(), [20], "pid 21 never read");
     }
 
     #[tokio::test]

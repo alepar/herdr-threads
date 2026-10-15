@@ -158,15 +158,15 @@ mod sweep;
 #[cfg(feature = "test-support")]
 #[path = "integration/sweep_remaining.rs"]
 mod sweep_remaining;
+/// ht-5fr.8: the operator and status CLI for sync (`peer`, `sync ...`) against real daemons.
+#[cfg(feature = "test-support")]
+#[path = "cli/sync_cli.rs"]
+mod sync_cli;
 /// ht-5fr.7: peer discovery: a fake `herdr machine list` target is upserted, linked and
 /// converged through `sync.dial_command`.
 #[cfg(feature = "test-support")]
 #[path = "daemon/sync_discovery.rs"]
 mod sync_discovery;
-/// ht-5fr.8: the operator and status CLI for sync (`peer`, `sync ...`) against real daemons.
-#[cfg(feature = "test-support")]
-#[path = "cli/sync_cli.rs"]
-mod sync_cli;
 /// ht-5fr.5.10: two real daemons linked through `sync.dial_command`: genesis exchange,
 /// convergence, the composed Apply lane, backoff and reconnect, dial-child reaping.
 #[cfg(feature = "test-support")]
