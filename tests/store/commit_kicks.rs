@@ -142,6 +142,10 @@ const INSERTS: &[(&str, &str)] = &[
         "INSERT INTO sync_dial_targets(ssh_dest,source,created_at,updated_at) VALUES ('host','explicit',0,0)",
     ),
     (
+        "sync_logs",
+        "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) VALUES (1,printf('%032d',1),1,0,zeroblob(32),zeroblob(32),1,zeroblob(32),0)",
+    ),
+    (
         "bootstrap_handoffs",
         "INSERT INTO bootstrap_handoffs(instance_id,state_dir,host_endpoint,actor_scope,compound,digest,identity_json,create_key,state,current_attempt,created_at) VALUES ('34750f98bd59fcfc946da45aaabe933b','/state','/host','seat:s1','c',printf('%064d',0),x'7b7d','create','prepared',1,0)",
     ),
