@@ -133,7 +133,7 @@ impl fmt::Debug for NodeIdentity {
 }
 
 impl NodeIdentity {
-    fn from_seed(seed: [u8; 32]) -> Self {
+    pub(crate) fn from_seed(seed: [u8; 32]) -> Self {
         let signing = SigningKey::from_bytes(&seed);
         let public = signing.verifying_key().to_bytes();
         Self {
