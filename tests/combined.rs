@@ -29,6 +29,8 @@ mod fact_convergence_seat;
 mod fact_convergence_thread;
 #[path = "sync/facts_membership.rs"]
 mod facts_membership;
+#[path = "sync/facts_message.rs"]
+mod facts_message;
 #[path = "sync/facts_seat.rs"]
 mod facts_seat;
 #[path = "sync/facts_thread.rs"]

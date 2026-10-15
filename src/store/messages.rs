@@ -4,7 +4,10 @@ use crate::ports::{DurableWorkAdmission, SendPreparationProgress};
 use crate::protocol::{
     authority::{MutationPermit, ObligationRef},
     commands::{DeliveryMode, SendMessage},
-    ids::{MessageId, SeatId, ServiceAuthorId, ThreadId, prefix, send_message_id_for_preparation},
+    ids::{
+        MessageId, SeatId, ServiceAuthorId, ThreadId, prefix, send_message_id_for_preparation,
+        send_preparation_id_for_message,
+    },
     results::{ApiError, CommandResult, ErrorCode},
     time::CallBudget,
 };
@@ -13,10 +16,14 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 use super::{
+    attribution,
     connection::{StoreContext, api_error, store_error},
     effective::{self, UnavailableWarningKey},
+    materialize::{FactRoute, MaterializeInput},
     schema,
 };
+use crate::sync::facts::message::{MessageSent, MessageSentPayload};
+use crate::sync::facts::payload::{ReceiptObligation, RecipientSpec};
 
 fn require_live_budget(context: &StoreContext, budget: &CallBudget) -> Result<(), ApiError> {
     if budget.is_exhausted(context.clock()) {
@@ -753,19 +760,38 @@ pub(super) fn stage_recipient(
     Ok(())
 }
 
-/// Who a published ordinary message is attributed to.
+/// Who a published ordinary message is attributed to, and when it was decided.
+///
+/// Built from the `message.sent` payload (`decision_at` is its `sent_at`) with
+/// the attribution `attribution::take` returned, so a local and a replicated
+/// publication write the same columns.
 pub(super) enum PublicationAuthor<'a> {
-    /// A joined native seat, with its serialized observation.
+    /// A native seat, with its serialized observation.
     Native {
         seat: &'a SeatId,
         observation: &'a str,
-        /// The acting binding, recorded as `messages.sender_binding_id` (spec §2).
-        binding: &'a crate::protocol::ids::BindingId,
+        /// The acting binding, recorded as `messages.sender_binding_id` (spec
+        /// §2); `None` when no local binding made the row (a remote author).
+        binding: Option<&'a str>,
         relays_user: bool,
         user_intent: Option<crate::protocol::summary::UserIntent>,
+        decision_at: i64,
     },
     /// The registered service author: no seat, label `herdr-graph`.
-    Programmatic(&'a ServiceAuthorId),
+    Programmatic {
+        author: &'a ServiceAuthorId,
+        decision_at: i64,
+    },
+}
+
+impl PublicationAuthor<'_> {
+    fn decision_at(&self) -> i64 {
+        match self {
+            Self::Native { decision_at, .. } | Self::Programmatic { decision_at, .. } => {
+                *decision_at
+            }
+        }
+    }
 }
 
 /// What one publication wrote.
@@ -778,22 +804,20 @@ pub(super) struct Publication {
 }
 
 /// Inserts the message, its manifest and ordinary-only `send_attention` job for the sealed
-/// preparation `(scope, key, digest)`. The caller proved authority and revision
-/// currency; this touches a constant number of rows regardless of audience size,
-/// except that a lazy send writes one `wake_work` row per `wake_on: all`
-/// recipient (set-based; `nudge` recipients cost no write).
-// Allowed: one deciding insert: transaction, instant, replay identity and author.
-#[allow(clippy::too_many_arguments)]
+/// preparation `prep_id`, under the apply input `m` (its `decision_seq` and origin
+/// node) and `author` (its `decision_at` and attribution). The caller proved
+/// authority and revision currency; this touches a constant number of rows regardless
+/// of audience size, except that a lazy send writes one `wake_work` row per
+/// `wake_on: all` recipient (set-based; `nudge` recipients cost no write).
 pub(super) fn insert_publication(
     tx: &Transaction<'_>,
-    utc: i64,
-    scope: &str,
-    key: &str,
-    digest: &[u8; 32],
+    m: &MaterializeInput<'_>,
+    prep_id: &str,
     thread: &ThreadId,
     body: &str,
     author: PublicationAuthor<'_>,
 ) -> Result<Publication, ApiError> {
+    let utc = author.decision_at();
     let author_role = match &author {
         PublicationAuthor::Native {
             seat,
@@ -802,7 +826,11 @@ pub(super) fn insert_publication(
             ..
         } => {
             let author_role = schema::open_binding_role(tx, seat)?;
-            if user_intent.is_some()
+            // A fact is never rejected from this node's view of its author
+            // (fact-kinds review rule 4): the intent check is the sending
+            // node's, made against its own binding.
+            if m.local_origin
+                && user_intent.is_some()
                 && !(author_role == Some("human") || (author_role == Some("agent") && *relays_user))
             {
                 return Err(api_error(
@@ -812,21 +840,23 @@ pub(super) fn insert_publication(
             }
             author_role
         }
-        PublicationAuthor::Programmatic(_) => None,
+        PublicationAuthor::Programmatic { .. } => None,
     };
-    let (prep_id,instance,high_water,recipient_count,warning_count,mode):(String,String,i64,i64,i64,String)=tx.query_row(
-        "SELECT id,instance_id,interval_high_water,recipient_count,warning_count,delivery_mode FROM send_preparations WHERE operation_scope=?1 AND operation_key=?2 AND digest=?3",
-        params![scope,key,digest.as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
+    let (instance,high_water,recipient_count,warning_count,mode):(String,i64,i64,i64,String)=tx.query_row(
+        "SELECT instance_id,interval_high_water,recipient_count,warning_count,delivery_mode FROM send_preparations WHERE id=?1",
+        [prep_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
     ).map_err(store_error)?;
     let mut duration_ms = 0;
     if recipient_count > 0 {
-        duration_ms=tx.query_row("SELECT frozen_duration_ms FROM prepared_recipients WHERE preparation_id=?1 AND receipt_ordinal=1",[prep_id.as_str()],|r|r.get(0)).map_err(store_error)?;
+        duration_ms=tx.query_row("SELECT frozen_duration_ms FROM prepared_recipients WHERE preparation_id=?1 AND receipt_ordinal=1",[prep_id],|r|r.get(0)).map_err(store_error)?;
         schema::checked_deadline(crate::protocol::time::UtcMillis(utc), duration_ms)?;
     }
     if warning_count > 0 {
-        schema::ensure_unavailability_reopen_ready(tx, &prep_id, thread.as_str())?;
+        schema::ensure_unavailability_reopen_ready(tx, prep_id, thread.as_str())?;
     }
-    let decision_seq = schema::next_decision_seq(tx, &instance)?;
+    let decision_seq = i64::try_from(m.decision_seq)
+        .map_err(|_| api_error(ErrorCode::SequenceExhausted, "decision sequence exhausted"))?;
+    let origin_node = m.origin_node.to_string();
     let base: i64 = tx
         .query_row(
             "SELECT next_sequence FROM threads WHERE id=?1",
@@ -847,7 +877,7 @@ pub(super) fn insert_publication(
         ));
     }
     let id = MessageId::new(
-        send_message_id_for_preparation(&prep_id)
+        send_message_id_for_preparation(prep_id)
             .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "invalid send preparation ID"))?,
     );
     match author {
@@ -857,20 +887,21 @@ pub(super) fn insert_publication(
             binding,
             relays_user,
             user_intent,
+            ..
         } => {
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode,sender_binding_id,origin_node) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?2)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode,binding.as_str()]).map_err(store_error)?;
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode,sender_binding_id,origin_node) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode,binding,origin_node]).map_err(store_error)?;
         }
-        PublicationAuthor::Programmatic(author) => {
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role,origin_node) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service',?2)",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq as i64,author.as_str()]).map_err(store_error)?;
+        PublicationAuthor::Programmatic { author, .. } => {
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role,origin_node) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service',?9)",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq,author.as_str(),origin_node]).map_err(store_error)?;
         }
     }
-    tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![prep_id,id.as_str(),instance,thread.as_str(),decision_seq as i64,utc,base,high_water,recipient_count,warning_count]).map_err(store_error)?;
+    tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![prep_id,id.as_str(),instance,thread.as_str(),decision_seq,utc,base,high_water,recipient_count,warning_count]).map_err(store_error)?;
     if warning_count > 0 {
         schema::record_published_unavailable_conditions(
             tx,
-            &prep_id,
+            prep_id,
             thread.as_str(),
-            decision_seq as i64,
+            decision_seq,
             high_water,
             crate::protocol::time::UtcMillis(utc),
         )?;
@@ -884,9 +915,9 @@ pub(super) fn insert_publication(
     schema::bump_filter_revision(tx, &instance, "directory", thread.as_str())?;
     super::delivery_tail::DeliveryTail::message(
         tx,
-        None,
+        Some(m),
         &id,
-        &prep_id,
+        prep_id,
         &mode,
         recipient_count,
         warning_count,
@@ -899,11 +930,359 @@ pub(super) fn insert_publication(
     })
 }
 
+/// The mismatch every audience comparison reports.
+fn audience_mismatch() -> ApiError {
+    api_error(
+        ErrorCode::StoreCorrupt,
+        "staged audience differs from authored audience",
+    )
+}
+
+/// The thread of a preparation a local publication may adopt: `sealed`, born
+/// local, with no manifest yet. `None` for any other state.
+fn adoptable_preparation(
+    tx: &Transaction<'_>,
+    prep_id: &str,
+) -> Result<Option<(String, String)>, ApiError> {
+    tx.query_row(
+        "SELECT thread_id,delivery_mode FROM send_preparations WHERE id=?1 AND status='sealed' AND origin='local' AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",
+        [prep_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+    .map_err(store_error)
+}
+
+/// Publishes a service author's sealed preparation through the local-only
+/// route: the local-adopt branch of `materialize_message` for a message no
+/// journal carries (managed threads are never journaled, fact-kinds design
+/// section 2). `m` is a [`materialize::local_only`](super::materialize::local_only)
+/// input.
+pub(super) fn adopt_service_preparation(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    prep_id: &str,
+    thread: &ThreadId,
+    body: &str,
+    author: &ServiceAuthorId,
+    sent_at: i64,
+) -> Result<Publication, ApiError> {
+    if adoptable_preparation(tx, prep_id)?
+        .is_none_or(|(prep_thread, _)| prep_thread != thread.as_str())
+    {
+        return Err(api_error(ErrorCode::Conflict, "send preparation missing"));
+    }
+    insert_publication(
+        tx,
+        m,
+        prep_id,
+        thread,
+        body,
+        PublicationAuthor::Programmatic {
+            author,
+            decision_at: sent_at,
+        },
+    )
+}
+
+/// Builds the `message.sent` payload of a sealed preparation (fact-kinds
+/// design section 8, author steps 1-2): the complete audience the author
+/// fixes, sorted by seat ID with the author excluded.
+///
+/// - `ack` for each prepared recipient, timed (`sent_at + frozen duration`)
+///   when it was eligible at the snapshot;
+/// - `none` for every other joined member at the preparation's interval high
+///   water and for each explicit recipient, which owe nothing (humans);
+/// - for a lazy message, `none` for each staged lazy recipient.
+pub(super) fn build_message_sent(
+    tx: &Transaction<'_>,
+    prep_id: &str,
+    request: &SendMessage,
+    sent_at: i64,
+) -> Result<MessageSentPayload, ApiError> {
+    let message = MessageId::new(
+        send_message_id_for_preparation(prep_id)
+            .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "invalid send preparation ID"))?,
+    );
+    let (mode, high_water): (String, i64) = tx
+        .query_row(
+            "SELECT delivery_mode,interval_high_water FROM send_preparations WHERE id=?1",
+            [prep_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(store_error)?;
+    let author = &request.claim.seat;
+    let mut audience: std::collections::BTreeMap<String, RecipientSpec> = Default::default();
+    let none = |seat: &str| RecipientSpec {
+        seat: SeatId::new(seat),
+        receipt: ReceiptObligation::None,
+        deadline_at: None,
+    };
+    let mut duration_ms = 0;
+    if mode == "lazy" {
+        let mut stmt = tx
+            .prepare("SELECT seat_id FROM lazy_recipients WHERE preparation_id=?1")
+            .map_err(store_error)?;
+        for seat in stmt
+            .query_map([prep_id], |r| r.get::<_, String>(0))
+            .map_err(store_error)?
+        {
+            let seat = seat.map_err(store_error)?;
+            audience.insert(seat.clone(), none(&seat));
+        }
+    } else {
+        let mut stmt = tx
+            .prepare("SELECT mi.seat_id FROM membership_intervals mi JOIN seats s ON s.id=mi.seat_id WHERE mi.thread_id=?1 AND mi.ordinal<=?2 AND mi.left_seq IS NULL AND s.retired_seq IS NULL AND s.state!='retired'")
+            .map_err(store_error)?;
+        for seat in stmt
+            .query_map(params![request.thread.as_str(), high_water], |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(store_error)?
+        {
+            let seat = seat.map_err(store_error)?;
+            audience.insert(seat.clone(), none(&seat));
+        }
+        for seat in request
+            .invited_recipients
+            .iter()
+            .chain(request.direct_recipient.iter())
+        {
+            audience.insert(seat.as_str().to_owned(), none(seat.as_str()));
+        }
+        let mut stmt = tx
+            .prepare("SELECT seat_id,frozen_duration_ms,eligible_at_snapshot,receipt_ordinal FROM prepared_recipients WHERE preparation_id=?1")
+            .map_err(store_error)?;
+        for row in stmt
+            .query_map([prep_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, bool>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(store_error)?
+        {
+            let (seat, frozen, eligible, ordinal) = row.map_err(store_error)?;
+            let deadline_at = if eligible {
+                Some(schema::checked_deadline(crate::protocol::time::UtcMillis(sent_at), frozen)?.0)
+            } else {
+                None
+            };
+            if ordinal == 1 {
+                duration_ms = frozen;
+            }
+            audience.insert(
+                seat.clone(),
+                RecipientSpec {
+                    seat: SeatId::new(seat),
+                    receipt: ReceiptObligation::Ack,
+                    deadline_at,
+                },
+            );
+        }
+    }
+    audience.remove(author.as_str());
+    Ok(MessageSentPayload {
+        message,
+        thread: request.thread.clone(),
+        author: author.clone(),
+        body: request.body.clone(),
+        mode: request.delivery_mode,
+        nudge: false,
+        relays_user: request.relays_user,
+        user_intent: request.user_intent,
+        sent_at,
+        duration_ms,
+        recipients: audience.into_values().collect(),
+    })
+}
+
+/// Whether the audience staged for `prep_id` is the one `payload` fixed: the
+/// same thread and mode, the same ack seats with the same timing, and for a
+/// lazy message the same lazy recipients.
+fn check_staged_audience(
+    tx: &Transaction<'_>,
+    prep_id: &str,
+    prep_thread: &str,
+    prep_mode: &str,
+    payload: &MessageSentPayload,
+) -> Result<(), ApiError> {
+    let mode = if payload.mode.is_ordinary() {
+        "ordinary"
+    } else {
+        "lazy"
+    };
+    if prep_thread != payload.thread.as_str()
+        || prep_mode != mode
+        || payload
+            .recipients
+            .windows(2)
+            .any(|w| w[0].seat >= w[1].seat)
+        || payload.recipients.iter().any(|r| r.seat == payload.author)
+    {
+        return Err(audience_mismatch());
+    }
+    let staged_ack: Vec<(String, i64, bool)> = {
+        let mut stmt = tx
+            .prepare("SELECT seat_id,frozen_duration_ms,eligible_at_snapshot FROM prepared_recipients WHERE preparation_id=?1 ORDER BY seat_id")
+            .map_err(store_error)?;
+        stmt.query_map([prep_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(store_error)?
+            .collect::<Result<_, _>>()
+            .map_err(store_error)?
+    };
+    let authored_ack: Vec<&RecipientSpec> = payload
+        .recipients
+        .iter()
+        .filter(|r| r.receipt == ReceiptObligation::Ack)
+        .collect();
+    if staged_ack.len() != authored_ack.len() {
+        return Err(audience_mismatch());
+    }
+    for ((seat, frozen, eligible), authored) in staged_ack.iter().zip(&authored_ack) {
+        let expected = eligible
+            .then(|| payload.sent_at.checked_add(*frozen))
+            .flatten();
+        if authored.seat.as_str() != seat
+            || authored.deadline_at != expected
+            || (*eligible && expected.is_none())
+        {
+            return Err(audience_mismatch());
+        }
+    }
+    let staged_duration: i64 = tx
+        .query_row(
+            "SELECT COALESCE((SELECT frozen_duration_ms FROM prepared_recipients WHERE preparation_id=?1 AND receipt_ordinal=1),0)",
+            [prep_id],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if staged_duration != payload.duration_ms {
+        return Err(audience_mismatch());
+    }
+    if mode == "lazy" {
+        let staged: Vec<String> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT seat_id FROM lazy_recipients WHERE preparation_id=?1 ORDER BY seat_id",
+                )
+                .map_err(store_error)?;
+            stmt.query_map([prep_id], |r| r.get(0))
+                .map_err(store_error)?
+                .collect::<Result<_, _>>()
+                .map_err(store_error)?
+        };
+        let authored: Vec<&str> = payload.recipients.iter().map(|r| r.seat.as_str()).collect();
+        if staged
+            .iter()
+            .map(String::as_str)
+            .ne(authored.iter().copied())
+        {
+            return Err(audience_mismatch());
+        }
+    }
+    Ok(())
+}
+
+/// The one materializer of a published ordinary message (`message.sent`;
+/// fact-kinds design section 8), shared by the journal handler and the
+/// local-only route.
+///
+/// 1. A no-op when the message exists (a re-authored copy writes nothing).
+/// 2. The preparation is the message ID's inverse (`m<tag><8>` to `p<tag><8>`).
+/// 3. Local branch: for a local-origin fact whose preparation is `sealed`
+///    with no manifest, the staged rows are adopted after checking they equal
+///    the authored audience (`StoreCorrupt` "staged audience differs from
+///    authored audience" otherwise, which aborts the command), then the
+///    message is published with the attribution `take` returns.
+///
+/// Any other case (a remote origin, or an own old incarnation without a
+/// preparation) is `Unsupported` until the synthesized branch lands
+/// (ht-5fr.4.16).
+pub fn materialize_message(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    payload: &MessageSentPayload,
+) -> Result<(), ApiError> {
+    let exists: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE id=?1)",
+            [payload.message.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if exists {
+        return Ok(());
+    }
+    let prep_id = send_preparation_id_for_message(payload.message.as_str()).ok_or_else(|| {
+        api_error(
+            ErrorCode::InvalidRequest,
+            "message id is not a send message id",
+        )
+    })?;
+    let adopted = if m.local_origin {
+        adoptable_preparation(tx, &prep_id)?
+    } else {
+        None
+    };
+    let Some((prep_thread, prep_mode)) = adopted else {
+        return Err(api_error(
+            ErrorCode::Unsupported,
+            "message.sent without a local preparation is not supported yet",
+        ));
+    };
+    check_staged_audience(tx, &prep_id, &prep_thread, &prep_mode, payload)?;
+    let attribution = attribution::take(tx, m, &attribution::send_key(payload.message.as_str()))?;
+    insert_publication(
+        tx,
+        m,
+        &prep_id,
+        &payload.thread,
+        &payload.body,
+        PublicationAuthor::Native {
+            seat: &payload.author,
+            observation: &attribution.observation,
+            binding: attribution.binding_id.as_deref(),
+            relays_user: payload.relays_user,
+            user_intent: payload.user_intent,
+            decision_at: payload.sent_at,
+        },
+    )?;
+    Ok(())
+}
+
+/// The route a send takes: the journal for a journaled thread whose creating
+/// fact exists, a node-local write for any other.
+///
+/// Transitional (ht-5fr.4.10): a pair thread `ensure_direct_thread` still
+/// inserts directly has no creating fact, so `message.sent` for it would park
+/// on its `needs`; until that command authors `thread.direct` such a thread,
+/// and a store whose journal never opened (a fixture; the daemon opens it
+/// before serving), keep the node-local write.
+fn send_route(
+    tx: &Transaction<'_>,
+    context: &StoreContext,
+    thread: &ThreadId,
+) -> Result<FactRoute, ApiError> {
+    let route = FactRoute::for_thread(tx, thread)?;
+    if route == FactRoute::Journal
+        && (!context.journal_open() || !super::control::has_creating_fact(tx, thread)?)
+    {
+        return Ok(FactRoute::LocalOnly);
+    }
+    Ok(route)
+}
+
 /// Publishes only a sealed, revision-current preparation after a fresh caller proof.
 /// `current_body_bytes` reads writer-owned effective configuration after the writer
 /// wait; configuration updates must use that same lane and remain stable through
 /// this transaction. The callback must do bounded memory work without host/file I/O.
-/// The deciding writer touches a constant number of rows regardless of recipient count.
+/// On a journaled thread the writer authors one `message.sent` carrying the complete
+/// audience (fact-kinds design section 8), so it reads one row per recipient and the
+/// payload is capped at 448 KiB; the publication itself still writes a constant number
+/// of rows regardless of recipient count.
 pub fn publish_send(
     context: &StoreContext,
     conn: &mut Connection,
@@ -1017,23 +1396,33 @@ pub fn publish_send(
                 ));
             }
             let observation = actor.observation(decision.utc.0);
-            let published = insert_publication(
+            let prep_id: String = tx
+                .query_row(
+                    "SELECT id FROM send_preparations WHERE operation_scope=?1 AND operation_key=?2 AND digest=?3",
+                    params![scope, request.operation.as_str(), digest.as_slice()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            let payload = build_message_sent(tx, &prep_id, request, decision.utc.0)?;
+            let route = send_route(tx, context, &request.thread)?;
+            if route == FactRoute::Journal {
+                payload.validate_for_author()?;
+            }
+            attribution::stage(
                 tx,
-                decision.utc.0,
-                &scope,
-                request.operation.as_str(),
-                &digest,
-                &request.thread,
-                &request.body,
-                PublicationAuthor::Native {
-                    seat: &seat,
-                    observation: &observation,
-                    binding: &actor.binding_id,
-                    relays_user: request.relays_user,
-                    user_intent: request.user_intent,
-                },
+                &attribution::send_key(payload.message.as_str()),
+                &actor,
+                &observation,
             )?;
-            let id = published.message;
+            route.emit::<MessageSent>(
+                tx,
+                context,
+                decision,
+                &payload,
+                None,
+                materialize_message,
+            )?;
+            let id = payload.message;
             failpoint!("send.before_commit", context.failpoint_scope());
             Ok(CommandResult::MessageSent(id))
         },

@@ -49,6 +49,7 @@ pub use thread::archive;
 pub(crate) use thread::author_register;
 pub use thread::create_thread;
 pub use thread::create_thread_in_namespace;
+pub(crate) use thread::has_creating_fact;
 pub use thread::materialize_register;
 pub use thread::materialize_thread_created;
 pub use thread::materialize_thread_direct;

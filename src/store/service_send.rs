@@ -6,12 +6,9 @@
 //! bounded quanta and published under the service decision fence. The service
 //! itself never appears in a receipt table.
 use super::{
-    connection::{StoreContext, api_error, store_error},
-    materialization,
-    messages::{
-        self, AudienceWalk, MAX_BODY_BYTES, MessageLimits, PublicationAuthor, RecipientRejection,
-        WalkEnd,
-    },
+    connection::{DecisionInstant, StoreContext, api_error, store_error},
+    materialization, materialize,
+    messages::{self, AudienceWalk, MAX_BODY_BYTES, MessageLimits, RecipientRejection, WalkEnd},
     schema, service_controls,
 };
 use crate::{
@@ -458,16 +455,25 @@ pub(crate) fn publish_service_send(
     check_body(request, limits)?;
     live_budget(context, budget)?;
     let now = context.clock().utc_now();
-    let published = messages::insert_publication(
+    // Managed threads are never journaled (fact-kinds design section 2): the
+    // local-adopt branch runs under a local-only input.
+    let input = materialize::local_only(
         tx,
-        now.0,
-        &op_scope,
-        request.operation.as_str(),
-        &digest,
+        DecisionInstant {
+            utc: now,
+            monotonic: context.clock().monotonic_now(),
+        },
+    )?;
+    let published = messages::adopt_service_preparation(
+        tx,
+        &input,
+        &prep_id,
         &request.thread,
         &request.body,
-        PublicationAuthor::Programmatic(&author),
+        &author,
+        now.0,
     )?;
+    drop(input);
     let recipient_count = u64::try_from(published.recipient_count)
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative recipient count"))?;
     let receipt_duration_millis = u64::try_from(published.duration_ms)

@@ -2581,6 +2581,13 @@ fn relevance_publication_binding(db: &Connection) -> BindingId {
     BindingId::new(db.query_row("SELECT binding_id FROM occupant_bindings WHERE seat_id='o' AND harness='codex' AND native_session='relevance-author-session' AND agent_id=''", [], |r|r.get::<_,String>(0)).unwrap())
 }
 
+fn relevance_decision(n: u32) -> crate::store::connection::DecisionInstant {
+    crate::store::connection::DecisionInstant {
+        utc: crate::protocol::time::UtcMillis(i64::from(n) + 100),
+        monotonic: crate::protocol::time::MonoInstant(1),
+    }
+}
+
 fn relevance_publish_unrelated_lazy(db: &mut Connection, n: u32) {
     use crate::store::messages::{PublicationAuthor, insert_publication, stage_recipient};
     let tx = db.transaction().unwrap();
@@ -2605,20 +2612,21 @@ fn relevance_publish_unrelated_lazy(db: &mut Connection, n: u32) {
         [&preparation],
     )
     .unwrap();
+    let binding = relevance_publication_binding(&tx);
+    let input = crate::store::materialize::local_only(&tx, relevance_decision(n)).unwrap();
     let publication = insert_publication(
         &tx,
-        i64::from(n) + 100,
-        "seat:o",
-        &operation,
-        &[0; 32],
+        &input,
+        &preparation,
         &ThreadId::new("relevance-unrelated"),
         "unrelated lazy publication",
         PublicationAuthor::Native {
             seat: &SeatId::new("o"),
-            binding: &relevance_publication_binding(&tx),
+            binding: Some(binding.as_str()),
             observation: "cooperative_top_level",
             relays_user: false,
             user_intent: None,
+            decision_at: i64::from(n) + 100,
         },
     )
     .unwrap();
@@ -3689,20 +3697,25 @@ fn presentation_relevance_unavailable_exact_episode_and_late_publication_are_swe
     let publish = |db: &mut Connection, n: i64| {
         let tx = db.transaction().unwrap();
         let thread = format!("relevance-episode-{n}");
+        let binding = relevance_publication_binding(&tx);
+        let input = crate::store::materialize::local_only(
+            &tx,
+            relevance_decision(u32::try_from(n).unwrap()),
+        )
+        .unwrap();
         messages::insert_publication(
             &tx,
-            200 + n,
-            "seat:o",
-            &thread,
-            &[0; 32],
+            &input,
+            &format!("pEpi{n:08}"),
             &ThreadId::new(&thread),
             "episode publication",
             PublicationAuthor::Native {
                 seat: &SeatId::new("o"),
-                binding: &relevance_publication_binding(&tx),
+                binding: Some(binding.as_str()),
                 observation: "cooperative_top_level",
                 relays_user: false,
                 user_intent: None,
+                decision_at: 200 + n,
             },
         )
         .unwrap();
