@@ -232,7 +232,6 @@ fn sync_logs_kicks_sync() {
 }
 
 #[test]
-<<<<<<< HEAD
 fn sync_dial_targets_kick_sync_and_node_contact_kicks_nothing() {
     assert_eq!(
         lanes_for_table("sync_dial_targets"),
@@ -246,8 +245,6 @@ fn sync_dial_targets_kick_sync_and_node_contact_kicks_nothing() {
 }
 
 #[test]
-=======
->>>>>>> 689defc1 (Lane::Sync and its kick table map (ht-5fr.5.3))
 fn sync_and_apply_origin_keep_sync() {
     let sealed = LaneSet::EMPTY.with(Lane::Apply).with(Lane::Sync);
     assert_eq!(
