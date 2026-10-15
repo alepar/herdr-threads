@@ -127,6 +127,35 @@ CREATE INDEX journal_unapplied ON journal(apply_state, ingest_seq) WHERE apply_s
 CREATE INDEX journal_creates ON journal(creates) WHERE creates IS NOT NULL;
 CREATE INDEX journal_parked_on ON journal(parked_on) WHERE apply_state = 'parked_dep';
 
+-- Sync coordinator tables (ht-5fr.5.4, peer-link design sections 12 and 13).
+-- Code owners: store::sync_dial_targets and store::sync_contacts.
+CREATE TABLE sync_dial_targets (
+    target_id INTEGER PRIMARY KEY,
+    ssh_dest TEXT NOT NULL UNIQUE CHECK(length(ssh_dest) BETWEEN 1 AND 1024 AND substr(ssh_dest,1,1) <> '-'),
+    source TEXT NOT NULL CHECK(source IN ('explicit','herdr_machine','herdr_remote_process')),
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+    remote_command TEXT CHECK(remote_command IS NULL OR length(remote_command) BETWEEN 1 AND 1024),
+    learned_node_uuid TEXT CHECK(learned_node_uuid IS NULL OR length(learned_node_uuid) = 32),
+    state TEXT NOT NULL DEFAULT 'idle' CHECK(state IN ('idle','dialing','linked','backoff','not_installed','stopped')),
+    stopped_reason TEXT CHECK(stopped_reason IS NULL OR stopped_reason IN ('envelope_unsupported','self_link','auth_failed','node_collision')),
+    stopped_version TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+    next_attempt_at INTEGER,
+    last_error TEXT CHECK(last_error IS NULL OR length(last_error) <= 512),
+    last_error_at INTEGER,
+    last_linked_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK((state = 'stopped') = (stopped_reason IS NOT NULL))
+) STRICT;
+
+CREATE TABLE sync_node_contact (
+    node_uuid TEXT PRIMARY KEY CHECK(length(node_uuid) = 32),
+    last_contact_at INTEGER NOT NULL,
+    via TEXT NOT NULL CHECK(via IN ('direct','relayed')),
+    updated_at INTEGER NOT NULL
+) STRICT;
+
 CREATE TABLE journal_forked (
     forked_ix INTEGER PRIMARY KEY AUTOINCREMENT,
     log_ix INTEGER NOT NULL REFERENCES sync_logs(log_ix),

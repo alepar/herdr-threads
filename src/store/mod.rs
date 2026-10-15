@@ -36,6 +36,8 @@ pub mod service_events;
 pub mod service_send;
 pub mod service_substrate;
 pub mod summary;
+pub mod sync_contacts;
+pub mod sync_dial_targets;
 pub mod thread_registers;
 pub mod topology_handoff;
 pub mod wake;
@@ -116,6 +118,10 @@ pub struct SqliteStore {
     /// Hook state of `writer`; declared after it so it outlives the connection.
     hooks: Box<connection::KickHooks>,
     kicks: Arc<CommitKicks>,
+    /// The writer admission the sync port's writes take a background turn on
+    /// (`with_sync_admission`); none in tools and tests that run without a
+    /// service.
+    sync_admission: Option<Arc<crate::service::fair_writer::FairWriter>>,
     /// Change mark (`retention::change_mark`) at which the last retention
     /// snapshot scan found no candidate; the scan is skipped while it holds.
     retention_idle: Mutex<Option<(u64, i64)>>,
@@ -324,6 +330,7 @@ impl SqliteStore {
             hooks: connection::KickHooks::install(&writer),
             writer: Mutex::new(writer),
             kicks: Arc::new(CommitKicks::default()),
+            sync_admission: None,
             retention_idle: Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
             retention_cost: Mutex::new(None),
@@ -346,6 +353,18 @@ impl SqliteStore {
     #[must_use]
     pub fn with_commit_kicks(mut self, kicks: Arc<CommitKicks>) -> Self {
         self.kicks = kicks;
+        self
+    }
+
+    /// Makes the [`SyncStorePort`](crate::sync::sync_store::SyncStorePort)
+    /// writes wait for a background turn on `writer`, the one-at-a-time
+    /// admission the service's other background work shares.
+    #[must_use]
+    pub fn with_sync_admission(
+        mut self,
+        writer: Arc<crate::service::fair_writer::FairWriter>,
+    ) -> Self {
+        self.sync_admission = Some(writer);
         self
     }
 
@@ -1316,6 +1335,60 @@ impl crate::ports::ModStoreReads for SqliteStore {
         db.execute_batch("BEGIN DEFERRED")
             .map_err(|e| db.map_error(e))?;
         seats::mod_stall_oldest(&db, seat, at_or_before, body_limit)
+    }
+}
+
+impl crate::sync::sync_store::SyncStorePort for SqliteStore {
+    fn enabled_targets(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<Vec<sync_dial_targets::DialTarget>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        sync_dial_targets::enabled(&db)
+    }
+
+    fn record_transition(
+        &self,
+        target: sync_dial_targets::TargetId,
+        transition: &sync_dial_targets::DialTransition,
+        now: UtcMillis,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let _turn = self
+            .sync_admission
+            .as_ref()
+            .map(|writer| writer.enter_background(budget, self.context.clock()))
+            .transpose()?;
+        let mut writer = self.writer(budget)?;
+        let tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        sync_dial_targets::record_transition(&tx, target, transition, now.0)?;
+        tx.commit().map_err(store_error)
+    }
+
+    fn record_contacts(
+        &self,
+        contacts: &[sync_contacts::NodeContact],
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        if contacts.is_empty() {
+            return Ok(());
+        }
+        let _turn = self
+            .sync_admission
+            .as_ref()
+            .map(|writer| writer.enter_background(budget, self.context.clock()))
+            .transpose()?;
+        let now = u64::try_from(self.context.clock().utc_now().0).unwrap_or(0);
+        let mut writer = self.writer(budget)?;
+        let tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        sync_contacts::record(&tx, contacts, now)?;
+        tx.commit().map_err(store_error)
     }
 }
 
