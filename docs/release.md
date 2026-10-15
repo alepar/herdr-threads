@@ -39,10 +39,10 @@ Nothing in this repository establishes an inference-interruption guarantee, exac
 
 `.github/workflows/ci.yml` runs on every push and pull request with Rust 1.94.0 and Python 3.11.9. The test jobs run on `ubuntu-24.04` (Linux x86_64); macOS arm64 runs the same suite locally before a merge (`scripts/full-suite-gate`). Both jobs download the [official Herdr v0.9.1 Linux x86_64 asset](https://github.com/herdrdev/herdr/releases/tag/v0.9.1) and check its architecture, `herdr --version` and SHA-256 `2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7` (GitHub's asset digest), so the real-parser package tests run in the ordinary suite.
 
-The `tests` job runs in two parallel shards. Each shard:
+The `tests` job runs in three parallel shards. Each shard:
 
 1. `cargo test --locked --all-targets --all-features --no-run` and the ordinary and `test-support` release builds (the package suite compares them), before the timer.
-2. `cargo nextest run --locked --all-targets --all-features --profile ci --partition slice:N/2` (one process per test; test groups in `.config/nextest.toml`; the two slices split the sorted test list round-robin, about half the test time each). `--all-features` enables `test-support`. The package suite runs `check_failpoints_absent.sh`, which makes two extra release builds. Ignored tests (the package lifecycle gate and the 10^5 to 10^6 scale tests) do not run. Each shard fails at 300 s wall clock.
+2. `cargo nextest run --locked --all-targets --all-features --profile ci --partition slice:N/3` (one process per test; test groups in `.config/nextest.toml`; the three slices split the sorted test list round-robin, about a third of the test time each). `--all-features` enables `test-support`. The package suite runs `check_failpoints_absent.sh`, which makes two extra release builds. Ignored tests (the package lifecycle gate and the 10^5 to 10^6 scale tests) do not run. Each shard fails at 300 s wall clock.
 3. `scripts/check-no-leaked-processes`, even after a failure.
 
 The `deterministic` job:
