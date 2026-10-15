@@ -90,7 +90,7 @@ What we do today:
 
 ## Pre-release wake e2e
 
-Before every release (tagging a `v*` version), run the wake e2e against the release candidate, locally: it drives real, authenticated Claude Code and Codex agents, so it never runs in CI and no agent runs it unattended for a release. A person (or an agent the person asked) runs it from a Herdr pane in a checkout of the release SHA:
+The wake e2e is a release prerequisite: before every release (tagging a `v*` version) the releasing agent runs it against the release candidate, unattended, from a Herdr pane in a checkout of the release SHA, with no further prompt from the user. It drives real, authenticated Claude Code and Codex agents (and spends their quota), so it runs locally and never in CI:
 
 ```sh
 nice scripts/build.sh                         # the candidate: bin/herdr-threads
