@@ -176,6 +176,7 @@ fn remote_input(origin: NodeUuid, decision: DecisionInstant) -> MaterializeInput
         own_history: false,
         provenance: "replicated_from:x",
         suppress: &|_, _| Ok(false),
+        scope: Default::default(),
     }
 }
 

@@ -44,6 +44,7 @@ fn input(local_origin: bool, provenance: &'static str) -> MaterializeInput<'stat
         own_history: local_origin,
         provenance,
         suppress: &|_, _| Ok(false),
+        scope: Default::default(),
     }
 }
 

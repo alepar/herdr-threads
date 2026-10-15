@@ -22,6 +22,8 @@ pub mod search_barrier;
 pub mod server_completion;
 pub mod slow_clock;
 pub mod spawn;
+#[cfg(feature = "test-support")]
+pub mod write_guard;
 
 pub use fake_hosts::{
     FakeHostWorld, RefusingHost, fake_host_plan, single_host_plan, single_host_plan_at,

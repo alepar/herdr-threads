@@ -27,6 +27,9 @@
 //!   (its replicated columns, its position columns, the column linking a row
 //!   to its journal entry) to the list it passes in; nothing else changes.
 //!
+//! `CONVERTED_TABLES` lists the converted fact-kind tables; see the
+//! write guard for the other side of that table set.
+//!
 //! Excluded from a projection: rows originating from the replaying node (its
 //! own genesis and self `node_directory` row exist only in the replay) and
 //! every local-position or local-clock column (`applied_seq`, `decision_seq`,
@@ -108,6 +111,166 @@ pub const CORE_TABLES: &[TableSpec] = &[
         src_column: Some("src_ingest_seq"),
     },
 ];
+
+/// The converted fact-kind tables' replicated columns (fact-kinds design,
+/// Testing "Oracle"). Attribution columns, local positions (`ordinal`,
+/// `sequence`, `decision_seq`, `episode`, revisions) and every delivery table
+/// are left out. The other side of this table set is
+/// `write_guard::REPLICATED_TABLES`.
+///
+/// Only journaled threads and what hangs off them project: a local-only
+/// (managed) thread never replicates.
+///
+/// Column entries may be `expr AS name`; a projected row is labelled by the
+/// name. Seats project only published rows, normalized local versus remote.
+/// `prepared_recipients` and `receipt_state` project the rows of replicated
+/// (manifested, ordinary) messages.
+pub const CONVERTED_TABLES: &[TableSpec] = &[
+    TableSpec {
+        name: "threads",
+        filter: Some("journaled=1"),
+        key_columns: &["id"],
+        replicated_columns: &[
+            "topic",
+            "goal",
+            "name",
+            "archived",
+            "created_at",
+            "journaled",
+        ],
+        origin_column: None,
+        position_columns: &[],
+        src_column: None,
+    },
+    TableSpec {
+        name: "direct_threads",
+        filter: None,
+        key_columns: &["thread_id"],
+        replicated_columns: &["seat_a", "seat_b", "created_hlc", "created_node"],
+        origin_column: None,
+        position_columns: &[],
+        src_column: None,
+    },
+    TableSpec {
+        name: "seats",
+        filter: Some("published=1"),
+        key_columns: &["id"],
+        replicated_columns: &[
+            "home_node",
+            "coalesce(remote_kind, CASE WHEN EXISTS(SELECT 1 FROM occupant_bindings b \
+             WHERE b.seat_id=seats.id AND b.harness='human') THEN 'human' ELSE 'agent' END) AS kind",
+            "(state='retired') AS retired",
+            "retired_at",
+        ],
+        origin_column: Some("home_node"),
+        position_columns: &[],
+        src_column: None,
+    },
+    TableSpec {
+        name: "memberships",
+        filter: Some("thread_id IN (SELECT id FROM threads WHERE journaled=1)"),
+        key_columns: &["thread_id AS thread", "seat_id AS seat"],
+        replicated_columns: &["state", "home_transition", "last_joined_n"],
+        origin_column: None,
+        position_columns: &[],
+        src_column: None,
+    },
+    TableSpec {
+        name: "invitations",
+        filter: Some("thread_id IN (SELECT id FROM threads WHERE journaled=1)"),
+        key_columns: &["id"],
+        replicated_columns: &[
+            "thread_id AS thread",
+            "seat_id AS seat",
+            "state",
+            "deadline_at",
+            "confirmation",
+            "inviter_seat_id AS inviter",
+            "invitee_n",
+            "origin_node",
+            "accepted_at",
+        ],
+        origin_column: Some("origin_node"),
+        position_columns: &[],
+        src_column: None,
+    },
+    TableSpec {
+        name: "invitation_rejections",
+        filter: Some(
+            "invitation_id IN (SELECT id FROM invitations WHERE thread_id IN \
+             (SELECT id FROM threads WHERE journaled=1))",
+        ),
+        key_columns: &["invitation_id"],
+        replicated_columns: &["reason"],
+        origin_column: None,
+        position_columns: &[],
+        src_column: None,
+    },
+    TableSpec {
+        name: "messages",
+        filter: Some("kind='ordinary' AND thread_id IN (SELECT id FROM threads WHERE journaled=1)"),
+        key_columns: &["id"],
+        replicated_columns: &[
+            "thread_id AS thread",
+            "actor_seat_id",
+            "body",
+            "decision_at",
+            "origin_node",
+        ],
+        origin_column: None,
+        position_columns: &[],
+        src_column: None,
+    },
+    TableSpec {
+        name: "prepared_recipients",
+        filter: Some(
+            "preparation_id IN (SELECT preparation_id FROM send_manifests) AND thread_id IN \
+             (SELECT id FROM threads WHERE journaled=1)",
+        ),
+        key_columns: &[
+            "(SELECT m.message_id FROM send_manifests m WHERE \
+             m.preparation_id=prepared_recipients.preparation_id) AS message",
+            "seat_id AS seat",
+        ],
+        replicated_columns: &["frozen_duration_ms", "eligible_at_snapshot AS eligible"],
+        origin_column: None,
+        position_columns: &[],
+        src_column: None,
+    },
+    TableSpec {
+        name: "receipt_state",
+        filter: Some(
+            "message_id IN (SELECT id FROM messages WHERE kind='ordinary' AND thread_id IN \
+             (SELECT id FROM threads WHERE journaled=1))",
+        ),
+        key_columns: &["message_id AS message", "seat_id AS seat"],
+        replicated_columns: &[
+            "state",
+            "deadline_at",
+            "acked_at",
+            "settle_batch",
+            "retired_at",
+        ],
+        origin_column: None,
+        position_columns: &[],
+        src_column: None,
+    },
+];
+
+/// [`CORE_TABLES`] and [`CONVERTED_TABLES`]: every replicated table.
+pub fn replicated_tables() -> Vec<TableSpec> {
+    CORE_TABLES
+        .iter()
+        .chain(CONVERTED_TABLES)
+        .copied()
+        .collect()
+}
+
+/// The name a projected column is reported under: the part after `AS`, else
+/// the whole entry.
+fn column_label(column: &'static str) -> &'static str {
+    column.rsplit_once(" AS ").map_or(column, |(_, name)| name)
+}
 
 struct OracleClock;
 impl Clock for OracleClock {
@@ -324,7 +487,7 @@ pub fn replicated_projection(
                     columns
                         .iter()
                         .enumerate()
-                        .map(|(i, c)| (*c, render(row.get_ref(i).expect("cell"))))
+                        .map(|(i, c)| (column_label(c), render(row.get_ref(i).expect("cell"))))
                         .collect(),
                 );
             }

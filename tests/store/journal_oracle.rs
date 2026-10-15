@@ -406,3 +406,121 @@ fn strict_mode_detects_inverted_order() {
         "{violations:?}"
     );
 }
+
+/// Inserts the same replicated rows into `store`, with `skew` shifting every
+/// local position, attribution and delivery-side column.
+fn seed_converted(store: &OracleStore, skew: i64, body: &str) {
+    let conn = store.context().open_writer().unwrap();
+    let me: String = conn
+        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+        .unwrap();
+    // Burn ordinals so every AUTOINCREMENT position differs between stores.
+    for n in 0..skew {
+        conn.execute(
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) \
+             VALUES(?1,?2,'burn','',1,1,0)",
+            rusqlite::params![format!("burn{n}"), me],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO threads(id,instance_id,topic,goal,name,created_at,updated_at,journaled, \
+         topic_revision,next_sequence) VALUES('t1',?1,'topic','goal','nm',10,?2,1,?3,?4)",
+        rusqlite::params![me, 100 + skew, skew, 1 + skew],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local, \
+         remote_kind,published) VALUES('s-r',?1,'remote','native',?2,?3,?4,0,'agent',1)",
+        rusqlite::params![me, skew, 5 + skew, "ab".repeat(16)],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memberships(thread_id,seat_id,episode,state,joined_at,home_transition) \
+         VALUES('t1','s-r',?1,'joined',?2,0)",
+        rusqlite::params![1 + skew, 7 + skew],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,decision_seq, \
+         body,decision_at,origin_node,native_observation) \
+         VALUES('m1',?1,'t1',?2,'ordinary','s-r',?3,?6,42,?4,?5)",
+        rusqlite::params![
+            me,
+            1 + skew,
+            1 + skew,
+            "ab".repeat(16),
+            format!("obs{skew}"),
+            body
+        ],
+    )
+    .unwrap();
+}
+
+fn converted_projection(store: &OracleStore) -> BTreeMap<String, BTreeSet<Row>> {
+    let stranger = NodeIdentity::from_seed([99; 32]).uuid();
+    replicated_projection(store, stranger, CONVERTED_TABLES)
+}
+
+/// The rows of one table in a projection, whatever filter labels it.
+fn table_rows<'a>(
+    projection: &'a BTreeMap<String, BTreeSet<Row>>,
+    table: &str,
+) -> &'a BTreeSet<Row> {
+    let (_, rows) = projection
+        .iter()
+        .find(|(label, _)| label.as_str() == table || label.starts_with(&format!("{table} where")))
+        .unwrap_or_else(|| panic!("{table} is not projected"));
+    rows
+}
+
+// Kills: a projection that includes a local position, an attribution column or
+// a local-only thread, or one that cannot see the converted tables at all.
+#[test]
+fn equal_replicated_rows_with_different_positions_project_equal() {
+    let a = OracleStore::open([41; 32], registry());
+    let b = OracleStore::open([42; 32], registry());
+    seed_converted(&a, 0, "hello");
+    seed_converted(&b, 3, "hello");
+    let (pa, pb) = (converted_projection(&a), converted_projection(&b));
+    assert_eq!(pa, pb);
+    for table in ["threads", "seats", "memberships", "messages"] {
+        assert_eq!(
+            table_rows(&pa, table).len(),
+            1,
+            "{table} projects its row (and not the local-only ones)"
+        );
+    }
+    let seat = table_rows(&pa, "seats").iter().next().unwrap();
+    assert!(seat.contains(&("kind", "agent".to_owned())), "{seat:?}");
+    assert!(seat.contains(&("retired", "0".to_owned())), "{seat:?}");
+}
+
+// Kills: a projection that drops a replicated column.
+#[test]
+fn changed_replicated_column_projects_differently() {
+    let a = OracleStore::open([41; 32], registry());
+    seed_converted(&a, 0, "hello");
+    for (sql, table) in [
+        ("UPDATE threads SET topic='other'", "threads"),
+        ("UPDATE memberships SET state='left'", "memberships"),
+        ("UPDATE seats SET state='retired', retired_at=9", "seats"),
+    ] {
+        let b = OracleStore::open([42; 32], registry());
+        seed_converted(&b, 0, "hello");
+        b.context().open_writer().unwrap().execute(sql, []).unwrap();
+        let (pa, pb) = (converted_projection(&a), converted_projection(&b));
+        assert_ne!(table_rows(&pa, table), table_rows(&pb, table), "{sql}");
+    }
+}
+
+// Kills: a projection that ignores the message body.
+#[test]
+fn changed_message_body_projects_differently() {
+    let a = OracleStore::open([41; 32], registry());
+    let b = OracleStore::open([42; 32], registry());
+    seed_converted(&a, 0, "hello");
+    seed_converted(&b, 0, "bye");
+    let (pa, pb) = (converted_projection(&a), converted_projection(&b));
+    assert_ne!(table_rows(&pa, "messages"), table_rows(&pb, "messages"));
+}
