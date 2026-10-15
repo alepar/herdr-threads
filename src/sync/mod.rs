@@ -12,6 +12,8 @@ pub mod hlc;
 pub mod incarnations;
 pub mod journal_port;
 pub mod link;
+#[cfg(any(test, feature = "test-support"))]
+pub mod memory_journal;
 
 use std::collections::BTreeMap;
 

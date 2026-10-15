@@ -39,6 +39,8 @@ mod inbox_continuation_context;
 mod installer_integrations;
 #[path = "store/invitation_content.rs"]
 mod invitation_content;
+#[path = "sync/journal_port_contract.rs"]
+mod journal_port_contract;
 #[path = "protocol/lazy_delivery.rs"]
 mod lazy_delivery;
 #[path = "cli/lazy_recovery_context.rs"]
