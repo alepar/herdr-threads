@@ -1609,12 +1609,20 @@ mod live {
     }
     #[test]
     fn composition_actual_retained_child_establishes_coverage_without_authority() {
-        let f = Fixture::aligned(Fault::None, None);
+        let mut f = Fixture::aligned(Fault::None, None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher {
             unknown: true,
             ..Default::default()
         };
-        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        expect_api_error(
+            downstream(&f, &mut launcher, &mut vec![]),
+            ErrorCode::UnknownOutcome,
+            "downstream possible start",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         assert!(child_progress_path(&f.journal, &f.peer.reference).exists());
         let before = f.peer.status();
         let child = &before.attachment.as_ref().unwrap().handoff;
@@ -1643,7 +1651,10 @@ mod live {
     /// each over a legacy page) is built once; each phase restores it.
     #[test]
     fn composition_actual_large_bundle_survivors_admission_loss_and_cancel() {
-        let f = Fixture::aligned(Fault::None, Some(large_escaped_argv()));
+        let mut f = Fixture::aligned(Fault::None, Some(large_escaped_argv()));
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let original = f
             .journal
             .snapshot_bootstrap_origin(&f.peer.reference)
@@ -1658,7 +1669,12 @@ mod live {
             bytes: vec![],
             write: true,
         };
-        assert!(downstream(&f, &mut launcher, &mut output).is_err());
+        expect_io_error(
+            downstream(&f, &mut launcher, &mut output),
+            std::io::ErrorKind::Other,
+            "injected output write loss",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         assert_eq!(launcher.starts, 1);
         let terminal = std::fs::read(terminal_path(&f.journal, &f.peer.reference)).unwrap();
         let child = std::fs::read(child_progress_path(&f.journal, &f.peer.reference)).unwrap();
@@ -1722,7 +1738,10 @@ mod live {
     }
     #[test]
     fn composition_retained_completion_requires_full_canonical_equality() {
-        let f = Fixture::aligned(Fault::None, None);
+        let mut f = Fixture::aligned(Fault::None, None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         downstream(&f, &mut DownstreamLauncher::default(), &mut vec![]).unwrap();
         let path = terminal_path(&f.journal, &f.peer.reference);
         let mut terminal = read_terminal(&f.journal, &f.peer.reference)
@@ -1751,12 +1770,20 @@ mod live {
     }
     #[test]
     fn composition_retained_child_requires_exact_canonical_attachment() {
-        let f = Fixture::aligned(Fault::None, None);
+        let mut f = Fixture::aligned(Fault::None, None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher {
             unknown: true,
             ..Default::default()
         };
-        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        expect_api_error(
+            downstream(&f, &mut launcher, &mut vec![]),
+            ErrorCode::UnknownOutcome,
+            "downstream possible start",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         let path = child_progress_path(&f.journal, &f.peer.reference);
         let mut child: ChildProgress =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -1883,18 +1910,23 @@ mod live {
     }
     #[test]
     fn composition_actual_retained_bundle_cap_and_corruption_controls() {
-        let f = Fixture::aligned(Fault::None, None);
-        assert!(
+        let mut f = Fixture::aligned(Fault::None, None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
+        expect_io_error(
             downstream(
                 &f,
                 &mut DownstreamLauncher::default(),
                 &mut FailingOutput {
                     bytes: vec![],
-                    write: true
-                }
-            )
-            .is_err()
+                    write: true,
+                },
+            ),
+            std::io::ErrorKind::Other,
+            "injected output write loss",
         );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         let retained = f.checkpoint();
         // Control: the undamaged restored bundle composes (restore first, so
         // this proves restore fidelity, not just the original state).
@@ -1997,12 +2029,20 @@ mod live {
     }
     #[test]
     fn composition_child_lookup_many_names_and_modern_header_progress() {
-        let f = Fixture::aligned(Fault::None, None);
+        let mut f = Fixture::aligned(Fault::None, None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher {
             unknown: true,
             ..Default::default()
         };
-        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        expect_api_error(
+            downstream(&f, &mut launcher, &mut vec![]),
+            ErrorCode::UnknownOutcome,
+            "downstream possible start",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         for n in 0..700 {
             std::fs::write(f.journal.root().join(format!(".intent-noise-{n}")), []).unwrap();
         }
@@ -2327,7 +2367,10 @@ mod live {
     }
     #[test]
     fn composition_actual_terminal_after_cleanup_matches_human_original_and_worker() {
-        let f = Fixture::aligned(Fault::None, None);
+        let mut f = Fixture::aligned(Fault::None, None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let pending = f.journal.load(&f.peer.reference).unwrap();
         downstream(&f, &mut DownstreamLauncher::default(), &mut vec![]).unwrap();
         assert!(f.journal.load(&f.peer.reference).is_err());
@@ -2431,18 +2474,23 @@ mod live {
     }
     #[test]
     fn composition_terminal_surviving_submission_must_match_completed_attempt_and_creation() {
-        let f = Fixture::aligned(Fault::None, None);
-        assert!(
+        let mut f = Fixture::aligned(Fault::None, None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
+        expect_io_error(
             downstream(
                 &f,
                 &mut DownstreamLauncher::default(),
                 &mut FailingOutput {
                     bytes: vec![],
-                    write: true
-                }
-            )
-            .is_err()
+                    write: true,
+                },
+            ),
+            std::io::ErrorKind::Other,
+            "injected output write loss",
         );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         let retained = f.checkpoint();
         // Control: the uncontradicted restored bundle composes (restore first,
         // so this proves restore fidelity, not just the original state).
@@ -2496,7 +2544,10 @@ mod live {
                 panic!("wrong handoff route")
             };
             r.binary = Some("/bin/quoted path".into());
-            let f = Fixture::with_request(Fault::CompleteBefore, r, Some(vec![]));
+            let mut f = Fixture::with_request(Fault::CompleteBefore, r, Some(vec![]));
+            // Setup only: host load must not expire a 250 ms child permit;
+            // the subject is not the permit (see HeldStoreClock).
+            f.hold_store_clock();
             let original = f
                 .journal
                 .snapshot_bootstrap_origin(&f.peer.reference)
@@ -2505,7 +2556,12 @@ mod live {
             std::fs::remove_file(&path).unwrap();
             let mut launcher = DownstreamLauncher::default();
             let mut output = vec![];
-            assert!(downstream(&f, &mut launcher, &mut output).is_err());
+            expect_api_error(
+                downstream(&f, &mut launcher, &mut output),
+                ErrorCode::HostUnavailable,
+                "crash before wrapper deciding transaction",
+            );
+            assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
             f.peer.state.lock().unwrap().db =
                 rusqlite::Connection::open(&f.peer.database_path).unwrap();
             let result = downstream(&f, &mut launcher, &mut output).unwrap();
@@ -2563,7 +2619,10 @@ mod live {
 
     #[test]
     fn downstream_atomic_completion_runs_exact_child_then_flushes_success() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
         let mut output = vec![];
         let result = downstream(&f, &mut launcher, &mut output).unwrap();
@@ -2579,7 +2638,10 @@ mod live {
     }
     #[test]
     fn downstream_original_agent_after_intent_removed_replays_history() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
         let mut first = vec![];
         downstream(&f, &mut launcher, &mut first).unwrap();
@@ -2604,7 +2666,10 @@ mod live {
     }
     #[test]
     fn downstream_original_human_after_intent_removed_refuses_root_before_effects() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
         downstream(&f, &mut launcher, &mut vec![]).unwrap();
         let path = terminal_path(&f.journal, &f.peer.reference);
@@ -2691,9 +2756,20 @@ mod live {
         request.thread_name = Some("new-channel".into());
         request.topic = Some("new topic".into());
         request.goal = Some("new goal".into());
-        let f = Fixture::with_request(Fault::CompleteBefore, request, Some(vec![]));
+        let mut f = Fixture::with_request(Fault::CompleteBefore, request, Some(vec![]));
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
-        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        expect_api_error(
+            downstream(&f, &mut launcher, &mut vec![]),
+            ErrorCode::HostUnavailable,
+            "crash before wrapper deciding transaction",
+        );
+        assert_eq!(
+            child_calls(&f),
+            ["create_child", "invite_child", "send_child"]
+        );
         let saved_parent = f.peer.status();
         let state = f.peer.state.lock().unwrap();
         let child = crate::store::handoff::current(
@@ -2732,9 +2808,17 @@ mod live {
     }
     #[test]
     fn downstream_wrapper_before_call_failure_retries_cached_real_report_only() {
-        let f = Fixture::downstream(Fault::CompleteBefore);
+        let mut f = Fixture::downstream(Fault::CompleteBefore);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
-        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        expect_api_error(
+            downstream(&f, &mut launcher, &mut vec![]),
+            ErrorCode::HostUnavailable,
+            "crash before wrapper deciding transaction",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         let parent = f.peer.status();
         assert_eq!(parent.state, BootstrapState::Attached);
         assert_eq!(
@@ -2767,7 +2851,10 @@ mod live {
     }
     #[test]
     fn downstream_wrapper_reply_loss_recovers_atomic_canonical_report() {
-        let f = Fixture::downstream(Fault::CompleteReply);
+        let mut f = Fixture::downstream(Fault::CompleteReply);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
         let done = downstream(&f, &mut launcher, &mut vec![]).unwrap();
         assert_eq!(done.state, BootstrapState::Completed);
@@ -2787,6 +2874,33 @@ mod live {
             .copied()
             .filter(|role| role.ends_with("_child"))
             .collect()
+    }
+    /// Asserts a run failed with exactly this API error code and a detail
+    /// containing `detail`, so an earlier failure (such as an expired child
+    /// permit) is reported by name instead of passing as any error.
+    #[track_caller]
+    fn expect_api_error<T: std::fmt::Debug>(
+        result: Result<T, RunError>,
+        code: ErrorCode,
+        detail: &str,
+    ) {
+        assert!(
+            matches!(&result, Err(RunError::Api(e)) if e.code == code && e.detail.contains(detail)),
+            "expected {code:?} {detail:?}, got {result:?}"
+        );
+    }
+    /// Asserts a run failed with exactly this I/O error kind and a message
+    /// containing `message` (see [`expect_api_error`]).
+    #[track_caller]
+    fn expect_io_error<T: std::fmt::Debug>(
+        result: Result<T, RunError>,
+        kind: std::io::ErrorKind,
+        message: &str,
+    ) {
+        assert!(
+            matches!(&result, Err(RunError::Io(e)) if e.kind() == kind && e.to_string().contains(message)),
+            "expected {kind:?} {message:?}, got {result:?}"
+        );
     }
     /// Negative control for [`HeldStoreClock`]: holding the clock does not
     /// disable the permit expiry. A window past `MAX_PERMIT_MILLIS` between
@@ -2841,7 +2955,10 @@ mod live {
     }
     #[test]
     fn downstream_crash_before_or_after_native_start_never_relaunches() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let fresh = f.checkpoint();
         for after_start in [false, true] {
             f.restore(&fresh);
@@ -2850,13 +2967,12 @@ mod live {
                 crash_after_start: after_start,
                 ..Default::default()
             };
+            let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                downstream(&f, &mut launcher, &mut vec![])
+            }));
             assert!(
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| downstream(
-                    &f,
-                    &mut launcher,
-                    &mut vec![]
-                )))
-                .is_err()
+                crashed.is_err(),
+                "only the injected launcher crash may end the first run: {crashed:?}"
             );
             launcher.crash_after_gate = false;
             launcher.crash_after_start = false;
@@ -2876,7 +2992,10 @@ mod live {
     }
     #[test]
     fn downstream_unknown_launch_never_becomes_success_or_clears_fence() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher {
             unknown: true,
             ..Default::default()
@@ -2890,12 +3009,20 @@ mod live {
     }
     #[test]
     fn downstream_adapter_proven_not_submitted_can_retry_start_without_restage() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher {
             not_submitted: true,
             ..Default::default()
         };
-        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        expect_api_error(
+            downstream(&f, &mut launcher, &mut vec![]),
+            ErrorCode::HostUnavailable,
+            "adapter proven no native submission",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         let child: ChildProgress = serde_json::from_slice(
             &std::fs::read(child_progress_path(&f.journal, &f.peer.reference)).unwrap(),
         )
@@ -2907,7 +3034,10 @@ mod live {
     #[test]
     fn downstream_launch_report_save_loss_retains_possible_start_after_reopen() {
         use std::os::unix::fs::PermissionsExt;
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher {
             report_save_loss: Some(f.journal.root().into()),
             ..Default::default()
@@ -2929,13 +3059,21 @@ mod live {
     // Dropping execute_steps' phase/report would hide durable prestart refusal.
     #[test]
     fn final_sdd_pending_proven_not_submitted_preserves_phase_and_manual_frozen_argv() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher {
             not_submitted: true,
             ..Default::default()
         };
         let mut bytes = vec![];
-        assert!(downstream(&f, &mut launcher, &mut bytes).is_err());
+        expect_api_error(
+            downstream(&f, &mut launcher, &mut bytes),
+            ErrorCode::HostUnavailable,
+            "adapter proven no native submission",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         let frame: serde_json::Value =
             serde_json::from_slice(&bytes).expect("admitted refusal must report known progress");
         let report = &frame["bootstrap"];
@@ -2956,7 +3094,10 @@ mod live {
     }
     #[test]
     fn final_sdd_pending_write_and_flush_loss_preserve_possible_start_and_retry() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let fresh = f.checkpoint();
         for write in [true, false] {
             f.restore(&fresh);
@@ -3134,7 +3275,10 @@ mod live {
     }
     #[test]
     fn pending_writer_fresh_not_submitted_reports_next_prepared() {
-        let f = Fixture::downstream(Fault::NotSubmitted);
+        let mut f = Fixture::downstream(Fault::NotSubmitted);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let fresh = f.checkpoint();
         for json in [true, false] {
             f.restore(&fresh);
@@ -3168,7 +3312,10 @@ mod live {
     }
     #[test]
     fn pending_writer_saved_not_submitted_reports_next_prepared() {
-        let f = Fixture::downstream(Fault::NotSubmittedRecordUnavailable);
+        let mut f = Fixture::downstream(Fault::NotSubmittedRecordUnavailable);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let fresh = f.checkpoint();
         for json in [true, false] {
             f.restore(&fresh);
@@ -3200,7 +3347,10 @@ mod live {
     }
     #[test]
     fn pending_writer_rearm_report_write_and_flush_failure_stays_replayable() {
-        let f = Fixture::downstream(Fault::NotSubmitted);
+        let mut f = Fixture::downstream(Fault::NotSubmitted);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let fresh = f.checkpoint();
         for write in [true, false] {
             f.restore(&fresh);
@@ -3223,13 +3373,21 @@ mod live {
     }
     #[test]
     fn pending_writer_completion_failure_labels_last_observed_attached_as_uncertain() {
-        let f = Fixture::downstream(Fault::CompleteBefore);
+        let mut f = Fixture::downstream(Fault::CompleteBefore);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let fresh = f.checkpoint();
         for json in [true, false] {
             f.restore(&fresh);
             let mut launcher = DownstreamLauncher::default();
             let mut bytes = vec![];
-            assert!(downstream_format(&f, &mut launcher, json, &mut bytes).is_err());
+            expect_api_error(
+                downstream_format(&f, &mut launcher, json, &mut bytes),
+                ErrorCode::HostUnavailable,
+                "crash before wrapper deciding transaction",
+            );
+            assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
             if json {
                 let frame: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
                 let report = &frame["bootstrap"];
@@ -3345,7 +3503,10 @@ mod live {
             Fixture::downstream(Fault::CompleteBefore),
         ]
         .into_iter()
-        .map(|f| {
+        .map(|mut f| {
+            // Setup only: host load must not expire a 250 ms child permit;
+            // the subject is not the permit (see HeldStoreClock).
+            f.hold_store_clock();
             let fresh = f.checkpoint();
             (f, fresh)
         })
@@ -3420,7 +3581,12 @@ mod live {
                 ..Default::default()
             };
             let mut bytes = vec![];
-            assert!(downstream_format(f, &mut launcher, json, &mut bytes).is_err());
+            expect_api_error(
+                downstream_format(f, &mut launcher, json, &mut bytes),
+                ErrorCode::HostUnavailable,
+                "adapter proven no native submission",
+            );
+            assert_eq!(child_calls(f), ["invite_child", "send_child"]);
             assert_eq!(f.peer.status().state, BootstrapState::Attached);
             assert!(String::from_utf8_lossy(&bytes).contains("outcome"));
             assert_inspect_is_public_pending_ops(f, json, &bytes);
@@ -3432,16 +3598,24 @@ mod live {
                 ..Default::default()
             };
             let mut bytes = vec![];
-            assert!(downstream_format(f, &mut launcher, json, &mut bytes).is_err());
+            expect_api_error(
+                downstream_format(f, &mut launcher, json, &mut bytes),
+                ErrorCode::UnknownOutcome,
+                "downstream possible start",
+            );
+            assert_eq!(child_calls(f), ["invite_child", "send_child"]);
             assert!(String::from_utf8_lossy(&bytes).contains("possible_start"));
             assert_inspect_is_public_pending_ops(f, json, &bytes);
 
             // Completion pending.
             let f = scenario(3);
             let mut bytes = vec![];
-            assert!(
-                downstream_format(f, &mut DownstreamLauncher::default(), json, &mut bytes).is_err()
+            expect_api_error(
+                downstream_format(f, &mut DownstreamLauncher::default(), json, &mut bytes),
+                ErrorCode::HostUnavailable,
+                "crash before wrapper deciding transaction",
             );
+            assert_eq!(child_calls(f), ["invite_child", "send_child"]);
             assert!(String::from_utf8_lossy(&bytes).contains("completion_pending"));
             assert_inspect_is_public_pending_ops(f, json, &bytes);
         }
@@ -3464,7 +3638,10 @@ mod live {
     }
     #[test]
     fn downstream_failed_output_reopen_archive_depart_binding_changes_are_history_only() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let fresh = f.checkpoint();
         for write in [false, true] {
             f.restore(&fresh);
@@ -3473,7 +3650,16 @@ mod live {
                 bytes: vec![],
                 write,
             };
-            assert!(downstream(&f, &mut launcher, &mut failed).is_err());
+            expect_io_error(
+                downstream(&f, &mut launcher, &mut failed),
+                std::io::ErrorKind::Other,
+                if write {
+                    "injected output write loss"
+                } else {
+                    "injected output flush loss"
+                },
+            );
+            assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
             assert_eq!(f.peer.status().state, BootstrapState::Completed);
             let original = f
                 .journal
@@ -3531,7 +3717,10 @@ mod live {
     }
     #[test]
     fn downstream_terminal_save_loss_recovers_canonical_success_without_effects() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
         let path = terminal_path(&f.journal, &f.peer.reference);
         std::fs::create_dir(&path).unwrap();
@@ -3542,7 +3731,12 @@ mod live {
         // Native/semantic work completes, then a terminal-local write obstacle
         // is installed at wrapper commit, outside the local origin preflight.
         f.peer.state.lock().unwrap().fault = Fault::TerminalSave;
-        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        expect_io_error(
+            downstream(&f, &mut launcher, &mut vec![]),
+            std::io::ErrorKind::AlreadyExists,
+            "File exists",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         assert_eq!(f.peer.status().state, BootstrapState::Completed);
         std::fs::remove_dir(&path).unwrap();
         f.peer.state.lock().unwrap().calls.clear();
@@ -3560,7 +3754,10 @@ mod live {
     }
     #[test]
     fn downstream_invalid_or_oversized_success_report_refuses_before_wrapper_commit() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let fresh = f.checkpoint();
         for oversized in [false, true] {
             f.restore(&fresh);
@@ -3569,7 +3766,12 @@ mod live {
                 oversized_report: oversized,
                 ..Default::default()
             };
-            assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+            expect_api_error(
+                downstream(&f, &mut launcher, &mut vec![]),
+                ErrorCode::InvalidRequest,
+                "invalid retained successful launch report",
+            );
+            assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
             assert_eq!(f.peer.status().state, BootstrapState::Attached);
             assert!(
                 !f.peer
@@ -3584,7 +3786,10 @@ mod live {
     }
     #[test]
     fn downstream_canonical_accepted_escaped_origin_exceeding_delivery_bound_replays() {
-        let f = Fixture::with_request(Fault::None, request(), Some(large_escaped_argv()));
+        let mut f = Fixture::with_request(Fault::None, request(), Some(large_escaped_argv()));
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let original = f
             .journal
             .snapshot_bootstrap_origin(&f.peer.reference)
@@ -3615,12 +3820,20 @@ mod live {
     }
     #[test]
     fn downstream_original_binding_change_at_native_gate_stops_start() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher {
             change_binding_before_gate: Some(f._temp.path().join("canonical.db")),
             ..Default::default()
         };
-        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        expect_api_error(
+            downstream(&f, &mut launcher, &mut vec![]),
+            ErrorCode::CallerUnverified,
+            "cooperative occupant context changed",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         assert_eq!(
             launcher.starts, 0,
             "fresh canonical original actor guard must precede native start"
@@ -3673,7 +3886,10 @@ mod live {
     #[test]
     fn downstream_child_intent_and_directory_sync_cleanup_loss_replays_only_history() {
         use std::os::unix::fs::PermissionsExt;
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let fresh = f.checkpoint();
         for mode in ["child", "intent", "sync"] {
             f.restore(&fresh);
@@ -3708,7 +3924,10 @@ mod live {
     fn downstream_retained_origin_damage_or_ambiguity_refuses_before_client_or_output() {
         // One completed handoff is the shared, not-under-test setup; each
         // damage case starts from an exact restore of it.
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
         downstream(&f, &mut launcher, &mut vec![]).unwrap();
         assert_eq!(launcher.starts, 1);
@@ -3913,7 +4132,10 @@ mod live {
     }
     #[test]
     fn downstream_terminal_namespace_mismatch_refuses_even_after_cleanup() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
         downstream(&f, &mut launcher, &mut vec![]).unwrap();
         let completed = f.checkpoint();
@@ -3958,7 +4180,10 @@ mod live {
     }
     #[test]
     fn downstream_retained_terminal_requires_exact_canonical_completed_report() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         downstream(&f, &mut DownstreamLauncher::default(), &mut vec![]).unwrap();
         let completed = f.checkpoint();
         for damage in [
@@ -4054,9 +4279,17 @@ mod live {
     }
     #[test]
     fn downstream_partial_terminal_with_live_original_refuses_before_any_effect() {
-        let f = Fixture::downstream(Fault::CompleteBefore);
+        let mut f = Fixture::downstream(Fault::CompleteBefore);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
-        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        expect_api_error(
+            downstream(&f, &mut launcher, &mut vec![]),
+            ErrorCode::HostUnavailable,
+            "crash before wrapper deciding transaction",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         let path = terminal_path(&f.journal, &f.peer.reference);
         std::fs::write(&path, b"{partial").unwrap();
         f.peer.state.lock().unwrap().calls.clear();
@@ -4066,8 +4299,16 @@ mod live {
     }
     #[test]
     fn downstream_child_progress_corruption_or_oversize_never_clears_launch_fence() {
-        let f = Fixture::downstream(Fault::CompleteBefore);
-        assert!(downstream(&f, &mut DownstreamLauncher::default(), &mut vec![]).is_err());
+        let mut f = Fixture::downstream(Fault::CompleteBefore);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
+        expect_api_error(
+            downstream(&f, &mut DownstreamLauncher::default(), &mut vec![]),
+            ErrorCode::HostUnavailable,
+            "crash before wrapper deciding transaction",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         let pending = f.checkpoint();
         for damage in ["unknown", "identity", "oversized"] {
             f.restore(&pending);
@@ -4107,7 +4348,10 @@ mod live {
     }
     #[test]
     fn downstream_retained_identity_alternate_path_spelling_is_corruption() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
         downstream(&f, &mut launcher, &mut vec![]).unwrap();
         let path = terminal_path(&f.journal, &f.peer.reference);
@@ -4133,9 +4377,17 @@ mod live {
     }
     #[test]
     fn downstream_delivery_terminal_with_live_bootstrap_origin_refuses_before_client() {
-        let f = Fixture::downstream(Fault::CompleteBefore);
+        let mut f = Fixture::downstream(Fault::CompleteBefore);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
-        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        expect_api_error(
+            downstream(&f, &mut launcher, &mut vec![]),
+            ErrorCode::HostUnavailable,
+            "crash before wrapper deciding transaction",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         let foreign = f.journal.root().join(format!(
             "delivery-{:020}-{}.terminal",
             f.peer.reference.ordinal,
@@ -5417,11 +5669,14 @@ mod live {
         let mut request = request();
         request.kind = Some("claude".into());
         request.argv = vec!["--tools".into(), String::new()];
-        let f = Fixture::with_request(
+        let mut f = Fixture::with_request(
             Fault::None,
             request,
             Some(vec!["--tools".into(), String::new()]),
         );
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let attached = f.run().unwrap().attachment.unwrap();
         let plan =
             downstream_plan(&f.peer.identity, &attached.created, &attached.resolved_seat).unwrap();
@@ -5520,7 +5775,10 @@ mod live {
     /// store: create, attach, launch with the adapter's own composition, complete.
     #[test]
     fn bootstrap_v2_synthetic_fourth_completes_end_to_end() {
-        let f = fourth_fixture(Fault::None);
+        let mut f = fourth_fixture(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         assert_eq!(f.peer.identity.payload.plan_version(), 2);
         let mut launcher = DownstreamLauncher::default();
         let mut output = vec![];
@@ -5547,7 +5805,11 @@ mod live {
     /// `--prompt-interactive` and completion validates it against the frozen template.
     #[test]
     fn bootstrap_v2_agy_completes_end_to_end_with_prompt_interactive() {
-        let f = Fixture::with_request(Fault::None, super::kind_request("agy", &[]), Some(vec![]));
+        let mut f =
+            Fixture::with_request(Fault::None, super::kind_request("agy", &[]), Some(vec![]));
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         assert_eq!(f.peer.identity.payload.plan_version(), 2);
         let mut launcher = DownstreamLauncher::default();
         let mut output = vec![];
@@ -5574,7 +5836,10 @@ mod live {
     /// different arguments than the adapter composition the plan froze.
     #[test]
     fn bootstrap_v2_root_launch_refuses_before_start_when_current_composition_differs() {
-        let f = fourth_fixture(Fault::None);
+        let mut f = fourth_fixture(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
         let _drift = crate::harness::launch::current_drift::arm_output("--drifted");
         let result = downstream(&f, &mut launcher, &mut vec![]);
@@ -5588,9 +5853,17 @@ mod live {
     /// report whose argv the adapter would not have produced is refused.
     #[test]
     fn bootstrap_v2_completion_refuses_a_report_the_frozen_composition_did_not_produce() {
-        let f = fourth_fixture(Fault::CompleteBefore);
+        let mut f = fourth_fixture(Fault::CompleteBefore);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut setup = DownstreamLauncher::default();
-        assert!(downstream(&f, &mut setup, &mut vec![]).is_err());
+        expect_api_error(
+            downstream(&f, &mut setup, &mut vec![]),
+            ErrorCode::HostUnavailable,
+            "crash before wrapper deciding transaction",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         let path = child_progress_path(&f.journal, &f.peer.reference);
         let mut saved: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -5606,9 +5879,17 @@ mod live {
     }
     #[test]
     fn historical_v1_saved_success_completes_after_current_composition_drift() {
-        let f = Fixture::downstream(Fault::CompleteBefore);
+        let mut f = Fixture::downstream(Fault::CompleteBefore);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
-        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        expect_api_error(
+            downstream(&f, &mut launcher, &mut vec![]),
+            ErrorCode::HostUnavailable,
+            "crash before wrapper deciding transaction",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         let saved: ChildProgress = serde_json::from_slice(
             &std::fs::read(child_progress_path(&f.journal, &f.peer.reference)).unwrap(),
         )
@@ -5644,7 +5925,10 @@ mod live {
     }
     #[test]
     fn historical_v1_completed_terminal_presents_after_current_composition_drift() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
         let mut first = vec![];
         downstream(&f, &mut launcher, &mut first).unwrap();
@@ -5673,7 +5957,10 @@ mod live {
     }
     #[test]
     fn root_launch_refuses_before_start_when_current_composition_differs_from_v1() {
-        let f = Fixture::downstream(Fault::None);
+        let mut f = Fixture::downstream(Fault::None);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut launcher = DownstreamLauncher::default();
         let _drift = crate::harness::launch::current_drift::arm_output("--drifted");
         let mut output = vec![];
@@ -5713,9 +6000,17 @@ mod live {
     }
     #[test]
     fn historical_v1_reply_loss_and_terminal_save_loss_recover_after_drift() {
-        let f = Fixture::downstream(Fault::CompleteBefore);
+        let mut f = Fixture::downstream(Fault::CompleteBefore);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut setup = DownstreamLauncher::default();
-        assert!(downstream(&f, &mut setup, &mut vec![]).is_err());
+        expect_api_error(
+            downstream(&f, &mut setup, &mut vec![]),
+            ErrorCode::HostUnavailable,
+            "crash before wrapper deciding transaction",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         let pending = f.checkpoint();
         for fault in [Fault::CompleteReply, Fault::TerminalSave] {
             f.restore(&pending);
@@ -5748,9 +6043,17 @@ mod live {
     }
     #[test]
     fn historical_v1_corrupted_saved_report_refuses_after_drift_without_relaunch() {
-        let f = Fixture::downstream(Fault::CompleteBefore);
+        let mut f = Fixture::downstream(Fault::CompleteBefore);
+        // Setup only: host load must not expire a 250 ms child permit;
+        // the subject is not the permit (see HeldStoreClock).
+        f.hold_store_clock();
         let mut setup = DownstreamLauncher::default();
-        assert!(downstream(&f, &mut setup, &mut vec![]).is_err());
+        expect_api_error(
+            downstream(&f, &mut setup, &mut vec![]),
+            ErrorCode::HostUnavailable,
+            "crash before wrapper deciding transaction",
+        );
+        assert_eq!(child_calls(&f), ["invite_child", "send_child"]);
         let pending = f.checkpoint();
         for change in ["prompt", "options"] {
             f.restore(&pending);
