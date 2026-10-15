@@ -1800,111 +1800,151 @@ pub fn start_wake_worker_with_liveness(
     hook_pull: Arc<dyn crate::ports::HookPullOutlook>,
     liveness: Option<Arc<crate::service::liveness::LivenessWorker>>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
-    thread::Builder::new()
-        .name("herdr-wakes".into())
-        .spawn(move || {
-            let _origin = kicks::enter_lane(Lane::Wakes);
-            status.attach_pacer(Arc::clone(&pacer));
-            let _guard = status.lane_guard(&cancellation);
-            let port = ScheduledStore::new(store, writer)
-                .for_host(host_id)
-                .with_liveness(liveness);
-            let notifier = NativeWakeDispatcher::new(host.as_ref(), &port, port.store.clock())
-                .with_hook_pull(hook_pull.as_ref());
-            let observed = ObservedWakePort::new(&port, &status);
-            let scheduler = Scheduler::new(instance, &port, &observed, &notifier, retry, boot)
-                .with_poke_capabilities(poke_capabilities.as_ref())
-                .with_mod_channels(mod_channels.as_ref())
-                .with_hook_pull(hook_pull.as_ref());
-            let safety_tick = Duration::from_millis(WAKE_SAFETY_TICK_MILLIS);
-            // The first pass runs at boot, before the first wait.
-            let mut next_due_at: Option<crate::protocol::time::MonoInstant> = None;
-            let mut waited = false;
-            let mut recoveries = reachability.recoveries();
-            while !cancellation.is_cancelled() {
-                if waited {
-                    let tick = wake_wait(safety_tick, next_due_at, pacer.now());
-                    if pacer.wait_blocking(tick) == Wake::Cancelled {
-                        break;
-                    }
-                }
-                waited = true;
-                next_due_at = None;
-                let mut wakes_failed = false;
-                // Herdr down (TRUST-POLICY C4): the lane is frozen. No
-                // completion retry, recovery, reservation, refusal record or
-                // Herdr call; it waits for the observation lane's recovery
-                // kick (or a safety tick). A frozen pass is not a failure.
-                if reachability.is_down() {
-                    status.record_success(port.store.clock().utc_now());
-                    continue;
-                }
-                // Back after an outage: refusal backoff from before it says
-                // nothing about the host now, so every due seat goes at once.
-                let seen = reachability.recoveries();
-                if seen != recoveries {
-                    recoveries = seen;
-                    let _ = scheduler.clear_wake_refusals();
-                }
-                loop {
-                    // An outage seen mid-drain stops the drain too.
-                    if reachability.is_down() {
-                        break;
-                    }
-                    let budget = CallBudget {
-                        deadline: crate::protocol::time::MonoInstant(
-                            port.store.clock().monotonic_now().0.saturating_add(5_000),
-                        ),
-                        cancellation: cancellation.clone(),
-                    };
-                    observed.begin_drive(&budget);
-                    let result = scheduler.drive_wakes(&budget);
-                    observed.observe_drive(&result);
-                    match result {
-                        Err(error) => {
-                            // A failure raised inside a store callback is already
-                            // reported per phase and retried on the next wake;
-                            // only an unclassified error backs the lane off.
-                            if !observed.callback_failed() && !cancellation.is_cancelled() {
-                                pacer.on_failure();
-                                status.record_failure(Lane::Wakes, &error);
-                            }
-                            wakes_failed = true;
-                            break;
-                        }
-                        Ok(outcome) => {
-                            pacer.on_success();
-                            status.record_success(port.store.clock().utc_now());
-                            next_due_at = outcome.next_due_at;
-                            if !outcome.has_more || cancellation.is_cancelled() {
-                                break;
-                            }
-                        }
-                    }
-                }
-                if cancellation.is_cancelled() {
+    start_wake_worker_named(
+        "herdr-wakes".into(),
+        store,
+        writer,
+        host,
+        host_id,
+        instance,
+        boot,
+        retry,
+        pacer,
+        cancellation,
+        status,
+        poke_capabilities,
+        reachability,
+        mod_channels,
+        hook_pull,
+        liveness,
+    )
+}
+
+/// [`start_wake_worker_with_liveness`] on a thread called `thread_name`: a
+/// `HostSession` starts one per Herdr server and names it `herdr-wakes-<host_id>`.
+// Allowed: worker start-up wiring: each argument is a distinct dependency.
+#[allow(clippy::too_many_arguments)]
+pub fn start_wake_worker_named(
+    thread_name: String,
+    store: Arc<dyn StorePort>,
+    writer: Arc<FairWriter>,
+    host: Arc<dyn HostPort>,
+    host_id: HostId,
+    instance: String,
+    boot: uuid::Uuid,
+    retry: RetryConfig,
+    pacer: Arc<Pacer>,
+    cancellation: Cancellation,
+    status: Arc<WorkerStatus>,
+    poke_capabilities: Arc<dyn crate::ports::PokeCapabilitySource>,
+    reachability: Arc<HostReachability>,
+    mod_channels: Arc<dyn crate::ports::ModChannels>,
+    hook_pull: Arc<dyn crate::ports::HookPullOutlook>,
+    liveness: Option<Arc<crate::service::liveness::LivenessWorker>>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    thread::Builder::new().name(thread_name).spawn(move || {
+        let _origin = kicks::enter_lane(Lane::Wakes);
+        status.attach_pacer(Arc::clone(&pacer));
+        let _guard = status.lane_guard(&cancellation);
+        let port = ScheduledStore::new(store, writer)
+            .for_host(host_id)
+            .with_liveness(liveness);
+        let notifier = NativeWakeDispatcher::new(host.as_ref(), &port, port.store.clock())
+            .with_hook_pull(hook_pull.as_ref());
+        let observed = ObservedWakePort::new(&port, &status);
+        let scheduler = Scheduler::new(instance, &port, &observed, &notifier, retry, boot)
+            .with_poke_capabilities(poke_capabilities.as_ref())
+            .with_mod_channels(mod_channels.as_ref())
+            .with_hook_pull(hook_pull.as_ref());
+        let safety_tick = Duration::from_millis(WAKE_SAFETY_TICK_MILLIS);
+        // The first pass runs at boot, before the first wait.
+        let mut next_due_at: Option<crate::protocol::time::MonoInstant> = None;
+        let mut waited = false;
+        let mut recoveries = reachability.recoveries();
+        while !cancellation.is_cancelled() {
+            if waited {
+                let tick = wake_wait(safety_tick, next_due_at, pacer.now());
+                if pacer.wait_blocking(tick) == Wake::Cancelled {
                     break;
                 }
-                // A failed wake pass leaves its retained completion to the
-                // wake path's next tick (no back-off for a store-callback
-                // failure); the poke drive waits for a clean pass.
-                // An outage seen mid-pass freezes the poke drive too (ht-72q).
-                if wakes_failed || reachability.is_down() {
-                    continue;
+            }
+            waited = true;
+            next_due_at = None;
+            let mut wakes_failed = false;
+            // Herdr down (TRUST-POLICY C4): the lane is frozen. No
+            // completion retry, recovery, reservation, refusal record or
+            // Herdr call; it waits for the observation lane's recovery
+            // kick (or a safety tick). A frozen pass is not a failure.
+            if reachability.is_down() {
+                status.record_success(port.store.clock().utc_now());
+                continue;
+            }
+            // Back after an outage: refusal backoff from before it says
+            // nothing about the host now, so every due seat goes at once.
+            let seen = reachability.recoveries();
+            if seen != recoveries {
+                recoveries = seen;
+                let _ = scheduler.clear_wake_refusals();
+            }
+            loop {
+                // An outage seen mid-drain stops the drain too.
+                if reachability.is_down() {
+                    break;
                 }
-                // Spec §10: soft-deadline pokes share the wake dispatcher and
-                // its limits, once per pass (a pass runs at least every
-                // safety tick); store callback failures are observed per
-                // phase and driver errors are recorded in worker health.
-                let poke_budget = CallBudget {
+                let budget = CallBudget {
                     deadline: crate::protocol::time::MonoInstant(
                         port.store.clock().monotonic_now().0.saturating_add(5_000),
                     ),
                     cancellation: cancellation.clone(),
                 };
-                observed.observe_poke_drive(&scheduler.drive_pokes(&poke_budget));
+                observed.begin_drive(&budget);
+                let result = scheduler.drive_wakes(&budget);
+                observed.observe_drive(&result);
+                match result {
+                    Err(error) => {
+                        // A failure raised inside a store callback is already
+                        // reported per phase and retried on the next wake;
+                        // only an unclassified error backs the lane off.
+                        if !observed.callback_failed() && !cancellation.is_cancelled() {
+                            pacer.on_failure();
+                            status.record_failure(Lane::Wakes, &error);
+                        }
+                        wakes_failed = true;
+                        break;
+                    }
+                    Ok(outcome) => {
+                        pacer.on_success();
+                        status.record_success(port.store.clock().utc_now());
+                        next_due_at = outcome.next_due_at;
+                        if !outcome.has_more || cancellation.is_cancelled() {
+                            break;
+                        }
+                    }
+                }
             }
-        })
+            if cancellation.is_cancelled() {
+                break;
+            }
+            // A failed wake pass leaves its retained completion to the
+            // wake path's next tick (no back-off for a store-callback
+            // failure); the poke drive waits for a clean pass.
+            // An outage seen mid-pass freezes the poke drive too (ht-72q).
+            if wakes_failed || reachability.is_down() {
+                continue;
+            }
+            // Spec §10: soft-deadline pokes share the wake dispatcher and
+            // its limits, once per pass (a pass runs at least every
+            // safety tick); store callback failures are observed per
+            // phase and driver errors are recorded in worker health.
+            let poke_budget = CallBudget {
+                deadline: crate::protocol::time::MonoInstant(
+                    port.store.clock().monotonic_now().0.saturating_add(5_000),
+                ),
+                cancellation: cancellation.clone(),
+            };
+            observed.observe_poke_drive(&scheduler.drive_pokes(&poke_budget));
+        }
+    })
 }
 
 /// The wake lane's wait: the safety tick, or less when a seat's retry comes
@@ -2085,7 +2125,36 @@ pub fn start_observation_worker(
     pacer: Arc<Pacer>,
     reachability: Arc<HostReachability>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
-    spawn_observation_loop(
+    start_observation_worker_named(
+        "herdr-observations".into(),
+        identity,
+        store,
+        writer,
+        cancellation,
+        status,
+        host_evidence,
+        pacer,
+        reachability,
+    )
+}
+
+/// [`start_observation_worker`] on a thread called `thread_name`: a `HostSession`
+/// starts one per Herdr server and names it `herdr-observations-<host_id>`.
+// Allowed: worker start-up wiring: each argument is a distinct dependency.
+#[allow(clippy::too_many_arguments)]
+pub fn start_observation_worker_named(
+    thread_name: String,
+    identity: Arc<crate::identity::repair::OrdinaryIdentity>,
+    store: Arc<dyn StorePort>,
+    writer: Arc<FairWriter>,
+    cancellation: Cancellation,
+    status: Arc<WorkerStatus>,
+    host_evidence: Arc<crate::service::host_evidence::HostEvidenceStatus>,
+    pacer: Arc<Pacer>,
+    reachability: Arc<HostReachability>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    spawn_observation_loop_named(
+        thread_name,
         identity,
         ScheduledStore::new(store, writer),
         cancellation,
@@ -2102,6 +2171,7 @@ pub fn start_observation_worker(
 /// The lane blocks in its Pacer: the 5 s cadence while healthy, the capped
 /// backoff after a failed capture, and no wait while a reconciliation
 /// continuation page is pending (pacer spec D4).
+#[cfg(test)]
 fn spawn_observation_loop<S>(
     identity: Arc<crate::identity::repair::OrdinaryIdentity>,
     port: S,
@@ -2114,8 +2184,35 @@ fn spawn_observation_loop<S>(
 where
     S: crate::identity::reconcile::observation_store::ObservationStore + 'static,
 {
+    spawn_observation_loop_named(
+        "herdr-observations".into(),
+        identity,
+        port,
+        cancellation,
+        status,
+        host_evidence,
+        pacer,
+        reachability,
+    )
+}
+
+// Allowed: worker start-up wiring: each argument is a distinct dependency.
+#[allow(clippy::too_many_arguments)]
+fn spawn_observation_loop_named<S>(
+    thread_name: String,
+    identity: Arc<crate::identity::repair::OrdinaryIdentity>,
+    port: S,
+    cancellation: Cancellation,
+    status: Arc<WorkerStatus>,
+    host_evidence: Arc<crate::service::host_evidence::HostEvidenceStatus>,
+    pacer: Arc<Pacer>,
+    reachability: Arc<HostReachability>,
+) -> std::io::Result<thread::JoinHandle<()>>
+where
+    S: crate::identity::reconcile::observation_store::ObservationStore + 'static,
+{
     thread::Builder::new()
-        .name("herdr-observations".into())
+        .name(thread_name)
         .spawn(move || {
             // Its commits count as the observation origin, never as requests.
             let _origin = kicks::enter_lane(Lane::Observation);
