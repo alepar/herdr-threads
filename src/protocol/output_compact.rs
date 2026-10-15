@@ -744,7 +744,9 @@ fn participant_row(participant: &Participant, out: &mut String) {
             snake(&participant.physical_state)
         ));
     }
-    out.push_str(if participant.active {
+    out.push_str(if participant.availability.as_deref() == Some("remote") {
+        " remote"
+    } else if participant.active {
         " active"
     } else {
         " inactive"

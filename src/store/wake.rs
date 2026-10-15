@@ -445,15 +445,17 @@ pub(super) fn human_bound_sql(seat_expr: &str) -> String {
 
 /// SQL true when `seat_expr` can pass a wake or poke reservation without its
 /// own state changing first: resolved, with a target that has no unreleased
-/// recovery hold, and not bound to a person. The observation-dependent half
+/// recovery hold, local (`rs.{LOCAL_SEAT}`: a remote seat is never woken or
+/// poked from here) and not bound to a person. The observation-dependent half
 /// of the authority (boot, epoch, generation, UI) is rechecked at
 /// reservation time only.
 pub(super) fn reservable_seat_sql(seat_expr: &str) -> String {
     format!(
-        "(EXISTS(SELECT 1 FROM seats rs WHERE rs.id={seat_expr} AND rs.state='resolved' AND rs.target_id IS NOT NULL \
+        "(EXISTS(SELECT 1 FROM seats rs WHERE rs.id={seat_expr} AND rs.{LOCAL_SEAT} AND rs.state='resolved' AND rs.target_id IS NOT NULL \
          AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.host_id=rs.host_id AND rh.target_id=rs.target_id AND rh.released_at IS NULL)) \
          AND NOT {})",
-        human_bound_sql(seat_expr)
+        human_bound_sql(seat_expr),
+        LOCAL_SEAT = super::seats::LOCAL_SEAT
     )
 }
 
@@ -1135,7 +1137,8 @@ pub fn recover_abandoned(
 
 /// The retained-window table drives this walk through its primary key. Cost
 /// follows retained windows, rather than all resolved or historical seats.
-pub(crate) const BATCH_SEATS_SQL: &str = "SELECT b.seat_id FROM wake_batches b CROSS JOIN seats s ON s.id=b.seat_id WHERE s.instance_id=?1 AND s.host_id=?4 AND b.seat_id>?2 ORDER BY b.seat_id LIMIT ?3";
+// `s.is_local=1` spells `seats::LOCAL_SEAT` (a const &str cannot interpolate it).
+pub(crate) const BATCH_SEATS_SQL: &str = "SELECT b.seat_id FROM wake_batches b CROSS JOIN seats s ON s.id=b.seat_id WHERE s.instance_id=?1 AND s.host_id=?4 AND s.is_local=1 AND b.seat_id>?2 ORDER BY b.seat_id LIMIT ?3";
 
 fn receipt_attention_at(
     db: &Connection,

@@ -237,6 +237,7 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
                     crate::protocol::results::ContinuityStatus::Resolved => "resolved",
                     crate::protocol::results::ContinuityStatus::Unresolved => "unresolved",
                     crate::protocol::results::ContinuityStatus::Retired => "retired",
+                    crate::protocol::results::ContinuityStatus::Remote => "remote",
                 };
                 vec![
                     seat.seat.as_str().to_owned(),

@@ -45,8 +45,18 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 /// Responsibility: owns the predicate's spelling ([`LOCAL_SEAT`] for SQL,
 /// [`is_local_seat`] for one seat). Hides how locality is stored. Must not be
 /// restated: callers never compare `home_node` inline. New locality questions
-/// (a remote seat's host, its kind) get a function here. Role: observation,
-/// wake and archival adopt it to skip remote seats (ht-5fr.4).
+/// (a remote seat's host, its kind) get a function here.
+///
+/// Adopting node-local workers (each selects local seats only; a new
+/// seat-selecting worker query adds it): observation and reconciliation (this
+/// module's snapshot apply, absence closure, allocation, retirement by
+/// observation, recovery baseline), liveness sampling
+/// (`bindings::liveness_candidates`), wake (`WAKE_SEAT_WALK`, `BATCH_SEATS_SQL`,
+/// `wake::reservable_seat_sql`, which the poke scans share), archival
+/// (`archival::has_live_remote_member` negates it) and pane listings
+/// (`panes`, the picker directory, `seats --panes`). Reads that list members
+/// (participants, thread show, directory, `seats`) deliberately include remote
+/// seats and render them with state `remote`. Role: the one locality test.
 pub(crate) const LOCAL_SEAT: &str = "is_local=1";
 
 /// The Herdr server a local seat sits on (`seats.host_id`; the last server of an
