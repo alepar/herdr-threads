@@ -4974,6 +4974,54 @@ fn thread_registers_delete_aborts() {
     );
 }
 
+// Kills: a baseline without the staging table (verify_baseline rejects the
+// drift), one that loses its checks, or one that lets a negative generation or
+// an oversized observation through.
+#[test]
+fn fact_attribution_staging_verifies() {
+    let db = fresh_db();
+    schema::verify_baseline(&db).unwrap();
+    db.execute(
+        "INSERT INTO fact_attribution_staging VALUES('send:m1','b1',3,'{}')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO fact_attribution_staging VALUES('ack:m1/s1',NULL,0,'{}')",
+        [],
+    )
+    .unwrap();
+    assert!(
+        db.execute(
+            "INSERT INTO fact_attribution_staging VALUES('send:m1','b2',1,'{}')",
+            [],
+        )
+        .is_err(),
+        "staging_key is the primary key"
+    );
+    assert!(
+        db.execute(
+            "INSERT INTO fact_attribution_staging VALUES('k',NULL,-1,'{}')",
+            [],
+        )
+        .is_err(),
+        "binding_generation is non-negative"
+    );
+    assert!(
+        db.execute(
+            "INSERT INTO fact_attribution_staging VALUES('k',NULL,0,?1)",
+            ["x".repeat(4097)],
+        )
+        .is_err(),
+        "observation is at most 4096 bytes"
+    );
+    db.execute(
+        "INSERT INTO fact_attribution_staging VALUES('k',NULL,0,?1)",
+        ["x".repeat(4096)],
+    )
+    .unwrap();
+}
+
 fn insert_forked(db: &Connection) {
     db.execute(
         "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,source_node,received_at) \

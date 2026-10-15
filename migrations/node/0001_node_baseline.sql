@@ -1201,6 +1201,15 @@ CREATE TABLE direct_threads (
     UNIQUE(instance_id, seat_a, seat_b)
 ) STRICT;
 
+-- Local attribution of a command's own fact (ht-5fr.4.15): staged by the command, taken by the
+-- materializer in the same transaction. Never replicated, never keyed by an EntityKey.
+CREATE TABLE fact_attribution_staging (
+    staging_key TEXT PRIMARY KEY,
+    binding_id TEXT,
+    binding_generation INTEGER NOT NULL CHECK(binding_generation >= 0),
+    observation TEXT NOT NULL CHECK(length(CAST(observation AS BLOB)) <= 4096)
+) STRICT;
+
 CREATE TABLE automatic_handoff_keys (
     instance_id TEXT NOT NULL,
     actor_scope TEXT NOT NULL,
