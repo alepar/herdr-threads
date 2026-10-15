@@ -151,6 +151,9 @@ fn unknown_seats_fall_back_to_the_short_seat_id() {
     );
     assert_eq!(short_seat("seat-Ab12Cd34"), "seat-Ab12Cd34");
     assert_eq!(short_seat("sAb12Cd34"), "sAb12Cd34");
+    assert_eq!(short_seat("sQ7aAb12Cd34"), "sAb12Cd34");
+    let tagged = render(&summary(1, "sQ7aAb12Cd34", "hi"), &mut NoLookup);
+    assert_eq!(tagged, "[12:34] <sAb12Cd34> hi\n");
 }
 
 #[test]

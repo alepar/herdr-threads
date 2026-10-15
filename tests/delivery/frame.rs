@@ -11,13 +11,14 @@ macro_rules! golden {
     };
 }
 
-const GOLDENS: [(&str, &str, &str); 6] = [
+const GOLDENS: [(&str, &str, &str); 7] = [
     golden!("empty"),
     golden!("multiline"),
     golden!("controls"),
     golden!("name-equals-id"),
     golden!("markers"),
     golden!("attention"),
+    golden!("tagged-ids"),
 ];
 
 fn items(json: &str) -> Vec<FrameItem> {
@@ -61,6 +62,13 @@ fn goldens_exercise_the_cases_they_name() {
     );
     assert!(by_name("markers").contains("[query]:") && by_name("markers").contains("[request]:"));
     assert!(by_name("markers").contains("unknown intent adds no marker"));
+    // Tagged and direct-thread ids appear unchanged in the header line.
+    assert!(by_name("tagged-ids").contains(
+        "[herdr-threads] message mQ7aAb12Cd34 in tQ7aZz99Yy88 \"plans\" from sQ7aK3Fq9a2B \"alice\":\n"
+    ));
+    assert!(by_name("tagged-ids").contains(
+        "[herdr-threads] lazy mQ7aEf56Gh78 in dK3Fq9a2B7x \"plans\" from sQ7aK3Fq9a2B \"bob\":\n"
+    ));
     // The short attention header has no thread or sender.
     assert!(
         by_name("attention").contains("\n\n[herdr-threads] attention attention:4:\n  You have")

@@ -3898,3 +3898,82 @@ fn automatic_handoff_channel_omission_parses_for_every_destination() {
         }
     }
 }
+
+/// One tagged public id per prefix plus a direct-thread id, as minted by
+/// `protocol::ids` (ht-5fr.1.6).
+const TAGGED: [(&str, &str); 9] = [
+    ("s", "sQ7aK3Fq9a2B"),
+    ("t", "tQ7aZz99Yy88"),
+    ("i", "iQ7aAb12Cd34"),
+    ("q", "qQ7aAb12Cd34"),
+    ("r", "rQ7aAb12Cd34"),
+    ("e", "eQ7aAb12Cd34"),
+    ("m", "mQ7aEf56Gh78"),
+    ("n", "nQ7aEf56Gh78"),
+    ("d", "dK3Fq9a2B7x"),
+];
+
+#[test]
+fn tagged_and_direct_ids_are_public_ids_and_parse_from_arguments() {
+    use crate::protocol::{
+        commands::Command,
+        ids::{is_direct_thread_id, is_public_id},
+    };
+    for (prefix, id) in TAGGED {
+        if prefix == "d" {
+            assert!(is_direct_thread_id(id), "{id}");
+        } else {
+            assert!(is_public_id(prefix, id), "{id}");
+        }
+    }
+    // ack takes message ids (m and n), accept and body take thread/message ids.
+    let ack = parse_argv(["herdr-threads", "ack", "mQ7aEf56Gh78", "nQ7aEf56Gh78"]).unwrap();
+    let CliAction::Mutation(spec) = ack.action else {
+        panic!("expected mutation")
+    };
+    let command = spec
+        .into_command(Some(claim()), crate::protocol::ids::OperationId::new("op-1"))
+        .unwrap();
+    let Command::Ack(ref batch) = command else {
+        panic!("expected ack")
+    };
+    assert_eq!(
+        batch.messages.iter().map(|id| id.as_str()).collect::<Vec<_>>(),
+        ["mQ7aEf56Gh78", "nQ7aEf56Gh78"]
+    );
+    // The wire encoding keeps the ids unchanged.
+    let back: Command = serde_json::from_slice(&serde_json::to_vec(&command).unwrap()).unwrap();
+    assert_eq!(back, command);
+    for thread in ["tQ7aZz99Yy88", "dK3Fq9a2B7x"] {
+        let accept = parse_argv(["herdr-threads", "accept", thread]).unwrap();
+        let CliAction::Mutation(spec) = accept.action else {
+            panic!("expected mutation")
+        };
+        let command = spec
+            .into_command(Some(claim()), crate::protocol::ids::OperationId::new("op-2"))
+            .unwrap();
+        assert!(matches!(&command, Command::Accept(a) if a.thread.as_str() == thread));
+        let json = serde_json::to_string(&command).unwrap();
+        assert!(json.contains(thread), "{json}");
+        let back: Command = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, command);
+        let participants =
+            parse_argv(["herdr-threads", "thread", "participants", thread]).unwrap();
+        assert!(matches!(participants.action,
+            CliAction::Wire(Command::Participants(q)) if q.thread.as_str() == thread));
+    }
+    let send = parse_argv([
+        "herdr-threads",
+        "send",
+        "dK3Fq9a2B7x",
+        "--body",
+        "hi",
+        "--require-ack",
+        "sQ7aK3Fq9a2B",
+    ])
+    .unwrap();
+    assert!(matches!(send.action, CliAction::Mutation(_)));
+    let body = parse_argv(["herdr-threads", "body", "mQ7aEf56Gh78"]).unwrap();
+    assert!(matches!(body.action,
+        CliAction::Wire(Command::Message(q)) if q.message.as_str() == "mQ7aEf56Gh78"));
+}

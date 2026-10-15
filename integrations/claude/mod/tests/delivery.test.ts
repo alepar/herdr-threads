@@ -251,6 +251,16 @@ test('a turn that ends before a tool result delivers by append, then a wake subm
   expect(h.logs).toEqual(['delivered 1 message(s)'])
 })
 
+test('tagged message ids and d-thread ids are framed and acked unchanged', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(msg('mQ7aAb12Cd34', { thread: 'dK3Fq9a2B7x', sender: 'sQ7aK3Fq9a2B' }))
+  await flush()
+  h.core.onTurnComplete({ turnId: 't1' })
+  await flush()
+  expect(h.appends[0]).toContain('[herdr-threads] message mQ7aAb12Cd34 in dK3Fq9a2B7x "plans" from sQ7aK3Fq9a2B "alice":')
+  expect(h.ackRuns()[0].slice(5)).toEqual(['--via', 'append', 'mQ7aAb12Cd34'])
+})
+
 test('submit is re-checked and never issued while a main turn is open', async () => {
   const h = await harness({ state: IDLE }).boot()
   // the prompt box read is slow; a turn starts while it is pending
