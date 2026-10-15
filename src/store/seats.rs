@@ -4193,7 +4193,7 @@ pub(crate) fn eligible_delivery_recipient(
         Option<i64>,
         Option<i64>,
     );
-    let row: Option<Row> = db.query_row("SELECT s.state,s.target_id,s.target_generation,h.host_boot,h.host_epoch,s.retired_at,s.retired_seq FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2", params![seat.as_str(), instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
+    let row: Option<Row> = db.query_row("SELECT s.state,s.target_id,s.target_generation,h.host_boot,h.host_epoch,s.retired_at,s.retired_seq FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id AND h.node_id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2", params![seat.as_str(), instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
     let Some((state, Some(target), generation, boot, epoch, retired_at, retired_seq)) = row else {
         return Err(api_error(
             ErrorCode::TargetUnresolved,
