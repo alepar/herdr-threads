@@ -110,9 +110,9 @@ Pass the same context the Herdr instance gives the plugin:
 /absolute/path/to/bin/herdr-threads --state-dir STATE_DIR --host-endpoint HOST_SOCKET doctor
 ```
 
-`STATE_DIR` is the plugin state directory (`HERDR_PLUGIN_STATE_DIR`) and `HOST_SOCKET` is the Herdr socket (`HERDR_SOCKET_PATH`). They are placeholders, not shell variables. Every command against one daemon must use the same pair: the daemon's instance directory is `STATE_DIR/instances/<sha256 of HOST_SOCKET>/`. The host endpoint is a filesystem path of up to 1024 bytes and may contain spaces.
+`STATE_DIR` is the plugin state directory (`HERDR_PLUGIN_STATE_DIR`) and `HOST_SOCKET` is the Herdr socket (`HERDR_SOCKET_PATH`). They are placeholders, not shell variables. The daemon is addressed by `STATE_DIR` alone (see [Cross-node sync](#cross-node-sync)): its node directory is `STATE_DIR/node/`. `HOST_SOCKET` is the claim host: the Herdr server a command speaks for, which the daemon attaches as a host on first use (a hint, not part of the daemon's address). The host endpoint is a filesystem path of up to 1024 bytes and may contain spaces.
 
-The state directory must be owned by you and not writable by group or others (Herdr's 0755 directory is fine). Everything the plugin creates below it is 0700. An unsafe state directory, or a private directory below it (`instances/`, the instance directory, the runtime socket directory) whose mode or owner has been changed, is an invalid local context: `daemon ensure` and `doctor` exit 2, change nothing and do not repair the mode.
+The state directory must be owned by you and not writable by group or others (Herdr's 0755 directory is fine). Everything the plugin creates below it is 0700. An unsafe state directory, or a private directory below it (`node/`, the runtime socket directory) whose mode or owner has been changed, is an invalid local context: `daemon ensure` and `doctor` exit 2, change nothing and do not repair the mode.
 
 No global shell configuration is edited. Put the absolute executable path in your own agent instructions or PATH as you see fit.
 
@@ -124,11 +124,53 @@ Observed on this build (merge of integration `38a31f5`) with a missing host sock
 - `daemon stop` exits 0 with `stop_accepted`, and `daemon health` afterwards exits 3 with `host_unavailable`.
 - With `instances/` changed to 0755, `doctor` exits 2 (`result: unsafe_state_dir`) and `daemon ensure` exits 2 (`unsafe private directory`).
 
+## Cross-node sync
+
+Machines running herdr-threads can share threads, seats and messages. Each machine (OS user and state directory) is one **node**: one daemon and one store, however many Herdr servers it serves.
+
+**Node layout.** The node lives in `STATE_DIR/node/`:
+
+| File | Content |
+| --- | --- |
+| `node.key` | The node's Ed25519 secret key (mode 0600), created once and never rewritten. Back it up with the store; do not copy it to another machine |
+| `node.json` | Node UUID, 3-character tag and creation time (derived; regenerable) |
+| `herdr-threads.db` | The store (SQLite, with its `-wal` and `-shm` files) |
+| `daemon.sock`, `owner.lock`, `daemon.log`, `settings.json` | Daemon runtime files and [settings](#settings-default-deadlines-and-wake-spacing) |
+
+The tag appears inside every ID the node mints (`<prefix><tag><8 characters>`). A cloned `node/` directory is the same node twice: `sync status` then reports clone evidence and the operator repairs it (below).
+
+**State-dir addressing.** The CLI selects the daemon by state directory only (`--state-dir`, then `HERDR_PLUGIN_STATE_DIR`, then the default). `--host-endpoint` (or `HERDR_SOCKET_PATH`) names the claim host: the Herdr server a command acts for, and the hint that attaches that server to the daemon. A daemon attaches one host per Herdr server and keeps running with none (`store-only`) while it has a peer link or dial target.
+
+**Health and doctor.** `daemon health` lists `hosts`, one entry per attached Herdr server (endpoint, reachability, version). `doctor` prints `daemon: store-only` when the daemon has no attached host, and the usual `healthy` or `degraded` otherwise.
+
+**Peers.** `peer add SSH_DEST` makes this node dial `SSH_DEST` (anything `ssh` accepts, such as `user@host` or an `~/.ssh/config` alias); `peer forget DEST_OR_NODE` stops dialing a destination or a node (uuid or tag) and deletes nothing; `peer list` shows every dial target. `add` and `forget` are operator commands, so run them as `herdr-threads human peer add ...`. A `peer list` row reads:
+
+```text
+peer 1 backoff explicit off node=- reach=unknown attempts=1: me@example.invalid err=ssh: Could not resolve hostname ...
+```
+
+That is the target id, its dial state, its source (`explicit`, or `herdr_machine` / `herdr_remote_process` when discovered), `off` when disabled, the learned node, reachability and attempts, the destination, and the last error. `peer add --remote-command C` replaces the command run on the remote side (default `herdr-threads peer --stdio`). Re-adding a stopped target restarts it.
+
+**Remote install requirement.** The dial runs `ssh -o BatchMode=yes DEST` and starts `herdr-threads peer --stdio` there: key-based ssh login must work without a prompt, and `herdr-threads` must be on the remote's `PATH` or in `~/.local/bin`. A remote without it is shown as `not_installed` and retried every 30 minutes.
+
+**Discovery.** While a Herdr server is attached, the daemon adds dial targets on its own: the saved machines of `herdr machine list` and the `herdr --remote TARGET` clients it sees running. `herdr` is found through `HERDR_BIN_PATH` or `PATH`. Set `"sync": {"discover": false}` in `settings.json` to stop adding targets (existing targets and explicit `peer add` entries are unaffected). The `discovery` line of `peer list` and `sync status` shows the worker's state (`starting`, `disabled`, `no_host`, `not_available` or `running`).
+
+**Sync status and repair.** `sync status` shows per-log counters, heads, parked and failed counts, per-link state and last error, repairs, open clone evidence with its remedy, and store size. Operator repair, each described by `sync COMMAND --help`:
+
+- `sync verify`: check journal invariants and hash-chain linkage.
+- `sync unapplied [list|replay]`: show or re-attempt parked and failed entries.
+- `sync resync --from NODE`: stop the daemon; the next start backs up the store and rebuilds it from that peer (operator command).
+- `sync clone-cleared`: clear clone evidence about this node once the copy is dealt with (operator command).
+
+`sync.dial_command` in `settings.json` (a `/bin/sh -c` template containing `{dest}`) replaces ssh as the transport; it is meant for tests.
+
+**Legacy data.** Earlier versions kept data in `STATE_DIR/instances/`. This version never opens it: it starts with a fresh store. `doctor` reports it as `legacy data: ... not used; remove: herdr-threads legacy purge`. `herdr-threads legacy purge` lists what would go; `legacy purge --confirm` removes `instances/` only (never `node/`), and refuses to run as an agent, with a live legacy daemon, or on a symlink. Run it in your own shell, or as the local account with `--operator`.
+
 ## Settings: default deadlines and wake spacing
 
 Per-operation deadlines use `--deadline SECONDS` on `invite` and `send`. The value must be positive. The default for both is 300 seconds.
 
-Instance-wide defaults come from an optional `settings.json` in the instance directory (`STATE_DIR/instances/<digest>/settings.json`):
+Instance-wide defaults come from an optional `settings.json` in the node directory (`STATE_DIR/node/settings.json`):
 
 ```json
 {"invitation_default_ms": 300000, "receipt_default_ms": 300000, "minimum_wake_delay_ms": 30000, "harness_manifest": "auto"}
@@ -139,6 +181,7 @@ Instance-wide defaults come from an optional `settings.json` in the instance dir
 - `harness_manifest`: `auto` (default) or `off`; `off` stops the daemon fetching the harness version manifest ([docs/compatibility/harnesses.md](compatibility/harnesses.md), "Manifest").
 - Invitation and receipt durations must be positive. `minimum_wake_delay_ms` must be at least 30000.
 - `auto_archive_after_ms` defaults to `3600000`; `0` disables automatic channel archival. See [channel lifecycle](channel-archival.md) for protected work, composer evidence and conservative legacy-journal coverage. This feature activates with the combined schema23/wire6 integration.
+- `"sync": {"discover": true, "dial_command": "..."}` configures [cross-node sync](#cross-node-sync); `discover` defaults to `true`, and `dial_command` is for tests and advanced setups.
 - The daemon reads it at start. Edits apply after `daemon stop` then `daemon ensure`. `daemon health` prints the effective `settings`.
 - The chosen duration is frozen on each invitation and message when it is created.
 
