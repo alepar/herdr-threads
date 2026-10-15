@@ -102,10 +102,11 @@ fn releases_from_the_floor_allow_transport_and_snapshot_without_claiming_capabil
         ("0.9.2", 22, None),
         ("0.9.3", 22, None),
         ("0.9.4", 22, None),
+        ("0.9.5", 22, None),
         (
             "0.10.0",
             23,
-            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.4"),
+            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.5"),
         ),
     ] {
         let snapshot = json!({"type":"session_snapshot","snapshot":{
@@ -1490,7 +1491,7 @@ fn answered_ping_is_observed_even_when_the_operation_fails() {
         assert_eq!(release.summary(), "0.10.0 (protocol 23)");
         assert_eq!(
             release.warning().as_deref(),
-            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.4")
+            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.5")
         );
     }
 }
