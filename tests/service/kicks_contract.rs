@@ -65,6 +65,63 @@ fn kick_to_an_unregistered_lane_is_a_noop() {
     assert!(!kicks.registered(Lane::Observation));
 }
 
+/// True when a kick is already latched on `pacer`. The test clock is fixed, so
+/// a wait on an unkicked pacer would never time out: probe from a thread and
+/// release it afterwards.
+fn observes_kick(pacer: &Arc<Pacer>) -> bool {
+    let (tx, rx) = mpsc::channel();
+    let waiter = pacer.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(waiter.wait_blocking(Duration::from_secs(5)));
+    });
+    let seen = rx.recv_timeout(Duration::from_millis(200)).ok() == Some(Wake::Kicked);
+    if !seen {
+        pacer.kick();
+        let _ = rx.recv_timeout(Duration::from_secs(2));
+    }
+    seen
+}
+
+#[test]
+fn kick_reaches_every_registered_pacer() {
+    let kicks = CommitKicks::default();
+    let (a, b) = (pacer("a"), pacer("b"));
+    kicks.register(Lane::Wakes, a.clone());
+    kicks.register(Lane::Wakes, b.clone());
+    kicks.kick(LaneSet::EMPTY.with(Lane::Wakes));
+    assert!(observes_kick(&a), "first pacer missed the kick");
+    assert!(observes_kick(&b), "second pacer missed the kick");
+}
+
+#[test]
+fn unregister_removes_exactly_one() {
+    let kicks = CommitKicks::default();
+    let (a, b, c) = (pacer("a"), pacer("b"), pacer("c"));
+    for p in [&a, &b, &c] {
+        kicks.register(Lane::Wakes, p.clone());
+    }
+    kicks.unregister(Lane::Wakes, &b);
+    kicks.kick(LaneSet::EMPTY.with(Lane::Wakes));
+    assert!(observes_kick(&a));
+    assert!(observes_kick(&c));
+    assert!(!observes_kick(&b), "unregistered pacer was still kicked");
+    // Unregistering a pacer that is not registered changes nothing.
+    kicks.unregister(Lane::Wakes, &b);
+    assert!(kicks.registered(Lane::Wakes));
+}
+
+#[test]
+fn registered_while_at_least_one_remains() {
+    let kicks = CommitKicks::default();
+    let (a, b) = (pacer("a"), pacer("b"));
+    kicks.register(Lane::Wakes, a.clone());
+    kicks.register(Lane::Wakes, b.clone());
+    kicks.unregister(Lane::Wakes, &a);
+    assert!(kicks.registered(Lane::Wakes));
+    kicks.unregister(Lane::Wakes, &b);
+    assert!(!kicks.registered(Lane::Wakes));
+}
+
 #[test]
 fn lane_set_is_a_set_over_all_lanes() {
     let set = LaneSet::EMPTY
