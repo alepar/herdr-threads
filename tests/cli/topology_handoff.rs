@@ -5957,14 +5957,71 @@ mod live {
             decision_pairs: usize,
         }
 
+        /// The AutoPeer store clock. AutoPeer fixtures are not about timing,
+        /// but every automatic mutation they drive issues a 250 ms cooperative
+        /// permit and consumes it in the deciding transaction, both sampled on
+        /// this clock. It follows real time, except that `diagnosed_permit_call`
+        /// holds it from just before each permit's issuance until that
+        /// permit's mutation returns, so host load cannot widen the
+        /// issuance-to-decision gap: the gap is exactly `permit_window` for the
+        /// role named by `window_role` (every role when `None`) and zero
+        /// otherwise. After a hold, real time resumes without running
+        /// backwards. Setup, sizing, budgets and every other store call run on
+        /// real time. The expiry itself stays exercised (see
+        /// `automatic_permit_clock_window_*`).
+        ///
+        /// Hang mode: while held, the writer budget and the busy handler see
+        /// no time pass, so a writer deadlock inside that one mutation would
+        /// hang until nextest's timeout instead of failing `DeadlineExceeded`.
         #[derive(Default)]
         struct AutomaticPermitClock {
             real: crate::app::SystemClock,
             samples: Mutex<AutomaticPermitSamples>,
+            offset: std::sync::atomic::AtomicU64,
+            held: Mutex<Option<u64>>,
+            permit_window: std::sync::atomic::AtomicU64,
+            window_role: Mutex<Option<&'static str>>,
+            /// Every role whose permit window was held, in order.
+            windows: Mutex<Vec<&'static str>>,
         }
         impl AutomaticPermitClock {
-            fn now(&self) -> u64 {
+            /// Real monotonic time, never held (diagnostic wall timings).
+            fn real_now(&self) -> u64 {
                 crate::protocol::time::Clock::monotonic_now(&self.real).0
+            }
+            fn running(&self) -> u64 {
+                self.real_now() + self.offset.load(std::sync::atomic::Ordering::SeqCst)
+            }
+            /// The store-visible monotonic time: held during a permit window.
+            fn now(&self) -> u64 {
+                let held = *self.held.lock().unwrap();
+                held.unwrap_or_else(|| self.running())
+            }
+            /// Freezes time just before a permit's issuance.
+            fn hold(&self) -> AutomaticPermitClockHold<'_> {
+                let mut held = self.held.lock().unwrap();
+                // Not reentrant: a nested hold would move the frozen instant.
+                assert!(
+                    held.is_none(),
+                    "automatic permit clock hold is not reentrant"
+                );
+                *held = Some(self.running());
+                drop(held);
+                AutomaticPermitClockHold(self)
+            }
+            /// Moves the frozen instant by the window when `role` is targeted;
+            /// returns the window applied.
+            fn pass_permit_window(&self, role: &'static str) -> u64 {
+                self.windows.lock().unwrap().push(role);
+                let target = *self.window_role.lock().unwrap();
+                if target.is_some_and(|target| target != role) {
+                    return 0;
+                }
+                let millis = self.permit_window.load(std::sync::atomic::Ordering::SeqCst);
+                if let Some(held) = self.held.lock().unwrap().as_mut() {
+                    *held += millis;
+                }
+                millis
             }
             fn arm(&self) {
                 *self.samples.lock().unwrap() = AutomaticPermitSamples {
@@ -5978,9 +6035,25 @@ mod live {
                 *samples
             }
             fn store_entry(&self) {
+                let now = self.now();
                 let mut samples = self.samples.lock().unwrap();
                 if samples.armed && samples.store_entry.is_none() {
-                    samples.store_entry = Some(self.now());
+                    samples.store_entry = Some(now);
+                }
+            }
+        }
+        /// Resumes real time when the held mutation returns, including on an
+        /// early error return.
+        struct AutomaticPermitClockHold<'a>(&'a AutomaticPermitClock);
+        impl Drop for AutomaticPermitClockHold<'_> {
+            fn drop(&mut self) {
+                let clock = self.0;
+                if let Some(held) = clock.held.lock().unwrap().take() {
+                    let real = clock.real_now();
+                    clock.offset.fetch_max(
+                        held.saturating_sub(real),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
                 }
             }
         }
@@ -5994,14 +6067,14 @@ mod live {
                 now
             }
             fn monotonic_now(&self) -> crate::protocol::time::MonoInstant {
-                let now = crate::protocol::time::Clock::monotonic_now(&self.real);
+                let now = self.now();
                 let mut samples = self.samples.lock().unwrap();
                 if samples.armed && samples.utc_pending {
                     samples.utc_pending = false;
                     samples.decision_pairs += 1;
-                    samples.first_decision_pair.get_or_insert(now.0);
+                    samples.first_decision_pair.get_or_insert(now);
                 }
-                now
+                crate::protocol::time::MonoInstant(now)
             }
         }
 
@@ -6123,7 +6196,7 @@ mod live {
             }
             fn diagnosed_permit_call(
                 &self,
-                role: &str,
+                role: &'static str,
                 started: u64,
                 build_started: u64,
                 input: crate::ports::CooperativePermitRequest,
@@ -6133,6 +6206,12 @@ mod live {
                 ) -> Result<CommandResult, ApiError>,
             ) -> Result<CommandResult, ApiError> {
                 let operation = input.operation.clone();
+                // Store time is held from just before issuance until the
+                // mutation returns (see [`AutomaticPermitClock`]); the
+                // diagnostic reports store-visible instants plus the real
+                // wall time the held window took.
+                let real_started = self.permit_clock.real_now();
+                let hold = self.permit_clock.hold();
                 let built = self.permit_clock.now();
                 let issued = self.store.issue_cooperative_permit(input, budget);
                 let issue_finished = self.permit_clock.now();
@@ -6143,7 +6222,8 @@ mod live {
                             "{}",
                             bounded_permit_diagnostic(
                                 format_args!(
-                                    "automatic-permit role={role} operation={operation:?} stage=issuance start={started} build_start={build_started} issue_start={built} issue_end={issue_finished} code={:?}",
+                                    "automatic-permit role={role} operation={operation:?} stage=issuance clock=held real_window_ms={} start={started} build_start={build_started} issue_start={built} issue_end={issue_finished} code={:?}",
+                                    self.permit_clock.real_now() - real_started,
                                     error.code
                                 ),
                                 4095,
@@ -6160,17 +6240,22 @@ mod live {
                     .split_once("observed_at: MonoInstant(")
                     .and_then(|(_, tail)| tail.split_once(')'))
                     .and_then(|(number, _)| number.parse::<u64>().ok());
+                let window_ms = self.permit_clock.pass_permit_window(role);
                 let mutate_started = self.permit_clock.now();
                 self.permit_clock.arm();
                 let result = mutate(permit);
                 let finished = self.permit_clock.now();
                 let samples = self.permit_clock.finish();
+                drop(hold);
+                let real_window_ms = self.permit_clock.real_now() - real_started;
                 if let Err(error) = &result {
                     // In these synchronous AutoPeer paths the first UTC->mono pair
                     // after arm is execute_budgeted_decision_with_constraints's
                     // actual DecisionInstant. Budget/prefix reads are mono-only;
                     // later historical presentation can add another pair. This is
                     // a source-dependent observation, not a production tracing API.
+                    // The clock is held, so age_ms is the store-visible age
+                    // (the injected window_ms); real_window_ms is the wall time.
                     let age = samples
                         .first_decision_pair
                         .zip(observed_at)
@@ -6180,7 +6265,7 @@ mod live {
                         "{}",
                         bounded_permit_diagnostic(
                             format_args!(
-                                "automatic-permit role={role} operation={operation:?} stage=mutation start={started} build_start={build_started} issue_start={built} issue_end={issue_finished} mutate_start={mutate_started} store_entry={:?} first_decision_pair={:?} decision_pairs={} outcome={finished} observed_at={observed_at:?} age_ms={age:?} basis=first-UTC-mono-in-synchronous-accountable-path region=namespace-and-canonical-validation-combined code={:?} detail={detail:?} issued_metadata={issued_metadata}",
+                                "automatic-permit role={role} operation={operation:?} stage=mutation clock=held window_ms={window_ms} real_window_ms={real_window_ms} start={started} build_start={build_started} issue_start={built} issue_end={issue_finished} mutate_start={mutate_started} store_entry={:?} first_decision_pair={:?} decision_pairs={} outcome={finished} observed_at={observed_at:?} age_ms={age:?} basis=first-UTC-mono-in-synchronous-accountable-path region=namespace-and-canonical-validation-combined code={:?} detail={detail:?} issued_metadata={issued_metadata}",
                                 samples.store_entry,
                                 samples.first_decision_pair,
                                 samples.decision_pairs,
@@ -6312,6 +6397,8 @@ mod live {
                     lineage_parent: None,
                 };
                 let budget = super::super::super::super::cooperative_budget(&self.base.clock);
+                // Held from issuance until the check-in returns (see [`AutomaticPermitClock`]).
+                let _hold = self.permit_clock.hold();
                 let permit = self
                     .store
                     .issue_cooperative_permit(
@@ -8329,6 +8416,100 @@ mod live {
             peer.print_supported_envelope_sizes("near-admission-public");
             assert!(peer.historical_retry(peer.ns()).unwrap().0);
             assert_eq!(peer.status().state, BootstrapState::Completed);
+        }
+
+        fn run_public_automatic(peer: &AutoPeer) -> (Result<(), RunError>, DownstreamLauncher) {
+            let mut launcher = DownstreamLauncher::default();
+            let result = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                peer,
+                peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec::default(),
+                &mut Vec::new(),
+            )
+            .map(|_| ());
+            (result, launcher)
+        }
+
+        /// Negative control for [`AutomaticPermitClock`]: holding the clock does
+        /// not disable the permit expiry. A held window past `MAX_PERMIT_MILLIS`
+        /// between one role's issuance and decision refuses that role's
+        /// mutation through the same public automatic path, with no later
+        /// permit role reached and the bootstrap left incomplete.
+        #[test]
+        fn automatic_permit_clock_window_past_the_bound_still_expires() {
+            let roles = {
+                let peer = AutoPeer::new();
+                let (result, _) = run_public_automatic(&peer);
+                result.unwrap();
+                peer.permit_clock.windows.lock().unwrap().clone()
+            };
+            for role in ["auto_attach", "auto_child_send"] {
+                assert!(roles.contains(&role), "{role} not held in {roles:?}");
+            }
+            let mut targets = roles.clone();
+            targets.dedup();
+            for role in targets {
+                let peer = AutoPeer::new();
+                *peer.permit_clock.window_role.lock().unwrap() = Some(role);
+                peer.permit_clock.permit_window.store(
+                    crate::protocol::authority::MAX_PERMIT_MILLIS + 1,
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                let (result, _) = run_public_automatic(&peer);
+                let error = result.unwrap_err();
+                assert!(
+                    matches!(&error, RunError::Api(e) if e.code == ErrorCode::CallerUnverified && e.detail == "permit expired"),
+                    "{role}: {error:?}"
+                );
+                let held = peer.permit_clock.windows.lock().unwrap().clone();
+                assert_eq!(
+                    held.last(),
+                    Some(&role),
+                    "{role} must be the refused permit role: {held:?}"
+                );
+                // Before Begin commits there is no parent row to report.
+                let status = peer.store.automatic_bootstrap_query(
+                    peer.ns(),
+                    &AutomaticBootstrapMutation {
+                        identity: peer.identity.clone(),
+                        action: AutomaticBootstrapAction::Status,
+                    },
+                    &super::super::super::super::cooperative_budget(&peer.base.clock),
+                );
+                assert!(
+                    !matches!(&status, Ok(CommandResult::AutomaticBootstrap(s)) if s.state == BootstrapState::Completed),
+                    "{role}: {status:?}"
+                );
+            }
+        }
+
+        /// The exact bound completes: every held permit window is
+        /// `MAX_PERMIT_MILLIS` and the public automatic path still completes.
+        #[test]
+        fn automatic_permit_clock_window_at_the_bound_completes() {
+            let peer = AutoPeer::new();
+            peer.permit_clock.permit_window.store(
+                crate::protocol::authority::MAX_PERMIT_MILLIS,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            let (result, launcher) = run_public_automatic(&peer);
+            result.unwrap();
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(peer.status().state, BootstrapState::Completed);
+            let roles = peer.permit_clock.windows.lock().unwrap().clone();
+            for role in ["auto_attach", "auto_child_send"] {
+                assert!(roles.contains(&role), "{role} not held in {roles:?}");
+            }
         }
 
         fn ordinary_and_invitation_counts(peer: &AutoPeer) -> (i64, i64) {
