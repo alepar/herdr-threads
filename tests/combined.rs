@@ -65,6 +65,8 @@ mod handoff_topology_cli;
 mod host_adapter;
 #[path = "cli/inbox_continuation_context.rs"]
 mod inbox_continuation_context;
+#[path = "sync/incarnations_scenarios.rs"]
+mod incarnations_scenarios;
 #[path = "installer_integrations.rs"]
 mod installer_integrations;
 #[path = "store/invitation_content.rs"]

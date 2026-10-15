@@ -1,7 +1,10 @@
 //! The branch-request table: which source a `branch_want` goes to, how long
 //! it may stay unanswered, and which `(source, log)` pairs are avoided.
 //!
-//! Owns: at most one outstanding request per branch, the 30 s timeout with
+//! Owns: at most one outstanding request per branch, held from the send until
+//! the worker has handled the reply ([`RequestTable::clear`]; an answered
+//! request still blocks a new one, else the worker would ask for the same
+//! `from` again while the reply waits in its queue), the 30 s timeout with
 //! failover to the next advertising source, the 10-minute `(source, log)`
 //! penalties and the oldest-last-request preference. Hides: nothing the
 //! sink does not also pass in; the advertising sources of a tip arrive as
@@ -55,6 +58,9 @@ pub struct Outstanding {
     pub sent_at: MonoInstant,
     /// Sources this branch already failed over from.
     tried: Vec<NodeUuid>,
+    /// The reply arrived and waits for the worker; the request stays until
+    /// [`RequestTable::clear`].
+    answered: bool,
 }
 
 /// What [`RequestTable::fail`] did.
@@ -105,13 +111,17 @@ impl RequestTable {
         Some(source)
     }
 
-    /// Match a reply from `source` to its outstanding request and clear it;
-    /// `None` (drop the reply) when there is none from that source.
+    /// Match a reply from `source` to its outstanding request and mark it
+    /// answered; `None` (drop the reply) when there is none from that source
+    /// or it was answered already. The request stays outstanding until the
+    /// worker calls [`clear`](Self::clear) after handling the reply.
     pub fn answer(&mut self, source: NodeUuid, key: &BranchKey) -> Option<Outstanding> {
-        if self.outstanding.get(key)?.source != source {
+        let outstanding = self.outstanding.get_mut(key)?;
+        if outstanding.source != source || outstanding.answered {
             return None;
         }
-        self.outstanding.remove(key)
+        outstanding.answered = true;
+        Some(outstanding.clone())
     }
 
     /// Avoid `(source, log)` for [`PENALTY_MS`].
@@ -142,6 +152,10 @@ impl RequestTable {
     /// The request of `key` failed (`branch_none`, or a timeout): move it to
     /// the next usable source that it has not been to yet.
     pub fn fail(&mut self, key: &BranchKey, sources: &[NodeUuid], now: MonoInstant) -> Failover {
+        if self.outstanding.get(key).is_none_or(|o| o.answered) {
+            // Nothing asked, or the reply is with the worker already.
+            return Failover::Unknown;
+        }
         let Some(old) = self.outstanding.remove(key) else {
             return Failover::Unknown;
         };
@@ -167,10 +181,14 @@ impl RequestTable {
         self.penalties.retain(|_, until| now < *until);
         self.last_request
             .retain(|_, at| now.0.saturating_sub(at.0) < LAST_REQUEST_KEEP_MS);
+        let expired = |o: &Outstanding| now.0.saturating_sub(o.sent_at.0) >= REQUEST_TIMEOUT_MS;
+        // An answered request whose reply never got handled (the worker's
+        // queue dropped it) is forgotten, so the branch can be asked again.
+        self.outstanding.retain(|_, o| !(o.answered && expired(o)));
         let due: Vec<BranchKey> = self
             .outstanding
             .iter()
-            .filter(|(_, o)| now.0.saturating_sub(o.sent_at.0) >= REQUEST_TIMEOUT_MS)
+            .filter(|(_, o)| expired(o))
             .map(|(key, _)| key.clone())
             .collect();
         let mut swept = Swept::default();
@@ -215,6 +233,7 @@ impl RequestTable {
                 want,
                 sent_at: now,
                 tried,
+                answered: false,
             },
         );
     }
@@ -308,9 +327,31 @@ mod tests {
         // A different branch of the same log is independent.
         assert!(table.request(want("b", 1), &[a, b], at(1)).is_some());
         assert_eq!(table.outstanding_count(), 2);
-        // Once answered, the branch may be asked again.
-        assert!(table.answer(a, &BranchKey::of(&want("a", 1))).is_some());
+        // An answered request still holds the branch until the worker has
+        // handled the reply; then it may be asked again.
+        let key = BranchKey::of(&want("a", 1));
+        assert!(table.answer(a, &key).is_some());
+        assert_eq!(table.request(want("a", 5), &[a, b], at(2)), None);
+        assert!(table.clear(&key));
         assert!(table.request(want("a", 5), &[a, b], at(2)).is_some());
+    }
+
+    #[test]
+    fn answered_request_is_not_failed_over_and_times_out_quietly() {
+        let (a, b) = (node(1), node(2));
+        let mut table = RequestTable::new();
+        let w = want("a", 4);
+        let key = BranchKey::of(&w);
+        assert_eq!(table.request(w.clone(), &[a, b], at(0)), Some(a));
+        assert!(table.answer(a, &key).is_some());
+        let sources = |_: &BranchKey| vec![a, b];
+        assert_eq!(table.fail(&key, &[a, b], at(1)), Failover::Unknown);
+        assert_eq!(table.outstanding_count(), 1, "still held");
+        // The reply was lost with the worker's queue: after the timeout the
+        // entry goes without a resend, and the branch can be asked again.
+        assert_eq!(table.sweep(at(30), &sources), Swept::default());
+        assert_eq!(table.outstanding_count(), 0);
+        assert!(table.request(w, &[a, b], at(31)).is_some());
     }
 
     #[test]

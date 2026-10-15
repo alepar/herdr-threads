@@ -584,6 +584,9 @@ impl Core {
                 self.pending.push_back(item);
             }
             Err(e) => {
+                if let Job::Branch { want, .. } = &item.job {
+                    self.d.sink.clear_request(&BranchKey::of(want));
+                }
                 self.d.status.record_failure(Lane::Sync, &e);
                 self.failing = true;
                 self.log(&format!(
@@ -1097,6 +1100,7 @@ impl Core {
                 // the next pull goes to another source.
                 self.d.sink.penalize(source, key.log);
                 self.probes.remove(&key);
+                self.d.sink.clear_request(&key);
                 return self.schedule_pulls();
             }
             BranchReply::Entries { entries, more, .. } => (entries, *more),
@@ -1111,12 +1115,15 @@ impl Core {
                 key.log.incarnation,
                 uuid8(&source)
             ));
+            self.d.sink.clear_request(&key);
             return self.schedule_pulls();
         };
         match self.probes.get(&key).cloned() {
             Some(probe) => {
                 self.on_probe(probe, source, want, &key, &entries)?;
                 self.probes.remove(&key);
+                // The reply is handled: the branch may be requested again.
+                self.d.sink.clear_request(&key);
                 Ok(())
             }
             None => self.on_pull_reply(source, &key, &entries, more),
@@ -1196,6 +1203,7 @@ impl Core {
         more: bool,
     ) -> Result<(), ApiError> {
         let Some(branch_ix) = self.find_branch(key)? else {
+            self.d.sink.clear_request(key);
             return Ok(());
         };
         let verdict = quantum!(self, |tx, _ctx, _decision| store::branch_progress(
@@ -1221,6 +1229,9 @@ impl Core {
             }
         }
         self.refresh_branches_flag()?;
+        // The row is updated: only now may the branch be requested again
+        // (before, a pull would repeat the `from` this reply answered).
+        self.d.sink.clear_request(key);
         self.schedule_pulls()
     }
 
