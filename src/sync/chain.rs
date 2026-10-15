@@ -32,7 +32,8 @@ pub struct HeldLog {
 /// closed result of [`check_next`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChainStep {
-    /// The entry claims to extend this node's own active log.
+    /// A validly signed entry of this node's own active log that this node
+    /// does not hold.
     AheadOfSelf,
     /// Entries before `expected` are missing.
     Gap { expected: u64 },
@@ -53,14 +54,15 @@ pub enum ChainStep {
 
 /// Decide what `entry` means for the log it names, given what is `held`.
 ///
-/// Owns: the single statement of the chain rules, in this order: self log,
-/// unknown log, counter at or below the held prefix, freeze, gap, then
-/// `prev_hash` and signature. Hides that order from callers. Does not:
+/// Owns: the single statement of the chain rules, in this order: self log
+/// (duplicate, then signature, then `AheadOfSelf`), unknown log, counter at
+/// or below the held prefix, freeze, gap, then `prev_hash` and signature. Hides that order from callers. Does not:
 /// touch the store or the clock, act on the step, or read the payload
 /// (except through [`Envelope::genesis_pubkey`] for a genesis). Role: shared
 /// by `SqliteStore` and `MemoryJournal` so they cannot disagree. A mismatched
 /// hash or `prev_hash` whose signature does not verify is `Corrupt`, never a
-/// fork, so a damaged transfer cannot freeze a healthy log.
+/// fork, so a damaged transfer cannot freeze a healthy log; this holds for the
+/// self log too.
 pub fn check_next(held: Option<&HeldLog>, entry: &Envelope) -> ChainStep {
     let Some(held) = held else {
         if entry.counter != 1 {
@@ -75,7 +77,13 @@ pub fn check_next(held: Option<&HeldLog>, entry: &Envelope) -> ChainStep {
         };
     };
     if held.is_active_self {
-        return ChainStep::AheadOfSelf;
+        if entry.counter <= held.contiguous && held.stored_hash == Some(entry.hash) {
+            return ChainStep::Duplicate;
+        }
+        return match entry.verify(&held.pubkey) {
+            Ok(()) => ChainStep::AheadOfSelf,
+            Err(err) => ChainStep::Corrupt(err),
+        };
     }
     if entry.counter <= held.contiguous {
         if held.stored_hash == Some(entry.hash) {
@@ -203,9 +211,59 @@ mod tests {
         h.is_active_self = true;
         let next = entry(&id, &id, 4, e3.hash, "four");
         assert_eq!(check_next(Some(&h), &next), ChainStep::AheadOfSelf);
-        // Even an entry the node already holds is evidence, not a duplicate.
+        // An own entry already held is a duplicate, not evidence.
         h.stored_hash = Some(e3.hash);
-        assert_eq!(check_next(Some(&h), &e3), ChainStep::AheadOfSelf);
+        assert_eq!(check_next(Some(&h), &e3), ChainStep::Duplicate);
+    }
+
+    #[test]
+    fn self_log_held_entry_redelivered_is_duplicate() {
+        let id = identity(1);
+        let (mut h, [_, e2, _]) = held(&id);
+        h.is_active_self = true;
+        h.stored_hash = Some(e2.hash);
+        assert_eq!(check_next(Some(&h), &e2), ChainStep::Duplicate);
+    }
+
+    #[test]
+    fn self_log_bad_signature_is_corrupt() {
+        let id = identity(1);
+        let (mut h, [e1, e2, e3]) = held(&id);
+        h.is_active_self = true;
+        let forged = entry(&id, &identity(9), 4, e3.hash, "four");
+        assert_eq!(
+            check_next(Some(&h), &forged),
+            ChainStep::Corrupt(EnvelopeError::BadSignature)
+        );
+        h.stored_hash = Some(e2.hash);
+        let rival = entry(&id, &identity(9), 2, e1.hash, "rival");
+        assert_eq!(
+            check_next(Some(&h), &rival),
+            ChainStep::Corrupt(EnvelopeError::BadSignature)
+        );
+    }
+
+    #[test]
+    fn self_log_tampered_payload_is_corrupt() {
+        let id = identity(1);
+        let (mut h, [_, _, e3]) = held(&id);
+        h.is_active_self = true;
+        let mut t = entry(&id, &id, 4, e3.hash, "four");
+        t.payload = br#"{"t":"changed"}"#.to_vec();
+        assert_eq!(
+            check_next(Some(&h), &t),
+            ChainStep::Corrupt(EnvelopeError::HashMismatch)
+        );
+    }
+
+    #[test]
+    fn self_log_valid_rival_at_held_counter_is_ahead_of_self() {
+        let id = identity(1);
+        let (mut h, [e1, e2, _]) = held(&id);
+        h.is_active_self = true;
+        h.stored_hash = Some(e2.hash);
+        let rival = entry(&id, &id, 2, e1.hash, "rival");
+        assert_eq!(check_next(Some(&h), &rival), ChainStep::AheadOfSelf);
     }
 
     #[test]
