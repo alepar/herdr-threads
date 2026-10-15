@@ -86,7 +86,7 @@ fn fx(name: &str) -> Fx {
         conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh',?2,'inc','coherent_enumeration',1)", rusqlite::params![format!("p{seat}"), format!("term-p{seat}")]).unwrap();
     }
     conn.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)",
         [],
     )
     .unwrap();
@@ -449,9 +449,9 @@ fn invitations_are_listed_per_seat() {
     let fx = fx("bi-invitations");
     fx.conn
         .execute_batch(
-            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','other','goal',0,0);
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','other','goal',0,0,0);
              INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES ('u','b',1,'invited','invited');
-             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv1','u','b',1,'pending',1,0,300,99999999);",
+             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv1','u','b',1,'pending',1,0,300,99999999,(SELECT id FROM local_node));",
         )
         .unwrap();
     let want = vec![Row::Invitation("u".into())];
@@ -487,9 +487,9 @@ fn unknown_session_inbox_shows_no_backlog_past_the_seat_maximum() {
     let m3 = send(&mut fx, "three");
     fx.conn
         .execute_batch(
-            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','other','goal',0,0);
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','other','goal',0,0,0);
              INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES ('u','b',1,'invited','invited');
-             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv1','u','b',1,'pending',1,0,300,99999999);",
+             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv1','u','b',1,'pending',1,0,300,99999999,(SELECT id FROM local_node));",
         )
         .unwrap();
     let listed = page(&fx, Some(&stranger));
@@ -683,7 +683,7 @@ fn bound_warning_cutoff_is_the_reading_bindings_own_offer_frontier() {
             |r| r.get(0),
         )
         .unwrap();
-    fx.conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES('inv','t','b',2,'pending',0,?1,300,300)", [decision]).unwrap();
+    fx.conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,origin_node) VALUES('inv','t','b',2,'pending',0,?1,300,300,(SELECT id FROM local_node))", [decision]).unwrap();
     let warned = decision + 1;
     fx.conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES('34750f98bd59fcfc946da45aaabe933b','warning','t',100,'warn','{}',?1,0)", [warned]).unwrap();
     fx.conn.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES('warning',?1,'t',100,'b','invitation','inv')", [warned]).unwrap();
@@ -729,7 +729,7 @@ fn thread_scoped_page_lists_only_that_threads_lazy_rows() {
     let mut fx = fx("binding-inbox-thread-scope");
     fx.conn
         .execute(
-            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic2','goal',0,0)",
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic2','goal',0,0,0)",
             [],
         )
         .unwrap();

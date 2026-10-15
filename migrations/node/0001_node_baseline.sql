@@ -439,6 +439,8 @@ CREATE TABLE seats (
     is_local INTEGER NOT NULL CHECK(is_local IN (0,1)),
     remote_kind TEXT CHECK(remote_kind IN ('agent','human')),
     host_id INTEGER REFERENCES herdr_hosts(host_id),
+    published INTEGER NOT NULL DEFAULT 0 CHECK(published IN (0,1)),
+    CHECK(is_local=1 OR published=1),
     CHECK((is_local=0) = (remote_kind IS NOT NULL)),
     CHECK((is_local=1) = (host_id IS NOT NULL)),
     CHECK(is_local=1 OR (target_id IS NULL AND structural_terminal_id IS NULL AND state IN ('remote','retired'))),
@@ -465,7 +467,8 @@ CREATE TABLE threads (
     directory_revision INTEGER NOT NULL DEFAULT 0 CHECK(directory_revision >= 0),
     membership_revision INTEGER NOT NULL DEFAULT 0 CHECK(membership_revision >= 0),
     timeline_revision INTEGER NOT NULL DEFAULT 0 CHECK(timeline_revision >= 0)
-, managed_owner_author_id TEXT REFERENCES service_authors(id), name TEXT, last_activity INTEGER NOT NULL DEFAULT 0) STRICT;
+, managed_owner_author_id TEXT REFERENCES service_authors(id), name TEXT, last_activity INTEGER NOT NULL DEFAULT 0,
+    journaled INTEGER NOT NULL CHECK(journaled IN (0,1))) STRICT;
 
 CREATE TABLE memberships (
     ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -477,6 +480,8 @@ CREATE TABLE memberships (
     left_at INTEGER,
     retired_at INTEGER, voluntary_state TEXT
     CHECK(voluntary_state IN ('absent','invited','joined','left','retired')),
+    home_transition INTEGER NOT NULL DEFAULT 0,
+    last_joined_n INTEGER NOT NULL DEFAULT 0,
     UNIQUE(thread_id, seat_id)
 ) STRICT;
 
@@ -506,7 +511,7 @@ CREATE TABLE invitations (
     thread_id TEXT NOT NULL REFERENCES threads(id),
     seat_id TEXT NOT NULL REFERENCES seats(id),
     episode INTEGER NOT NULL CHECK(episode > 0),
-    state TEXT NOT NULL CHECK(state IN ('pending', 'accepted', 'recipient_retired')),
+    state TEXT NOT NULL CHECK(state IN ('pending', 'accepted', 'recipient_retired', 'already_joined')),
     created_decision_seq INTEGER NOT NULL CHECK(created_decision_seq > 0),
     created_at INTEGER NOT NULL,
     frozen_duration_ms INTEGER NOT NULL CHECK(frozen_duration_ms > 0),
@@ -517,6 +522,8 @@ CREATE TABLE invitations (
     accepted_observation TEXT,
     warning_message_id TEXT REFERENCES messages(id),
     retired_at INTEGER, reject_recorded INTEGER NOT NULL DEFAULT 0 CHECK(reject_recorded IN (0,1)), confirmation TEXT CHECK(confirmation IN ('lazy','require_ack')), inviter_seat_id TEXT REFERENCES seats(id), command_context_epoch INTEGER NOT NULL DEFAULT 0,
+    origin_node TEXT NOT NULL CHECK(length(origin_node)=32 AND origin_node NOT GLOB '*[^0-9a-f]*'),
+    invitee_n INTEGER NOT NULL DEFAULT 0 CHECK(invitee_n >= 0),
     UNIQUE(thread_id, seat_id, episode),
     CHECK(state <> 'accepted' OR (accepted_at IS NOT NULL AND accepted_actor_seat_id IS NOT NULL AND accepted_generation IS NOT NULL AND accepted_observation IS NOT NULL))
 ) STRICT;
@@ -544,6 +551,7 @@ CREATE TABLE messages (
     CHECK(relays_user IN (0, 1)), author_role_backfilled INTEGER NOT NULL DEFAULT 0
     CHECK(author_role_backfilled IN (0, 1)), user_intent TEXT
     CHECK (user_intent IN ('query', 'request', 'rule')), delivery_mode TEXT NOT NULL DEFAULT 'ordinary' CHECK(delivery_mode IN ('ordinary','lazy')), sender_binding_id TEXT,
+    origin_node TEXT CHECK(origin_node IS NULL OR length(origin_node)=32),
     UNIQUE(id, thread_id),
     UNIQUE(thread_id, sequence),
     CHECK((kind = 'ordinary' AND body IS NOT NULL AND event_key IS NULL) OR
@@ -569,6 +577,7 @@ CREATE TABLE send_preparations (
     warning_count INTEGER NOT NULL DEFAULT 0 CHECK(warning_count >= 0),
     earliest_lease_deadline INTEGER,
     status TEXT NOT NULL CHECK(status IN ('building','sealed','discarded')), prepared_at INTEGER, delivery_mode TEXT NOT NULL DEFAULT 'ordinary' CHECK(delivery_mode IN ('ordinary','lazy')),
+    origin TEXT NOT NULL DEFAULT 'local' CHECK(origin IN ('local','replicated')),
     UNIQUE(instance_id, operation_scope, operation_key)
 ) STRICT;
 
@@ -609,7 +618,8 @@ CREATE TABLE send_manifests (
     base_sequence INTEGER NOT NULL CHECK(base_sequence > 0),
     interval_high_water INTEGER NOT NULL CHECK(interval_high_water >= 0),
     recipient_count INTEGER NOT NULL CHECK(recipient_count >= 0),
-    warning_count INTEGER NOT NULL CHECK(warning_count >= 0)
+    warning_count INTEGER NOT NULL CHECK(warning_count >= 0),
+    suppressed_seats TEXT
 ) STRICT;
 
 CREATE TABLE operations (
@@ -678,10 +688,11 @@ CREATE TABLE retirements (
     id TEXT NOT NULL UNIQUE,
     seat_id TEXT NOT NULL UNIQUE REFERENCES seats(id),
     cutover_at INTEGER NOT NULL,
-    closure_boot TEXT NOT NULL,
-    closure_epoch INTEGER NOT NULL CHECK(closure_epoch >= 0),
-    closure_target TEXT NOT NULL,
-    closure_generation INTEGER NOT NULL CHECK(closure_generation >= 0),
+    closure_boot TEXT,
+    closure_epoch INTEGER CHECK(closure_epoch >= 0),
+    closure_target TEXT,
+    closure_generation INTEGER CHECK(closure_generation >= 0),
+    origin TEXT NOT NULL DEFAULT 'local' CHECK(origin IN ('local','replicated')),
     thread_ordinal INTEGER NOT NULL DEFAULT 0 CHECK(thread_ordinal >= 0),
     phase TEXT NOT NULL DEFAULT 'select_thread' CHECK(phase IN ('select_thread', 'invitations', 'receipts', 'logical_receipts', 'audit', 'complete')),
     obligation_ordinal INTEGER NOT NULL DEFAULT 0 CHECK(obligation_ordinal >= 0),
@@ -691,7 +702,8 @@ CREATE TABLE retirements (
     obligations_retired INTEGER NOT NULL DEFAULT 0 CHECK(obligations_retired >= 0),
     audits_added INTEGER NOT NULL DEFAULT 0 CHECK(audits_added >= 0),
     status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'complete')),
-    last_error TEXT CHECK(last_error IS NULL OR length(CAST(last_error AS BLOB)) <= 512)
+    last_error TEXT CHECK(last_error IS NULL OR length(CAST(last_error AS BLOB)) <= 512),
+    CHECK((origin='local') = (closure_boot IS NOT NULL))
 ) STRICT;
 
 CREATE TABLE retirement_audits (
@@ -1238,6 +1250,8 @@ CREATE TABLE direct_threads (
     seat_a TEXT NOT NULL REFERENCES seats(id),
     seat_b TEXT NOT NULL REFERENCES seats(id),
     thread_id TEXT NOT NULL UNIQUE REFERENCES threads(id),
+    created_hlc INTEGER NOT NULL,
+    created_node TEXT NOT NULL CHECK(length(created_node)=32 AND created_node NOT GLOB '*[^0-9a-f]*'),
     CHECK(seat_a < seat_b),
     UNIQUE(instance_id, seat_a, seat_b)
 ) STRICT;
@@ -1399,6 +1413,7 @@ CREATE TABLE receipt_state (
     retired_at INTEGER,
     warning_message_id TEXT, soft_poked_at INTEGER, ack_required INTEGER NOT NULL DEFAULT 1 CHECK(ack_required IN (0,1)),
     ack_binding_id TEXT,
+    settle_batch TEXT CHECK(settle_batch IS NULL OR length(settle_batch) <= 64),
     PRIMARY KEY(message_id, seat_id)
 ) STRICT;
 
@@ -1676,6 +1691,8 @@ CREATE INDEX seat_availability_after ON seat_availability(seat_id, decision_seq)
 
 CREATE INDEX invitations_due ON invitations(deadline_at, ordinal) WHERE state = 'pending';
 
+CREATE INDEX invitations_due_origin ON invitations(origin_node, deadline_at, ordinal) WHERE state = 'pending';
+
 CREATE INDEX invitations_seat_thread_pending ON invitations(seat_id, thread_id, ordinal) WHERE state = 'pending';
 
 CREATE INDEX invitations_thread_seat_episode ON invitations(thread_id, seat_id, episode);
@@ -1687,6 +1704,8 @@ CREATE INDEX invitations_pending_unwarned ON invitations(deadline_at, ordinal) W
 CREATE INDEX messages_thread_sequence ON messages(thread_id, sequence);
 
 CREATE INDEX messages_kind_ordinal ON messages(kind, ordinal);
+
+CREATE INDEX messages_origin_ordinary ON messages(origin_node) WHERE kind='ordinary';
 
 CREATE UNIQUE INDEX messages_instance_logical ON messages(instance_id, decision_seq, event_offset);
 

@@ -77,13 +77,13 @@ fn seeded_body(
         let thread = format!("q4-t{n}");
         let sender = format!("a-q4-{n}");
         rows.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&sender]).unwrap();
-        rows.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','q4','q4',0,0,100001)", [&thread]).unwrap();
+        rows.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','q4','q4',0,0,100001,0)", [&thread]).unwrap();
         if !(50..75).contains(&n) {
-            rows.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'s',?2)", params![sender,thread]).unwrap();
+            rows.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id,created_hlc,created_node) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'s',?2,0,(SELECT id FROM local_node))", params![sender,thread]).unwrap();
         }
         let voluntary = if n >= 75 { "left" } else { "invited" };
         rows.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,'s',10000,'invited',?2)", params![thread,voluntary]).unwrap();
-        rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES (?1,?2,'s',10000,'pending',0,1000000,300,300,'lazy',?3)", params![format!("q4-inv{n}"),thread,sender]).unwrap();
+        rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node) VALUES (?1,?2,'s',10000,'pending',0,1000000,300,300,'lazy',?3,(SELECT id FROM local_node))", params![format!("q4-inv{n}"),thread,sender]).unwrap();
         let prep = format!("prep-q4-{n}");
         let message = format!("msg-q4-{n}");
         rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')", params![prep,thread]).unwrap();
@@ -110,11 +110,11 @@ fn seeded_body(
         let sender = format!("a-noise-{n}");
         let thread = format!("noise-t{n}");
         rows.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&sender]).unwrap();
-        rows.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','noise','noise',0,0)", [&thread]).unwrap();
-        rows.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'s',?2)", params![sender,thread]).unwrap();
+        rows.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','noise','noise',0,0,0)", [&thread]).unwrap();
+        rows.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id,created_hlc,created_node) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'s',?2,0,(SELECT id FROM local_node))", params![sender,thread]).unwrap();
         rows.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,'s',1,'invited','invited')", [&thread]).unwrap();
         rows.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,?2,1,'joined','joined')",params![thread,sender]).unwrap();
-        rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES (?1,?2,'s',1,'pending',0,?3,300,300)", params![format!("noise-inv{n}"),thread,n+1]).unwrap();
+        rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,origin_node) VALUES (?1,?2,'s',1,'pending',0,?3,300,300,(SELECT id FROM local_node))", params![format!("noise-inv{n}"),thread,n+1]).unwrap();
         // Same-seat historical identities defeat a seat-prefix binding search.
         // Both cursor-key directions have distractors: the selected binding on
         // unrelated threads, and unrelated bindings on the selected thread.
@@ -151,7 +151,7 @@ fn seeded_body(
         rows.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,?3,?4,0,1,0,?5,0)",params![prep,message,thread,600000+n,if same_seat_recipients {2} else {1}]).unwrap();
         // Exact current episode is fixed at10000 in both populations. Older
         // retained episodes and event history grow without moving that boundary.
-        rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,retired_at) VALUES (?1,'q4-t0','s',?2,'recipient_retired',0,?2,300,300,1)", params![format!("old-inv{n}"),n+1]).unwrap();
+        rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,retired_at,origin_node) VALUES (?1,'q4-t0','s',?2,'recipient_retired',0,?2,300,300,1,(SELECT id FROM local_node))", params![format!("old-inv{n}"),n+1]).unwrap();
         rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_seq,decision_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','q4-t0',?2,'info',?1,'{}',?3,0)", params![format!("noise-event{n}"),n+1,500000+n]).unwrap();
     }
     drop(rows);

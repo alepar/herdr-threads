@@ -112,8 +112,8 @@ impl Store {
     fn remote_seat(&self, id: &str, home: NodeUuid) {
         self.conn
             .execute(
-                "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind) \
-                 VALUES(?1,(SELECT id FROM local_node),'remote','native',1,0,?2,0,'agent')",
+                "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+                 VALUES(?1,(SELECT id FROM local_node),'remote','native',1,0,?2,0,'agent',1)",
                 params![id, home.to_string()],
             )
             .unwrap();

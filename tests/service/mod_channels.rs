@@ -1354,7 +1354,7 @@ mod domain {
         // An ordinary message addressed to the seat.
         db(&rig)
             .execute_batch(
-                "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);\
+                "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);\
                  INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m1','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','hello',0,1);\
                  INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m1','t','s','pending',100);\
                  UPDATE wake_work SET attention_version=6 WHERE seat_id='s';",
@@ -1663,7 +1663,7 @@ mod domain {
     /// An ordinary message `id` (sequence `seq` of thread `t`) published to seat `s`.
     fn deliver(db: &rusqlite::Connection, id: &str, seq: u32) {
         db.execute_batch(&format!(
-            "INSERT OR IGNORE INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);
+            "INSERT OR IGNORE INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);
              INSERT OR IGNORE INTO memberships(thread_id,seat_id,state) VALUES ('t','s','joined');
              INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','{id}','t',{seq},'ordinary','b',{seq},{seq});
              INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p-{id}','34750f98bd59fcfc946da45aaabe933b','actor','{id}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');

@@ -1724,7 +1724,7 @@ fn producer_ordering_control(
     let context = StoreContext::new(iso.path("store.db"), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','34750f98bd59fcfc946da45aaabe933b','ordering','ordering',0,0);").unwrap();
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','ordering','ordering',0,0,0);").unwrap();
     for seat in ["a", "b", "c"] {
         db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat,format!("p-{seat}")]).unwrap();
         db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,1,'fresh',0,?2,'inc','coherent_enumeration',1)",rusqlite::params![format!("p-{seat}"),format!("term-{seat}")]).unwrap();
@@ -1738,7 +1738,7 @@ fn producer_ordering_control(
             db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t',?1,1,1)",[seat]).unwrap();
         }
     }
-    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES('unrelated','t','c',1,'pending',0,1,300000,300000);").unwrap();
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES('unrelated','t','c',1,'pending',0,1,300000,300000,(SELECT id FROM local_node));").unwrap();
     let control_boot = uuid::Uuid::new_v4();
     let store = Arc::new(
         SqliteStore::new(

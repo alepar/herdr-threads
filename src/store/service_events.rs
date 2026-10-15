@@ -721,7 +721,7 @@ mod tests {
         ));
         let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0);").unwrap();
+        db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);").unwrap();
         let tx = db.unchecked_transaction().unwrap();
         let author = service_substrate::ensure_reserved_author(
             &tx,
@@ -821,7 +821,7 @@ mod tests {
         db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[seat]).unwrap();
         let invitation = format!("inv-{seat}");
         let requirement = format!("req-{seat}");
-        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES(?1,'t',?2,1,'pending',1,1,100,101)",params![invitation,seat]).unwrap();
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES(?1,'t',?2,1,'pending',1,1,100,101,(SELECT id FROM local_node))",params![invitation,seat]).unwrap();
         db.execute("INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES(?1,'t',?2,?3,?4,'pending',1,1)",params![requirement,seat,author.as_str(),invitation]).unwrap();
     }
     fn count(db: &Connection, table: &str) -> i64 {
@@ -1262,7 +1262,7 @@ mod tests {
         seed_joined(&db, "joined");
         seed_joined(&db, "both");
         let invitation = "inv-both";
-        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES(?1,'t','both',1,'pending',1,1,100,101)",[invitation]).unwrap();
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES(?1,'t','both',1,'pending',1,1,100,101,(SELECT id FROM local_node))",[invitation]).unwrap();
         db.execute("INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES('req-both','t','both',?1,?2,'pending',1,1)",params![connection.author().as_str(),invitation]).unwrap();
         seed_pending(&db, "pending", connection.author());
         seed_joined(&db, "retired");
@@ -1867,7 +1867,7 @@ mod tests {
         )
         .unwrap();
         seed_joined(&db, "native");
-        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('inv-native','t','native',1,'pending',1,1,100,101)",[]).unwrap();
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES('inv-native','t','native',1,'pending',1,1,100,101,(SELECT id FROM local_node))",[]).unwrap();
         db.execute("INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES('req-native','t','native',?1,'inv-native','pending',1,1)",[connection.author().as_str()]).unwrap();
         let request = request("mixed-info", NotificationSeverity::Info);
         stage_all(&context, &mut db, &connection, &gate, &request);

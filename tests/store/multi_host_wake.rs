@@ -78,7 +78,7 @@ fn due_seat(db: &Connection, seat: &str, socket: &str, pane: &str) {
     .unwrap();
     let thread = format!("t-{seat}");
     db.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,?2,'topic','goal',0,0)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,?2,'topic','goal',0,0,0)",
         rusqlite::params![thread, NODE],
     )
     .unwrap();
@@ -88,7 +88,7 @@ fn due_seat(db: &Connection, seat: &str, socket: &str, pane: &str) {
     )
     .unwrap();
     db.execute(
-        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,?2,?3,1,'pending',0,1,100,100)",
+        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES (?1,?2,?3,1,'pending',0,1,100,100,(SELECT id FROM local_node))",
         rusqlite::params![format!("inv-{seat}"), thread, seat],
     )
     .unwrap();

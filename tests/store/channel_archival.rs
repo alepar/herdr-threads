@@ -53,7 +53,7 @@ pub(super) fn fixture() -> Connection {
 #[test]
 fn archival_schema_new_channel_gets_dirty_grace_without_historical_backdating() {
     let db = fixture();
-    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',-999999,-999999)").unwrap();
+    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',-999999,-999999,0)").unwrap();
     let row = db.query_row("SELECT activity_revision,quiet_mono,due_mono FROM channel_archival WHERE thread_id='t'", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,i64>(2)?))).expect("new channels need explicit fresh archival grace");
     assert_eq!(row, (1, None, 0));
 }
@@ -61,7 +61,7 @@ fn archival_schema_new_channel_gets_dirty_grace_without_historical_backdating() 
 #[test]
 fn archival_schema_channel_activity_invalidates_certificate() {
     let db = fixture();
-    db.execute_batch("INSERT INTO archival_instances(instance_id,runtime_boot) VALUES('34750f98bd59fcfc946da45aaabe933b','boot'); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0); UPDATE channel_archival SET quiet_mono=10,scan_revision=3 WHERE thread_id='t'; UPDATE threads SET topic='changed' WHERE id='t';").unwrap();
+    db.execute_batch("INSERT INTO archival_instances(instance_id,runtime_boot) VALUES('34750f98bd59fcfc946da45aaabe933b','boot'); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0); UPDATE channel_archival SET quiet_mono=10,scan_revision=3 WHERE thread_id='t'; UPDATE threads SET topic='changed' WHERE id='t';").unwrap();
     let row = db
         .query_row(
             "SELECT quiet_mono,scan_revision FROM channel_archival WHERE thread_id='t'",
@@ -93,7 +93,7 @@ fn runtime(at: i64) -> Runtime {
     }
 }
 pub(super) fn thread(db: &Connection) {
-    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',-999999999,-999999999)").unwrap();
+    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',-999999999,-999999999,0)").unwrap();
 }
 fn archived(db: &Connection) -> bool {
     db.query_row("SELECT archived FROM threads WHERE id='t'", [], |r| {
@@ -532,7 +532,7 @@ fn archival_protected_occupants_and_work_remain_unchanged() {
             "invitation" | "requirement" => {
                 // The invitee is an active seat (a connected binding); a pending invitation to an
                 // inactive seat does not block (see the inactive-seat tests below).
-                db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('q','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('q',1,'q','b',1,'codex','qsession','00000000-0000-4000-8000-000000000002','cooperative_top_level',0,0); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('inv','t','q',1,'pending',1,0,300000,300000)").unwrap();
+                db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('q','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('q',1,'q','b',1,'codex','qsession','00000000-0000-4000-8000-000000000002','cooperative_top_level',0,0); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES('inv','t','q',1,'pending',1,0,300000,300000,(SELECT id FROM local_node))").unwrap();
                 if case == "requirement" {
                     db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES('service','34750f98bd59fcfc946da45aaabe933b',0); UPDATE threads SET managed_owner_author_id='service'; INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES('req','t','q','service','inv','pending',1,0)").unwrap();
                 }
@@ -2447,7 +2447,7 @@ fn retired_and_unresolved_member_seats_do_not_block() {
 fn pending_invitation_to_an_inactive_seat_does_not_block() {
     let mut db = fixture();
     thread(&db);
-    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('q','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('inv','t','q',1,'pending',1,0,300000,300000)").unwrap();
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('q','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES('inv','t','q',1,'pending',1,0,300000,300000,(SELECT id FROM local_node))").unwrap();
     assert_eq!(
         archived_at(&mut db, 3_600_000),
         Some(3_600_000),
@@ -2657,7 +2657,7 @@ fn runtime2(at: i64, h1_coherent: bool, h2_coherent: bool) -> Runtime {
 }
 /// Adds the second Herdr server (host_id 2) and a thread `u`.
 fn second_host(db: &Connection) {
-    db.execute_batch(&format!("INSERT INTO herdr_hosts(node_id,endpoint,created_at,host_boot,host_epoch) VALUES('{NODE}','/h2.sock',0,'b2',1); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','{NODE}','topic','goal',-999999999,-999999999)")).unwrap();
+    db.execute_batch(&format!("INSERT INTO herdr_hosts(node_id,endpoint,created_at,host_boot,host_epoch) VALUES('{NODE}','/h2.sock',0,'b2',1); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('u','{NODE}','topic','goal',-999999999,-999999999,0)")).unwrap();
 }
 /// Seat `s2` on h2 (target `p2`), a member of each of `threads`.
 fn agent_on_h2(db: &Connection, threads: &[&str]) {

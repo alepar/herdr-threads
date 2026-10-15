@@ -50,7 +50,7 @@ fn seed_discovery_database(conn: &Connection) {
     ] {
         conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,?2,'b',1,1,'codex',?3,?4,'cooperative_top_level',0,'term-'||?2,'inc')", params![seat,target,session,execution]).unwrap();
     }
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     for (seat, state) in [("a", "joined"), ("b", "joined"), ("c", "invited")] {
         conn.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,?2)",
@@ -873,7 +873,7 @@ fn one_ack_batch_can_settle_messages_from_two_threads() {
         crate::protocol::results::CommandResult::MessageSent(id) => id,
         _ => panic!(),
     };
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','second','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','second','goal',0,0,0)", []).unwrap();
     conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('m2','34750f98bd59fcfc946da45aaabe933b','u',1,'ordinary','a','other',0,100000)", []).unwrap();
     conn.execute(
         "UPDATE local_node SET decision_seq=100000 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
@@ -2631,7 +2631,7 @@ fn foreground_write_between_preparation_quanta_and_failed_publication_stays_hidd
         }
     ));
     let foreground = context.open_writer().unwrap();
-    foreground.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('foreground','34750f98bd59fcfc946da45aaabe933b','fg','goal',0,0)",[]).unwrap();
+    foreground.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('foreground','34750f98bd59fcfc946da45aaabe933b','fg','goal',0,0,0)",[]).unwrap();
     let prep_id = loop {
         match messages::prepare_send_step(
             &context,
@@ -3137,7 +3137,7 @@ fn entry_sets_entry_plus_p99_never_lowering() {
 #[test]
 fn progress_extends_every_active_seat_on_the_thread() {
     let (_context, mut conn, _clock) = setup();
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     catch_up_row(&conn, "a", "t", true, Some(150));
     catch_up_row(&conn, "b", "t", true, None);
     catch_up_row(&conn, "c", "t", false, Some(40));
@@ -3354,7 +3354,7 @@ fn recheck_walks_the_extension_index_in_bounded_pages_with_a_watermark() {
     // matters is the 101st by extension_until.
     for n in 0..100 {
         let thread = format!("x{n}");
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", [&thread]).unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", [&thread]).unwrap();
         catch_up_row(&conn, "a", &thread, false, Some(100 + n));
     }
     legacy_receipt(&conn, "ml", "t", 1, 1500);
@@ -3405,7 +3405,7 @@ fn many_ended_rows_stop_reporting_more() {
     let (context, mut conn, clock) = setup();
     for n in 0..250 {
         let thread = format!("x{n:03}");
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", [&thread]).unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", [&thread]).unwrap();
         catch_up_row(&conn, "a", &thread, false, Some(100 + n));
     }
     clock.0.store(2000, Ordering::SeqCst);
@@ -3450,7 +3450,7 @@ fn keyset_pages_through_rows_sharing_one_extension_until() {
     let (context, mut conn, clock) = setup();
     for n in 0..150 {
         let thread = format!("x{n:03}");
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", [&thread]).unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", [&thread]).unwrap();
         catch_up_row(&conn, "a", &thread, false, Some(1800));
     }
     legacy_receipt(&conn, "ml", "t", 1, 1500);
@@ -3469,7 +3469,7 @@ fn keyset_pages_through_rows_sharing_one_extension_until() {
 fn record_overdue_uses_effective_for_both_bases() {
     use crate::ports::TimeBasis;
     let (context, mut conn, _clock) = setup();
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     legacy_receipt(&conn, "ext", "t", 1, 1500);
     legacy_receipt(&conn, "plain", "t2", 1, 1500);
     catch_up_row(&conn, "b", "t", true, Some(5000));
@@ -3533,7 +3533,7 @@ fn record_overdue_uses_effective_for_both_bases() {
 fn retirement_cutover_is_classified_against_the_effective_deadline() {
     use crate::ports::TimeBasis;
     let (context, mut conn, _clock) = setup();
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     legacy_receipt(&conn, "ext", "t", 1, 1500);
     legacy_receipt(&conn, "plain", "t2", 1, 1500);
     catch_up_row(&conn, "b", "t", true, Some(5000));
@@ -4219,7 +4219,7 @@ fn receipt_discovery_driver_fixture(
         db.execute("UPDATE receipt_deadline_backfill SET physical_high_water=(SELECT COALESCE(MAX(ordinal),0) FROM receipts),completed=0",[]).unwrap();
     }
     for n in 0..invitation_count {
-        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,'t','c',?2,'pending',0,1,?3,500)",params![format!("driver-inv-{n}"),n+1,if n%5==0{5000}else{500}]).unwrap();
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES (?1,'t','c',?2,'pending',0,1,?3,500,(SELECT id FROM local_node))",params![format!("driver-inv-{n}"),n+1,if n%5==0{5000}else{500}]).unwrap();
     }
     db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
         .unwrap();

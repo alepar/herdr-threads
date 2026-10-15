@@ -309,8 +309,8 @@ pub(crate) fn resolve_direct_pair(
     )?);
     let label = format!("1:1 {} {}", a.as_str(), b.as_str());
     let joined_seq = schema::next_decision_seq(tx, instance)?;
-    tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES(?1,?2,?3,?3,?4,?4)",params![thread.as_str(),instance,label,decision.utc.0]).map_err(store_error)?;
-    tx.execute("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES(?1,?2,'joined','joined',?3)",params![thread.as_str(),caller.as_str(),decision.utc.0]).map_err(store_error)?;
+    tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES(?1,?2,?3,?3,?4,?4,1)",params![thread.as_str(),instance,label,decision.utc.0]).map_err(store_error)?;
+    tx.execute("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at,home_transition,last_joined_n) VALUES(?1,?2,'joined','joined',?3,1,1)",params![thread.as_str(),caller.as_str(),decision.utc.0]).map_err(store_error)?;
     crate::store::read_cursors::init_for_join(tx, caller, &thread)?;
     tx.execute(
         "INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES(?1,?2,1,?3)",
@@ -340,7 +340,7 @@ pub(crate) fn resolve_direct_pair(
     )?);
     let invited_seq = schema::next_decision_seq(tx, instance)?;
     tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES(?1,?2,1,'invited','invited')",params![thread.as_str(),recipient.as_str()]).map_err(store_error)?;
-    tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES(?1,?2,?3,1,'pending',?4,?5,?6,?7,?8,?9)",params![invitation.as_str(),thread.as_str(),recipient.as_str(),decision.utc.0,invited_seq as i64,duration,deadline.0,confirmation,creation_policy.map(|_| caller.as_str())]).map_err(store_error)?;
+    tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node,invitee_n) VALUES(?1,?2,?3,1,'pending',?4,?5,?6,?7,?8,?9,(SELECT id FROM local_node),0)",params![invitation.as_str(),thread.as_str(),recipient.as_str(),decision.utc.0,invited_seq as i64,duration,deadline.0,confirmation,caller.as_str()]).map_err(store_error)?;
     let mut payload = serde_json::json!({"action":"invite","actor_seat":caller.as_str(),"seat":recipient.as_str(),"invitation":invitation.as_str()});
     if timed {
         payload["deadline_at"] = serde_json::json!(deadline.0);
@@ -362,8 +362,14 @@ pub(crate) fn resolve_direct_pair(
         },
     )?;
     tx.execute(
-        "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES(?1,?2,?3,?4)",
-        params![instance, a.as_str(), b.as_str(), thread.as_str()],
+        "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id,created_hlc,created_node) VALUES(?1,?2,?3,?4,?5,?1)",
+        params![
+            instance,
+            a.as_str(),
+            b.as_str(),
+            thread.as_str(),
+            crate::sync::hlc::HlcStamp::from_parts(decision.utc.0.max(0) as u64, 0).as_u64() as i64
+        ],
     )
     .map_err(store_error)?;
     for seat in [caller, recipient] {

@@ -434,7 +434,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         assert!(ack_observation.is_some());
         let service_receipts: i64 = db.query_row("SELECT count(*) FROM receipt_state WHERE message_id=?1", [notice.summary.message.as_str()], |row| row.get(0)).unwrap();
         assert_eq!(service_receipts, 0);
-        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('ordinary-populated',?1,'ordinary','ordinary',0,0)", [instance.to_string()]).unwrap();
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('ordinary-populated',?1,'ordinary','ordinary',0,0,0)", [instance.to_string()]).unwrap();
         db.execute("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state) VALUES ('ordinary-populated','member-0','joined','joined')", []).unwrap();
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('ordinary-populated','member-0',1,1)", []).unwrap();
         db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('ordinary-target',?1,'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();

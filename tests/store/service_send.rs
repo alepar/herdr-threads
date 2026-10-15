@@ -819,8 +819,8 @@ fn error_cases_map_to_section_2_codes() {
         let db = f.db();
         db.execute_batch(
             "PRAGMA foreign_keys=OFF;
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('other-instance','j','x','x',0,0);
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('plain','34750f98bd59fcfc946da45aaabe933b','x','x',0,0);
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('other-instance','j','x','x',0,0,0);
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('plain','34750f98bd59fcfc946da45aaabe933b','x','x',0,0,0);
 ",
         )
         .unwrap();
@@ -1474,7 +1474,7 @@ fn new_service_sends_anchor_all_unavailable_audiences_to_send_time() {
                         [],
                     )
                     .unwrap();
-                    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('v','t','s1',1,'pending',2,0,300,300)",[]).unwrap();
+                    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES('v','t','s1',1,'pending',2,0,300,300,(SELECT id FROM local_node))",[]).unwrap();
                 }
                 _ => unreachable!(),
             }

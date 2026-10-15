@@ -272,7 +272,7 @@ fn ensure_thread(
             tx, &v.thread, author,
         )?));
     }
-    tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,managed_owner_author_id) VALUES (?1,?2,?3,?4,?5,?5,?6)",
+    tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,managed_owner_author_id,journaled) VALUES (?1,?2,?3,?4,?5,?5,?6,0)",
         params![v.thread.as_str(),instance,v.topic,v.goal,at.0,author.as_str()]).map_err(store_error)?;
     schema::bump_filter_revision(tx, instance, "directory", "all")?;
     Ok(ServiceResult::ThreadEnsured(managed_thread(
@@ -418,7 +418,7 @@ fn invite(
         )?);
         let seq = schema::next_decision_seq(tx, instance)? as i64;
         let deadline = schema::checked_deadline(at, duration)?;
-        tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8)",
+        tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,origin_node,invitee_n) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,(SELECT id FROM local_node),COALESCE((SELECT home_transition FROM memberships WHERE thread_id=?2 AND seat_id=?3),0))",
             params![id.as_str(),v.thread.as_str(),v.seat.as_str(),episode,at.0,seq,duration,deadline.0]).map_err(store_error)?;
         (id, episode, seq)
     } else {

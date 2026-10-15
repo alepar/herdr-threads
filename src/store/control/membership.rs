@@ -127,7 +127,7 @@ pub fn join(
             )?;
             let instance = &command.claim.instance;
             let seq = schema::next_decision_seq(tx, instance)?;
-            tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state,joined_at) VALUES (?1,?2,?3,'joined','joined',?4) ON CONFLICT(thread_id,seat_id) DO UPDATE SET episode=excluded.episode,state='joined',voluntary_state='joined',joined_at=excluded.joined_at,left_at=NULL",
+            tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state,joined_at,home_transition,last_joined_n) VALUES (?1,?2,?3,'joined','joined',?4,1,1) ON CONFLICT(thread_id,seat_id) DO UPDATE SET episode=excluded.episode,state='joined',voluntary_state='joined',joined_at=excluded.joined_at,left_at=NULL,home_transition=memberships.home_transition+1,last_joined_n=memberships.home_transition+1",
                 params![command.thread.as_str(),caller.as_str(),episode,decision.utc.0]).map_err(store_error)?;
             tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
                 params![command.thread.as_str(),caller.as_str(),episode,seq as i64]).map_err(store_error)?;

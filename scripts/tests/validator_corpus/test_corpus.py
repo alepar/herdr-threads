@@ -129,7 +129,7 @@ class Case:
         observation = json.dumps({"harness": self.case.get("harness", "claude"), "session": SESSION,
                                   "provenance": "cooperative_top_level", "execution": "exec-root"})
         for message in spec.get("messages", []):
-            self.db.execute("INSERT INTO send_manifests VALUES (?,?, 'i', ?, ?, 0, 3, 1, 1, 0)",
+            self.db.execute("INSERT INTO send_manifests VALUES (?,?, 'i', ?, ?, 0, 3, 1, 1, 0, NULL)",
                             (f"prep-{message['id']}", message["id"], THREAD, message["seq"]))
             self.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,"
                             "eligible_at_snapshot) VALUES (?, ?, ?, 1, 900000, 0)", (f"prep-{message['id']}", THREAD, SEAT))
@@ -139,8 +139,8 @@ class Case:
         for invitation in spec.get("invitations", []):
             accepted = invitation["state"] == "accepted"
             self.db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,"
-                            "deadline_at,accepted_at,accepted_actor_seat_id,accepted_generation,accepted_observation) "
-                            "VALUES (?,?,?,1,?,?,0,900000,1,?,?,?,?)",
+                            "deadline_at,accepted_at,accepted_actor_seat_id,accepted_generation,accepted_observation,origin_node) "
+                            "VALUES (?,?,?,1,?,?,0,900000,1,?,?,?,?,(SELECT id FROM local_node))",
                             (invitation["id"], THREAD, SEAT, invitation["state"], invitation["seq"], 1 if accepted else None,
                              SEAT if accepted else None, 1 if accepted else None, observation if accepted else None))
         if "wake_work" in spec:

@@ -32,7 +32,7 @@ fn setup(iso: &TestIsolation) -> (SqliteStore, Connection) {
     let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("PRAGMA foreign_keys=OFF;
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0),('ft','foreign','foreign','foreign',0,0);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0),('ft','foreign','foreign','foreign',0,0,0);
         INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES('s','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));").unwrap();
     for n in 1..=100 {
         db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?2,?3,0,?4)",params![format!("msg-{n}"),n,if n%2==0 {"ordinary message"} else {"[lazy] alleged passive message"},if n%2==0 {"lazy"} else {"ordinary"}]).unwrap();

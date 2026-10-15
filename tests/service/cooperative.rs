@@ -3854,7 +3854,7 @@ fn completion_hint_channels(service: &mut DomainService) -> Arc<CompletionHintCh
     channels
 }
 fn completion_hint_mail(db: &Connection) {
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('hint-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,3)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('hint-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,3,0)", []).unwrap();
     db.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hint-thread','s','joined')",
         [],

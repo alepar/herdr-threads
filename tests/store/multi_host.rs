@@ -404,8 +404,8 @@ fn mapped_seat(f: &TwoHosts, seat: &str, socket: &str, target: &str) {
 
 fn insert_remote_seat(db: &Connection, seat: &str) {
     db.execute(
-        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,host_id) \
-         VALUES (?1,?2,'remote','native',1,0,?3,0,'agent',NULL)",
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,host_id,published) \
+         VALUES (?1,?2,'remote','native',1,0,?3,0,'agent',NULL,1)",
         params![seat, NODE, FOREIGN_NODE],
     )
     .unwrap();
