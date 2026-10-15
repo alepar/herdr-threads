@@ -100,7 +100,10 @@ python3 scripts/wake-e2e.py                   # both harnesses, all cases (~10 m
 #   --codex-auth-home DIR   Codex home whose auth.json is copied (default $CODEX_HOME or ~/.codex)
 #   --harness claude|codex  --cases CASE,...  --keep (leave the workspace up)  --evidence-dir DIR
 #   opt-in, not in the default matrix: --harness codex --cases side-nudge/group,side-draft/group
+scripts/wake-e2e-herdr 0.9.5 [ARGS...]        # the same run inside a private server of one listed Herdr release
 ```
+
+- Run it once per release, against the newest Herdr release in `tests/herdr-releases.tsv`: directly when the local Herdr is that release, else through `scripts/wake-e2e-herdr` (checksum-verified binary from the release-smoke cache, private socket, config and state, the user's HOME kept for harness credentials, removed at the end). The release smoke (`scripts/herdr-release-smoke`, stand-in agent) covers every listed release, including `launch` and the default automatic `handoff --new-tab`.
 
 - The opt-in side cases (ht-327) give each Codex recipient, plus a hookless `co-plain` Codex whose bindings are all plain CLI calls, two `/side` session bindings in its one process before the send: `side-nudge` (a p0 send, `--nudge`, to a recipient at T = 0) must still wake the idle recipient, and a second p0 that a busy `/side` turn already displayed through its own `inbox` must still wake the idle main session afterwards (a sibling's display never blocks the process's wake, ht-yha.62); `side-draft` (an ACK request with a deadline) must leave a typed composer draft untouched and give the sender an overdue warning naming the refused wake (`wake=`).
 

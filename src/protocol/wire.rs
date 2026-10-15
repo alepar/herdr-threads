@@ -50,6 +50,29 @@ pub fn automatic_response_result(result: &Result<CommandResult, ApiError>) -> bo
         Ok(CommandResult::AutomaticBootstrap(_) | CommandResult::AutomaticBootstrapReserved(_))
     )
 }
+/// The success family the daemon answers an automatic bootstrap request
+/// with: the submission check confirms the reservation with
+/// `BootstrapSubmissionChecked`, resolution names the created pane's seat with
+/// `SeatResolved`, and every other action returns the automatic status
+/// families.
+pub fn automatic_response_family(
+    command: &Command,
+    result: &Result<CommandResult, ApiError>,
+) -> bool {
+    use crate::protocol::handoff::AutomaticBootstrapAction;
+    let Command::AutomaticBootstrap(request) = command else {
+        return automatic_response_result(result);
+    };
+    match request.action {
+        AutomaticBootstrapAction::CheckSubmission { .. } => {
+            matches!(result, Ok(CommandResult::BootstrapSubmissionChecked(_)))
+        }
+        AutomaticBootstrapAction::Resolve { .. } => {
+            matches!(result, Ok(CommandResult::SeatResolved(_)))
+        }
+        _ => automatic_response_result(result),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WireRequest {

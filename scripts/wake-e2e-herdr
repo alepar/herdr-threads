@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Run the wake e2e against one official Herdr release in a private server.
+
+  wake-e2e-herdr VERSION [wake-e2e.py arguments...]
+  wake-e2e-herdr 0.9.5 --harness codex --cases send-p0/group
+
+The release's binary comes from tests/herdr-releases.tsv through the
+herdr-release-smoke cache (downloaded once, SHA-256 checked on every run).
+A private `herdr server` runs under a fresh /tmp/hwe.XXXXXX root with its own
+API socket, config (no user plugins) and state; the user's HOME stays, so the harnesses keep
+their real credentials, as in the default run. Its panes run /bin/sh (no user
+shell rc), with the release's `herdr` first on PATH, and
+scripts/wake-e2e.py runs in one pane of that server, so every agent it starts
+and every `herdr` call it makes reaches that release. The shared Herdr server
+is never touched. The server and root are removed at the end; the wake-e2e
+exit status (0 pass, 1 fail, 2 refused) is returned, and its evidence
+directory is printed as usual.
+"""
+from __future__ import annotations
+
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shlex
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+TIMEOUT_S = 3600
+# Caller harness markers: the server's panes are not this caller's session.
+CALLER_ENV_PREFIXES = ("HERDR_", "CLAUDE_CODE_", "CODEX_SESSION", "CODEX_THREAD", "CODEX_SANDBOX")
+CALLER_ENV = ("CLAUDECODE", "AI_AGENT", "HERMES_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID",
+              "ANTIGRAVITY_AGENT")
+
+
+def smoke_module():
+    loader = importlib.machinery.SourceFileLoader("herdr_release_smoke", str(ROOT / "scripts/herdr-release-smoke"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def release_binary(version: str) -> Path:
+    smoke = smoke_module()
+    releases = smoke.read_list()
+    asset = smoke.host_asset()
+    if version not in releases or asset not in releases[version]:
+        sys.exit(f"wake-e2e-herdr: {version} {asset} is not in tests/herdr-releases.tsv")
+    cache = Path(os.environ.get("HT_HERDR_RELEASE_CACHE", Path.home() / ".cache/herdr-threads/herdr-releases"))
+    return smoke.fetch(version, asset, releases[version][asset], cache)
+
+
+def main() -> int:
+    if len(sys.argv) < 2 or sys.argv[1].startswith("-"):
+        sys.exit(__doc__)
+    version, e2e_args = sys.argv[1], sys.argv[2:]
+    herdr = release_binary(version)
+    root = Path(tempfile.mkdtemp(prefix="hwe.", dir="/tmp"))
+    for sub in ("cfg", "st", "rt", "bin"):
+        (root / sub).mkdir(mode=0o700)
+    (root / "cfg/herdr.toml").write_text("default_shell = '/bin/sh'\n")
+    (root / "bin/herdr").symlink_to(herdr)
+    socket = root / "h.sock"
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(CALLER_ENV_PREFIXES) and k not in CALLER_ENV}
+    # A private XDG_CONFIG_HOME too: Herdr loads plugins from there, and a user's linked plugins
+    # (an installed herdr-threads among them) must not start in this server.
+    env.update(HERDR_SOCKET_PATH=str(socket), HERDR_CONFIG_PATH=str(root / "cfg/herdr.toml"),
+               XDG_CONFIG_HOME=str(root / "cfg"), XDG_STATE_HOME=str(root / "st"), XDG_RUNTIME_DIR=str(root / "rt"),
+               PATH=f"{root / 'bin'}:{env.get('PATH', '')}")
+    server = None
+    try:
+        with (root / "server.out").open("wb") as log:
+            server = subprocess.Popen([str(herdr), "server"], env=env, stdin=subprocess.DEVNULL, stdout=log,
+                                      stderr=subprocess.STDOUT, start_new_session=True)
+        deadline = time.time() + 15
+        while not socket.exists():
+            if server.poll() is not None or time.time() > deadline:
+                print((root / "server.out").read_text(errors="replace"), file=sys.stderr)
+                sys.exit(f"wake-e2e-herdr: herdr {version} server did not start")
+            time.sleep(0.1)
+
+        def herdr_cli(*argv):
+            out = subprocess.run([str(herdr), *argv], env=env, capture_output=True, text=True, timeout=30)
+            if out.returncode != 0:
+                raise RuntimeError(f"herdr {' '.join(argv[:2])}: {out.stderr.strip()}")
+            return json.loads(out.stdout) if out.stdout.strip() else {}
+
+        print(f"wake-e2e-herdr: herdr {version} ({herdr}) private server under {root}", flush=True)
+        created = herdr_cli("workspace", "create", "--label", "wake-e2e-control", "--cwd", str(ROOT), "--no-focus")
+        pane = created["result"]["root_pane"]["pane_id"]
+        log, rc = root / "wake-e2e.log", root / "wake-e2e.rc"
+        command = (f"cd {shlex.quote(str(ROOT))} && python3 scripts/wake-e2e.py {shlex.join(e2e_args)} "
+                   f"> {shlex.quote(str(log))} 2>&1; echo $? > {shlex.quote(str(rc))}")
+        herdr_cli("pane", "run", pane, command)
+        deadline, shown = time.time() + TIMEOUT_S, 0
+        while not rc.exists():
+            if time.time() > deadline:
+                print(f"wake-e2e-herdr: no result after {TIMEOUT_S}s", file=sys.stderr)
+                return 1
+            if log.exists():
+                text = log.read_text(errors="replace")
+                sys.stdout.write(text[shown:])
+                sys.stdout.flush()
+                shown = len(text)
+            time.sleep(2)
+        time.sleep(0.5)
+        sys.stdout.write(log.read_text(errors="replace")[shown:])
+        return int(rc.read_text().strip() or 1)
+    finally:
+        if server is not None and server.poll() is None:
+            subprocess.run([str(herdr), "server", "stop"], env=env, capture_output=True, timeout=30)
+            try:
+                server.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(server.pid, signal.SIGKILL)
+                server.wait()
+        # Anything still naming the root (a process the server started that outlived it) goes too.
+        listing = subprocess.run(["ps", "axeww", "-o", "pid=", "-o", "command="], capture_output=True,
+                                 text=True, errors="replace").stdout
+        for line in listing.splitlines():
+            pid, _, command = line.strip().partition(" ")
+            if f"{root}/" in command and pid.isdigit() and int(pid) != os.getpid():
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        subprocess.run(["rm", "-rf", str(root)], check=False)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

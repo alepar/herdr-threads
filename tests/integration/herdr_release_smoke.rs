@@ -5,7 +5,8 @@
 //! it. Everything runs in a private IsolatedHerdr root, never the shared
 //! server: plugin link, the startup entry's daemon, two seats in real panes, a
 //! thread with a required ACK, and a stand-in agent (a local script, no
-//! provider or credentials).
+//! provider or credentials) started by Herdr directly, by `launch` and by the
+//! default automatic `handoff --new-tab`.
 use herdr_threads::test_support::isolated_herdr::IsolatedHerdr;
 use serde_json::Value;
 use std::{
@@ -144,13 +145,28 @@ fn herdr_release_smoke() {
     )
     .unwrap();
     let plugin = plugin_checkout(host.root());
+    // A stand-in `codex` (a local script, no provider or credentials) first on
+    // the server's PATH, so panes and tabs the server creates for a launch or
+    // handoff start it by name, as Herdr starts the real one.
+    let bin = host.root().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let standin = bin.join("codex");
+    fs::write(
+        &standin,
+        "#!/bin/sh\n[ \"$1\" = --version ] && { echo 'codex-cli 0.0.0-smoke'; exit 0; }\n\
+         printf '\\033[2J\\033[H› Ask Codex to do anything\\n'\n\
+         while IFS= read -r line; do [ \"$line\" = exit ] && exit 0; \
+         printf '\\033[2J\\033[H• observed:%s\\n› Ask Codex to do anything\\n' \"$line\"; done\n",
+    )
+    .unwrap();
+    fs::set_permissions(&standin, fs::Permissions::from_mode(0o700)).unwrap();
     let smoke = Smoke { host, plugin };
 
     // 1. Plugin links; the server runs its startup entry (`daemon ensure`).
     let linked = smoke.herdr(&["plugin", "link", smoke.plugin.to_str().unwrap()]);
     assert_eq!(linked["result"]["plugin"]["plugin_id"], PLUGIN, "{linked}");
     assert_eq!(linked["result"]["plugin"]["enabled"], true, "{linked}");
-    smoke.host.start();
+    smoke.host.start_with_path_prefix(&bin);
     let listed = smoke.herdr(&["plugin", "list", "--json"]);
     assert!(
         listed["result"]["plugins"]
@@ -249,17 +265,6 @@ fn herdr_release_smoke() {
     assert_eq!(pending["data"]["items"], serde_json::json!([]), "{pending}");
 
     // 5. A stand-in agent starts and becomes interactive-ready.
-    let bin = smoke.host.root().join("bin");
-    fs::create_dir_all(&bin).unwrap();
-    let standin = bin.join("codex");
-    fs::write(
-        &standin,
-        "#!/bin/sh\nprintf '\\033[2J\\033[H› Ask Codex to do anything\\n'\n\
-         while IFS= read -r line; do [ \"$line\" = exit ] && exit 0; \
-         printf '\\033[2J\\033[H• observed:%s\\n› Ask Codex to do anything\\n' \"$line\"; done\n",
-    )
-    .unwrap();
-    fs::set_permissions(&standin, fs::Permissions::from_mode(0o700)).unwrap();
     let path = format!("PATH={}:{}", bin.display(), std::env::var("PATH").unwrap());
     let pane = smoke.workspace("smoke-agent", Some(&path));
     let started = smoke.herdr(&[
@@ -287,5 +292,90 @@ fn herdr_release_smoke() {
             Err(agent.to_string())
         }
     });
+
+    // 6. `launch` starts the agent through this Herdr's guarded agent start in
+    // an existing empty pane, with the owned hooks installed by `setup`.
+    let mut setup = smoke.host.command(smoke.plugin.join("bin").join(PLUGIN));
+    herdr_threads::test_support::isolation::scrub_env(&mut setup);
+    let root = smoke.host.root();
+    setup
+        .envs(smoke.host.env())
+        .env("CODEX_HOME", root.join("codex"))
+        .env("HERDR_THREADS_OFFLINE", "1")
+        .args(["setup", "codex", "--harness-binary"])
+        .arg(&standin)
+        .arg("--state-dir")
+        .arg(root.join("st/herdr/plugins").join(PLUGIN))
+        .arg("--host-endpoint")
+        .arg(smoke.host.socket_path());
+    let out = setup.output().unwrap();
+    assert!(
+        out.status.success(),
+        "setup codex: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let target = smoke.workspace("smoke-launch", None);
+    // The caller resolves `codex` on its own PATH, like the server's panes.
+    let caller_path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let mut launch = smoke.cli();
+    launch
+        .env("PATH", &caller_path)
+        .args([
+            "launch",
+            "--kind",
+            "codex",
+            "--pane",
+            &target,
+            "--harness-binary",
+        ])
+        .arg(&standin);
+    let launched = json(&launch.output().unwrap(), "herdr-threads launch")["launch"].clone();
+    assert_eq!(launched["outcome"], "started", "{launched}");
+    assert_eq!(launched["pane"], target.as_str(), "{launched}");
+    assert_eq!(launched["binding"]["recorded"], true, "{launched}");
+
+    // 7. The default automatic handoff (no --new-thread or --thread) asks
+    // this Herdr for a new tab, starts the agent there and completes.
+    let mut cmd = smoke.cli();
+    herdr_threads::test_support::isolation::as_agent(&mut cmd, "codex", "smoke-handoff");
+    cmd.env("PATH", &caller_path)
+        .args([
+            "--cooperative-seat",
+            &seats[0],
+            "--cooperative-target",
+            &panes[0],
+        ])
+        .args([
+            "--cooperative-harness",
+            "codex",
+            "--cooperative-role",
+            "top-level",
+        ])
+        .args([
+            "handoff",
+            "--new-tab",
+            "smoke-handoff",
+            "--kind",
+            "codex",
+            "--harness-binary",
+        ])
+        .arg(&standin)
+        .arg("--cwd")
+        .arg(root.join("home"))
+        .args(["--", &format!("release-smoke-handoff-{expected}")]);
+    let handed =
+        json(&cmd.output().unwrap(), "herdr-threads handoff --new-tab")["bootstrap"].clone();
+    assert_eq!(handed["state"], "completed", "{handed}");
+    assert_eq!(handed["outcome"], "started", "{handed}");
+    let workspace = panes[0].split(':').next().unwrap();
+    let tabs = smoke.herdr(&["tab", "list", "--workspace", workspace]);
+    assert!(
+        tabs["result"]["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["label"] == "smoke-handoff"),
+        "{tabs}"
+    );
     println!("herdr {expected}: release smoke passed");
 }

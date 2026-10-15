@@ -209,7 +209,7 @@ impl LocalSocketClient {
         })?;
         if matches!(&request.command, Command::AutomaticBootstrap(_))
             && response.result.is_ok()
-            && !crate::protocol::wire::automatic_response_result(&response.result)
+            && !crate::protocol::wire::automatic_response_family(&request.command, &response.result)
             || response_bytes.len() > MAX_FRAME_BYTES
                 && !crate::protocol::wire::automatic_response_result(&response.result)
         {

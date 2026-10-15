@@ -1025,6 +1025,62 @@ fn elected_public_delivery_is_staged_without_native_effect_and_completed_retry_i
     assert!(f.instance != Uuid::nil());
 }
 
+/// The default automatic two-seat channel (no --new-thread or --thread)
+/// through the real CLI, Unix socket client and daemon: every automatic
+/// bootstrap step's reply family, including the submission check before the
+/// native tab creation, must pass the client's response gate.
+#[test]
+fn elected_public_automatic_new_tab_creates_and_starts_through_the_socket_client() {
+    let _serial = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
+    let f = Fixture::new();
+    let setup = f.cli(
+        &["setup", "codex", "--harness-binary", "/usr/bin/true"],
+        true,
+    );
+    assert!(
+        setup.status.success(),
+        "owned setup: {}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
+    let out = f.cli(
+        &[
+            "--cooperative-seat",
+            "sender",
+            "--cooperative-target",
+            "w4:p1",
+            "--cooperative-harness",
+            "codex",
+            "--cooperative-role",
+            "top-level",
+            "handoff",
+            "--new-tab",
+            "Peer",
+            "--kind",
+            "codex",
+            "--harness-binary",
+            "/usr/bin/true",
+            "--",
+            "one automatic native work item",
+        ],
+        false,
+    );
+    assert!(
+        out.status.success(),
+        "automatic new-tab: {} {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(f.creates.load(Ordering::Relaxed), 1);
+    assert_eq!(f.starts.load(Ordering::Relaxed), 1);
+    let state = f
+        .db()
+        .query_row("SELECT state FROM automatic_bootstrap_parents", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap();
+    assert_eq!(state, "completed");
+}
+
 #[test]
 fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_history() {
     let _serial = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
