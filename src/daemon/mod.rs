@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod harness_evidence;
 pub mod harness_states;
 pub mod health;
+pub mod idle_exit;
 pub mod lifecycle;
 pub mod logs;
 pub mod ownership;

@@ -1978,6 +1978,36 @@ where
                 },
             );
             factory_peers.set_intake(peer_intake);
+            // Idle exit (spec §15): a store-only daemon with no host, link,
+            // target or client stops through the same shutdown as `Stop`.
+            {
+                let idle_stop = Cancellation::default();
+                let subscriptions = [&cancellation, &factory_stop].map(|token| {
+                    let idle_stop = idle_stop.clone();
+                    token.on_cancel(Arc::new(move || idle_stop.cancel()))
+                });
+                let idle = crate::daemon::idle_exit::IdleExit::new(
+                    crate::daemon::idle_exit::ActivityProbe {
+                        hosts: Arc::clone(&host_sessions),
+                        sync: sync_handle.clone(),
+                        gauge: factory_peers.gauge(),
+                    },
+                    Arc::clone(&factory_clock),
+                    config.idle_exit_after(),
+                    cancellation.clone(),
+                    {
+                        let log = Arc::clone(&rate_limited_log);
+                        Arc::new(move |line: &str| log.write_line(line))
+                    },
+                );
+                std::thread::Builder::new()
+                    .name("idle-exit".into())
+                    .spawn(move || {
+                        idle.run(&idle_stop);
+                        drop(subscriptions);
+                    })
+                    .map_err(|error| io::Error::other(format!("idle exit monitor: {error}")))?;
+            }
             *factory_sync_slot
                 .lock()
                 .map_err(|_| io::Error::other("sync slot poisoned"))? = Some(ComposedSync {
