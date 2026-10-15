@@ -15,7 +15,10 @@ use crate::{
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::sync::OnceLock;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use super::connection::{DecisionInstant, StoreContext, api_error, store_error};
 use super::effective::{
@@ -34,6 +37,35 @@ pub const NODE_SCHEMA_VERSION: i64 = 1;
 pub const NODE_APPLICATION_ID: i32 = 0x4854_4E44;
 /// The `schema_identity.marker` of a node store.
 pub const NODE_SCHEMA_MARKER: &str = "herdr-threads-node-v1";
+
+/// One forward migration applied on top of the baseline.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NodeDelta {
+    /// The `PRAGMA user_version` this delta produces: 2 for the first delta,
+    /// then consecutive.
+    pub(crate) version: i64,
+    /// The statements, applied in one `BEGIN IMMEDIATE` together with the
+    /// `user_version` bump.
+    pub(crate) sql: &'static str,
+}
+
+/// Forward migrations after the baseline, in `version` order (2, 3, ...), each an
+/// `include_str!` of `migrations/node/NNNN_<slug>.sql` (NNNN = the `user_version`
+/// it produces). Empty until a change lands after the first `v*` release that
+/// ships the node store.
+///
+/// Responsibility: until that release the baseline file is edited in place and
+/// this list stays empty; after it, every schema change is a new entry here and
+/// the baseline is frozen. Never edit an applied delta: stores that already ran it
+/// are audited against the baseline plus the deltas in this list, so an edited
+/// delta makes them `IncompatibleSchema`. An entry that is out of order or
+/// misnumbered is refused on open.
+pub(crate) const NODE_DELTAS: &[NodeDelta] = &[];
+
+/// The `user_version` of a store that has every delta of `deltas` applied.
+fn latest_version(deltas: &[NodeDelta]) -> i64 {
+    NODE_SCHEMA_VERSION + i64::try_from(deltas.len()).expect("delta count fits i64")
+}
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -217,6 +249,19 @@ pub(crate) fn initialize_with(
     now: impl FnOnce() -> UtcMillis,
     node: Option<&NodeSeed>,
 ) -> Result<(), ApiError> {
+    initialize_with_deltas(conn, now, node, NODE_DELTAS, true)
+}
+
+/// [`initialize_with`] against an explicit delta list; `initialize_with` passes
+/// `NODE_DELTAS`. `cache` allows the expected-object cache (production list only:
+/// a test list changes between calls).
+pub(crate) fn initialize_with_deltas(
+    conn: &Connection,
+    now: impl FnOnce() -> UtcMillis,
+    node: Option<&NodeSeed>,
+    deltas: &[NodeDelta],
+    cache: bool,
+) -> Result<(), ApiError> {
     check_integrity(conn)?;
     let application_id: i64 = conn
         .pragma_query_value(None, "application_id", |r| r.get(0))
@@ -254,15 +299,19 @@ pub(crate) fn initialize_with(
                 return Err(store_error(error));
             }
         }
-        return verify_baseline(conn);
+        // A fresh store continues through the same delta path as an upgraded one.
+        return apply_deltas(conn, deltas, cache);
     }
     if application_id == i64::from(NODE_APPLICATION_ID) {
+        let newest = latest_version(deltas);
         return match version {
-            NODE_SCHEMA_VERSION => verify_baseline(conn),
-            v if v > NODE_SCHEMA_VERSION => Err(incompatible(format!(
-                "store is newer than this binary (schema version {v})"
+            v if v > newest => Err(incompatible(format!(
+                "store is newer than this binary (schema version {v}, newest known {newest})"
             ))),
-            v => Err(incompatible(format!("unsupported schema version {v}"))),
+            v if v < NODE_SCHEMA_VERSION => {
+                Err(incompatible(format!("unsupported schema version {v}")))
+            }
+            _ => apply_deltas(conn, deltas, cache),
         };
     }
     if application_id == 0 && version > 0 {
@@ -273,6 +322,44 @@ pub(crate) fn initialize_with(
     Err(incompatible(format!(
         "not a herdr-threads node store (application_id {application_id:#x})"
     )))
+}
+
+/// Audit a node store at its stamped version, then apply each missing delta in
+/// its own `BEGIN IMMEDIATE` (statements and `user_version` bump commit together;
+/// a failure rolls both back), auditing the result against the baseline plus the
+/// deltas up to that version.
+fn apply_deltas(conn: &Connection, deltas: &[NodeDelta], cache: bool) -> Result<(), ApiError> {
+    let mut version = schema_version(conn)?;
+    verify_at(conn, deltas, version, cache)?;
+    for (index, delta) in deltas.iter().enumerate() {
+        let want = NODE_SCHEMA_VERSION + 1 + i64::try_from(index).expect("delta index fits i64");
+        if delta.version != want {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!(
+                    "schema delta misnumbered: entry {index} is {}, expected {want}",
+                    delta.version
+                ),
+            ));
+        }
+        if delta.version <= version {
+            continue;
+        }
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let applied = conn
+            .execute_batch(delta.sql)
+            .and_then(|()| conn.pragma_update(None, "user_version", delta.version));
+        match applied {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(store_error(error));
+            }
+        }
+        version = delta.version;
+        verify_at(conn, deltas, version, cache)?;
+    }
+    Ok(())
 }
 
 /// The creating transaction's node rows: `local_node`, then the self row of
@@ -320,26 +407,69 @@ fn schema_objects(conn: &Connection) -> rusqlite::Result<Vec<SchemaObject>> {
         .collect()
 }
 
-/// The objects `NODE_BASELINE` creates, read once from an in-memory database.
-fn expected_objects() -> &'static [SchemaObject] {
-    static EXPECTED: OnceLock<Vec<SchemaObject>> = OnceLock::new();
-    EXPECTED.get_or_init(|| {
-        let memory = Connection::open_in_memory().expect("in-memory baseline database");
-        memory
-            .execute_batch(NODE_BASELINE)
-            .expect("NODE_BASELINE applies to an empty database");
-        schema_objects(&memory).expect("read baseline objects")
-    })
+/// The objects `NODE_BASELINE` plus `deltas[..version - 1]` create, read from an
+/// in-memory database. With `cache` (the production list only) each version is
+/// built once per process.
+fn expected_objects(
+    deltas: &[NodeDelta],
+    version: i64,
+    cache: bool,
+) -> Result<Arc<Vec<SchemaObject>>, ApiError> {
+    static CACHE: Mutex<BTreeMap<i64, Arc<Vec<SchemaObject>>>> = Mutex::new(BTreeMap::new());
+    if cache && let Some(hit) = CACHE.lock().expect("expected-object cache").get(&version) {
+        return Ok(hit.clone());
+    }
+    let memory = Connection::open_in_memory().map_err(store_error)?;
+    memory
+        .execute_batch(NODE_BASELINE)
+        .expect("NODE_BASELINE applies to an empty database");
+    for delta in deltas.iter().filter(|d| d.version <= version) {
+        memory.execute_batch(delta.sql).map_err(|error| {
+            api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("schema delta {} does not apply: {error}", delta.version),
+            )
+        })?;
+    }
+    let built = Arc::new(schema_objects(&memory).map_err(store_error)?);
+    if cache {
+        CACHE
+            .lock()
+            .expect("expected-object cache")
+            .insert(version, built.clone());
+    }
+    Ok(built)
 }
 
-/// The one schema check. `NODE_BASELINE` is the reviewed schema: the open path
-/// applies it to an empty store and compares every table, index, trigger and
-/// view of an existing store (normalized `type, name, tbl_name, sql`) against an
-/// in-memory copy of it, plus the application id, version and identity marker.
-/// The first differing object is named in the `IncompatibleSchema` detail.
-/// Schema changes are edits to `migrations/node/0001_node_baseline.sql` until
-/// the first `v*` release that ships it, then additive deltas.
+/// The one schema check. `NODE_BASELINE` (plus `NODE_DELTAS`) is the reviewed
+/// schema: the open path applies it to an empty store and compares every table,
+/// index, trigger and view of an existing store (normalized
+/// `type, name, tbl_name, sql`) against an in-memory copy of it, plus the
+/// application id, version and identity marker. The first differing object is
+/// named in the `IncompatibleSchema` detail. Schema changes are edits to
+/// `migrations/node/0001_node_baseline.sql` until the first `v*` release that
+/// ships it, then additive `NODE_DELTAS` entries.
 pub fn verify_baseline(conn: &Connection) -> Result<(), ApiError> {
+    let version = schema_version(conn)?;
+    verify_at(conn, NODE_DELTAS, version, true)?;
+    let newest = latest_version(NODE_DELTAS);
+    if version != newest {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            format!("unsupported schema version {version} (expected {newest})"),
+        ));
+    }
+    Ok(())
+}
+
+/// Audit `conn` as a node store at schema `version` of the baseline extended by
+/// `deltas`.
+fn verify_at(
+    conn: &Connection,
+    deltas: &[NodeDelta],
+    version: i64,
+    cache: bool,
+) -> Result<(), ApiError> {
     let incompatible = |detail: String| api_error(ErrorCode::IncompatibleSchema, detail);
     let application_id: i64 = conn
         .pragma_query_value(None, "application_id", |r| r.get(0))
@@ -349,8 +479,7 @@ pub fn verify_baseline(conn: &Connection) -> Result<(), ApiError> {
             "not a herdr-threads node store (application_id {application_id:#x})"
         )));
     }
-    let version = schema_version(conn)?;
-    if version != NODE_SCHEMA_VERSION {
+    if version < NODE_SCHEMA_VERSION || version > latest_version(deltas) {
         return Err(incompatible(format!(
             "unsupported schema version {version}"
         )));
@@ -365,7 +494,7 @@ pub fn verify_baseline(conn: &Connection) -> Result<(), ApiError> {
             !(object.0 == "trigger" && object.1.starts_with(TEST_FAULT_TRIGGER_PREFIX))
         })
         .collect();
-    let expected = expected_objects();
+    let expected = expected_objects(deltas, version, cache)?;
     let (mut a, mut e) = (actual.iter().peekable(), expected.iter().peekable());
     loop {
         let key = |o: &&SchemaObject| (o.0.clone(), o.1.clone());
@@ -437,7 +566,7 @@ pub fn verify_query_connection(conn: &Connection) -> Result<(), ApiError> {
         .pragma_query_value(None, "application_id", |r| r.get(0))
         .map_err(store_error)?;
     let version = schema_version(conn)?;
-    if application_id != i64::from(NODE_APPLICATION_ID) || version != NODE_SCHEMA_VERSION {
+    if application_id != i64::from(NODE_APPLICATION_ID) || version != latest_version(NODE_DELTAS) {
         return Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version} (application_id {application_id:#x})"),
