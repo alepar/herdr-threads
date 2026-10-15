@@ -1835,7 +1835,7 @@ fn three_failed_lanes_fold_in_production_health() {
     use crate::service::kicks::Lane;
     let workers: [Arc<WorkerStatus>; 3] = Default::default();
     let production = Production::new(workers.clone());
-    for (status, lane) in workers.iter().zip(Lane::ALL) {
+    for (status, lane) in workers.iter().zip(Lane::WORKERS) {
         status.record_failure(lane, &api_error(ErrorCode::StoreBusy, "x"));
     }
     let mut inputs = (production.health)(&production.budget());

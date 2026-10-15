@@ -14,7 +14,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -1252,8 +1252,8 @@ mod fresh_schema_template {
 /// `Sync`, the mutex provides the ordering.
 #[derive(Default)]
 pub(super) struct KickHooks {
-    pending: AtomicU8,
-    sealed: AtomicU8,
+    pending: AtomicU16,
+    sealed: AtomicU16,
     /// A table of `kicks::MOD_NOTIFY_TABLES` changed in the open / last
     /// commit; sealed separately from the lane set (spec D2).
     mod_pending: AtomicBool,
@@ -1347,11 +1347,11 @@ impl KickHooks {
         #[cfg(any(test, feature = "test-support"))]
         self.commits[origin.map_or(kicks::Lane::INTERNAL_ALL.len(), |lane| lane as usize)]
             .fetch_add(1, Ordering::SeqCst);
-        if !kicks::origin_discards_kicks(origin) {
-            self.sealed.fetch_or(pending, Ordering::SeqCst);
-            if mod_pending {
-                self.mod_sealed.store(true, Ordering::SeqCst);
-            }
+        let kicked = kicks::kicks_for_commit(origin, LaneSet::from_bits(pending));
+        self.sealed.fetch_or(kicked.to_bits(), Ordering::SeqCst);
+        // Mod notification follows the origin guard only for Retention.
+        if mod_pending && origin != Some(kicks::Lane::Retention) {
+            self.mod_sealed.store(true, Ordering::SeqCst);
         }
     }
 

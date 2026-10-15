@@ -678,8 +678,8 @@ pub type KickRecord = (crate::service::kicks::LaneSet, Option<Lane>, Instant);
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct LaneFaults {
-    codes: Mutex<[Option<crate::protocol::results::ErrorCode>; 6]>,
-    hits: [std::sync::atomic::AtomicU64; 6],
+    codes: Mutex<[Option<crate::protocol::results::ErrorCode>; Lane::COUNT]>,
+    hits: [std::sync::atomic::AtomicU64; Lane::COUNT],
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1941,6 +1941,8 @@ where
                 factory_retention_status.clone(),
                 factory_admission_status.clone(),
                 factory_archival_status.clone(),
+                // Apply has no worker yet (ht-5fr.3.15 registers it).
+                Arc::new(WorkerStatus::default()),
             ];
             factory_probe.attach_registry(&kicks, lane_statuses.clone());
             let health_store = Arc::clone(&store);
