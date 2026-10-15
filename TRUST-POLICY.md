@@ -98,8 +98,11 @@ seat whose continuity is not structurally proven becomes unresolved, and the dae
 of current targets. Every unowned target in that baseline is **held**: ordinary resolution (`seat resolve`,
 `launch`, top-level `SessionStart` enrollment, `ht human me init`) refuses it with inspect / rebind / fresh-seat guidance. Panes authoritatively created
 after the baseline are not held. Holds are durable and survive daemon restart. A hold is released by:
-operator rebind or fresh seat on that target; cooperative continuity on that target (C1); or, instance-wide,
-when no unresolved nonretired seats remain (implemented, nothing left to protect).
+operator rebind or fresh seat on that target; cooperative continuity on that target (C1); or, per Herdr server,
+when no unresolved nonretired seats of that server remain (implemented, nothing left to protect). Holds, the
+baseline and observed targets are keyed by the Herdr server (`host_id`), because target ids are unique only
+within one server: a coherent snapshot of one server resolves, unresolves or retires only the local seats whose
+`host_id` is that server, and never touches another server's seats, holds or baseline.
 
 **Pane-close retirement (ht-54r.14).** A pane absent from a coherent snapshot of the *same* Herdr
 incarnation retires its seat, however many session bindings the seat holds. The retirement fence disconnects

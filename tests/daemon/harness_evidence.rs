@@ -2184,9 +2184,10 @@ mod publication_order {
         fn begin_host_observation(
             &self,
             instance: &str,
+            host: crate::ports::HostId,
             budget: &CallBudget,
         ) -> Result<HostObservationAdmission, ApiError> {
-            self.inner.begin_host_observation(instance, budget)
+            self.inner.begin_host_observation(instance, host, budget)
         }
         fn publish_current_target_observation(
             &self,

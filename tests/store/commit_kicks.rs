@@ -248,7 +248,7 @@ const WAKE_INSERT: &str = "INSERT INTO wake_work(seat_id) VALUES ('s1')";
 const SEAT_INSERT: &str = "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))";
 const JOB_INSERT: &str =
     "INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES ('j','send_attention','sub',0)";
-const GENERATION_INSERT: &str = "INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g','34750f98bd59fcfc946da45aaabe933b','b',1,1,'x',0,'building',0,0,0)";
+const GENERATION_INSERT: &str = "INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g',(SELECT min(host_id) FROM herdr_hosts),'b',1,1,'x',0,'building',0,0,0)";
 const TARGET_INSERT: &str = "INSERT INTO snapshot_targets(generation_id,target_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES ('g','t',0,1,'unknown','unknown',0)";
 const OPERATION_INSERT: &str = "INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES ('a',hex(randomblob(8)),zeroblob(32),'{}',0)";
 

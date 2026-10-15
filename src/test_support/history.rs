@@ -61,16 +61,16 @@ fn actor(conn: &Connection, seat: &str) -> Result<Actor, ApiError> {
         )
         .map_err(store_error)?;
     conn.execute(
-        "INSERT OR IGNORE INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) \
-         SELECT s.instance_id,s.target_id,h.host_boot,h.host_epoch,s.target_generation,0,'fresh','term-'||s.target_id,'inc','coherent_enumeration',1 \
-         FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE s.id=?1",
+        "INSERT OR IGNORE INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) \
+         SELECT s.host_id,s.target_id,h.host_boot,h.host_epoch,s.target_generation,0,'fresh','term-'||s.target_id,'inc','coherent_enumeration',1 \
+         FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1",
         [seat],
     )
     .map_err(store_error)?;
     conn.execute(
         "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) \
          SELECT s.id,s.generation,s.target_generation,s.target_id,h.host_boot,h.host_epoch,'codex','hist-'||s.id,?2,'cooperative_top_level',0,'term-'||s.target_id,'inc' \
-         FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id \
+         FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
          WHERE s.id=?1 AND NOT EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL)",
         rusqlite::params![seat, fixture_execution(seat)],
     )

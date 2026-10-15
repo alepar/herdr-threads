@@ -80,6 +80,7 @@ impl Lane5 {
         let identity = Arc::new(
             OrdinaryIdentity::new(
                 instance,
+                herdr_threads::test_support::test_host_id(),
                 Arc::clone(&store) as Arc<dyn StorePort>,
                 host,
                 clock,

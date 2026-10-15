@@ -390,7 +390,7 @@ fn scan_members(
             .map_err(store_error)?;
             continue;
         }
-        let qualified:Option<(i64,String)>=tx.query_row("SELECT a.last_mono,b.harness FROM seat_archival a JOIN seats s ON s.id=a.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id WHERE a.seat_id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=a.binding_generation AND s.target_generation=a.target_generation AND s.target_id=a.target_id AND b.generation=a.binding_generation AND b.registered_at IS NOT NULL AND b.harness=a.harness AND b.role='top_level' AND b.liveness='connected' AND b.native_session=a.native_session AND b.execution_id=a.execution AND h.host_boot=a.host_boot AND h.host_epoch=a.host_epoch AND a.runtime_boot=?3 AND a.evidence_epoch=?4 AND a.samples>=2 AND a.idle_mono<=?5 AND a.last_mono>=?6 AND a.last_mono<=?7 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=s.instance_id AND rh.target_id=s.target_id AND rh.released_at IS NULL)",params![seat,instance,rt.boot,epoch,rt.mono.saturating_sub(rt.after_ms),rt.mono.saturating_sub(MAX_GAP_MS),rt.mono],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
+        let qualified:Option<(i64,String)>=tx.query_row("SELECT a.last_mono,b.harness FROM seat_archival a JOIN seats s ON s.id=a.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL JOIN herdr_hosts h ON h.host_id=s.host_id WHERE a.seat_id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=a.binding_generation AND s.target_generation=a.target_generation AND s.target_id=a.target_id AND b.generation=a.binding_generation AND b.registered_at IS NOT NULL AND b.harness=a.harness AND b.role='top_level' AND b.liveness='connected' AND b.native_session=a.native_session AND b.execution_id=a.execution AND h.host_boot=a.host_boot AND h.host_epoch=a.host_epoch AND a.runtime_boot=?3 AND a.evidence_epoch=?4 AND a.samples>=2 AND a.idle_mono<=?5 AND a.last_mono>=?6 AND a.last_mono<=?7 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.host_id=s.host_id AND rh.target_id=s.target_id AND rh.released_at IS NULL)",params![seat,instance,rt.boot,epoch,rt.mono.saturating_sub(rt.after_ms),rt.mono.saturating_sub(MAX_GAP_MS),rt.mono],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
         let Some((last, harness)) = qualified else {
             return Ok((rows.len(), false, true));
         };
@@ -407,10 +407,11 @@ fn scan_members(
     }
     Ok((rows.len(), rows.len() < PAGE, false))
 }
-fn sample_still_current(tx: &Connection, instance: &str, seat: &str) -> Result<bool, ApiError> {
+fn sample_still_current(tx: &Connection, _instance: &str, seat: &str) -> Result<bool, ApiError> {
+    let host = super::seats::seat_host(tx, &crate::protocol::ids::SeatId::new(seat))?;
     let (target,boot,epoch,generation,terminal,incarnation,sequence):(String,String,i64,i64,String,String,i64)=tx.query_row("SELECT target_id,host_boot,host_epoch,target_generation,terminal,incarnation,observation_sequence FROM seat_archival WHERE seat_id=?1",[seat],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(store_error)?;
     Ok(
-        effective::effective_observation(tx, instance, &target)?.is_some_and(|o| {
+        effective::effective_observation(tx, host, &target)?.is_some_and(|o| {
             o.host_boot == boot
                 && o.epoch == epoch
                 && o.structural_generation == generation
@@ -774,7 +775,11 @@ pub(crate) fn record_sample_in_with_registry(
         .map_err(store_error)?;
     let proof = observation.verified_structural_proof();
     let mapping = super::seats::cooperative_bound_mapping(tx, claim, None).ok();
-    let current = effective::effective_observation(tx, &claim.instance, claim.target.as_str())?;
+    let current = effective::effective_observation(
+        tx,
+        super::seats::seat_host(tx, &claim.seat)?,
+        claim.target.as_str(),
+    )?;
     let positive = rt.coherent
         && ticket.runtime_boot == rt.boot
         && ticket.evidence_epoch == epoch

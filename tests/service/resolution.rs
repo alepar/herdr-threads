@@ -389,7 +389,11 @@ impl Fixture {
                 targets: vec![host.observation(1)],
             };
             let admission = store
-                .begin_host_observation(&instance.to_string(), &budget)
+                .begin_host_observation(
+                    &instance.to_string(),
+                    herdr_threads::test_support::test_host_id(),
+                    &budget,
+                )
                 .unwrap();
             let stage = store
                 .begin_snapshot_stage(
@@ -1010,7 +1014,11 @@ fn real_ipc_late_target_read_cannot_publish_after_newer_invalidation_and_health_
     ));
     let admission = fixture
         .store
-        .begin_host_observation(&fixture.descriptor.node_uuid.to_string(), &fixture.budget())
+        .begin_host_observation(
+            &fixture.descriptor.node_uuid.to_string(),
+            herdr_threads::test_support::test_host_id(),
+            &fixture.budget(),
+        )
         .unwrap();
     fixture
         .store
@@ -2060,6 +2068,7 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
     }
     let identity = OrdinaryIdentity::new(
         fixture.descriptor.node_uuid.to_string(),
+        herdr_threads::test_support::test_host_id(),
         fixture.store.clone(),
         fixture.host.clone(),
         fixture.clock.clone(),
@@ -2070,7 +2079,7 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
         .unwrap();
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 2);
     let db = fixture.db();
-    db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES (?1,'w1:p1','host',1,'repair')", [fixture.descriptor.node_uuid.to_string()]).unwrap();
+    db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'w1:p1','host',1,'repair')", [fixture.descriptor.node_uuid.to_string()]).unwrap();
     // Exact resolution replay still returns historical data; the independent
     // check must reject the active hold without treating replay as authority.
     assert_eq!(
@@ -2438,6 +2447,7 @@ fn quiesced_identity(
     let writer = Arc::new(FairWriter::new(32));
     let identity = OrdinaryIdentity::new(
         fixture.descriptor.node_uuid.to_string(),
+        herdr_threads::test_support::test_host_id(),
         fixture.store.clone(),
         fixture.host.clone(),
         fixture.clock.clone(),

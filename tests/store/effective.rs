@@ -249,27 +249,27 @@ fn human_waiver_survives_agent_rebinding_without_erasing_ack_history() {
 fn retained_baseline_holds_only_its_unowned_members_across_later_snapshots() {
     let db = fixture();
     db.execute_batch("\
-        INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g1','34750f98bd59fcfc946da45aaabe933b','b',1,1,'inc',1,1,'published',0,0,0),('g2','34750f98bd59fcfc946da45aaabe933b','b',1,2,'inc',2,2,'published',0,0,0);\
+        INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g1',(SELECT min(host_id) FROM herdr_hosts),'b',1,1,'inc',1,1,'published',0,0,0),('g2',(SELECT min(host_id) FROM herdr_hosts),'b',1,2,'inc',2,2,'published',0,0,0);\
         INSERT INTO snapshot_targets(generation_id,target_id,terminal_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES ('g1','old','term-old',1,1,'empty_shell','idle',0),('g2','old','term-old',1,2,'empty_shell','idle',1),('g2','new','term-new',1,2,'empty_shell','idle',1);\
         UPDATE herdr_hosts SET host_boot='b',host_epoch=1,observation_sequence=2,active_snapshot_id='g2',recovery_baseline_generation_id='g1',baseline_hold_unclaimed=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b';\
     ").unwrap();
     assert_eq!(
-        effective_recovery_disposition(&db, "34750f98bd59fcfc946da45aaabe933b", "old").unwrap(),
+        effective_recovery_disposition(&db, crate::test_support::test_host_id(), "old").unwrap(),
         EffectiveRecoveryDisposition::BaselineHeld
     );
     assert_eq!(
-        effective_recovery_disposition(&db, "34750f98bd59fcfc946da45aaabe933b", "new").unwrap(),
+        effective_recovery_disposition(&db, crate::test_support::test_host_id(), "new").unwrap(),
         EffectiveRecoveryDisposition::CreatedAfterBaseline
     );
-    db.execute("INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','g1','old',1)",[]).unwrap();
+    db.execute("INSERT INTO recovery_baseline_releases(host_id,baseline_generation_id,target_id,decision_seq) VALUES ((SELECT min(host_id) FROM herdr_hosts),'g1','old',1)",[]).unwrap();
     assert_eq!(
-        effective_recovery_disposition(&db, "34750f98bd59fcfc946da45aaabe933b", "old").unwrap(),
+        effective_recovery_disposition(&db, crate::test_support::test_host_id(), "old").unwrap(),
         EffectiveRecoveryDisposition::Released
     );
     db.execute("UPDATE seats SET target_id='old' WHERE id='s'", [])
         .unwrap();
     assert_eq!(
-        effective_recovery_disposition(&db, "34750f98bd59fcfc946da45aaabe933b", "old").unwrap(),
+        effective_recovery_disposition(&db, crate::test_support::test_host_id(), "old").unwrap(),
         EffectiveRecoveryDisposition::Owned("s".into())
     );
 }
@@ -278,29 +278,29 @@ fn retained_baseline_holds_only_its_unowned_members_across_later_snapshots() {
 fn only_strictly_newer_same_boot_target_override_beats_publication() {
     let db = fixture();
     db.execute_batch("\
-        INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g','34750f98bd59fcfc946da45aaabe933b','b',1,5,'inc',1,1,'published',0,0,0);\
+        INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g',(SELECT min(host_id) FROM herdr_hosts),'b',1,5,'inc',1,1,'published',0,0,0);\
         INSERT INTO snapshot_targets(generation_id,target_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES ('g','p',4,5,'occupied','idle',0);\
         UPDATE herdr_hosts SET host_boot='b',host_epoch=1,observation_sequence=5,active_snapshot_id='g' WHERE node_id='34750f98bd59fcfc946da45aaabe933b';\
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,9,4,1,'fresh');\
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,9,4,1,'fresh');\
     ").unwrap();
     assert_eq!(
-        effective_observation(&db, "34750f98bd59fcfc946da45aaabe933b", "p")
+        effective_observation(&db, crate::test_support::test_host_id(), "p")
             .unwrap()
             .unwrap()
             .structural_generation,
         4
     );
-    db.execute("UPDATE observed_targets SET observation_sequence=6 WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND target_id='p'",[]).unwrap();
+    db.execute("UPDATE observed_targets SET observation_sequence=6 WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND target_id='p'",[]).unwrap();
     assert_eq!(
-        effective_observation(&db, "34750f98bd59fcfc946da45aaabe933b", "p")
+        effective_observation(&db, crate::test_support::test_host_id(), "p")
             .unwrap()
             .unwrap()
             .structural_generation,
         9
     );
-    db.execute("UPDATE observed_targets SET host_boot='other',observation_sequence=7 WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND target_id='p'",[]).unwrap();
+    db.execute("UPDATE observed_targets SET host_boot='other',observation_sequence=7 WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND target_id='p'",[]).unwrap();
     assert_eq!(
-        effective_observation(&db, "34750f98bd59fcfc946da45aaabe933b", "p")
+        effective_observation(&db, crate::test_support::test_host_id(), "p")
             .unwrap()
             .unwrap()
             .structural_generation,
@@ -311,15 +311,15 @@ fn only_strictly_newer_same_boot_target_override_beats_publication() {
 #[test]
 fn host_invalidation_immediately_denies_published_target_until_new_publication() {
     let db = fixture();
-    db.execute_batch("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,admission_sequence,created_at) VALUES ('g','34750f98bd59fcfc946da45aaabe933b','b',1,1,'inc',1,1,'published',0,0,0,1,0); INSERT INTO snapshot_targets(generation_id,target_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES ('g','p',1,1,'occupied','idle',0); UPDATE herdr_hosts SET host_boot='b',host_epoch=1,observation_sequence=1,active_snapshot_id='g',observation_admission_sequence=1,observation_decided_sequence=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b';").unwrap();
+    db.execute_batch("INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,admission_sequence,created_at) VALUES ('g',(SELECT min(host_id) FROM herdr_hosts),'b',1,1,'inc',1,1,'published',0,0,0,1,0); INSERT INTO snapshot_targets(generation_id,target_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES ('g','p',1,1,'occupied','idle',0); UPDATE herdr_hosts SET host_boot='b',host_epoch=1,observation_sequence=1,active_snapshot_id='g',observation_admission_sequence=1,observation_decided_sequence=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b';").unwrap();
     assert!(
-        effective_observation(&db, "34750f98bd59fcfc946da45aaabe933b", "p")
+        effective_observation(&db, crate::test_support::test_host_id(), "p")
             .unwrap()
             .is_some()
     );
     db.execute("UPDATE herdr_hosts SET invalidation_revision=1,observation_admission_sequence=2,observation_decided_sequence=2 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",[]).unwrap();
     assert!(
-        effective_observation(&db, "34750f98bd59fcfc946da45aaabe933b", "p")
+        effective_observation(&db, crate::test_support::test_host_id(), "p")
             .unwrap()
             .is_none()
     );
@@ -329,7 +329,7 @@ fn host_invalidation_immediately_denies_published_target_until_new_publication()
     )
     .unwrap();
     assert!(
-        effective_observation(&db, "34750f98bd59fcfc946da45aaabe933b", "p")
+        effective_observation(&db, crate::test_support::test_host_id(), "p")
             .unwrap()
             .is_some()
     );

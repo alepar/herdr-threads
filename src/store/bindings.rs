@@ -685,7 +685,7 @@ pub fn liveness_candidates(
              AND (?1 IS NULL OR seat_id=?1) \
              AND seat_id IN (SELECT s.id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id AND h.node_id=s.instance_id \
                  WHERE s.state='resolved' AND COALESCE(h.baseline_hold_unclaimed,0)=0 \
-                 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=s.instance_id AND rh.released_at IS NULL)) \
+                 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.host_id=s.host_id AND rh.released_at IS NULL)) \
              ORDER BY ordinal"
         ))
         .map_err(store_error)?;

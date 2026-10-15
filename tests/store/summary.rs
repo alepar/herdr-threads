@@ -2001,7 +2001,7 @@ fn user_intent_partial_and_ack_do_not_complete() {
             "x".repeat(520)
         ),
     );
-    fx.db.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m1','t','b','pending',800); INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane-b','host',1,1,0,'fresh','term-b','inc-b','coherent_enumeration',1);").unwrap();
+    fx.db.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m1','t','b','pending',800); INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane-b','host',1,1,0,'fresh','term-b','inc-b','coherent_enumeration',1);").unwrap();
     let receipt_before: String = fx
         .db
         .query_row(

@@ -59,6 +59,7 @@ fn attachment_fixture_inner(real_writer: bool, retain_legacy: bool) -> Attachmen
         &context,
         &mut db,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -291,7 +292,7 @@ fn topology_attachment_refuses_stale_or_held_evidence_and_missing_or_changed_res
         let mut guard = attachment_guard(&store, &observation, &budget, &a.resolve_operation, 3);
         match corruption {
             "hold" => {
-                db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','w1:p2',?1,1,'held')",[a.created.host_incarnation.as_str()]).unwrap();
+                db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'w1:p2',?1,1,'held')",[a.created.host_incarnation.as_str()]).unwrap();
             }
             "stale" => {
                 let _ = attachment_guard(&store, &observation, &budget, &a.resolve_operation, 4);

@@ -209,7 +209,7 @@ pub(super) fn joined_agent(db: &Connection) {
     db.execute_batch("UPDATE herdr_hosts SET host_boot='b',host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b';
 INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
 INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('s',1,'p','b',1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0);
-INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES('34750f98bd59fcfc946da45aaabe933b','p','b',1,0,1,'fresh',0,'term','inc','native_current_target',1,'idle');
+INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,0,1,'fresh',0,'term','inc','native_current_target',1,'idle');
 INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('t','s','joined',0);").unwrap();
 }
 pub(super) fn sample(
@@ -392,7 +392,7 @@ fn archival_current_structure_change_after_member_scan_invalidates_final_decisio
         if race == "current" {
             db.execute_batch("UPDATE observed_targets SET terminal_id='different',observation_sequence=99 WHERE target_id='p'").unwrap();
         } else {
-            db.execute_batch("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES('snap','34750f98bd59fcfc946da45aaabe933b','b',1,100,'inc',0,'published',0,0,60000)").unwrap();
+            db.execute_batch("INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES('snap',(SELECT min(host_id) FROM herdr_hosts),'b',1,100,'inc',0,'published',0,0,60000)").unwrap();
             if race == "matching_snapshot" {
                 db.execute_batch("UPDATE snapshot_generations SET expected_targets=1,staged_targets=1 WHERE id='snap'; INSERT INTO snapshot_targets(generation_id,target_id,terminal_id,generation,observation_sequence,connection_epoch,incarnation_source_kind,occupancy,ui_state,observed_at) VALUES('snap','p','term',0,100,1,'coherent_enumeration','unknown','unknown',60000)").unwrap();
             }
@@ -520,7 +520,7 @@ fn archival_protected_occupants_and_work_remain_unchanged() {
                     .unwrap();
             }
             "held" => {
-                db.execute_batch("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','p','b',1,'repair')").unwrap();
+                db.execute_batch("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,'repair')").unwrap();
             }
             "unknown" => ui = HostUiState::Unknown,
             "draft" => ui = HostUiState::HumanInput,
@@ -1126,7 +1126,7 @@ mod archival_actual_producer_base_fixture {
             params![proof.target().as_str(), proof.target_generation() as i64]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('s',1,?1,?2,?3,?4,'session','00000000-0000-4000-8000-000000000001','cooperative_top_level',1000,1000)",
             params![proof.target().as_str(), proof.host_boot().as_str(), proof.host_epoch() as i64, harness]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES('34750f98bd59fcfc946da45aaabe933b',?1,?2,?3,?4,?5,'fresh',1000,?6,?7,'native_current_target',?8,'unknown')",
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,?2,?3,?4,?5,'fresh',1000,?6,?7,'native_current_target',?8,'unknown')",
             params![proof.target().as_str(), proof.host_boot().as_str(), proof.host_epoch() as i64,
                 proof.target_generation() as i64, observation.observation_sequence as i64,
                 proof.terminal().as_str(), proof.incarnation(), proof.connection_epoch() as i64]).unwrap();
@@ -1209,7 +1209,7 @@ mod archival_actual_producer_base_fixture {
             .expect("prerequisite: actual archival structural proof");
         let current = effective::effective_observation(
             &db,
-            "34750f98bd59fcfc946da45aaabe933b",
+            herdr_threads::test_support::test_host_id(),
             target.as_str(),
         )
         .unwrap()
@@ -1981,7 +1981,7 @@ fn archival_registered_binding_and_composer_evidence_neighbors_refuse() {
                 .unwrap();
             }
             "held" => {
-                db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','p','b',1,'fixture hold')",[]).unwrap();
+                db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,'fixture hold')",[]).unwrap();
             }
             "unresolved" => {
                 db.execute("UPDATE seats SET state='unresolved'", [])

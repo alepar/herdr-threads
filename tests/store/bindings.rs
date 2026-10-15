@@ -1960,7 +1960,7 @@ mod availability {
         db.execute_batch(
             "UPDATE seats SET target_id='p', target_generation=1, unavailability_open=0 WHERE id='s'; \
              UPDATE herdr_hosts SET host_boot='b', host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'; \
-             INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','p','b',1,1,1,'fresh');",
+             INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,1,1,'fresh');",
         )
         .unwrap();
         db

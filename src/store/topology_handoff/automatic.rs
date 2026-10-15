@@ -788,6 +788,7 @@ fn apply(
                 tx,
                 at,
                 &ns.instance,
+                guard.ordinary().admission().host_id(),
                 &created.root_pane,
                 guard.ordinary().structural_proof(),
             )?;
@@ -801,8 +802,8 @@ fn apply(
             }
             let lifecycle: i64 = tx
                 .query_row(
-                    "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
-                    [&ns.instance],
+                    "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=?1",
+                    [guard.ordinary().admission().host_id().get()],
                     |r| r.get(0),
                 )
                 .map_err(store_error)?;

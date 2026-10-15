@@ -184,10 +184,14 @@ impl Input {
         let context = &f.context;
         let conn = &mut f.connection;
         match self {
-            Self::Begin => {
-                seats::begin_host_observation(context, conn, "34750f98bd59fcfc946da45aaabe933b", b)
-                    .map(|r| format!("{r:?}"))
-            }
+            Self::Begin => seats::begin_host_observation(
+                context,
+                conn,
+                "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
+                b,
+            )
+            .map(|r| format!("{r:?}")),
             Self::Target(a, o) => seats::publish_current_target_observation(context, conn, a, o, b)
                 .map(|r| format!("{r:?}")),
             Self::Invalidate(a) => seats::invalidate_host_observation(
@@ -223,6 +227,7 @@ impl Input {
 fn header(a: HostObservationAdmission, sequence: u64) -> SnapshotHeader {
     SnapshotHeader {
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+        host_id: crate::test_support::test_host_id(),
         boot: HostBootId::new("b"),
         epoch: 1,
         observation_sequence: sequence,
@@ -236,6 +241,7 @@ fn stage(f: &mut Fixture, sequence: u64) -> SnapshotGenerationId {
         &f.context,
         &mut f.connection,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget(),
     )
     .unwrap();
@@ -269,6 +275,7 @@ fn prepare(kind: &str) -> (Fixture, Input) {
                 &f.context,
                 &mut f.connection,
                 "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
                 &budget(),
             )
             .unwrap();
@@ -302,6 +309,7 @@ fn prepare(kind: &str) -> (Fixture, Input) {
                 &f.context,
                 &mut f.connection,
                 "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
                 &budget(),
             )
             .unwrap(),
@@ -311,6 +319,7 @@ fn prepare(kind: &str) -> (Fixture, Input) {
                 &f.context,
                 &mut f.connection,
                 "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
                 &budget(),
             )
             .unwrap();
@@ -322,6 +331,7 @@ fn prepare(kind: &str) -> (Fixture, Input) {
                 &f.context,
                 &mut f.connection,
                 "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
                 &budget(),
             )
             .unwrap();

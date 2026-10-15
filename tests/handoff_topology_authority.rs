@@ -57,6 +57,7 @@ impl Fixture {
         let writer = Arc::new(FairWriter::new(32));
         let identity = Arc::new(herdr_threads::identity::repair::OrdinaryIdentity::new(
             "34750f98bd59fcfc946da45aaabe933b".into(),
+            herdr_threads::test_support::test_host_id(),
             store.clone(),
             host.clone(),
             clock.clone(),
@@ -427,7 +428,7 @@ fn public_delivery_scoped_status_and_prepublication_admission_are_read_only() {
     let live_status = f
         .call(Command::HandoffDelivery(Box::new(request.clone())))
         .unwrap();
-    f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','p','b',1,'pure Status control')", []).unwrap();
+    f.db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,'pure Status control')", []).unwrap();
     assert_eq!(
         f.call(Command::HandoffDelivery(Box::new(request.clone())))
             .unwrap(),
@@ -502,7 +503,7 @@ fn public_delivery_current_recipient_hold_refuses_live_begin_and_send_preparatio
     let mut request = delivery();
     f.call(Command::HandoffDelivery(Box::new(request.clone())))
         .unwrap();
-    f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','p','b',1,'repair')", []).unwrap();
+    f.db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,'repair')", []).unwrap();
     assert!(
         f.call(Command::HandoffDelivery(Box::new(request.clone())))
             .is_err()
@@ -613,7 +614,7 @@ fn live_cached_replay(phase: &str) {
                 .unwrap();
         match change {
             "hold" => {
-                f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('34750f98bd59fcfc946da45aaabe933b','p','b',1,'repair')", []).unwrap();
+                f.db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,'repair')", []).unwrap();
             }
             "binding" => {
                 f.db.execute("UPDATE seats SET generation=generation+1 WHERE id='s'", [])
@@ -823,7 +824,7 @@ fn ordinary_unlinked_direct_ensure_send_reaches_selected_bootstrap_runtime() {
     let f = Fixture::new();
     let caller = super::topology_handoff::identity().claim;
     f.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('peer','34750f98bd59fcfc946da45aaabe933b','resolved','native','peer-pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
-    f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('34750f98bd59fcfc946da45aaabe933b','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
+    f.db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
     let ensure = Command::EnsureDirectThread(EnsureDirectThread {
         creation_policy: None,
         recipient: SeatId::new("peer"),
@@ -935,7 +936,7 @@ fn automatic_contract_public_dispatch_refuses_every_phase_without_effects() {
 fn automatic_request(f: &Fixture) -> AutomaticDeliveryMutation {
     use herdr_threads::{cli::journal::IntentScope, protocol::ids::*};
     f.db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('peer','34750f98bd59fcfc946da45aaabe933b','resolved','native','peer-pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))").unwrap();
-    f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('34750f98bd59fcfc946da45aaabe933b','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
+    f.db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
     let claim = super::handoff_fences::identity().claim;
     AutomaticDeliveryMutation::new(
         IntentScope::Cooperative {

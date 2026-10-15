@@ -1,6 +1,6 @@
 //! Canonical logical receipt and warning projection.
 
-use crate::ports::LogicalAttentionFrontier;
+use crate::ports::{HostId, LogicalAttentionFrontier};
 use crate::protocol::{
     pagination::InboxCursorState,
     results::{ApiError, ErrorCode},
@@ -16,7 +16,8 @@ use super::{
 
 /// The one read path for a target after a hidden snapshot publishes. A fresh
 /// current-target observation wins only within the same boot/epoch and with a
-/// strictly later trusted sequence. Missing data stays missing.
+/// strictly later trusted sequence. Missing data stays missing. Target ids are
+/// unique only within one Herdr server, so the read is always for one `host`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectiveObservationSource {
     Published,
@@ -43,13 +44,13 @@ pub struct EffectiveObservation {
 
 pub fn effective_observation(
     db: &Connection,
-    instance: &str,
+    host: HostId,
     target: &str,
 ) -> Result<Option<EffectiveObservation>, ApiError> {
     type CurrentColumns = Option<(Option<String>, Option<String>, i64, i64, i64)>;
     let current: CurrentColumns = db.query_row(
-        "SELECT active_snapshot_id,host_boot,host_epoch,observation_sequence,invalidation_revision FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
-        [instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+        "SELECT active_snapshot_id,host_boot,host_epoch,observation_sequence,invalidation_revision FROM herdr_hosts WHERE host_id=?1",
+        [host.get()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
     ).optional().map_err(store_error)?;
     let Some((active_id, host_boot, host_epoch, publication_seq, invalidation_revision)) = current
     else {
@@ -85,8 +86,8 @@ pub fn effective_observation(
         None
     };
     let newer = db.query_row(
-        "SELECT host_boot,epoch,generation,observation_sequence,terminal_id,occupancy,ui_state,verified_execution,top_level_occupant,connection_epoch,incarnation,incarnation_source_kind FROM observed_targets WHERE instance_id=?1 AND target_id=?2 AND provenance='fresh'",
-        params![instance,target], |r| Ok(EffectiveObservation {
+        "SELECT host_boot,epoch,generation,observation_sequence,terminal_id,occupancy,ui_state,verified_execution,top_level_occupant,connection_epoch,incarnation,incarnation_source_kind FROM observed_targets WHERE host_id=?1 AND target_id=?2 AND provenance='fresh'",
+        params![host.get(),target], |r| Ok(EffectiveObservation {
             source: EffectiveObservationSource::NewerCurrentTarget,
             target_id:target.into(), host_boot:r.get(0)?, epoch:r.get(1)?,
             structural_generation:r.get(2)?, observation_sequence:r.get(3)?,
@@ -123,32 +124,36 @@ pub enum EffectiveRecoveryDisposition {
 /// hold applies only to members of the first complete recovery generation.
 pub fn effective_recovery_disposition(
     db: &Connection,
-    instance: &str,
+    host: HostId,
     target: &str,
 ) -> Result<EffectiveRecoveryDisposition, ApiError> {
-    let owner: Option<String> = db.query_row(
-        "SELECT id FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",
-        params![instance,target], |r| r.get(0),
-    ).optional().map_err(store_error)?;
+    let owner: Option<String> = db
+        .query_row(
+            "SELECT id FROM seats WHERE host_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",
+            params![host.get(), target],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
     if let Some(owner) = owner {
         return Ok(EffectiveRecoveryDisposition::Owned(owner));
     }
     type RowColumns = Option<(Option<String>, i64, Option<String>, Option<String>, i64)>;
     let row: RowColumns = db.query_row(
-        "SELECT host_boot,host_epoch,recovery_baseline_generation_id,active_snapshot_id,baseline_hold_unclaimed FROM herdr_hosts WHERE host_id=primary_host() AND node_id=?1",
-        [instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+        "SELECT host_boot,host_epoch,recovery_baseline_generation_id,active_snapshot_id,baseline_hold_unclaimed FROM herdr_hosts WHERE host_id=?1",
+        [host.get()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
     ).optional().map_err(store_error)?;
     let Some((boot, epoch, baseline, active, hold_unclaimed)) = row else {
         return Ok(EffectiveRecoveryDisposition::Unknown);
     };
     let explicit: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND baseline_boot=?3 AND baseline_epoch=?4 AND released_at IS NULL)",
-        params![instance,target,boot,epoch],|r|r.get(0),
+        "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE host_id=?1 AND target_id=?2 AND baseline_boot=?3 AND baseline_epoch=?4 AND released_at IS NULL)",
+        params![host.get(),target,boot,epoch],|r|r.get(0),
     ).map_err(store_error)?;
     if explicit {
         return Ok(EffectiveRecoveryDisposition::ExplicitHold);
     }
-    let Some(observation) = effective_observation(db, instance, target)? else {
+    let Some(observation) = effective_observation(db, host, target)? else {
         return Ok(EffectiveRecoveryDisposition::Unknown);
     };
     if observation.host_boot != boot.as_deref().unwrap_or("") || observation.epoch != epoch {
@@ -166,8 +171,8 @@ pub fn effective_recovery_disposition(
         .map_err(store_error)?;
     if member {
         let released: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM recovery_baseline_releases WHERE instance_id=?1 AND baseline_generation_id=?2 AND target_id=?3)",
-            params![instance,baseline,target],|r|r.get(0),
+            "SELECT EXISTS(SELECT 1 FROM recovery_baseline_releases WHERE host_id=?1 AND baseline_generation_id=?2 AND target_id=?3)",
+            params![host.get(),baseline,target],|r|r.get(0),
         ).map_err(store_error)?;
         if released {
             return Ok(EffectiveRecoveryDisposition::Released);

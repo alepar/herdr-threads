@@ -51,11 +51,13 @@ fn eligible_delivery_recipient_uses_seat_host() {
     .unwrap();
     add_seat(&db, "seat-h1", h1, "p1");
     add_seat(&db, "seat-h2", h2, "p2");
-    for target in ["p1", "p2"] {
+    // Both rows carry h1's boot and epoch; the row of h2 therefore disagrees with
+    // h2's own boot.
+    for (host, target) in [(h1, "p1"), (h2, "p2")] {
         db.execute(
-            "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance) \
+            "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance) \
              VALUES (?1,?2,'boot-1',1,1,1,0,'fresh')",
-            rusqlite::params![NODE, target],
+            rusqlite::params![host, target],
         )
         .unwrap();
     }

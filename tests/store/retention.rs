@@ -137,7 +137,7 @@ impl Fx {
 fn add_generation(db: &Connection, n: i64, status: &str, admission: i64, targets: usize) -> String {
     let id = format!("g{n}");
     db.execute(
-        "INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,admission_sequence,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','b',1,?2,'inc',?3,?3,?4,0,0,?5,0)",
+        "INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,admission_sequence,created_at) VALUES (?1,(SELECT min(host_id) FROM herdr_hosts),'b',1,?2,'inc',?3,?3,?4,0,0,?5,0)",
         params![id, n, targets as i64, status, admission],
     )
     .unwrap();
@@ -226,9 +226,13 @@ fn stage(
     sequence: u64,
     panes: usize,
 ) -> (crate::ports::HostObservationAdmission, SnapshotGenerationId) {
-    let admission =
-        StorePort::begin_host_observation(store, "34750f98bd59fcfc946da45aaabe933b", &budget())
-            .unwrap();
+    let admission = StorePort::begin_host_observation(
+        store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget(),
+    )
+    .unwrap();
     let snap = snapshot(sequence, panes);
     let header = SnapshotHeader::from_captured(admission.clone(), &snap).unwrap();
     let stage = StorePort::begin_snapshot_stage(store, header, &budget()).unwrap();
@@ -311,7 +315,7 @@ fn every_pin_survives() {
         set_pointers(&db, Some("g5"), Some("g2"));
         pin_by_unresolved_seat(&db, "s", "g3");
         db.execute_batch(
-            "INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','g2','t0',1),('34750f98bd59fcfc946da45aaabe933b','g1','t0',1)",
+            "INSERT INTO recovery_baseline_releases(host_id,baseline_generation_id,target_id,decision_seq) VALUES ((SELECT min(host_id) FROM herdr_hosts),'g2','t0',1),((SELECT min(host_id) FROM herdr_hosts),'g1','t0',1)",
         )
         .unwrap();
     }
@@ -467,7 +471,7 @@ fn backlog_of_10k_drains_while_a_request_write_completes_within_one_batch() {
         db.execute_batch("BEGIN").unwrap();
         for n in 1..=10_000 {
             db.execute(
-                "INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,admission_sequence,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','b',1,?2,'inc',0,0,'discarded',0,0,?2,0)",
+                "INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,admission_sequence,created_at) VALUES (?1,(SELECT min(host_id) FROM herdr_hosts),'b',1,?2,'inc',0,0,'discarded',0,0,?2,0)",
                 params![format!("g{n}"), n],
             )
             .unwrap();
@@ -613,7 +617,7 @@ fn cooperative_fx(label: &str, seats: &[&str], bound: bool) -> Fx {
         .unwrap();
         for seat in seats {
             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat]).unwrap();
-            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
+            db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
             if !bound {
                 continue;
             }
@@ -1040,7 +1044,7 @@ fn triggers_allow_discard_then_delete() {
         [],
     ).unwrap();
     fx.db().execute(
-        "INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'p0',1),('34750f98bd59fcfc946da45aaabe933b',?2,'p0',1)",
+        "INSERT INTO recovery_baseline_releases(host_id,baseline_generation_id,target_id,decision_seq) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'p0',1),((SELECT min(host_id) FROM herdr_hosts),?2,'p0',1)",
         params![generations[0].as_str(), pruned],
     ).unwrap();
     let revision = || -> i64 {

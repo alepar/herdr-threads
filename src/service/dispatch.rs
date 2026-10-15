@@ -1003,6 +1003,7 @@ impl DomainService {
     }
     pub fn with_host(
         instance: String,
+        host_id: crate::ports::HostId,
         store: Arc<dyn StorePort>,
         clock: Arc<dyn Clock>,
         host: Arc<dyn HostPort>,
@@ -1010,6 +1011,7 @@ impl DomainService {
     ) -> Self {
         let current_target = OrdinaryIdentity::new(
             instance.clone(),
+            host_id,
             Arc::clone(&store),
             host,
             Arc::clone(&clock),

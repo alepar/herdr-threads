@@ -45,20 +45,27 @@ pub fn begin_retirement(
             phase: if status == "complete" { RetirementPhase::Complete } else { RetirementPhase::Warnings },
             after_ordinal: None, high_water_ordinal: high_water as u64, processed_units: processed as u64 });
     }
-    let current: Option<(String,String,i64,i64,Option<String>,i64)> = tx.query_row(
-        "SELECT s.instance_id,s.state,s.generation,s.target_generation,h.host_boot,h.host_epoch \
-         FROM seats s JOIN herdr_hosts h ON h.host_id=primary_host() AND h.node_id=s.instance_id \
+    type SeatRow = Option<(String, String, i64, i64, Option<String>, i64, i64)>;
+    let current: SeatRow = tx.query_row(
+        "SELECT s.instance_id,s.state,s.generation,s.target_generation,h.host_boot,h.host_epoch,h.host_id \
+         FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id \
          WHERE s.id=?1 AND s.target_id=?2",
         params![seat.as_str(),proof.target.as_str()],
-        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
+        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)),
     ).optional().map_err(store_error)?;
-    let Some((instance, state, binding_generation, _seat_generation, boot, epoch)) = current else {
+    let Some((instance, state, binding_generation, _seat_generation, boot, epoch, host_id)) =
+        current
+    else {
         return Err(api_error(
             ErrorCode::StaleHostObservation,
             "closure target not current",
         ));
     };
-    let observed = effective::effective_observation(&tx, &instance, proof.target.as_str())?;
+    let observed = effective::effective_observation(
+        &tx,
+        crate::ports::HostId::from_row(host_id),
+        proof.target.as_str(),
+    )?;
     if state == "retired"
         || boot.as_deref() != Some(proof.host_boot.as_str())
         || epoch != proof_epoch

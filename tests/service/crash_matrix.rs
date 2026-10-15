@@ -189,7 +189,7 @@ impl Matrix {
     fn add_seat(&self, seat: &str) {
         let db = self.db();
         db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?1,0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", params![seat, self.instance]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc','coherent_enumeration',1)", params![self.instance, seat]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),?2,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc','coherent_enumeration',1)", params![self.instance, seat]).unwrap();
     }
 
     fn handle(&self, command: Command) -> Result<CommandResult, ApiError> {
@@ -686,7 +686,7 @@ impl Matrix {
     fn host_observes_idle(&self, claim: &CallerClaim) {
         self.db()
             .execute(
-                "UPDATE observed_targets SET occupancy='occupied',ui_state='idle',top_level_occupant=1,verified_execution=?1 WHERE instance_id=?2 AND target_id=?3",
+                "UPDATE observed_targets SET occupancy='occupied',ui_state='idle',top_level_occupant=1,verified_execution=?1 WHERE host_id=(SELECT min(host_id) FROM herdr_hosts WHERE node_id=?2) AND target_id=?3",
                 params![claim.execution.as_str(), self.instance, claim.target.as_str()],
             )
             .unwrap();
@@ -1770,6 +1770,7 @@ impl Matrix {
     ) -> Arc<crate::identity::repair::OrdinaryIdentity> {
         let identity = Arc::new(crate::identity::repair::OrdinaryIdentity::new(
             self.instance.clone(),
+            crate::test_support::test_host_id(),
             self.store.clone(),
             host.clone(),
             self.clock.clone(),

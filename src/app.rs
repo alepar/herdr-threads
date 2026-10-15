@@ -1865,6 +1865,7 @@ where
                 Arc::new(
                     crate::identity::repair::OrdinaryIdentity::new(
                         instance.to_string(),
+                        crate::ports::HostId::from_row(session.host_id),
                         Arc::clone(&store),
                         Arc::clone(&session.port),
                         Arc::clone(&factory_clock),

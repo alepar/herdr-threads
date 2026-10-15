@@ -152,9 +152,14 @@ fn publish_from(
 ) -> crate::ports::PublishedSnapshot {
     let context = staging;
     let budget = budget();
-    let admission =
-        seats::begin_host_observation(context, conn, "34750f98bd59fcfc946da45aaabe933b", &budget)
-            .unwrap();
+    let admission = seats::begin_host_observation(
+        context,
+        conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let snapshot = host_snapshot(capture, sequence);
     let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
     let stage = seats::begin_snapshot_stage(context, conn, header, &budget).unwrap();
@@ -449,6 +454,7 @@ fn recovery_after_invalidation_bumps_once() {
                 context,
                 conn,
                 "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
                 &budget,
             )
             .unwrap();
@@ -480,6 +486,7 @@ fn publication_after_a_current_target_read_bumps_once() {
                 context,
                 conn,
                 "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
                 &budget,
             )
             .unwrap();
@@ -514,6 +521,7 @@ fn publication_after_a_read_of_an_unpublished_target_bumps_once() {
                 context,
                 conn,
                 "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
                 &budget,
             )
             .unwrap();
@@ -556,9 +564,14 @@ fn publication_without_staging_evidence_bumps() {
 /// sequence `sequence`.
 fn fresh_read(context: &StoreContext, conn: &mut Connection, id: &str, sequence: u64) {
     let budget = budget();
-    let admission =
-        seats::begin_host_observation(context, conn, "34750f98bd59fcfc946da45aaabe933b", &budget)
-            .unwrap();
+    let admission = seats::begin_host_observation(
+        context,
+        conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let mut observation = host_snapshot(&capture(&[id]), sequence).targets.remove(0);
     observation.provenance = ObservationProvenance::FreshCurrentTarget;
     observation.generation = 7;
@@ -569,7 +582,7 @@ fn fresh_read(context: &StoreContext, conn: &mut Connection, id: &str, sequence:
 }
 
 fn effective_generation(conn: &Connection, id: &str) -> Option<i64> {
-    crate::store::effective::effective_observation(conn, "34750f98bd59fcfc946da45aaabe933b", id)
+    crate::store::effective::effective_observation(conn, crate::test_support::test_host_id(), id)
         .unwrap()
         .map(|observation| observation.structural_generation)
 }

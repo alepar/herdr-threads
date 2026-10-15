@@ -37,7 +37,7 @@ fn fixture(at: i64) -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
         .unwrap();
     for seat in ["s1", "s2"] {
         conn.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, target_generation, created_at,home_node,is_local,host_id) VALUES (?1, '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', ?1, 1, 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat]).unwrap();
-        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
+        conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
     }
     (context, conn, path, clock)
 }
@@ -146,6 +146,7 @@ fn host_admission_orders_late_success_and_failure_without_false_absence() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -153,6 +154,7 @@ fn host_admission_orders_late_success_and_failure_without_false_absence() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -172,7 +174,7 @@ fn host_admission_orders_late_success_and_failure_without_false_absence() {
         .is_none()
     );
     assert_eq!(
-        effective::effective_observation(&conn, "34750f98bd59fcfc946da45aaabe933b", "s1")
+        effective::effective_observation(&conn, crate::test_support::test_host_id(), "s1")
             .unwrap()
             .unwrap()
             .source,
@@ -183,6 +185,7 @@ fn host_admission_orders_late_success_and_failure_without_false_absence() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -190,6 +193,7 @@ fn host_admission_orders_late_success_and_failure_without_false_absence() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -206,7 +210,7 @@ fn host_admission_orders_late_success_and_failure_without_false_absence() {
     .unwrap();
     assert!(invalidation.invalidation_revision() > publication.invalidation_revision);
     assert!(
-        effective::effective_observation(&conn, "34750f98bd59fcfc946da45aaabe933b", "s1")
+        effective::effective_observation(&conn, crate::test_support::test_host_id(), "s1")
             .unwrap()
             .is_none()
     );
@@ -245,6 +249,7 @@ fn saved_seats_page_counts_physical_rows_and_uses_published_index() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -300,6 +305,7 @@ fn discarded_stage_cleans_up_in_bounded_reopenable_quanta() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -372,6 +378,7 @@ fn denied_observation_marks_saved_seat_unresolved_without_retirement() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -428,6 +435,7 @@ fn guarded_reconciliation_rejects_stale_publication_and_binding() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -439,6 +447,7 @@ fn guarded_reconciliation_rejects_stale_publication_and_binding() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -526,6 +535,7 @@ fn invalidation_seat_page_is_bounded_and_rejects_a_newer_host_decision() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -548,6 +558,7 @@ fn invalidation_seat_page_is_bounded_and_rejects_a_newer_host_decision() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -599,6 +610,7 @@ fn guarded_absence_retirement_commits_one_fence_and_rejects_invalidation() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -619,6 +631,7 @@ fn guarded_absence_retirement_commits_one_fence_and_rejects_invalidation() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -646,6 +659,7 @@ fn guarded_absence_retirement_commits_one_fence_and_rejects_invalidation() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -723,6 +737,7 @@ fn guarded_move_preserves_binding() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -799,6 +814,7 @@ fn move_with_absent_occupant_evidence(
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -882,6 +898,7 @@ fn first_published_baseline_hold_survives_later_snapshots_and_operator_release()
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -891,7 +908,7 @@ fn first_published_baseline_hold_survives_later_snapshots_and_operator_release()
     assert_eq!(
         effective::effective_recovery_disposition(
             &conn,
-            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             "new-target"
         )
         .unwrap(),
@@ -901,6 +918,7 @@ fn first_published_baseline_hold_survives_later_snapshots_and_operator_release()
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -918,7 +936,7 @@ fn first_published_baseline_hold_survives_later_snapshots_and_operator_release()
     assert_eq!(
         effective::effective_recovery_disposition(
             &conn,
-            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             "new-target"
         )
         .unwrap(),
@@ -927,7 +945,7 @@ fn first_published_baseline_hold_survives_later_snapshots_and_operator_release()
     assert_eq!(
         effective::effective_recovery_disposition(
             &conn,
-            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             "later-target"
         )
         .unwrap(),
@@ -937,7 +955,7 @@ fn first_published_baseline_hold_survives_later_snapshots_and_operator_release()
     fresh.provenance = crate::ports::ObservationProvenance::FreshCurrentTarget;
     fresh.observation_sequence = 3;
     conn.execute(
-        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','new-target','b',1,1,3,100,'fresh','term-'||'new-target','inc','coherent_enumeration',1)",
+        "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'new-target','b',1,1,3,100,'fresh','term-'||'new-target','inc','coherent_enumeration',1)",
         [],
     )
     .unwrap();
@@ -948,6 +966,7 @@ fn first_published_baseline_hold_survives_later_snapshots_and_operator_release()
     };
     let guard = OperatorTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::FreshSeat(command.clone()),
         fresh,
     )
@@ -966,7 +985,7 @@ fn first_published_baseline_hold_survives_later_snapshots_and_operator_release()
     };
     let release_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM recovery_baseline_releases WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND baseline_generation_id=?1 AND target_id='new-target'",
+            "SELECT COUNT(*) FROM recovery_baseline_releases WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND baseline_generation_id=?1 AND target_id='new-target'",
             [baseline.as_str()],
             |r| r.get(0),
         )
@@ -980,7 +999,7 @@ fn first_published_baseline_hold_survives_later_snapshots_and_operator_release()
     assert_eq!(
         effective::effective_recovery_disposition(
             &conn,
-            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             "new-target"
         )
         .unwrap(),
@@ -1007,6 +1026,7 @@ fn large_snapshot_resumes_after_reopen_and_duplicate_rows_roll_back_the_quantum(
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -1051,6 +1071,7 @@ fn large_snapshot_resumes_after_reopen_and_duplicate_rows_roll_back_the_quantum(
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -1090,6 +1111,7 @@ fn large_snapshot_resumes_after_reopen_and_duplicate_rows_roll_back_the_quantum(
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -1132,6 +1154,7 @@ fn old_fresh_row_cannot_authorize_direct_retirement_after_empty_publication() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -1202,6 +1225,7 @@ fn invalidated_seat_reconfirms_moved_terminal_without_restoring_registration() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -1212,6 +1236,7 @@ fn invalidated_seat_reconfirms_moved_terminal_without_restoring_registration() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -1253,6 +1278,7 @@ fn invalidated_seat_reconfirms_moved_terminal_without_restoring_registration() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -1344,6 +1370,7 @@ fn fresh_coherent_absence_retires_a_host_invalidated_seat() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -1355,6 +1382,7 @@ fn fresh_coherent_absence_retires_a_host_invalidated_seat() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -1387,6 +1415,7 @@ fn fresh_coherent_absence_retires_a_host_invalidated_seat() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -1479,6 +1508,7 @@ fn snapshot_stage_is_hidden_bounded_and_allows_a_foreground_writer() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -1504,7 +1534,7 @@ fn snapshot_stage_is_hidden_bounded_and_allows_a_foreground_writer() {
         ErrorCode::StaleHostObservation
     );
     assert!(
-        effective::effective_observation(&conn, "34750f98bd59fcfc946da45aaabe933b", "stage-0")
+        effective::effective_observation(&conn, crate::test_support::test_host_id(), "stage-0")
             .unwrap()
             .is_none()
     );
@@ -1528,14 +1558,14 @@ fn snapshot_stage_is_hidden_bounded_and_allows_a_foreground_writer() {
     assert_eq!(second.visited, 1);
     seats::seal_snapshot_stage(&context, &mut conn, &stage.id, &budget).unwrap();
     assert!(
-        effective::effective_observation(&conn, "34750f98bd59fcfc946da45aaabe933b", "stage-0")
+        effective::effective_observation(&conn, crate::test_support::test_host_id(), "stage-0")
             .unwrap()
             .is_none()
     );
     let published = seats::publish_snapshot_stage(&context, &mut conn, &stage.id, &budget).unwrap();
     assert_eq!(published.target_count, 17);
     assert_eq!(
-        effective::effective_observation(&conn, "34750f98bd59fcfc946da45aaabe933b", "stage-0")
+        effective::effective_observation(&conn, crate::test_support::test_host_id(), "stage-0")
             .unwrap()
             .unwrap()
             .structural_generation,
@@ -4456,6 +4486,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
             &context,
             &mut conn,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             partial
         )
         .is_err()
@@ -4468,6 +4499,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -4478,6 +4510,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -4507,7 +4540,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
     assert_eq!(
         crate::store::effective::effective_recovery_disposition(
             &conn,
-            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             "p1"
         )
         .unwrap(),
@@ -4543,6 +4576,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
     };
     let guard = OperatorTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &crate::protocol::commands::OperatorCommand::FreshSeat(fresh.clone()),
         observation.clone(),
     )
@@ -4655,6 +4689,7 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -4665,6 +4700,7 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -4764,6 +4800,7 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -4802,6 +4839,7 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -4844,6 +4882,7 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -4864,6 +4903,7 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -4911,6 +4951,7 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -4975,6 +5016,7 @@ fn coherent_target_change_updates_structural_generation() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         HostSnapshot {
             boot: HostBootId::new("b"),
             epoch: 1,
@@ -5055,6 +5097,7 @@ fn coherent_snapshots_keep_per_target_order_and_accept_ordered_empty_enumeration
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         snapshot(5, vec![target("s1", 1, 4), target("s2", 2, 5)]),
     )
     .unwrap();
@@ -5062,10 +5105,11 @@ fn coherent_snapshots_keep_per_target_order_and_accept_ordered_empty_enumeration
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         snapshot(6, vec![target("s1", 2, 6), target("s2", 99, 4)]),
     )
     .unwrap();
-    let saved:(i64,i64)=conn.query_row("SELECT generation,observation_sequence FROM observed_targets WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND target_id='s2'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    let saved:(i64,i64)=conn.query_row("SELECT generation,observation_sequence FROM observed_targets WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND target_id='s2'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
     assert_eq!(saved, (2, 5));
     assert_eq!(
         conn.query_row(
@@ -5080,6 +5124,7 @@ fn coherent_snapshots_keep_per_target_order_and_accept_ordered_empty_enumeration
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         snapshot(7, vec![]),
     )
     .unwrap();
@@ -5097,6 +5142,7 @@ fn coherent_snapshots_keep_per_target_order_and_accept_ordered_empty_enumeration
             &context,
             &mut conn,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             snapshot(6, vec![])
         )
         .is_err()
@@ -5106,6 +5152,7 @@ fn coherent_snapshots_keep_per_target_order_and_accept_ordered_empty_enumeration
             &context,
             &mut conn,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             snapshot(7, vec![])
         )
         .is_err()
@@ -5118,6 +5165,7 @@ fn coherent_snapshots_keep_per_target_order_and_accept_ordered_empty_enumeration
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         new_boot,
     )
     .unwrap();
@@ -5130,7 +5178,7 @@ fn coherent_snapshots_keep_per_target_order_and_accept_ordered_empty_enumeration
         .unwrap(),
         ("c".to_owned(), 1)
     );
-    assert_eq!(conn.query_row("SELECT generation,observation_sequence FROM observed_targets WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND target_id='s2'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap(),(4,1));
+    assert_eq!(conn.query_row("SELECT generation,observation_sequence FROM observed_targets WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND target_id='s2'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap(),(4,1));
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
@@ -5146,7 +5194,7 @@ fn restoring_current_target_observation_bumps_send_eligibility_revision() {
     };
     let (context, mut conn, path, _) = fixture(100);
     conn.execute(
-        "DELETE FROM observed_targets WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND target_id='s2'",
+        "DELETE FROM observed_targets WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND target_id='s2'",
         [],
     )
     .unwrap();
@@ -5182,6 +5230,7 @@ fn restoring_current_target_observation_bumps_send_eligibility_revision() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         HostSnapshot {
             boot: HostBootId::new("b"),
             epoch: 1,
@@ -5265,6 +5314,7 @@ fn snapshot_rejects_nonrepresentable_host_numbers_without_changing_state() {
                 &context,
                 &mut conn,
                 "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
                 snapshot
             )
             .unwrap_err()
@@ -5292,12 +5342,13 @@ fn snapshot_rejects_nonrepresentable_host_numbers_without_changing_state() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         make(i64::MAX as u64, i64::MAX as u64, i64::MAX as u64),
     )
     .unwrap();
     let accepted: (i64, i64, i64) = conn
         .query_row(
-            "SELECT h.host_epoch,h.observation_sequence,o.generation FROM herdr_hosts h JOIN observed_targets o ON o.instance_id=h.node_id WHERE h.node_id='34750f98bd59fcfc946da45aaabe933b' AND o.target_id='overflow-target'",
+            "SELECT h.host_epoch,h.observation_sequence,o.generation FROM herdr_hosts h JOIN observed_targets o ON o.host_id=h.host_id WHERE h.node_id='34750f98bd59fcfc946da45aaabe933b' AND o.target_id='overflow-target'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -5558,7 +5609,7 @@ fn operator_rebind_rejects_exhausted_binding_generation() {
         [i64::MAX],
     )
     .unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','free','b',1,1,1,100,'fresh','term-'||'free','inc','coherent_enumeration',1)",[]).unwrap();
+    conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'free','b',1,1,1,100,'fresh','term-'||'free','inc','coherent_enumeration',1)",[]).unwrap();
     let command = OperatorRebind {
         host: crate::test_support::test_host_locator(),
         seat: SeatId::new("s1"),
@@ -5588,6 +5639,7 @@ fn operator_rebind_rejects_exhausted_binding_generation() {
     };
     let guard = OperatorTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::Rebind(command.clone()),
         observation,
     )
@@ -6468,6 +6520,7 @@ fn review_operator_rebind_new_incarnation_then_absence() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -6484,6 +6537,7 @@ fn review_operator_rebind_new_incarnation_then_absence() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -6499,6 +6553,7 @@ fn review_operator_rebind_new_incarnation_then_absence() {
     };
     let guard = OperatorTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::Rebind(command.clone()),
         fresh,
     )
@@ -6533,6 +6588,7 @@ fn review_operator_rebind_new_incarnation_then_absence() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -6639,6 +6695,7 @@ fn ordinary_resolution_guard_rejects_unqualified_or_mismatched_read() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -6691,6 +6748,7 @@ fn ordinary_resolution_fixture() -> (
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -6724,7 +6782,11 @@ fn ordinary_resolution_read(
 ) {
     use crate::ports::StorePort;
     let admission = store
-        .begin_host_observation("34750f98bd59fcfc946da45aaabe933b", budget)
+        .begin_host_observation(
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            budget,
+        )
         .unwrap();
     let observation = crate::ports::HostObservation {
         observation_sequence: sequence,
@@ -6815,7 +6877,11 @@ fn ordinary_resolution_returns_existing_owner_and_replays_through_host_loss_and_
     )
     .unwrap();
     let failed = store
-        .begin_host_observation("34750f98bd59fcfc946da45aaabe933b", &budget)
+        .begin_host_observation(
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &budget,
+        )
         .unwrap();
     store
         .invalidate_host_observation(&failed, HostInvalidationReason::HostUnavailable, &budget)
@@ -6996,7 +7062,7 @@ fn final_resolved_target_check_rejects_hold_retirement_and_changed_structure() {
             .unwrap();
         let expected = match change {
             "hold" => {
-                conn.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane-new','b',1,'explicit operator hold')",[]).unwrap();
+                conn.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane-new','b',1,'explicit operator hold')",[]).unwrap();
                 ErrorCode::TargetUnresolved
             }
             "retire" => {
@@ -7043,7 +7109,11 @@ fn final_resolved_target_check_rejects_hold_retirement_and_changed_structure() {
             "wrong-seat" => ErrorCode::TargetUnresolved,
             "superseded" => {
                 store
-                    .begin_host_observation("34750f98bd59fcfc946da45aaabe933b", &budget)
+                    .begin_host_observation(
+                        "34750f98bd59fcfc946da45aaabe933b",
+                        crate::test_support::test_host_id(),
+                        &budget,
+                    )
                     .unwrap();
                 ErrorCode::StaleHostObservation
             }
@@ -7146,7 +7216,7 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
                 .unwrap();
             }
             "released" => {
-                conn.execute("INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) SELECT '34750f98bd59fcfc946da45aaabe933b',recovery_baseline_generation_id,'pane-new',1 FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",[]).unwrap();
+                conn.execute("INSERT INTO recovery_baseline_releases(host_id,baseline_generation_id,target_id,decision_seq) SELECT host_id,recovery_baseline_generation_id,'pane-new',1 FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",[]).unwrap();
             }
             _ => (),
         }
@@ -7777,9 +7847,14 @@ fn b5_published_baseline(
     )
     .unwrap();
     let budget = b5_budget();
-    let admission =
-        seats::begin_host_observation(context, conn, "34750f98bd59fcfc946da45aaabe933b", &budget)
-            .unwrap();
+    let admission = seats::begin_host_observation(
+        context,
+        conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let snapshot = snapshot_for_test(1, targets);
     let stage = staged_test_snapshot(context, conn, admission, &snapshot, &budget);
     seats::publish_snapshot_stage(context, conn, &stage, &budget).unwrap()
@@ -7787,7 +7862,7 @@ fn b5_published_baseline(
 
 fn b5_hold_state(conn: &Connection) -> (i64, i64) {
     conn.query_row(
-        "SELECT baseline_hold_unclaimed,(SELECT count(*) FROM recovery_holds WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND released_at IS NULL) FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
+        "SELECT baseline_hold_unclaimed,(SELECT count(*) FROM recovery_holds WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND released_at IS NULL) FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )
@@ -7808,6 +7883,7 @@ fn b5_lift(context: &StoreContext, conn: &mut Connection) -> bool {
     let lifted = crate::store::seats::lift_baseline_hold_if_clear(
         &tx,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         UtcMillis(100),
     )
     .unwrap();
@@ -7817,7 +7893,7 @@ fn b5_lift(context: &StoreContext, conn: &mut Connection) -> bool {
 
 fn b5_add_hold(conn: &Connection, instance: &str, target: &str) {
     conn.execute(
-        "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES (?1,?2,'b',1,'unresolved saved seat continuity')",
+        "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),?2,'b',1,'unresolved saved seat continuity')",
         rusqlite::params![instance, target],
     )
     .unwrap();
@@ -7856,7 +7932,7 @@ fn lift_requires_reconciliation_marker_for_current_recovery_boot_epoch() {
     assert_eq!(b5_hold_state(&conn), (0, 0));
     let other: (i64, i64) = conn
         .query_row(
-            "SELECT baseline_hold_unclaimed,(SELECT count(*) FROM recovery_holds WHERE instance_id='other' AND released_at IS NULL) FROM herdr_hosts WHERE node_id='other'",
+            "SELECT baseline_hold_unclaimed,(SELECT count(*) FROM recovery_holds WHERE host_id=(SELECT host_id FROM herdr_hosts WHERE node_id='other') AND released_at IS NULL) FROM herdr_hosts WHERE node_id='other'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -7890,14 +7966,14 @@ fn explicit_hold_pane_resolves_after_last_unresolved_seat_is_retired() {
     assert_eq!(
         effective::effective_recovery_disposition(
             &conn,
-            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             "pane-h"
         )
         .unwrap(),
         Disposition::ExplicitHold
     );
     conn.execute(
-        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane-h','b',1,1,1,100,'fresh','term-pane-h','inc','coherent_enumeration',1)",
+        "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane-h','b',1,1,1,100,'fresh','term-pane-h','inc','coherent_enumeration',1)",
         [],
     )
     .unwrap();
@@ -7918,7 +7994,7 @@ fn explicit_hold_pane_resolves_after_last_unresolved_seat_is_retired() {
     assert_eq!(b5_hold_state(&conn), (0, 0));
     let disposition = effective::effective_recovery_disposition(
         &conn,
-        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         "pane-h",
     )
     .unwrap();
@@ -7951,7 +8027,7 @@ fn operator_fresh_seat_lifts_when_no_unresolved_remains() {
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
+        "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
         [],
     )
     .unwrap();
@@ -7962,6 +8038,7 @@ fn operator_fresh_seat_lifts_when_no_unresolved_remains() {
     };
     let guard = OperatorTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::FreshSeat(command.clone()),
         b5_fresh_observation("new-target"),
     )
@@ -7992,7 +8069,7 @@ fn operator_rebind_of_last_unresolved_seat_lifts_holds_in_same_transaction() {
     b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "held-elsewhere");
     // Marker lags: the rebind must not lift.
     conn.execute(
-        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
+        "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
         [],
     )
     .unwrap();
@@ -8005,6 +8082,7 @@ fn operator_rebind_of_last_unresolved_seat_lifts_holds_in_same_transaction() {
     let command = rebind("rebind-lag");
     let guard = OperatorTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::Rebind(command.clone()),
         b5_fresh_observation("new-target"),
     )
@@ -8029,13 +8107,14 @@ fn operator_rebind_of_last_unresolved_seat_lifts_holds_in_same_transaction() {
     b5_add_hold(&conn2, "34750f98bd59fcfc946da45aaabe933b", "held-elsewhere");
     b5_set_marker_to_recovery(&conn2);
     conn2.execute(
-        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
+        "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
         [],
     )
     .unwrap();
     let command = rebind("rebind-lift");
     let guard = OperatorTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::Rebind(command.clone()),
         b5_fresh_observation("new-target"),
     )
@@ -8101,6 +8180,7 @@ fn record_reconciliation_pass_writes_marker_only_for_current_recovery_publicatio
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -8178,6 +8258,7 @@ fn reconciliation_retirement_of_last_unresolved_seat_lifts() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -8247,6 +8328,7 @@ fn reconfirm_structure_of_last_unresolved_seat_lifts_and_not_before() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -8256,6 +8338,7 @@ fn reconfirm_structure_of_last_unresolved_seat_lifts_and_not_before() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -8290,6 +8373,7 @@ fn reconfirm_structure_of_last_unresolved_seat_lifts_and_not_before() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -8551,6 +8635,7 @@ fn b5_replace_request(
     };
     let guard = OperatorTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::Replace(command.clone()),
         b5_fresh_observation(pane),
     )
@@ -8716,6 +8801,7 @@ fn rebind_onto_owned_target_lists_both_resolutions() {
     };
     let guard = OperatorTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::Rebind(command.clone()),
         b5_fresh_observation("s2"),
     )
@@ -8752,7 +8838,7 @@ fn rebind_onto_owned_target_lists_both_resolutions() {
 
 fn c1_observe(conn: &Connection, target: &str) {
     conn.execute(
-        "INSERT OR REPLACE INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'b',1,1,3,100,'fresh','term-'||?1,'inc','coherent_enumeration',1)",
+        "INSERT OR REPLACE INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,3,100,'fresh','term-'||?1,'inc','coherent_enumeration',1)",
         [target],
     )
     .unwrap();
@@ -8799,6 +8885,7 @@ fn c1_decide(
 ) -> Result<CommandResult, crate::protocol::results::ApiError> {
     let guard = crate::ports::ContinuityTargetGuard::try_new(
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         command,
         b5_fresh_observation(command.target.as_str()),
     )
@@ -9937,6 +10024,7 @@ fn spent_snapshot_quantum_commits_its_prefix_and_staging_resumes() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -12297,7 +12385,7 @@ fn invitation_confirmation_duplicate_caller_cannot_change_origin_policy_deadline
     let (context, mut conn, path, _, thread, invitation) =
         rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::RequireAck));
     conn.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s3','34750f98bd59fcfc946da45aaabe933b','resolved','native','s3',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('34750f98bd59fcfc946da45aaabe933b','s3','b',1,1,0,'fresh','term-s3','inc','coherent_enumeration',1);
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'s3','b',1,1,0,'fresh','term-s3','inc','coherent_enumeration',1);
         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s3',1,'s3','b',1,1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-s3','inc');").unwrap();
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(u64::MAX),

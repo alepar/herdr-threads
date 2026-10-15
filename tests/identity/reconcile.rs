@@ -232,6 +232,7 @@ fn indexed_saved_seat_page_plans_move_without_namespace_scan() {
     let publication = PublishedSnapshot {
         id: SnapshotGenerationId::store_issued("published-a".into()),
         instance: "instance-a".into(),
+        host_id: crate::test_support::test_host_id(),
         boot: HostBootId::new("boot-a"),
         epoch: 1,
         observation_sequence: 2,
@@ -365,6 +366,7 @@ fn occupant_evidence_never_unseats_or_replaces_the_active_occupant() {
         publication: PublishedSnapshot {
             id: SnapshotGenerationId::store_issued("binding-loss".into()),
             instance: "instance-a".into(),
+            host_id: crate::test_support::test_host_id(),
             boot: HostBootId::new("boot-a"),
             epoch: 1,
             observation_sequence: 3,
@@ -495,6 +497,7 @@ fn host_invalidation_never_reconfirms_from_execution_or_prior_empty_shell_eviden
     let publication = PublishedSnapshot {
         id: SnapshotGenerationId::store_issued("recovery-publication".into()),
         instance: "instance-a".into(),
+        host_id: crate::test_support::test_host_id(),
         boot: HostBootId::new("boot-a"),
         epoch: 1,
         observation_sequence: 7,
@@ -630,6 +633,7 @@ fn host_invalidated_seat_reconfirms_structurally_from_binding_evidence_with_unkn
         publication: PublishedSnapshot {
             id: SnapshotGenerationId::store_issued("publication".into()),
             instance: "instance".into(),
+            host_id: crate::test_support::test_host_id(),
             boot: HostBootId::new("boot-a"),
             epoch: 1,
             observation_sequence: 7,
@@ -796,6 +800,7 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
             context,
             conn,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             budget,
         )
         .unwrap();
@@ -827,7 +832,7 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
         conn.execute("UPDATE herdr_hosts SET host_boot='boot-a',host_epoch=1", [])
             .unwrap();
         conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
-        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane','boot-a',1,1,0,'fresh')", []).unwrap();
+        conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane','boot-a',1,1,0,'fresh')", []).unwrap();
         conn.execute(
             "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane','boot-a',1,'codex','plugin_context:x','e','cooperative_top_level',1,1,'terminal-a',?1)",
             [binding_incarnation],
@@ -838,6 +843,7 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
             &context,
             &mut conn,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             &budget,
         )
         .unwrap();
@@ -969,6 +975,7 @@ fn never_registered_host_invalidated_seat_reconfirms_from_its_structural_proof()
         publication: PublishedSnapshot {
             id: SnapshotGenerationId::store_issued("publication".into()),
             instance: "instance".into(),
+            host_id: crate::test_support::test_host_id(),
             boot: HostBootId::new("boot-a"),
             epoch: 2,
             observation_sequence: 7,
@@ -1126,6 +1133,7 @@ fn real_store_reconfirms_never_registered_seat_from_its_structural_proof() {
             context,
             conn,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             budget,
         )
         .unwrap();
@@ -1157,12 +1165,13 @@ fn real_store_reconfirms_never_registered_seat_from_its_structural_proof() {
         conn.execute("UPDATE herdr_hosts SET host_boot='boot-a',host_epoch=1", [])
             .unwrap();
         conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,home_node,is_local,host_id) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,'terminal-u',?1,'coherent_enumeration','boot-a',1,1,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [proof_incarnation]).unwrap();
-        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('34750f98bd59fcfc946da45aaabe933b','pane','boot-a',1,1,0,'fresh')", []).unwrap();
+        conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane','boot-a',1,1,0,'fresh')", []).unwrap();
         publish(&context, &mut conn, &budget, production(2));
         let admission = seats::begin_host_observation(
             &context,
             &mut conn,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             &budget,
         )
         .unwrap();
@@ -1302,6 +1311,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
             context,
             conn,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             budget,
         )
         .unwrap();
@@ -1329,6 +1339,7 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
         &context,
         &mut conn,
         "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &budget,
     )
     .unwrap();
@@ -1580,6 +1591,7 @@ fn real_store_registered_seat_follows_observed_move_with_unsupported_execution()
             context,
             conn,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             budget,
         )
         .unwrap();
@@ -1810,6 +1822,7 @@ mod fake_port {
         fn begin_host_observation(
             &self,
             instance: &str,
+            host: crate::ports::HostId,
             _: &CallBudget,
         ) -> Result<HostObservationAdmission, ApiError> {
             let mut state = self.state.lock().unwrap();
@@ -1817,6 +1830,7 @@ mod fake_port {
             state.calls.push("admit".into());
             Ok(HostObservationAdmission {
                 instance: instance.into(),
+                host_id: host,
                 sequence: state.admission_sequence,
                 expected_active: None,
                 expected_boot: None,
@@ -1980,6 +1994,7 @@ mod fake_port {
             Ok(PublishedSnapshot {
                 id: stage_id(),
                 instance: header.instance.clone(),
+                host_id: crate::test_support::test_host_id(),
                 boot: header.boot.clone(),
                 epoch: header.epoch,
                 observation_sequence: header.observation_sequence,
@@ -2145,6 +2160,7 @@ mod fake_port {
             store.as_ref(),
             &mut lane,
             "instance-a",
+            crate::test_support::test_host_id(),
             &HostCallContext {
                 budget: budget(),
                 expected_boot: None,
@@ -2185,6 +2201,7 @@ mod fake_port {
             store.as_ref(),
             &mut lane,
             "instance-a",
+            crate::test_support::test_host_id(),
             &HostCallContext {
                 budget: budget(),
                 expected_boot: None,
@@ -2211,10 +2228,10 @@ mod fake_port {
     fn older_failed_admission_cannot_invalidate_newer_decision() {
         let store = FakeStore::new();
         let old = store
-            .begin_host_observation("instance-a", &budget())
+            .begin_host_observation("instance-a", crate::test_support::test_host_id(), &budget())
             .unwrap();
         let new = store
-            .begin_host_observation("instance-a", &budget())
+            .begin_host_observation("instance-a", crate::test_support::test_host_id(), &budget())
             .unwrap();
         assert!(
             store
@@ -2243,10 +2260,10 @@ mod fake_port {
     fn late_success_cannot_publish_after_newer_invalidation() {
         let store = FakeStore::new();
         let old = store
-            .begin_host_observation("instance-a", &budget())
+            .begin_host_observation("instance-a", crate::test_support::test_host_id(), &budget())
             .unwrap();
         let newer = store
-            .begin_host_observation("instance-a", &budget())
+            .begin_host_observation("instance-a", crate::test_support::test_host_id(), &budget())
             .unwrap();
         store
             .invalidate_host_observation(&newer, HostInvalidationReason::HostUnavailable, &budget())
@@ -2290,6 +2307,7 @@ mod fake_port {
             store.as_ref(),
             &mut lane,
             "instance-a",
+            crate::test_support::test_host_id(),
             &HostCallContext {
                 budget: budget(),
                 expected_boot: None,
@@ -2327,6 +2345,7 @@ mod fake_port {
                 store.as_ref(),
                 &mut lane,
                 "instance-a",
+                crate::test_support::test_host_id(),
                 &HostCallContext {
                     budget: budget(),
                     expected_boot: None,
@@ -2364,6 +2383,7 @@ mod fake_port {
             store.as_ref(),
             &mut lane,
             "instance-a",
+            crate::test_support::test_host_id(),
             &HostCallContext {
                 budget: budget(),
                 expected_boot: None,
@@ -2400,7 +2420,7 @@ mod fake_port {
         let mut lane = ObservationLane::default();
         let ticket = lane.begin_observation().unwrap();
         let host_admission = store
-            .begin_host_observation("instance-a", &budget())
+            .begin_host_observation("instance-a", crate::test_support::test_host_id(), &budget())
             .unwrap();
         let published = publish_captured(
             &store,
@@ -2430,7 +2450,7 @@ mod fake_port {
         let mut lane = ObservationLane::default();
         let ticket = lane.begin_observation().unwrap();
         let host_admission = store
-            .begin_host_observation("instance-a", &budget())
+            .begin_host_observation("instance-a", crate::test_support::test_host_id(), &budget())
             .unwrap();
         assert!(
             publish_captured(
@@ -2457,6 +2477,7 @@ mod fake_port {
         let publication = PublishedSnapshot {
             id: stage_id(),
             instance: "instance-a".into(),
+            host_id: crate::test_support::test_host_id(),
             boot: HostBootId::new("boot-a"),
             epoch: 1,
             observation_sequence: 2,
@@ -2560,6 +2581,7 @@ mod fake_port {
             store.as_ref(),
             lane,
             "instance-a",
+            crate::test_support::test_host_id(),
             &context(),
             &budget(),
         )
@@ -2781,7 +2803,7 @@ mod fake_port {
     fn invalidation_projects_only_bounded_unresolved_transitions() {
         let store = FakeStore::new();
         let admission = store
-            .begin_host_observation("instance-a", &budget())
+            .begin_host_observation("instance-a", crate::test_support::test_host_id(), &budget())
             .unwrap();
         let fence = HostInvalidationFence {
             admission,
@@ -2832,7 +2854,7 @@ mod fake_port {
     fn invalidation_skips_already_unresolved_seats_and_marks_the_rest() {
         let store = FakeStore::new();
         let admission = store
-            .begin_host_observation("instance-a", &budget())
+            .begin_host_observation("instance-a", crate::test_support::test_host_id(), &budget())
             .unwrap();
         let fence = HostInvalidationFence {
             admission,
@@ -2887,6 +2909,7 @@ mod fake_port {
         let publication = PublishedSnapshot {
             id: stage_id(),
             instance: "instance-a".into(),
+            host_id: crate::test_support::test_host_id(),
             boot: HostBootId::new("boot-a"),
             epoch: 1,
             observation_sequence: 2,
@@ -3055,6 +3078,7 @@ mod carry_forward {
             &f.context,
             &mut f.conn,
             "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
             &f.budget,
         )
         .unwrap();

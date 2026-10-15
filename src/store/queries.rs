@@ -1048,7 +1048,7 @@ fn seat_inspect(
         detail_argv: None,
     };
     let hold = if let Some(target) = &summary.target {
-        db.query_row("SELECT reason FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND released_at IS NULL",params![instance,target.as_str()],|r|r.get::<_,String>(0)).optional().map_err(|e|db.map_error(e))?.map(|reason|HoldSummary{target:target.clone(),reason_data:reason,detail_argv:vec!["herdr-threads".into(),"seat".into(),"inspect".into(),q.seat.as_str().into()]})
+        db.query_row("SELECT reason FROM recovery_holds WHERE host_id=(SELECT host_id FROM seats WHERE id=?1) AND target_id=?2 AND released_at IS NULL",params![q.seat.as_str(),target.as_str()],|r|r.get::<_,String>(0)).optional().map_err(|e|db.map_error(e))?.map(|reason|HoldSummary{target:target.clone(),reason_data:reason,detail_argv:vec!["herdr-threads".into(),"seat".into(),"inspect".into(),q.seat.as_str().into()]})
     } else {
         None
     };

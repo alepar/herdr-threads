@@ -282,7 +282,7 @@ pub(super) fn binding_scope(
     let Ok(generation) = i64::try_from(claim.binding_generation) else {
         return Ok(None);
     };
-    let valid: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?1 AND s.id=?2 AND s.instance_id=?3 AND s.state='resolved' AND b.generation=?4 AND b.execution_id=?5 AND s.target_id=?6 AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.ended_at IS NULL AND b.role='top_level' AND b.liveness='connected' AND NOT EXISTS(SELECT 1 FROM recovery_holds h WHERE h.instance_id=s.instance_id AND h.target_id=s.target_id AND h.released_at IS NULL))",params![binding.binding_id.as_str(),claim.seat.as_str(),claim.instance,generation,claim.execution.as_str(),claim.target.as_str()],|r|r.get(0)).map_err(store_error)?;
+    let valid: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?1 AND s.id=?2 AND s.instance_id=?3 AND s.state='resolved' AND b.generation=?4 AND b.execution_id=?5 AND s.target_id=?6 AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.ended_at IS NULL AND b.role='top_level' AND b.liveness='connected' AND NOT EXISTS(SELECT 1 FROM recovery_holds h WHERE h.host_id=s.host_id AND h.target_id=s.target_id AND h.released_at IS NULL))",params![binding.binding_id.as_str(),claim.seat.as_str(),claim.instance,generation,claim.execution.as_str(),claim.target.as_str()],|r|r.get(0)).map_err(store_error)?;
     Ok(valid.then_some(binding.binding_id))
 }
 

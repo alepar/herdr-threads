@@ -76,6 +76,13 @@ fn upsert_test_host(conn: &Connection) -> i64 {
         .expect("attach the test host row")
 }
 
+/// The id of the fixture host row: the first `herdr_hosts` row a fresh store
+/// gets, which every fixture that attaches [`TEST_HOST_ENDPOINT`] first uses.
+/// Observation entry points take it as their explicit host.
+pub fn test_host_id() -> crate::ports::HostId {
+    crate::ports::HostId::from_row(1)
+}
+
 /// Attaches the fixture Herdr host to a store: upserts its `herdr_hosts` row
 /// through `conn`, makes it `ctx`'s primary host and binds `conn` to it.
 /// Idempotent. Returns the host id.

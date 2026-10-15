@@ -112,7 +112,11 @@ impl HostPort for Host {
         if self.invalidate.swap(false, Ordering::SeqCst) {
             let newer = self
                 .store
-                .begin_host_observation(&self.instance, &context.budget)
+                .begin_host_observation(
+                    &self.instance,
+                    herdr_threads::test_support::test_host_id(),
+                    &context.budget,
+                )
                 .unwrap();
             self.store
                 .invalidate_host_observation(
@@ -237,7 +241,11 @@ impl Fixture {
             .unwrap();
         let admission = host
             .store
-            .begin_host_observation(&host.instance, &budget)
+            .begin_host_observation(
+                &host.instance,
+                herdr_threads::test_support::test_host_id(),
+                &budget,
+            )
             .unwrap();
         let stage = host
             .store
