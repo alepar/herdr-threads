@@ -34,6 +34,11 @@ path = "tests/integration.rs"
 required-features = ["test-support"]
 
 [[test]]
+name = "multinode"
+path = "tests/multinode.rs"
+required-features = ["test-support"]
+
+[[test]]
 name = "package"
 path = "tests/package.rs"
 required-features = ["test-support"]

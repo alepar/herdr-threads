@@ -12,6 +12,8 @@ pub mod isolated_herdr;
 pub mod isolation;
 #[cfg(feature = "test-support")]
 pub mod journal_oracle;
+#[cfg(feature = "test-support")]
+pub mod multinode;
 pub mod owner_watch;
 #[cfg(feature = "test-support")]
 pub mod search_barrier;
