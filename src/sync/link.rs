@@ -473,7 +473,7 @@ pub enum SendError {
     Full,
     /// The link has ended.
     LinkGone,
-    /// An `entries` body that is empty or over the negotiated `max_frame`.
+    /// An `entries` or `branch_entries` body that is empty or over the negotiated `max_frame`.
     BadSize,
 }
 
@@ -524,14 +524,16 @@ impl LinkHandle {
         &self.peer
     }
 
-    /// Queue a control frame (anything but `entries`; use
-    /// [`Self::try_send_entries`] for those).
+    /// Queue a control frame (anything but `entries` and `branch_entries`;
+    /// use [`Self::try_send_entries`] for those). `branch_want` and
+    /// `branch_none` are control frames.
     pub fn send(&self, frame: PeerFrame) -> Result<(), SendError> {
         map_try(self.control.try_send(Control::Frame(frame)))
     }
 
-    /// Queue one pre-encoded `entries` frame body. It is written when the
-    /// credit window allows (`outstanding + len <= credit`, or nothing is
+    /// Queue one pre-encoded `entries` or `branch_entries` frame body (both
+    /// share the credited data queue and the credit counting). It is written
+    /// when the credit window allows (`outstanding + len <= credit`, or nothing is
     /// outstanding).
     pub fn try_send_entries(&self, body: Vec<u8>) -> Result<(), SendError> {
         if body.is_empty() || body.len() > self.peer.limits.max_frame as usize {
@@ -1362,6 +1364,7 @@ mod tests {
             full: true,
             ask: false,
             logs: vec![],
+            forks: vec![],
         };
         let have_len = have.encode().unwrap().len();
         write_peer_frame(&mut peer.writer, &have).await.unwrap();
@@ -1401,5 +1404,96 @@ mod tests {
             panic!("expected Ended");
         };
         assert!(matches!(why, LinkError::Refused(CloseReason::Busy)));
+    }
+
+    fn branch_entries_body(payload_bytes: usize) -> Vec<u8> {
+        let payload = format!(r#"{{"p":"{}"}}"#, "x".repeat(payload_bytes));
+        let envelope = crate::sync::envelope::WireEnvelope {
+            node: "00".repeat(16),
+            inc: 1,
+            counter: 2,
+            prev: "00".repeat(32),
+            hlc: 5,
+            kind: "k".into(),
+            ver: 1,
+            deps: "0000".into(),
+            creates: None,
+            needs: vec![],
+            payload: serde_json::value::RawValue::from_string(payload).unwrap(),
+            hash: "00".repeat(32),
+            sig: "00".repeat(64),
+        };
+        PeerFrame::BranchEntries {
+            node: NodeUuid::nil(),
+            inc: 1,
+            tip_hash: "bb".repeat(32),
+            entries: vec![envelope],
+            more: false,
+        }
+        .encode()
+        .unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn branch_entries_consume_and_return_credit_like_entries() {
+        let (handle, mut events, mut peer, _cancel) = running().await;
+        let body = branch_entries_body(400 * 1024);
+        assert!(body.len() > 400 * 1024 && body.len() < 410 * 1024);
+        let len = body.len();
+        // Sending: two frames fill the 1 MiB window, the third waits.
+        for _ in 0..3 {
+            handle.try_send_entries(body.clone()).unwrap();
+        }
+        assert_eq!(read_body(&mut peer).await.len(), len);
+        assert_eq!(read_body(&mut peer).await.len(), len);
+        assert!(
+            nothing_within(&mut peer, 5).await,
+            "third branch_entries frame needs credit"
+        );
+        write_peer_frame(&mut peer.writer, &PeerFrame::Credit { bytes: len as u32 })
+            .await
+            .unwrap();
+        let third = read_body(&mut peer).await;
+        assert_eq!(third.len(), len);
+        assert!(matches!(
+            PeerFrame::decode(&third),
+            Ok(PeerFrame::BranchEntries { .. })
+        ));
+
+        // Receiving: a branch_entries frame reaches the coordinator with its
+        // wire length (the figure returned as credit); branch_want and
+        // branch_none are forwarded as ordinary frames.
+        write_raw(&mut peer.writer, &body).await.unwrap();
+        for frame in [
+            PeerFrame::BranchWant(crate::sync::frame::BranchWant {
+                node: NodeUuid::nil(),
+                inc: 1,
+                tip: crate::sync::frame::TipRef {
+                    counter: 3,
+                    hash: "bb".repeat(32),
+                },
+                from: 2,
+            }),
+            PeerFrame::BranchNone {
+                node: NodeUuid::nil(),
+                inc: 1,
+                tip_hash: "bb".repeat(32),
+            },
+        ] {
+            write_peer_frame(&mut peer.writer, &frame).await.unwrap();
+        }
+        let mut seen = Vec::new();
+        while seen.len() < 3 {
+            if let Some(LinkEvent::Frame {
+                frame, wire_len, ..
+            }) = events.recv().await
+            {
+                seen.push((frame, wire_len));
+            }
+        }
+        assert!(matches!(seen[0].0, PeerFrame::BranchEntries { .. }));
+        assert_eq!(seen[0].1, len);
+        assert!(matches!(seen[1].0, PeerFrame::BranchWant { .. }));
+        assert!(matches!(seen[2].0, PeerFrame::BranchNone { .. }));
     }
 }

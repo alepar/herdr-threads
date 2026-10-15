@@ -34,6 +34,10 @@ pub const MAX_HELLO_BYTES: usize = 8 * 1024;
 pub const MAX_HELLO_CAPS: usize = 32;
 /// Longest single capability name, in bytes.
 pub const MAX_CAP_BYTES: usize = 64;
+/// The capability the fork frames (`branch_*`, `Have.forks`) belong to.
+pub const FORK_CAP: &str = "fork.v1";
+/// Most fork references in one `have` frame.
+pub const MAX_HAVE_FORKS: usize = 64;
 /// Longest `close.detail`, in bytes.
 pub const MAX_CLOSE_DETAIL_BYTES: usize = 256;
 /// Most logs in one `have` frame.
@@ -89,6 +93,37 @@ pub struct HaveLog {
     pub head: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen_at: Option<u64>,
+}
+
+/// A log position: a counter and the hash of the entry at it (64 hex
+/// characters).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TipRef {
+    pub counter: u64,
+    pub hash: String,
+}
+
+/// The body of a `branch_want` frame; also what a fork sink queues to send.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchWant {
+    pub node: NodeUuid,
+    pub inc: u32,
+    /// The conflicting branch's tip the sender wants entries of.
+    pub tip: TipRef,
+    /// First counter wanted, `1 <= from <= tip.counter`.
+    pub from: u64,
+}
+
+/// Fork evidence carried in a `have` frame behind [`FORK_CAP`]: the sender
+/// holds `held` on this log and knows of a conflicting branch ending at
+/// `conflicting`, frozen at counter `frozen_at`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkRef {
+    pub node: NodeUuid,
+    pub inc: u32,
+    pub held: TipRef,
+    pub conflicting: TipRef,
+    pub frozen_at: u64,
 }
 
 /// How long ago a node was last heard from, in a `seen` frame.
@@ -162,6 +197,10 @@ pub enum PeerFrame {
         #[serde(default)]
         ask: bool,
         logs: Vec<HaveLog>,
+        /// Fork evidence, at most [`MAX_HAVE_FORKS`]; sent only to a peer
+        /// that advertised [`FORK_CAP`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        forks: Vec<ForkRef>,
     },
     Want {
         node: NodeUuid,
@@ -178,6 +217,25 @@ pub enum PeerFrame {
         node: NodeUuid,
         inc: u32,
         entries: Vec<WireEnvelope>,
+    },
+    /// Fork cap: ask for the conflicting branch of a frozen log, from
+    /// counter `from` (`1 <= from <= tip.counter`, checked by `decode`).
+    BranchWant(BranchWant),
+    /// Fork cap: a batch of the branch ending at `tip_hash`, 1..=256 entries.
+    /// Rides the credited data queue like `Entries`.
+    #[serde(skip_deserializing)]
+    BranchEntries {
+        node: NodeUuid,
+        inc: u32,
+        tip_hash: String,
+        entries: Vec<WireEnvelope>,
+        more: bool,
+    },
+    /// Fork cap: the sender no longer has the branch ending at `tip_hash`.
+    BranchNone {
+        node: NodeUuid,
+        inc: u32,
+        tip_hash: String,
     },
     Credit {
         bytes: u32,
@@ -201,7 +259,13 @@ impl PeerFrame {
         serde_json::to_vec(self)
     }
 
+    /// Decode one frame body. Fork frames are validated here: a
+    /// `branch_want` outside `1 <= from <= tip.counter`, a `branch_entries`
+    /// with 0 or more than [`MAX_FRAME_ENTRIES`] entries, or a `have` with
+    /// more than [`MAX_HAVE_FORKS`] fork refs is an error (the link answers
+    /// `protocol_error`).
     pub fn decode(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        use serde::de::Error as _;
         #[derive(Deserialize)]
         struct Tag {
             t: String,
@@ -212,11 +276,49 @@ impl PeerFrame {
             inc: u32,
             entries: Vec<WireEnvelope>,
         }
-        if serde_json::from_slice::<Tag>(bytes).is_ok_and(|tag| tag.t == "entries") {
-            let EntriesBody { node, inc, entries } = serde_json::from_slice(bytes)?;
-            return Ok(Self::Entries { node, inc, entries });
+        #[derive(Deserialize)]
+        struct BranchEntriesBody {
+            node: NodeUuid,
+            inc: u32,
+            tip_hash: String,
+            entries: Vec<WireEnvelope>,
+            more: bool,
         }
-        serde_json::from_slice(bytes)
+        let tag = serde_json::from_slice::<Tag>(bytes).ok();
+        match tag.as_ref().map(|tag| tag.t.as_str()) {
+            Some("entries") => {
+                let EntriesBody { node, inc, entries } = serde_json::from_slice(bytes)?;
+                return Ok(Self::Entries { node, inc, entries });
+            }
+            Some("branch_entries") => {
+                let body: BranchEntriesBody = serde_json::from_slice(bytes)?;
+                if body.entries.is_empty() || body.entries.len() > MAX_FRAME_ENTRIES {
+                    return Err(serde_json::Error::custom(
+                        "branch_entries needs 1..=256 entries",
+                    ));
+                }
+                return Ok(Self::BranchEntries {
+                    node: body.node,
+                    inc: body.inc,
+                    tip_hash: body.tip_hash,
+                    entries: body.entries,
+                    more: body.more,
+                });
+            }
+            _ => {}
+        }
+        let frame: Self = serde_json::from_slice(bytes)?;
+        match &frame {
+            Self::BranchWant(BranchWant { tip, from, .. }) if *from < 1 || *from > tip.counter => {
+                Err(serde_json::Error::custom(
+                    "branch_want from outside 1..=tip.counter",
+                ))
+            }
+            Self::Have { forks, .. } if forks.len() > MAX_HAVE_FORKS => Err(
+                serde_json::Error::custom("have carries more than 64 fork refs"),
+            ),
+            _ => Ok(frame),
+        }
     }
 
     /// The hello in `bytes`, only if it is a JSON object whose `"t"` is
@@ -340,6 +442,7 @@ mod tests {
                         frozen_at: None,
                     },
                 ],
+                forks: vec![],
             },
             PeerFrame::Want {
                 node: node(1),
@@ -577,5 +680,194 @@ mod tests {
             .unwrap();
         let err = read_peer_frame(&mut b, 4).await.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    fn tip(counter: u64, byte: &str) -> TipRef {
+        TipRef {
+            counter,
+            hash: byte.repeat(32),
+        }
+    }
+
+    fn fork_ref(n: u128) -> ForkRef {
+        ForkRef {
+            node: node(n),
+            inc: 2,
+            held: tip(5, "aa"),
+            conflicting: tip(7, "bb"),
+            frozen_at: 4,
+        }
+    }
+
+    #[test]
+    fn branch_frames_round_trip() {
+        let frames = [
+            PeerFrame::BranchWant(BranchWant {
+                node: node(1),
+                inc: 2,
+                tip: tip(7, "bb"),
+                from: 5,
+            }),
+            PeerFrame::BranchEntries {
+                node: node(1),
+                inc: 2,
+                tip_hash: "bb".repeat(32),
+                entries: vec![wire_envelope()],
+                more: true,
+            },
+            PeerFrame::BranchNone {
+                node: node(1),
+                inc: 2,
+                tip_hash: "bb".repeat(32),
+            },
+        ];
+        for (frame, tag) in frames
+            .iter()
+            .zip(["branch_want", "branch_entries", "branch_none"])
+        {
+            let bytes = frame.encode().unwrap();
+            assert_eq!(json_of(frame)["t"], tag);
+            let back = PeerFrame::decode(&bytes).unwrap();
+            assert!(!matches!(back, PeerFrame::Unknown), "{frame:?}");
+            assert_eq!(back.encode().unwrap(), bytes, "{frame:?}");
+        }
+        // The entry payload keeps its exact bytes.
+        let text = String::from_utf8(frames[1].encode().unwrap()).unwrap();
+        assert!(text.contains(r#""payload":{ "b":1, "a":2 }"#));
+        // 0 and 257 entries are refused.
+        for count in [0usize, MAX_FRAME_ENTRIES + 1] {
+            let frame = PeerFrame::BranchEntries {
+                node: node(1),
+                inc: 2,
+                tip_hash: "bb".repeat(32),
+                entries: (0..count).map(|_| wire_envelope()).collect(),
+                more: false,
+            };
+            assert!(
+                PeerFrame::decode(&frame.encode().unwrap()).is_err(),
+                "{count}"
+            );
+        }
+    }
+
+    #[test]
+    fn have_forks_round_trip() {
+        let have = PeerFrame::Have {
+            full: true,
+            ask: false,
+            logs: vec![],
+            forks: vec![fork_ref(1), fork_ref(2)],
+        };
+        let bytes = have.encode().unwrap();
+        let PeerFrame::Have { forks, .. } = PeerFrame::decode(&bytes).unwrap() else {
+            panic!("not a have");
+        };
+        assert_eq!(forks, vec![fork_ref(1), fork_ref(2)]);
+        let value = json_of(&have);
+        assert_eq!(value["forks"][0]["held"]["counter"], 5);
+        assert_eq!(value["forks"][0]["conflicting"]["hash"], "bb".repeat(32));
+        assert_eq!(value["forks"][0]["frozen_at"], 4);
+        // An empty list is omitted from the wire; an absent one decodes empty.
+        let plain = PeerFrame::Have {
+            full: false,
+            ask: false,
+            logs: vec![],
+            forks: vec![],
+        };
+        assert!(json_of(&plain).get("forks").is_none());
+        let PeerFrame::Have { forks, .. } =
+            PeerFrame::decode(br#"{"t":"have","full":true,"logs":[]}"#).unwrap()
+        else {
+            panic!("not a have");
+        };
+        assert!(forks.is_empty());
+        // At most 64 refs.
+        let at_limit = PeerFrame::Have {
+            full: true,
+            ask: false,
+            logs: vec![],
+            forks: (0..MAX_HAVE_FORKS as u128).map(fork_ref).collect(),
+        };
+        assert!(PeerFrame::decode(&at_limit.encode().unwrap()).is_ok());
+        let over = PeerFrame::Have {
+            full: true,
+            ask: false,
+            logs: vec![],
+            forks: (0..=MAX_HAVE_FORKS as u128).map(fork_ref).collect(),
+        };
+        assert!(PeerFrame::decode(&over.encode().unwrap()).is_err());
+    }
+
+    #[test]
+    fn capless_reader_ignores_forks_and_decodes_branch_as_unknown() {
+        // The frame enum as it stood before fork.v1: no `forks`, no `branch_*`.
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "t", rename_all = "snake_case")]
+        enum OldFrame {
+            Have {
+                full: bool,
+                #[serde(default)]
+                ask: bool,
+                logs: Vec<HaveLog>,
+            },
+            #[serde(other)]
+            Unknown,
+        }
+        let have = PeerFrame::Have {
+            full: true,
+            ask: true,
+            logs: vec![],
+            forks: vec![fork_ref(1)],
+        };
+        let old: OldFrame = serde_json::from_slice(&have.encode().unwrap()).unwrap();
+        assert!(matches!(
+            old,
+            OldFrame::Have {
+                full: true,
+                ask: true,
+                ref logs,
+            } if logs.is_empty()
+        ));
+        for frame in [
+            PeerFrame::BranchWant(BranchWant {
+                node: node(1),
+                inc: 2,
+                tip: tip(7, "bb"),
+                from: 5,
+            }),
+            PeerFrame::BranchEntries {
+                node: node(1),
+                inc: 2,
+                tip_hash: "bb".repeat(32),
+                entries: vec![wire_envelope()],
+                more: false,
+            },
+            PeerFrame::BranchNone {
+                node: node(1),
+                inc: 2,
+                tip_hash: "bb".repeat(32),
+            },
+        ] {
+            let old: OldFrame = serde_json::from_slice(&frame.encode().unwrap()).unwrap();
+            assert!(matches!(old, OldFrame::Unknown), "{frame:?}");
+        }
+    }
+
+    #[test]
+    fn branch_want_from_bounds_refused() {
+        let want = |from: u64, counter: u64| {
+            PeerFrame::BranchWant(BranchWant {
+                node: node(1),
+                inc: 2,
+                tip: tip(counter, "bb"),
+                from,
+            })
+            .encode()
+            .unwrap()
+        };
+        assert!(PeerFrame::decode(&want(0, 7)).is_err());
+        assert!(PeerFrame::decode(&want(8, 7)).is_err());
+        assert!(PeerFrame::decode(&want(1, 7)).is_ok());
+        assert!(PeerFrame::decode(&want(7, 7)).is_ok());
     }
 }
