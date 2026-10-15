@@ -660,10 +660,20 @@ impl Core {
         }
         line.push_str(if report.interrupted {
             "; interrupted, marker kept"
+        } else if report.headroom {
+            "; marker kept: no disk headroom"
         } else {
             "; marker removed"
         });
         self.log(&line);
+        if report.headroom {
+            // Retryable: the job stays queued and runs again; ingest is
+            // idempotent, so the repeat continues where headroom ran out.
+            return Err(ApiError::new(
+                ErrorCode::StoreFull,
+                "resync salvage stopped: no disk headroom",
+            ));
+        }
         Ok(())
     }
 

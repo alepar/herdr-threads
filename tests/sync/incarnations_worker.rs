@@ -673,6 +673,49 @@ fn failing_job_records_sync_failure_and_backs_off_1_to_60s() {
     assert_eq!(core.retry_at, None);
 }
 
+// Kills: a salvage that removes the marker after a Headroom stop, a stop that
+// is not reported or not retried, and a retry that does not finish the rebuild.
+#[test]
+fn salvage_out_of_headroom_keeps_marker_and_retries_until_it_fits() {
+    let clock = ManualClock::new(T0);
+    let a = Node::new(SEED_A, 600, clock.clone());
+    let c = Node::new(SEED_C, 77, ManualClock::new(T0));
+    c.put("x");
+    c.put("y");
+    let dir = a._isolation.state_root().join("node-dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join(crate::sync::resync::MARKER_FILE);
+    std::fs::write(&marker, b"{}").unwrap();
+    let c_uuid = NodeIdentity::from_seed(SEED_C).uuid().to_string();
+    let held = format!("SELECT COUNT(*) FROM sync_logs WHERE node_uuid='{c_uuid}'");
+    let failed = |a: &Node| a.status.health().is_some_and(|h| h.failure.is_some());
+
+    a.store.context().set_ingest_headroom(u64::MAX);
+    let mut core = a.core();
+    a.sink.enqueue(Job::Salvage {
+        backup_db: c._isolation.state_root().join("store.db"),
+        node_dir: dir.clone(),
+    });
+    core.work();
+    assert!(marker.exists(), "the marker stays");
+    assert!(
+        a.lines()
+            .iter()
+            .any(|l| l.contains("marker kept: no disk headroom")),
+        "{:?}",
+        a.lines()
+    );
+    assert!(failed(&a), "Health shows the stop");
+    assert_eq!(a.count(&held), 0, "nothing was stored");
+
+    a.store.context().set_ingest_headroom(0);
+    clock.advance(60_000);
+    core.work();
+    assert!(!marker.exists(), "the retry finished the rebuild");
+    assert!(a.lines().iter().any(|l| l.contains("marker removed")));
+    assert_eq!(a.count(&held), 1, "c's log is read back");
+}
+
 // ---- Third-party and owner paths ------------------------------------------------
 
 // Kills: a conflict that is not recorded, a freeze at the wrong counter, a log

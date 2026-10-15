@@ -5,7 +5,8 @@
 //!   writes, the step-0 phase transitions (backup by `VACUUM INTO`, moving
 //!   the old files into `orig/`, choosing `backup_db`), the plan handed to
 //!   composition, the salvage reader (the backup read back, per log, into an
-//!   ingest callback) and deleting the marker when salvage ends.
+//!   ingest callback) and deleting the marker when every log was read back (a
+//!   log stopped for lack of disk headroom keeps it).
 //! - Hides: the marker format (`resync.json` v1), the backup directory layout
 //!   (`backups/<unix_ms>/{herdr-threads.db,orig/}`), and that a rebuild is a
 //!   restart against a missing store.
@@ -429,6 +430,10 @@ pub struct SalvageReport {
     pub unreadable: Option<String>,
     /// Cancelled before the end; the marker is kept for the next start.
     pub interrupted: bool,
+    /// At least one log stopped for lack of disk headroom (it is also in
+    /// `stopped`): its tail is not yet in the store, so the marker stays and
+    /// a later pass continues.
+    pub headroom: bool,
 }
 
 /// The ingest callback of a salvage: one batch of one log. The worker's
@@ -445,7 +450,7 @@ pub type SalvageIngest<'a> =
 /// reading it, and the next log goes on. `ingest` verifies every entry, so
 /// corrupt rows are never admitted. A store error from `ingest` itself ends
 /// the pass with that error: ingest is idempotent, so the caller runs the
-/// whole pass again.
+/// whole pass again. A `Headroom` stop sets [`SalvageReport::headroom`].
 pub fn salvage(
     backup_db: &Path,
     ingest: &mut SalvageIngest<'_>,
@@ -500,6 +505,7 @@ pub fn salvage(
                     from = last.saturating_add(1);
                 }
                 other => {
+                    report.headroom |= matches!(other, IngestOutcome::Headroom);
                     report.stopped.push(SalvageStop {
                         log: *log,
                         why: format!("ingest at counter {from}: {}", outcome_name(&other)),
@@ -524,7 +530,8 @@ fn outcome_name(outcome: &IngestOutcome) -> &'static str {
 }
 
 /// [`salvage`], then the end of the rebuild: the marker is deleted unless the
-/// pass was interrupted. The backup directory is never touched.
+/// pass was interrupted or a log stopped for lack of disk headroom (that tail
+/// would survive only in the backup). The backup directory is never touched.
 pub fn run_salvage(
     node_dir: &Path,
     backup_db: &Path,
@@ -532,7 +539,7 @@ pub fn run_salvage(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<SalvageReport, ApiError> {
     let report = salvage(backup_db, ingest, cancelled)?;
-    if !report.interrupted {
+    if !report.interrupted && !report.headroom {
         ResyncMarker::finish_in(node_dir)
             .map_err(|error| ApiError::new(ErrorCode::StoreBusy, error.to_string()))?;
     }
@@ -1150,6 +1157,7 @@ mod tests {
             report.entries,
             held.iter().map(|(_, c)| c).sum::<u64>() - 44
         );
+        assert!(!report.headroom, "a gap is not a headroom stop");
         assert_eq!(report.stopped.len(), 1);
         assert_eq!(report.stopped[0].log, big);
         assert!(
@@ -1201,6 +1209,64 @@ mod tests {
         assert!(plan.backup_db.is_file(), "the backup stays");
         let dir = plan.backup_db.parent().unwrap();
         assert!(dir.join(ORIG_DIR).join(DB_FILE).is_file(), "orig/ stays");
+    }
+
+    #[test]
+    fn headroom_stop_keeps_the_marker_then_a_salvage_with_headroom_removes_it() {
+        let (_iso, paths) = node("resync-salvage-headroom");
+        build_store(&paths.database_path, &three_logs());
+        requested_marker(&paths);
+        let plan = resume_at_start(&paths, &FixedClock(NOW)).unwrap().unwrap();
+        mark_salvaging(&paths).unwrap();
+
+        let mut full = |_: &LogKey, _: Vec<Envelope>| Ok(IngestOutcome::Headroom);
+        let report = run_salvage(&paths.node_dir, &plan.backup_db, &mut full, &|| false).unwrap();
+        assert!(report.headroom, "{report:?}");
+        assert_eq!(report.entries, 0);
+        assert_eq!(report.stopped.len(), 4, "every log stopped");
+        assert!(
+            report
+                .stopped
+                .iter()
+                .all(|stop| stop.why.contains("no disk headroom")),
+            "{:?}",
+            report.stopped
+        );
+        let marker = ResyncMarker::read(&paths).unwrap().expect("marker kept");
+        assert_eq!(marker.phase, ResyncPhase::Salvaging);
+
+        let mut room = |_: &LogKey, entries: Vec<Envelope>| Ok(stored(entries.len()));
+        let report = run_salvage(&paths.node_dir, &plan.backup_db, &mut room, &|| false).unwrap();
+        assert!(!report.headroom);
+        assert_eq!(report.entries, 300 + 3 + 2 + 1);
+        assert!(ResyncMarker::read(&paths).unwrap().is_none());
+        assert!(plan.backup_db.is_file(), "the backup stays");
+    }
+
+    #[test]
+    fn headroom_on_one_log_still_reads_the_others() {
+        let (_iso, paths) = node("resync-salvage-headroom-one");
+        build_store(&paths.database_path, &three_logs());
+        requested_marker(&paths);
+        let plan = resume_at_start(&paths, &FixedClock(NOW)).unwrap().unwrap();
+        let first = *backup_logs(&plan.backup_db)
+            .first()
+            .map(|(l, _)| l)
+            .unwrap();
+        let mut ingest = |log: &LogKey, entries: Vec<Envelope>| {
+            if *log == first {
+                Ok(IngestOutcome::Headroom)
+            } else {
+                Ok(stored(entries.len()))
+            }
+        };
+        let report = run_salvage(&paths.node_dir, &plan.backup_db, &mut ingest, &|| false).unwrap();
+        let first_count = backup_logs(&plan.backup_db)[0].1;
+        let total: u64 = backup_logs(&plan.backup_db).iter().map(|(_, c)| c).sum();
+        assert!(report.headroom);
+        assert_eq!(report.entries, total - first_count, "the others were read");
+        assert_eq!(report.stopped.len(), 1);
+        assert!(ResyncMarker::read(&paths).unwrap().is_some(), "marker kept");
     }
 
     #[test]
