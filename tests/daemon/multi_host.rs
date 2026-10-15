@@ -32,7 +32,10 @@ use herdr_threads::{
             ExecutionId, HostBootId, HostCallId, HostLocator, HostTargetId, NativeSessionId,
             OperationId, SeatId, TerminalId, ThreadId,
         },
-        results::{ApiError, CommandResult, ErrorCode},
+        results::{
+            ApiError, CommandResult, ComponentState, ErrorCode, Health, HealthState,
+            bound_endpoint_tail,
+        },
         time::{CallBudget, Cancellation, Clock, MonoInstant},
     },
     service::{config::ServiceConfig, kicks::Lane},
@@ -775,6 +778,13 @@ impl Rig {
             .ok()
     }
 
+    fn health(&self) -> Health {
+        match self.call(Command::Health).expect("health") {
+            CommandResult::Health(health) => health,
+            other => panic!("not a health result: {other:?}"),
+        }
+    }
+
     fn host_id_of(&self, locator: &HostLocator) -> i64 {
         self.db()
             .query_row(
@@ -853,6 +863,80 @@ fn claim_from_b_attaches_b_and_both_seats_nudged() {
     // Each server was only ever asked about its own pane.
     assert!(rig.a.woken().iter().all(|pane| pane == "pane-1"));
     assert!(rig.b.woken().iter().all(|pane| pane == "pane-1"));
+}
+
+// Kills: Health that reports a count or the startup server instead of one
+// entry per attached server: none before any claim, one after the lazy attach
+// of A, two (in host id order, each with its own endpoint) after B's.
+#[test]
+fn health_lists_hosts_as_they_attach() {
+    let rig = Rig::start("mh-health-list", false);
+    assert!(rig.health().hosts.is_empty(), "store-only until a claim");
+    rig.touch(&rig.loc_a);
+    let one = rig.health();
+    assert_eq!(one.hosts.len(), 1, "{one:?}");
+    assert_eq!(
+        one.hosts[0].endpoint,
+        bound_endpoint_tail(rig.loc_a.as_str())
+    );
+    assert_eq!(one.hosts[0].host_id, rig.host_id_of(&rig.loc_a));
+    rig.touch(&rig.loc_b);
+    let two = rig.health();
+    assert_eq!(two.hosts.len(), 2, "{two:?}");
+    let ids: Vec<i64> = two.hosts.iter().map(|host| host.host_id).collect();
+    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]), "{ids:?}");
+    let endpoints: BTreeSet<&str> = two.hosts.iter().map(|h| h.endpoint.as_str()).collect();
+    assert_eq!(
+        endpoints,
+        BTreeSet::from([
+            bound_endpoint_tail(rig.loc_a.as_str()).as_str(),
+            bound_endpoint_tail(rig.loc_b.as_str()).as_str()
+        ])
+    );
+    two.validate().expect("a valid wire shape");
+}
+
+// Kills: an outage of one server that leaves Health `healthy` or unnamed, a
+// line for the server that is up, and a recovery that stays reported down.
+#[test]
+fn health_degraded_while_host_down() {
+    let Settled { rig, .. } = settled("mh-health-down");
+    let line_a = format!(
+        "Herdr server {} unreachable",
+        bound_endpoint_tail(rig.loc_a.as_str())
+    );
+    let line_b = format!(
+        "Herdr server {} unreachable",
+        bound_endpoint_tail(rig.loc_b.as_str())
+    );
+    rig.a.set_up(false);
+    rig.observe_until(&rig.loc_a, "A to be marked down", || {
+        rig.is_down(&rig.loc_a)
+    });
+    let health = rig.health();
+    assert_eq!(health.state, HealthState::Degraded, "{health:?}");
+    assert!(health.limitations.contains(&line_a), "{health:?}");
+    assert!(!health.limitations.contains(&line_b), "{health:?}");
+    assert_eq!(health.host.reachability, ComponentState::Unavailable);
+    let by_endpoint = |h: &Health, loc: &HostLocator| {
+        h.hosts
+            .iter()
+            .find(|host| host.endpoint == bound_endpoint_tail(loc.as_str()))
+            .map(|host| host.reachability)
+    };
+    assert_eq!(
+        by_endpoint(&health, &rig.loc_a),
+        Some(ComponentState::Unavailable)
+    );
+    assert_ne!(
+        by_endpoint(&health, &rig.loc_b),
+        Some(ComponentState::Unavailable)
+    );
+    rig.a.set_up(true);
+    rig.observe_until(&rig.loc_a, "A to be marked up", || !rig.is_down(&rig.loc_a));
+    rig.wait("A to stop being reported unreachable", || {
+        !rig.health().limitations.contains(&line_a)
+    });
 }
 
 /// Both seats checked in on their servers, with a thread between them. Nobody

@@ -1,7 +1,8 @@
 //! Health is assembled from injected observations without scanning durable work.
 use crate::protocol::results::{
-    ApiError, CapabilityState, ComponentState, ErrorClass, HEALTH_STARTING_NOTE, HarnessHealth,
-    HarnessState, Health, HealthComponent, HealthSettings, HealthState,
+    ApiError, AttachedHostHealth, CapabilityState, ComponentState, ErrorClass,
+    HEALTH_STARTING_NOTE, HarnessHealth, HarnessState, Health, HealthComponent, HealthSettings,
+    HealthState, MAX_HEALTH_HOSTS, bound_endpoint_tail,
 };
 use crate::protocol::time::UtcMillis;
 use crate::protocol::wire::PROTOCOL_VERSION;
@@ -60,7 +61,9 @@ pub struct RetirementHealth {
 /// name and its typed, redacted Health summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaneDegradation {
-    pub lane: &'static str,
+    /// `deadline`, `retention`, ..., or `observation[<host_id>]` /
+    /// `wake[<host_id>]` for one attached server's lanes (operator-facing).
+    pub lane: String,
     pub summary: String,
     /// The failure's class (its code's default class); `None` when the
     /// failure carries no code or the code has no class.
@@ -140,9 +143,82 @@ pub struct HealthInputs {
     /// on its monotonic clock. None (no start time supplied) keeps the
     /// ordinary classification: never `starting`, no overdue line.
     pub since_start_ms: Option<u64>,
-    /// Herdr servers attached: 0 store-only, 1 with the primary host
-    /// (`Health::hosts`). The unknown starting point is the single-host 1.
-    pub hosts: u32,
+    /// One input per attached Herdr server, ascending by host id (from
+    /// `HostSessions::health_entries`). Empty means a store-only daemon:
+    /// the `host`, `host_version`, capability and `last_reconciliation_at`
+    /// fields above then stand as given. Non-empty, `assemble` replaces them
+    /// with the aggregate over these entries (worst reachability, weakest
+    /// capability, earliest reconciliation).
+    pub hosts: Vec<HostHealthInput>,
+}
+
+/// One attached Herdr server's observations, as `HostSessions::health_entries`
+/// reads them from the session. Operator-only (see `AttachedHostHealth`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostHealthInput {
+    pub host_id: i64,
+    /// The server's socket path, unbounded; `assemble` bounds what it prints.
+    pub endpoint: String,
+    pub status: ComponentStatus,
+    pub version: Option<String>,
+    pub current_execution: CapabilityState,
+    pub coherent_enumeration: CapabilityState,
+    pub safe_prompt: CapabilityState,
+    pub last_reconciliation_at: Option<UtcMillis>,
+}
+
+fn reach_state(status: &ComponentStatus) -> ComponentState {
+    match status {
+        ComponentStatus::Unknown => ComponentState::Unknown,
+        ComponentStatus::Ready => ComponentState::Ready,
+        ComponentStatus::Degraded(_) | ComponentStatus::Unsupported(_) => ComponentState::Degraded,
+        ComponentStatus::Unavailable(_) => ComponentState::Unavailable,
+    }
+}
+
+/// Larger is worse.
+fn reach_rank(state: ComponentState) -> u8 {
+    match state {
+        ComponentState::Ready => 0,
+        ComponentState::Unknown => 1,
+        ComponentState::Degraded => 2,
+        ComponentState::Unavailable => 3,
+    }
+}
+
+/// The weakest capability: `Unsupported`, then `Unknown`, then `Supported`.
+fn weakest(states: impl Iterator<Item = CapabilityState>) -> CapabilityState {
+    states
+        .min_by_key(|state| match state {
+            CapabilityState::Unsupported => 0,
+            CapabilityState::Unknown => 1,
+            CapabilityState::Supported => 2,
+        })
+        .unwrap_or(CapabilityState::Unknown)
+}
+
+/// One `Herdr server <endpoint> unreachable` limitation per unreachable
+/// attached server, folded past [`LANE_LINES_BEFORE_FOLD`] into
+/// `<n> Herdr servers unreachable`. About 40 bytes a line plus the endpoint
+/// (at most 128), bounded to 256 by `push`. The cause (the worst server's
+/// detail) rides on the aggregate `host unavailable: ...` line.
+fn unreachable_lines(hosts: &[HostHealthInput]) -> Vec<String> {
+    let unreachable: Vec<&HostHealthInput> = hosts
+        .iter()
+        .filter(|host| matches!(host.status, ComponentStatus::Unavailable(_)))
+        .collect();
+    if unreachable.len() > LANE_LINES_BEFORE_FOLD {
+        return vec![format!("{} Herdr servers unreachable", unreachable.len())];
+    }
+    unreachable
+        .iter()
+        .map(|host| {
+            format!(
+                "Herdr server {} unreachable",
+                bound_endpoint_tail(&host.endpoint)
+            )
+        })
+        .collect()
 }
 
 /// How long after daemon start Health may report `starting` while no host
@@ -304,7 +380,7 @@ fn component(
 
 /// The one line a fold of more than two degraded lanes renders.
 fn folded_lanes_text(lanes: &[LaneDegradation], log: Option<&std::path::Path>) -> String {
-    let names: Vec<&str> = lanes.iter().map(|lane| lane.lane).collect();
+    let names: Vec<&str> = lanes.iter().map(|lane| lane.lane.as_str()).collect();
     let mut text = format!("{} lanes degraded ({})", lanes.len(), names.join(", "));
     if let Some(log) = log {
         text.push_str(&format!(": see {}", log.display()));
@@ -474,7 +550,7 @@ impl HealthInputs {
             transitions_refused: 0,
             harness_version_lines: Vec::new(),
             since_start_ms: None,
-            hosts: 1,
+            hosts: Vec::new(),
         }
     }
 
@@ -509,7 +585,41 @@ impl HealthInputs {
         }
     }
 
-    pub fn assemble(self) -> Health {
+    pub fn assemble(mut self) -> Health {
+        // Attached servers: the aggregate replaces the single-host fields and
+        // each server gets its own entry and, when not ready, its own line.
+        self.hosts.truncate(MAX_HEALTH_HOSTS);
+        let hosts = std::mem::take(&mut self.hosts);
+        let mut every_host_wakes = None;
+        if !hosts.is_empty() {
+            // The worst server's status (the first on a tie) stands for the
+            // aggregate, including its detail on the `host ...` line.
+            self.host = hosts
+                .iter()
+                .fold(None::<&HostHealthInput>, |worst, host| match worst {
+                    Some(w)
+                        if reach_rank(reach_state(&w.status))
+                            >= reach_rank(reach_state(&host.status)) =>
+                    {
+                        Some(w)
+                    }
+                    _ => Some(host),
+                })
+                .map_or(ComponentStatus::Unknown, |host| host.status.clone());
+            self.host_version = hosts.iter().find_map(|host| host.version.clone());
+            self.current_execution = weakest(hosts.iter().map(|host| host.current_execution));
+            self.coherent_enumeration = weakest(hosts.iter().map(|host| host.coherent_enumeration));
+            self.safe_prompt = weakest(hosts.iter().map(|host| host.safe_prompt));
+            self.last_reconciliation_at = hosts
+                .iter()
+                .map(|host| host.last_reconciliation_at)
+                .min()
+                .flatten();
+            every_host_wakes = Some(hosts.iter().all(|host| {
+                host.safe_prompt == CapabilityState::Supported
+                    || host.current_execution == CapabilityState::Supported
+            }));
+        }
         let v1_harness = self.v1_harness_health();
         let mut health = Health::unknown(
             self.instance.to_string(),
@@ -518,12 +628,27 @@ impl HealthInputs {
             PROTOCOL_VERSION,
         );
         health.settings = self.settings;
-        health.hosts = self.hosts;
         health.last_reconciliation_at = self.last_reconciliation_at;
         health.database = component("database", self.database, &mut health.limitations);
         health.schema = component("schema", self.schema, &mut health.limitations);
         let host = component("host", self.host, &mut health.limitations);
         health.host.reachability = host.state;
+        for line in unreachable_lines(&hosts) {
+            push(&mut health.limitations, line);
+        }
+        health.hosts = hosts
+            .iter()
+            .map(|host| AttachedHostHealth {
+                host_id: host.host_id,
+                endpoint: bound_endpoint_tail(&host.endpoint),
+                reachability: reach_state(&host.status),
+                version: host.version.as_deref().map(|value| bounded(value, 128)),
+                coherent_enumeration: host.coherent_enumeration,
+                safe_prompt: host.safe_prompt,
+                current_execution: host.current_execution,
+                last_reconciliation_at: host.last_reconciliation_at,
+            })
+            .collect();
         health.host.version = self
             .host_version
             .as_deref()
@@ -596,8 +721,10 @@ impl HealthInputs {
                 cooperative_wake_line_for(crate::harness::registry::builtins()),
             );
         }
-        let wake_available = self.safe_prompt == CapabilityState::Supported
-            || self.current_execution == CapabilityState::Supported;
+        let wake_available = every_host_wakes.unwrap_or(
+            self.safe_prompt == CapabilityState::Supported
+                || self.current_execution == CapabilityState::Supported,
+        );
         if !wake_available
             && self.current_execution != CapabilityState::Unknown
             && self.safe_prompt != CapabilityState::Unknown
@@ -725,6 +852,9 @@ mod health_budget;
 #[cfg(test)]
 #[path = "../../tests/daemon/health_harness_state.rs"]
 mod health_harness_state;
+#[cfg(test)]
+#[path = "../../tests/daemon/health_hosts.rs"]
+mod health_hosts;
 #[cfg(test)]
 #[path = "../../tests/daemon/health_optimistic.rs"]
 mod health_optimistic;

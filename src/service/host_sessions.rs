@@ -4,6 +4,7 @@
 //! (`app::run_elected_impl`): startup attach, the sweep, and `stop_all` in its
 //! stop path.
 
+use crate::daemon::health::{ComponentStatus, HostHealthInput, LaneDegradation};
 use crate::daemon::logs::LaneErrorLog;
 use crate::identity::repair::OrdinaryIdentity;
 use crate::ports::{
@@ -13,7 +14,7 @@ use crate::ports::{
 use crate::protocol::{
     handoff::HandoffNamespace,
     ids::HostLocator,
-    results::{ApiError, ErrorCode},
+    results::{ApiError, CapabilityState, ErrorCode},
     time::{CallBudget, CancelSubscription, Cancellation, Clock, MonoInstant},
 };
 use crate::service::{
@@ -172,6 +173,34 @@ impl LaneHandle {
     }
 }
 
+/// One attached server's Health inputs and its failed lanes. Operator-only
+/// (see [`HostSessions::health_entries`]).
+pub struct HostHealthEntry {
+    pub input: HostHealthInput,
+    pub lanes: Vec<LaneDegradation>,
+}
+
+/// `lane` as a Health degradation when its worker recorded a failure after its
+/// last success, or its thread ended without a requested stop.
+pub(crate) fn lane_degradation(lane: String, status: &WorkerStatus) -> Option<LaneDegradation> {
+    if status.lane_dead() {
+        return Some(LaneDegradation {
+            lane,
+            summary: "lane stopped unexpectedly".into(),
+            class: None,
+        });
+    }
+    status.health().map(|health| LaneDegradation {
+        lane,
+        summary: health.summary(),
+        class: health
+            .failure
+            .as_ref()
+            .and_then(crate::service::workers::RedactedFailure::code)
+            .and_then(ErrorCode::default_class),
+    })
+}
+
 /// The guarded-bootstrap runtime of one session.
 #[derive(Clone)]
 pub struct BootstrapRuntime {
@@ -248,6 +277,39 @@ impl HostSession {
     }
     pub fn is_stopped(&self) -> bool {
         self.stop.is_cancelled()
+    }
+
+    fn health_entry(&self) -> HostHealthEntry {
+        let evidence = self.evidence.health(self.port.incarnation_witness());
+        let status = match evidence.host {
+            ComponentStatus::Ready | ComponentStatus::Unknown if self.reachability.is_down() => {
+                ComponentStatus::Unavailable("host marked down by the observation lane".into())
+            }
+            other => other,
+        };
+        let id = self.host_id.get();
+        let lanes = [&self.observation, &self.wake]
+            .into_iter()
+            .filter_map(|handle| {
+                lane_degradation(format!("{}[{id}]", handle.lane().name()), handle.status())
+            })
+            .collect();
+        HostHealthEntry {
+            input: HostHealthInput {
+                host_id: id,
+                endpoint: self.locator.as_str().to_owned(),
+                status,
+                version: self
+                    .port
+                    .observed_release()
+                    .map(|release| release.summary()),
+                current_execution: CapabilityState::Unsupported,
+                coherent_enumeration: evidence.coherent_enumeration,
+                safe_prompt: self.port.safe_prompt_capability(),
+                last_reconciliation_at: evidence.last_reconciliation_at,
+            },
+            lanes,
+        }
     }
 
     /// A session over a caller-built identity, with no workers, for services
@@ -424,6 +486,21 @@ impl HostSessions {
         self.attached()
             .iter()
             .any(|session| !session.reachability.is_down())
+    }
+
+    /// One Health entry per attached server, ascending by host id, with the
+    /// server's own failed lanes (`observation[<host_id>]`, `wake[<host_id>]`).
+    ///
+    /// Operator-only surface: it feeds `Health.hosts` and the degraded-lane
+    /// lines of `doctor`, which carry the node-local host id and the socket
+    /// path; nothing agent-facing reads it. Read on every Health call, so an
+    /// outage or recovery shows without a restart. A server the observation
+    /// lane marked down reports unreachable even before its evidence says so.
+    pub fn health_entries(&self) -> Vec<HostHealthEntry> {
+        self.attached()
+            .iter()
+            .map(|session| session.health_entry())
+            .collect()
     }
 
     /// The session of `locator`, attaching it first when it is new.

@@ -1039,8 +1039,13 @@ fn elected_service_fixture(custom_settings: bool) {
             !health
                 .limitations
                 .iter()
-                // The one deliberate path: the daemon-log pointer (ht-p03.27).
+                // The deliberate paths: the daemon-log pointer (ht-p03.27) and
+                // the operator-facing `Herdr server <endpoint> unreachable`
+                // line (ht-5fr.2.10).
                 .filter(|detail| !detail.starts_with("degraded: "))
+                .filter(|detail| {
+                    !(detail.starts_with("Herdr server ") && detail.ends_with(" unreachable"))
+                })
                 .any(|detail| detail.contains(&root_text) || detail.contains("host.sock")),
             "private host path reached elected Health: {:?}",
             health.limitations

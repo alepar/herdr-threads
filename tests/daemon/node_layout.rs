@@ -147,7 +147,7 @@ fn mode(path: &Path) -> u32 {
 fn state_dir_only_daemon_starts_store_only() {
     let mut node = Node::new("nl-store-only");
     let health = node.start(None);
-    assert_eq!(health.hosts, 0, "{health:?}");
+    assert!(health.hosts.is_empty(), "{health:?}");
     let dir = node.node_dir();
     assert_eq!(mode(&dir), 0o700);
     assert_eq!(mode(&dir.join("node.key")), 0o600);
@@ -207,7 +207,7 @@ fn legacy_instances_tree_untouched() {
     // Mtime granularity: a write by the daemon must land in a later tick.
     std::thread::sleep(Duration::from_millis(20));
     let health = node.start(None);
-    assert_eq!(health.hosts, 0);
+    assert!(health.hosts.is_empty());
     node.stop();
     assert_eq!(snapshot(&node.state.join("instances")), before);
 }
@@ -275,7 +275,11 @@ fn second_claim_host_attaches_lazily() {
     let mut node = Node::new("nl-second-claim");
     let hint = node.iso.socket_path("herdr-a.sock");
     let health = node.start(Some(&hint));
-    assert_eq!(health.hosts, 1, "the hinted host is attached: {health:?}");
+    assert_eq!(
+        health.hosts.len(),
+        1,
+        "the hinted host is attached: {health:?}"
+    );
     // The attached host's own claim and a second server's claim both pass.
     let own = node
         .iso
@@ -299,7 +303,7 @@ fn second_claim_host_attaches_lazily() {
         String::from_utf8_lossy(&other.stderr)
     );
     assert_eq!(
-        node.health("herdr-b.sock").expect("health").hosts,
+        node.health("herdr-b.sock").expect("health").hosts.len(),
         1,
         "a call that names no pane attaches nothing"
     );
@@ -329,7 +333,7 @@ fn second_claim_host_attaches_lazily() {
         &budget,
     );
     let after = node.health("herdr-b.sock").expect("health after");
-    assert_eq!(after.hosts, 2, "{after:?}");
+    assert_eq!(after.hosts.len(), 2, "{after:?}");
     assert_eq!(after.boot_id, health.boot_id, "the same daemon served both");
     node.stop();
 }
