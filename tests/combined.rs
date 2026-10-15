@@ -23,6 +23,8 @@ mod channel_archival;
 mod contracts;
 #[path = "store/fact_convergence_invitation.rs"]
 mod fact_convergence_invitation;
+#[path = "store/deadline_scope.rs"]
+mod deadline_scope;
 #[path = "store/fact_convergence_membership.rs"]
 mod fact_convergence_membership;
 #[path = "store/fact_convergence_message.rs"]

@@ -1243,6 +1243,13 @@ fn overdue_wake(
 /// The retirement time basis is valid only for a job and its fenced seat.
 /// Ordinary scans ignore effectively terminal obligations. This helper does
 /// not settle the obligation; the handler performs settlement in the same tx.
+///
+/// Responsibility: the one deciding-node guard. Only the node that authored an
+/// obligation (`messages.origin_node` for a receipt, `invitations.origin_node`
+/// for an invitation) records it overdue; for another node's obligation this
+/// returns `inserted: false` and writes nothing. Every overdue path (due scan,
+/// extension lapse, late ACK/answer, retirement job) goes through here, so a
+/// new overdue path must call this function and not write the warning itself.
 pub fn record_overdue_if_pending(
     tx: &Transaction<'_>,
     obligation: &ObligationRef,
@@ -1600,6 +1607,31 @@ pub fn record_overdue_with_decision_seq(
     record_overdue_inner(tx, obligation, basis, decision_at, Some(decision_seq))
 }
 
+/// Whether this node is the obligation's deciding node. An obligation with no
+/// recorded origin (a derived message, an unknown row) is judged by the caller's
+/// own checks, so it counts as authored here.
+fn obligation_authored_here(
+    tx: &Transaction<'_>,
+    obligation: &ObligationRef,
+) -> Result<bool, ApiError> {
+    let (sql, id) = match obligation {
+        ObligationRef::Invitation(id) => (
+            "SELECT origin_node IS (SELECT id FROM local_node) FROM invitations WHERE id=?1",
+            id.as_str(),
+        ),
+        ObligationRef::Receipt { message, .. } => (
+            "SELECT origin_node IS NULL OR origin_node=(SELECT id FROM local_node) FROM messages WHERE id=?1",
+            message.as_str(),
+        ),
+        _ => return Ok(true),
+    };
+    Ok(tx
+        .query_row(sql, [id], |r| r.get::<_, bool>(0))
+        .optional()
+        .map_err(store_error)?
+        .unwrap_or(true))
+}
+
 fn record_overdue_inner(
     tx: &Transaction<'_>,
     obligation: &ObligationRef,
@@ -1607,6 +1639,12 @@ fn record_overdue_inner(
     decision_at: UtcMillis,
     decision_seq: Option<u64>,
 ) -> Result<OverdueOutcome, ApiError> {
+    if !obligation_authored_here(tx, obligation)? {
+        return Ok(OverdueOutcome {
+            warning: None,
+            inserted: false,
+        });
+    }
     let (thread, seat, deadline, state, source_message, source_invitation, key, manifest_receipt) =
         match obligation {
             ObligationRef::Invitation(id) => {

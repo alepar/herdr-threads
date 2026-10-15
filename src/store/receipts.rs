@@ -1,4 +1,11 @@
 //! Receipt settlement and availability transitions.
+//!
+//! Deadline scope: only the node that authored a message (`messages.origin_node`)
+//! records its receipts overdue; the due scans, the extension-lapse scan and
+//! `schema::record_overdue_if_pending` all skip other nodes' messages. Accepted
+//! limit: catch-up extensions exist only for local bindings, so a remote
+//! recipient that is mid catch-up can be reported overdue earlier than a local
+//! one would be.
 
 use crate::sync::facts::{
     payload::{SettleBatch, SettleHow},
@@ -914,7 +921,7 @@ pub struct DueScanResult {
     pub next_ordinal: i64,
 }
 
-pub(crate) const PHYSICAL_DUE_SELECTION: &str = "SELECT ordinal,message_id,seat_id,deadline_at FROM receipts INDEXED BY receipts_required_due_ordinal WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4";
+pub(crate) const PHYSICAL_DUE_SELECTION: &str = "SELECT ordinal,message_id,seat_id,deadline_at FROM receipts INDEXED BY receipts_required_due_ordinal WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND ordinal>?2 AND ordinal<=?3 AND COALESCE((SELECT origin_node FROM messages WHERE id=receipts.message_id),(SELECT id FROM local_node))=(SELECT id FROM local_node) ORDER BY ordinal LIMIT ?4";
 
 fn project_receipt_origin(
     tx: &Connection,
@@ -976,7 +983,7 @@ fn repair_receipt_discovery(
             for (at, message, seat) in rows {
                 project_receipt_origin(tx, table, &message, &seat)?;
                 if table == "receipt_state" {
-                    tx.execute("INSERT INTO receipt_due_sparse(message_id,seat_id,deadline_at) SELECT message_id,seat_id,deadline_at FROM receipt_state WHERE message_id=?1 AND seat_id=?2 AND state='pending' AND ack_required=1 AND deadline_at IS NOT NULL AND warning_message_id IS NULL ON CONFLICT(message_id,seat_id) DO UPDATE SET deadline_at=excluded.deadline_at",params![message,seat]).map_err(store_error)?;
+                    tx.execute("INSERT INTO receipt_due_sparse(message_id,seat_id,deadline_at) SELECT message_id,seat_id,deadline_at FROM receipt_state WHERE message_id=?1 AND seat_id=?2 AND state='pending' AND ack_required=1 AND deadline_at IS NOT NULL AND warning_message_id IS NULL AND COALESCE((SELECT origin_node FROM messages WHERE id=receipt_state.message_id),(SELECT id FROM local_node))=(SELECT id FROM local_node) ON CONFLICT(message_id,seat_id) DO UPDATE SET deadline_at=excluded.deadline_at",params![message,seat]).map_err(store_error)?;
                 }
                 *after = at;
             }
@@ -1250,7 +1257,7 @@ pub fn scan_extension_lapses(
             let mut inspected = 0u16;
             for (_, seat, thread) in &rows {
                 let mut stmt = tx
-                    .prepare("SELECT message_id FROM receipts WHERE seat_id=?1 AND thread_id=?2 AND state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND deadline_at<=?3 UNION SELECT s.message_id FROM receipt_state s JOIN messages m ON m.id=s.message_id WHERE s.seat_id=?1 AND m.thread_id=?2 AND s.state='pending' AND s.ack_required=1 AND s.warning_message_id IS NULL AND s.deadline_at IS NOT NULL AND s.deadline_at<=?3")
+                    .prepare("SELECT message_id FROM receipts WHERE seat_id=?1 AND thread_id=?2 AND state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND deadline_at<=?3 AND COALESCE((SELECT origin_node FROM messages WHERE id=receipts.message_id),(SELECT id FROM local_node))=(SELECT id FROM local_node) UNION SELECT s.message_id FROM receipt_state s JOIN messages m ON m.id=s.message_id WHERE s.seat_id=?1 AND m.thread_id=?2 AND s.state='pending' AND s.ack_required=1 AND s.warning_message_id IS NULL AND s.deadline_at IS NOT NULL AND s.deadline_at<=?3 AND COALESCE(m.origin_node,(SELECT id FROM local_node))=(SELECT id FROM local_node)")
                     .map_err(store_error)?;
                 let messages: Vec<String> = stmt
                     .query_map(params![seat, thread, decision.utc.0], |r| r.get(0))

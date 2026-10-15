@@ -3081,6 +3081,7 @@ CREATE TRIGGER receipt_due_sparse_insert AFTER INSERT ON receipt_state
  INSERT INTO receipt_due_sparse(message_id,seat_id,deadline_at)
  SELECT NEW.message_id,NEW.seat_id,NEW.deadline_at
  WHERE NEW.state='pending' AND NEW.ack_required=1 AND NEW.deadline_at IS NOT NULL AND NEW.warning_message_id IS NULL
+  AND COALESCE((SELECT origin_node FROM messages WHERE id=NEW.message_id),(SELECT id FROM local_node))=(SELECT id FROM local_node)
  ON CONFLICT(message_id,seat_id) DO UPDATE SET deadline_at=excluded.deadline_at;
  END;
 
@@ -3091,6 +3092,7 @@ CREATE TRIGGER receipt_due_sparse_update AFTER UPDATE OF state,ack_required,dead
  INSERT INTO receipt_due_sparse(message_id,seat_id,deadline_at)
  SELECT NEW.message_id,NEW.seat_id,NEW.deadline_at
  WHERE NEW.state='pending' AND NEW.ack_required=1 AND NEW.deadline_at IS NOT NULL AND NEW.warning_message_id IS NULL
+  AND COALESCE((SELECT origin_node FROM messages WHERE id=NEW.message_id),(SELECT id FROM local_node))=(SELECT id FROM local_node)
  ON CONFLICT(message_id,seat_id) DO UPDATE SET deadline_at=excluded.deadline_at;
  END;
 
