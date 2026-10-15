@@ -100,7 +100,7 @@ WHEN OLD.decision_seq IS NULL AND NEW.decision_seq IS NOT NULL
 BEGIN
     INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq)
     SELECT b.binding_id,NEW.ordinal,NEW.thread_id,NEW.priority,NEW.decision_seq FROM occupant_bindings b
-    WHERE b.seat_id=NEW.seat_id AND (b.ended_at IS NULL AND (b.liveness='connected' OR b.disconnect_reason='liveness_process_exit'))
+    WHERE b.seat_id=NEW.seat_id AND (b.ended_at IS NULL AND b.liveness='connected')
       AND (EXISTS(SELECT 1 FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=NEW.thread_id)
         OR EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=NEW.thread_id AND mb.seat_id=NEW.seat_id AND mb.state IN ('joined','invited')));
 END;
@@ -110,7 +110,7 @@ WHEN OLD.legacy_pending=0 AND NEW.legacy_pending=1 AND NEW.decision_seq IS NOT N
 BEGIN
     INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq)
     SELECT b.binding_id,NEW.ordinal,NEW.thread_id,NEW.priority,NEW.decision_seq FROM occupant_bindings b
-    WHERE b.seat_id=NEW.seat_id AND (b.ended_at IS NULL AND (b.liveness='connected' OR b.disconnect_reason='liveness_process_exit')) AND b.role='top_level';
+    WHERE b.seat_id=NEW.seat_id AND (b.ended_at IS NULL AND b.liveness='connected') AND b.role='top_level';
 END;
 
 CREATE TRIGGER binding_pending_legacy_clear AFTER UPDATE OF legacy_pending ON lazy_recipients

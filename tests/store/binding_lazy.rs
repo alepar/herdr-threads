@@ -621,7 +621,7 @@ fn a_process_exited_siblings_backlog_never_slows_the_live_session() {
         publish(&mut db, n);
     }
     complete(&mut db, Some(&a), &(3..=103).map(msg).collect::<Vec<_>>());
-    assert_eq!(view(&db, &b), 101, "b keeps its own view");
+    assert_eq!(view(&db, &b), 0, "a disconnected binding holds no view");
     assert_eq!(view(&db, &a), 0);
     publish(&mut db, 104);
     assert_eq!(first(&db, RowFilter::Binding(&a)), (Some(msg(104)), 1));
@@ -752,6 +752,20 @@ fn connect_now(db: &Connection, binding: &BindingId) {
     );
 }
 
+/// The plain-call reconnect a returning process makes after a process exit.
+fn plain_reconnect_now(db: &Connection, binding: &BindingId) {
+    assert!(
+        crate::store::bindings::connect(
+            db,
+            binding,
+            Some(crate::protocol::authority::LivenessFingerprint { pid: 42, start: 1 }),
+            crate::store::bindings::ConnectTrigger::PlainCall,
+            UtcMillis(7)
+        )
+        .unwrap()
+    );
+}
+
 /// A p0 delivery row, published (the row's priority cannot change after insert).
 fn publish_p0(db: &mut Connection, n: i64) {
     lazy_with_priority(db, n, 0);
@@ -796,9 +810,10 @@ fn publication_writes_views_only_for_bindings_that_can_still_be_offered_rows() {
     publish(&mut db, 3);
     publish(&mut db, 4);
     publish(&mut db, 5);
-    for held in [&live, &px, &sub_live] {
+    for held in [&live, &sub_live] {
         assert_eq!(view(&db, held), 3);
     }
+    assert_eq!(view(&db, &px), 0, "a process-exited binding holds no view");
     for binding in &away {
         assert_eq!(view(&db, binding), 0);
     }
@@ -806,7 +821,7 @@ fn publication_writes_views_only_for_bindings_that_can_still_be_offered_rows() {
         db.query_row("SELECT count(*) FROM binding_pending", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        9
+        6
     );
 }
 
@@ -822,7 +837,7 @@ fn a_disconnect_other_than_process_exit_drops_the_view() {
     disconnect_now(&db, &b, DisconnectReason::EndEvent);
     disconnect_now(&db, &c, DisconnectReason::ProcessExit);
     assert_eq!(view(&db, &b), 0);
-    assert_eq!(view(&db, &c), 2, "a process-exited binding reconnects");
+    assert_eq!(view(&db, &c), 0, "a process exit drops the view too");
     assert_eq!(
         first(&db, RowFilter::Binding(&b)),
         (None, 0),
@@ -906,5 +921,122 @@ fn the_backfill_skips_bindings_outside_the_held_set() {
     publish(&mut db, 4);
     db.execute("DELETE FROM binding_pending", []).unwrap();
     seed_all_binding_pending(&db).unwrap();
-    assert_eq!((view(&db, &a), view(&db, &b), view(&db, &c)), (2, 0, 2));
+    assert_eq!((view(&db, &a), view(&db, &b), view(&db, &c)), (2, 0, 0));
+}
+
+#[test]
+fn a_process_exited_binding_is_offered_exactly_the_rows_it_missed() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    publish(&mut db, 3);
+    complete(&mut db, Some(&b), &[msg(3)]);
+    disconnect_now(&db, &b, DisconnectReason::ProcessExit);
+    assert_eq!(view(&db, &b), 0);
+    let mut grown = 0;
+    for n in 4..=8 {
+        publish(&mut db, n);
+        assert_eq!(
+            view(&db, &b),
+            0,
+            "publication writes a disconnected binding no rows"
+        );
+        assert!(view(&db, &a) > grown);
+        grown = view(&db, &a);
+    }
+    plain_reconnect_now(&db, &b);
+    let missed: Vec<MessageId> = (4..=8).map(msg).collect();
+    assert_eq!(view_messages(&db, &b), missed);
+    assert_eq!(unread(&db, &b), missed);
+    assert_eq!(drain_binding(&db, &b), missed);
+}
+
+#[test]
+fn the_reconnect_seed_equals_the_unread_predicate() {
+    let mut db = db();
+    let a = enroll_binding(&db, "sess-A", None);
+    let b = enroll_binding(&db, "sess-B", None);
+    let sub = enroll_binding(&db, "sess-sub", Some(&a));
+    for n in 3..=8 {
+        publish(&mut db, n);
+    }
+    let check = |db: &Connection, binding: &BindingId, expect_rows: bool| {
+        db.execute(
+            "DELETE FROM binding_pending WHERE binding_id=?1",
+            [binding.as_str()],
+        )
+        .unwrap();
+        seed_binding_pending(db, binding).unwrap();
+        let expected = unread(db, binding);
+        assert_eq!(
+            !expected.is_empty(),
+            expect_rows,
+            "non-vacuous: {expected:?}"
+        );
+        assert_eq!(view_messages(db, binding), expected);
+    };
+    check(&db, &b, true);
+    let t = ThreadId::new("t");
+    read_cursors::advance_through_displayed(&db, &b, &t, &[4]).unwrap();
+    read_cursors::advance_through_displayed(&db, &b, &t, &[7]).unwrap();
+    check(&db, &b, true);
+    db.execute(
+        "UPDATE lazy_recipients SET legacy_pending=1 WHERE message_id='msg-3'",
+        [],
+    )
+    .unwrap();
+    check(&db, &b, true);
+    assert!(unread(&db, &b).contains(&msg(3)));
+    for n in [3, 4, 5] {
+        read_cursors::advance_through_displayed(&db, &sub, &t, &[n]).unwrap();
+    }
+    check(&db, &sub, true);
+    assert!(
+        !unread(&db, &sub).contains(&msg(3)),
+        "a legacy row below the cursor never counts for a subagent"
+    );
+    db.execute(
+        "DELETE FROM binding_cursors WHERE binding_id=?1",
+        [b.as_str()],
+    )
+    .unwrap();
+    check(&db, &b, true);
+}
+
+#[test]
+fn the_binding_seed_never_walks_the_seats_delivery_history() {
+    let db = db();
+    let mut stmt = db
+        .prepare(&format!("EXPLAIN QUERY PLAN {SEED_BINDING_VIEW_SQL}"))
+        .unwrap();
+    let details: Vec<String> = stmt
+        .query_map(params!["binding", "s"], |r| r.get::<_, String>(3))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    for needle in [
+        "SEARCH cm USING INDEX messages_thread_sequence (thread_id=? AND sequence>?)",
+        "SEARCH mm USING INDEX messages_thread_sequence (thread_id=?)",
+        "SEARCH lg USING COVERING INDEX lazy_recipients_legacy (seat_id=?)",
+    ] {
+        assert!(
+            details.iter().any(|d| d == needle),
+            "missing {needle}: {details:#?}"
+        );
+    }
+    assert!(
+        !details
+            .iter()
+            .any(|d| d.contains("lazy_recipients_seat_ordinal")),
+        "seed walks the seat's delivery rows: {details:#?}"
+    );
+    for detail in &details {
+        for alias in ["r", "lr", "cm", "mm", "m", "lazy_recipients", "messages"] {
+            assert!(
+                detail != &format!("SCAN {alias}")
+                    && !detail.starts_with(&format!("SCAN {alias} ")),
+                "seed plan scans {alias}: {details:#?}"
+            );
+        }
+    }
 }
