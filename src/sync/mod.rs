@@ -9,6 +9,7 @@ pub mod envelope;
 pub mod facts;
 pub mod frame;
 pub mod hlc;
+pub mod incarnations;
 pub mod journal_port;
 pub mod link;
 
