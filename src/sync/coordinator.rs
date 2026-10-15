@@ -20,9 +20,13 @@
 //!   the own-history `Links` flag. The pure decisions live in `routing`
 //!   (`duplicate_order`, `reselect`, `wantable`, `own_history_on`): that is
 //!   where relay-policy changes go; the actor only applies their answers.
-//! - Where new behaviour goes: serving, live tail, ingest and Have deltas
-//!   are ht-5fr.5.13. Each fills the marked stub arm of [`Actor::run`] and the
-//!   state fields marked below; `signals()` is ht-5fr.5.6's. The Dialer
+//! - Serving and ingest (ht-5fr.5.13): `serve` answers `want` from committed
+//!   rows (halved to the link's `max_frame`), re-pushes armed subscriptions
+//!   on `CreditFreed` and on a local vector change, and sends throttled
+//!   `have` deltas; `ingest` drops unsolicited `entries`, runs the one
+//!   sequential ingest worker and acts on every `IngestOutcome`. New
+//!   outcomes are handled there; fork policy goes in a [`ForkSink`]
+//!   implementation. `signals()` is ht-5fr.5.6's. The Dialer
 //!   (`super::dialer`, ht-5fr.5.7) is constructed here: [`SyncHandle::reload_targets`]
 //!   and [`SyncHandle::enabled_target_count`] reach it, a pacer kick re-diffs
 //!   its targets, and shutdown cancels its tasks.
@@ -49,16 +53,16 @@ use tokio::time::{Instant, MissedTickBehavior, timeout};
 use uuid::Uuid;
 
 use super::dialer::{DialConfig, DialShared, Dialer, DialerDeps};
-use super::envelope::{GENESIS_KIND, WireEnvelope, hex_decode, hex_encode};
+use super::envelope::{Envelope, GENESIS_KIND, WireEnvelope, hex_decode, hex_encode};
 use super::facts::GenesisPayload;
 use super::frame::{
     BranchWant, CloseReason, FORK_CAP, ForkRef, HaveLog, MAX_HAVE_LOGS, PeerFrame, Role,
     write_peer_frame,
 };
-use super::journal_port::{ForkEvidence, JournalPort};
+use super::journal_port::{ForkEvidence, IngestOutcome, JournalPort};
 use super::link::{
     CLOSE_WRITE_TIMEOUT, Established, HANDSHAKE_TIMEOUT, LinkError, LinkEvent, LinkHandle,
-    LocalHello, PeerInfo, handshake,
+    LocalHello, PeerInfo, SendError, handshake,
 };
 use super::sync_store::SyncStorePort;
 use super::{BatchLimits, LogHead, LogKey, LogState, Vector};
@@ -71,9 +75,13 @@ use crate::service::workers::WorkerStatus;
 use crate::store::connection::{HoldSource, OwnHistoryHold};
 use crate::store::sync_dial_targets::TargetId;
 
+mod ingest;
 mod routing;
+mod serve;
 
+use ingest::{IngestDone, IngestJob};
 use routing::{DupKey, SourceView};
+use serve::ServeDone;
 
 /// Offers the transport may have waiting for the actor.
 pub const PEER_INTAKE_SLOTS: usize = 16;
@@ -456,7 +464,8 @@ pub struct LinkStatus {
     pub since: UtcMillis,
     /// Logs this link is the rx source of.
     pub rx_logs: u32,
-    /// Filled by ht-5fr.5.13.
+    /// `entries` frames dropped because this link was not the log's rx
+    /// source (their credit was granted back).
     pub unsolicited: u64,
     pub last_error: Option<String>,
 }
@@ -466,9 +475,9 @@ pub struct LinkStatus {
 pub struct SyncSnapshot {
     /// At most [`SNAPSHOT_MAX_LINKS`], by link id.
     pub links: Vec<LinkStatus>,
-    /// Filled by ht-5fr.5.13.
+    /// Logs the fork sink holds (no `want` for them).
     pub paused_logs: Vec<LogKey>,
-    /// Filled by ht-5fr.5.13.
+    /// Every want is paused until then (no disk headroom).
     pub headroom_until: Option<UtcMillis>,
 }
 
@@ -558,6 +567,18 @@ impl SyncCoordinator {
         let (requests_tx, requests_rx) = mpsc::channel(REQUEST_SLOTS);
         let (events_tx, events_rx) = mpsc::channel(LINK_EVENT_SLOTS);
         let (ingest_tx, ingest_rx) = mpsc::channel(LINK_EVENT_SLOTS);
+        // Bounded by credit (at most 16 links of 1 MiB), so unbounded here.
+        let (jobs_tx, jobs_rx) = mpsc::unbounded_channel();
+        let worker = ingest::spawn_worker(
+            ingest::WorkerDeps {
+                journal: deps.journal.clone(),
+                writer: deps.writer.clone(),
+                clock: deps.clock.clone(),
+                cancel: deps.cancel.clone(),
+            },
+            jobs_rx,
+            ingest_tx,
+        );
         let dialer = Dialer::start(
             DialerDeps {
                 store: deps.sync_store.clone(),
@@ -594,7 +615,11 @@ impl SyncCoordinator {
             events_tx,
             link_cancel: Cancellation::default(),
             dialer,
-            _ingest_tx: ingest_tx,
+            serve_jobs: JoinSet::new(),
+            serving: BTreeSet::new(),
+            ingest_jobs: jobs_tx,
+            worker: Some(worker),
+            retry_logs: BTreeSet::new(),
         };
         let join = tokio::spawn(actor.run(Inputs {
             intake: intake_rx,
@@ -615,14 +640,10 @@ struct Inputs {
     ingest: mpsc::Receiver<IngestDone>,
 }
 
-/// An ingest-worker result. Filled by ht-5fr.5.13; the worker does not exist
-/// yet, so nothing sends these.
-struct IngestDone;
-
 /// The source a log is being pulled from. `last_progress` is set when the
-/// source is chosen or re-asked and by ht-5fr.5.13's ingest on `Stored`;
-/// `requested_from` is read by its gap handling.
-#[allow(dead_code)]
+/// source is chosen or re-asked and by the ingest outcome `Stored`;
+/// `requested_from` is what the last `Want` asked for (a `Gap` that names the
+/// same counter is a stale batch).
 struct RxSource {
     link: u64,
     requested_from: u64,
@@ -664,9 +685,19 @@ struct LinkEntry {
     /// This activation's first `have` has gone out; until then the link is
     /// no rx source, so a `want` never precedes the `have`.
     announced: bool,
-    /// Penalty-until per log on this link (written here by the failover and
-    /// by ht-5fr.5.13's ingest outcomes).
+    /// Penalty-until per log on this link (written by the failover and by
+    /// the ingest outcomes).
     errors: BTreeMap<LogKey, MonoInstant>,
+    /// What the peer wants from us: the next counter to push per log.
+    subs_out: BTreeMap<LogKey, u64>,
+    /// The log served last, so the next push starts after it.
+    push_cursor: Option<LogKey>,
+    /// `entries` frames dropped as unsolicited.
+    unsolicited: u64,
+    /// The heads the peer was last told of (a delta carries the difference).
+    last_have_sent: Vector,
+    /// When the last `have` went out.
+    last_have_at: Option<MonoInstant>,
     /// Held so the transport's slot is released when the link is.
     _permit: Option<PeerPermit>,
 }
@@ -691,10 +722,9 @@ struct Actor {
     rx: BTreeMap<LogKey, RxSource>,
     /// The last read of `journal.vector()`.
     local: Vector,
-    /// Logs not to be pulled (a fork the sink holds). Written by
-    /// ht-5fr.5.13's ingest outcomes.
+    /// Logs not to be pulled (a fork the sink holds).
     paused: BTreeSet<LogKey>,
-    /// All wants are paused until then. Written by ht-5fr.5.13 on `Headroom`.
+    /// All wants are paused until then (`Headroom`).
     headroom_until: Option<MonoInstant>,
     /// Clone probes by the newer link's id.
     probes: BTreeMap<u64, CloneProbe>,
@@ -712,8 +742,16 @@ struct Actor {
     link_cancel: Cancellation,
     /// Owns the dial tasks and their children.
     dialer: Dialer,
-    /// Keeps the ingest channel open until the worker (ht-5fr.5.13) takes it.
-    _ingest_tx: mpsc::Sender<IngestDone>,
+    /// `journal.serve` reads in flight (at most one per link).
+    serve_jobs: JoinSet<ServeDone>,
+    /// Links with a serve job in flight.
+    serving: BTreeSet<u64>,
+    /// The ingest worker's FIFO.
+    ingest_jobs: mpsc::UnboundedSender<IngestJob>,
+    /// The worker task; ended at shutdown.
+    worker: Option<JoinHandle<()>>,
+    /// Logs whose batch failed to store; asked again at the pacer's backoff.
+    retry_logs: BTreeSet<LogKey>,
 }
 
 impl Actor {
@@ -739,23 +777,30 @@ impl Actor {
                     self.on_local(joined.unwrap_or_else(|e| Err(e.to_string())));
                 }
                 Some(request) = inputs.requests.recv() => self.on_request(request),
-                Some(IngestDone) = inputs.ingest.recv() => {
-                    // Ingest results: ht-5fr.5.13 acts on the outcome here.
+                Some(done) = inputs.ingest.recv() => self.on_ingested(done),
+                Some(joined) = self.serve_jobs.join_next(), if !self.serve_jobs.is_empty() => {
+                    if let Ok(done) = joined {
+                        self.on_served(done);
+                    }
                 }
                 wake = pacer.wait(PACER_TICK) => {
-                    if wake == Wake::Kicked {
+                    // A latched kick survives the loop re-creating this wait.
+                    // A due backoff (`RetryDue`) clears the latched kicks, so
+                    // it does their work too; `on_retry_due` always moves the
+                    // backoff on, so a due pacer cannot spin the loop.
+                    if wake == Wake::RetryDue {
+                        self.on_retry_due();
+                    }
+                    if matches!(wake, Wake::Kicked | Wake::RetryDue) {
                         // A table or commit kick: re-diff the dial targets
                         // (the Dialer limits this to once a second) and
-                        // re-read the local vector.
+                        // re-read the local vector, whose arrival pushes the
+                        // armed subscriptions and the `have` deltas.
                         self.dialer.kick();
                         self.request_local();
                     }
-                    // Have deltas on a kick: ht-5fr.5.13.
                 }
-                _ = tick.tick() => {
-                    self.housekeeping();
-                    // fork_sink.resumed() and the contact flush: ht-5fr.5.13.
-                }
+                _ = tick.tick() => self.housekeeping(),
             }
         }
         self.shutdown(&mut inputs).await;
@@ -886,6 +931,11 @@ impl Actor {
                         have_pending: None,
                         announced: false,
                         errors: BTreeMap::new(),
+                        subs_out: BTreeMap::new(),
+                        push_cursor: None,
+                        unsolicited: 0,
+                        last_have_sent: Vector::default(),
+                        last_have_at: None,
                         _permit: permit,
                     },
                 );
@@ -1070,6 +1120,10 @@ impl Actor {
         entry.have_pending = None;
         entry.announced = false;
         entry.errors.clear();
+        entry.subs_out.clear();
+        entry.push_cursor = None;
+        entry.last_have_sent = Vector::default();
+        entry.last_have_at = None;
         self.drop_rx_of(link_id);
     }
 
@@ -1135,14 +1189,16 @@ impl Actor {
                 why,
                 up_for,
             } => self.on_ended(link_id, why, up_for),
-            LinkEvent::Frame { link_id, frame, .. } => self.on_frame(link_id, frame),
-            LinkEvent::CreditFreed { .. } => {
-                // Resuming a blocked push: ht-5fr.5.13.
-            }
+            LinkEvent::Frame {
+                link_id,
+                frame,
+                wire_len,
+            } => self.on_frame(link_id, frame, wire_len),
+            LinkEvent::CreditFreed { link_id } => self.push_link(link_id),
         }
     }
 
-    fn on_frame(&mut self, link_id: u64, frame: PeerFrame) {
+    fn on_frame(&mut self, link_id: u64, frame: PeerFrame, wire_len: usize) {
         let Some(entry) = self.links.get(&link_id) else {
             return;
         };
@@ -1155,16 +1211,43 @@ impl Actor {
             if matches!(frame, PeerFrame::Have { .. } | PeerFrame::Want { .. }) {
                 self.promote_on_traffic(link_id);
             } else {
+                if matches!(frame, PeerFrame::Entries { .. }) {
+                    // Never wanted here: hand its credit back.
+                    if let Some(entry) = self.links.get_mut(&link_id) {
+                        entry.unsolicited += 1;
+                        let _ = entry
+                            .handle
+                            .grant(u32::try_from(wire_len).unwrap_or(u32::MAX));
+                    }
+                }
                 return;
             }
         }
-        // `want`, `unwant`, `entries`, the branch frames and `seen` are
-        // served, ingested or recorded by ht-5fr.5.13 and ht-5fr.5.6.
-        if let PeerFrame::Have {
-            full, ask, logs, ..
-        } = frame
-        {
-            self.on_have(link_id, full, ask, &logs);
+        // The branch frames and `seen` are recorded by ht-5fr.5.6 and
+        // ht-5fr.6.
+        match frame {
+            PeerFrame::Have {
+                full, ask, logs, ..
+            } => self.on_have(link_id, full, ask, &logs),
+            PeerFrame::Want { node, inc, from } => self.on_want(
+                link_id,
+                LogKey {
+                    node,
+                    incarnation: inc,
+                },
+                from,
+            ),
+            PeerFrame::Unwant { node, inc } => self.on_unwant(
+                link_id,
+                &LogKey {
+                    node,
+                    incarnation: inc,
+                },
+            ),
+            PeerFrame::Entries { node, inc, entries } => {
+                self.on_entries(link_id, node, inc, entries, wire_len);
+            }
+            _ => {}
         }
     }
 
@@ -1258,18 +1341,24 @@ impl Actor {
                     .filter(|(_, l)| l.mode == LinkMode::Active && !l.closing)
                     .filter_map(|(id, l)| l.have_pending.map(|ask| (*id, ask)))
                     .collect();
+                let now = self.mono();
                 for (id, ask) in owed {
                     self.send_have(id, ask);
                     if let Some(entry) = self.links.get_mut(&id) {
                         entry.have_pending = None;
                         entry.announced = true;
+                        entry.last_have_sent = self.local.clone();
+                        entry.last_have_at = Some(now);
                     }
                 }
+                self.flush_have_deltas(now);
             }
             Err(e) => (self.deps.log)(&format!("sync: local vector read failed: {e}")),
         }
         self.reselect_all();
         self.update_own_history();
+        // The vector moved: serve what armed subscriptions now have waiting.
+        self.push_all();
         if std::mem::take(&mut self.refresh_again) {
             self.request_local();
         }
@@ -1286,16 +1375,7 @@ impl Actor {
             .0
             .iter()
             .take(MAX_HAVE_LOGS)
-            .map(|(key, head)| HaveLog {
-                node: key.node,
-                inc: key.incarnation,
-                counter: head.counter,
-                head: hex_encode(&head.head_hash),
-                frozen_at: match (head.state, head.frozen_at) {
-                    (LogState::Frozen, Some(at)) => u64::try_from(at).ok(),
-                    _ => None,
-                },
-            })
+            .map(|(key, head)| serve::have_log(key, head))
             .collect();
         let forks = if entry.handle.peer().caps.iter().any(|cap| cap == FORK_CAP) {
             self.deps.fork_sink.fork_refs()
@@ -1477,7 +1557,9 @@ impl Actor {
         let now = self.mono();
         self.resolve_probes(now);
         self.expire_penalties(now);
+        self.lift_pauses(now);
         self.failover(now);
+        self.flush_have_deltas(now);
         if self.refresh.is_empty() && self.links.values().any(|l| l.have_pending.is_some()) {
             // A read that failed leaves `have`s owed: try again.
             self.request_local();
@@ -1573,14 +1655,23 @@ impl Actor {
                                 self.rx.values().filter(|src| src.link == *id).count(),
                             )
                             .unwrap_or(u32::MAX),
-                            unsolicited: 0,
+                            unsolicited: entry.unsolicited,
                             last_error: None,
                         }
                     })
                     .collect();
+                let now = self.mono();
+                let headroom_until =
+                    self.headroom_until
+                        .filter(|until| until.0 > now.0)
+                        .map(|until| {
+                            let left = i64::try_from(until.0 - now.0).unwrap_or(i64::MAX);
+                            UtcMillis(self.deps.clock.utc_now().0.saturating_add(left))
+                        });
                 let _ = reply.send(SyncSnapshot {
                     links,
-                    ..SyncSnapshot::default()
+                    paused_logs: self.paused.iter().copied().collect(),
+                    headroom_until,
                 });
             }
         }
@@ -1606,6 +1697,13 @@ impl Actor {
         }
         self.link_cancel.cancel();
         self.handshakes.abort_all();
+        self.serve_jobs.abort_all();
+        // Closing the FIFO ends the worker once its current batch is done.
+        let (closed, _) = mpsc::unbounded_channel();
+        drop(std::mem::replace(&mut self.ingest_jobs, closed));
+        if let Some(worker) = self.worker.take() {
+            let _ = timeout(CLOSE_WRITE_TIMEOUT, worker).await;
+        }
         self.dialer.shutdown().await;
         let leftover: Vec<u64> = self.links.keys().copied().collect();
         for link_id in leftover {
@@ -1753,18 +1851,24 @@ mod tests {
         (log, lines)
     }
 
-    /// The log-only sink, recording every clone report too.
+    /// The log-only sink, recording every clone report and fork too. `ack`
+    /// is what `on_fork` answers; `resume` is handed out by `resumed()`.
     struct RecordingSink {
         inner: LogOnlyForkSink,
         clones: Mutex<Vec<CloneReport>>,
+        forks: Mutex<Vec<(LogKey, NodeUuid)>>,
+        ack: Mutex<ForkAck>,
+        resume: Mutex<Vec<LogKey>>,
     }
 
     impl ForkSink for RecordingSink {
         fn on_fork(&self, log: LogKey, evidence: ForkEvidence, source: NodeUuid) -> ForkAck {
-            self.inner.on_fork(log, evidence, source)
+            self.inner.on_fork(log, evidence, source);
+            self.forks.lock().unwrap().push((log, source));
+            *self.ack.lock().unwrap()
         }
         fn resumed(&self) -> Vec<LogKey> {
-            self.inner.resumed()
+            std::mem::take(&mut *self.resume.lock().unwrap())
         }
         fn on_clone(&self, report: CloneReport) {
             self.inner.on_clone(report.clone());
@@ -1781,6 +1885,7 @@ mod tests {
         pacer: Arc<Pacer>,
         own_history: Arc<OwnHistoryHold>,
         sink: Arc<RecordingSink>,
+        status: Arc<WorkerStatus>,
         lines: Lines,
     }
 
@@ -1791,6 +1896,10 @@ mod tests {
     }
 
     fn start_with(journal: Arc<dyn JournalPort>) -> Rig {
+        start_node(1, journal)
+    }
+
+    fn start_node(n: u8, journal: Arc<dyn JournalPort>) -> Rig {
         let clock: Arc<dyn Clock> = Arc::new(TokioClock(Instant::now()));
         let cancel = Cancellation::default();
         let (log, lines) = capture();
@@ -1799,16 +1908,20 @@ mod tests {
         let sink = Arc::new(RecordingSink {
             inner: LogOnlyForkSink::new(log.clone(), clock.clone()),
             clones: Mutex::new(Vec::new()),
+            forks: Mutex::new(Vec::new()),
+            ack: Mutex::new(ForkAck::Paused),
+            resume: Mutex::new(Vec::new()),
         });
+        let status = Arc::new(WorkerStatus::default());
         let (handle, intake, join) = SyncCoordinator::start(CoordinatorDeps {
             journal,
             sync_store: Arc::new(MemorySyncStore::new()),
-            identity: identity(1),
-            boot: Uuid::from_u128(1),
+            identity: identity(n),
+            boot: Uuid::from_u128(u128::from(n)),
             writer: Arc::new(FairWriter::new(8)),
             clock: clock.clone(),
             pacer: pacer.clone(),
-            status: Arc::new(WorkerStatus::default()),
+            status: status.clone(),
             log,
             fork_sink: sink.clone(),
             own_history: own_history.clone(),
@@ -1824,6 +1937,7 @@ mod tests {
             pacer,
             own_history,
             sink,
+            status,
             lines,
         }
     }
@@ -2952,5 +3066,833 @@ mod tests {
         assert!(!hold_on(&rig));
         rig.cancel.cancel();
         rig.join.await.unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // Serving, live tail, ingest outcomes and Have deltas (ht-5fr.5.13)
+    // -----------------------------------------------------------------------
+
+    use std::collections::VecDeque;
+
+    fn open_budget() -> CallBudget {
+        CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Cancellation::default(),
+        }
+    }
+
+    /// What `TestJournal::ingest` answers instead of ingesting.
+    enum Scripted {
+        Outcome(IngestOutcome),
+        Fail,
+    }
+
+    /// A `MemoryJournal` that counts what it stores and can answer `ingest`
+    /// from a script (headroom, a fork, a store error) before it falls back
+    /// to the real chain rules.
+    struct TestJournal {
+        inner: MemoryJournal,
+        script: Mutex<VecDeque<Scripted>>,
+        stored: AtomicUsize,
+        ingests: AtomicUsize,
+    }
+
+    impl TestJournal {
+        fn new(n: u8) -> Arc<Self> {
+            Arc::new(Self {
+                inner: MemoryJournal::new(identity(n)),
+                script: Mutex::default(),
+                stored: AtomicUsize::new(0),
+                ingests: AtomicUsize::new(0),
+            })
+        }
+
+        fn script(&self, step: Scripted) {
+            self.script.lock().unwrap().push_back(step);
+        }
+
+        fn view(&self) -> Vector {
+            self.inner.vector(&open_budget()).unwrap()
+        }
+    }
+
+    impl JournalPort for TestJournal {
+        fn vector(&self, budget: &CallBudget) -> Result<Vector, ApiError> {
+            self.inner.vector(budget)
+        }
+        fn stored_hash(
+            &self,
+            log: &LogKey,
+            counter: u64,
+            budget: &CallBudget,
+        ) -> Result<Option<[u8; 32]>, ApiError> {
+            self.inner.stored_hash(log, counter, budget)
+        }
+        fn serve(
+            &self,
+            log: &LogKey,
+            from: u64,
+            limits: BatchLimits,
+            budget: &CallBudget,
+        ) -> Result<Vec<Envelope>, ApiError> {
+            self.inner.serve(log, from, limits, budget)
+        }
+        fn serve_branch(
+            &self,
+            log: &LogKey,
+            tip: (u64, [u8; 32]),
+            from: u64,
+            limits: BatchLimits,
+            budget: &CallBudget,
+        ) -> Result<Option<Vec<Envelope>>, ApiError> {
+            self.inner.serve_branch(log, tip, from, limits, budget)
+        }
+        fn log_meta(
+            &self,
+            log: &LogKey,
+            budget: &CallBudget,
+        ) -> Result<Option<crate::sync::journal_port::LogMeta>, ApiError> {
+            self.inner.log_meta(log, budget)
+        }
+        fn ingest(
+            &self,
+            log: &LogKey,
+            entries: Vec<Envelope>,
+            budget: &CallBudget,
+        ) -> Result<IngestOutcome, ApiError> {
+            self.ingests.fetch_add(1, Ordering::SeqCst);
+            let scripted = self.script.lock().unwrap().pop_front();
+            match scripted {
+                Some(Scripted::Outcome(outcome)) => return Ok(outcome),
+                Some(Scripted::Fail) => {
+                    return Err(ApiError::new(ErrorCode::StoreBusy, "scripted store error"));
+                }
+                None => {}
+            }
+            let outcome = self.inner.ingest(log, entries, budget)?;
+            if let IngestOutcome::Stored { stored, .. } = &outcome {
+                self.stored.fetch_add(*stored, Ordering::SeqCst);
+            }
+            Ok(outcome)
+        }
+        fn apply_pending(&self, budget: &CallBudget) -> Result<ApplyProgress, ApiError> {
+            self.inner.apply_pending(budget)
+        }
+    }
+
+    fn payload(i: usize, pad: usize) -> Vec<u8> {
+        format!("{{\"i\":{i},\"pad\":\"{}\"}}", "x".repeat(pad)).into_bytes()
+    }
+
+    /// A node whose own log holds a genesis and `entries` more entries.
+    fn node(n: u8, entries: usize, pad: usize) -> (Rig, Arc<TestJournal>) {
+        let journal = TestJournal::new(n);
+        journal.inner.bootstrap();
+        for i in 0..entries {
+            journal
+                .inner
+                .author_raw("test.kind", payload(i, pad))
+                .unwrap();
+        }
+        (start_node(n, journal.clone()), journal)
+    }
+
+    async fn stop(rig: Rig) {
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    /// `a` dials `b` over a duplex, the way the Dialer and the transport
+    /// would (the first frame is read off before the offer).
+    async fn link_nodes(a: &Rig, b: &Rig) -> mpsc::Receiver<DialReport> {
+        let (ours, mut theirs) = duplex(BIG);
+        let (stdout, stdin) = tokio::io::split(ours);
+        let (report_tx, report) = mpsc::channel(DIAL_REPORT_SLOTS);
+        a.handle
+            .hand_off_dialed(DialedStream {
+                target_id: TargetId(1),
+                dest: "b".into(),
+                stdout: Box::new(stdout),
+                stdin: Box::new(stdin),
+                report: report_tx,
+            })
+            .await
+            .ok()
+            .expect("the actor is running");
+        let first = transport::read_frame_with_limit(&mut theirs, MAX_FRAME_BYTES)
+            .await
+            .unwrap();
+        b.intake
+            .offer(PeerStream {
+                stream: Box::new(theirs),
+                first_frame: first,
+                permit: Box::new(()),
+            })
+            .ok()
+            .expect("intake has room");
+        report
+    }
+
+    /// Wait until every journal shows the same, non-empty vector.
+    async fn converge(journals: &[&Arc<TestJournal>]) {
+        for _ in 0..1200 {
+            let first = journals[0].view();
+            if !first.0.is_empty() && journals.iter().all(|j| j.view() == first) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!(
+            "no convergence: {:?}",
+            journals
+                .iter()
+                .map(|j| j.view().0.values().map(|h| h.counter).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Another node's log with `extra` entries after its genesis, held by no
+    /// rig: the source of valid `entries` frames for a manual peer to send.
+    struct Foreign {
+        log: LogKey,
+        envs: Vec<Envelope>,
+    }
+
+    fn foreign(n: u8, extra: usize) -> Foreign {
+        let journal = MemoryJournal::new(identity(n));
+        journal.bootstrap();
+        for i in 0..extra {
+            journal.author_raw("test.kind", payload(i, 0)).unwrap();
+        }
+        let log = journal.self_log();
+        let envs = journal
+            .serve(&log, 1, BatchLimits::default(), &open_budget())
+            .unwrap();
+        Foreign { log, envs }
+    }
+
+    fn entries_frame(log: &LogKey, envs: &[Envelope]) -> PeerFrame {
+        PeerFrame::Entries {
+            node: log.node,
+            inc: log.incarnation,
+            entries: envs.iter().map(WireEnvelope::from).collect(),
+        }
+    }
+
+    fn wire_len(frame: &PeerFrame) -> u32 {
+        u32::try_from(frame.encode().unwrap().len()).unwrap()
+    }
+
+    fn open_vector_counter(journal: &TestJournal, log: &LogKey) -> u64 {
+        journal.view().0.get(log).map_or(0, |h| h.counter)
+    }
+
+    impl TestPeer {
+        /// Let `ms` of virtual time pass in short steps, answering the
+        /// coordinator's pings so the link stays alive; returns every other
+        /// frame that arrived.
+        async fn pump(&mut self, ms: u64) -> Vec<PeerFrame> {
+            let mut out = Vec::new();
+            let mut left = ms;
+            while left > 0 {
+                let step = left.min(250);
+                tokio::time::sleep(Duration::from_millis(step)).await;
+                left -= step;
+                while let Ok(frame) = self.frames.try_recv() {
+                    match frame {
+                        PeerFrame::Ping { n } => self.send(PeerFrame::Pong { n }).await,
+                        other => out.push(other),
+                    }
+                }
+            }
+            out
+        }
+
+        /// The next frame `pick` accepts; everything else is skipped.
+        async fn find<T>(&mut self, mut pick: impl FnMut(&PeerFrame) -> Option<T>) -> T {
+            loop {
+                let frame = self.next().await;
+                if let Some(found) = pick(&frame) {
+                    return found;
+                }
+            }
+        }
+
+        async fn find_want(&mut self, node: NodeUuid, inc: u32, from: u64) {
+            self.find(|f| match f {
+                PeerFrame::Want {
+                    node: n,
+                    inc: i,
+                    from: fr,
+                } if (*n, *i, *fr) == (node, inc, from) => Some(()),
+                _ => None,
+            })
+            .await;
+        }
+
+        async fn find_unwant(&mut self, node: NodeUuid, inc: u32) {
+            self.find(|f| match f {
+                PeerFrame::Unwant { node: n, inc: i } if (*n, *i) == (node, inc) => Some(()),
+                _ => None,
+            })
+            .await;
+        }
+
+        async fn find_credit(&mut self) -> u32 {
+            self.find(|f| match f {
+                PeerFrame::Credit { bytes } => Some(*bytes),
+                _ => None,
+            })
+            .await
+        }
+
+        /// Counters of the next `entries` frame.
+        async fn next_entries(&mut self) -> (LogKey, Vec<u64>) {
+            self.find(|f| match f {
+                PeerFrame::Entries { node, inc, entries } => Some((
+                    LogKey {
+                        node: *node,
+                        incarnation: *inc,
+                    },
+                    entries.iter().map(|e| e.counter).collect(),
+                )),
+                _ => None,
+            })
+            .await
+        }
+    }
+
+    fn wants_in(frames: &[PeerFrame]) -> Vec<(NodeUuid, u32, u64)> {
+        frames
+            .iter()
+            .filter_map(|f| match f {
+                PeerFrame::Want { node, inc, from } => Some((*node, *inc, *from)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn two_nodes_converge() {
+        let (a, ja) = node(1, 3, 0);
+        let (b, jb) = node(2, 2, 0);
+        let _report = link_nodes(&a, &b).await;
+        converge(&[&ja, &jb]).await;
+        let vector = ja.view();
+        assert_eq!(vector.0.len(), 2, "each node holds both logs");
+        let mut counters: Vec<u64> = vector.0.values().map(|h| h.counter).collect();
+        counters.sort_unstable();
+        assert_eq!(counters, [3, 4], "genesis plus the authored entries");
+        // The pulled entries are the served ones, byte for byte.
+        let log_a = ja.inner.self_log();
+        let on_a = ja
+            .inner
+            .serve(&log_a, 1, BatchLimits::default(), &open_budget());
+        let on_b = jb
+            .inner
+            .serve(&log_a, 1, BatchLimits::default(), &open_budget());
+        assert_eq!(on_a.unwrap(), on_b.unwrap());
+        stop(a).await;
+        stop(b).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn line_relays_and_live_tail_reaches_c_without_new_want() {
+        let (a, ja) = node(1, 2, 0);
+        let jb = TestJournal::new(2);
+        let b = start_node(2, jb.clone());
+        let _report = link_nodes(&a, &b).await;
+        // C is a manual peer on B that asks for A's log exactly once, before
+        // B holds it: the want stays armed.
+        let mut c = connect(&b, 0, &peer_hello(3)).await;
+        c.expect_have().await;
+        let log_a = ja.inner.self_log();
+        c.send(PeerFrame::Want {
+            node: log_a.node,
+            inc: log_a.incarnation,
+            from: 1,
+        })
+        .await;
+        let mut seen = Vec::new();
+        while seen.len() < 3 {
+            let (log, counters) = c.next_entries().await;
+            assert_eq!(log, log_a);
+            seen.extend(counters);
+        }
+        assert_eq!(seen, [1, 2, 3], "relayed in order from B's copy");
+
+        // An entry authored on A after convergence reaches C through the
+        // live tail: C sends nothing more.
+        converge(&[&ja, &jb]).await;
+        ja.inner.author_raw("test.kind", payload(9, 0)).unwrap();
+        a.pacer.kick();
+        let (log, counters) = c.next_entries().await;
+        assert_eq!((log, counters), (log_a, vec![4]));
+        assert_eq!(open_vector_counter(&jb, &log_a), 4);
+        stop(a).await;
+        stop(b).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn triangle_ingests_each_entry_once_per_node() {
+        let (a, ja) = node(1, 2, 0);
+        let (b, jb) = node(2, 2, 0);
+        let (c, jc) = node(3, 2, 0);
+        let _r1 = link_nodes(&a, &b).await;
+        let _r2 = link_nodes(&b, &c).await;
+        let _r3 = link_nodes(&a, &c).await;
+        converge(&[&ja, &jb, &jc]).await;
+        // Let any late duplicate traffic settle, then count.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        converge(&[&ja, &jb, &jc]).await;
+        for (name, journal) in [("a", &ja), ("b", &jb), ("c", &jc)] {
+            assert_eq!(
+                journal.stored.load(Ordering::SeqCst),
+                6,
+                "node {name} stores the two foreign logs' 3 entries each exactly once"
+            );
+        }
+        stop(a).await;
+        stop(b).await;
+        stop(c).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn oversized_want_served_in_halved_frames_within_credit() {
+        const MAX_FRAME: u32 = 4_096;
+        const CREDIT: u32 = 8_192;
+        let (rig, journal) = node(1, 12, 700);
+        let own = journal.inner.self_log();
+        let mut hello = peer_hello(2);
+        hello.limits.max_frame = MAX_FRAME;
+        hello.limits.credit = CREDIT;
+        let mut peer = connect(&rig, 0, &hello).await;
+        peer.expect_have().await;
+        peer.send(PeerFrame::Want {
+            node: own.node,
+            inc: own.incarnation,
+            from: 1,
+        })
+        .await;
+
+        // Without credit back, no more than the window arrives.
+        let mut frames: Vec<PeerFrame> = Vec::new();
+        for frame in peer.pump(1_000).await {
+            if matches!(frame, PeerFrame::Entries { .. }) {
+                frames.push(frame);
+            }
+        }
+        let first_wave: u32 = frames.iter().map(wire_len).sum();
+        assert!(frames.len() >= 2, "the batch was split: {}", frames.len());
+        assert!(
+            first_wave <= CREDIT,
+            "{first_wave} bytes outstanding exceed the {CREDIT} window"
+        );
+        // Every frame fits `max_frame`; granting the credit back releases the
+        // rest, in order and complete.
+        let mut counters: Vec<u64> = Vec::new();
+        let mut granted = 0u32;
+        for _ in 0..200 {
+            for frame in &frames[granted as usize..] {
+                assert!(wire_len(frame) <= MAX_FRAME, "frame over max_frame");
+                if let PeerFrame::Entries { entries, .. } = frame {
+                    counters.extend(entries.iter().map(|e| e.counter));
+                }
+                peer.send(PeerFrame::Credit {
+                    bytes: wire_len(frame),
+                })
+                .await;
+            }
+            granted = u32::try_from(frames.len()).unwrap();
+            if counters.len() >= 13 {
+                break;
+            }
+            for frame in peer.pump(250).await {
+                if matches!(frame, PeerFrame::Entries { .. }) {
+                    frames.push(frame);
+                }
+            }
+        }
+        assert_eq!(counters, (1..=13).collect::<Vec<u64>>());
+        assert!(frames.len() >= 4, "{} frames", frames.len());
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn have_deltas_at_most_1_per_s() {
+        let (rig, journal) = node(1, 0, 0);
+        let own = journal.inner.self_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        let mut at: Vec<tokio::time::Instant> = Vec::new();
+        let mut last_counter = 0;
+        for step in 0..80 {
+            if step % 10 == 0 {
+                journal
+                    .inner
+                    .author_raw("test.kind", payload(step, 0))
+                    .unwrap();
+                rig.pacer.kick();
+            }
+            for frame in peer.pump(50).await {
+                if let PeerFrame::Have {
+                    full: false, logs, ..
+                } = frame
+                {
+                    at.push(tokio::time::Instant::now());
+                    last_counter = logs
+                        .iter()
+                        .find(|l| l.node == own.node)
+                        .map_or(last_counter, |l| l.counter);
+                }
+            }
+        }
+        assert!(at.len() >= 2, "deltas flow: {}", at.len());
+        assert!(at.len() <= 5, "at most one a second over 4 s: {}", at.len());
+        for pair in at.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= Duration::from_millis(900),
+                "two deltas {:?} apart",
+                pair[1] - pair[0]
+            );
+        }
+        // The throttled leftovers still go out.
+        for frame in peer.pump(2_000).await {
+            if let PeerFrame::Have {
+                full: false, logs, ..
+            } = frame
+            {
+                last_counter = logs
+                    .iter()
+                    .find(|l| l.node == own.node)
+                    .map_or(last_counter, |l| l.counter);
+            }
+        }
+        assert_eq!(last_counter, open_vector_counter(&journal, &own));
+        stop(rig).await;
+    }
+
+    /// A rig plus manual peers B (node 2) and C (node 3) that both advertise
+    /// the foreign log `f`: B has more, so B is the rx source and has been
+    /// sent the first `Want`.
+    async fn two_sources(rig: &Rig, f: &Foreign) -> (TestPeer, TestPeer) {
+        let mut b = connect(rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        let mut c = connect(rig, 1, &peer_hello(3)).await;
+        c.expect_have().await;
+        let top = f.envs.len() as u64;
+        b.send_have(true, false, vec![have_log(f.log.node, 1, top)])
+            .await;
+        c.send_have(true, false, vec![have_log(f.log.node, 1, top - 1)])
+            .await;
+        b.find_want(f.log.node, 1, 1).await;
+        (b, c)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn corrupt_penalizes_and_switches_source() {
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 3);
+        let (mut b, mut c) = two_sources(&rig, &f).await;
+
+        // B serves a forged second entry: nothing is stored.
+        let mut forged = f.envs[..2].to_vec();
+        forged[1].payload = payload(99, 0);
+        let frame = entries_frame(&f.log, &forged);
+        let len = wire_len(&frame);
+        b.send(frame).await;
+        assert_eq!(b.find_credit().await, len, "the frame's credit comes back");
+        b.find_unwant(f.log.node, 1).await;
+        c.find_want(f.log.node, 1, 1).await;
+        assert_eq!(open_vector_counter(&journal, &f.log), 0);
+
+        // The penalty holds B off the log for minutes.
+        let frames = b.pump(5 * 60_000).await;
+        assert!(
+            wants_in(&frames).is_empty(),
+            "B is wanted again: {frames:?}"
+        );
+        assert!(
+            rig.lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("corrupt"))
+        );
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headroom_pauses_every_want_60s() {
+        let (rig, journal) = node(1, 0, 0);
+        let (f9, f8) = (foreign(9, 2), foreign(8, 2));
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        b.send_have(
+            true,
+            false,
+            vec![have_log(f9.log.node, 1, 3), have_log(f8.log.node, 1, 3)],
+        )
+        .await;
+        let mut wanted = Vec::new();
+        while wanted.len() < 2 {
+            wanted.push(
+                b.find(|f| match f {
+                    PeerFrame::Want { node, from: 1, .. } => Some(*node),
+                    _ => None,
+                })
+                .await,
+            );
+        }
+        wanted.sort();
+        let mut both = [f9.log.node, f8.log.node];
+        both.sort();
+        assert_eq!(wanted, both);
+
+        journal.script(Scripted::Outcome(IngestOutcome::Headroom));
+        let frame = entries_frame(&f9.log, &f9.envs[..2]);
+        let len = wire_len(&frame);
+        b.send(frame).await;
+        assert_eq!(b.find_credit().await, len);
+        let mut unwanted = Vec::new();
+        while unwanted.len() < 2 {
+            unwanted.push(
+                b.find(|f| match f {
+                    PeerFrame::Unwant { node, .. } => Some(*node),
+                    _ => None,
+                })
+                .await,
+            );
+        }
+        unwanted.sort();
+        assert_eq!(unwanted, both, "every rx subscription is unwanted");
+        let snap = snapshot(&rig).await;
+        let until = snap.headroom_until.expect("the pause is reported");
+        let left = until.0 - rig.clock.utc_now().0;
+        assert!((55_000..=60_000).contains(&left), "{left} ms left");
+
+        // Fresh news during the pause draws no want.
+        let frames = b.pump(30_000).await;
+        assert!(wants_in(&frames).is_empty(), "{frames:?}");
+        b.send_have(
+            true,
+            false,
+            vec![have_log(f9.log.node, 1, 3), have_log(f8.log.node, 1, 3)],
+        )
+        .await;
+        let frames = b.pump(25_000).await;
+        assert!(wants_in(&frames).is_empty(), "{frames:?}");
+
+        // After the 60 s every log is wanted again.
+        let frames = b.pump(8_000).await;
+        let wants = wants_in(&frames);
+        assert!(wants.contains(&(f9.log.node, 1, 1)), "{frames:?}");
+        assert!(wants.contains(&(f8.log.node, 1, 1)), "{frames:?}");
+        assert_eq!(snapshot(&rig).await.headroom_until, None);
+        stop(rig).await;
+    }
+
+    fn evidence(f: &Foreign) -> ForkEvidence {
+        ForkEvidence::Conflict {
+            held: Box::new(f.envs[1].clone()),
+            conflicting: Box::new(f.envs[2].clone()),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fork_pauses_log_and_resumed_rewants() {
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 2);
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        b.send_have(true, false, vec![have_log(f.log.node, 1, 3)])
+            .await;
+        b.find_want(f.log.node, 1, 1).await;
+
+        journal.script(Scripted::Outcome(IngestOutcome::Fork {
+            stored: 0,
+            evidence: evidence(&f),
+        }));
+        let frame = entries_frame(&f.log, &f.envs[..1]);
+        let len = wire_len(&frame);
+        b.send(frame).await;
+        assert_eq!(b.find_credit().await, len);
+        b.find_unwant(f.log.node, 1).await;
+        assert_eq!(
+            *rig.sink.forks.lock().unwrap(),
+            vec![(f.log, node_of(2))],
+            "the sink got the fork with the source node"
+        );
+        assert_eq!(snapshot(&rig).await.paused_logs, vec![f.log]);
+
+        // Paused: more news draws no want.
+        b.send_have(true, false, vec![have_log(f.log.node, 1, 5)])
+            .await;
+        let frames = b.pump(5_000).await;
+        assert!(wants_in(&frames).is_empty(), "{frames:?}");
+
+        // The sink reports it resumed: the next tick wants it again.
+        rig.sink.resume.lock().unwrap().push(f.log);
+        let frames = b.pump(2_000).await;
+        assert_eq!(wants_in(&frames), vec![(f.log.node, 1, 1)], "{frames:?}");
+        assert!(snapshot(&rig).await.paused_logs.is_empty());
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fork_ack_corrupt_penalizes_and_switches() {
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 3);
+        *rig.sink.ack.lock().unwrap() = ForkAck::Corrupt;
+        let (mut b, mut c) = two_sources(&rig, &f).await;
+
+        journal.script(Scripted::Outcome(IngestOutcome::Fork {
+            stored: 0,
+            evidence: evidence(&f),
+        }));
+        b.send(entries_frame(&f.log, &f.envs[..1])).await;
+        b.find_unwant(f.log.node, 1).await;
+        c.find_want(f.log.node, 1, 1).await;
+        assert_eq!(rig.sink.forks.lock().unwrap().len(), 1);
+        assert!(
+            snapshot(&rig).await.paused_logs.is_empty(),
+            "an unproven fork pauses nothing"
+        );
+        let frames = b.pump(2 * 60_000).await;
+        assert!(
+            wants_in(&frames).is_empty(),
+            "B stays penalized: {frames:?}"
+        );
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn err_records_sync_lane_failure_and_rewants_after_backoff() {
+        let (rig, journal) = node(1, 0, 0);
+        let own = journal.inner.self_log();
+        let f = foreign(9, 2);
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        // B also wants this node's own log, to observe the live tail.
+        b.send(PeerFrame::Want {
+            node: own.node,
+            inc: own.incarnation,
+            from: 2,
+        })
+        .await;
+        b.send_have(true, false, vec![have_log(f.log.node, 1, 3)])
+            .await;
+        b.find_want(f.log.node, 1, 1).await;
+
+        journal.script(Scripted::Fail);
+        let frame = entries_frame(&f.log, &f.envs[..2]);
+        let len = wire_len(&frame);
+        b.send(frame).await;
+        assert_eq!(
+            b.find_credit().await,
+            len,
+            "credit returns on a store error"
+        );
+        until(|| rig.status.last_error().is_some()).await;
+        assert!(
+            rig.status.last_error().unwrap().contains("sync"),
+            "{:?}",
+            rig.status.last_error()
+        );
+        assert_eq!(rig.pacer.attempts(), 1, "the backoff is armed");
+
+        // A kick that lands during the backoff is latched, not lost.
+        journal
+            .inner
+            .author_raw("test.kind", payload(1, 0))
+            .unwrap();
+        rig.pacer.kick();
+        let early = b.pump(40).await;
+        assert!(
+            wants_in(&early).is_empty(),
+            "not before the backoff: {early:?}"
+        );
+        let frames = b.pump(600).await;
+        assert_eq!(wants_in(&frames), vec![(f.log.node, 1, 1)], "{frames:?}");
+        let tail: Vec<u64> = frames
+            .iter()
+            .filter_map(|f| match f {
+                PeerFrame::Entries { entries, .. } => Some(entries.iter().map(|e| e.counter)),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(tail, vec![2], "the latched kick pushed the new own entry");
+
+        // The retried batch stores: the failure and the backoff clear.
+        b.send(entries_frame(&f.log, &f.envs[..2])).await;
+        until(|| open_vector_counter(&journal, &f.log) == 2).await;
+        until(|| rig.status.last_error().is_none()).await;
+        until(|| rig.pacer.attempts() == 0).await;
+
+        // A due pacer must not spin the loop.
+        let before = rig.pacer.wakes();
+        b.pump(5_000).await;
+        let woke = rig.pacer.wakes() - before;
+        assert!(woke <= 10, "{woke} pacer wakes in 5 s of quiet");
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unsolicited_entries_dropped_credit_granted() {
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 2);
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+
+        // A log nobody wanted.
+        let frame = entries_frame(&f.log, &f.envs[..2]);
+        let len = wire_len(&frame);
+        b.send(frame).await;
+        assert_eq!(b.find_credit().await, len);
+        let snap = snapshot(&rig).await;
+        assert_eq!(snap.links[0].unsolicited, 1);
+        assert_eq!(journal.ingests.load(Ordering::SeqCst), 0, "never ingested");
+        assert_eq!(open_vector_counter(&journal, &f.log), 0);
+
+        // A wanted log, from a link that is not its source.
+        let mut c = connect(&rig, 1, &peer_hello(3)).await;
+        c.expect_have().await;
+        b.send_have(true, false, vec![have_log(f.log.node, 1, 3)])
+            .await;
+        b.find_want(f.log.node, 1, 1).await;
+        let frame = entries_frame(&f.log, &f.envs[..2]);
+        let len = wire_len(&frame);
+        c.send(frame).await;
+        assert_eq!(c.find_credit().await, len);
+        let snap = snapshot(&rig).await;
+        assert_eq!(snap.links[1].unsolicited, 1);
+        assert_eq!(snap.links[0].unsolicited, 1);
+        assert_eq!(journal.ingests.load(Ordering::SeqCst), 0);
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gap_rewants_from_expected_and_frozen_unwants() {
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 4);
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        b.send_have(true, false, vec![have_log(f.log.node, 1, 5)])
+            .await;
+        b.find_want(f.log.node, 1, 1).await;
+        b.send(entries_frame(&f.log, &f.envs[..2])).await;
+        until(|| open_vector_counter(&journal, &f.log) == 2).await;
+        // The next batch skips counter 3.
+        b.send(entries_frame(&f.log, &f.envs[3..])).await;
+        b.find_want(f.log.node, 1, 3).await;
+
+        journal.script(Scripted::Outcome(IngestOutcome::Frozen {
+            stored: 0,
+            frozen_at: 2,
+        }));
+        b.send(entries_frame(&f.log, &f.envs[2..4])).await;
+        b.find_unwant(f.log.node, 1).await;
+        stop(rig).await;
     }
 }
