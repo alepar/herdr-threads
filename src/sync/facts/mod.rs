@@ -29,8 +29,8 @@
 //!
 //! The v1 kinds land in six entity-grouped modules, one `FactKind` type per
 //! kind and one `.with::<K>()` per kind in [`FactRegistry::builtins`], all
-//! `MAJOR = 1`. The modules are declared here and hold no kinds yet; each leaf
-//! task adds its own.
+//! `MAJOR = 1`. The modules are declared here; each leaf task adds its own
+//! kinds (`seat.created` is the first).
 //!
 //! - `seat`: `seat.created`, `seat.retired`.
 //! - `thread`: `thread.created`, `thread.direct`, `thread.register`.
@@ -236,6 +236,7 @@ impl FactRegistry {
             FactRegistry::builder()
                 .with::<NodeGenesis>()
                 .with::<NodeRetag>()
+                .with::<seat::SeatCreated>()
                 .build()
         })
     }

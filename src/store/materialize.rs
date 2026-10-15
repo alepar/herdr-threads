@@ -1,7 +1,8 @@
 //! The seam between "who applied this fact" and "what rows it writes".
 //!
 //! Responsibility
-//! - Owns: [`MaterializeInput`] (the apply instant, the entry's one
+//! - Owns: [`FactRoute`] (the journal-or-local-only choice and the one emit),
+//!   [`MaterializeInput`] (the apply instant, the entry's one
 //!   `decision_seq`, the origin node and wall-clock ms, `local_origin`, the
 //!   provenance string and the suppression query), [`local_only`] (the one
 //!   other way to build it) and [`require_author`] (the origin-authority
@@ -17,11 +18,15 @@
 use rusqlite::{OptionalExtension, Transaction};
 
 use crate::node::{NodeUuid, tag_for};
-use crate::protocol::ids::{SeatId, prefix, public_id_parts};
+use crate::protocol::ids::{SeatId, ThreadId, prefix, public_id_parts};
 use crate::protocol::results::{ApiError, ErrorCode};
-use crate::store::connection::{DecisionInstant, api_error, store_error};
-use crate::store::schema;
+use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
+use crate::store::journal::{self, Authored};
+use crate::store::{schema, seats};
 use crate::sync::EntityKey;
+use crate::sync::facts::FactKind;
+use crate::sync::facts::payload::ReferencedSeats;
+use crate::sync::hlc::HlcStamp;
 
 /// The suppression query: whether the settlement named by the key already
 /// exists, so a delivery for it must be skipped.
@@ -106,6 +111,141 @@ pub fn local_only(
         #[cfg(not(feature = "test-support"))]
         scope: (),
     })
+}
+
+/// The kinds the restore-window authoring hold refuses for a local seat
+/// (fact-kinds design section 2; root section 7). Each is a one-shot fact on a
+/// same-key entity, where the node's unpulled old tail may already hold a
+/// different fact for the key. [`FactRoute`] owns this list; callers never
+/// match kind strings.
+pub const HELD_KINDS: &[&str] = &[
+    "receipt.settled",
+    "membership.joined",
+    "membership.left",
+    "invitation.answered",
+    "seat.retired",
+];
+
+/// How a command turns a decided payload into rows: through the journal, or
+/// as a node-local write for a service-managed thread.
+///
+/// Responsibility
+/// - Owns: the route choice, made once per command from `threads.journaled`
+///   ([`FactRoute::for_thread`]); for `Journal`, the restore-window authoring
+///   hold (while `SyncState.own_history` is active a [`HELD_KINDS`] kind for a
+///   local seat is refused as retryable before anything is written), then the
+///   publication of every local seat the payload references
+///   (`seats::ensure_published`), then `journal::author` / `author_above`; for
+///   `LocalOnly`, the refusal of any remote seat (`Unsupported "service
+///   threads are node-local"`) and the call of the kind's materializer with
+///   [`local_only`].
+/// - Hides: the managed-thread exception, so no converted command branches on
+///   `journaled` or calls `ensure_published`.
+/// - Must not: skip the journal for a journaled thread, publish a seat on the
+///   local-only route, or decide anything the command decides (validation,
+///   IDs, audience). Authoring errors pass through unchanged (including a
+///   parked dependency `Conflict`).
+/// - Role: commands call [`FactRoute::emit`] in their fixed per-command order.
+///   A new kind needs only its `ReferencedSeats` impl and its materializer; new
+///   routing behaviour goes here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FactRoute {
+    Journal,
+    LocalOnly,
+}
+
+impl FactRoute {
+    /// The route of a thread whose `journaled` flag is already known.
+    pub fn from_journaled(journaled: bool) -> Self {
+        if journaled {
+            Self::Journal
+        } else {
+            Self::LocalOnly
+        }
+    }
+
+    /// The route of `thread`, read from `threads.journaled`; `NotFound` for an
+    /// unknown thread.
+    pub fn for_thread(tx: &Transaction<'_>, thread: &ThreadId) -> Result<Self, ApiError> {
+        let journaled: Option<bool> = tx
+            .query_row(
+                "SELECT journaled FROM threads WHERE id=?1",
+                [thread.as_str()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        journaled
+            .map(Self::from_journaled)
+            .ok_or_else(|| api_error(ErrorCode::NotFound, "thread not found"))
+    }
+
+    /// Emits fact `K` for `payload`. `floor` is the register stamp a
+    /// last-writer-wins write must exceed (`author_above`). `materialize_local`
+    /// is the kind's materializer, called only on the local-only route.
+    /// Returns the authored entry (`None` on the local-only route).
+    pub fn emit<K: FactKind>(
+        self,
+        tx: &Transaction<'_>,
+        ctx: &StoreContext,
+        decision: DecisionInstant,
+        payload: &K::Payload,
+        floor: Option<HlcStamp>,
+        materialize_local: impl FnOnce(
+            &Transaction<'_>,
+            &MaterializeInput<'_>,
+            &K::Payload,
+        ) -> Result<(), ApiError>,
+    ) -> Result<Option<Authored>, ApiError>
+    where
+        K::Payload: ReferencedSeats,
+    {
+        let seats = payload.referenced_seats();
+        match self {
+            Self::Journal => {
+                if HELD_KINDS.contains(&K::NAME)
+                    && ctx.sync()?.own_history_hold().active(decision.monotonic)
+                {
+                    for seat in &seats {
+                        if seats::is_local_seat(tx, seat)? {
+                            return Err(api_error(
+                                ErrorCode::ServiceBusy,
+                                "own history catching up",
+                            ));
+                        }
+                    }
+                }
+                for seat in &seats {
+                    seats::ensure_published(tx, ctx, decision, seat)?;
+                }
+                let authored = match floor {
+                    Some(floor) => journal::author_above::<K>(tx, ctx, decision, payload, floor)?,
+                    None => journal::author::<K>(tx, ctx, decision, payload)?,
+                };
+                Ok(Some(authored))
+            }
+            Self::LocalOnly => {
+                for seat in &seats {
+                    let remote: bool = tx
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND is_local=0)",
+                            [seat.as_str()],
+                            |r| r.get(0),
+                        )
+                        .map_err(store_error)?;
+                    if remote {
+                        return Err(api_error(
+                            ErrorCode::Unsupported,
+                            "service threads are node-local",
+                        ));
+                    }
+                }
+                let input = local_only(tx, decision)?;
+                materialize_local(tx, &input, payload)?;
+                Ok(None)
+            }
+        }
+    }
 }
 
 /// Who may author a kind (spec section 17; root section 6 "Author authority

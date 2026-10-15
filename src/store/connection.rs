@@ -1087,7 +1087,9 @@ impl StoreContext {
             return Err(error);
         }
         guard.disable();
+        let publication = super::seats::PublicationScope::begin();
         let result = apply(&tx, decision, prepared)?;
+        publication.publish(&tx, self, decision)?;
         super::journal::check_self_applied(&tx)?;
         tx.commit().map_err(store_error)?;
         Ok(result)
@@ -1109,7 +1111,9 @@ impl StoreContext {
             utc: self.clock.utc_now(),
             monotonic: self.clock.monotonic_now(),
         };
+        let publication = super::seats::PublicationScope::begin();
         let result = apply(&tx, decision, prepared)?;
+        publication.publish(&tx, self, decision)?;
         super::journal::check_self_applied(&tx)?;
         tx.commit().map_err(store_error)?;
         Ok(result)
