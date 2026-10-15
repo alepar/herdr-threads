@@ -10,6 +10,7 @@ pub mod facts;
 pub mod frame;
 pub mod hlc;
 pub mod journal_port;
+pub mod link;
 
 use std::collections::BTreeMap;
 
