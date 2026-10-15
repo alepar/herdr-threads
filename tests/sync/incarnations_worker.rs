@@ -640,7 +640,7 @@ fn failing_job_records_sync_failure_and_backs_off_1_to_60s() {
 
     let mut delays = Vec::new();
     for round in 2..=8_u64 {
-        let delay = core.retry_at.unwrap().0 - a.now().0;
+        let delay = core.next_job_retry().unwrap().0 - a.now().0;
         delays.push(delay);
         clock.advance(delay - 1);
         core.work();
@@ -659,7 +659,7 @@ fn failing_job_records_sync_failure_and_backs_off_1_to_60s() {
         "1 s doubling to the 60 s cap"
     );
     assert_eq!(
-        core.retry_at.unwrap().0 - a.now().0,
+        core.next_job_retry().unwrap().0 - a.now().0,
         60_000,
         "the cap holds"
     );
@@ -670,7 +670,44 @@ fn failing_job_records_sync_failure_and_backs_off_1_to_60s() {
     core.work();
     assert_eq!(a.evidence("handshake"), 1, "the job was kept and ran");
     assert!(!failed(&a), "recovery clears the failure");
-    assert_eq!(core.retry_at, None);
+    assert_eq!(core.next_job_retry(), None);
+    assert!(core.pending.is_empty());
+}
+
+// Kills: a retryable failure of one job that blocks every other job behind a
+// worker-wide backoff.
+#[test]
+fn one_failing_job_does_not_block_the_others() {
+    let clock = ManualClock::new(T0);
+    let a = Node::new(SEED_A, 600, clock.clone());
+    let mut core = a.core();
+    let bad_dir = a._isolation.path("not-a-dir");
+    std::fs::write(&bad_dir, b"").unwrap();
+    a.sink.enqueue(Job::Salvage {
+        backup_db: a._isolation.path("no-backup.db"),
+        node_dir: bad_dir,
+    });
+    let clone = |n: u8| {
+        Job::Clone(CloneReport {
+            subject: peer(n),
+            kind: CloneKind::Handshake,
+            boots: Vec::new(),
+            source: peer(2),
+        })
+    };
+    a.sink.enqueue(clone(1));
+    core.work();
+    assert_eq!(a.evidence("handshake"), 1, "the clone job ran");
+    assert!(
+        core.next_job_retry().is_some(),
+        "the salvage job is pending with its own backoff"
+    );
+    assert!(a.status.health().is_some_and(|h| h.failure.is_some()));
+
+    clock.advance(1_000);
+    a.sink.enqueue(clone(3));
+    core.work();
+    assert_eq!(a.evidence("handshake"), 2, "a later job still completes");
 }
 
 // Kills: a salvage that removes the marker after a Headroom stop, a stop that
@@ -942,6 +979,46 @@ fn stops_on_cancel() {
 }
 
 // ---- Clone gate -----------------------------------------------------------------
+
+// Kills: a source that holds less than the tip being treated as done (the
+// pull never moves to another source).
+#[test]
+fn short_branch_reply_moves_to_another_source() {
+    let w = world();
+    let mut core = w.a.core();
+    let (s1, s2) = (peer(11), peer(12));
+    w.a.sink.enqueue(w.owner_fork(s1));
+    core.work();
+    w.a.sink.on_branch(s1, w.b3_reply());
+    core.work();
+    w.a.sink.note_tip_source(w.log, &hex(&w.b4.hash), s1);
+    w.a.sink.note_tip_source(w.log, &hex(&w.b4.hash), s2);
+    w.a.sink.on_have(s1, true, &w.have(4, &w.b4.hash), &[]);
+    core.work();
+    let sends = w.a.sink.outbox().sends;
+    let (asked, want) = sends.last().cloned().expect("the b4 branch was requested");
+    assert_eq!(want.tip.counter, 4, "{sends:?}");
+    let other = if asked == s1 { s2 } else { s1 };
+
+    let reply = BranchReply::Entries {
+        node: w.log.node,
+        inc: w.log.incarnation,
+        tip_hash: hex(&w.b4.hash),
+        entries: vec![WireEnvelope::from(&w.b3)],
+        more: false,
+    };
+    w.a.sink.on_branch(asked, reply);
+    core.work();
+    assert_eq!(
+        w.a.sink.outbox().sends,
+        vec![(other, BranchWant { from: 4, ..want })],
+        "the rest is asked of the other source"
+    );
+    assert_eq!(
+        w.a.count("SELECT COUNT(*) FROM sync_branches WHERE state='pulling'"),
+        1
+    );
+}
 
 // Kills: a Clone job that is not recorded and an owner rotation that runs on a
 // clone suspect, or logs more than once an hour.

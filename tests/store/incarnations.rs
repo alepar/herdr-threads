@@ -2051,7 +2051,8 @@ fn branch_progress_skips_common_stores_off_chain_lowers_freeze() {
             skipped: 1,
             complete: true,
             next_from: 6,
-            frozen_at: 2
+            frozen_at: 2,
+            short: false
         }
     );
     assert_eq!(freeze_of(&o.conn, &o.old), ("frozen".into(), Some(2)));
@@ -2094,7 +2095,7 @@ fn branch_progress_skips_common_stores_off_chain_lowers_freeze() {
 
 // Kills: a first entry that does not chain accepted as a branch, a span that
 // does not double, a search that does not clamp at counter 1, and a short
-// source treated as still pulling.
+// source that completes the branch.
 #[test]
 fn branch_progress_needs_earlier_widens_search() {
     let mut o = owner(3, 4);
@@ -2144,7 +2145,8 @@ fn branch_progress_needs_earlier_widens_search() {
     // Nothing was admitted by any of those replies.
     assert_eq!(count(&o.conn, "SELECT COUNT(*) FROM journal_forked"), 0);
 
-    // A source that holds less than the tip: complete, not pulling forever.
+    // A source that holds less than the tip leaves the row pulling; a second
+    // reply with the rest completes it.
     let mut o = owner(3, 2);
     let chain = branch(&o, 3, 6, o.entries[1].hash, "s");
     let ix = tip_row(&mut o, chain.last().unwrap());
@@ -2153,8 +2155,24 @@ fn branch_progress_needs_earlier_widens_search() {
         matches!(
             verdict,
             BranchVerdict::Progress {
-                complete: true,
+                complete: false,
+                short: true,
                 next_from: 5,
+                ..
+            }
+        ),
+        "{verdict:?}"
+    );
+    let (state, next_from, ..) = branch_row(&o.conn, ix);
+    assert_eq!((state.as_str(), next_from), ("pulling", 5));
+    let verdict = progress(&mut o, ix, &chain[2..], false);
+    assert!(
+        matches!(
+            verdict,
+            BranchVerdict::Progress {
+                complete: true,
+                short: false,
+                next_from: 7,
                 ..
             }
         ),
@@ -2162,6 +2180,105 @@ fn branch_progress_needs_earlier_widens_search() {
     );
     let (state, ..) = branch_row(&o.conn, ix);
     assert_eq!(state, "complete");
+}
+
+// Kills: an empty reply with more=false completing a row short of its tip.
+#[test]
+fn empty_reply_never_completes_short_of_the_tip() {
+    let mut o = owner(3, 2);
+    let chain = branch(&o, 3, 5, o.entries[1].hash, "e");
+    let ix = tip_row(&mut o, chain.last().unwrap());
+    let verdict = progress(&mut o, ix, &[], false);
+    assert!(
+        matches!(
+            verdict,
+            BranchVerdict::Progress {
+                stored: 0,
+                complete: false,
+                short: true,
+                next_from: 3,
+                ..
+            }
+        ),
+        "{verdict:?}"
+    );
+    let (state, next_from, ..) = branch_row(&o.conn, ix);
+    assert_eq!((state.as_str(), next_from), ("pulling", 3));
+}
+
+// Kills: a short-completed row that stays complete when its tip is advertised
+// again, a re-open that drops the pulled progress, a truly complete row that
+// re-opens, and a higher tip that reuses the lower tip's row.
+#[test]
+fn complete_short_row_reopens_on_re_advertise_and_higher_tip_gets_its_own_row() {
+    let mut o = owner(3, 2);
+    let chain = branch(&o, 3, 8, o.entries[1].hash, "h");
+    let tip6 = chain[3].clone();
+    let ix = tip_row(&mut o, &tip6);
+    o.conn
+        .execute(
+            "UPDATE sync_branches SET state='complete', next_from=5, next_attempt_at=99",
+            [],
+        )
+        .unwrap();
+    assert_eq!(tip_row(&mut o, &tip6), ix, "same tip, same row");
+    let (state, next_from, ..) = branch_row(&o.conn, ix);
+    assert_eq!((state.as_str(), next_from), ("pulling", 5), "progress kept");
+    assert_eq!(
+        count(
+            &o.conn,
+            "SELECT COUNT(*) FROM sync_branches WHERE next_attempt_at IS NULL"
+        ),
+        1,
+        "the re-open clears the attempt gate"
+    );
+
+    o.conn
+        .execute("UPDATE sync_branches SET state='complete', next_from=7", [])
+        .unwrap();
+    assert_eq!(tip_row(&mut o, &tip6), ix);
+    let (state, ..) = branch_row(&o.conn, ix);
+    assert_eq!(
+        state, "complete",
+        "a branch pulled to its tip stays complete"
+    );
+
+    let higher = tip_row(&mut o, chain.last().unwrap());
+    assert_ne!(higher, ix, "a higher tip is its own row");
+    let (state, ..) = branch_row(&o.conn, higher);
+    assert_eq!(state, "pulling");
+}
+
+// Kills: a tip at or below the freeze requested from a counter above it
+// (judged Corrupt), and a tip already held in journal_forked pulled again.
+#[test]
+fn tip_below_next_from_is_pulled_from_the_tip() {
+    let mut o = owner(4, 4);
+    let rival = signed_entry(o.old, 3, o.entries[1].hash, r#"{"id":"r3"}"#);
+    let ix = tip_row(&mut o, &rival);
+    let (state, next_from, ..) = branch_row(&o.conn, ix);
+    assert_eq!((state.as_str(), next_from), ("pulling", 3));
+    let verdict = progress(&mut o, ix, std::slice::from_ref(&rival), false);
+    assert!(
+        matches!(
+            verdict,
+            BranchVerdict::Progress {
+                stored: 1,
+                complete: true,
+                frozen_at: 2,
+                ..
+            }
+        ),
+        "{verdict:?}"
+    );
+    assert_eq!(freeze_of(&o.conn, &o.old), ("frozen".into(), Some(2)));
+
+    // A tip the store already holds in journal_forked is complete at once.
+    let mut o = owner(4, 4);
+    let held = o.fork(3, o.entries[1].hash, r#"{"id":"r3"}"#);
+    let ix = tip_row(&mut o, &held);
+    let (state, next_from, ..) = branch_row(&o.conn, ix);
+    assert_eq!((state.as_str(), next_from), ("complete", 4));
 }
 
 // Kills: a bad signature or a broken chain admitted, a Corrupt reply that

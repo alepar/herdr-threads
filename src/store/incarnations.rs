@@ -973,9 +973,13 @@ fn restore_chain(
 const MIN_SEARCH_SPAN: u64 = 256;
 
 /// The `sync_branches` row for a branch tip of a frozen own log, created
-/// `pulling` with `next_from = frozen_at + 1`. A tip already known keeps its
-/// progress, except that an `unavailable` row returns to `pulling`. Returns the
-/// row's `branch_ix`. `_source` is the advertiser; the sink keeps sources in
+/// `pulling` with `next_from = min(frozen_at + 1, counter)` (a tip at or below
+/// the freeze is pulled from the tip itself); a tip at or below the freeze that
+/// `journal_forked` already holds was pulled before and is created `complete`. A tip already
+/// known keeps its progress (`next_from`, `search_span`), except that an
+/// `unavailable` row, or a `complete` row that completed short of its tip
+/// (`next_from <= tip_counter`), returns to `pulling`. Returns the row's
+/// `branch_ix`. `_source` is the advertiser; the sink keeps sources in
 /// memory, the table has no column for it. Not gated by the clone gate.
 pub fn upsert_branch_tip(
     tx: &Transaction<'_>,
@@ -1003,14 +1007,26 @@ pub fn upsert_branch_tip(
         .ok()
         .filter(|c| *c >= 1)
         .ok_or_else(|| api_error(ErrorCode::InvalidRequest, "branch tip counter out of range"))?;
+    let held: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM journal_forked WHERE log_ix=?1 AND counter=?2 AND hash=?3)",
+            params![log_ix, counter, hash.as_slice()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let (state, next_from) = if held && counter <= frozen_at {
+        ("complete", counter + 1)
+    } else {
+        ("pulling", (frozen_at + 1).min(counter))
+    };
     tx.execute(
         "INSERT INTO sync_branches(log_ix,tip_counter,tip_hash,next_from,state,first_seen_at,updated_at) \
-         VALUES (?1,?2,?3,?4,'pulling',CAST(strftime('%s','now') AS INTEGER)*1000,CAST(strftime('%s','now') AS INTEGER)*1000) \
+         VALUES (?1,?2,?3,?4,?5,CAST(strftime('%s','now') AS INTEGER)*1000,CAST(strftime('%s','now') AS INTEGER)*1000) \
          ON CONFLICT(log_ix,tip_hash) DO UPDATE SET \
-            state=CASE WHEN state='unavailable' THEN 'pulling' ELSE state END, \
-            next_attempt_at=CASE WHEN state='unavailable' THEN NULL ELSE next_attempt_at END, \
+            state=CASE WHEN state='unavailable' OR (state='complete' AND next_from<=tip_counter) THEN 'pulling' ELSE state END, \
+            next_attempt_at=CASE WHEN state='unavailable' OR (state='complete' AND next_from<=tip_counter) THEN NULL ELSE next_attempt_at END, \
             updated_at=CAST(strftime('%s','now') AS INTEGER)*1000",
-        params![log_ix, counter, hash.as_slice(), frozen_at + 1],
+        params![log_ix, counter, hash.as_slice(), next_from, state],
     )
     .map_err(store_error)?;
     tx.query_row(
@@ -1091,6 +1107,9 @@ pub enum BranchVerdict {
         next_from: u64,
         /// The log's freeze counter afterwards.
         frozen_at: u64,
+        /// The reply ended (`more == false`) below the tip: the source held
+        /// less. The row stays `pulling`; the caller moves to another source.
+        short: bool,
     },
     /// The first entry did not chain on a known predecessor: the divergence
     /// lies below `next_from` and the back-search moved earlier.
@@ -1237,8 +1256,10 @@ fn chains_on_known(
 /// `source` as `source_node`, and the first off-chain counter `d + 1` lowers
 /// the log's freeze to `min(frozen_at, d)` before any of them is stored, so
 /// I2 holds. `next_from` moves past the last entry; the row is `complete` when
-/// that entry is the tip, or when `more` is false and it is short of the tip
-/// (the source held less). A `Corrupt` reply writes nothing but the
+/// that entry is the tip; a reply that ends short of the tip leaves the row
+/// `pulling` and reports `short`, so the caller moves to another source. A
+/// row already past its tip is marked `complete` without looking at the reply.
+/// A `Corrupt` reply writes nothing but the
 /// `attempts` and `last_error` record. Not gated by the clone gate.
 pub fn branch_progress(
     tx: &Transaction<'_>,
@@ -1248,25 +1269,41 @@ pub fn branch_progress(
     more: bool,
 ) -> Result<BranchVerdict, ApiError> {
     let branch = load_branch(tx, branch_ix)?;
-    if let Err(reason) = verify_reply(&branch, entries) {
-        note_failure(tx, branch_ix, &reason)?;
-        return Ok(BranchVerdict::Corrupt { reason });
-    }
-    let Some(first) = entries.first() else {
-        let complete = !more;
+    if branch.next_from > branch.tip_counter {
         tx.execute(
-            "UPDATE sync_branches SET attempts=attempts+1, last_error=NULL, \
-             state=CASE WHEN ?2 THEN 'complete' ELSE state END, \
+            "UPDATE sync_branches SET state='complete', \
              updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE branch_ix=?1",
-            params![branch_ix, complete],
+            params![branch_ix],
         )
         .map_err(store_error)?;
         return Ok(BranchVerdict::Progress {
             stored: 0,
             skipped: 0,
-            complete,
+            complete: true,
             next_from: branch.next_from,
             frozen_at: branch.frozen_at,
+            short: false,
+        });
+    }
+    if let Err(reason) = verify_reply(&branch, entries) {
+        note_failure(tx, branch_ix, &reason)?;
+        return Ok(BranchVerdict::Corrupt { reason });
+    }
+    let Some(first) = entries.first() else {
+        // An empty reply never completes a row whose pull is short of the tip.
+        tx.execute(
+            "UPDATE sync_branches SET attempts=attempts+1, last_error=NULL, \
+             updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE branch_ix=?1",
+            params![branch_ix],
+        )
+        .map_err(store_error)?;
+        return Ok(BranchVerdict::Progress {
+            stored: 0,
+            skipped: 0,
+            complete: false,
+            next_from: branch.next_from,
+            frozen_at: branch.frozen_at,
+            short: !more,
         });
     };
     if !chains_on_known(tx, &branch, first)? {
@@ -1316,7 +1353,7 @@ pub fn branch_progress(
     let stored = journal::store_forked(tx, &branch.log, off_chain, Some(source))?;
 
     let last = entries.last().map_or(branch.next_from - 1, |e| e.counter);
-    let complete = last >= branch.tip_counter || !more;
+    let complete = last >= branch.tip_counter;
     tx.execute(
         "UPDATE sync_branches SET next_from=?2, search_span=0, attempts=attempts+1, last_error=NULL, \
          state=CASE WHEN ?3 THEN 'complete' ELSE state END, \
@@ -1334,6 +1371,7 @@ pub fn branch_progress(
         complete,
         next_from: last + 1,
         frozen_at,
+        short: !complete && !more,
     })
 }
 

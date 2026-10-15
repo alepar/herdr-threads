@@ -26,7 +26,8 @@
 //! - Lifecycle: all in-memory state starts empty; at start the worker
 //!   re-derives its pulls and re-issues from the store rows.
 //! - Errors: a store error records `Lane::Sync` health, keeps the job and
-//!   retries it after the backoff; a job that can never succeed
+//!   retries it after its own backoff (1 s doubling to 60 s; other jobs keep
+//!   running); a job that can never succeed
 //!   (`InvalidRequest`, `NotFound`, `Conflict`) is recorded and dropped.
 //!
 //! The timer is a 1 s tokio interval timer on a current-thread runtime
@@ -149,6 +150,10 @@ struct Queued {
     queued_at: MonoInstant,
     /// Branch-entry bytes it counts against the cap.
     bytes: usize,
+    /// The job's own backoff: it does not run before this.
+    retry_at: Option<MonoInstant>,
+    /// The next backoff delay of this job.
+    delay_ms: u64,
 }
 
 /// A single-entry (or restore-entry) `branch_want` the worker sent, and what
@@ -317,12 +322,14 @@ impl Core {
             }
             self.poll_clone_cleared();
             self.intake();
-            if self.retry_at.is_some_and(|at| self.now() < at) {
-                return;
-            }
+            // Due jobs first: a failing job backs off on its own and never
+            // blocks the others behind the worker-wide gate.
             if let Some(item) = self.next_runnable() {
                 self.run_item(item);
                 continue;
+            }
+            if self.retry_at.is_some_and(|at| self.now() < at) {
+                return;
             }
             if self.reissue_due && !self.clone_held {
                 self.run_reissue();
@@ -350,7 +357,9 @@ impl Core {
 
     // ---- Failure path ------------------------------------------------------
 
-    /// A store failure: record it, back off 1 s doubling to 60 s.
+    /// A store failure of a non-job unit (re-issue, evidence, restore
+    /// derivation): record it, back the worker off 1 s doubling to 60 s. A
+    /// failing job backs off on its own (`run_item`).
     fn fail(&mut self, error: &ApiError) {
         self.d.status.record_failure(Lane::Sync, error);
         self.failing = true;
@@ -359,8 +368,11 @@ impl Core {
         self.delay_ms = self.delay_ms.saturating_mul(2).min(BACKOFF_MAX_MS);
     }
 
+    /// Records recovery (unless a job is still backing off) and clears the
+    /// worker-wide backoff; per-job backoffs are untouched.
     fn succeed(&mut self) {
-        if self.failing {
+        // Health stays failed while a job is still in its own backoff.
+        if self.failing && self.pending.iter().all(|q| q.retry_at.is_none()) {
             self.d.status.record_success(self.utc());
             self.failing = false;
         }
@@ -420,6 +432,8 @@ impl Core {
                     .iter_mut()
                     .find(|q| matches!(&q.job, Job::Have { source: s, .. } if *s == source))
                 {
+                    // The slot keeps its backoff so a stream of `Have`s cannot
+                    // defeat it.
                     slot.job = job;
                     slot.queued_at = queued_at;
                     return;
@@ -443,6 +457,8 @@ impl Core {
             job,
             queued_at,
             bytes,
+            retry_at: None,
+            delay_ms: BACKOFF_BASE_MS,
         });
     }
 
@@ -482,7 +498,12 @@ impl Core {
     /// advertised own geneses (or its 5 minutes).
     fn next_runnable(&mut self) -> Option<Queued> {
         let mut index = 0;
+        let now = self.now();
         while index < self.pending.len() {
+            if self.pending[index].retry_at.is_some_and(|at| now < at) {
+                index += 1;
+                continue;
+            }
             let ready = match &self.pending[index].job {
                 Job::Restore { .. } => {
                     let queued_at = self.pending[index].queued_at;
@@ -504,6 +525,12 @@ impl Core {
             index += 1;
         }
         None
+    }
+
+    /// The earliest backoff deadline among pending jobs.
+    #[cfg(test)]
+    fn next_job_retry(&self) -> Option<MonoInstant> {
+        self.pending.iter().filter_map(|q| q.retry_at).min()
     }
 
     /// Whether a `Restore` queued at `queued_at` may run: every own log an
@@ -545,13 +572,16 @@ impl Core {
 
     // ---- Running one job ---------------------------------------------------
 
-    fn run_item(&mut self, item: Queued) {
+    fn run_item(&mut self, mut item: Queued) {
         match self.dispatch(&item.job, item.queued_at) {
             Ok(()) => self.succeed(),
             Err(e) if Self::retryable(&e) => {
-                self.fail(&e);
+                self.d.status.record_failure(Lane::Sync, &e);
+                self.failing = true;
+                item.retry_at = Some(MonoInstant(self.now().0.saturating_add(item.delay_ms)));
+                item.delay_ms = item.delay_ms.saturating_mul(2).min(BACKOFF_MAX_MS);
                 self.pending_bytes += item.bytes;
-                self.pending.push_front(item);
+                self.pending.push_back(item);
             }
             Err(e) => {
                 self.d.status.record_failure(Lane::Sync, &e);
@@ -1172,7 +1202,13 @@ impl Core {
             tx, branch_ix, source, entries, more
         ));
         match verdict {
-            BranchVerdict::Progress { .. } => self.reissue_due = true,
+            BranchVerdict::Progress { short, .. } => {
+                self.reissue_due = true;
+                if short {
+                    // The source held less than the tip: ask another one.
+                    self.d.sink.penalize(source, key.log);
+                }
+            }
             BranchVerdict::NeedsEarlier { .. } => {}
             BranchVerdict::Corrupt { reason } => {
                 self.d.sink.penalize(source, key.log);
@@ -1206,6 +1242,10 @@ impl Core {
         let due = store::due_branches(&db, self.utc())?;
         drop(db);
         for branch in due {
+            debug_assert!(
+                (1..=branch.tip.0).contains(&branch.next_from),
+                "a pulling branch has 1 <= next_from <= tip"
+            );
             let want = BranchWant {
                 node: branch.log.node,
                 inc: branch.log.incarnation,
@@ -1213,7 +1253,7 @@ impl Core {
                     counter: branch.tip.0,
                     hash: hex_encode(&branch.tip.1),
                 },
-                from: branch.next_from.clamp(1, branch.tip.0.max(1)),
+                from: branch.next_from,
             };
             self.d.sink.request_branch(want);
         }
