@@ -109,6 +109,10 @@ mod operator_ux;
 #[cfg(feature = "test-support")]
 #[path = "integration/pane_close_retirement.rs"]
 mod pane_close_retirement;
+/// ht-5fr.5.9: `peer --stdio`, the stateless ssh-side pump, against a daemon it starts.
+#[cfg(feature = "test-support")]
+#[path = "cli/peer_stdio.rs"]
+mod peer_stdio;
 /// ht-54r.25: session-binding flows the smoke configurations do not assert (settle once, one-shot).
 #[cfg(feature = "test-support")]
 #[path = "integration/session_bindings_e2e.rs"]
