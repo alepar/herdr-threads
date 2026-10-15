@@ -1164,6 +1164,23 @@ mod tests {
         ) -> Result<Vec<Envelope>, ApiError> {
             Ok(vec![self.forged.clone()])
         }
+        fn serve_branch(
+            &self,
+            _: &LogKey,
+            _: (u64, [u8; 32]),
+            _: u64,
+            _: BatchLimits,
+            _: &CallBudget,
+        ) -> Result<Option<Vec<Envelope>>, ApiError> {
+            Ok(None)
+        }
+        fn log_meta(
+            &self,
+            _: &LogKey,
+            _: &CallBudget,
+        ) -> Result<Option<crate::sync::journal_port::LogMeta>, ApiError> {
+            Ok(None)
+        }
         fn ingest(
             &self,
             _: &LogKey,
