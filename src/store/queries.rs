@@ -1079,7 +1079,12 @@ fn seat_inspect(
     )?;
     let mut summary = summary;
     (summary.active, summary.bindings) = presence(db, q.seat.as_str())?;
-    summary.availability = Some(availability_label(db, q.seat.as_str())?);
+    // A remote seat's state column already says `remote`; it has no availability.
+    summary.availability = if row.0 == "remote" {
+        None
+    } else {
+        Some(availability_label(db, q.seat.as_str())?)
+    };
     let mapping = MappingStatus {
         state: summary.continuity,
         target: summary.target.clone(),
