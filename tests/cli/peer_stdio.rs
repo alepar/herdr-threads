@@ -307,6 +307,20 @@ fn pump_with_no_state_flag_or_env_uses_the_default_state_dir() {
     assert!(state.join("node/node.key").exists());
 }
 
+/// A node never used locally (no state dir yet) still accepts an inbound link: the pump
+/// creates the default state dir and starts the daemon there, as a first local use would.
+#[test]
+fn pump_on_a_fresh_node_creates_the_default_state_dir() {
+    let iso = TestIsolation::new("peer-stdio-fresh-node");
+    let state = iso.path("xdg/state").join("herdr/plugins/herdr-threads");
+    assert!(!state.exists(), "the isolation starts with no state dir");
+    let _stop = StopDaemon(&iso, &state);
+    let mut child = pump_cmd(&iso).spawn_owned().unwrap();
+    let (peer, _stdout) = dial_through(&mut child);
+    assert_eq!(peer.node, daemon_node(&state));
+    wait_for_log(&state, "sync: link up ");
+}
+
 /// sshd relays the pump's stdout from one thread with non-blocking reads. On Linux, a pump
 /// that copied with `io::copy` spliced the socket into stdout, and a splice waiting on an
 /// idle socket holds the stdout pipe's lock: sshd's read then blocked in the kernel, sshd

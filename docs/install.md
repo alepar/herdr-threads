@@ -139,7 +139,7 @@ Machines running herdr-threads can share threads, seats and messages. Each machi
 
 The tag appears inside every ID the node mints (`<prefix><tag><8 characters>`). A cloned `node/` directory is the same node twice: `sync status` then reports clone evidence and the operator repairs it (below).
 
-**State-dir addressing.** The CLI selects the daemon by state directory only (`--state-dir`, then `HERDR_PLUGIN_STATE_DIR`, then the default). `--host-endpoint` (or `HERDR_SOCKET_PATH`) names the claim host: the Herdr server a command acts for, and the hint that attaches that server to the daemon. A daemon attaches one host per Herdr server and keeps running with none (`store-only`) while it has a peer link or dial target.
+**State-dir addressing.** The CLI selects the daemon by state directory only (`--state-dir`, then `HERDR_PLUGIN_STATE_DIR`, then the default). `--host-endpoint` (or `HERDR_SOCKET_PATH`) names the claim host: the Herdr server a command acts for, and the hint that attaches that server to the daemon. A daemon attaches one host per Herdr server and keeps running with none (`store-only`) while it has a peer link or dial target. An inbound peer link to a machine where herdr-threads was never used (no state dir yet) creates the default state dir and starts the daemon there, as a first local use would.
 
 **Health and doctor.** `daemon health` lists `hosts`, one entry per attached Herdr server (endpoint, reachability, version). `doctor` prints `daemon: store-only` when the daemon has no attached host, and the usual `healthy` or `degraded` otherwise.
 

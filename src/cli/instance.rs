@@ -186,6 +186,18 @@ pub fn default_state_dir(inputs: &InstanceInputs) -> Result<Option<(PathBuf, Str
     }))
 }
 
+/// Where the default state dir would be, whether or not it exists yet: the place a node that
+/// was never used locally creates its state when an inbound peer link starts its daemon
+/// (`peer --stdio`). `None` for a named Herdr session or no usable HOME/XDG root;
+/// `Err` when both roots already hold a store (ambiguous, as for [`default_state_dir`]).
+pub fn default_state_dir_to_create(inputs: &InstanceInputs) -> Result<Option<PathBuf>, String> {
+    if inputs.non_default_server {
+        return Ok(None);
+    }
+    let (xdg, home) = state_candidates(absolute(&inputs.home), absolute(&inputs.xdg_state_home));
+    Ok(choose_state_dir(xdg, home)?.map(|(dir, _, _)| dir))
+}
+
 /// What Herdr's plugin registry says about this plugin, read from a file only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginRegistry {
