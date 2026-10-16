@@ -26,7 +26,7 @@ codeBuckets:
   parked:
   stalled: false
   review: ready (final-review-fix-round-1.md; caller final-SHA sweep and combined-node proof pending)
-  sweep: SWEEP DEFERRED (caller-owned)
+  sweep: d51ca797 — 1555 passed, 17 failed, 0 errors, 4841 skipped; failing: see sweep-initial-failures.md; command: affected-sweep-command.txt nextest command @ d51ca79772e9896bd6e4beb6980f0080f4835b81
   slowness: fresh task-path links and peer contention exceeded build budgets; merged-tree lint 1m32 and 2m04; no demonstrated source-only regression
   worktreesKept:
   processSweep: stopped 0 · survived 0
@@ -37,3 +37,4 @@ scopeFilter-round-1: [Should-fix] src/cli/hook_inbox.rs:365 in-scope — Missing
 scopeFilter-round-1: [Nit] TRUST-POLICY.md:1702 punch-list — Correcting superseded historical policy wording is documentation hygiene; the goal names delivery and receipt-settlement behavior, and the operative policy sections already describe that behavior correctly.
 scope-filter: 1 in-scope · 1 punch-listed
 roastCodeExit: converged
+sweepFix: 17 failing → ht-794l.9, ht-794l.10 · re-run pending @ cd0c32d1
