@@ -23,6 +23,10 @@ code-run-1: coordinator wf_516906c6-9a5 · stopReason ready-drained · completed
 graph-change-applied: L33–L38 epic narrows applied mid-run on user approval (relayed via herdr-threads 1:1; user ran narrow.py) — adds 4.1<-1.5, 2.1<-1.6, removes 8 epic-level edges
 fix-beads-mid-run: ht-5fr.3.21 (self-log AheadOfSelf verify/dedupe, security review) merged · ht-5fr.3.32 (commit_kicks fixture vs seeded sync_logs row) merged · ht-5fr.18 (Linux process-table discovery reads other users' processes, security review) merged
 
+main-merge: fe24ebf18 merge main into run branch (89 commits, 41 conflict files, schema baseline unchanged) + d01f73dd1 temp_path conversion
+code-run-2: coordinator wf_03c7a2f1-6c4 · stopReason stalled (ht-5fr.3.37 left un-redispatched after a triage wait edge) · completed 105 total · final review: not ready — 3.37 unmerged; dial-each-other stall; store-only seat restore after wipe; register events lost actor (regression from main)
+fix-beads-run-2: ht-5fr.3.37 · ht-5fr.6.30 · ht-5fr.6.31 · ht-5fr.5.27 · ht-5fr.2.25 · ht-5fr.22 · ht-5fr.23 · ht-5fr.24 (loop_inventory) — all merged except 3.37
+
 approvals:
 - top-split · auto · ht-5fr.1 PROMOTE, ht-5fr.2 PROMOTE, ht-5fr.3 PROMOTE, ht-5fr.4 PROMOTE, ht-5fr.5 PROMOTE, ht-5fr.6 PROMOTE, ht-5fr.7 LEAF, ht-5fr.8 LEAF, ht-5fr.9 LEAF, ht-5fr.10 LEAF, ht-5fr.11 LEAF, ht-5fr.12 LEAF, ht-5fr.13 LEAF
 - coverage-round-1 · canonical R-list: R1–R16 (coverage-round-1-requirements.md), R-new appended as R17–R20 · requirements: 16 · mapped: 16 · unmapped: 0 · auto GAP R17 → ht-5fr.4.5 amended + 4.18 case; auto GAP R18 → ht-5fr.5.2 amended; auto GAP R19 → leaf ht-5fr.1.12; auto GAP R20 → leaf ht-5fr.1.13; auto GAP real-ssh → leaf ht-5fr.14; auto GAP ht-5fr.7/.11/.12 → edges + scope; auto UNOWNED-SEAM status reads → ht-5fr.8 owns; auto UNOWNED-SEAM marker rendering → ht-5fr.4.14/ht-5fr.13; auto reject wake-e2e (spec follow-on); auto reject leaf decomposition (promotion verdict); NEEDS-SPEC (ht-5fr.7/.8/.13, leaves under root spec) not re-run — the findings already named the gaps and were fixed
@@ -42,3 +46,5 @@ parked:
 - decision · ht-5fr.4.2 / ht-52dq · "spec gap: inviter-less service/operator invites on journaled threads — chose (d) now + (b) in ht-5fr.4.10: inviter_kind seat|service|operator, optional inviter, origin-node authority for non-seat kinds; fact-kinds §2/§6 amendment owed"
 - security-followup · phase-4 roast · "envelope.rs payload parser differential (dup keys / non-canonical JSON vs handlers); serve.rs/coordinator.rs peer-controlled max_frame lower bound, subs_out growth, serve-job deadline; incarnations/worker.rs unsigned Have claims must not drive evidence/restore/hold"
 - pipeline-defect · super-code · "evidence-only fix pass with no commit classed BLOCKED (3x: 1.2, 1.6, 2.4), cancelling 5 stacked tasks; local coordinator patch refused by permission layer (self-modification), reverted"
+- decision · run-2 review finding 3 · "store-only daemon cannot restore own seats after wipe — chose: retry own seat.created (and entries parked behind it) on first host attach and at startup, instead of an operator replay step"
+- decision · run-2 review finding 4 · "register events (topic/name/archive) lost actor — chose: optional actor field on thread.register payload, restoring main's behaviour"
