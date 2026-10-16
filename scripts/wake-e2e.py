@@ -248,7 +248,14 @@ def header_priorities(screen):
     """{message id: priority} from the frame headers on the screen: a `[pN]` marker, else the silent default p1."""
     out = {}
     for m in HEADER.finditer(screen):
-        sender_and_markers = m.group(2).split(": ", 1)[0].rstrip(":")
+        rest = m.group(2)
+        if ":" not in rest:
+            # Claude's TUI breaks a long header with a real newline (soft wraps are already undone),
+            # so the markers and the closing colon can start the next line.
+            following = screen[m.end():].lstrip("\n").split("\n", 1)[0].strip()
+            if following.startswith("["):
+                rest += " " + following
+        sender_and_markers = rest.split(": ", 1)[0].rstrip(":")
         marker = re.search(r"\[p(\d)\]", sender_and_markers)
         out.setdefault(m.group(1), int(marker.group(1)) if marker else 1)
     return out
