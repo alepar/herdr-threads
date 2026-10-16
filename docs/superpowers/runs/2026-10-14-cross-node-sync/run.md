@@ -1,8 +1,8 @@
 # super-auto run — 2026-10-14-cross-node-sync
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: fix-loop
-roastCodeRound: 1
+phase: roast-code
+roastCodeRound: 2
 codeMechanism: Workflow
 
 idea: Cross-node herdr-threads sync. Seed: the vision spec docs/superpowers/specs/2026-10-13-cross-node-sync-vision-design.md plus research in docs/superpowers/research/2026-10-13-cross-node-sync/. Write the actual (detailed) spec, checking for any gaps, split into beads; all autonomously; both roasts on.
@@ -39,6 +39,8 @@ fix-beads-run-4: ht-5fr.53 (hold waits for apply) · ht-5fr.54 (hold counts unli
 main-merge-3: REFUSED by the permission layer (session merge of main v1.1.0, 7 commits) — left for the human; must precede the merge to main
 
 code-run-5: coordinator wf_b06245f4-b3c · stopReason closure-unconfirmed (stale ht-5fr.15) · ht-5fr.53–.58 merged, all ht-5fr beads closed; stale ht-33gb closed · final review: no new product defect; must-fix: main v1.1.0 merge (human), full suite on merged tree, landing order vs ht-794l (human); follow-ups: journaled_route test-build fallback, author_answer local-only route
+
+fix-round-1: coordinator wf_014f01df-1a7 · ht-5fr.60, ht-5fr.61 merged · final review: not ready — main v1.1.0 merge, license allowlist (release blocker; punch-listed r1), tag_k walk and JoinError (punch-listed r1), landing order vs ht-794l, no full suite
 
 approvals:
 - top-split · auto · ht-5fr.1 PROMOTE, ht-5fr.2 PROMOTE, ht-5fr.3 PROMOTE, ht-5fr.4 PROMOTE, ht-5fr.5 PROMOTE, ht-5fr.6 PROMOTE, ht-5fr.7 LEAF, ht-5fr.8 LEAF, ht-5fr.9 LEAF, ht-5fr.10 LEAF, ht-5fr.11 LEAF, ht-5fr.12 LEAF, ht-5fr.13 LEAF
