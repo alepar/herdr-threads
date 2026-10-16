@@ -38,14 +38,14 @@ use std::{
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 const FAKE_ENV: &str = "HT_FAKE_OTHER_VERSION_DAEMON";
-const FAKE_SOFTWARE: &str = "0.11.0";
-/// The v0.11.0 release wire protocol; this build is protocol 8.
-const OLD_PROTOCOL: u16 = 7;
+const FAKE_SOFTWARE: &str = "1.0.1";
+/// The v1.0.x release wire protocol; this build is protocol 9.
+const OLD_PROTOCOL: u16 = 8;
 
 /// Kills: a protocol bump that leaves the skew tests on a synthetic pair.
 #[test]
 fn skew_tests_use_the_real_release_pair() {
-    assert_eq!(PROTOCOL_VERSION, 8);
+    assert_eq!(PROTOCOL_VERSION, 9);
     const { assert!(OLD_PROTOCOL < PROTOCOL_VERSION) };
 }
 

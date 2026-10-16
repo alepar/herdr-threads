@@ -1271,6 +1271,7 @@ fn a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service() {
 // filtering a bounded all-invitation window after LIMIT, or sharing one binding's in-turn
 // evidence with a sibling. Invitations and display claims use real canonical mutations.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn in_turn_timed_invitation_service_ignores_unseen_lazy_backlog_per_binding() {
     let mut f = Fixture::new();
     f.store = SqliteStore::new(

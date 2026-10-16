@@ -1144,7 +1144,7 @@ fn invited_thread(db: &Connection, thread: &str, pair: Option<&str>, voluntary: 
     .unwrap();
     if let Some(pair) = pair {
         db.execute(
-            "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'s',?2)",
+            "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id,created_hlc,created_node) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'s',?2,0,(SELECT id FROM local_node))",
             [pair, thread],
         )
         .unwrap();

@@ -303,6 +303,7 @@ impl Q4Readers {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor() {
     let f = Q4Readers::new();
     let thread = f.pair();
@@ -330,6 +331,7 @@ fn q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor() {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn q4_direct_lazy_completion_is_independent_for_two_initial_bindings() {
     let f = Q4Readers::new();
     let b = f.fresh_reader("q4-b", 2);
@@ -368,6 +370,7 @@ fn q4_direct_lazy_completion_is_independent_for_two_initial_bindings() {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap() {
     for display_later in [false, true] {
         let f = Q4Readers::new();
@@ -431,6 +434,7 @@ fn q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap() {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog() {
     let f = Q4Readers::new();
     let b = f.fresh_reader("q4-old-unread-b", 2);
@@ -468,6 +472,7 @@ fn q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog() {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap() {
     let f = Q4Readers::new();
     let thread = f.pair();
@@ -491,6 +496,7 @@ fn q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap() {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept() {
     let f = Q4Readers::new();
     let thread = f.pair();

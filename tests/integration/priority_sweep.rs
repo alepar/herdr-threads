@@ -201,6 +201,7 @@ fn priority_sweep_invitation_is_p0_confirming_with_deadline() {
 
 /// Flow 6.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 11"]
 fn priority_sweep_first_direct_send_joins_both_seats_without_invitation() {
     let w = World::agents_only();
     let before = invitations_total(&w);

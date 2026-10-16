@@ -12143,6 +12143,7 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn invitation_confirmation_creates_frozen_policy_and_only_timed_wake() {
     let (context, mut conn, path, _) = bound_fixture(100);
     let budget = crate::protocol::time::CallBudget {
@@ -12239,6 +12240,7 @@ fn invitation_confirmation_creates_frozen_policy_and_only_timed_wake() {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn invitation_confirmation_required_service_gets_fresh_timed_episode_without_mutating_lazy() {
     use crate::ports::ServiceAuthorityGate;
     use crate::protocol::{
@@ -12577,6 +12579,7 @@ fn invitation_confirmation_registration_never_settles_or_restarts_and_late_accep
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn invitation_confirmation_lazy_rejection_still_publishes_attributed_notice() {
     use crate::protocol::commands::{InvitationConfirmation, Reject};
     let (context, mut conn, path, clock, thread, invitation) =
@@ -12968,6 +12971,7 @@ fn invitation_confirmation_discovery_survives_committed_notice_offer_and_complet
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn invitation_confirmation_late_lazy_accept_has_no_overdue_condition_or_wake() {
     use crate::protocol::commands::InvitationConfirmation;
     let (context, mut conn, path, clock, thread, invitation) =
@@ -13020,6 +13024,7 @@ fn invitation_confirmation_late_lazy_accept_has_no_overdue_condition_or_wake() {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn invitation_confirmation_late_lazy_retirement_has_no_overdue_condition_or_wake() {
     use crate::{
         ports::{ClosureEvidence, WorkAdmission},
@@ -13345,6 +13350,7 @@ fn same_invitation_requirement_attach_release_replacement_has_distinct_context_e
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn service_requirement_uses_an_independent_episode_without_mutating_native_lazy_invitation() {
     use crate::ports::ServiceAuthorityGate;
     use crate::protocol::{

@@ -1312,7 +1312,7 @@ fn direct_request_deserialization_enforces_version_and_page_validation() {
     assert!(serde_json::from_value::<WireRequest>(good.clone()).is_ok());
     assert!(WireRequest::decode(good.to_string().as_bytes()).is_ok());
     let mut bad_version = good;
-    bad_version["version"] = serde_json::json!(9);
+    bad_version["version"] = serde_json::json!(PROTOCOL_VERSION + 1);
     assert!(
         serde_json::from_value::<WireRequest>(bad_version.clone())
             .unwrap_err()

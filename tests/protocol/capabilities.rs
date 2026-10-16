@@ -382,7 +382,7 @@ fn every_advertised_capability_has_a_handler() {
             SEND_PRIORITY_V1 => {
                 // The explicit priority is on the wire, validates and routes to the domain; the
                 // store freezes it (`store::messages::priority_send_tests`).
-                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"priority":3,"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"priority":3,"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"host":"/host.sock","instance":"34750f98bd59fcfc946da45aaabe933b","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
                 let wire = serde_json::to_value(&command).unwrap();
                 assert_eq!(wire["args"]["priority"], 3);
@@ -514,7 +514,7 @@ fn every_advertised_capability_has_a_handler() {
                         .code,
                     ErrorCode::NotFound
                 );
-                let set: Command = serde_json::from_value(serde_json::json!({"kind":"set_nudge_threshold","args":{"value":3,"operation":"op","claim":{"instance":"i","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                let set: Command = serde_json::from_value(serde_json::json!({"kind":"set_nudge_threshold","args":{"value":3,"operation":"op","claim":{"host":"/host.sock","instance":"34750f98bd59fcfc946da45aaabe933b","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(set.validate().is_ok());
                 assert_eq!(
                     handler
@@ -1957,7 +1957,7 @@ fn probe_message_delivery_modes() {
         .query(
             &asked,
             &ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: OutputSpec::default(),
                 operation_scope: None,
             },

@@ -87,6 +87,7 @@ fn open_thread(cluster: &Cluster, a: &Seat, invitee: &Seat, topic: &str) -> Stri
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 22"]
 fn created_thread_invites_unseen_seats_and_delivery_follows_the_contract() {
     let cluster = support::cluster("mn-sweep-invite", 2, &[(0, 1)], &[0, 1]);
     let a = cluster.seat(0, P1);

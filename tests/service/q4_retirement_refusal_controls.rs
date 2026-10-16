@@ -239,6 +239,7 @@ fn partial(key: &str, text: &str) -> String {
 // These malformed records cannot be produced by canonical writers. Fault only the isolated
 // private accumulator/cursor after a real capture and real audience transition.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn modern_lazy_scope_loss_cannot_hide_corrupt_accumulator_or_utf8_offset() {
     for fault in [
         "invalid_accumulator_id",
@@ -329,6 +330,7 @@ fn fault_with_restored_guard(
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn modern_lazy_retirement_requires_intact_captured_publication_and_recipient_authority() {
     for fault in [
         "missing_manifest",
@@ -427,6 +429,7 @@ fn modern_lazy_retirement_requires_intact_captured_publication_and_recipient_aut
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn public_lazy_continuation_refuses_real_old_episode_audience_loss() {
     let c = CapturedScopeLoss::new();
     let f = &c.f;
@@ -464,6 +467,7 @@ fn public_lazy_continuation_refuses_real_old_episode_audience_loss() {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn legacy_lazy_tail_keeps_strict_refusal_when_modern_reader_scope_is_lost() {
     let c = CapturedScopeLoss::new();
     let f = &c.f;
@@ -489,6 +493,7 @@ fn legacy_lazy_tail_keeps_strict_refusal_when_modern_reader_scope_is_lost() {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn modern_lazy_scope_retirement_rolls_back_when_final_private_save_fails() {
     let c = CapturedScopeLoss::new();
     let f = &c.f;

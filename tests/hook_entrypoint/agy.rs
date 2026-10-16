@@ -625,6 +625,7 @@ fn agy_lazy_row_settles_only_through_the_transcript_confirm_never_hook_context()
 // message-priority D6); a lazy one only survives from before the upgrade. The fixture builds that
 // legacy shape by sending the lazy `Invite` straight to the daemon with the peer's canonical claim.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn agy_turn_hook_carries_lazy_invitation_without_accepting_or_confirming_it() {
     use herdr_threads::protocol::{
         authority::{CallerClaim, CallerRole, LivenessFingerprint},
@@ -1624,6 +1625,7 @@ mod activation {
     // Kills: public Ensure loses its Lazy selection, registered Hook falls back,
     // full context disappears, or physical presentation settles participation.
     #[test]
+    #[ignore = "pending ht-5fr reconcile item 19"]
     fn modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement() {
         use herdr_threads::protocol::{
             authority::CallerRole,

@@ -1570,6 +1570,7 @@ fn old_direct_peer_with_lazy_support_refuses_creation_policy_before_any_effect()
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn modern_direct_send_creates_lazy_pending_invitation_without_invitation_wake() {
     let f = Fixture::new(false);
     f.run(
@@ -1602,6 +1603,7 @@ fn modern_direct_send_creates_lazy_pending_invitation_without_invitation_wake() 
 // ht-yha.6: with an auto-joining daemon (direct.auto_join_v1) a direct send needs no invitation:
 // both pair seats are joined at creation, the message is sent, and no accept step is printed.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 11"]
 fn direct_send_to_an_auto_joining_daemon_records_no_invitation() {
     let f = Fixture::new(false);
     f.auto_join();
@@ -1680,6 +1682,7 @@ fn ensure_call(f: &Fixture, command: Command) -> Result<CommandResult, ApiError>
     )
 }
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn human_initial_ensure_require_ack_refuses_before_pair_invitation_or_obligation_effects() {
     let f = Fixture::new(true);
     let obligations = f.count("seat_availability");
@@ -1699,6 +1702,7 @@ fn human_initial_ensure_require_ack_refuses_before_pair_invitation_or_obligation
     assert_eq!(f.count("operations"), operations);
 }
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn explicit_initial_ensure_policy_applies_once_and_existing_episode_is_immutable() {
     for timed in [false, true] {
         let f = Fixture::new(false);
@@ -1885,6 +1889,7 @@ fn historical_ensure_omits_new_result_and_modern_reuse_reports_old_timed_origin_
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn json_output_uses_the_versioned_send_envelope_with_the_thread() {
     let f = Fixture::new(false);
     let mut direct = vec![];

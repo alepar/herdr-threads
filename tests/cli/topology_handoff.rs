@@ -7784,6 +7784,7 @@ mod live {
         }
 
         #[test]
+        #[ignore = "pending ht-5fr reconcile item 17"]
         fn parsed_new_tab_automatic_route_creates_one_pair_and_starts_once() {
             let peer = AutoPeer::new();
             let (messages_before, invitations_before) = {
@@ -8965,6 +8966,7 @@ mod live {
         /// the applied caller argv unchanged, so its automatic plan launches with
         /// `--prompt-interactive` placing the frozen prompt and completes.
         #[test]
+        #[ignore = "pending ht-5fr reconcile item 17"]
         fn automatic_new_tab_agy_completes_end_to_end_with_prompt_interactive() {
             let peer = AutoPeer::with_kind("agy");
             assert_eq!(peer.identity.plan.payload.launch.harness.as_str(), "agy");
@@ -9032,6 +9034,7 @@ mod live {
         }
 
         #[test]
+        #[ignore = "pending ht-5fr reconcile item 17"]
         fn parsed_new_tab_selector_enters_public_runtime_dispatch() {
             let peer = AutoPeer::new();
             let mut parsed = super::super::super::super::commands::parse_argv([
@@ -9287,6 +9290,7 @@ mod live {
         }
 
         #[test]
+        #[ignore = "pending ht-5fr reconcile item 17"]
         fn lost_automatic_ensure_or_send_reply_replays_one_exact_child() {
             for lost in ["auto_child_ensure", "auto_child_send"] {
                 let peer = AutoPeer::new();

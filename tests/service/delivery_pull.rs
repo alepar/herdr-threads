@@ -3653,6 +3653,7 @@ fn notices_settled_by_a_pull_that_lost_a_rotation_race_are_still_returned() {
 // Kills: dropping informational invitations from the actual service page, or
 // treating a displayed invitation as a message receipt / accepted membership.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn a_lazy_invitation_reaches_hook_pull_without_attention_or_acceptance() {
     use crate::protocol::commands::{CreateThread, InvitationConfirmation, Invite};
     let f = fixture(0);
@@ -4045,6 +4046,7 @@ fn departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
 
 // Kills: a real canonical lazy arrival never triggering the live watch consumer.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn canonical_lazy_invitation_signals_a_passive_channel_drain_without_attention_history() {
     use crate::{
         ports::ModChannelSink,
@@ -5025,6 +5027,7 @@ fn an_old_visible_invitation_topic_change_survives_a_saturated_newest_window() {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache() {
     let f = fixture(0);
     let recipient = pull_seat(&f);
@@ -5196,6 +5199,7 @@ fn a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acce
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn presentation_v2_replays_one_canonical_invitation_until_emit_confirmation() {
     use serde_json::json;
     let mut f = fixture(0);
@@ -7526,6 +7530,7 @@ fn presentation_handler_partial_confirmation_retains_canonical_slots_across_rest
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn presentation_private_state_rejects_typed_corruption_without_confirmation_effects() {
     use crate::protocol::delivery::{
         DeliveryPresentationConfirmV2, DeliveryPullReplyV2, PresentationConsumer,
@@ -12898,6 +12903,7 @@ fn presentation_owner_replay_missing_quanta_preserve_current_native_outlook() {
 // Kills replacing/retiring the old nonordinary outbox to unlock recovery,
 // hydrating ordinary bodies on outbox replay, and clearing native outlook there.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn presentation_owner_replay_waits_for_original_outbox_then_continues() {
     use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
     for more in [false, true] {

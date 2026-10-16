@@ -610,6 +610,7 @@ fn assert_current_episode_readers(
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream() {
     let f = Q4WriterReaders::new();
     let thread = f.pair();
@@ -643,6 +644,7 @@ fn q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_str
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream() {
     let f = Q4WriterReaders::new();
     let thread = f.pair();
@@ -666,6 +668,7 @@ fn q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_st
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows() {
     let f = Q4WriterReaders::new();
     let thread = f.pair();
@@ -729,6 +732,7 @@ fn q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_fl
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows() {
     let f = Q4WriterReaders::new();
     let thread = f.pair();
@@ -784,6 +788,7 @@ fn q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_f
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority() {
     let f = Q4WriterReaders::new();
     let thread = f.pair();

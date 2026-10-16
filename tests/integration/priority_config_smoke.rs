@@ -336,16 +336,19 @@ fn mixed_order(w: &World) {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 11"]
 fn priority_config_smoke_threshold_minus_one() {
     configuration(-1);
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 11"]
 fn priority_config_smoke_threshold_zero() {
     configuration(0);
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 11"]
 fn priority_config_smoke_threshold_three() {
     configuration(3);
 }

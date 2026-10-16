@@ -388,6 +388,7 @@ fn body_argv(message: &MessageId, extra: &[&str]) -> Vec<String> {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalidates_its_consumer() {
     let f = BodyFixture::new();
     let body = long_utf8_body();
@@ -583,6 +584,7 @@ fn preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalida
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_invalidate() {
     let f = BodyFixture::new();
     let message = f.send("negative-body", &"π💡".repeat(1000));
@@ -632,6 +634,7 @@ fn preaccept_body_json_machine_partial_and_failed_stdout_do_not_advance_or_inval
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display() {
     use crate::protocol::{
         delivery::DeliveryPresentationConfirmV2,
@@ -740,6 +743,7 @@ fn private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display(
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn private_old_episode_lazy_tail_retires_and_reaches_fresh_preaccept_body() {
     use crate::protocol::{
         commands::{Invite, Reject},

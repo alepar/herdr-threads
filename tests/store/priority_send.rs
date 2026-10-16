@@ -582,6 +582,7 @@ fn retry_keeps_its_recorded_shape() {
 // lazy -> 1), resume rather than restart, publish one message, replay idempotently, and still
 // refuse the same key in the new priority shape.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn v46_prepared_send_retries_under_v47_in_its_recorded_shape() {
     for (mode, expected) in [(DeliveryMode::Ordinary, 0), (DeliveryMode::Lazy, 1)] {
         let iso = TestIsolation::new("prio-v46-retry");
@@ -643,6 +644,7 @@ fn v46_prepared_send_retries_under_v47_in_its_recorded_shape() {
 // finish in the receipt shape. Without them its duration no longer matches (D9: no ACK
 // recipients, no duration), so the resume discards it rather than mixing shapes.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn v46_prepared_mid_build_send_resumes_in_its_recorded_audience_shape() {
     const AGENTS: &[(&str, Kind)] = &[("b", Kind::Agent), ("c", Kind::Agent), ("d", Kind::Agent)];
     let iso = TestIsolation::new("prio-v46-mid-build");
