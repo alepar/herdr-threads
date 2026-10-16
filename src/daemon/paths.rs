@@ -116,6 +116,10 @@ impl RuntimeContext {
 
     /// Explicit values take precedence. The state directory is required; the
     /// claim host is optional (see [`RuntimeContext::require_host`]).
+    ///
+    /// For pane-scoped hook entry points whose argv names the state dir.
+    /// Node-scoped entry points (CLI commands, `peer --stdio`) resolve through
+    /// `cli::instance::resolve_context`, which adds the default state dir.
     pub fn from_environment(
         state_dir: Option<PathBuf>,
         host_endpoint: Option<PathBuf>,

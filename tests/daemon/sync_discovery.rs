@@ -320,10 +320,9 @@ impl Drop for NodeA {
 fn stop_b(iso: &TestIsolation, state: &Path) {
     let _ = iso
         .command(BIN)
+        .env("PATH", "/usr/bin:/bin")
         .arg("--state-dir")
         .arg(state)
-        .arg("--host-endpoint")
-        .arg(iso.path("no-host.sock"))
         .args(["daemon", "stop"])
         .output();
     let endpoint = state.join("node").join("endpoint.json");

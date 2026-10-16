@@ -525,15 +525,14 @@ impl Cluster {
         self.nodes[node].up = false;
     }
 
-    /// A `daemon` verb against `node`. The CLI wants a host endpoint for the
-    /// call; `stop` and `health` never contact it, so a path naming no socket serves.
+    /// A `daemon` verb against `node`, by state dir alone: a store-only node
+    /// needs no host.
     fn daemon_verb(&self, node: usize, verb: &str) -> Output {
         self.iso
             .command(&self.bin)
+            .env("PATH", "/usr/bin:/bin")
             .arg("--state-dir")
             .arg(&self.nodes[node].state)
-            .arg("--host-endpoint")
-            .arg(self.iso.path("no-host.sock"))
             .args(["daemon", verb])
             .output()
             .unwrap()

@@ -22,16 +22,31 @@ const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 const PREAMBLE: &[u8] = b"HTPEER1\n";
 const WAIT: Duration = Duration::from_secs(20);
 
+/// `peer --stdio` with piped stdio and no Herdr host: `PATH` holds no `herdr`,
+/// so the host deterministically resolves to none and a developer's Herdr is
+/// never queried.
+fn pump_cmd(iso: &TestIsolation) -> std::process::Command {
+    let mut command = iso.command(BIN);
+    command
+        .env("PATH", "/usr/bin:/bin")
+        .args(["peer", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
 fn pump(iso: &TestIsolation, state: &Path) -> OwnedChild {
-    iso.command(BIN)
+    let mut command = iso.command(BIN);
+    command
+        .env("PATH", "/usr/bin:/bin")
         .arg("--state-dir")
         .arg(state)
         .args(["peer", "--stdio"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn_owned()
-        .unwrap()
+        .stderr(Stdio::piped());
+    command.spawn_owned().unwrap()
 }
 
 fn wait_exit(child: &mut OwnedChild) -> std::process::ExitStatus {
@@ -59,15 +74,12 @@ fn read_preamble(child: &mut OwnedChild) {
     assert_eq!(&first[..], PREAMBLE);
 }
 
-/// `daemon stop` for the store-only daemon a pump started. The CLI still
-/// wants a host endpoint for the call; `stop` never contacts it, so a path
-/// that names no socket serves.
+/// `daemon stop` by state dir alone; a store-only node needs no host.
 fn daemon_stop(iso: &TestIsolation, state: &Path) -> std::process::Output {
     iso.command(BIN)
+        .env("PATH", "/usr/bin:/bin")
         .arg("--state-dir")
         .arg(state)
-        .arg("--host-endpoint")
-        .arg(iso.path("no-host.sock"))
         .args(["daemon", "stop"])
         .output()
         .unwrap()
@@ -230,4 +242,33 @@ fn stdin_eof_logs_link_down() {
     );
     assert_ne!(node, ours);
     assert_eq!(wait_exit(&mut child).code(), Some(0));
+}
+
+#[test]
+fn pump_with_env_state_dir_and_no_host_links() {
+    let iso = TestIsolation::new("peer-stdio-env-state");
+    let state = iso.path("state");
+    let _stop = StopDaemon(&iso, &state);
+    let mut child = pump_cmd(&iso)
+        .env("HERDR_PLUGIN_STATE_DIR", &state)
+        .spawn_owned()
+        .unwrap();
+    let peer = dial_through(&mut child);
+    assert_eq!(peer.node, daemon_node(&state));
+    wait_for_log(&state, "sync: link up ");
+}
+
+/// The ssh default: no flag, no plugin env, no host. The pump finds the
+/// default plugin state dir (used when it exists).
+#[test]
+fn pump_with_no_state_flag_or_env_uses_the_default_state_dir() {
+    let iso = TestIsolation::new("peer-stdio-default-state");
+    let state = iso.path("xdg/state").join("herdr/plugins/herdr-threads");
+    fs::create_dir_all(&state).unwrap();
+    let _stop = StopDaemon(&iso, &state);
+    let mut child = pump_cmd(&iso).spawn_owned().unwrap();
+    let peer = dial_through(&mut child);
+    assert_eq!(peer.node, daemon_node(&state));
+    wait_for_log(&state, "sync: link up ");
+    assert!(state.join("node/node.key").exists());
 }

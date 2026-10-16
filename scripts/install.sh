@@ -363,12 +363,14 @@ daemon_pids() {
 
 # Stop the running daemon with the still-installed executable: first with its
 # own context resolution, then once per live instance with that instance's
-# state dir and host endpoint (its `locator`) named explicitly, so a
-# Herdr-less, HERDR_CONFIG_PATH environment still reaches it. Returns 0 only
+# state dir named explicitly, so a Herdr-less, HERDR_CONFIG_PATH environment
+# still reaches it: a node daemon gets its state dir alone, a pre-node
+# instance its state dir and host endpoint (its `locator`). Returns 0 only
 # when a stop succeeded and no daemon found by the scan is left running; the
 # last stop error line is left in $stop_err.
 stop_with_installed() {
     local ok=0 err instance locator _
+    local -a where
     stop_err=''
     if err=$("$installed_binary" daemon stop 2>&1 > /dev/null); then
         ok=1
@@ -378,10 +380,15 @@ stop_with_installed() {
     if [ "$ok" = 0 ] || [ -n "$(live_instances)" ]; then
         while IFS= read -r instance; do
             [ -n "$instance" ] || continue
-            locator=$(cat "$instance/locator" 2>/dev/null) || continue
-            [ -n "$locator" ] || continue
-            if err=$("$installed_binary" --state-dir "$(state_of_instance "$instance")" \
-                --host-endpoint "$locator" daemon stop 2>&1 > /dev/null); then
+            case "$instance" in
+                */node) where=(--state-dir "$(state_of_instance "$instance")") ;;
+                *)
+                    locator=$(cat "$instance/locator" 2>/dev/null) || continue
+                    [ -n "$locator" ] || continue
+                    where=(--state-dir "$(state_of_instance "$instance")" --host-endpoint "$locator")
+                    ;;
+            esac
+            if err=$("$installed_binary" "${where[@]}" daemon stop 2>&1 > /dev/null); then
                 ok=1
             else
                 stop_err=$(printf '%s\n' "$err" | tail -n 1)

@@ -159,14 +159,13 @@ fn wait_until<T>(what: &str, mut probe: impl FnMut() -> Option<T>, daemons: &[&P
     }
 }
 
-/// A `daemon` verb against `state`. The CLI wants a host endpoint for the
-/// call; `stop` and `health` never contact it, so a path naming no socket serves.
+/// A `daemon` verb against `state`, by state dir alone: a store-only node needs
+/// no host.
 fn daemon(iso: &TestIsolation, state: &Path, verb: &str) -> std::process::Output {
     iso.command(BIN)
+        .env("PATH", "/usr/bin:/bin")
         .arg("--state-dir")
         .arg(state)
-        .arg("--host-endpoint")
-        .arg(iso.path("no-host.sock"))
         .args(["daemon", verb])
         .output()
         .unwrap()
