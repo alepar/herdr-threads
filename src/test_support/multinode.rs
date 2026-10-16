@@ -840,6 +840,9 @@ impl Cluster {
     /// daemon, and the next start (here, at once) backs the store up and pulls
     /// from `from`. Returns the command's output.
     pub fn resync(&mut self, node: usize, from: &str) -> Output {
+        // The command stops the daemon; no peer's dial may start it again
+        // (store-only, racing the start below) before this call does.
+        let _ = fs::write(self.down_flag(node), b"");
         let out = self.human(node, &["sync", "resync", "--from", from]);
         if out.status.success() {
             let endpoint = self.nodes[node].state.join("node").join("endpoint.json");
@@ -848,8 +851,16 @@ impl Cluster {
                 Duration::from_secs(60),
                 || (!endpoint.exists()).then_some(()),
             );
+            let lease = self.nodes[node].state.join("node").join("owner.lock");
+            self.wait_until(
+                &format!("node {} to release its owner lease", self.nodes[node].name),
+                Duration::from_secs(60),
+                || lease_released(&lease).then_some(()),
+            );
             self.nodes[node].up = false;
             self.start_node(node);
+        } else {
+            let _ = fs::remove_file(self.down_flag(node));
         }
         out
     }
