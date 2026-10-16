@@ -871,7 +871,7 @@ def provision_codex_auth(source, dest):
 
 
 def first_id(text, prefix):
-    m = re.search(r'"(%s[A-Za-z0-9]{8})"' % prefix, text)
+    m = re.search(r'"(%s[A-Za-z0-9]{11})"' % prefix, text)
     return m.group(1) if m else None
 
 

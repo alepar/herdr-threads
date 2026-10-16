@@ -292,7 +292,7 @@ class Node:
         if rc != 0 or not pane:
             raise RuntimeError(f"{self.name}: workspace create: {(err or out).strip()[:200]}")
         rc, doc, text = self.ht("me", "init", human=True, pane=pane)
-        seat = next((m.group(1) for m in [re.search(r'"(s[A-Za-z0-9]{8})"', text)] if m), None)
+        seat = next((m.group(1) for m in [re.search(r'"(s[A-Za-z0-9]{11})"', text)] if m), None)
         if rc != 0 or not seat:
             raise RuntimeError(f"{self.name}: me init: {text.strip()[:200]}")
         self.pane, self.seat = pane, seat
