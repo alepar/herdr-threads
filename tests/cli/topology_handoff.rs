@@ -891,11 +891,6 @@ mod live {
                     None => Arc::new(crate::app::SystemClock::new()),
                 }
             };
-            let context = crate::store::connection::StoreContext::new(
-                self.database_path.clone(),
-                store_clock(),
-            )
-            .with_test_host();
             let store = crate::store::SqliteStore::new(
                 crate::store::connection::StoreContext::new(
                     self.database_path.clone(),
@@ -964,8 +959,8 @@ mod live {
             };
             if let crate::protocol::commands::PermitMutation::CreateThread(create) = &mutation {
                 crate::store::control::create_thread_in_namespace(
-                    &context,
-                    &mut context.open_writer()?,
+                    store.context(),
+                    &mut store.context().open_writer()?,
                     budget,
                     create,
                     permit,
