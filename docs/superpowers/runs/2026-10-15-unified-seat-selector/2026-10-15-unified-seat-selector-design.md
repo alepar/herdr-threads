@@ -111,6 +111,17 @@ space/tab. That check reads the topology, which is fine because the caller asked
 
 Without narrowing, an exact ID still reads nothing from Herdr.
 
+**Which forms read Herdr.** The no-read guarantee covers exact IDs without narrowing only. A
+nickname always reads the topology to verify its prefix:
+- host unreachable → `HostUnavailable`;
+- the seat has no live mapped target → `Conflict`;
+- the seat's target is outside the prefix → `Conflict`.
+
+**ID-shaped strings.** Only an *existing* seat ID takes step 1. A string that merely looks like
+a seat ID but names no seat falls through to name resolution, and normally ends in `not_found`
+after a topology read. A pane, tab or space label that equals an existing seat ID cannot be
+reached by name; use the pane ID or a longer path. The docs state this accepted limit.
+
 **Unverifiable nickname.** A nickname whose seat has no live mapped target (unresolved, retired
 or unbound) is `Conflict` "cannot verify location of SEAT; pass the bare seat ID", as in step 2.
 It is never `not_found`, because the seat exists.
@@ -219,6 +230,29 @@ the verified nickname form. It is one line per resolved argument, on **stderr**,
 resolved: project/tryout/alice w4:p7 seat=sAb12Cd34 (tier: space)
 ```
 
+**Paste-back rule.** Each part of a rendered path is the plain label when that label is safe to
+type back, and the host ID otherwise. Safe means non-empty, no `/`, no control or whitespace
+characters, at most 64 bytes, and not shaped like a pane ID. IDs never contain `/`, so every
+rendered path (on the `resolved:` line, in conflict candidates and in nickname mismatches) can be
+pasted back as a seat argument and resolves to the same pane. There is no escape grammar.
+`seat_selector` owns both rendering and parsing, and a `parse(render(x)) == x` test pins them
+together.
+
+**One line per name.** One `resolved:` line is printed per distinct name argument (a repeated
+`--require-ack NAME` prints once). An exact ID or verified nickname prints nothing.
+
+**Machine output.** `--json`/`--machine` change nothing here. The line stays on stderr, and the
+conflict and not_found candidates stay in the error's `detail` text: no wire or schema change,
+and scripts disambiguate by rerunning with an ID or a longer path.
+
+**Sizes (AGENTS.md (f)).**
+- One `resolved:` line: 40–100 bytes typical, at most about 260 bytes (three 64-byte parts,
+  pane ID, seat ID, tier).
+- One conflict candidate row: about 80–200 bytes.
+- The qualification hint: one trailing line, about 120 bytes, not repeated per row.
+- Worst case at the 32-row cap: about 6.5 KB. This is only reached in pathological topologies;
+  typical conflicts are 2–3 rows, under 600 bytes.
+
 The path is always the **full live** `space/tab/pane` path of the chosen pane, whatever reading
 or alias matched (a one-segment `alice` still prints `project/tryout/alice`). The path parts are
 labels, or host IDs when there is no label, each escaped and bounded like
@@ -250,6 +284,12 @@ IDs.
 | pane maps to more than one seat | existing `mapping_error` | — |
 
 These match the existing `--pane` outcomes, so callers handle no new codes.
+
+### D8a. Narrowing under `handoff --existing`
+
+Under `--existing`, `--space`/`--tab` have no launch meaning: the existing peer is not launched.
+With `--seat` they only narrow the seat name. The stage consumes them, and handoff never sees
+them.
 
 ### D8b. Inventory of seat arguments
 

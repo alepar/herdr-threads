@@ -10,3 +10,15 @@ c8 · r1 · GAP · R14 narrowing with exact ID/nickname · applied — D2 amende
 c9 · r1 · GAP · nickname round-trip from read output · applied — ht-u3ym.4 adds round-trip test (agent nick as read/follow renders it)
 c10 · r1 · UNOWNED-SEAM · HostTopology input model · applied — boundary is an existing type (src/host/observation.rs incl. agent_names); consumes line on ht-u3ym.1, builder named on ht-u3ym.3.2; no seam beads needed
 c11 · r1 · UNOWNED-SEAM · parse-time checks on placeholder slots · rejected — already owned: ht-u3ym.3.2 skips placeholders at parse time (nested promotion review fix), ht-u3ym.3.3 re-runs post-freeze
+c12 · r2 · GAP · R3 host_unavailable owner/test · applied — ht-u3ym.3.2 states the mapping for every name/nickname read; ht-u3ym.4 adds a Herdr-down row
+c13 · r2 · GAP · Lookup pane without seat · applied — spec D4 already decides no_seat_for_pane; restated on ht-u3ym.3.2, row on ht-u3ym.4
+c14 · r2 · GAP · path round-trip / escaping · applied — spec D6 paste-back rule (unsafe labels render as IDs, no escape grammar); ht-u3ym.1 round-trip test, ht-u3ym.4 row
+c15 · r2 · GAP · multiple resolved lines · applied — spec D6 one line per distinct name; ht-u3ym.3.2, ht-u3ym.4
+c16 · r2 · UNOWNED-SEAM · handoff --existing narrowing meaning · applied — spec D8a; ht-u3ym.3.3
+c17 · r2 · GAP · ID-shaped strings / labels equal to seat IDs · applied — spec D2 'ID-shaped strings' accepted limit; ht-u3ym.3.2, ht-u3ym.4, ht-u3ym.5
+c18 · r2 · GAP · structured JSON candidates · applied (decision: message-only, no wire change) — spec D6 'Machine output'; ht-u3ym.4 JSON row
+c19 · r2 · GAP · output size budget · applied — spec D6 'Sizes'; ht-u3ym.1 single trailing hint line
+c20 · r2 · UNOWNED-SEAM · nickname no-read wording vs host down · applied — spec D2 'Which forms read Herdr'; ht-u3ym.3.2
+c21 · r2 · UNOWNED-SEAM · TRUST-POLICY same-commit · rejected — the AGENTS.md same-commit rule applies to weakening an invariant or adding an accepted limit; spec D9 decides no invariant is weakened and the sentences are clarifying, so they stay with the docs bead
+c22 · r2 · UNOWNED-SEAM · agy plugin skill copy · applied — ht-u3ym.5 owns confirming and updating any derived copy
+c23 · r2 · GAP · tiers end to end / no caller · applied — ht-u3ym.4 tier rows
