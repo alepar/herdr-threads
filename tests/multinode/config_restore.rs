@@ -13,17 +13,6 @@ fn tag(cluster: &herdr_threads::test_support::multinode::Cluster, node: usize) -
         .expect("the node's tag")
 }
 
-/// Gives B a dial target for A (B then has a path to A for `sync resync`), once
-/// the pair is in sync: a second link between two nodes already linked and
-/// converged just stands by. (Two dial targets that start together race to
-/// become the active link.)
-fn dial_back(cluster: &mut Cluster) {
-    cluster.link(1, 0);
-    cluster.wait_until("B's dial back to A to link", crate::WAIT, || {
-        (cluster.target_state(1).as_deref() == Some("linked")).then_some(())
-    });
-}
-
 /// The incarnations of `node`'s own log that `at` holds.
 fn incarnations(
     cluster: &herdr_threads::test_support::multinode::Cluster,
@@ -42,13 +31,13 @@ fn incarnations(
 
 #[test]
 fn restore_from_backup_forks_is_reissued_and_resync_converges() {
-    let mut cluster = support::cluster("mn-restore", 2, &[(0, 1)], &[0, 1]);
+    // Targets both ways: B needs a target for A for `sync resync --from A`.
+    let mut cluster = support::cluster("mn-restore", 2, &[(0, 1), (1, 0)], &[0, 1]);
     let a = cluster.seat(0, P1);
     let b = cluster.seat(1, P1);
     support::wait_seats(&cluster, 0, 2);
     support::wait_seats(&cluster, 1, 2);
     cluster.wait_converged(crate::WAIT);
-    dial_back(&mut cluster);
 
     // B's backup, then a fact B authors after it, which A ingests.
     let backup = cluster.backup(1);
@@ -151,7 +140,8 @@ fn restore_older_than_a_rotation_adopts_the_successor() {
         crate::BIN,
         2,
         ClusterOptions {
-            links: vec![(0, 1)],
+            // Targets both ways: B needs a target for A for `sync resync --from A`.
+            links: vec![(0, 1), (1, 0)],
             gated: true,
             ..Default::default()
         },
@@ -166,7 +156,6 @@ fn restore_older_than_a_rotation_adopts_the_successor() {
         support::wait_seats(&cluster, node, 4);
     }
     cluster.wait_converged(crate::WAIT);
-    dial_back(&mut cluster);
     // A message to B's second seat that is pending when the backup is taken.
     let (_, pre) = support::send(
         &cluster,

@@ -184,6 +184,9 @@ mod config_store_only;
 #[path = "multinode/config_partition.rs"]
 mod config_partition;
 
+#[path = "multinode/config_dial_each_other.rs"]
+mod config_dial_each_other;
+
 #[path = "multinode/config_mixed_versions.rs"]
 mod config_mixed_versions;
 
