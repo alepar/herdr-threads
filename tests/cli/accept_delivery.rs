@@ -64,6 +64,45 @@ fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
     }
 }
 
+/// A lazy row whose page carries only `body[..shown]`: the body is larger than the page.
+fn lazy_partial(id: &str, body: &str, shown: usize) -> InboxBatchV2Item {
+    match lazy(id, body) {
+        InboxBatchV2Item::LazyMessage {
+            priority,
+            thread,
+            topic_data,
+            message,
+            sequence,
+            sender,
+            author_role,
+            relays_user,
+            user_intent,
+            author_role_backfilled,
+            body_start,
+            body_len,
+            wakes,
+            ..
+        } => InboxBatchV2Item::LazyMessage {
+            priority,
+            thread,
+            topic_data,
+            message,
+            sequence,
+            sender,
+            author_role,
+            relays_user,
+            user_intent,
+            author_role_backfilled,
+            body: body[..shown].into(),
+            body_start,
+            body_end: shown as u64,
+            body_len,
+            wakes,
+        },
+        _ => unreachable!(),
+    }
+}
+
 fn page(items: Vec<InboxBatchV2Item>, has_more: bool) -> Page<InboxBatchV2Item> {
     Page {
         items,
@@ -98,6 +137,9 @@ struct Script {
     page_budgets: Mutex<Vec<(u64, u64)>>,
     pages: Mutex<VecDeque<Page<InboxBatchV2Item>>>,
     calls: Mutex<Vec<&'static str>>,
+    /// The `displayed` list of each `AdvanceCursors` call, and the messages of each completion.
+    advanced: Mutex<Vec<Vec<MessageId>>>,
+    completed: Mutex<Vec<Vec<MessageId>>>,
 }
 impl Script {
     fn new(pages: Vec<Page<InboxBatchV2Item>>) -> Self {
@@ -111,6 +153,8 @@ impl Script {
             page_budgets: Mutex::new(vec![]),
             pages: Mutex::new(pages.into()),
             calls: Mutex::new(vec![]),
+            advanced: Mutex::new(vec![]),
+            completed: Mutex::new(vec![]),
         }
     }
     fn count(&self, name: &str) -> usize {
@@ -193,6 +237,10 @@ impl LocalClient for Script {
             }
             Command::AdvanceCursors(advance) => {
                 self.calls.lock().unwrap().push("advance");
+                self.advanced
+                    .lock()
+                    .unwrap()
+                    .push(advance.displayed.clone());
                 if self.fail_bookkeeping || self.fail_advance_only {
                     return busy();
                 }
@@ -200,6 +248,10 @@ impl LocalClient for Script {
             }
             Command::CompleteInboxDelivery(complete) => {
                 self.calls.lock().unwrap().push("complete");
+                self.completed
+                    .lock()
+                    .unwrap()
+                    .push(complete.messages.clone());
                 if self.fail_bookkeeping {
                     return busy();
                 }
@@ -221,6 +273,22 @@ fn run_with(
     presentation: Presentation,
     grace: ChannelGrace,
 ) -> Run {
+    let mut out = Vec::new();
+    let diagnostics = run_with_writer(script, claim, presentation, grace, &mut out);
+    Run {
+        out: String::from_utf8(out).unwrap(),
+        diagnostics,
+    }
+}
+
+/// `run_with` against a caller-supplied stdout; returns the diagnostics text.
+fn run_with_writer<W: std::io::Write>(
+    script: &Script,
+    claim: &CallerClaim,
+    presentation: Presentation,
+    grace: ChannelGrace,
+    out: &mut W,
+) -> String {
     let root = crate::test_support::isolation::TestIsolation::new("accept-delivery");
     let journal = Journal::open(root.state_root().join("intents")).unwrap();
     let output = OutputSpec {
@@ -231,7 +299,6 @@ fn run_with(
         },
     };
     let thread = ThreadId::new("t");
-    let mut out = Vec::new();
     let mut diagnostics = Vec::new();
     show(
         &AcceptPage {
@@ -249,13 +316,10 @@ fn run_with(
             deadline: MonoInstant(TestClock.monotonic_now().0 + 5_000),
             cancellation: Default::default(),
         },
-        &mut out,
+        out,
         &mut diagnostics,
     );
-    Run {
-        out: String::from_utf8(out).unwrap(),
-        diagnostics: String::from_utf8(diagnostics).unwrap(),
-    }
+    String::from_utf8(diagnostics).unwrap()
 }
 
 fn run(script: &Script) -> Run {
@@ -520,4 +584,85 @@ fn an_advance_failure_after_successful_completion_does_not_claim_pending() {
         run.diagnostics
     );
     assert_eq!(script.count("complete"), 1);
+}
+
+/// ht-5fr.57: a body larger than the page shows its first chunk, is not passed by the cursor
+/// advance and is not completed, so plain `inbox` re-shows it from offset 0.
+#[test]
+fn a_body_larger_than_the_page_shows_its_first_chunk_and_is_not_marked_displayed() {
+    let body = format!("HEAD-{}-TAIL", "x".repeat(200));
+    let script = Script::new(vec![page(
+        vec![
+            lazy("m-whole", "whole opener"),
+            lazy_partial("m-big", &body, 100),
+        ],
+        true,
+    )]);
+    let run = run(&script);
+    assert!(run.out.contains("whole opener"), "{}", run.out);
+    assert!(run.out.contains("HEAD-"), "{}", run.out);
+    assert!(!run.out.contains("-TAIL"), "{}", run.out);
+    let next: Vec<&str> = run.out.lines().filter(|l| l.starts_with("next:")).collect();
+    assert_eq!(next.len(), 1, "{}", run.out);
+    let last = next[0].split_whitespace().last().unwrap();
+    assert_eq!(last, "inbox", "{}", run.out);
+    assert!(
+        !next[0].contains("body") && !next[0].contains("v2:more"),
+        "{}",
+        run.out
+    );
+    let big = MessageId::new("m-big");
+    let whole = MessageId::new("m-whole");
+    let advanced: Vec<MessageId> = script.advanced.lock().unwrap().concat();
+    assert_eq!(
+        advanced,
+        vec![whole.clone()],
+        "only the whole row is passed"
+    );
+    let completed: Vec<MessageId> = script.completed.lock().unwrap().concat();
+    assert!(!completed.contains(&big), "{completed:?}");
+    assert_eq!(completed, vec![whole]);
+    assert_eq!(run.diagnostics, "");
+}
+
+/// A stdout that accepts writes but fails to flush (or fails the write itself).
+struct FailingOut {
+    fail_write: bool,
+}
+impl std::io::Write for FailingOut {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.fail_write {
+            Err(std::io::Error::other("scripted write failure"))
+        } else {
+            Ok(buf.len())
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::other("scripted flush failure"))
+    }
+}
+
+/// Display before bookkeeping: when the page cannot be written or flushed nothing advances and
+/// nothing completes, and the failure is one diagnostics line.
+#[test]
+fn a_failed_stdout_flush_advances_and_completes_nothing() {
+    for fail_write in [false, true] {
+        let script = Script::new(vec![page(vec![lazy("m1", "opener body")], false)]);
+        let mut out = FailingOut { fail_write };
+        let diagnostics = run_with_writer(
+            &script,
+            &claim(),
+            Presentation::Auto,
+            CHANNEL_GRACE,
+            &mut out,
+        );
+        assert_eq!(script.count("advance"), 0, "fail_write={fail_write}");
+        assert_eq!(script.count("complete"), 0, "fail_write={fail_write}");
+        assert_eq!(diagnostics.lines().count(), 1, "{diagnostics}");
+        assert!(
+            diagnostics
+                .starts_with("herdr-threads: accepted; opening mail display bookkeeping failed"),
+            "{diagnostics}"
+        );
+    }
 }

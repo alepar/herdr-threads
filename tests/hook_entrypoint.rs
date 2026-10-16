@@ -1852,6 +1852,89 @@ fn text_generic_accept_shows_seat_pending_lazy_mail_once() {
     }
 }
 
+// ht-5fr.57: a text accept of an ordinary-thread invitation whose backlog body exceeds the page
+// shows its first chunk with one `next: ... inbox` line and leaves the row pending; plain `inbox`
+// restarts the body at offset 0 and follows its continuation to the tail. Kills: a continuation
+// line dropped from the accept page, a partially shown row passed or completed by the accept.
+#[test]
+fn text_accept_of_an_ordinary_invitation_shows_a_large_body_first_chunk_and_inbox_restarts_it() {
+    let fx = Fixture::start();
+    let peer = fx.hook("w9:p2", &start("sess-1"));
+    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
+    let started = fx.codex_hook(
+        "w9:p3",
+        &Payload::session_start("cx-sess", "startup")
+            .codex("t0")
+            .bytes(),
+    );
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let thread = fx.cooperative("peer", "w9:p2", &["thread", "create", "--topic", "big"])["result"]
+        ["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
+    let json = |command: &[&str]| {
+        let mut args = vec!["--json"];
+        args.extend_from_slice(command);
+        text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", &args)
+    };
+    json(&["accept", &thread]);
+    let body = format!("HEAD-{}-TAIL", "x".repeat(40_000));
+    fx.cooperative("peer", "w9:p2", &["send", &thread, "--body", &body]);
+    json(&["leave", &thread]);
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
+    let id = fx.count_text(&format!(
+        "SELECT id FROM messages WHERE thread_id='{thread}' AND body LIKE 'HEAD-%'"
+    ));
+    let state = || {
+        fx.count_text(&format!(
+            "SELECT state FROM lazy_recipients WHERE seat_id='cx' AND message_id='{id}'"
+        ))
+    };
+
+    let accepted = text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", &["accept", &thread]);
+    assert!(accepted.starts_with("accepted"), "{accepted}");
+    assert!(accepted.contains("HEAD-"), "first chunk shown: {accepted}");
+    assert!(!accepted.contains("-TAIL"), "tail not shown: {accepted}");
+    let next: Vec<&str> = accepted
+        .lines()
+        .filter(|line| line.starts_with("next:"))
+        .collect();
+    assert_eq!(next.len(), 1, "{accepted}");
+    assert_eq!(
+        next[0].split_whitespace().last(),
+        Some("inbox"),
+        "{accepted}"
+    );
+    assert_eq!(state(), "pending", "a partly shown row stays pending");
+
+    let mut text = text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", &["inbox"]);
+    assert!(text.contains("HEAD-"), "inbox restarts at offset 0: {text}");
+    for _ in 0..8 {
+        if text.contains("-TAIL") {
+            break;
+        }
+        let line = text
+            .lines()
+            .rev()
+            .find(|line| line.starts_with("next:"))
+            .unwrap_or_else(|| panic!("no continuation before the tail: {text}"));
+        let args: Vec<String> = line["next:".len()..]
+            .split_whitespace()
+            .skip_while(|word| *word != "inbox" && *word != "body")
+            .map(str::to_owned)
+            .collect();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        text = text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", &args);
+    }
+    assert!(
+        text.contains("-TAIL"),
+        "continuation reaches the tail: {text}"
+    );
+    // That the row then completes is ht-5fr.58 (display progress gap); not asserted here.
+}
+
 // Required test 3: offer -> identical second tool call is quiet -> new message
 // is emitted. Kills: no coalescing (every call re-injects the same offer),
 // coalescing on counts or text (an ACK of one message plus a new one in the
