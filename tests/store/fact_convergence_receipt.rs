@@ -165,15 +165,21 @@ fn public_completion_replicates_only_shown_ids(path: CompletionPath) {
     assert!(pending > 0, "foreign dependencies have not arrived");
     ship_origin(&w.a, w.a.id, &fresh);
     let db = fresh.context().open_query(budget()).unwrap();
-    for (id, expected) in [(&shown, "acked"), (&withheld, "pending")] {
-        let state: String = db
-            .query_row(
-                "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2",
-                rusqlite::params![id.as_str(), w.agent.as_str()],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(state, expected);
+    for (id, expected) in [
+        (
+            &shown,
+            herdr_threads::store::effective::EffectiveReceiptState::Acknowledged,
+        ),
+        (
+            &withheld,
+            herdr_threads::store::effective::EffectiveReceiptState::Pending,
+        ),
+    ] {
+        let receipt =
+            herdr_threads::store::effective::effective_receipt(&db, id.as_str(), w.agent.as_str())
+                .unwrap()
+                .expect("the message publishes a receipt obligation");
+        assert_eq!(receipt.state, expected);
     }
     let unapplied: i64 = db
         .query_row(
