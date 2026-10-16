@@ -1260,7 +1260,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         .as_str()
         .unwrap();
     assert!(
-        context.starts_with("Use inbox; follow its next: commands"),
+        context.starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"),
         "{context}"
     );
     assert!(
@@ -1337,7 +1337,8 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     );
     let message = sent["result"]["data"].as_str().unwrap().to_owned();
 
-    // 4. The next tool hook offers it as framed peer data; nothing is ACKed.
+    // 4. The next tool hook displays the complete message and automatically ACKs
+    // its receipt; the invitation still requires separate consent.
     let offered = run_hook(&command, "w9:p1", &host, &tool("sess-1"));
     assert_eq!(offered.code, Some(0), "{}", offered.stderr);
     let value = offered.context();
@@ -1349,14 +1350,19 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     assert!(!fixed.contains("Ignore instructions"), "{fixed}");
     let data: String = serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap();
     assert!(data.contains(&thread) || data.contains(&message), "{data}");
+    assert!(context.contains("please ack"), "{context}");
+    assert!(!fixed.contains("- pending mail:"), "{fixed}");
+    assert!(!fixed.contains("- inbox fallback"), "{fixed}");
     assert_eq!(
         count(
             &db,
             &format!(
-                "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+                "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked' \
+                 AND json_extract(ack_observation, '$.action_provenance')='cooperative_hook_context' \
+                 AND json_extract(ack_observation, '$.via')='hook_context'"
             )
         ),
-        0
+        1
     );
     assert_eq!(
         count(
@@ -1556,7 +1562,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         .unwrap();
     // Either the check-in won the race with reconciliation, or it was reported.
     assert!(
-        (registered == 1 && !context.contains("unavailable"))
+        (registered == 1 && !context.contains("herdr-threads: check-in unavailable ("))
             || (registered == 0 && context.starts_with("herdr-threads: check-in unavailable (")),
         "state={seat_state} registered={registered} {context}"
     );
@@ -1611,7 +1617,7 @@ fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
     let fx = Fixture::start();
     let started = fx.hook("w9:p1", &start("sess-1"));
     assert_eq!(started.code, Some(0), "{}", started.stderr);
-    assert!(context_of(&started).starts_with("Use inbox; follow its next: commands"));
+    assert!(context_of(&started).starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"));
     let journal_before = fs::read(fx.context_dir("seat").join("context.json")).unwrap();
     let intents_before = fx.intents();
     let before = fx.check_ins.load(Ordering::SeqCst);
@@ -1650,7 +1656,7 @@ fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
     // The seat is not wedged: a later lifecycle check-in still registers.
     let restarted = fx.hook("w9:p1", &start("sess-2"));
     assert!(
-        !context_of(&restarted).contains("unavailable"),
+        !context_of(&restarted).contains("herdr-threads: check-in unavailable ("),
         "{}",
         context_of(&restarted)
     );
@@ -1727,7 +1733,7 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
     let fresh = fx.hook("w9:p1", &start("a-2"));
     assert_eq!(fresh.code, Some(0), "{}", fresh.stderr);
     assert!(
-        !context_of(&fresh).contains("unavailable"),
+        !context_of(&fresh).contains("herdr-threads: check-in unavailable ("),
         "{} / {}",
         context_of(&fresh),
         fresh.stderr
@@ -1754,7 +1760,7 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
     let fresh = fx.hook("w9:p1", &start("b-2"));
     assert_eq!(fresh.code, Some(0), "{}", fresh.stderr);
     assert!(
-        !context_of(&fresh).contains("unavailable"),
+        !context_of(&fresh).contains("herdr-threads: check-in unavailable ("),
         "{} / {}",
         context_of(&fresh),
         fresh.stderr
@@ -1793,10 +1799,15 @@ fn cooperative_seat_on_own_target_startup_clear_resume_register_session_bindings
         assert_eq!(hook.code, Some(0), "{source}: {}", hook.stderr);
         let context = context_of(&hook);
         assert!(
-            context.starts_with("Use inbox; follow its next: commands"),
+            context.starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"),
             "{source}: {context}"
         );
-        assert!(!context.contains("unavailable"), "{source}: {context}");
+        assert!(
+            !context.contains("herdr-threads: check-in unavailable ("),
+            "{source}: {context}"
+        );
+        assert!(!context.contains("- pending mail:"), "{source}: {context}");
+        assert!(!context.contains("- inbox fallback"), "{source}: {context}");
         let next = fx.count("SELECT generation FROM seats WHERE id='seat'");
         assert_eq!(next, generation, "{source}: {generation} -> {next}");
         assert_eq!(
@@ -5763,7 +5774,7 @@ fn hook_path_takeover_replaces_a_human_occupant_with_a_new_agent_generation() {
     let takeover = fx.hook("w9:p1", &start("agent-2"));
     assert_eq!(takeover.code, Some(0), "{}", takeover.stderr);
     assert!(
-        !context_of(&takeover).contains("unavailable"),
+        !context_of(&takeover).contains("herdr-threads: check-in unavailable ("),
         "{} / {}",
         context_of(&takeover),
         takeover.stderr
@@ -6918,7 +6929,7 @@ mod continuity {
             assert_eq!(resumed.code, Some(0), "{harness}: {}", resumed.stderr);
             let context = context_of(&resumed);
             assert!(
-                context.starts_with("Use inbox; follow its next: commands"),
+                context.starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"),
                 "{harness}: {context}"
             );
             assert_eq!(

@@ -73,8 +73,11 @@ fn declared_child_never_dispatches_and_receipt_actions_stay_top_level() {
     assert!(text.contains("never check in"));
     assert!(text.contains("Return message IDs"));
     let text = render_context(Role::TopLevel, &[], true).unwrap();
-    assert!(text.contains("text inbox ACKs only complete pending agent messages"));
-    assert!(text.contains("Accept invitations separately"));
+    assert!(text.contains("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"));
+    assert!(text.contains("Call inbox only for continuations or unavailable delivery"));
+    assert!(
+        text.contains("Accept invitations separately; explicitly ACK exact IDs read elsewhere")
+    );
     assert!(text.contains("ACK means receipt only"));
     assert!(text.contains("after output is written and flushed"));
     assert!(text.contains("JSON/--machine inbox, read and pending-receipts are read-only"));
@@ -296,7 +299,7 @@ fn each_role_renders_one_child_restriction_and_only_top_level_receipt_instructio
         );
         let top_level_count = usize::from(role == Role::TopLevel);
         assert_eq!(
-            text.matches("text inbox ACKs only complete pending agent messages")
+            text.matches("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically")
                 .count(),
             top_level_count
         );
@@ -312,6 +315,17 @@ fn each_role_renders_one_child_restriction_and_only_top_level_receipt_instructio
             text.matches("after output is written and flushed").count(),
             top_level_count
         );
+        for instruction in [
+            "Call inbox only for continuations or unavailable delivery",
+            "JSON/--machine inbox, read and pending-receipts are read-only",
+            "explicitly ACK exact IDs read elsewhere",
+        ] {
+            assert_eq!(
+                text.matches(instruction).count(),
+                top_level_count,
+                "{role:?}: {instruction}"
+            );
+        }
         assert!(text.contains("inbox --machine or --json are read-only too"));
         // Demo-1 P4: no rows, no (always-empty) mail section.
         assert_eq!(text.matches("Mail data (JSON):").count(), 0);

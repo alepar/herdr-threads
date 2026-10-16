@@ -4663,7 +4663,10 @@ fn clear_rebind_pending_item_restreamed_to_new_session() {
     let rig = Rig::new();
     let mut old = rig.watch(SESSION_B);
     old.wait_connected();
-    let id = rig.send_ordinary("pending across /clear");
+    // Keep the message outside the native hook envelope so it remains pending
+    // for the replacement channel, rather than being auto-ACKed at SessionStart.
+    let body = "pending across /clear".repeat(256);
+    let id = rig.send_ordinary(&body);
     old.wait_item(&id);
     rig.set_session_b("SB2");
     rig.session_start_hook_in_process_of(PANE_B, "SB2", "clear", SESSION_B);
@@ -4679,10 +4682,7 @@ fn clear_rebind_pending_item_restreamed_to_new_session() {
     let mut new = rig.watch_with(PANE_B, "SB2", &[("CLAUDE_CODE_SESSION_ID", "SB2")]);
     new.wait_connected();
     let line = new.wait_item(&id);
-    assert_eq!(
-        line["body"], "pending across /clear",
-        "re-streamed to the new session"
-    );
+    assert_eq!(line["body"], body, "re-streamed to the new session");
     rig.wait_channel(Some("live"));
     let (code, lines) = rig.ack_with(
         "SB2",
@@ -4828,8 +4828,28 @@ fn clear_new_binding_digests_and_wakes_for_its_unread_mail_without_grace() {
         "the digest does not list the unread mail's pending receipt: {}",
         started.stdout
     );
+    assert!(
+        started.stdout.contains("only the watch saw this"),
+        "{}",
+        started.stdout
+    );
+    assert!(
+        !started.stdout.contains("- pending mail:"),
+        "{}",
+        started.stdout
+    );
+    assert!(
+        !started.stdout.contains("- inbox fallback"),
+        "{}",
+        started.stdout
+    );
     rig.wait_prompt(mark, PANE_B);
-    assert_eq!(rig.receipt_state(&id), "pending");
+    assert_eq!(rig.receipt_state(&id), "acked");
+    assert_eq!(
+        rig.ack_observation(&id)["action_provenance"],
+        "cooperative_hook_context"
+    );
+    assert_eq!(rig.ack_observation(&id)["via"], "hook_context");
 }
 
 /// Spec D5/D6 reload: the plugin reloads without rotating the generation; the
