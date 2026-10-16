@@ -198,3 +198,9 @@ mod config_delivery;
 
 #[path = "multinode/config_restore.rs"]
 mod config_restore;
+
+#[path = "multinode/config_wipe.rs"]
+mod config_wipe;
+
+#[path = "multinode/config_clone.rs"]
+mod config_clone;

@@ -108,7 +108,7 @@ struct Node {
     up: bool,
     env: Vec<(String, String)>,
     /// The node's fake Herdr servers, in the order [`Cluster::add_host`] gave them.
-    hosts: Vec<FakeHerdr>,
+    hosts: Vec<Arc<FakeHerdr>>,
 }
 
 /// A stand-in agent seat on a node's fake Herdr server: what
@@ -209,7 +209,13 @@ fn copy_state(from: &Path, to: &Path) {
         if kind.is_dir() {
             copy_state(&entry.path(), &to.join(&name));
         } else if kind.is_file() {
-            fs::copy(entry.path(), to.join(&name)).expect("copy a state file");
+            // A file that went away since the listing (a WAL sidecar of a store
+            // closing) is not state.
+            match fs::copy(entry.path(), to.join(&name)) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => panic!("copy a state file: {e}"),
+            }
         }
     }
 }
@@ -227,6 +233,27 @@ fn clear_state(dir: &Path) {
             fs::remove_file(&path).expect("remove a state file");
         }
     }
+}
+
+impl Seat {
+    /// The same seat acting through another copy of its node
+    /// ([`Cluster::clone_node`]): same id, pane and server, other daemon.
+    pub fn on_node(&self, node: usize) -> Seat {
+        Seat {
+            node,
+            ..self.clone()
+        }
+    }
+}
+
+/// Whether nobody holds the owner lease at `path` (a missing file is released).
+fn lease_released(path: &Path) -> bool {
+    use std::os::fd::AsRawFd;
+    let Ok(file) = fs::File::open(path) else {
+        return true;
+    };
+    // SAFETY: the descriptor is open for the call; the lock is dropped with it.
+    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
 }
 
 /// N linked daemons under one isolated root. Dropping it stops them all.
@@ -281,6 +308,7 @@ impl Cluster {
         let root = iso.path("cluster");
         private_dir(&root.join("cut"));
         private_dir(&root.join("pids"));
+        private_dir(&root.join("down"));
         let shim = root.join("shim.sh");
         write_private(
             &shim,
@@ -291,6 +319,7 @@ impl Cluster {
                  root=\"$1\"; from=\"$2\"; dest=\"$3\"; to=$(basename \"$dest\")\n\
                  case \"$dest\" in \"$base\"/n[0-9]*) ;; *) echo \"not a cluster node: $dest\" >&2; exit 75;; esac\n\
                  [ -e \"$root/cut/$from-$to\" ] && {{ echo \"partitioned $from-$to\" >&2; exit 75; }}\n\
+                 [ -e \"$root/down/$to\" ] && {{ echo \"down $to\" >&2; exit 75; }}\n\
                  echo $$ > \"$root/pids/$from-$to\"\n\
                  [ -e \"$root/cut/$from-$to\" ] && {{ echo \"partitioned $from-$to\" >&2; exit 75; }}\n\
                  [ -e \"$root/relay.py\" ] && exec python3 \"$root/relay.py\" \"$root\" \"$from\" \"$to\" -- {bin} --state-dir \"$dest\" peer --stdio\n\
@@ -388,6 +417,13 @@ impl Cluster {
             .join(format!("{}-{}", self.nodes[from].name, self.nodes[to].name))
     }
 
+    fn down_flag(&self, node: usize) -> PathBuf {
+        self.iso
+            .path("cluster")
+            .join("down")
+            .join(&self.nodes[node].name)
+    }
+
     fn pid_file(&self, from: usize, to: usize) -> PathBuf {
         self.iso
             .path("cluster")
@@ -421,6 +457,7 @@ impl Cluster {
                 self.nodes[node].name
             );
             self.nodes[node].up = true;
+            let _ = fs::remove_file(self.down_flag(node));
             return;
         }
         let mut command = self.iso.command(&self.bin);
@@ -452,6 +489,7 @@ impl Cluster {
         drop(pump.stdin.take());
         let _ = pump.wait_with_output();
         self.nodes[node].up = true;
+        let _ = fs::remove_file(self.down_flag(node));
     }
 
     /// `daemon stop` on `node`, then waits until it has withdrawn its endpoint.
@@ -459,12 +497,24 @@ impl Cluster {
         if !self.nodes[node].up {
             return;
         }
+        // A stopped node is a machine that is off: no peer's dial may start its
+        // daemon again (a pump ensures the remote daemon, store-only) until the
+        // test starts it.
+        let _ = fs::write(self.down_flag(node), b"");
         let _ = self.daemon_verb(node, "stop");
         let endpoint = self.nodes[node].state.join("node").join("endpoint.json");
         self.wait_until(
             &format!("node {} to withdraw its endpoint", self.nodes[node].name),
             Duration::from_secs(60),
             || (!endpoint.exists()).then_some(()),
+        );
+        // The endpoint goes first; the daemon is gone when it has let go of its
+        // owner lease (its WAL is then checkpointed and closed).
+        let lease = self.nodes[node].state.join("node").join("owner.lock");
+        self.wait_until(
+            &format!("node {} to release its owner lease", self.nodes[node].name),
+            Duration::from_secs(60),
+            || lease_released(&lease).then_some(()),
         );
         self.nodes[node].up = false;
     }
@@ -506,7 +556,7 @@ impl Cluster {
         let label = format!("{}h{index}", self.nodes[node].name);
         self.nodes[node]
             .hosts
-            .push(FakeHerdr::start(&label, &socket, panes));
+            .push(Arc::new(FakeHerdr::start(&label, &socket, panes)));
         index
     }
 
@@ -676,15 +726,20 @@ impl Cluster {
         self.start_node(dialer);
     }
 
-    /// The operator form of the CLI (`human ...`) against `node`.
+    /// The operator form of the CLI (`human ...`) against `node`, naming its
+    /// first fake server when it has one.
     pub fn human(&self, node: usize, args: &[&str]) -> Output {
+        let endpoint = match self.nodes[node].hosts.first() {
+            Some(host) => host.socket().to_path_buf(),
+            None => self.iso.path("no-host.sock"),
+        };
         self.iso
             .command(&self.bin)
             .arg("human")
             .arg("--state-dir")
             .arg(&self.nodes[node].state)
             .arg("--host-endpoint")
-            .arg(self.iso.path("no-host.sock"))
+            .arg(endpoint)
             .args(args)
             .output()
             .unwrap()
@@ -713,6 +768,71 @@ impl Cluster {
         let state = self.nodes[node].state.join("node");
         clear_state(&state);
         copy_state(&backup.dir, &state);
+        self.start_node(node);
+    }
+
+    /// A second node whose state is a copy of `node`'s (key, store, settings): the
+    /// clone of a cloned VM or a restored image. Both nodes are left stopped, so
+    /// the test chooses which daemon starts first; the copy shares `node`'s fake
+    /// Herdr servers and answers to the same node uuid. Returns its index.
+    pub fn clone_node(&mut self, node: usize) -> usize {
+        self.stop_node(node);
+        let index = self.nodes.len();
+        let name = format!("n{index}");
+        let state = self.iso.path(&name);
+        copy_state(&self.nodes[node].state.join("node"), &state.join("node"));
+        let copy = Node {
+            name,
+            state,
+            seed: self.nodes[node].seed,
+            uuid: self.nodes[node].uuid,
+            up: false,
+            env: self.nodes[node].env.clone(),
+            hosts: self.nodes[node].hosts.clone(),
+        };
+        self.nodes.push(copy);
+        index
+    }
+
+    /// Stops `node`, moves its whole node directory (key and store) aside and
+    /// starts it again: a fresh node with a new key under the same state
+    /// directory. Its settings are put back (a dial command), as an operator's
+    /// would be. Returns the new node uuid.
+    pub fn restart_as_new_node(&mut self, node: usize) -> NodeUuid {
+        self.stop_node(node);
+        let state = self.nodes[node].state.join("node");
+        let aside = self.iso.path(format!("aside-{}", self.nodes[node].name));
+        fs::rename(&state, &aside).expect("move the node directory aside");
+        private_dir(&state);
+        let settings = fs::read(aside.join("settings.json")).expect("the node's settings");
+        write_private(&state.join("settings.json"), 0o600, &settings);
+        self.start_node(node);
+        let uuid = self
+            .wait_until("the new node's identity", Duration::from_secs(30), || {
+                self.scalar(node, "SELECT id FROM local_node", &[])
+            })
+            .parse::<NodeUuid>()
+            .expect("a node uuid");
+        self.nodes[node].uuid = uuid;
+        self.nodes[node].seed = [0; 32];
+        uuid
+    }
+
+    /// Stops `node` and moves its store aside, key kept: a wiped store under the
+    /// same node identity. The daemon is started again; the old store stays in
+    /// the cluster's root.
+    pub fn wipe_store(&mut self, node: usize) {
+        self.stop_node(node);
+        let aside = self.iso.path(format!("wiped-{}", self.nodes[node].name));
+        private_dir(&aside);
+        let state = self.nodes[node].state.join("node");
+        for entry in fs::read_dir(&state).expect("read the node directory") {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with("herdr-threads.db") {
+                fs::rename(entry.path(), aside.join(&name)).expect("move the store aside");
+            }
+        }
         self.start_node(node);
     }
 
