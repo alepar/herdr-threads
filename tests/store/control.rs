@@ -8598,7 +8598,11 @@ fn continuity_refuses_zero_and_multiple_matches() {
     )
     .unwrap_err();
     assert_eq!(many.code, ErrorCode::Conflict);
-    assert!(many.detail.contains("seat rebind --operator"));
+    assert!(
+        many.detail
+            .contains("herdr-threads human seat rebind s1 --pane held-pane --operator")
+    );
+    assert!(many.detail.contains("herdr-threads seat inspect s3"));
     let after: (String, String, i64, i64) = conn
         .query_row(
             "SELECT (SELECT state FROM seats WHERE id='s1'),(SELECT state FROM seats WHERE id='s3'),(SELECT count(*) FROM recovery_holds WHERE target_id='held-pane' AND released_at IS NULL),(SELECT count(*) FROM allocation_decisions)",
@@ -12873,4 +12877,96 @@ fn restore_hold_explicit_refusal_carries_exact_repair_guidance() {
     drop(store);
     drop(conn);
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn same_session_continuity_survives_store_reopen_without_session_restart() {
+    let (context, conn, path) = c1_fixture();
+    drop(conn);
+    let mut reopened = context.open_writer().unwrap();
+    let mut command = c1_command("held-pane", "sess-1", "upgrade-running");
+    command.source = "same_session".into();
+    let result = c1_decide(&context, &mut reopened, &command, "match").unwrap();
+    assert!(matches!(result, CommandResult::ContinuityReattached(ref r) if r.seat.as_str()=="s1"));
+    let binding: (String,String) = reopened.query_row("SELECT native_session,observation_provenance FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(binding, ("sess-1".into(), "cooperative_top_level".into()));
+    drop(reopened);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn same_session_continuity_ambiguous_or_owned_refuses_with_actionable_details() {
+    for owned in [false, true] {
+        let (context, mut conn, path) = c1_fixture();
+        b5_set_marker_to_recovery(&conn);
+        let target = if owned {
+            c1_observe(&conn, "s2");
+            "s2"
+        } else {
+            c1_unresolved_seat(&conn, "s3", "claude", "sess-1");
+            "held-pane"
+        };
+        let mut command = c1_command(target, "sess-1", "running-refusal");
+        command.source = "same_session".into();
+        let error = c1_decide(&context, &mut conn, &command, "match").unwrap_err();
+        assert_eq!(
+            error.code,
+            if owned {
+                ErrorCode::TargetAlreadyOwned
+            } else {
+                ErrorCode::Conflict
+            }
+        );
+        assert!(
+            error.detail.contains("herdr-threads seat inspect"),
+            "{}",
+            error.detail
+        );
+        assert!(
+            error.detail.contains(if owned { "s2" } else { "s3" }),
+            "{}",
+            error.detail
+        );
+        assert_eq!(
+            conn.query_row("SELECT state FROM seats WHERE id='s1'", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "unresolved"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM operations WHERE operation_key='running-refusal'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn same_session_continuity_digest_is_distinct_and_resume_digest_is_compatible() {
+    let resume = c1_command("held-pane", "sess-1", "key");
+    let mut current = resume.clone();
+    current.source = "same_session".into();
+    let old_digest = crate::store::schema::canonical_digest(&(
+        "continuity_check_in",
+        "i",
+        &resume.target,
+        &resume.harness,
+        &resume.native_session,
+        &resume.execution,
+    ))
+    .unwrap();
+    assert_eq!(
+        crate::store::seats::continuity_digest("i", &resume).unwrap(),
+        old_digest
+    );
+    assert_ne!(
+        crate::store::seats::continuity_digest("i", &current).unwrap(),
+        old_digest
+    );
 }

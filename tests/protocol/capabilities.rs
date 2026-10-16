@@ -291,6 +291,7 @@ fn capability_constants_are_stable() {
             "harness.states",
             "harness.health_v2",
             "seat.managed_launch",
+            "seat.continuity_same_session_v1",
             "inbox.batch_v1",
             "invitation.reject_v1",
             "thread.join_v1",
@@ -336,6 +337,26 @@ fn every_advertised_capability_has_a_handler() {
             HARNESS_STATES => probe_harness_states(),
             HARNESS_HEALTH_V2 => health_v2_capability_is_negotiated_only_with_cached_provider(),
             SEAT_MANAGED_LAUNCH => probe_seat_managed_launch(),
+            SAME_SESSION_CONTINUITY_V1 => {
+                let command =
+                    Command::ContinuityCheckIn(crate::protocol::commands::ContinuityCheckIn {
+                        target: crate::protocol::ids::HostTargetId::new("pane"),
+                        harness: crate::protocol::authority::Harness::Codex,
+                        native_session: crate::protocol::ids::NativeSessionId::new("session"),
+                        source: "same_session".into(),
+                        operation: crate::protocol::ids::OperationId::new("capability-probe"),
+                        execution: crate::protocol::ids::ExecutionId::new("execution"),
+                        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
+                    });
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    daemon_handler(Uuid::new_v4(), Uuid::new_v4())
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
             INBOX_BATCH => probe_inbox_batch(),
             INBOX_BATCH_V2 => {
                 let command = Command::InboxBatchV2(crate::protocol::commands::InboxQuery {
@@ -769,6 +790,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "hook.harness_evidence",
             "harness.states",
             "seat.managed_launch",
+            "seat.continuity_same_session_v1",
             "inbox.batch_v1",
             "invitation.reject_v1",
             "thread.join_v1",

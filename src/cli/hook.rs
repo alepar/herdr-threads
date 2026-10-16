@@ -341,7 +341,13 @@ fn api_failure(stage: &str, error: &ApiError) -> Failure {
     // Restore refusals carry the daemon's canonical cause and repair argv.
     // Lifecycle context must keep that guidance, as stderr alone is invisible
     // to the agent. Other failures retain their compact stage/code report.
-    if error.code == ErrorCode::TargetUnresolved {
+    if error.code == ErrorCode::TargetUnresolved
+        || (stage == "continuity"
+            && matches!(
+                error.code,
+                ErrorCode::Conflict | ErrorCode::TargetAlreadyOwned
+            ))
+    {
         reason.push_str(&format!(": {}", error.detail.escape_debug()));
     }
     Failure::UnavailableDetail(reason, error.detail.clone())
@@ -1834,7 +1840,8 @@ fn check_in(
     // (1) A4 agent-to-human refusal, (2) C1 reattachment on a held or
     // unowned target, (3) canonical guarded startup enrollment / ordinary path. A
     // person's lifecycle check-in is never sent here; (2) is attempted only
-    // for a top-level resume. The reattachment is one complete check-in (the
+    // for a top-level same-session event (only resume probes a resolved pane).
+    // The reattachment is one complete check-in (the
     // daemon rebinds the seat and opens its successor binding), so nothing
     // follows it.
     let existing = match find_seat_for(event.harness, &client, &target, deadline, clock.as_ref())? {
@@ -1848,14 +1855,11 @@ fn check_in(
         // never does. This probe never replays an earlier intent's result.
         PaneSeat::Resolved(seat, generation) => match call.reattach_by_continuity(event, true) {
             Reattach::Done(done) => return Ok(stamp(*done)),
-            Reattach::Declined | Reattach::Refused(ErrorCode::TargetAlreadyOwned) => {
+            Reattach::Declined => Some((seat, generation)),
+            Reattach::Refused(error) if error.code == ErrorCode::TargetAlreadyOwned => {
                 Some((seat, generation))
             }
-            Reattach::Refused(_) => {
-                return Err(Failure::Unavailable(
-                    "resume continuity requires repair; no new seat allocated".into(),
-                ));
-            }
+            Reattach::Refused(error) => return Err(api_failure("continuity", &error)),
             Reattach::InstallFailed(detail) => return Err(install_failed(&detail)),
             Reattach::Pending => {
                 return Err(Failure::Unavailable(
@@ -1875,14 +1879,15 @@ fn check_in(
                 // The daemon alone decides whether this target is genuinely new.
                 None
             }
-            Reattach::Refused(ErrorCode::NotFound)
-                if enroll != Enroll::No && matches!(absent, PaneSeat::Unowned) =>
+            Reattach::Refused(error)
+                if error.code == ErrorCode::NotFound
+                    && enroll != Enroll::No
+                    && matches!(absent, PaneSeat::Unowned) =>
             {
                 None
             }
-            Reattach::Declined | Reattach::Refused(_) | Reattach::Pending => {
-                return Err(absent.refusal(pane));
-            }
+            Reattach::Refused(error) => return Err(api_failure("continuity", &error)),
+            Reattach::Declined | Reattach::Pending => return Err(absent.refusal(pane)),
         },
     };
     // A lifecycle event always runs the ordinary resolver; a witnessed turn only
@@ -1967,9 +1972,9 @@ struct PaneCall<'a> {
 enum ContinuityOutcome {
     Reattached(crate::protocol::results::ContinuityReattachment),
     /// A definitive refusal; the intent was discarded.
-    Refused(ErrorCode),
+    Refused(ApiError),
     /// Still retryable when the hook's deadline passed; the intent is kept for
-    /// the next `resume` in the pane or `herdr-threads retry`.
+    /// the next eligible session event or `herdr-threads retry`.
     Kept,
 }
 
@@ -1978,16 +1983,16 @@ enum Reattach {
     /// The daemon reattached the pane's seat; the check-in is complete
     /// (boxed: the check-in output dwarfs the other variants).
     Done(Box<CheckedIn>),
-    /// Not attempted (not a top-level resume with a native session).
+    /// Not attempted (no eligible top-level native session, or a steady resolved turn).
     Declined,
     /// A definitive daemon continuity refusal; only no-match or an already
     /// resolved owner may proceed to ordinary enrollment.
-    Refused(ErrorCode),
+    Refused(ApiError),
     /// Undecided: still retryable when the deadline passed (the intent is
     /// kept), or the hook could not record the intent.
     Pending,
     /// The daemon committed the reattachment but the hook could not install the
-    /// pane context locally (the intent stays; the next resume installs it).
+    /// pane context locally (the intent stays; the next eligible event installs it).
     /// Carries the failure detail.
     InstallFailed(String),
 }
@@ -2088,7 +2093,7 @@ impl PaneCall<'_> {
                 Ok(Err(rejection)) if super::retry::is_continuity_refusal(&rejection.code) => {
                     // A failed removal leaves an inert, still-refused entry.
                     let _ = journal.complete(reference);
-                    return ContinuityOutcome::Refused(rejection.code);
+                    return ContinuityOutcome::Refused(rejection);
                 }
                 Ok(Ok(_)) => return ContinuityOutcome::Kept,
                 _ => {}
@@ -2158,7 +2163,11 @@ impl PaneCall<'_> {
                     target: self.target.clone(),
                     harness,
                     native_session: session.clone(),
-                    source: event.source.clone(),
+                    source: if event.kind == EventKind::Resume {
+                        event.source.clone()
+                    } else {
+                        crate::protocol::commands::ContinuityCheckIn::SAME_SESSION_SOURCE.into()
+                    },
                     event_id: event.event_id.clone(),
                     execution: crate::protocol::ids::ExecutionId::new(execution.to_string()),
                     liveness: Some(liveness),
@@ -2182,7 +2191,7 @@ impl PaneCall<'_> {
         Some(seats.resolved.len() == 1 && seats.resolved[0].seat == *seat)
     }
 
-    /// C1 attempt: a top-level `resume` asks the daemon to reattach the
+    /// C1 attempt: a top-level native session asks the daemon to reattach the
     /// unresolved seat one of whose bindings holds this session (a pane whose
     /// resolved mapping is current is refused, its target being owned; there
     /// `pane_resolved` is set and no pending intent is reused). The daemon's
@@ -2198,10 +2207,13 @@ impl PaneCall<'_> {
     /// pane-seat listing now resolves the pane to the replayed seat. A stale
     /// replay is discarded and the resume submitted once more under a fresh
     /// key; an unanswered lookup keeps the intent and installs nothing. It
-    /// runs only on this resume path: tool events never read or replay a
-    /// continuity intent.
+    /// runs for resume and for a lifecycle/turn event without a resolved pane.
+    /// Steady resolved turns never read or replay a continuity intent.
     fn reattach_by_continuity(&self, event: &LifecycleEvent, pane_resolved: bool) -> Reattach {
-        if event.role != Role::TopLevel || event.kind != EventKind::Resume {
+        if event.role != Role::TopLevel
+            || event.agent_id.is_some()
+            || (pane_resolved && event.kind != EventKind::Resume)
+        {
             return Reattach::Declined;
         }
         let Some(harness) = wire_harness(event.harness) else {
@@ -2214,6 +2226,19 @@ impl PaneCall<'_> {
         else {
             return Reattach::Declined;
         };
+        if session.as_str().starts_with("plugin_context:") {
+            return Reattach::Declined;
+        }
+        if event.kind != EventKind::Resume
+            && !self.client.supports_capability(
+                crate::protocol::capabilities::SAME_SESSION_CONTINUITY_V1,
+                &budget(self.deadline, self.clock.as_ref()),
+            )
+        {
+            // An older daemon still serves resume and ordinary guarded startup.
+            // Missing capability is never evidence that a held target is free.
+            return Reattach::Declined;
+        }
         // C1 reattachment is a lifecycle check-in: the successor binding records this
         // process's fingerprint. A failure declines, so ordinary enrollment surfaces it.
         let Ok(liveness) = hook_fingerprint(event.harness) else {
@@ -2302,13 +2327,16 @@ impl PaneCall<'_> {
             let lines = crate::store::first_contact::render_fast_forward(ff, self.clock.utc_now());
             done.summary = with_history(&lines, done.summary.take());
         }
-        // A resumed session is a lifecycle start: it gets the standing
-        // instruction a lifecycle check-in presents, ahead of any attention.
-        let mut text = render_context(Role::TopLevel, &[], true)
-            .unwrap_or_default()
-            .into_bytes();
-        text.append(&mut done.text);
-        done.text = text;
+        // A lifecycle recovery presents the standing instruction as an
+        // ordinary lifecycle would. In-turn recovery keeps Current's quiet
+        // output contract and delivers only pending context.
+        if event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle {
+            let mut text = render_context(Role::TopLevel, &[], true)
+                .unwrap_or_default()
+                .into_bytes();
+            text.append(&mut done.text);
+            done.text = text;
+        }
         Reattach::Done(Box::new(done))
     }
 

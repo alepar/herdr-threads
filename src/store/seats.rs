@@ -3614,8 +3614,20 @@ pub fn continuity_digest(
     instance: &str,
     command: &crate::protocol::commands::ContinuityCheckIn,
 ) -> Result<[u8; 32], ApiError> {
+    command
+        .validate()
+        .map_err(|detail| api_error(ErrorCode::InvalidRequest, detail))?;
+    // Keep every committed resume digest replayable across this upgrade.
+    // A new claim kind has its own domain, so changing it cannot replay an
+    // operation recorded under the other kind.
+    let domain =
+        if command.source == crate::protocol::commands::ContinuityCheckIn::SAME_SESSION_SOURCE {
+            "same_session_continuity_check_in"
+        } else {
+            "continuity_check_in"
+        };
     schema::canonical_digest(&(
-        "continuity_check_in",
+        domain,
         instance,
         &command.target,
         &command.harness,
@@ -3677,7 +3689,7 @@ pub fn replay_continuity(
 }
 
 /// TRUST-POLICY C1: reattach the one unresolved seat one of whose bindings holds
-/// the resumed session id onto the (held or unowned) target, in one deciding
+/// the native session id onto the (held or unowned) target, in one deciding
 /// transaction that is a complete lifecycle check-in. The match is cooperative
 /// and structural only: Herdr's `agent_session` (`diagnostic`) is recorded,
 /// never consulted. The seat's old binding is ended and the successor
@@ -3731,7 +3743,7 @@ pub fn decide_continuity(
             if command.liveness.is_none() {
                 return Err(api_error(
                     ErrorCode::LivenessFingerprintRequired,
-                    "a resumed session's reattachment must carry its liveness fingerprint",
+                    "a native session's reattachment must carry its liveness fingerprint",
                 ));
             }
             if !observed_matches(
@@ -3760,9 +3772,16 @@ pub fn decide_continuity(
                         "recovery reconciliation of the current host epoch has not finished; retry",
                     )
                 } else {
+                    let owner: String = tx.query_row("SELECT id FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved'", params![instance,target.as_str()], |row| row.get(0)).map_err(store_error)?;
+                    let owner = shlex::try_quote(&owner)
+                        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid owner id"))?;
+                    let pane = shlex::try_quote(target.as_str())
+                        .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid target"))?;
                     api_error(
                         ErrorCode::TargetAlreadyOwned,
-                        "resumed session's pane already has a resolved seat",
+                        format!(
+                            "continuity target {pane} already belongs to {owner}; inspect `herdr-threads seat inspect {owner}` before operator repair; no seat moved"
+                        ),
                     )
                 });
             }
@@ -3789,13 +3808,21 @@ pub fn decide_continuity(
                     } else {
                         api_error(
                             ErrorCode::NotFound,
-                            "no unresolved seat matches this resumed session",
+                            "no unresolved seat matches this native session",
                         )
                     }
                 } else {
+                    let pane = shlex::try_quote(target.as_str())
+                        .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid target"))?;
+                    let choices = candidates.iter().map(|seat| {
+                        let seat = shlex::try_quote(seat.as_str()).map_err(|_| api_error(ErrorCode::StoreCorrupt,"invalid seat id"))?;
+                        Ok(format!("inspect `herdr-threads seat inspect {seat}`; if this is its pane, `herdr-threads human seat rebind {seat} --pane {pane} --operator`"))
+                    }).collect::<Result<Vec<_>,ApiError>>()?.join("; ");
                     api_error(
                         ErrorCode::Conflict,
-                        "resumed session matches several unresolved seats; repair with herdr-threads human seat rebind --operator",
+                        format!(
+                            "native session matches several unresolved seats (up to two shown); {choices}; no seat moved"
+                        ),
                     )
                 });
             };
@@ -3901,7 +3928,7 @@ pub fn decide_continuity(
             let fingerprint = command.liveness.ok_or_else(|| {
                 api_error(
                     ErrorCode::LivenessFingerprintRequired,
-                    "a resumed session's reattachment must carry its liveness fingerprint",
+                    "a native session's reattachment must carry its liveness fingerprint",
                 )
             })?;
             // ht-54r.78: the general resolver. The unresolve ended every binding of the seat, so

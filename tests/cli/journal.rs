@@ -1186,7 +1186,7 @@ fn continuity_intent_round_trips_and_is_found_by_instance_and_target() {
 }
 
 #[test]
-fn continuity_intent_refuses_foreign_scope_and_non_resume_source() {
+fn continuity_intent_refuses_foreign_scope_and_unsupported_source() {
     let dir = temp();
     let journal = Journal::open(&dir).unwrap();
     // The scope names one pane; a request for another is a scope mismatch.
@@ -1205,7 +1205,7 @@ fn continuity_intent_refuses_foreign_scope_and_non_resume_source() {
             .record(scope(), continuity_semantic("w1:p1", "evt"), 1)
             .is_err()
     );
-    // Only a resume can be journaled.
+    // Raw lifecycle sources are not same-session recovery claims.
     let SemanticMutation::ContinuityCheckIn {
         target,
         harness,
@@ -2623,4 +2623,22 @@ fn cooperative_semantic_records_the_shape_chosen_for_the_daemon() {
             .unwrap_or("ordinary");
         assert_eq!(mode, want_mode, "{argv:?}");
     }
+}
+
+#[test]
+fn same_session_continuity_intent_is_durable_and_replayable() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let mut semantic = continuity_semantic("w1:p1", "running-turn");
+    if let SemanticMutation::ContinuityCheckIn { source, .. } = &mut semantic {
+        *source = "same_session".into();
+    }
+    let reference = journal
+        .record(continuity_scope("i1", "w1:p1"), semantic, 1)
+        .unwrap();
+    let pending = journal.load(&reference).unwrap();
+    assert!(
+        matches!(pending.semantic.to_command(reference.operation,None).unwrap(),Command::ContinuityCheckIn(c) if c.source=="same_session")
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }

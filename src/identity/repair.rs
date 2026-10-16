@@ -333,7 +333,7 @@ impl OrdinaryIdentity {
         })
     }
 
-    /// Compare Herdr's reported agent session for the pane with the resumed
+    /// Compare Herdr's reported agent session for the pane with the claimed native
     /// session id. Diagnostic only (C1): the value is stored for seat inspect.
     fn agent_session_diagnostic(
         &self,
