@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-15-unified-seat-selector
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: fix-loop
+phase: report
 roastCodeExit: converged
 codeMechanism: Workflow
 
@@ -44,3 +44,4 @@ codeBuckets:
 - code roast round 2 converged: punch list [Nit] TRUST-POLICY.md:99 (fix-regression, sentence over-claims; folded into the final-review fix bead), [Nit] src/cli/seat_resolution.rs:327 (duplicated direct-ACK rule; punch list), [Nit] src/cli/seat_resolution.rs:230; :234 (punch-listed r1, open)
 - final-review-reentry-1 routing: M1 [Must-fix] session refusal runs after seat stage pass 1 (Important correctness, goal-named path) → the one autonomous post-loop fix round; post-cap audit reviews it
 - final-review fix round: ht-u3ym.12 filed (M1 + TRUST-POLICY.md:99 Nit), once per run
+baseAbsorbed: 3ff902c77 → b761a8194, 0 conflicted files
