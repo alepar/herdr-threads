@@ -504,6 +504,22 @@ fn answer(w: &World, source: NodeUuid, want: &BranchWant, reply: BranchReply) {
     w.a.sink.on_branch(source, reply);
 }
 
+/// The peer answers the `TipProof` probe of a `Have` that named b4 with the
+/// signed b4 entry, and the worker handles the reply.
+fn prove_b4_tip(w: &World, core: &mut Core, source: NodeUuid) {
+    w.a.sink.on_branch(
+        source,
+        BranchReply::Entries {
+            node: w.log.node,
+            inc: w.log.incarnation,
+            tip_hash: hex(&w.b4.hash),
+            entries: vec![WireEnvelope::from(&w.b4)],
+            more: false,
+        },
+    );
+    core.work();
+}
+
 // Kills: no cap, a cap that drops the newest job, a log line per drop instead
 // of per minute, and a dropped branch that is never asked for again.
 #[test]
@@ -899,7 +915,13 @@ fn reissue_runs_after_pull_commits() {
     assert_eq!(
         w.a.sink.outbox().sends.len(),
         2,
-        "the proof's tip was asked first, then the longer branch"
+        "the proof's tip was asked first, then the unsigned tip is probed alone"
+    );
+    prove_b4_tip(&w, &mut core, s);
+    assert_eq!(
+        w.a.sink.outbox().sends.len(),
+        1,
+        "the longer branch is pulled once its tip is proven"
     );
     let reply = BranchReply::Entries {
         node: w.log.node,
@@ -998,6 +1020,7 @@ fn stale_branch_reply_is_dropped_not_penalized() {
     core.work();
     w.a.sink.on_have(s, true, &w.have(4, &w.b4.hash), &[]);
     core.work();
+    prove_b4_tip(&w, &mut core, s);
     let (_, want) =
         w.a.sink
             .outbox()
@@ -1144,6 +1167,14 @@ fn short_branch_reply_moves_to_another_source() {
     w.a.sink.note_tip_source(w.log, &hex(&w.b4.hash), s2);
     w.a.sink.on_have(s1, true, &w.have(4, &w.b4.hash), &[]);
     core.work();
+    let probed =
+        w.a.sink
+            .outbox()
+            .sends
+            .last()
+            .expect("the tip was probed")
+            .0;
+    prove_b4_tip(&w, &mut core, probed);
     let sends = w.a.sink.outbox().sends;
     let (asked, want) = sends.last().cloned().expect("the b4 branch was requested");
     assert_eq!(want.tip.counter, 4, "{sends:?}");
@@ -1358,21 +1389,22 @@ fn restore_waits_for_i2_genesis_then_names_i2_no_evidence() {
     assert_eq!(w.restored.sink.resumed(), vec![w.i1]);
 }
 
-// Kills: a Restore that waits forever for a genesis nobody serves, and the
+// Kills: a Restore that waits for a genesis nobody serves beyond the 10 s proof
+// window of an unsigned claim (it used to wait 5 minutes), and the
 // single-copy case: I2 arriving later must leave lineage-branch evidence.
 #[test]
-fn restore_runs_at_5_min_naming_i1_then_lineage_branch_recorded() {
+fn restore_runs_after_10s_naming_i1_then_lineage_branch_recorded() {
     let w = restore_world();
     let mut core = w.restored.core();
     w.advertise_and_queue();
     core.work();
-    w.restored.advance(299_000);
+    w.restored.advance(9_000);
     core.tick();
-    assert_eq!(w.restored.active_log(), w.i1, "still waiting at 299 s");
+    assert_eq!(w.restored.active_log(), w.i1, "still waiting at 9 s");
     w.restored.advance(1_000);
     core.tick();
     let active = w.restored.active_log();
-    assert_ne!(active, w.i1, "ran at 5 minutes");
+    assert_ne!(active, w.i1, "ran when the unproven claim's 10 s ended");
     assert_eq!(
         w.restored.genesis_predecessor(&active),
         Some(Predecessor {
@@ -1390,4 +1422,264 @@ fn restore_runs_at_5_min_naming_i1_then_lineage_branch_recorded() {
     w.restored.ingest(&w.orig, &w.i2, 1);
     core.tick();
     assert_eq!(w.restored.evidence("lineage_branch"), 1);
+}
+
+// ---- Unsigned Have claims (ht-5fr.42) ----------------------------------------------
+
+fn none_reply(log: &LogKey, tip: &[u8; 32]) -> BranchReply {
+    BranchReply::None {
+        node: log.node,
+        inc: log.incarnation,
+        tip_hash: hex(tip),
+    }
+}
+
+// Kills: a Have-advertised tip of a frozen own log that creates a `pulling`
+// branch row (and with it the own-history hold) before any signed entry shows
+// it exists; a probe reply that is trusted without checking counter, hash and
+// signature; a lie that is not penalized; an honest tip that never records.
+#[test]
+fn have_claiming_a_higher_frozen_own_tip_persists_nothing() {
+    let w = world();
+    let mut core = w.a.core();
+    let s = peer(11);
+    w.a.sink.enqueue(w.owner_fork(s));
+    core.work();
+    w.a.sink.on_branch(s, w.b3_reply());
+    core.work();
+    let rows = || w.a.count("SELECT COUNT(*) FROM sync_branches");
+    let before = rows();
+    assert!(!w.a.hold.active(w.a.now()));
+    w.a.sink.outbox();
+
+    // Lie 1: a tip nobody can serve (branch_none).
+    let lie = [9u8; 32];
+    w.a.sink.on_have(s, true, &w.have(4, &lie), &[]);
+    core.work();
+    assert_eq!(
+        w.a.sink.outbox().sends,
+        vec![(
+            s,
+            BranchWant {
+                node: w.log.node,
+                inc: w.log.incarnation,
+                tip: TipRef {
+                    counter: 4,
+                    hash: hex(&lie)
+                },
+                from: 4,
+            }
+        )],
+        "the tip alone is probed"
+    );
+    assert_eq!(rows(), before, "nothing is persisted before the proof");
+    assert!(!w.a.hold.active(w.a.now()), "no own-history hold");
+    w.a.sink.on_branch(s, none_reply(&w.log, &lie));
+    core.work();
+    assert_eq!(rows(), before);
+    assert!(!w.a.hold.active(w.a.now()));
+    assert!(w.a.sink.is_penalized(s, w.log), "the liar is penalized");
+    w.a.sink.outbox();
+
+    // Lie 2: an entry that is not at the claimed (counter, hash).
+    let lie2 = [8u8; 32];
+    w.a.sink.on_have(s, true, &w.have(4, &lie2), &[]);
+    core.work();
+    w.a.sink.outbox();
+    let wrong = BranchReply::Entries {
+        node: w.log.node,
+        inc: w.log.incarnation,
+        tip_hash: hex(&lie2),
+        entries: vec![WireEnvelope::from(&w.b3)],
+        more: false,
+    };
+    w.a.sink.on_branch(s, wrong);
+    core.work();
+    assert_eq!(rows(), before);
+    assert!(!w.a.hold.active(w.a.now()));
+
+    // Lie 3: the right counter and hash, a forged signature.
+    let mut forged = w.b4.clone();
+    forged.signature[0] ^= 1;
+    w.a.sink.on_have(s, true, &w.have(4, &forged.hash), &[]);
+    core.work();
+    w.a.sink.outbox();
+    let reply = BranchReply::Entries {
+        node: w.log.node,
+        inc: w.log.incarnation,
+        tip_hash: hex(&forged.hash),
+        entries: vec![WireEnvelope::from(&forged)],
+        more: false,
+    };
+    w.a.sink.on_branch(s, reply);
+    core.work();
+    assert_eq!(rows(), before, "an unsigned entry proves nothing");
+    assert!(!w.a.hold.active(w.a.now()));
+
+    // The honest tip: a signed entry at exactly (4, b4).
+    w.a.advance(61_000);
+    let t = peer(12);
+    w.a.sink.on_have(t, true, &w.have(4, &w.b4.hash), &[]);
+    core.work();
+    w.a.sink.outbox();
+    prove_b4_tip(&w, &mut core, t);
+    assert_eq!(rows(), before + 1, "the signed tip is recorded");
+    assert!(w.a.hold.active(w.a.now()), "and its pull holds the history");
+}
+
+// Kills: clone evidence, a fork row, a branch row or a clone gate driven by
+// Haves that name unknown own logs, foreign logs or wild heads.
+#[test]
+fn have_claims_record_no_clone_evidence() {
+    let w = restore_world();
+    let mut core = w.restored.core();
+    let own = w.i1.node;
+    let wild = |node: NodeUuid, inc: u32, counter: u64| HaveLog {
+        node,
+        inc,
+        counter,
+        head: hex(&[7; 32]),
+        frozen_at: None,
+    };
+    let logs = vec![
+        wild(own, 12_345, 50),
+        wild(own, w.i1.incarnation, 40),
+        wild(peer(5), 1, 9),
+        wild(peer(6), 3, 1_000),
+    ];
+    w.restored.sink.on_have(w.src, true, &logs, &[]);
+    core.work();
+    core.tick();
+    for table in [
+        "sync_clone_evidence",
+        "sync_forks",
+        "sync_branches",
+        "sync_reissues",
+    ] {
+        assert_eq!(
+            w.restored.count(&format!("SELECT COUNT(*) FROM {table}")),
+            0,
+            "{table}"
+        );
+    }
+    assert!(!core.clone_held, "no clone gate");
+    assert_eq!(w.restored.held_lines(), 0);
+    assert!(!w.restored.hold.active(w.restored.now()));
+    assert_eq!(w.restored.active_log(), w.i1);
+}
+
+// Kills: a restore rotation driven by a peer's claim of entries beyond the
+// head rather than by a signed entry that extends it.
+#[test]
+fn lying_have_triggers_no_restore_rotation() {
+    for forged_entry in [false, true] {
+        let w = restore_world();
+        let mut core = w.restored.core();
+        // A restore successor is known: I2's genesis is here.
+        w.restored.ingest(&w.orig, &w.i2, 1);
+        let logs_before = w.restored.count("SELECT COUNT(*) FROM sync_logs");
+        let fake = [7u8; 32];
+        let lie = vec![HaveLog {
+            node: w.i1.node,
+            inc: w.i1.incarnation,
+            counter: 2,
+            head: hex(&fake),
+            frozen_at: None,
+        }];
+        w.restored.sink.on_have(w.src, true, &lie, &[]);
+        core.work();
+        let sends = w.restored.sink.outbox().sends;
+        assert!(
+            sends
+                .iter()
+                .any(|(s, want)| *s == w.src && want.tip.hash == hex(&fake) && want.from == 2),
+            "the claimed entry is asked for: {sends:?}"
+        );
+        let reply = if forged_entry {
+            let mut bad = w.tail.clone();
+            bad.signature[0] ^= 1;
+            BranchReply::Entries {
+                node: w.i1.node,
+                inc: w.i1.incarnation,
+                tip_hash: hex(&fake),
+                entries: vec![WireEnvelope::from(&bad)],
+                more: false,
+            }
+        } else {
+            none_reply(&w.i1, &fake)
+        };
+        w.restored.sink.on_branch(w.src, reply);
+        core.work();
+        w.restored.advance(1_000);
+        core.tick();
+        assert_eq!(
+            w.restored.active_log(),
+            w.i1,
+            "no rotation (forged: {forged_entry})"
+        );
+        assert_eq!(
+            w.restored.count("SELECT COUNT(*) FROM sync_logs"),
+            logs_before
+        );
+        assert_eq!(core.pending.len(), 0, "no Restore stays queued");
+        assert_eq!(
+            w.restored.count("SELECT COUNT(*) FROM sync_clone_evidence"),
+            0
+        );
+    }
+}
+
+// Kills: a per-source memory that one peer can fill, and a table that stops
+// updating the heads it already holds once it is full.
+#[test]
+fn one_source_cannot_fill_active_heads() {
+    let w = restore_world();
+    let mut core = w.restored.core();
+    let greedy = peer(11);
+    for inc in 0..20u32 {
+        let log = LogKey {
+            node: w.i1.node,
+            incarnation: 1_000 + inc,
+        };
+        core.note_active_head(greedy, log, 9, [1; 32]);
+    }
+    let held = |core: &Core, s: NodeUuid| core.active_heads.keys().filter(|(k, _)| *k == s).count();
+    assert_eq!(held(&core, greedy), MAX_ACTIVE_HEADS_PER_SOURCE);
+    // Others still have room, up to the global cap.
+    for n in 0..(MAX_ACTIVE_HEADS as u8) {
+        core.note_active_head(peer(100 + n), w.i1, 9, [2; 32]);
+    }
+    assert_eq!(core.active_heads.len(), MAX_ACTIVE_HEADS);
+    // A head already held is still updated at the cap.
+    core.note_active_head(peer(100), w.i1, 12, [3; 32]);
+    assert_eq!(core.active_heads[&(peer(100), w.i1)], (12, [3; 32]));
+}
+
+// Kills: a Restore held back for 5 minutes by an advertised own log whose
+// genesis nobody can serve.
+#[test]
+fn restore_ready_ignores_unproven_advertised_own_logs() {
+    let w = restore_world();
+    let mut core = w.restored.core();
+    let phantom = HaveLog {
+        node: w.i1.node,
+        inc: 777,
+        counter: 5,
+        head: hex(&[4; 32]),
+        frozen_at: None,
+    };
+    w.restored.sink.on_have(w.src, true, &[phantom], &[]);
+    w.restored.sink.enqueue(Job::Restore {
+        log: w.i1,
+        source: w.src,
+        entry: Box::new(w.tail.clone()),
+    });
+    core.work();
+    w.restored.advance(9_000);
+    core.tick();
+    assert_eq!(w.restored.active_log(), w.i1, "waits inside the window");
+    assert_eq!(core.pending.len(), 1);
+    w.restored.advance(1_000);
+    core.tick();
+    assert_ne!(w.restored.active_log(), w.i1, "rotates after 10 s");
 }

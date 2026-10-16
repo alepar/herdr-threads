@@ -78,8 +78,12 @@ const MAX_SEEN_FORKS: usize = 4096;
 /// Most own logs remembered per advertising source, and sources.
 const MAX_ADVERTISED_LOGS: usize = 64;
 const MAX_ADVERTISED_SOURCES: usize = 256;
-/// Most peer heads of the active self log remembered.
+/// Most peer heads of the active self log remembered, and per source.
 const MAX_ACTIVE_HEADS: usize = 64;
+const MAX_ACTIVE_HEADS_PER_SOURCE: usize = 8;
+/// How long (ms) an own log a peer advertises may hold a `Restore` back while
+/// its genesis (which no peer can forge) has not arrived. A `Have` is unsigned.
+const OWN_CLAIM_PROOF_MS: u64 = 10_000;
 
 /// Most stopped logs a salvage summary line names.
 const SALVAGE_STOPS_LOGGED: usize = 4;
@@ -174,6 +178,9 @@ enum Probe {
     ForkSide { fork: ForkRef, got: Vec<Envelope> },
     /// The peer's entry that extends this node's active head.
     RestoreEntry,
+    /// The entry a peer's `Have` names as the tip of a frozen own log. Only a
+    /// signed entry at exactly that (counter, hash) starts a branch pull.
+    TipProof,
 }
 
 struct Core {
@@ -182,8 +189,8 @@ struct Core {
     pending_bytes: usize,
     probes: BTreeMap<BranchKey, Probe>,
     seen_forks: BTreeSet<(LogKey, [u8; 32], [u8; 32])>,
-    /// Own logs each source advertised.
-    advertised_own: BTreeMap<NodeUuid, BTreeSet<LogKey>>,
+    /// Own logs each source advertised, with when it first did.
+    advertised_own: BTreeMap<NodeUuid, BTreeMap<LogKey, MonoInstant>>,
     /// Advertised own logs whose genesis has not been seen ingested yet.
     watch_own: BTreeSet<LogKey>,
     /// Peers' heads of the active self log beyond this node's head.
@@ -560,19 +567,28 @@ impl Core {
     }
 
     /// Whether a `Restore` queued at `queued_at` may run: every own log an
-    /// active link advertises has its genesis ingested, or 5 minutes passed.
+    /// active link advertises has its genesis ingested, its advertisement is
+    /// older than [`OWN_CLAIM_PROOF_MS`] (an unproven claim), or 5 minutes
+    /// passed.
     fn restore_ready(&self, queued_at: MonoInstant) -> Result<bool, ApiError> {
         if self.now().0.saturating_sub(queued_at.0) >= RESTORE_WAIT_MS {
             return Ok(true);
         }
-        let advertised: BTreeSet<LogKey> = self
-            .advertised_own
-            .values()
-            .flat_map(|logs| logs.iter().copied())
-            .collect();
-        for log in advertised {
+        // The earliest advertisement of each log counts.
+        let mut advertised: BTreeMap<LogKey, MonoInstant> = BTreeMap::new();
+        for (log, first) in self.advertised_own.values().flatten() {
+            let slot = advertised.entry(*log).or_insert(*first);
+            if first.0 < slot.0 {
+                *slot = *first;
+            }
+        }
+        let now = self.now();
+        for (log, first) in advertised {
             match self.meta(&log)? {
                 Some(meta) if meta.contiguous >= 1 => {}
+                // An unsigned claim whose genesis did not come within the
+                // proof window no longer holds the restore back.
+                _ if now.0.saturating_sub(first.0) >= OWN_CLAIM_PROOF_MS => {}
                 _ => return Ok(false),
             }
         }
@@ -907,10 +923,7 @@ impl Core {
             };
             if meta.active {
                 if have.counter > meta.contiguous {
-                    if self.active_heads.len() < MAX_ACTIVE_HEADS {
-                        self.active_heads
-                            .insert((source, log), (have.counter, head));
-                    }
+                    self.note_active_head(source, log, have.counter, head);
                 } else {
                     self.active_heads.remove(&(source, log));
                 }
@@ -925,18 +938,28 @@ impl Core {
                 continue;
             }
             if meta.own && meta.state == LogState::Frozen {
-                // A frozen own log: the peer's head is a branch tip.
+                // A frozen own log: the peer's head may be a branch tip. A
+                // `Have` is unsigned, so the tip is recorded (and the
+                // own-history hold it starts) only on a signed entry: one this
+                // store already holds, else the peer's, probed for alone.
                 self.d.sink.note_tip_source(log, &have.head, source);
-                quantum!(self, |tx, _ctx, _decision| store::upsert_branch_tip(
-                    tx,
-                    &log,
-                    have.counter,
-                    head,
-                    Some(source)
-                ));
-                self.refresh_branches_flag()?;
-                self.schedule_pulls()?;
-                self.d.sink.set_have_memo(source, log, memo.0, memo.1);
+                if self.local_entry(&log, have.counter, head)?.is_some() {
+                    self.record_tip(log, have.counter, head, source)?;
+                    self.d.sink.set_have_memo(source, log, memo.0, memo.1);
+                    continue;
+                }
+                let want = BranchWant {
+                    node: log.node,
+                    inc: log.incarnation,
+                    tip: TipRef {
+                        counter: have.counter,
+                        hash: have.head.clone(),
+                    },
+                    from: have.counter,
+                };
+                if self.send_probe(source, want, Probe::TipProof) {
+                    self.d.sink.set_have_memo(source, log, memo.0, memo.1);
+                }
                 continue;
             }
             if have.counter > meta.contiguous {
@@ -996,13 +1019,55 @@ impl Core {
         {
             return;
         }
+        let now = self.now();
         let logs = self.advertised_own.entry(source).or_default();
-        if logs.len() < MAX_ADVERTISED_LOGS
-            && logs.insert(log)
-            && self.watch_own.len() < MAX_ADVERTISED_SOURCES
-        {
-            self.watch_own.insert(log);
+        if logs.len() < MAX_ADVERTISED_LOGS && !logs.contains_key(&log) {
+            logs.insert(log, now);
+            if self.watch_own.len() < MAX_ADVERTISED_SOURCES {
+                self.watch_own.insert(log);
+            }
         }
+    }
+
+    /// Remembers a peer's head of the active self log beyond this node's.
+    /// Memory only (the head is unsigned): a source holds at most
+    /// [`MAX_ACTIVE_HEADS_PER_SOURCE`] heads and the node [`MAX_ACTIVE_HEADS`];
+    /// a head already remembered is always updated.
+    fn note_active_head(&mut self, source: NodeUuid, log: LogKey, counter: u64, head: [u8; 32]) {
+        let key = (source, log);
+        if !self.active_heads.contains_key(&key) {
+            let by_source = self
+                .active_heads
+                .keys()
+                .filter(|(s, _)| *s == source)
+                .count();
+            if self.active_heads.len() >= MAX_ACTIVE_HEADS
+                || by_source >= MAX_ACTIVE_HEADS_PER_SOURCE
+            {
+                return;
+            }
+        }
+        self.active_heads.insert(key, (counter, head));
+    }
+
+    /// Records a signed branch tip of a frozen own log, starts its pull and
+    /// turns the own-history `Branches` hold on while it pulls.
+    fn record_tip(
+        &mut self,
+        log: LogKey,
+        counter: u64,
+        hash: [u8; 32],
+        source: NodeUuid,
+    ) -> Result<(), ApiError> {
+        quantum!(self, |tx, _ctx, _decision| store::upsert_branch_tip(
+            tx,
+            &log,
+            counter,
+            hash,
+            Some(source)
+        ));
+        self.refresh_branches_flag()?;
+        self.schedule_pulls()
     }
 
     /// Sends a probe `branch_want` and remembers what its reply is for;
@@ -1146,10 +1211,16 @@ impl Core {
         };
         match self.probes.get(&key).cloned() {
             Some(probe) => {
+                let is_tip_proof = matches!(probe, Probe::TipProof);
                 self.on_probe(probe, source, want, &key, &entries)?;
                 self.probes.remove(&key);
                 // The reply is handled: the branch may be requested again.
                 self.d.sink.clear_request(&key);
+                if is_tip_proof {
+                    // The probe held the tip's request slot while the proven
+                    // tip's pull was scheduled: schedule it again.
+                    self.schedule_pulls()?;
+                }
                 Ok(())
             }
             None => self.on_pull_reply(source, &key, want.from, &entries, more),
@@ -1177,6 +1248,28 @@ impl Core {
                         entry: Box::new(entry.clone()),
                     };
                     self.admit(job);
+                }
+                Ok(())
+            }
+            Probe::TipProof => {
+                let Some(meta) = self.meta(&log)? else {
+                    return Ok(());
+                };
+                let proven = entries.iter().any(|e| {
+                    e.log == log
+                        && e.counter == want.tip.counter
+                        && e.hash == tip_hash
+                        && e.verify(&meta.pubkey).is_ok()
+                });
+                if !proven {
+                    // A tip the peer cannot back with a signed entry: nothing
+                    // is recorded, and the memo keeps the claim from being
+                    // probed again.
+                    self.d.sink.penalize(source, log);
+                    return Ok(());
+                }
+                if meta.own && meta.state == LogState::Frozen {
+                    self.record_tip(log, want.tip.counter, tip_hash, source)?;
                 }
                 Ok(())
             }

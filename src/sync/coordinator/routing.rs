@@ -31,6 +31,11 @@ pub(super) const CLONE_PROBE_MS: u64 = 10_000;
 /// Established links per peer node beyond which the newest standby is closed.
 pub(super) const MAX_LINKS_PER_NODE: usize = 2;
 
+/// How long (ms) an advertised own log this node does not hold may keep the
+/// own-history hold on, from a link's first advertisement of it: its genesis
+/// (which no peer can forge) arrives in a round trip or the claim is ignored.
+pub(super) const OWN_CLAIM_PROOF_MS: u64 = 10_000;
+
 /// How long a [`ResyncPin`] holds without a completed round with its peer
 /// (ms).
 pub(super) const PIN_LIFT_MS: u64 = 600_000;
@@ -175,18 +180,28 @@ pub(super) fn reselect(
 /// `local` froze it, else the peer's); the branches beyond are the
 /// incarnations worker's flag. A node no peer advertises beyond itself (a
 /// fresh node) is never on.
-pub(super) fn own_history_on<'a>(
+///
+/// A `Have` is unsigned. An advertised own log that `local` does not hold at
+/// all (no ingested genesis) counts only while `unheld_counts(peer, log)`
+/// says its proof window is open; the actor closes the window
+/// [`OWN_CLAIM_PROOF_MS`] after the peer's first advertisement of the log. A
+/// log `local` holds counts as advertised.
+pub(super) fn own_history_on<'a, P>(
     own: NodeUuid,
     local: &Vector,
-    active_peers: impl IntoIterator<Item = &'a Vector>,
+    active_peers: impl IntoIterator<Item = (P, &'a Vector)>,
+    unheld_counts: impl Fn(&P, &LogKey) -> bool,
 ) -> bool {
-    active_peers.into_iter().any(|peer| {
+    active_peers.into_iter().any(|(id, peer)| {
         peer.0
             .iter()
             .filter(|(log, _)| log.node == own)
             .any(|(log, adv)| {
                 let held = local.0.get(log);
                 let have = held.map_or(0, |head| head.counter);
+                if have == 0 && adv.counter > 0 && !unheld_counts(&id, log) {
+                    return false;
+                }
                 let mut counter = adv.counter;
                 let freezes = [held, Some(adv)].into_iter().flatten().filter_map(|head| {
                     match (head.state, head.frozen_at) {
@@ -377,36 +392,81 @@ mod tests {
         // Another own incarnation beyond local: on.
         let local = vector(&[(own_log(2), head(1))]);
         let peer = vector(&[(own_log(1), head(7)), (log(5), head(99))]);
-        assert!(own_history_on(own, &local, [&peer]));
+        assert!(own_history_on(own, &local, [(0, &peer)], |_, _| true));
 
         // Caught up: off.
         let local = vector(&[(own_log(1), head(7)), (own_log(2), head(1))]);
-        assert!(!own_history_on(own, &local, [&peer]));
+        assert!(!own_history_on(own, &local, [(0, &peer)], |_, _| true));
 
         // The peer advertises no own log beyond local (fresh node): off.
         let only_foreign = vector(&[(log(5), head(99))]);
-        assert!(!own_history_on(own, &Vector::default(), [&only_foreign]));
-        assert!(!own_history_on(own, &Vector::default(), []));
+        assert!(!own_history_on(
+            own,
+            &Vector::default(),
+            [(0, &only_foreign)],
+            |_, _| true
+        ));
+        let no_peers: [(u8, &Vector); 0] = [];
+        assert!(!own_history_on(
+            own,
+            &Vector::default(),
+            no_peers,
+            |_, _| true
+        ));
         let zero = vector(&[(own_log(1), head(0))]);
-        assert!(!own_history_on(own, &Vector::default(), [&zero]));
+        assert!(!own_history_on(
+            own,
+            &Vector::default(),
+            [(0, &zero)],
+            |_, _| true
+        ));
 
         // A frozen own log counts only up to its freeze counter.
         let local = vector(&[(own_log(1), frozen(3, 3))]);
         let beyond = vector(&[(own_log(1), head(9))]);
-        assert!(!own_history_on(own, &local, [&beyond]));
+        assert!(!own_history_on(own, &local, [(0, &beyond)], |_, _| true));
         let local = vector(&[(own_log(1), frozen(2, 3))]);
-        assert!(own_history_on(own, &local, [&beyond]));
+        assert!(own_history_on(own, &local, [(0, &beyond)], |_, _| true));
         // A peer's freeze caps its advertisement too.
         let capped = vector(&[(own_log(1), frozen(9, 4))]);
         assert!(!own_history_on(
             own,
             &vector(&[(own_log(1), head(4))]),
-            [&capped]
+            [(0, &capped)],
+            |_, _| true
         ));
         assert!(own_history_on(
             own,
             &vector(&[(own_log(1), head(3))]),
-            [&capped]
+            [(0, &capped)],
+            |_, _| true
         ));
+
+        // An advertised own log local does not hold counts only while its
+        // proof window is open, per (peer, log).
+        let unheld = vector(&[(own_log(1), head(50))]);
+        assert!(own_history_on(
+            own,
+            &Vector::default(),
+            [(7, &unheld)],
+            |p, l| { *p == 7 && *l == own_log(1) }
+        ));
+        assert!(!own_history_on(
+            own,
+            &Vector::default(),
+            [(7, &unheld)],
+            |_, _| false
+        ));
+        // The window is the claiming peer's: another peer's open window does
+        // not keep an expired claim alive.
+        assert!(!own_history_on(
+            own,
+            &Vector::default(),
+            [(7, &unheld)],
+            |p, _| *p == 8
+        ));
+        // A held log counts whatever the predicate says.
+        let held = vector(&[(own_log(1), head(3))]);
+        assert!(own_history_on(own, &held, [(7, &unheld)], |_, _| false));
     }
 }
