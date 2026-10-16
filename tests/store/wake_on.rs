@@ -363,3 +363,82 @@ fn a_database_missing_a_wake_on_column_is_incompatible() {
         ErrorCode::IncompatibleSchema
     );
 }
+
+const FOREIGN_NODE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+/// A seat homed on another node (no host, no target), plus a directory row naming that node `bx1`.
+fn remote_seat(conn: &Connection) -> SeatId {
+    conn.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,host_id,published) \
+         VALUES ('r','34750f98bd59fcfc946da45aaabe933b','remote','native',0,0,?1,0,'agent',NULL,1)",
+        [FOREIGN_NODE],
+    )
+    .unwrap();
+    crate::store::node_directory::upsert(
+        conn,
+        &crate::store::node_directory::NodeDirectoryRow {
+            node_uuid: FOREIGN_NODE.parse().unwrap(),
+            tag: "bx1".parse().unwrap(),
+            tag_k: 0,
+            host_label: None,
+            first_seen_at: 0,
+            tag_hlc: None,
+        },
+    )
+    .unwrap();
+    SeatId::new("r")
+}
+
+#[test]
+fn remote_seat_threshold_read_is_refused_naming_its_home_node() {
+    let (_, conn) = setup();
+    let remote = remote_seat(&conn);
+    let errors = [
+        seats::nudge_threshold(&conn, &remote)
+            .map(|_| ())
+            .unwrap_err(),
+        seats::wake_on(&conn, &remote).map(|_| ()).unwrap_err(),
+    ];
+    for error in errors {
+        assert_eq!(error.code, ErrorCode::CallerUnverified);
+        assert_eq!(
+            error.detail,
+            "seat r is homed on node bx1; its nudge threshold is set there"
+        );
+    }
+}
+
+#[test]
+fn remote_seat_threshold_set_is_refused_before_any_write() {
+    let (context, mut conn) = setup();
+    let remote = remote_seat(&conn);
+    let mut command = threshold_command(3, "op-remote");
+    command.claim.seat = remote.clone();
+    let before = conn.total_changes();
+    let error = set_threshold(&context, &mut conn, &command).unwrap_err();
+    assert_eq!(error.code, ErrorCode::CallerUnverified);
+    assert!(
+        error.detail.contains("homed on node bx1"),
+        "{}",
+        error.detail
+    );
+    let mut wake = SetWakeOn {
+        value: WakeOn::All,
+        operation: OperationId::new("op-remote-wake"),
+        claim: command.claim.clone(),
+    };
+    wake.claim.seat = remote;
+    let error = set(&context, &mut conn, &wake).unwrap_err();
+    assert!(
+        error.detail.contains("homed on node bx1"),
+        "{}",
+        error.detail
+    );
+    assert_eq!(conn.total_changes(), before, "a refused set writes nothing");
+    let stored: i64 = conn
+        .query_row("SELECT nudge_threshold FROM seats WHERE id='r'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(stored, 0);
+}
