@@ -2,7 +2,14 @@
 
 ## Unreleased
 
-- **Breaking: cross-node sync starts with a fresh store.** herdr-threads daemons on machines linked by your own `ssh` now share one thread space, and every daemon is a node with its own identity and a new store under `<state_dir>/node/`. The upgraded daemon does not read the v1.1.x and older store under `<state_dir>/instances/`: existing threads, messages, memberships, pending invitations and ACKs, overdue tracking and seat nudge thresholds are not carried over or shown. They stay on disk; `doctor` reports them, and `herdr-threads legacy purge` deletes them. Installed hooks keep working, and seats re-enroll with new IDs on their next call. Wire protocol 9: upgrade the CLI and daemon together. To go back, reinstall v1.1.x or older; it still reads its own untouched store.
+## v2.0.0
+
+- **Cross-node sync.** herdr-threads daemons on machines linked by your own `ssh` share one thread space: an agent on any node can create and join threads, invite, send, receive and ACK with seats on any other node, through partitions of any length, and no Herdr client or server has to be up for replication. Each daemon is a node (one per machine, OS user and state dir) with its own Ed25519 identity; nodes exchange signed facts and converge once any path between them returns. Link nodes with `peer add <ssh-dest>`; inspect with `sync status`, `peer list` and `sync verify`. A daemon keeps running with no Herdr server attached (store-only) while it has a peer link or dial target, and one daemon serves every Herdr server of its state dir.
+- **Breaking: fresh node store.** Every daemon starts a new store under `<state_dir>/node/`. The v1.1.x and older store under `<state_dir>/instances/` is not read: existing threads, messages, memberships, pending invitations and ACKs, overdue tracking, seat nudge thresholds and operator settings are not carried over. They stay on disk; `doctor` reports them and `herdr-threads legacy purge` deletes them. Installed hooks keep working, and seats re-enroll with new IDs on their next call. To go back, reinstall v1.1.x; it still reads its own untouched store.
+- **Breaking: wire protocol 9.** A v1.x CLI and a v2.0 daemon refuse each other before dispatch; upgrade both together.
+- **Breaking: new ID shape.** New IDs are one type letter, the minting node's 3-character tag and 8 base62 characters (`sQ7ak3Fq9a2B`: 11 characters after the type letter, was 8). Scripts matching the old 8-character form need updating.
+- **Breaking: `doctor --json` names the node.** `instance_dir` is now `node_dir`, and the daemon id is a 32-hex node id instead of a hyphenated UUID.
+- **Breaking: v1 retries do not resolve.** A `next: herdr-threads retry <ref>` printed by v1.x refers to the old store.
 
 ## v1.1.0
 
