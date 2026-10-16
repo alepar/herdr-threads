@@ -30,8 +30,8 @@ codeBuckets:
   pendingRetry: 
   parked: 
   stalled: false
-  review: not ready (only blocker: full suite unmeasured under deferSweep; clippy/check-default-features/fmt/harness-neutral clean @ a73a58234) — final-review-reentry-2.md
-  sweep: SWEEP DEFERRED (caller-owned)
+  review: ready (after the phase-6 sweep @ 82f475f56)
+  sweep: 82f475f56 — 6538 passed, 0 failed, 0 errors, 47 skipped; failing: none; command: HT_LEAK_RUN_ID=<uuid> nice cargo nextest run --locked --all-targets --all-features + scripts/check-no-leaked-processes --run-id (clean; nextest 312.7s, wall 510s) @ 82f475f56
   slowness: round 1: graph-bound — 8 open beads, depth 5, achievable width 2 vs cap 8; edge audit armed now (no changes)
   worktreesKept: 
   processSweep: stopped 0 · survived 0
