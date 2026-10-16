@@ -1022,8 +1022,14 @@ fn public_facade_mixed_retirement_keeps_cutover_across_quanta_and_reopen() {
             0
         );
     }
-    let status =
+    let pending =
         StorePort::pending_retirement_jobs(&store, PageRequest::default(), &budget()).unwrap();
+    assert!(
+        pending.items.is_empty(),
+        "completed jobs leave normal discovery"
+    );
+    let status =
+        StorePort::retirement_recovery_jobs(&store, PageRequest::default(), &budget()).unwrap();
     assert_eq!(status.items[0].cleanup_state, CleanupState::Complete);
     assert!(status.items[0].warning_history_complete);
     let db = store.context.open_writer().unwrap();

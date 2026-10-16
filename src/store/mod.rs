@@ -2678,6 +2678,13 @@ impl StorePort for SqliteStore {
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<RetirementStatus>, ApiError> {
+        queries::pending_retirement_jobs(&self.context, &self.instance, page, budget)
+    }
+    fn retirement_recovery_jobs(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<RetirementStatus>, ApiError> {
         let result = queries::query_with_output(
             &self.context,
             &self.instance,

@@ -3568,6 +3568,58 @@ fn retirement_jobs_page_205_scalar_rows() {
 }
 
 #[test]
+fn pending_retirement_cursor_is_separate_from_terminal_inclusive_history() {
+    let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
+    for (n, complete) in [(0, true), (1, false), (2, false)] {
+        let seat = format!("seat-{n}");
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES (?1,'i','retired','native',1,0,1,1)", [&seat]).unwrap();
+        db.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,status,phase) VALUES (?1,?2,1,'boot',1,'target',1,?3,?4)", params![format!("job-{n}"), seat, if complete { "complete" } else { "pending" }, if complete { "complete" } else { "select_thread" }]).unwrap();
+    }
+    db.execute_batch("COMMIT").unwrap();
+    let request = PageRequest {
+        limit: 1,
+        ..Default::default()
+    };
+    let pending = pending_retirement_jobs(&store, "i", request.clone(), &budget()).unwrap();
+    assert_eq!(pending.items[0].job.as_str(), "job-1");
+    let public = Command::RetirementJobs(RetirementJobsQuery {
+        page: request.clone(),
+    });
+    let CommandResult::RetirementJobs(history) = query(&store, "i", &public, &budget()).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(history.items[0].job.as_str(), "job-0");
+    let from_pending = Command::RetirementJobs(RetirementJobsQuery {
+        page: PageRequest {
+            cursor: pending.next_cursor,
+            ..request.clone()
+        },
+    });
+    assert_eq!(
+        query(&store, "i", &from_pending, &budget())
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidCursor
+    );
+    assert_eq!(
+        pending_retirement_jobs(
+            &store,
+            "i",
+            PageRequest {
+                cursor: history.next_cursor,
+                ..request
+            },
+            &budget()
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::InvalidCursor
+    );
+}
+
+#[test]
 fn retirement_summary_finds_late_pending_failure_and_clears_after_completion() {
     let (store, db) = fixture();
     for n in 0..25 {

@@ -372,6 +372,120 @@ fn progressed_with_more_needs_unfinished_progress() {
 }
 
 #[test]
+fn completed_retirement_history_never_enters_the_advancement_writer() {
+    struct HistoryPort {
+        due: FakePort,
+        count: u64,
+        discoveries: AtomicU64,
+        advances: AtomicU64,
+    }
+    impl DeadlinePort for HistoryPort {
+        crate::no_durable_work!();
+        fn clock(&self) -> &dyn Clock {
+            &self.due.clock
+        }
+        fn due_obligations(
+            &self,
+            request: DueScanRequest,
+            budget: &CallBudget,
+        ) -> Result<DueScanProgress, ApiError> {
+            self.due.due_obligations(request, budget)
+        }
+        fn pending_retirement_jobs(
+            &self,
+            page: PageRequest,
+            _: &CallBudget,
+        ) -> Result<Page<RetirementStatus>, ApiError> {
+            self.discoveries.fetch_add(1, Ordering::SeqCst);
+            let after = page
+                .cursor
+                .as_deref()
+                .map_or(0, |raw| raw.parse::<u64>().unwrap());
+            let items = if after < self.count {
+                vec![RetirementStatus {
+                    job: RetirementJobId::new(format!("job-{after}")),
+                    seat: SeatId::new(format!("seat-{after}")),
+                    effective_retired: true,
+                    retired_at: UtcMillis(0),
+                    cleanup_state: crate::protocol::results::CleanupState::Complete,
+                    warning_history_complete: true,
+                    phase: "complete".into(),
+                    processed_units: 1,
+                    remaining_estimate: None,
+                    last_error: None,
+                }]
+            } else {
+                vec![]
+            };
+            Ok(Page {
+                items,
+                next_cursor: (after < self.count).then(|| (after + 1).to_string()),
+                next_argv: (after < self.count).then(|| vec!["next".into()]),
+                high_water_ordinal: self.count,
+                scope_revision: None,
+                has_more: after < self.count,
+                stop_reason: if after < self.count {
+                    crate::protocol::pagination::StopReason::Rows
+                } else {
+                    crate::protocol::pagination::StopReason::Complete
+                },
+                consistency: crate::protocol::pagination::Consistency::BoundedLive,
+            })
+        }
+        fn advance_retirement(
+            &self,
+            job: RetirementJobId,
+            _: WorkAdmission,
+            _: &CallBudget,
+        ) -> Result<RetirementProgress, ApiError> {
+            self.advances.fetch_add(1, Ordering::SeqCst);
+            Ok(RetirementProgress {
+                job,
+                processed_this_turn: 0,
+                processed_total: 1,
+                complete: true,
+                warning_history_complete: true,
+                last_error: None,
+            })
+        }
+    }
+    for count in [143, 10_000] {
+        let port = HistoryPort {
+            due: FakePort::default(),
+            count,
+            discoveries: AtomicU64::new(0),
+            advances: AtomicU64::new(0),
+        };
+        let mut driver = DeadlineDriver::new(&port);
+        let status = crate::service::workers::WorkerStatus::default();
+        for sweep in 0..2 {
+            port.due.clock.mono.store(sweep * 5_000, Ordering::SeqCst);
+            let before = port.discoveries.load(Ordering::SeqCst);
+            loop {
+                let outcome = status.drive_deadlines(&mut driver, &budget()).unwrap();
+                assert!(outcome.retirement_error.is_none());
+                if !outcome.progressed_with_more() {
+                    break;
+                }
+                assert!(port.discoveries.load(Ordering::SeqCst) - before <= count);
+                driver.after_committed_change();
+            }
+            assert_eq!(
+                port.advances.load(Ordering::SeqCst),
+                0,
+                "completed history entered the writer: N={count}, sweep={sweep}"
+            );
+        }
+        eprintln!(
+            "N={count}: two sweeps: discovery={}, due={}, advancement={}",
+            port.discoveries.load(Ordering::SeqCst),
+            port.due.due_calls.load(Ordering::SeqCst),
+            port.advances.load(Ordering::SeqCst)
+        );
+    }
+}
+
+#[test]
 fn retirement_backlog_drains_without_a_safety_tick_per_completed_job() {
     use crate::service::{fair_writer::FairWriter, workers::ScheduledStore};
     use crate::store::{SqliteStore, StoreSettings, connection::StoreContext};
@@ -448,6 +562,402 @@ fn retirement_backlog_drains_without_a_safety_tick_per_completed_job() {
         );
         assert_eq!(processed, 1, "the no-membership job needs just one unit");
     }
+}
+
+// This port counts calls around the real scheduler/store boundary; discovery and
+// retirement decisions themselves are production implementations.
+struct MeasuredRetirementStore {
+    inner: crate::service::workers::ScheduledStore,
+    due_calls: AtomicU64,
+    advances: Mutex<Vec<String>>,
+    recovery_reads: Mutex<Vec<Option<String>>>,
+    fail_recovery: std::sync::atomic::AtomicBool,
+}
+impl DeadlinePort for MeasuredRetirementStore {
+    crate::no_durable_work!();
+    fn clock(&self) -> &dyn Clock {
+        self.inner.clock()
+    }
+    fn due_obligations(
+        &self,
+        request: DueScanRequest,
+        budget: &CallBudget,
+    ) -> Result<DueScanProgress, ApiError> {
+        self.due_calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.due_obligations(request, budget)
+    }
+    fn pending_retirement_jobs(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<RetirementStatus>, ApiError> {
+        self.inner.pending_retirement_jobs(page, budget)
+    }
+    fn retirement_recovery_jobs(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<RetirementStatus>, ApiError> {
+        assert!(page.limit <= 32 && page.max_bytes <= 16_384);
+        self.recovery_reads
+            .lock()
+            .unwrap()
+            .push(page.cursor.clone());
+        if self.fail_recovery.swap(false, Ordering::SeqCst) {
+            return Err(ApiError::store_busy("injected recovery read failure"));
+        }
+        self.inner.retirement_recovery_jobs(page, budget)
+    }
+    fn advance_retirement(
+        &self,
+        job: RetirementJobId,
+        admission: WorkAdmission,
+        budget: &CallBudget,
+    ) -> Result<RetirementProgress, ApiError> {
+        self.advances.lock().unwrap().push(job.as_str().to_owned());
+        self.inner.advance_retirement(job, admission, budget)
+    }
+}
+fn measured_retirement_store(
+    terminal: usize,
+    pending: usize,
+) -> (
+    MeasuredRetirementStore,
+    std::sync::Arc<FakeClock>,
+    rusqlite::Connection,
+) {
+    use crate::service::{fair_writer::FairWriter, workers::ScheduledStore};
+    use crate::store::{SqliteStore, StoreSettings, connection::StoreContext};
+    use std::sync::Arc;
+    let path = crate::test_support::scratch::temp_path(format!(
+        "ht-retirement-cost-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let clock = Arc::new(FakeClock::default());
+    let context = StoreContext::new(path, clock.clone());
+    let mut db = context.open_writer().unwrap();
+    let tx = db.transaction().unwrap();
+    tx.execute(
+        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
+        [],
+    )
+    .unwrap();
+    for n in 0..terminal + pending {
+        let complete = n < terminal;
+        let seat = format!("seat-{n}");
+        let job = format!("job-{n}");
+        tx.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES (?1,'i','retired','native',1,0,1,1)", [&seat]).unwrap();
+        tx.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,status,phase,processed_units) VALUES (?1,?2,1,'boot',1,'target',1,?3,?4,?5)", rusqlite::params![job,seat,if complete { "complete" } else { "pending" },if complete { "complete" } else { "select_thread" },i64::from(complete)]).unwrap();
+    }
+    tx.commit().unwrap();
+    let inner = ScheduledStore::new(
+        Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap()),
+        Arc::new(FairWriter::new(32)),
+    );
+    (
+        MeasuredRetirementStore {
+            inner,
+            due_calls: AtomicU64::new(0),
+            advances: Mutex::new(vec![]),
+            recovery_reads: Mutex::new(vec![]),
+            fail_recovery: std::sync::atomic::AtomicBool::new(false),
+        },
+        clock,
+        db,
+    )
+}
+
+#[test]
+fn real_store_retirement_sweep_cost_depends_only_on_pending_jobs() {
+    for terminal in [143, 10_000] {
+        for pending in [0, 3] {
+            let (port, _, db) = measured_retirement_store(terminal, pending);
+            let mut driver = DeadlineDriver::new(&port);
+            let status = crate::service::workers::WorkerStatus::default();
+            let mut calls = 0;
+            loop {
+                calls += 1;
+                assert!(calls <= terminal + pending + 2);
+                let outcome = status.drive_deadlines(&mut driver, &budget()).unwrap();
+                assert!(outcome.retirement_error.is_none(), "{outcome:?}");
+                if !outcome.progressed_with_more() && !outcome.due_continuation {
+                    break;
+                }
+                driver.after_committed_change();
+            }
+            assert!(
+                port.recovery_reads.lock().unwrap().is_empty(),
+                "healthy sweeps never read terminal history"
+            );
+            let advances = port.advances.lock().unwrap();
+            let historical_advances = advances
+                .iter()
+                .filter(|id| id.strip_prefix("job-").unwrap().parse::<usize>().unwrap() < terminal)
+                .count();
+            assert_eq!(historical_advances, 0, "N={terminal}, k={pending}");
+            assert_eq!(advances.len(), pending);
+            // Each ScheduledStore due call admits one fair-writer turn (two due
+            // scans plus catch-up maintenance), and each retirement admits one. k jobs plus
+            // the final empty page cost at most 3*(k+1)+k durable decisions.
+            let writer_admissions = port.due_calls.load(Ordering::SeqCst) + advances.len() as u64;
+            assert!(writer_admissions <= 2 * pending as u64 + 1);
+            let writer_decisions =
+                3 * port.due_calls.load(Ordering::SeqCst) + advances.len() as u64;
+            assert!(
+                writer_decisions <= 4 * pending as u64 + 3,
+                "N={terminal}, k={pending}: {writer_decisions}"
+            );
+            let remaining: i64 = db
+                .query_row(
+                    "SELECT count(*) FROM retirements WHERE status='pending'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(remaining, 0);
+            eprintln!(
+                "real store N={terminal}, k={pending}: advances={}, due={}, admissions={writer_admissions}, transaction bound={writer_decisions}",
+                advances.len(),
+                port.due_calls.load(Ordering::SeqCst)
+            );
+        }
+    }
+}
+
+fn remember_retirement_failure(status: &crate::service::workers::WorkerStatus, n: usize) {
+    status.observe(&DriveOutcome {
+        retirement_job: Some(RetirementJobId::new(format!("job-{n}"))),
+        retirement_error: Some(ApiError::store_busy("fixture transaction failure")),
+        ..Default::default()
+    });
+}
+
+#[test]
+fn pending_retirement_discovery_cannot_certify_lost_key_recovery() {
+    let status = crate::service::workers::WorkerStatus::default();
+    for n in 0..65 {
+        remember_retirement_failure(&status, n);
+    }
+    for n in 0..64 {
+        status.observe(&DriveOutcome {
+            retirement_job: Some(RetirementJobId::new(format!("job-{n}"))),
+            retirement_complete: true,
+            ..Default::default()
+        });
+    }
+    assert!(status.health().unwrap().tracking_gap);
+    status.observe(&DriveOutcome {
+        retirement_discovery: Some(DiscoveryProgress {
+            fresh_start: true,
+            reached_end: true,
+            returned_job: false,
+        }),
+        ..Default::default()
+    });
+    assert!(
+        status.health().unwrap().tracking_gap,
+        "an empty pending index is not terminal-inclusive recovery evidence"
+    );
+    let pending_only = FakePort::default();
+    let driver = DeadlineDriver::new(&pending_only);
+    status.recover_retirements(&driver, &budget());
+    assert!(
+        status.health().unwrap().tracking_gap,
+        "a port without a recovery reader must fail conservatively"
+    );
+}
+
+#[test]
+fn retirement_health_recovers_completion_elsewhere_without_advancement() {
+    let (port, clock, db) = measured_retirement_store(0, 1);
+    let status = crate::service::workers::WorkerStatus::default();
+    remember_retirement_failure(&status, 0);
+    assert!(status.health().is_some());
+    db.execute(
+        "UPDATE retirements SET status='complete',phase='complete',last_error=NULL",
+        [],
+    )
+    .unwrap();
+    let mut driver = DeadlineDriver::new(&port);
+    for tick in 0..4 {
+        clock.mono.store(tick * TICK_MILLIS, Ordering::SeqCst);
+        status.drive_deadlines(&mut driver, &budget()).unwrap();
+    }
+    assert!(status.health().is_none());
+    assert!(
+        port.advances.lock().unwrap().is_empty(),
+        "health recovery must never advance terminal jobs"
+    );
+}
+
+#[test]
+fn retirement_health_tracking_gap_requires_terminal_inclusive_fresh_coverage() {
+    let (port, clock, db) = measured_retirement_store(65, 1);
+    // An unfinished valid phase whose membership is absent retains a failure,
+    // so normal advancement cannot turn this fixture into terminal evidence.
+    db.execute(
+        "UPDATE retirements SET phase='invitations' WHERE id='job-65'",
+        [],
+    )
+    .unwrap();
+    let status = crate::service::workers::WorkerStatus::default();
+    for n in 0..65 {
+        remember_retirement_failure(&status, n);
+    }
+    assert!(status.health().unwrap().tracking_gap);
+    let mut driver = DeadlineDriver::new(&port);
+    for tick in 0..80 {
+        clock.mono.store(tick * TICK_MILLIS, Ordering::SeqCst);
+        status.drive_deadlines(&mut driver, &budget()).unwrap();
+    }
+    assert!(
+        status.health().unwrap().tracking_gap,
+        "pending rows cannot close a tracking gap"
+    );
+    db.execute(
+        "UPDATE retirements SET status='complete',phase='complete',last_error=NULL",
+        [],
+    )
+    .unwrap();
+    port.advances.lock().unwrap().clear();
+    for tick in 80..160 {
+        clock.mono.store(tick * TICK_MILLIS, Ordering::SeqCst);
+        status.drive_deadlines(&mut driver, &budget()).unwrap();
+    }
+    assert!(
+        status.health().is_none(),
+        "fresh full terminal coverage closes the gap"
+    );
+    assert!(
+        port.advances.lock().unwrap().is_empty(),
+        "recovery is read-only"
+    );
+}
+
+#[test]
+fn retirement_recovery_rejects_terminal_rows_with_retained_errors() {
+    let (port, clock, db) = measured_retirement_store(1, 0);
+    let status = crate::service::workers::WorkerStatus::default();
+    remember_retirement_failure(&status, 0);
+    db.execute(
+        "UPDATE retirements SET last_error='inconsistent terminal diagnostic'",
+        [],
+    )
+    .unwrap();
+    let driver = DeadlineDriver::new(&port);
+    status.recover_retirements(&driver, &budget());
+    assert!(
+        status.health().is_some(),
+        "a terminal row retaining an error is not completion evidence"
+    );
+    db.execute("UPDATE retirements SET last_error=NULL", [])
+        .unwrap();
+    clock.mono.store(5_000, Ordering::SeqCst);
+    status.recover_retirements(&driver, &budget());
+    assert!(status.health().is_none());
+    assert!(port.advances.lock().unwrap().is_empty());
+}
+
+#[test]
+fn retirement_recovery_error_backs_off_and_requires_a_fresh_complete_walk() {
+    let (port, clock, _) = measured_retirement_store(65, 0);
+    let status = crate::service::workers::WorkerStatus::default();
+    for n in 0..65 {
+        remember_retirement_failure(&status, n);
+    }
+    let driver = DeadlineDriver::new(&port);
+    status.recover_retirements(&driver, &budget());
+    assert!(status.health().unwrap().tracking_gap);
+    // Even fast normal continuations must not drain recovery pages at once.
+    for _ in 0..10 {
+        status.recover_retirements(&driver, &budget());
+    }
+    assert_eq!(port.recovery_reads.lock().unwrap().len(), 1);
+    clock.mono.store(5_000, Ordering::SeqCst);
+    port.fail_recovery.store(true, Ordering::SeqCst);
+    status.recover_retirements(&driver, &budget());
+    clock.mono.store(9_999, Ordering::SeqCst);
+    status.recover_retirements(&driver, &budget());
+    assert_eq!(
+        port.recovery_reads.lock().unwrap().len(),
+        2,
+        "failed query is backed off"
+    );
+    for at in [10_000, 15_000] {
+        clock.mono.store(at, Ordering::SeqCst);
+        status.recover_retirements(&driver, &budget());
+    }
+    assert!(
+        status.health().unwrap().tracking_gap,
+        "the error invalidated this partial walk"
+    );
+    for at in [20_000, 25_000, 30_000] {
+        clock.mono.store(at, Ordering::SeqCst);
+        status.recover_retirements(&driver, &budget());
+    }
+    assert!(
+        status.health().is_none(),
+        "only a fresh error-free full walk closes the gap"
+    );
+    let reads = port.recovery_reads.lock().unwrap().len();
+    clock.mono.store(35_000, Ordering::SeqCst);
+    status.recover_retirements(&driver, &budget());
+    assert_eq!(
+        port.recovery_reads.lock().unwrap().len(),
+        reads,
+        "recovery stops when health is clear"
+    );
+    assert_eq!(port.due_calls.load(Ordering::SeqCst), 0);
+    assert!(port.advances.lock().unwrap().is_empty());
+}
+
+#[test]
+fn retirement_health_recovery_reads_while_the_fair_writer_is_held() {
+    use crate::ports::StorePort;
+    use crate::service::{
+        fair_writer::FairWriter,
+        workers::{ScheduledStore, WorkerStatus},
+    };
+    use crate::store::{SqliteStore, StoreSettings, connection::StoreContext};
+    use std::sync::Arc;
+    let clock = Arc::new(crate::app::SystemClock::new());
+    let path = crate::test_support::scratch::temp_path(format!(
+        "ht-retirement-read-only-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let context = StoreContext::new(path, clock.clone());
+    let db = context.open_writer().unwrap();
+    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0);
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES ('seat-0','i','retired','native',1,0,1,1);
+        INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,status,phase) VALUES ('job-0','seat-0',1,'boot',1,'target',1,'complete','complete');").unwrap();
+    let store: Arc<dyn StorePort> =
+        Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
+    let writer = Arc::new(FairWriter::new(32));
+    let port = ScheduledStore::new(store, writer.clone());
+    let driver = DeadlineDriver::new(&port);
+    let status = WorkerStatus::default();
+    remember_retirement_failure(&status, 0);
+    // A real clock bounds a regression that incorrectly waits for writer
+    // admission. No helper thread or frozen-clock timeout can outlive this test.
+    let call_budget = CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + 1_000),
+        cancellation: Cancellation::default(),
+    };
+    let _held = writer
+        .enter_foreground(&call_budget, clock.as_ref())
+        .unwrap();
+    let before: i64 = db
+        .query_row("PRAGMA data_version", [], |r| r.get(0))
+        .unwrap();
+    status.recover_retirements(&driver, &call_budget);
+    assert!(
+        status.health().is_none(),
+        "terminal evidence must recover without waiting for the writer"
+    );
+    let after: i64 = db
+        .query_row("PRAGMA data_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after, before, "the recovery read committed no SQLite write");
 }
 
 #[test]

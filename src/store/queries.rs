@@ -372,7 +372,7 @@ fn query_inner(
             delivery_inspect(&db, instance, q, store.clock().utc_now(), output)
         }
         Command::Thread(q) => thread_details(&db, instance, q, output),
-        Command::RetirementJobs(q) => retirement_jobs(&db, instance, q, output),
+        Command::RetirementJobs(q) => retirement_jobs(&db, instance, q, output, false),
         Command::Warnings(q) => warnings(&db, instance, q, output),
         Command::ActiveWarnings(q) => {
             active_warnings(&db, store, instance, q, output, &active_budget)
@@ -665,13 +665,50 @@ pub fn query_operation_status(
     }))
 }
 
+/// Scheduler discovery skips terminal history using the existing status index.
+/// Its cursor cannot be reused by the public terminal-inclusive history query.
+pub fn pending_retirement_jobs(
+    store: &StoreContext,
+    instance: &str,
+    page: PageRequest,
+    budget: &CallBudget,
+) -> Result<Page<RetirementStatus>, ApiError> {
+    page.validate()
+        .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+    let db = store.open_query(budget.clone())?;
+    db.execute_batch("BEGIN DEFERRED")
+        .map_err(|error| db.map_error(error))?;
+    let result = retirement_jobs(
+        &db,
+        instance,
+        &RetirementJobsQuery { page },
+        &OutputSpec::default(),
+        true,
+    )?;
+    db.execute_batch("COMMIT")
+        .map_err(|error| db.map_error(error))?;
+    db.check_budget()?;
+    match result {
+        CommandResult::RetirementJobs(page) => Ok(page),
+        _ => Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "retirement query returned wrong result",
+        )),
+    }
+}
+
 fn retirement_jobs(
     db: &QueryConnection,
     instance: &str,
     q: &RetirementJobsQuery,
     output: &OutputSpec,
+    pending_only: bool,
 ) -> Result<CommandResult, ApiError> {
-    let filter = digest(&"retirement-jobs")?;
+    let filter = digest(&if pending_only {
+        "pending-retirement-jobs"
+    } else {
+        "retirement-jobs"
+    })?;
     let cursor = decode_cursor(
         &q.page,
         instance,
@@ -712,7 +749,27 @@ fn retirement_jobs(
             Option<String>,
             String,
         );
-        let row:Option<Row>=db.query_row("SELECT r.ordinal,r.id,r.seat_id,r.cutover_at,r.phase,r.processed_units,r.status,r.last_error,s.instance_id FROM retirements r JOIN seats s ON s.id=r.seat_id WHERE r.ordinal>?1 AND r.ordinal<=?2 ORDER BY r.ordinal LIMIT 1",params![last as i64,high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).optional().map_err(|e|db.map_error(e))?;
+        let sql = if pending_only {
+            "SELECT r.ordinal,r.id,r.seat_id,r.cutover_at,r.phase,r.processed_units,r.status,r.last_error,s.instance_id FROM retirements r INDEXED BY retirements_status_ordinal JOIN seats s ON s.id=r.seat_id WHERE r.status='pending' AND r.ordinal>?1 AND r.ordinal<=?2 ORDER BY r.ordinal LIMIT 1"
+        } else {
+            "SELECT r.ordinal,r.id,r.seat_id,r.cutover_at,r.phase,r.processed_units,r.status,r.last_error,s.instance_id FROM retirements r JOIN seats s ON s.id=r.seat_id WHERE r.ordinal>?1 AND r.ordinal<=?2 ORDER BY r.ordinal LIMIT 1"
+        };
+        let row: Option<Row> = db
+            .query_row(sql, params![last as i64, high as i64], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
+            })
+            .optional()
+            .map_err(|e| db.map_error(e))?;
         let Some((ordinal, id, seat, at, phase, processed, status, error, owner)) = row else {
             break;
         };
