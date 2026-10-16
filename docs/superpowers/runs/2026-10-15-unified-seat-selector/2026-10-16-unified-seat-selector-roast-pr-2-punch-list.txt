@@ -1,0 +1,2 @@
+[Nit] src/cli/seat_resolution.rs:230; src/cli/seat_resolution.rs:234
+[Nit] src/cli/seat_resolution.rs:327
