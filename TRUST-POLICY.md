@@ -1096,7 +1096,7 @@ section 17):
 - for `seat.created`, the node whose tag the seat ID carries: the ID's tag is one the origin has held (from its
   initial tag up to its current retag step), so a seat minted under the origin's pre-retag tag still passes.
 
-`thread.register` and the `node.*` kinds are authored by any node. A re-issued fact keeps its original origin and
+`thread.register` and the `node.*` kinds are authored by any node. A `thread.register` may name its acting seat (`actor`, written as the event's `actor_seat`): a node names only one of its local seats, and an applying node keeps a replicated actor only when that seat's home node is the origin, else it materializes the change with no actor; the fact itself is never refused for its actor. A re-issued fact keeps its original origin and
 passes. This is a deterministic consistency guard on replicated identity against buggy or version-skewed nodes: it
 compares the origin with replicated identity that every node holds identically, so every node rejects the same
 facts. It is not adversarial verification (a node holding another node's key is out of scope, see Accepted limits)

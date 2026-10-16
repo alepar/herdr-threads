@@ -4,7 +4,7 @@
 //! - `thread.created` establishes an ordinary thread and seeds its topic and
 //!   name registers; the creator's membership is a separate fact.
 //! - `thread.register` is a last-writer-wins write of `topic`, `name` or
-//!   `archived`; any node may author it.
+//!   `archived`; any node may author it; the actor it names is bound to the origin.
 //! - `thread.direct` establishes a 1:1 thread whose ID is a pure function of
 //!   its two seats, so two nodes that open the same pair converge on one
 //!   thread.
@@ -95,8 +95,10 @@ pub struct ThreadRegisterPayload {
     #[serde(default)]
     pub value: Option<String>,
     /// The seat whose command wrote the register, for the derived event's
-    /// `actor_seat`. Absent for a lane decision (automatic archival). Optional
-    /// and unchecked: informational, like `thread.direct`'s `creator`.
+    /// `actor_seat`. Absent for a lane decision (automatic archival). Optional.
+    /// Kept on apply only when its seat's home node is the origin (else the
+    /// change is materialized with no actor); a node names only its own local
+    /// seats (see `control::materialize_register`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<SeatId>,
 }
