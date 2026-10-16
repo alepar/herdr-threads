@@ -4670,6 +4670,39 @@ pub(crate) fn require_local_seat(conn: &Connection, seat: &SeatId) -> Result<(),
     }
 }
 
+/// Refuses a seat homed on another node for the node-local nudge threshold (reconcile item 18:
+/// never replicated, a remote row's value is never read). The detail names the home node's tag so
+/// the operator knows where to set it. An unknown seat is left to the caller's not-found handling.
+pub(crate) fn require_local_threshold_seat(
+    conn: &Connection,
+    seat: &SeatId,
+) -> Result<(), ApiError> {
+    let home: Option<String> = conn
+        .query_row(
+            &format!("SELECT home_node FROM seats WHERE id=?1 AND NOT ({LOCAL_SEAT})"),
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some(home) = home else {
+        return Ok(());
+    };
+    let tag = home
+        .parse::<crate::node::NodeUuid>()
+        .ok()
+        .and_then(|uuid| super::node_directory::get(conn, uuid).ok().flatten())
+        .map(|row| row.tag.to_string())
+        .unwrap_or_else(|| home.chars().take(8).collect());
+    Err(api_error(
+        ErrorCode::CallerUnverified,
+        format!(
+            "seat {} is homed on node {tag}; its nudge threshold is set there",
+            seat.as_str()
+        ),
+    ))
+}
+
 /// Delivery's current recipient predicate uses canonical continuity without
 /// allocating, binding or requiring a working session on an unbound seat.
 pub(crate) fn eligible_delivery_recipient(
@@ -5863,6 +5896,7 @@ pub fn nudge_threshold(
     db: &Connection,
     seat: &SeatId,
 ) -> Result<crate::protocol::priority::NudgeThreshold, ApiError> {
+    require_local_threshold_seat(db, seat)?;
     let stored: Option<i64> = db
         .query_row(
             "SELECT nudge_threshold FROM seats WHERE id=?1",
@@ -5966,6 +6000,9 @@ fn write_threshold(
         return Err(api_error(ErrorCode::InvalidRequest, subagent_refusal));
     }
     let seat = claim.seat.clone();
+    // Before the transaction: its claim precheck would refuse a remote seat with the less useful
+    // "cooperative seat is not local".
+    require_local_threshold_seat(conn, &seat)?;
     let obligation = ObligationRef::CheckIn(seat.clone());
     schema::execute_accountable_transaction(
         context,
