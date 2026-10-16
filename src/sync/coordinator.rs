@@ -1300,8 +1300,10 @@ impl Actor {
     }
 
     /// A `have` or `want` arrived on a standby link: the peer promoted it, so
-    /// it is active here too and the formerly active link is demoted.
-    fn promote_on_traffic(&mut self, link_id: u64) {
+    /// it is active here too and the formerly active link is demoted. The
+    /// activation asks for the peer's vector unless `vector_known` (the
+    /// promoting frame is a full `have`, which carries it).
+    fn promote_on_traffic(&mut self, link_id: u64, vector_known: bool) {
         let Some(node) = self.links.get(&link_id).map(|l| l.handle.peer().node) else {
             return;
         };
@@ -1322,7 +1324,7 @@ impl Actor {
                 self.demote(id);
             }
         }
-        self.activate(link_id, false);
+        self.activate(link_id, !vector_known);
     }
 
     fn on_link_event(&mut self, event: LinkEvent) {
@@ -1362,7 +1364,10 @@ impl Actor {
             // A standby carries ping/pong (the link's own) and `seen` only
             // (handled above); a `have` or `want` is the peer's promotion.
             if matches!(frame, PeerFrame::Have { .. } | PeerFrame::Want { .. }) {
-                self.promote_on_traffic(link_id);
+                self.promote_on_traffic(
+                    link_id,
+                    matches!(frame, PeerFrame::Have { full: true, .. }),
+                );
             } else {
                 if matches!(
                     frame,
@@ -3432,6 +3437,71 @@ mod tests {
             modes, expected,
             "the standby is active, the former active demoted"
         );
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    /// The first `have` on `peer`, skipping the entries a `want` was served with.
+    async fn first_have(peer: &mut TestPeer) -> (bool, bool, Vec<HaveLog>) {
+        loop {
+            match peer.next().await {
+                PeerFrame::Have {
+                    full, ask, logs, ..
+                } => return (full, ask, logs),
+                PeerFrame::Entries { .. } | PeerFrame::BranchEntries { .. } => continue,
+                other => panic!("expected have, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn want_on_standby_promotes_it_and_asks_for_the_peer_vector() {
+        let (rig, journal) = rig_with_self_log();
+        let own = journal.self_log();
+        let (mut active, mut standby) = two_links(&rig).await;
+        standby
+            .send(PeerFrame::Want {
+                node: own.node,
+                inc: own.incarnation,
+                from: 1,
+            })
+            .await;
+        let (full, ask, _) = first_have(&mut standby).await;
+        assert!(full && ask, "a want carries no vector: the promotion asks");
+        active.quiet().await;
+        let snap = snapshot(&rig).await;
+        let modes: Vec<LinkMode> = snap.links.iter().map(|l| l.mode).collect();
+        let mut expected = [LinkMode::Standby, LinkMode::Standby];
+        expected[standby.idx] = LinkMode::Active;
+        assert_eq!(modes, expected);
+        let log_node = node_of(9);
+        standby
+            .send_have(true, false, vec![have_log(log_node, 1, 5)])
+            .await;
+        // The entries the first want was served may still be in flight.
+        loop {
+            match standby.next().await {
+                PeerFrame::Entries { .. } | PeerFrame::BranchEntries { .. } => continue,
+                PeerFrame::Want { node, inc, from } => {
+                    assert_eq!((node, inc, from), (log_node, 1, 1));
+                    break;
+                }
+                other => panic!("expected want, got {other:?}"),
+            }
+        }
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn delta_have_on_standby_asks_for_the_peer_vector() {
+        let (rig, _journal) = rig_with_self_log();
+        let (_active, mut standby) = two_links(&rig).await;
+        standby
+            .send_have(false, false, vec![have_log(node_of(9), 1, 5)])
+            .await;
+        let (full, ask, _) = first_have(&mut standby).await;
+        assert!(full && ask, "a delta is not the vector: the promotion asks");
         rig.cancel.cancel();
         rig.join.await.unwrap();
     }
