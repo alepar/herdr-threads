@@ -1797,7 +1797,7 @@ fn human_guidance_machine_and_foreign_seat_selectors_survive_text_budget_boundar
     let CommandResult::Inbox(selected) = selected_result(&result, &spec) else {
         panic!("wrong result")
     };
-    let parsed = crate::cli::commands::parse_argv(selected.next_argv.unwrap()).unwrap();
+    let parsed = crate::cli::commands::parse_argv_exact_seats(selected.next_argv.unwrap()).unwrap();
     assert_eq!(
         parsed.presentation,
         crate::cli::output::Presentation::Machine

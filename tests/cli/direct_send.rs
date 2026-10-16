@@ -1,7 +1,7 @@
 //! Direct CLI composition against the real accountable service/store, with reply loss.
 use herdr_threads::{
     app::SystemClock,
-    cli::{RunError, commands::parse_argv, journal::Journal, run_cooperative},
+    cli::{RunError, commands::parse_argv_exact_seats, journal::Journal, run_cooperative},
     harness::context::{ContextJournal, Harness, OccupantContext, Role, SessionReference},
     ports::{LocalClient, LocalService},
     protocol::{
@@ -197,7 +197,7 @@ impl Fixture {
         ]);
         argv.extend(args.iter().copied().filter(|arg| *arg != "human"));
         run_cooperative(
-            parse_argv(argv)?,
+            parse_argv_exact_seats(argv)?,
             journal,
             &self.contexts,
             None,
@@ -1333,7 +1333,7 @@ fn changed_retry_namespace_refuses_before_any_client_call() {
     );
     let recovery = f.recovery();
     let state = f.root.to_str().unwrap();
-    let parsed = parse_argv([
+    let parsed = parse_argv_exact_seats([
         "ht",
         "--state-dir",
         state,
