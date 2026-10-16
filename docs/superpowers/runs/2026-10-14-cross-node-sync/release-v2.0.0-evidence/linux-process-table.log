@@ -1,0 +1,14 @@
+Uid:	0	0	0	0
+test host::process_table::tests::parse_proc_stat_reads_ppid_and_start ... ok
+test host::process_table::tests::same_user_compares_record_and_own_uid ... ok
+test host::process_table::tests::process_table_remote_targets ... ok
+test host::process_table::tests::parse_status_real_uid_reads_first_uid_field ... ok
+test host::process_table::tests::scan_from_skips_foreign_pids_before_reading_them ... ok
+test host::process_table::tests::parse_procargs2_reads_argv ... ok
+test host::process_table::tests::this_process_reads_itself ... ok
+test host::process_table::tests::a_foreign_owner_is_not_read ... ok
+test host::process_table::tests::scan_lists_this_process ... ok
+test host::process_table::tests::a_renamed_parent_shows_its_argv0 ... ok
+test host::process_table::tests::a_managed_daemon_parent_is_recognized ... ok
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 5866 filtered out; finished in 0.04s
+rc=0
