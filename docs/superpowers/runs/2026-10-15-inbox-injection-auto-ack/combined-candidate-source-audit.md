@@ -35,3 +35,13 @@ Correction after root precompile: HostId::from_row is crate-private. The externa
 
 ## Runtime conflict-fixture correction
 Initial focused combined run: 50/51 passed; both JSON golden conflict resolutions accidentally acquired a final newline absent from both parents. Byte inspection confirmed each shared parent ends with `}}` and the comparison exhausted equal lines. Removed only the added final newline from two healthy fixtures, preserving all actual content and ordinals; no bless or production change. Full focused proof rerun follows.
+
+## Final sweep-contract merge
+Incoming feature4274f130 contains only final test contracts and design-status artifacts after last source prep. Resolved sole INDEX conflict by retaining all existing peer rows and marking the inbox injection row implemented. Source helper remains unchanged. Recheck new capability probe and handoff fixtures on this candidate.
+
+## Final capability-handler probe integration
+
+Source f5ff6c4a imported probe_hook_context_receipts from the pre-node feature branch. Adapted only that probe to the same fixture composition as presentation_capability_routes_use_configured_domain: NodeUuid identity; seeded journal and attached test host; host bootstrap UPDATE; local seats with home_node/is_local/host_id; observations indexed by actual local host; CallerClaim.host locator. Configured DomainService/ControlService signatures already matched once node identity was canonical. The complete real handler path and every pending/acked/provenance/replay assertion remain unchanged. Root authorized only the capability module for this integration check; no full suite or unrelated behavior run.
+
+Capability module command: env HT_LEAK_RUN_ID=0017a6a6-5e8c-4549-8b3b-7fe0e3fbae7d TMPDIR=/private/tmp/ht-cap-0017a6a6 nice cargo test --locked --all-features --lib protocol::capabilities::tests -- --test-threads=1
+Result: all 23 capability module tests passed (0 failed), including stable constants, bare-daemon capability defaults and real handler probe. Cargo compilation took 1m15s; test execution 0.64s. Authoritative escalated scripts/check-no-leaked-processes --run-id 0017a6a6-5e8c-4549-8b3b-7fe0e3fbae7d exited 0: no leaked test temp files; no leaked test processes.
