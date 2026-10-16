@@ -14,3 +14,5 @@ Base remains `3ff902c77c8df3dbcadf02119bacd9e344f7e59b`; no base drift to absorb
 The current AGENTS rule requires focused tests rather than a routine full suite. The affected sweep covers hooks/handoffs, canonical receipts, inbox display/recovery, channels, capability/wire and lazy-delivery boundaries across four binaries. Filtered tests are not a full-suite result.
 
 The refreshed cross-node candidate and scoped post-cap audit are recorded separately; their pending work must not be inferred from this local result.
+
+Final authoritative OS-visible run-root inspection and stop sweep: exit0,no matches/stops/survivors, covering both owned worktrees, run directory and all four final-test temporary roots.
