@@ -126,7 +126,7 @@ pub(super) fn complete_hook_context(
         &observation.to_string(),
         actor.binding_generation,
         &actor.binding_id,
-        "ack_hook",
+        "ack_mod",
     )
 }
 

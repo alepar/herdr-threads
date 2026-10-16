@@ -32,6 +32,34 @@ fn hook_receipt_completion_preserves_legacy_and_rejects_invalid_sources() {
     }
 }
 
+#[test]
+fn hook_receipt_completion_digest_freezes_source_ids_and_original_claim() {
+    use herdr_threads::protocol::commands::CompleteInboxDelivery;
+    use herdr_threads::store::control::cooperative_payload_hash;
+    let claim =
+        serde_json::from_str::<serde_json::Value>(ORDINARY).unwrap()["args"]["claim"].clone();
+    let value = serde_json::json!({"messages":[],"receipt_candidates":["m"],"operation":"done","claim":claim,"via":"hook_context"});
+    let original: CompleteInboxDelivery = serde_json::from_value(value.clone()).unwrap();
+    let digest = cooperative_payload_hash("complete_inbox_delivery", &original).unwrap();
+    for field in ["source", "ids", "claim"] {
+        let mut changed = value.clone();
+        match field {
+            "source" => {
+                changed.as_object_mut().unwrap().remove("via");
+            }
+            "ids" => changed["receipt_candidates"] = serde_json::json!(["other"]),
+            "claim" => changed["claim"]["target"] = serde_json::json!("other"),
+            _ => unreachable!(),
+        }
+        let changed: CompleteInboxDelivery = serde_json::from_value(changed).unwrap();
+        assert_ne!(
+            digest,
+            cooperative_payload_hash("complete_inbox_delivery", &changed).unwrap(),
+            "{field}"
+        );
+    }
+}
+
 const ORDINARY: &str = r#"{"kind":"send_message","args":{"thread":"t","body":"hello","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}}"#;
 
 fn lazy_value() -> serde_json::Value {

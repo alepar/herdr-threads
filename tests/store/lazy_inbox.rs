@@ -248,6 +248,18 @@ fn hook_receipt_completion_is_canonical_and_idempotent() {
     let request: CompleteInboxDelivery = serde_json::from_value(value).unwrap();
     complete(&iso, request.clone()).unwrap();
     complete(&iso, request.clone()).unwrap();
+    let mut repeated = request.clone();
+    repeated.operation = OperationId::new("hook-receipt-again");
+    complete(&iso, repeated).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM messages WHERE kind='info' AND event_key LIKE 'ack_mod:%'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
     let (state, observation): (String, String) = conn
         .query_row(
             "SELECT state,ack_observation FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
@@ -301,7 +313,7 @@ fn hook_receipt_completion_refuses_ineligible_claims_atomically() {
                 conn.execute("UPDATE memberships SET state='left' WHERE seat_id='b'", [])
                     .unwrap();
             }
-            "unknown" => value["receipt_candidates"] = serde_json::json!(["unknown"]),
+            "unknown" => value["receipt_candidates"] = serde_json::json!([id, "unknown"]),
             "wrong-source" => {
                 value.as_object_mut().unwrap().remove("via");
             }
@@ -390,6 +402,37 @@ fn hook_receipt_completion_mixed_batch_keeps_obligations_separate() {
         conn.query_row(
             "SELECT count(*) FROM receipt_state WHERE message_id=?1",
             [lazy.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn hook_receipt_completion_cannot_create_an_obligation() {
+    let (iso, context, mut conn) = fixture("hook-receipt-not-required");
+    let mut request = send_request();
+    request.delivery_mode = DeliveryMode::Ordinary;
+    request.operation = OperationId::new("default-send");
+    ready(&context, &mut conn, &request);
+    let CommandResult::MessageSent(id) = messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&iso, &request),
+        &budget(),
+        || 65536,
+    )
+    .unwrap() else {
+        panic!("send");
+    };
+    let completion: CompleteInboxDelivery = serde_json::from_value(serde_json::json!({"messages":[],"receipt_candidates":[id],"operation":"unsupported-receipt","claim":claim(),"via":"hook_context"})).unwrap();
+    assert!(complete(&iso, completion).is_err());
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM receipt_state WHERE message_id=?1",
+            [id.as_str()],
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),

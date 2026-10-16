@@ -985,7 +985,8 @@ short of the end, or a read from an explicit offset past 0) moves nothing, and n
 explicit `ack` settles or moves anything else: an `ack` carries no display, and a message the binding read
 whole was already passed by that read. The walk also counts as displayed a message whose seat receipt this
 same binding display-ACKed (`ack_binding_id` is the walking binding and the ACK observation carries
-`action_provenance`, which only display settlements write: text-inbox display, mod or hook-pull delivery),
+`action_provenance`, which only display settlements write: text-inbox display, native hook context,
+mod or hook-pull delivery),
 so a later message shown whole while the cursor was held behind a truncated one is passed together with it.
 Another binding's ACK and an explicit (non-display) `ack` are never such evidence. Accepted limit: a
 continuation chain begun at an explicit offset counts as whole (the continuation does not record where the
