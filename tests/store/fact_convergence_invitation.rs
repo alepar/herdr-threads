@@ -169,7 +169,7 @@ fn ingest_opposite_orders(w: &World) {
 // ---- crossed direct pairs ---------------------------------------------------
 
 #[test]
-fn crossed_direct_pair_one_thread_both_already_joined_no_wake() {
+fn crossed_direct_pair_one_thread_both_joined_no_invitation_no_wake() {
     let reg = registry();
     let (a, b) = (Node::with(170, reg), Node::with(171, reg));
     let (sa, sb) = (a.local_seat(), b.local_seat());
@@ -190,8 +190,8 @@ fn crossed_direct_pair_one_thread_both_already_joined_no_wake() {
     let earliest = authored.iter().min().unwrap().clone();
     assert_eq!(
         a.membership(&ta, &sb),
-        Some(("invited".into(), 0, 0)),
-        "before the exchange A only invited B's seat"
+        None,
+        "before the exchange A holds no row for B's seat (no invitation)"
     );
 
     sync_all(&[&a, &b]);
@@ -215,7 +215,7 @@ fn crossed_direct_pair_one_thread_both_already_joined_no_wake() {
         let states = node.query("SELECT state FROM invitations ORDER BY id", |r| {
             r.get::<_, String>(0)
         });
-        assert_eq!(states, vec!["already_joined"; 2], "both invitations settle");
+        assert!(states.is_empty(), "a pair records no invitation");
         assert!(
             node.attention(&sa).is_none() && node.attention(&sb).is_none(),
             "the crossing wakes nobody"
@@ -253,10 +253,9 @@ fn crossed_pair_orders() {
         fact_exchange::pull(&y.store, &source.store);
     }
     for node in [&x, &y] {
-        assert_eq!(
-            node.query("SELECT state FROM invitations ORDER BY id", |r| r
-                .get::<_, String>(0)),
-            vec!["already_joined"; 2]
+        assert!(
+            node.query("SELECT id FROM invitations", |r| r.get::<_, String>(0))
+                .is_empty()
         );
         assert_eq!(node.membership(&thread, &sa), Some(("joined".into(), 1, 1)));
         assert_eq!(node.membership(&thread, &sb), Some(("joined".into(), 1, 1)));

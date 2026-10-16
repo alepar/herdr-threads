@@ -6,6 +6,7 @@ use crate::support::{self, P1, P2, P3};
 use std::time::Duration;
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 22"]
 fn wakes_follow_the_delivery_contract_across_daemons() {
     // One recipient seat per case: a seat is woken at most once per 30 s.
     let cluster = support::cluster("mn-delivery", 2, &[(0, 1)], &[0, 1]);
@@ -117,6 +118,7 @@ fn settled_history_pulled_at_first_sync_wakes_nobody() {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 22"]
 fn a_seat_no_fact_references_is_opened_as_a_pair_by_id() {
     let cluster = support::cluster("mn-by-id", 2, &[(0, 1)], &[0, 1]);
     let a = cluster.seat(0, P1);

@@ -41,6 +41,7 @@ impl Node {
             seat: seat.clone(),
             n,
             at: at_of(n),
+            actor: None,
         };
         self.run(|tx, d| {
             FactRoute::Journal
@@ -143,6 +144,7 @@ fn payload_round_trips_creates_needs() {
         thread: ThreadId::new("tAbc12345678"),
         seat: SeatId::new("sAbc12345678"),
         n: 3,
+        actor: None,
         at: 1_700_000_000_000,
     };
     let json = serde_json::to_string(&payload).unwrap();
@@ -275,6 +277,7 @@ fn apply_twice_and_reauthored_noop() {
     let payload = MembershipPayload {
         thread: thread.clone(),
         seat: seat.clone(),
+        actor: None,
         n: 1,
         at: at_of(1),
     };
@@ -482,6 +485,7 @@ fn managed_thread_membership_is_local_only_and_publishes_nothing() {
     let before = node.journal_kinds();
     let payload = MembershipPayload {
         thread: thread.clone(),
+        actor: None,
         seat: seat.clone(),
         n: 1,
         at: at_of(1),
@@ -558,4 +562,71 @@ fn same_n_two_branches_first_applied_then_next_transition_agrees() {
         assert_eq!(node.membership(&thread, &seat), Some(("left".into(), 2, 1)));
     }
     assert_eq!(c.membership_projection(), d.membership_projection());
+}
+
+// ---- the pair creator's actor ------------------------------------------------
+
+#[test]
+fn membership_payload_actor_round_trips_and_is_optional() {
+    let base = r#"{"thread":"tAbc12345678","seat":"sAbc12345678","n":1,"at":5}"#;
+    let old: MembershipPayload = serde_json::from_str(base).unwrap();
+    assert_eq!(old.actor, None, "a payload without actor decodes to None");
+    assert!(
+        !serde_json::to_string(&old).unwrap().contains("actor"),
+        "None serializes with no actor key"
+    );
+    let with = MembershipPayload {
+        actor: Some(SeatId::new("sCreator0001")),
+        ..old
+    };
+    let json = serde_json::to_string(&with).unwrap();
+    assert!(json.contains(r#""actor":"sCreator0001""#), "{json}");
+    assert_eq!(
+        serde_json::from_str::<MembershipPayload>(&json).unwrap(),
+        with
+    );
+    assert_eq!(
+        with.referenced_seats(),
+        vec![with.seat.clone()],
+        "the actor is not a referenced seat"
+    );
+}
+
+#[test]
+fn join_event_drops_an_actor_outside_the_pair() {
+    let node = Node::with(83, registry());
+    let (s1, s2, outsider) = (node.local_seat(), node.local_seat(), node.local_seat());
+    let pair = node.author_direct(&s1, &s2).unwrap();
+    node.joined(&pair, &s1, 1).unwrap();
+    let payload = MembershipPayload {
+        thread: pair.clone(),
+        seat: s2.clone(),
+        n: 1,
+        at: at_of(1),
+        actor: Some(outsider),
+    };
+    node.run(|tx, d| journal::author::<MembershipJoined>(tx, node.ctx(), d, &payload).map(|_| ()))
+        .unwrap();
+    assert!(
+        node.journal()
+            .iter()
+            .filter(|(k, _, _)| k == "membership.joined")
+            .all(|(_, state, _)| state == "applied")
+    );
+    assert_eq!(node.membership(&pair, &s2), Some(("joined".into(), 1, 1)));
+    // The fact applied and its join event exists (an actor is never the
+    // creating join), but names no actor_seat for a seat outside the pair.
+    let events = node.query(
+        &format!(
+            "SELECT event_json FROM messages WHERE thread_id='{}' AND event_key='join:{}:{}:1'",
+            pair.as_str(),
+            pair.as_str(),
+            s2.as_str()
+        ),
+        |r| r.get::<_, String>(0),
+    );
+    assert_eq!(events.len(), 1, "the peer's join event exists");
+    let event: serde_json::Value = serde_json::from_str(&events[0]).unwrap();
+    assert_eq!(event["seat"], s2.as_str());
+    assert!(event.get("actor_seat").is_none(), "{event}");
 }

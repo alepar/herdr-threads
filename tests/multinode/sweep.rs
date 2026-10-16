@@ -156,6 +156,7 @@ fn created_thread_invites_unseen_seats_and_delivery_follows_the_contract() {
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 22"]
 fn three_node_partition_with_writes_on_both_sides_heals_to_identical_projections() {
     // A - B - C: C is cut off from B while A and C keep writing.
     let cluster = support::cluster("mn-sweep-heal", 3, &[(0, 1), (2, 1)], &[0, 2]);

@@ -1,19 +1,17 @@
 //! Direct-pair channels.
 
 use super::{
-    Transition, author_invitation, author_membership, cooperative_payload_hash, decide_accountable,
-    validate_actor,
+    Transition, author_membership, cooperative_payload_hash, decide_accountable, validate_actor,
 };
 use crate::protocol::authority::{MutationPermit, ObligationRef};
-use crate::protocol::ids::{InvitationId, SeatId, ThreadId, direct_thread_id, prefix};
+use crate::protocol::ids::{InvitationId, SeatId, ThreadId, direct_thread_id};
 use crate::protocol::results::{ApiError, CommandResult, ErrorCode};
 use crate::protocol::time::{CallBudget, UtcMillis};
+use crate::store::attribution;
 use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
 use crate::store::materialize::{FactRoute, local_only};
 use crate::store::schema;
-use crate::sync::facts::invitation::InvitationCreatedPayload;
 use crate::sync::facts::membership::MembershipPayload;
-use crate::sync::facts::payload::InviterKind;
 use crate::sync::facts::thread::{ThreadDirect, ThreadDirectPayload};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
@@ -249,7 +247,7 @@ pub fn resolve_direct_pair(
     claim: &crate::protocol::authority::CallerClaim,
     recipient: &SeatId,
     creation_policy: Option<&crate::protocol::commands::EnsureCreationPolicy>,
-    installation_default_ms: Option<u64>,
+    _installation_default_ms: Option<u64>,
 ) -> Result<(ThreadId, bool), ApiError> {
     let instance = claim.instance.as_str();
     let caller = &claim.seat;
@@ -281,32 +279,19 @@ pub fn resolve_direct_pair(
         require_pair_lifecycle(tx, &thread, caller, recipient)?;
         return Ok((thread, false));
     }
+    // The creation policy is shape-validated only: a new pair records no
+    // invitation, so there is no deadline or confirmation to compute.
     if let Some(policy) = creation_policy {
         policy
             .validate()
             .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
     }
-    // Main's `invitation_policy` (D6): the pair invitation is confirming with
-    // a deadline; a requested confirmation is accepted and ignored. (Pair
-    // auto-join, which drops this invitation, is reconcile item 11.)
-    let duration = i64::try_from(
-        creation_policy
-            .and_then(|p| p.deadline_millis)
-            .or(installation_default_ms)
-            .unwrap_or(300_000),
-    )
-    .map_err(|_| api_error(ErrorCode::InvalidRequest, "invitation duration too large"))?;
-    if duration <= 0 {
-        return Err(api_error(
-            ErrorCode::InvalidRequest,
-            "invitation duration must be positive",
-        ));
-    }
-    let deadline = schema::checked_deadline(decision.utc, duration)?;
     // Three facts, in this order: the pair's thread, the caller's membership
-    // (the creating join: its event is the thread's `create:` event) and the
-    // invitation of the recipient. A crossed create on another node authors the
-    // same `d...` thread; each side's invitation then settles `already_joined`.
+    // (the creating join: its event is the thread's `create:` event) and, only
+    // for a recipient seat this node hosts, the recipient's auto-join. A
+    // remote recipient's home node authors its own auto-join when it applies
+    // the `thread.direct`. A crossed create on another node authors the same
+    // `d...` thread; each side's seats then hold their rows and skip it.
     let direct = ThreadDirectPayload {
         thread: thread.clone(),
         seat_lo: a.clone(),
@@ -343,31 +328,103 @@ pub fn resolve_direct_pair(
             seat: caller.clone(),
             n: 1,
             at: decision.utc.0,
+            actor: None,
         },
     )?;
-    let invitation = InvitationId::new(crate::store::public_ids::fresh(
-        tx,
-        prefix::INVITATION,
-        &[("invitations", "id", prefix::INVITATION)],
-    )?);
-    author_invitation(
-        tx,
-        context,
-        decision,
-        &InvitationCreatedPayload {
-            invitation,
-            thread: thread.clone(),
-            inviter: Some(caller.clone()),
-            inviter_kind: InviterKind::Seat,
-            invitee: recipient.clone(),
-            invitee_n: 0,
-            created_at: decision.utc.0,
-            duration_ms: duration,
-            deadline_at: deadline.0,
-            actor_label: None,
-        },
-    )?;
+    for payload in
+        auto_join_local_pair_seats(tx, &thread, &[recipient], Some(caller), decision.utc.0)?
+    {
+        author_membership(tx, context, decision, Transition::Joined, &payload)?;
+    }
     Ok((thread, true))
+}
+
+/// The pair seats this node auto-joins now (reconcile section 2.1): local, not
+/// retired, and with no `memberships` row in `thread`. Each one's
+/// `direct_auto_join` attribution is staged under its join key, and its
+/// `membership.joined{seat, n = 1, at, actor}` payload returned for the caller
+/// to author (inline) or queue (`ApplyContext::follow_up`). `actor` is
+/// `creator` for a seat other than the creator itself and `None` for the
+/// creator (its join is the creating join, placed at the `create:` event).
+pub(crate) fn auto_join_local_pair_seats(
+    tx: &Transaction<'_>,
+    thread: &ThreadId,
+    seats: &[&SeatId],
+    creator: Option<&SeatId>,
+    at: i64,
+) -> Result<Vec<MembershipPayload>, ApiError> {
+    let mut payloads = Vec::new();
+    for &seat in seats {
+        let eligible: bool = tx
+            .query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND {} AND state!='retired') \
+                     AND NOT EXISTS(SELECT 1 FROM memberships WHERE thread_id=?2 AND seat_id=?1)",
+                    crate::store::seats::LOCAL_SEAT
+                ),
+                params![seat.as_str(), thread.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if !eligible {
+            continue;
+        }
+        attribution::stage_unbound(
+            tx,
+            &attribution::join_key(thread.as_str(), seat.as_str(), 1),
+            &serde_json::json!({"provenance": "direct_auto_join", "decided_at": at}).to_string(),
+        )?;
+        payloads.push(MembershipPayload {
+            thread: thread.clone(),
+            seat: seat.clone(),
+            n: 1,
+            at,
+            actor: creator.filter(|c| *c != seat).cloned(),
+        });
+    }
+    Ok(payloads)
+}
+
+/// The auto-join payloads this node owes after applying a `thread.direct`
+/// another node (or an earlier incarnation) authored: one per pair seat it
+/// hosts that has no membership row yet. The handler queues them as follow-ups.
+pub fn direct_auto_join_payloads(
+    tx: &Transaction<'_>,
+    m: &crate::store::materialize::MaterializeInput<'_>,
+    payload: &ThreadDirectPayload,
+) -> Result<Vec<MembershipPayload>, ApiError> {
+    auto_join_local_pair_seats(
+        tx,
+        &payload.thread,
+        &[&payload.seat_lo, &payload.seat_hi],
+        payload.creator.as_ref(),
+        m.decision.utc.0,
+    )
+}
+
+/// Whether `seat` is a pair seat hosted by another node that has no row in
+/// `thread` yet: its home node owes the auto-join and it has not arrived.
+pub(crate) fn pending_auto_join(
+    db: &Connection,
+    thread: &ThreadId,
+    seat: &SeatId,
+) -> Result<bool, ApiError> {
+    let Some((a, b)) = direct_pair(db, thread)? else {
+        return Ok(false);
+    };
+    if seat != &a && seat != &b {
+        return Ok(false);
+    }
+    db.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND NOT ({}) AND state!='retired') \
+             AND NOT EXISTS(SELECT 1 FROM memberships WHERE thread_id=?2 AND seat_id=?1)",
+            crate::store::seats::LOCAL_SEAT
+        ),
+        params![seat.as_str(), thread.as_str()],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
 }
 
 pub(crate) fn direct_pair_selection(
@@ -385,7 +442,9 @@ pub(crate) fn direct_pair_selection(
         results::{DirectThreadEnsureOutcome, DirectThreadEnsured, DirectThreadInvitation},
     };
     let membership = crate::store::service_substrate::effective_membership(db, &thread, recipient)?;
-    let (outcome, invitation) = if membership.native_state == Some("joined") {
+    let (outcome, invitation) = if membership.native_state == Some("joined")
+        || (membership.native_state.is_none() && pending_auto_join(db, &thread, recipient)?)
+    {
         (DirectThreadEnsureOutcome::AlreadyJoined, None)
     } else if membership.native_state == Some("invited") {
         let (id,episode,confirmation,deadline,inviter):(String,i64,Option<String>,i64,Option<String>)=db.query_row(

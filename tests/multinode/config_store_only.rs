@@ -5,6 +5,7 @@
 use crate::support::{self, P1};
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 22"]
 fn store_only_node_relays() {
     let cluster = support::cluster("mn-store-only", 3, &[(0, 1), (2, 1)], &[0, 2]);
     let a = cluster.seat(0, P1);

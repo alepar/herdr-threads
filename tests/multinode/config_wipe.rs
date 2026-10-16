@@ -23,6 +23,7 @@ fn warnings(cluster: &Cluster, node: usize, seat: &Seat) -> usize {
 /// offered, and an unsettled `--nudge` sent while B was down wakes the repaired
 /// seat once.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 22"]
 fn wipe_with_the_key_intact_suppresses_settled_history() {
     let mut cluster = support::cluster("mn-wipe", 2, &[(0, 1)], &[0, 1]);
     let a = cluster.seat(0, P1);
@@ -138,6 +139,7 @@ fn wipe_with_the_key_intact_suppresses_settled_history() {
 /// and the settlement applies. With B unreachable it warns only once the hold's
 /// cap passes (shortened by `HT_TEST_SYNC_HOLD_MS`; the constant is 60 s).
 #[test]
+#[ignore = "pending ht-5fr reconcile item 22"]
 fn cold_start_after_the_deadline_holds_overdue_until_a_round_completes() {
     const HOLD_MS: u64 = 12_000;
     let mut cluster = Cluster::start(

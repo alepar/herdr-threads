@@ -183,10 +183,9 @@ fn crossed_thread_direct() {
     t.check();
     for node in [&t.x, &t.y] {
         assert_eq!(
-            node.query("SELECT state FROM invitations ORDER BY id", |r| r
-                .get::<_, String>(0)),
-            vec!["already_joined"; 2],
-            "{:?}: both invitations settle",
+            node.count("SELECT count(*) FROM invitations"),
+            0,
+            "{:?}: a pair records no invitation",
             node.id
         );
         for seat in [&sa, &sb] {

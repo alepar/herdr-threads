@@ -980,6 +980,15 @@ fn invite_and_pair_never_referenced_seat_on_b() {
         a.membership(&pair, &seat).map(|m| m.0),
         b.membership(&pair, &seat).map(|m| m.0)
     );
+    // B hosts the seat, so B authored its auto-join: both nodes hold it joined.
+    for node in [&a, &b] {
+        assert_eq!(
+            node.membership(&pair, &seat).map(|m| m.0).as_deref(),
+            Some("joined"),
+            "{:?}",
+            node.id
+        );
+    }
     check_no_remote_delivery(&[&a, &b]);
 }
 

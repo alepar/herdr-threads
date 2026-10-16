@@ -925,6 +925,7 @@ fn create_thread_impl(
                     seat: seat.clone(),
                     n: 1,
                     at: decision.utc.0,
+                    actor: None,
                 },
             )?;
             Ok(CommandResult::ThreadCreated(thread))

@@ -156,6 +156,7 @@ pub fn join(
                     seat: caller.clone(),
                     n,
                     at: decision.utc.0,
+                    actor: None,
                 },
             )?;
             Ok(CommandResult::Joined(command.thread.clone()))
@@ -238,6 +239,7 @@ pub fn leave(
                         thread: command.thread.clone(),
                         seat: caller.clone(),
                         n,
+                        actor: None,
                         at: decision.utc.0,
                     },
                 )?;
@@ -354,6 +356,7 @@ pub fn materialize_membership(
                 n: payload.n,
                 at: payload.at,
                 join_event: true,
+                actor: payload.actor.as_ref(),
                 seq: m.decision_seq,
                 episode: None,
                 direct_floor: None,
@@ -373,6 +376,11 @@ pub(crate) struct JoinedTransition<'a> {
     /// Whether to append the derived `join` event (a `membership.joined`
     /// does; an accepted invitation appends its own `accept` event).
     pub join_event: bool,
+    /// The 1:1 pair creator of a pair seat's auto-join (`membership.joined`
+    /// only; accept paths pass `None`). An auto-join with an actor is never
+    /// the creating join, and the derived `join` event names it as
+    /// `actor_seat` when it is one of the thread's pair seats.
+    pub actor: Option<&'a SeatId>,
     /// The position the transition takes: the entry's `decision_seq`, or the
     /// later one an accept allocated after a late-overdue warning.
     pub seq: u64,
@@ -436,7 +444,7 @@ pub(crate) fn materialize_joined(
         return Ok(());
     }
     let last_joined_n = last_joined_n.max(n);
-    let creator_seq = if t.join_event && t.n == 1 {
+    let creator_seq = if t.join_event && t.n == 1 && t.actor.is_none() {
         creator_create_seq(tx, t.thread, t.seat)?
     } else {
         None
@@ -490,9 +498,15 @@ pub(crate) fn materialize_joined(
                 serde_json::from_str::<serde_json::Value>(&attribution.observation)
                     .ok()
                     .and_then(|v| v.get("provenance")?.as_str().map(str::to_owned));
-            let payload = serde_json::json!({"action":"join","seat":t.seat.as_str(),
-                "generation":attribution.generation,"observation":observed.unwrap_or_default()})
-            .to_string();
+            let mut payload = serde_json::json!({"action":"join","seat":t.seat.as_str(),
+                "generation":attribution.generation,"observation":observed.unwrap_or_default()});
+            if let Some(actor) = t.actor
+                && super::direct::direct_pair(tx, t.thread)?
+                    .is_some_and(|(a, b)| actor == &a || actor == &b)
+            {
+                payload["actor_seat"] = serde_json::Value::String(actor.as_str().to_owned());
+            }
+            let payload = payload.to_string();
             schema::append_attributed_event_once_with_decision_seq(
                 tx,
                 EventInput {
@@ -523,10 +537,10 @@ pub(crate) fn materialize_joined(
 /// applies, so every node decides alike.
 ///
 /// A pair thread's `create:` event names no actor (either member's node may
-/// have created it, and crossed creates make both), and a pair member's first
-/// transition is always its creating join (the other way in is an accepted
-/// invitation, which is not a `membership.joined`), so there the event counts
-/// as the creator's for either seat.
+/// have created it, and crossed creates make both), and a pair member's own
+/// first transition without a pair `actor` is its creating join, so there the
+/// event counts as the creator's for either seat. An auto-join carrying an
+/// `actor` never reaches this function (it is not the creating join).
 fn creator_create_seq(
     tx: &Transaction<'_>,
     thread: &ThreadId,

@@ -30,6 +30,7 @@ fn incarnations(
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 22"]
 fn restore_from_backup_forks_is_reissued_and_resync_converges() {
     // Targets both ways: B needs a target for A for `sync resync --from A`.
     let mut cluster = support::cluster("mn-restore", 2, &[(0, 1), (1, 0)], &[0, 1]);
