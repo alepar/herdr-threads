@@ -95,7 +95,7 @@ fn bounded_collection_routes_parse_with_exact_filters() {
         ),
     ];
     for (argv, predicate) in cases {
-        let parsed = parse_argv(argv).unwrap();
+        let parsed = parse_argv_exact_seats(argv).unwrap();
         let CliAction::Wire(command) = parsed.action else {
             panic!("expected read route")
         };
@@ -201,7 +201,7 @@ fn filtered_diagnostics_continuation_parses_both_scopes() {
     }
     .encode()
     .unwrap();
-    let parsed = parse_argv(vec![
+    let parsed = parse_argv_exact_seats(vec![
         "herdr-threads".into(),
         "diagnostics".into(),
         "--seat".into(),
@@ -251,7 +251,7 @@ fn overdue_rejects_invalid_cursor_and_page_bounds() {
 
 #[test]
 fn read_routes_select_typed_operations_and_explicit_context() {
-    let parsed = parse_argv([
+    let parsed = parse_argv_exact_seats([
         "herdr-threads",
         "--state-dir",
         "/tmp/state with space",
@@ -501,7 +501,7 @@ fn documented_read_table_dispatches_to_stub_client() {
     let mut stub = Stub(vec![]);
     for &(args, expected) in rows {
         let parsed =
-            parse_argv(std::iter::once("herdr-threads").chain(args.iter().copied())).unwrap();
+            parse_argv_exact_seats(std::iter::once("herdr-threads").chain(args.iter().copied())).unwrap();
         dispatch(freeze_thread_id(parsed), &mut stub, None, None).unwrap();
         let command = stub.0.last().unwrap();
         let value = serde_json::to_value(command).unwrap();
@@ -513,12 +513,12 @@ fn documented_read_table_dispatches_to_stub_client() {
 fn warnings_route_defaults_to_caller_and_requires_valid_page() {
     use crate::protocol::commands::Command;
     assert!(
-        parse_argv(["herdr-threads", "warnings"])
+        parse_argv_exact_seats(["herdr-threads", "warnings"])
             .unwrap()
             .caller_read_default
     );
-    assert!(parse_argv(["herdr-threads", "warnings", "--seat", "s1", "--limit", "0"]).is_err());
-    let parsed = parse_argv(["herdr-threads", "warnings", "--seat", "s1", "--limit", "7"]).unwrap();
+    assert!(parse_argv_exact_seats(["herdr-threads", "warnings", "--seat", "s1", "--limit", "0"]).is_err());
+    let parsed = parse_argv_exact_seats(["herdr-threads", "warnings", "--seat", "s1", "--limit", "7"]).unwrap();
     assert!(
         matches!(parsed.action,CliAction::Wire(Command::Warnings(ref query)) if query.seat.as_str()=="s1" && query.page.limit==7)
     );
@@ -732,20 +732,22 @@ fn parser_rejects_operator_and_source_conflicts() {
 
 #[test]
 fn send_rejects_duplicate_and_excess_explicit_recipients() {
-    assert!(
-        parse_argv([
-            "herdr-threads",
-            "send",
-            "t1",
-            "--body",
-            "hello",
-            "--require-ack",
-            "s1",
-            "--require-ack",
-            "s1"
-        ])
-        .is_err()
-    );
+    // A repeated recipient is deduplicated after the seats are frozen (a name and an ID can
+    // spell the same seat), not refused at parse time.
+    let parsed = parse_argv_exact_seats([
+        "herdr-threads",
+        "send",
+        "t1",
+        "--body",
+        "hello",
+        "--require-ack",
+        "s1",
+        "--require-ack",
+        "s1",
+    ])
+    .unwrap();
+    assert!(matches!(&parsed.action, CliAction::Mutation(MutationSpec::Send { require_ack, .. })
+        if *require_ack == vec![SeatId::new("s1")]));
     let mut argv = vec![
         "herdr-threads".to_string(),
         "send".into(),
@@ -762,7 +764,7 @@ fn send_rejects_duplicate_and_excess_explicit_recipients() {
 
 #[test]
 fn send_accepts_multi_and_repeated_require_ack_with_following_options() {
-    let parsed = parse_argv([
+    let parsed = parse_argv_exact_seats([
         "herdr-threads",
         "send",
         "t1",
@@ -953,7 +955,7 @@ fn documented_mutations_dispatch_exact_typed_command_to_stub() {
     ];
     let mut stub = Stub(vec![]);
     for &(args, expected) in rows {
-        let parsed = parse_argv(
+        let parsed = parse_argv_exact_seats(
             std::iter::once("herdr-threads")
                 .chain(expected.starts_with("operator_").then_some("human"))
                 .chain(args.iter().copied()),
@@ -1532,13 +1534,13 @@ fn exit_status_help_names_both_exit_3_remedies() {
 
 #[test]
 fn seat_retire_requires_operator_flag() {
-    let error = parse_argv(["herdr-threads", "human", "seat", "retire", "s1"]).unwrap_err();
+    let error = parse_argv_exact_seats(["herdr-threads", "human", "seat", "retire", "s1"]).unwrap_err();
     assert!(
         error.detail.contains("operator required"),
         "{}",
         error.detail
     );
-    let parsed = parse_argv([
+    let parsed = parse_argv_exact_seats([
         "herdr-threads",
         "human",
         "seat",
@@ -1556,7 +1558,7 @@ fn seat_retire_requires_operator_flag() {
 
 #[test]
 fn seat_rebind_replace_parses_to_operator_replace() {
-    let parsed = parse_argv([
+    let parsed = parse_argv_exact_seats([
         "herdr-threads",
         "human",
         "seat",
@@ -1576,7 +1578,7 @@ fn seat_rebind_replace_parses_to_operator_replace() {
         parsed.action
     );
     // Without --replace the same form stays a plain rebind; --replace needs --operator.
-    let plain = parse_argv([
+    let plain = parse_argv_exact_seats([
         "herdr-threads",
         "human",
         "seat",
@@ -1592,7 +1594,7 @@ fn seat_rebind_replace_parses_to_operator_replace() {
         CliAction::Mutation(MutationSpec::Rebind { .. })
     ));
     assert!(
-        parse_argv([
+        parse_argv_exact_seats([
             "herdr-threads",
             "human",
             "seat",
@@ -2358,6 +2360,8 @@ fn handoff_existing_target_matrix_and_no_launch_options() {
     for target in [
         vec!["--pane", "w1:p1"],
         vec!["--seat", "peer"],
+        // --space/--tab narrow a --seat name (root D8a).
+        vec!["--seat", "peer", "--space", "work"],
         vec!["--space", "work", "--tab", "tab", "--pane", "peer"],
     ] {
         let mut argv = vec![
@@ -2376,7 +2380,6 @@ fn handoff_existing_target_matrix_and_no_launch_options() {
         vec!["--space", "work"],
         vec!["--tab", "tab"],
         vec!["--seat", "peer", "--pane", "w1:p1"],
-        vec!["--seat", "peer", "--space", "work"],
         vec!["--pane", "w1:p1", "--kind", "codex"],
         vec!["--pane", "w1:p1", "--agent-arg=--model"],
         vec!["--pane", "w1:p1", "--harness-binary", "/bin/codex"],
@@ -3862,7 +3865,7 @@ fn direct_send_rejects_ambiguous_selectors_and_broadened_ack() {
             "ht", "send", "--seat", "seat-b", "--body", "hello", "--pane", "pane-b",
         ],
     ] {
-        assert!(parse_argv(argv.clone()).is_err(), "{argv:?}");
+        assert!(parse_argv_exact_seats(argv.clone()).is_err(), "{argv:?}");
     }
 }
 
@@ -3870,7 +3873,7 @@ fn direct_send_rejects_ambiguous_selectors_and_broadened_ack() {
 fn direct_send_file_and_options_preserve_frozen_input() {
     let path = crate::test_support::scratch::temp_path(format!("ht-direct-body-{}", uuid::Uuid::new_v4()));
     std::fs::write(&path, "first\n雪\n").unwrap();
-    let parsed = parse_argv([
+    let parsed = parse_argv_exact_seats([
         "ht",
         "send",
         "--seat",
@@ -3924,7 +3927,7 @@ fn direct_send_file_and_options_preserve_frozen_input() {
             "0",
         ],
     ] {
-        assert!(parse_argv(argv).is_err());
+        assert!(parse_argv_exact_seats(argv).is_err());
     }
 }
 
@@ -4081,16 +4084,25 @@ fn seat_arguments_record_slot_and_raw_string_and_still_fill_the_action() {
         let got = selectors(&argv);
         let want: Vec<_> = want.into_iter().map(|(s, r)| (s, r.to_owned())).collect();
         assert_eq!(got, want, "{argv:?}");
-        // The exact ID still fills the action: re-writing the same ID through the setter is a
-        // no-op, and the setter reports no foreign-action error for a recorded slot.
+        // Parsing leaves the placeholder in every recorded slot for the runtime stage to freeze.
         let mut full = vec!["herdr-threads"];
         full.extend(&argv);
-        let mut parsed = parse_argv(full).unwrap();
+        let unfrozen = parse_argv(full.clone()).unwrap();
+        for (slot, _) in &want {
+            assert_eq!(
+                slot.current(&unfrozen.action),
+                Some(SEAT_SELECTOR_PLACEHOLDER),
+                "{argv:?} {slot:?} not a placeholder after parse"
+            );
+        }
+        // The exact-seat helper fills the action with the ID: re-writing the same ID through the
+        // setter is a no-op, and the setter reports no foreign-action error for a recorded slot.
+        let mut parsed = parse_argv_exact_seats(full).unwrap();
         for (slot, raw) in &want {
             let before = parsed.action.clone();
             slot.set(&mut parsed.action, SeatId::parse(raw.clone()).unwrap())
                 .unwrap_or_else(|e| panic!("{argv:?} {slot:?}: {e:?}"));
-            assert_eq!(parsed.action, before, "{argv:?} {slot:?} not filled by parse");
+            assert_eq!(parsed.action, before, "{argv:?} {slot:?} not filled by the exact helper");
         }
     }
 }
@@ -4107,8 +4119,140 @@ fn omitted_seat_records_no_slot() {
 }
 
 #[test]
-fn invalid_seat_strings_are_still_rejected_at_parse() {
-    assert!(parse_argv(["herdr-threads", "inbox", "--seat", "a b"]).is_err());
+fn seat_strings_are_recorded_for_the_stage() {
+    // Any string is a candidate name; only the runtime stage decides what it denotes.
+    let parsed = parse_argv(["herdr-threads", "inbox", "--seat", "a b"]).unwrap();
+    assert_eq!(
+        parsed.seat_selectors,
+        vec![SeatSelectorArg {
+            slot: SeatSlot::ReadSeat,
+            raw: "a b".into()
+        }]
+    );
+    assert!(matches!(&parsed.action,
+        CliAction::Wire(WireCommand::Inbox(q)) if q.seat == Some(placeholder_seat())));
+    // The exact-ID test helper still validates seat IDs at parse time.
+    assert!(parse_argv_exact_seats(["herdr-threads", "inbox", "--seat", "a b"]).is_err());
+    let exact = parse_argv_exact_seats(["herdr-threads", "inbox", "--seat", "s1"]).unwrap();
+    assert!(exact.seat_selectors.is_empty());
+    assert!(matches!(&exact.action,
+        CliAction::Wire(WireCommand::Inbox(q)) if q.seat == Some(SeatId::new("s1"))));
+}
+
+#[test]
+fn seat_conflicts_with_pane_but_not_space_tab_at_parse() {
+    assert!(
+        parse_argv(["herdr-threads", "inbox", "--seat", "x", "--pane", "y"]).is_err(),
+        "--seat still conflicts with --pane"
+    );
+    let parsed = parse_argv(["herdr-threads", "inbox", "--seat", "x", "--tab", "t"]).unwrap();
+    assert_eq!(
+        parsed.seat_narrowing,
+        Some(SeatNarrowing {
+            space: None,
+            tab: Some("t".into())
+        })
+    );
+    assert!(parsed.pane_selector.is_none());
+    let parsed = parse_argv([
+        "herdr-threads", "handoff", "--existing", "--seat", "x", "--space", "s", "--thread", "t",
+        "--", "w",
+    ])
+    .unwrap();
+    assert_eq!(
+        parsed.seat_narrowing,
+        Some(SeatNarrowing {
+            space: Some("s".into()),
+            tab: None
+        })
+    );
+    assert!(parsed.pane_selector.is_none());
+    assert!(matches!(&parsed.action, CliAction::TopologyHandoff(request)
+        if request.selector == crate::cli::panes::PaneSelector::default()
+            && request.seat.as_deref() == Some(SEAT_SELECTOR_PLACEHOLDER)));
+    // Without --seat the selector keeps qualifying --pane, and nothing narrows.
+    let parsed = parse_argv([
+        "herdr-threads", "handoff", "--existing", "--space", "s", "--pane", "p", "--thread", "t",
+        "--", "w",
+    ])
+    .unwrap();
+    assert!(parsed.seat_narrowing.is_none());
+    // --seat still conflicts with --pane for handoff, and send never narrows.
+    assert!(parse_argv([
+        "herdr-threads", "handoff", "--existing", "--seat", "x", "--pane", "p", "--thread", "t",
+        "--", "w",
+    ])
+    .is_err());
+    assert!(parse_argv(["herdr-threads", "human", "seat", "rebind", "s1", "--space", "s", "--pane", "p", "--operator"])
+        .unwrap()
+        .seat_narrowing
+        .is_none());
+}
+
+#[test]
+fn post_freeze_checks_dedupe_and_direct_ack_rule() {
+    let check = crate::cli::seat_resolution::post_freeze_checks;
+    let s1 = SeatId::new("s1");
+    let s2 = SeatId::new("s2");
+    let direct = |require_ack: Vec<SeatId>| {
+        let mut action = parse_argv(["herdr-threads", "send", "--seat", "s1", "--body", "hi"])
+            .unwrap()
+            .action;
+        let CliAction::Mutation(MutationSpec::DirectSend(request)) = &mut action else {
+            panic!("direct send expected");
+        };
+        request.target = SeatId::new("s1");
+        request.require_ack = require_ack;
+        action
+    };
+    let mut action = direct(vec![s1.clone(), s1.clone()]);
+    check(&mut action).unwrap();
+    assert!(matches!(&action, CliAction::Mutation(MutationSpec::DirectSend(r))
+        if r.require_ack == vec![s1.clone()]));
+    let mut action = direct(vec![s2.clone()]);
+    let error = check(&mut action).unwrap_err();
+    assert_eq!(error.detail, "direct ACK requests may name only the target seat");
+    let mut action = parse_argv(["herdr-threads", "send", "t1", "--body", "hi"])
+        .unwrap()
+        .action;
+    let CliAction::Mutation(MutationSpec::Send { require_ack, .. }) = &mut action else {
+        panic!("send expected");
+    };
+    *require_ack = vec![s1.clone(), s2.clone(), s1.clone()];
+    check(&mut action).unwrap();
+    assert!(matches!(&action, CliAction::Mutation(MutationSpec::Send { require_ack, .. })
+        if *require_ack == vec![s1, s2]));
+}
+
+#[test]
+fn seat_slot_getter_mirrors_setter_and_placeholder_marks_unfrozen() {
+    let parsed = parse_argv([
+        "herdr-threads", "send", "--seat", "a", "--require-ack", "b", "--body", "hi",
+    ])
+    .unwrap();
+    for arg in &parsed.seat_selectors {
+        assert_eq!(arg.slot.current(&parsed.action), Some(SEAT_SELECTOR_PLACEHOLDER));
+    }
+    let mut action = parsed.action;
+    SeatSlot::DirectSendTarget.set(&mut action, SeatId::new("t")).unwrap();
+    SeatSlot::RequireAck(0).set(&mut action, SeatId::new("r")).unwrap();
+    assert_eq!(SeatSlot::DirectSendTarget.current(&action), Some("t"));
+    assert_eq!(SeatSlot::RequireAck(0).current(&action), Some("r"));
+    assert_eq!(SeatSlot::RequireAck(3).current(&action), None);
+    assert_eq!(SeatSlot::ReadSeat.current(&action), None);
+}
+
+#[test]
+fn dispatch_refuses_leftover_seat_selectors() {
+    struct NoBackend;
+    impl CliBackend for NoBackend {
+        fn call(&mut self, _: WireCommand, _: &OutputSpec) -> Result<CommandResult, ApiError> {
+            panic!("a leftover selector must not reach the backend")
+        }
+    }
+    let parsed = parse_argv(["herdr-threads", "inbox", "--seat", "s1"]).unwrap();
+    let error = dispatch(parsed, &mut NoBackend, None, None).unwrap_err();
+    assert_eq!(error.detail, "seat selectors require runtime resolution before dispatch");
 }
 
 #[test]
@@ -4117,7 +4261,7 @@ fn seat_slot_setter_writes_each_field_and_refuses_foreign_actions() {
     let parse = |argv: &[&str]| {
         let mut full = vec!["herdr-threads"];
         full.extend(argv);
-        parse_argv(full).unwrap().action
+        parse_argv_exact_seats(full).unwrap().action
     };
     let mut inbox = parse(&["inbox", "--seat", "s1"]);
     SeatSlot::ReadSeat.set(&mut inbox, frozen.clone()).unwrap();

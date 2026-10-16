@@ -2054,7 +2054,7 @@ fn recipient_panes_reads_do_not_allocate_and_invite_uses_guarded_resolution() {
                 },
             ))
         });
-        let mut parsed = crate::cli::commands::parse_argv(argv).unwrap();
+        let mut parsed = crate::cli::commands::parse_argv_exact_seats(argv).unwrap();
         crate::cli::panes::resolve_cli_targets(
             &mut parsed,
             || panic!("direct IDs"),
@@ -2141,6 +2141,66 @@ mod scoped_runtime {
             "tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"main"},{"tab_id":"w1:t2","workspace_id":"w1","label":"tryout"}],
             "panes":[p("w1:p1","w1:t1","caller"),p("w1:p2","w1:t2","alice")],"agents":[]})
     }
+    /// One seat of the fixture daemon's table (`SeatInspect`, `Seats`, `ResolveSeat`).
+    #[derive(Clone)]
+    struct FixtureSeat {
+        id: String,
+        target: Option<String>,
+        resolved: bool,
+        retired: bool,
+    }
+    impl FixtureSeat {
+        fn mapped(id: &str, target: Option<&str>) -> Self {
+            Self {
+                id: id.into(),
+                target: target.map(Into::into),
+                resolved: true,
+                retired: false,
+            }
+        }
+        fn summary(&self) -> SeatSummary {
+            SeatSummary {
+                seat: SeatId::new(self.id.as_str()),
+                target: self.target.as_deref().map(HostTargetId::new),
+                continuity: if self.resolved {
+                    ContinuityStatus::Resolved
+                } else {
+                    ContinuityStatus::Unresolved
+                },
+                generation: 1,
+                created_at: crate::protocol::time::UtcMillis(0),
+                retired_at: self.retired.then_some(crate::protocol::time::UtcMillis(1)),
+                active: false,
+                bindings: Vec::new(),
+                availability: None,
+            }
+        }
+        fn inspection(&self) -> crate::protocol::results::SeatInspection {
+            crate::protocol::results::SeatInspection {
+                summary: self.summary(),
+                mapping: crate::protocol::results::MappingStatus {
+                    state: if self.resolved {
+                        ContinuityStatus::Resolved
+                    } else {
+                        ContinuityStatus::Unresolved
+                    },
+                    target: self.target.as_deref().map(HostTargetId::new),
+                    detail_argv: None,
+                },
+                hold: None,
+                retirement: None,
+                open_binding: None,
+                history: empty(),
+            }
+        }
+    }
+    /// `recipient` lives at `w1:p2`; `foreign` is resolved but has no live target.
+    fn default_seats() -> Vec<FixtureSeat> {
+        vec![
+            FixtureSeat::mapped("recipient", Some("w1:p2")),
+            FixtureSeat::mapped("foreign", None),
+        ]
+    }
     struct Runtime {
         root: PathBuf,
         paths: InstancePaths,
@@ -2148,11 +2208,25 @@ mod scoped_runtime {
         calls: Arc<Mutex<Vec<Command>>>,
         host_calls: Arc<Mutex<Vec<Value>>>,
         journals: Arc<Mutex<Vec<Value>>>,
+        /// The `pane.current` answer.
+        current: Arc<Mutex<String>>,
+        capabilities: Arc<Mutex<Vec<String>>>,
         stop: Arc<AtomicBool>,
         workers: Vec<thread::JoinHandle<()>>,
     }
     impl Runtime {
         fn new(snapshot: Value) -> Self {
+            Self::with_seats(snapshot, default_seats())
+        }
+        fn with_seats(snapshot: Value, seats: Vec<FixtureSeat>) -> Self {
+            Self::build(snapshot, seats, true)
+        }
+        /// A runtime whose Herdr endpoint has no listener (every Herdr read is
+        /// `host_unavailable`, as `src/host/native.rs` tests document) while the daemon is up.
+        fn host_down(snapshot: Value) -> Self {
+            Self::build(snapshot, default_seats(), false)
+        }
+        fn build(snapshot: Value, seats: Vec<FixtureSeat>, host_up: bool) -> Self {
             let root = PathBuf::from("/tmp")
                 .canonicalize()
                 .unwrap()
@@ -2170,10 +2244,24 @@ mod scoped_runtime {
             let calls = Arc::new(Mutex::new(vec![]));
             let host_calls = Arc::new(Mutex::new(vec![]));
             let journals = Arc::new(Mutex::new(vec![]));
+            let seats = Arc::new(Mutex::new(seats));
+            let current = Arc::new(Mutex::new(String::from("w1:p2")));
+            let capabilities = Arc::new(Mutex::new(vec![
+                crate::protocol::capabilities::INBOX_BATCH.to_owned(),
+            ]));
             let stop = Arc::new(AtomicBool::new(false));
             let host_stop = Arc::clone(&stop);
+            let host_current = Arc::clone(&current);
             let host_seen = Arc::clone(&host_calls);
+            let host_listener = if host_up {
+                Some(host)
+            } else {
+                drop(host);
+                fs::remove_file(root.join("host.sock")).unwrap();
+                None
+            };
             let host_worker = thread::spawn(move || {
+                let Some(host) = host_listener else { return };
                 loop {
                     let (mut stream, _) = host.accept().unwrap();
                     if host_stop.load(Ordering::SeqCst) {
@@ -2193,7 +2281,7 @@ mod scoped_runtime {
                         }
                         "pane.current" => {
                             assert!(request["params"]["caller_pane_id"].is_string());
-                            json!({"type":"pane_current","pane":{"pane_id":"w1:p2","focused":false}})
+                            json!({"type":"pane_current","pane":{"pane_id":host_current.lock().unwrap().as_str(),"focused":false}})
                         }
                         other => panic!("unexpected host method {other}"),
                     };
@@ -2201,6 +2289,8 @@ mod scoped_runtime {
                 }
             });
             let daemon_stop = Arc::clone(&stop);
+            let daemon_seats = Arc::clone(&seats);
+            let daemon_capabilities = Arc::clone(&capabilities);
             let seen = Arc::clone(&calls);
             let journal_seen = Arc::clone(&journals);
             let intents = paths.instance_dir.join("intents");
@@ -2241,8 +2331,23 @@ mod scoped_runtime {
                                 name: Some("team café".into()),
                             },
                         )),
-                        Command::ResolveSeat(_) => {
-                            Ok(CommandResult::SeatResolved(SeatId::new("recipient")))
+                        Command::ResolveSeat(query) => {
+                            let mut table = daemon_seats.lock().unwrap();
+                            let target = query.target.as_str();
+                            let existing = table.iter().find(|seat| {
+                                seat.resolved
+                                    && !seat.retired
+                                    && seat.target.as_deref() == Some(target)
+                            });
+                            let id = match existing {
+                                Some(seat) => seat.id.clone(),
+                                None => {
+                                    let id = format!("alloc-{}", table.len() + 1);
+                                    table.push(FixtureSeat::mapped(&id, Some(target)));
+                                    id
+                                }
+                            };
+                            Ok(CommandResult::SeatResolved(SeatId::new(id)))
                         }
                         Command::OperatorOrphanInvite(_) => {
                             Ok(CommandResult::OperatorInvited(InvitationId::new("i123")))
@@ -2251,56 +2356,31 @@ mod scoped_runtime {
                             Err(ApiError::not_found("fixture refuses repair"))
                         }
                         Command::Seats(query) => Ok(CommandResult::Seats(Page {
-                            items: vec![SeatSummary {
-                                seat: SeatId::new("recipient"),
-                                target: Some(HostTargetId::new("w1:p2")),
-                                continuity: ContinuityStatus::Resolved,
-                                generation: 1,
-                                created_at: crate::protocol::time::UtcMillis(0),
-                                retired_at: None,
-                                active: false,
-                                bindings: Vec::new(),
-                                availability: None,
-                            }]
-                            .into_iter()
-                            .filter(|seat| {
-                                query
-                                    .target
-                                    .as_ref()
-                                    .is_none_or(|target| seat.target.as_ref() == Some(target))
-                            })
-                            .collect(),
+                            items: daemon_seats
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .filter(|seat| seat.resolved && !seat.retired)
+                                .map(FixtureSeat::summary)
+                                .filter(|seat| {
+                                    query
+                                        .target
+                                        .as_ref()
+                                        .is_none_or(|target| seat.target.as_ref() == Some(target))
+                                })
+                                .collect(),
                             ..empty()
                         })),
-                        Command::SeatInspect(_) => Ok(CommandResult::SeatInspect(
-                            crate::protocol::results::SeatInspection {
-                                summary: SeatSummary {
-                                    seat: SeatId::new("recipient"),
-                                    target: Some(HostTargetId::new("w1:p2")),
-                                    continuity: ContinuityStatus::Resolved,
-                                    generation: 1,
-                                    created_at: crate::protocol::time::UtcMillis(0),
-                                    retired_at: None,
-                                    active: false,
-                                    bindings: Vec::new(),
-                                    availability: None,
-                                },
-                                mapping: crate::protocol::results::MappingStatus {
-                                    state: ContinuityStatus::Resolved,
-                                    target: Some(HostTargetId::new("w1:p2")),
-                                    detail_argv: None,
-                                },
-                                hold: None,
-                                retirement: None,
-                                open_binding: None,
-                                history: empty(),
-                            },
-                        )),
+                        Command::SeatInspect(query) => daemon_seats
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .find(|seat| seat.id == query.seat.as_str())
+                            .map(|seat| CommandResult::SeatInspect(seat.inspection()))
+                            .ok_or_else(|| ApiError::not_found("seat not found")),
                         Command::Capabilities => Ok(CommandResult::Capabilities(
                             crate::protocol::results::CapabilityList {
-                                capabilities: vec![
-                                    crate::protocol::capabilities::INBOX_BATCH.into(),
-                                ],
+                                capabilities: daemon_capabilities.lock().unwrap().clone(),
                             },
                         )),
                         Command::InboxBatch(_) => Ok(CommandResult::InboxBatch(Page {
@@ -2359,6 +2439,8 @@ mod scoped_runtime {
                 calls,
                 host_calls,
                 journals,
+                current,
+                capabilities,
                 stop,
                 workers: vec![host_worker, daemon_worker],
             }
@@ -2399,6 +2481,22 @@ mod scoped_runtime {
             json: bool,
             caller: &str,
         ) -> Result<(), crate::cli::RunError> {
+            self.run_with_host(args, json, caller).0
+        }
+        /// stdout of a run in the default caller pane.
+        fn run_capture(
+            &self,
+            args: &[&str],
+            json: bool,
+        ) -> (Result<(), crate::cli::RunError>, Vec<u8>) {
+            self.run_with_host(args, json, "w1:p99")
+        }
+        fn run_with_host(
+            &self,
+            args: &[&str],
+            json: bool,
+            caller: &str,
+        ) -> (Result<(), crate::cli::RunError>, Vec<u8>) {
             let state = self.root.join("state");
             let host = self.root.join("host.sock");
             let (human, args) = if args.first() == Some(&"human") {
@@ -2426,7 +2524,9 @@ mod scoped_runtime {
                 args
             };
             argv.extend(args.iter().map(|value| value.to_string()));
-            crate::cli::run_in_pane(argv, Some(caller), &mut Vec::new())
+            let mut out = Vec::new();
+            let result = crate::cli::run_in_pane(argv, Some(caller), &mut out);
+            (result, out)
         }
     }
     #[test]
@@ -2759,9 +2859,12 @@ mod scoped_runtime {
             runtime.run(&args).unwrap();
             let calls = runtime.calls.lock().unwrap();
             let has_thread = args.contains(&"--thread") || args.contains(&"--active");
+            // `inbox --seat recipient` also makes the stage's exact-ID SeatInspect (spec D2 step 1).
             assert_eq!(
                 calls.len(),
-                if has_thread || args[0] == "inbox" {
+                if args[0] == "inbox" {
+                    3
+                } else if has_thread {
                     2
                 } else {
                     1
@@ -2769,7 +2872,8 @@ mod scoped_runtime {
                 "{args:?}: {calls:?}"
             );
             if args[0] == "inbox" {
-                assert!(matches!(calls.first(), Some(Command::Capabilities)));
+                assert!(matches!(calls.first(), Some(Command::SeatInspect(_))));
+                assert!(matches!(calls.get(1), Some(Command::Capabilities)));
                 assert!(
                     matches!(calls.last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("recipient")) && q.page.cursor.is_none() && q.page.limit == 20)
                 );
@@ -2942,6 +3046,338 @@ mod scoped_runtime {
                 .is_err()
         );
         assert!(runtime.calls.lock().unwrap().is_empty());
+    }
+
+    // ---- seat resolution stage (ht-u3ym.3.2) --------------------------------------------
+
+    /// `snapshot()` plus an empty pane `w1:p3` "dave" (no seat) in `w1:t1`, and a second space
+    /// `w2` "other" whose tab `w2:t1` "tryout" holds `w2:p1` labelled "alice".
+    fn seat_snapshot() -> Value {
+        let mut host = snapshot();
+        let pane = |id: &str, tab: &str, space: &str, label: &str| json!({"pane_id":id,"terminal_id":id,"workspace_id":space,"tab_id":tab,"label":label,"focused":false,"agent_status":"idle","revision":1});
+        host["workspaces"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"workspace_id":"w2","label":"other"}));
+        host["tabs"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"tab_id":"w2:t1","workspace_id":"w2","label":"tryout"}));
+        let panes = host["panes"].as_array_mut().unwrap();
+        panes.push(pane("w1:p3", "w1:t1", "w1", "dave"));
+        panes.push(pane("w2:p1", "w2:t1", "w2", "alice"));
+        host
+    }
+    fn api_error(result: Result<(), crate::cli::RunError>) -> ApiError {
+        match result {
+            Err(crate::cli::RunError::Api(error)) => error,
+            other => panic!("expected an API error, got {other:?}"),
+        }
+    }
+    fn resolve_seat_calls(runtime: &Runtime) -> Vec<String> {
+        runtime
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|command| match command {
+                Command::ResolveSeat(query) => Some(query.target.as_str().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+    fn no_resolve_seat_journal(runtime: &Runtime) {
+        assert!(
+            !runtime
+                .journals
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["semantic"]["kind"] == "resolve_seat"),
+            "a ResolveSeat intent was journaled"
+        );
+    }
+
+    #[test]
+    fn seat_name_direct_send_allocates_and_prints_resolved_line() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        let (result, stdout) =
+            runtime.run_capture(&["send", "--seat", "dave", "--body", "hi"], false);
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("resolved: project/"), "{lines:?}");
+        assert!(lines[0].contains("w1:p3 seat=alloc-"), "{lines:?}");
+        assert!(lines[0].contains("(tier: space)"), "{lines:?}");
+        assert!(lines[0].len() <= 260, "{lines:?}");
+        assert!(!String::from_utf8_lossy(&stdout).contains("resolved:"));
+        assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p3".to_owned()]);
+        assert!(runtime.journals.lock().unwrap().iter().any(|entry| {
+            entry["semantic"]["kind"] == "resolve_seat"
+                && entry["header"]["scope"]["kind"] == "service_allocation"
+                && entry["semantic"]["target"] == "w1:p3"
+        }));
+        // The command may fail later (the fixture daemon lacks the direct-send protocol), but
+        // never as a seat-selector error.
+        if let Err(crate::cli::RunError::Api(error)) = result {
+            assert!(
+                !matches!(
+                    error.code,
+                    ErrorCode::NotFound | ErrorCode::Conflict | ErrorCode::HostUnavailable
+                ),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_seat_id_works_with_host_down() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::host_down(snapshot());
+        runtime.run(&["inbox", "--seat", "recipient"]).unwrap();
+        assert!(runtime.host_calls.lock().unwrap().is_empty());
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.first(), Some(Command::SeatInspect(q)) if q.seat.as_str() == "recipient")
+        );
+        assert!(
+            matches!(calls.last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("recipient")))
+        );
+        assert!(crate::cli::seat_resolution::take_resolved_lines_for_test().is_empty());
+    }
+
+    #[test]
+    fn seat_name_with_host_down_is_host_unavailable() {
+        let runtime = Runtime::host_down(snapshot());
+        let error = api_error(runtime.run(&["inbox", "--seat", "alice"]));
+        assert_eq!(error.code, ErrorCode::HostUnavailable, "{error:?}");
+        assert!(
+            !runtime
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|command| matches!(command, Command::Inbox(_)))
+        );
+    }
+
+    #[test]
+    fn seat_name_read_writes_no_resolve_seat_intent() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        runtime
+            .run(&["inbox", "--seat", "alice", "--space", "project"])
+            .unwrap();
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("recipient"))),
+            "{calls:?}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|command| matches!(command, Command::ResolveSeat(_)))
+        );
+        drop(calls);
+        no_resolve_seat_journal(&runtime);
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("w1:p2 seat=recipient"), "{lines:?}");
+    }
+
+    #[test]
+    fn lookup_name_without_a_seat_prints_nothing_and_is_refused() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        let error = api_error(runtime.run(&["inbox", "--seat", "dave"]));
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+        assert!(
+            error
+                .detail
+                .contains("no resolved seat is mapped to pane w1:p3")
+        );
+        assert!(crate::cli::seat_resolution::take_resolved_lines_for_test().is_empty());
+        assert!(resolve_seat_calls(&runtime).is_empty());
+    }
+
+    #[test]
+    fn leftover_seat_selector_is_refused_by_the_stage() {
+        let runtime = Runtime::new(snapshot());
+        let _skip = crate::cli::seat_resolution::skip_first_freeze_for_test();
+        let error = api_error(runtime.run(&["inbox", "--seat", "recipient"]));
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+        assert_eq!(
+            error.detail,
+            "seat selector was not resolved before dispatch"
+        );
+        assert!(
+            !runtime
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|command| matches!(command, Command::Inbox(_) | Command::InboxBatch(_)))
+        );
+    }
+
+    #[test]
+    fn operator_invite_by_name_from_agent_pane_still_allocates() {
+        let runtime = Runtime::new(seat_snapshot());
+        let _origin = crate::cli::caller::fix_origin(crate::cli::caller::CallerOrigin::Refused(
+            crate::harness::caller_env::EnvRefusal::NoHarness,
+        ));
+        runtime
+            .run(&[
+                "human",
+                "invite",
+                "t123",
+                "--seat",
+                "alice",
+                "--space",
+                "project",
+                "--operator",
+            ])
+            .unwrap();
+        assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p2".to_owned()]);
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.last(), Some(Command::OperatorOrphanInvite(q)) if q.seat.as_str() == "recipient"),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn refused_commands_journal_no_resolve_seat() {
+        // (a) an agent without a session is refused before the recipient is allocated.
+        let runtime = Runtime::new(seat_snapshot());
+        {
+            let _origin =
+                crate::cli::caller::fix_origin(crate::cli::caller::CallerOrigin::Refused(
+                    crate::harness::caller_env::EnvRefusal::NoHarness,
+                ));
+            let error = api_error(runtime.run(&["invite", "t123", "--seat", "dave"]));
+            assert_eq!(error.code, ErrorCode::SessionClaimRequired, "{error:?}");
+        }
+        assert!(resolve_seat_calls(&runtime).is_empty());
+        no_resolve_seat_journal(&runtime);
+        // (b) a p0 send is refused for the missing receipts capability before allocation.
+        let error =
+            api_error(runtime.run(&["send", "t123", "--body", "x", "--require-ack", "dave"]));
+        assert_eq!(error.code, ErrorCode::Unsupported, "{error:?}");
+        assert!(error.detail.contains("send_time_receipts"), "{error:?}");
+        assert!(resolve_seat_calls(&runtime).is_empty());
+        no_resolve_seat_journal(&runtime);
+    }
+
+    #[test]
+    fn seat_space_narrowing_searches_every_tab() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let mut seats = default_seats();
+        seats.push(FixtureSeat::mapped("other-seat", Some("w2:p1")));
+        let runtime = Runtime::with_seats(seat_snapshot(), seats);
+        *runtime.current.lock().unwrap() = "w2:p1".into();
+        runtime.run(&["inbox", "--seat", "alice"]).unwrap();
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("w2:p1 seat=other-seat (tier: tab)"),
+            "{lines:?}"
+        );
+        // --space project searches every tab of the space (alice lives in its second tab).
+        runtime
+            .run(&["inbox", "--seat", "alice", "--space", "project"])
+            .unwrap();
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("w1:p2 seat=recipient"), "{lines:?}");
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("recipient")))
+        );
+    }
+
+    #[test]
+    fn name_and_id_for_same_seat_dedupe_in_direct_ack() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        runtime
+            .capabilities
+            .lock()
+            .unwrap()
+            .push(crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned());
+        let result = runtime.run(&[
+            "send",
+            "--seat",
+            "alice",
+            "--require-ack",
+            "recipient",
+            "--body",
+            "x",
+        ]);
+        // Past the stage: the name allocated recipient's own pane, and no direct-ACK refusal.
+        assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p2".to_owned()]);
+        if let Err(crate::cli::RunError::Api(error)) = result {
+            assert!(!error.detail.contains("direct ACK"), "{error:?}");
+        }
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+    }
+
+    #[test]
+    fn repeated_name_resolves_and_prints_once() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        runtime
+            .capabilities
+            .lock()
+            .unwrap()
+            .push(crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned());
+        let _ = runtime.run(&[
+            "send",
+            "t123",
+            "--body",
+            "x",
+            "--require-ack",
+            "dave",
+            "--require-ack",
+            "dave",
+        ]);
+        assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p3".to_owned()]);
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+    }
+
+    #[test]
+    fn nickname_unverifiable_and_narrowed_exact_id() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        runtime
+            .run(&["inbox", "--seat", "project/alice/recipient"])
+            .unwrap();
+        assert!(crate::cli::seat_resolution::take_resolved_lines_for_test().is_empty());
+        let error = api_error(runtime.run(&["inbox", "--seat", "other/recipient"]));
+        assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+        assert!(error.detail.contains("project/tryout/alice"), "{error:?}");
+        let error = api_error(runtime.run(&["inbox", "--seat", "project/foreign"]));
+        assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+        assert!(
+            error.detail.contains("cannot verify location of foreign"),
+            "{error:?}"
+        );
+        let error = api_error(runtime.run(&["inbox", "--seat", "recipient", "--space", "other"]));
+        assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+        assert!(error.detail.contains("project/tryout/alice"), "{error:?}");
+        // Inside the narrowing, the exact ID passes.
+        runtime
+            .run(&[
+                "inbox",
+                "--seat",
+                "recipient",
+                "--space",
+                "project",
+                "--tab",
+                "tryout",
+            ])
+            .unwrap();
     }
 }
 
@@ -4511,7 +4947,7 @@ mod main539_composition {
         }
         fn run(&self, argv: Vec<String>, output: &mut Vec<u8>) -> Result<(), crate::cli::RunError> {
             crate::cli::run_cooperative(
-                crate::cli::commands::parse_argv(argv).unwrap(),
+                crate::cli::commands::parse_argv_exact_seats(argv).unwrap(),
                 &self.journal,
                 &self.contexts,
                 None,
@@ -4630,7 +5066,14 @@ mod main539_composition {
             fail_invite: false,
         };
         let error = crate::cli::run_cooperative(
-            crate::cli::commands::parse_argv(["ht", "invite", "t", "--seat", "recipient"]).unwrap(),
+            crate::cli::commands::parse_argv_exact_seats([
+                "ht",
+                "invite",
+                "t",
+                "--seat",
+                "recipient",
+            ])
+            .unwrap(),
             &f.journal,
             &f.contexts,
             None,
@@ -4819,7 +5262,7 @@ mod main539_composition {
             let mut argv = vec!["ht", "invite", "t", "--seat", "recipient"];
             argv.extend(flags.iter().copied());
             let error = crate::cli::run_cooperative(
-                crate::cli::commands::parse_argv(argv).unwrap(),
+                crate::cli::commands::parse_argv_exact_seats(argv).unwrap(),
                 &f.journal,
                 &f.contexts,
                 None,

@@ -35,6 +35,16 @@ pub struct ParsedCli {
     /// Raw seat arguments, consumed once by the runtime stage before any journal or dispatch;
     /// never journaled (spec D5).
     pub seat_selectors: Vec<SeatSelectorArg>,
+    /// `--space`/`--tab` given with `--seat`: only the seat stage reads them; never a pane
+    /// selector, never journaled (spec D3 Narrowing).
+    pub seat_narrowing: Option<SeatNarrowing>,
+}
+
+/// Raw `--space`/`--tab` values that narrow a seat name or verify an exact seat's location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatNarrowing {
+    pub space: Option<String>,
+    pub tab: Option<String>,
 }
 
 /// Where one seat argument lives in an action, and its D4 pane-to-seat class.
@@ -69,7 +79,7 @@ pub enum SeatSlot {
 /// The D4 decision as a value. `Lookup` never allocates (reads, operator repair, handoff
 /// `--existing`); `Allocate` goes through the journaled ResolveSeat (invite, ACK recipients,
 /// direct send). Carries no behaviour.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SeatMapping {
     Lookup,
     Allocate,
@@ -153,6 +163,63 @@ impl SeatSlot {
         Ok(())
     }
 
+    /// The seat currently held in this slot's field (the getter twin of `set`), `None` when the
+    /// action has no such slot. The runtime stage's end check compares it with the placeholder.
+    pub fn current(self, action: &CliAction) -> Option<&str> {
+        use crate::cli::topology_handoff::Request as TopologyRequest;
+        match (self, action) {
+            (
+                Self::ReadSeat,
+                CliAction::Wire(WireCommand::Inbox(query) | WireCommand::InboxBatchV2(query)),
+            ) => query.seat.as_ref().map(SeatId::as_str),
+            (Self::ReadSeat, CliAction::Wire(WireCommand::PendingReceipts(query))) => {
+                query.seat.as_ref().map(SeatId::as_str)
+            }
+            (Self::ReadSeat, CliAction::Wire(WireCommand::Diagnostics(query))) => {
+                query.seat.as_ref().map(SeatId::as_str)
+            }
+            (Self::ReadSeat, CliAction::Wire(WireCommand::Warnings(query))) => {
+                Some(query.seat.as_str())
+            }
+            (Self::ThreadListMembership, CliAction::Wire(WireCommand::Directory(query))) => {
+                query.membership.as_ref().map(SeatId::as_str)
+            }
+            (Self::InviteRecipient, CliAction::Mutation(MutationSpec::Invite { seat, .. })) => {
+                Some(seat.as_str())
+            }
+            (Self::DirectSendTarget, CliAction::Mutation(MutationSpec::DirectSend(request))) => {
+                Some(request.target.as_str())
+            }
+            (
+                Self::RequireAck(index),
+                CliAction::Mutation(
+                    MutationSpec::Send { require_ack, .. }
+                    | MutationSpec::DirectSend(super::direct_send::Request { require_ack, .. }),
+                ),
+            ) => require_ack.get(index).map(SeatId::as_str),
+            (Self::InspectSeat, CliAction::Wire(WireCommand::SeatInspect(query))) => {
+                Some(query.seat.as_str())
+            }
+            (Self::RetireSeat, CliAction::Mutation(MutationSpec::Retire(seat))) => {
+                Some(seat.as_str())
+            }
+            (
+                Self::RebindSeat,
+                CliAction::Mutation(
+                    MutationSpec::Rebind { seat, .. } | MutationSpec::Replace { seat, .. },
+                ),
+            ) => Some(seat.as_str()),
+            (Self::RebindReplace, CliAction::Mutation(MutationSpec::Replace { replace, .. })) => {
+                Some(replace.as_str())
+            }
+            (
+                Self::HandoffExistingSeat,
+                CliAction::TopologyHandoff(TopologyRequest { seat, .. }),
+            ) => seat.as_deref(),
+            _ => None,
+        }
+    }
+
     /// The read slot an omitted or pane-selected read seat fills, else `None`. Used by
     /// `default_seat` and `resolve_recipient_seats` so neither matches action kinds itself.
     pub fn read_slot_of(action: &CliAction) -> Option<Self> {
@@ -198,6 +265,30 @@ pub fn check_unique_recipients(recipients: &[SeatId]) -> Result<(), ApiError> {
         return Err(invalid("duplicate explicit recipient"));
     }
     Ok(())
+}
+
+/// `--space`/`--tab` given with `--seat` (reads, invite, `handoff --existing`); never `send`
+/// (direct send refuses pane selectors until its own leaf) and never `seat rebind` (its
+/// `--space/--tab/--pane` locate the target pane).
+fn collect_seat_narrowing(command: &Top) -> Option<SeatNarrowing> {
+    let (selector, seat) = match command {
+        Top::Inbox(a) => (&a.selector, &a.seat),
+        Top::PendingReceipts(a) => (&a.selector, &a.seat),
+        Top::Diagnostics(a) => (&a.selector, &a.seat),
+        Top::Warnings(a) => (&a.selector, &a.seat),
+        Top::Thread {
+            command: ThreadSub::List(a),
+        } => (&a.selector, &a.seat),
+        Top::Invite(a) => (&a.selector, &a.seat),
+        Top::Handoff(a) if a.existing => (&a.selector, &a.seat),
+        _ => return None,
+    };
+    (seat.is_some() && (selector.space.is_some() || selector.tab.is_some())).then(|| {
+        SeatNarrowing {
+            space: selector.space.clone(),
+            tab: selector.tab.clone(),
+        }
+    })
 }
 
 /// Record every present seat argument of a command with its raw string.
@@ -462,6 +553,11 @@ pub fn dispatch<B: CliBackend>(
     {
         return Err(invalid(
             "pane selectors require runtime resolution before dispatch",
+        ));
+    }
+    if !parsed.seat_selectors.is_empty() || parsed.seat_narrowing.is_some() {
+        return Err(invalid(
+            "seat selectors require runtime resolution before dispatch",
         ));
     }
     if parsed.thread_selector.is_some() {
@@ -1244,18 +1340,21 @@ enum SeatSub {
     },
     /// Inspect one seat's mapping, binding and obligations.
     Inspect {
+        /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
         seat: String,
         #[command(flatten)]
         page: PageArgs,
     },
     /// Rebind a seat to a pane through explicit operator repair.
     Rebind {
+        /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
         seat: String,
         #[command(flatten)]
         selector: super::panes::PaneSelector,
         /// Retire the seat that owns the pane (NEW) and rebind this seat onto
         /// the pane in one step; NEW's pending obligations settle as
         /// recipient-retired and nothing moves from NEW to this seat.
+        /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
         #[arg(long, value_name = "NEW")]
         replace: Option<String>,
         #[arg(long, required = true)]
@@ -1264,6 +1363,7 @@ enum SeatSub {
     /// Abandon a seat: it retires and its pending obligations settle as
     /// recipient-retired. The seat is never merged into another.
     Retire {
+        /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
         seat: String,
         #[arg(long)]
         operator: bool,
@@ -1350,6 +1450,7 @@ struct ThreadListArgs {
     recent: bool,
     #[command(flatten)]
     selector: super::panes::PaneSelector,
+    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
     #[arg(long)]
     seat: Option<String>,
     #[arg(long, group = "membership")]
@@ -1368,6 +1469,7 @@ struct ThreadListArgs {
 struct InboxArgs {
     #[command(flatten)]
     selector: super::panes::PaneSelector,
+    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
     #[arg(long)]
     seat: Option<String>,
     #[command(flatten)]
@@ -1380,6 +1482,7 @@ struct InviteArgs {
     /// Thread to invite the seat into.
     thread: String,
     /// Seat ID to invite.
+    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
     #[arg(long)]
     seat: Option<String>,
     /// Acceptance deadline in positive seconds.
@@ -1402,7 +1505,8 @@ struct SendArgs {
     /// Thread that receives the message, or select a direct recipient with --seat.
     #[arg(required_unless_present = "seat", conflicts_with = "seat")]
     thread: Option<String>,
-    /// Exact recipient seat for an automatic one-to-one channel.
+    /// Recipient seat for an automatic one-to-one channel.
+    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
     #[arg(long, required_unless_present = "thread", conflicts_with = "thread")]
     seat: Option<String>,
     /// Message body given directly on the command line.
@@ -1415,7 +1519,8 @@ struct SendArgs {
     #[arg(long, group = "body_source")]
     stdin: bool,
     /// Require an ACK from this seat; repeat for more seats.
-    #[arg(long = "require-ack", num_args = 1.., action = ArgAction::Append)]
+    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+    #[arg(long = "require-ack", value_name = "SEAT", num_args = 1.., action = ArgAction::Append)]
     require_ack: Vec<String>,
     /// Require an ACK from one exact pane ID, label or live agent name; repeat
     /// this option for each recipient. Uses --space/--tab scope; qualify conflicts.
@@ -1460,6 +1565,7 @@ fn parse_user_intent(value: &str) -> Result<UserIntent, String> {
 struct PendingReceiptsArgs {
     #[command(flatten)]
     selector: super::panes::PaneSelector,
+    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
     #[arg(long)]
     seat: Option<String>,
     #[arg(long)]
@@ -1471,6 +1577,7 @@ struct PendingReceiptsArgs {
 struct DiagnosticsArgs {
     #[command(flatten)]
     selector: super::panes::PaneSelector,
+    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
     #[arg(long)]
     seat: Option<String>,
     #[arg(long)]
@@ -1482,6 +1589,7 @@ struct DiagnosticsArgs {
 struct WarningsArgs {
     #[command(flatten)]
     selector: super::panes::PaneSelector,
+    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
     #[arg(long)]
     seat: Option<String>,
     /// Show open conditions and actionable legacy warnings in this thread.
@@ -1627,7 +1735,8 @@ struct HandoffArgs {
     new_tab: Option<String>,
     #[arg(long)]
     existing: bool,
-    #[arg(long, requires = "existing", conflicts_with_all = ["pane", "tab", "space"])]
+    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+    #[arg(long, requires = "existing", conflicts_with = "pane")]
     seat: Option<String>,
     #[arg(long, requires = "new_tab")]
     cwd: Option<std::path::PathBuf>,
@@ -2019,6 +2128,32 @@ where
     })
 }
 
+/// Test-only: freeze every recorded seat argument as the exact seat ID it spells (no names, no
+/// daemon), clear the selectors and narrowing, then run the post-freeze checks. Production
+/// freezes through `seat_resolution::resolve_cli_seats`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn freeze_exact_seats(parsed: &mut ParsedCli) -> Result<(), ApiError> {
+    for arg in std::mem::take(&mut parsed.seat_selectors) {
+        let seat = id(arg.raw, SeatId::parse)?;
+        arg.slot.set(&mut parsed.action, seat)?;
+    }
+    parsed.seat_narrowing = None;
+    super::seat_resolution::post_freeze_checks(&mut parsed.action)
+}
+
+/// Test-only: [`parse_argv`] followed by [`freeze_exact_seats`], for tests that read action seat
+/// fields, call `dispatch` or call `run_cooperative` and keep testing exact IDs.
+#[cfg(any(test, feature = "test-support"))]
+pub fn parse_argv_exact_seats<I, T>(argv: I) -> Result<ParsedCli, ApiError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let mut parsed = parse_argv(argv)?;
+    freeze_exact_seats(&mut parsed)?;
+    Ok(parsed)
+}
+
 /// Local discovery dispatch, before config/context/daemon composition.
 pub(super) fn adapter_discovery_output(
     parsed: &ParsedCli,
@@ -2405,9 +2540,10 @@ fn parse_cli_in_registry(
             }
         }
         Top::Invite(args) => {
-            if args.seat.is_some() && args.selector.is_explicit() {
+            if args.seat.is_some() && args.selector.pane.is_some() {
                 return Err(invalid("--seat conflicts with pane selectors"));
             }
+            // With --seat, --space/--tab narrow the name (`seat_narrowing`), not a pane.
             args.seat.is_none().then(|| args.selector.clone())
         }
         Top::Inbox(InboxArgs { selector, seat, .. })
@@ -2417,13 +2553,14 @@ fn parse_cli_in_registry(
         | Top::Thread {
             command: ThreadSub::List(ThreadListArgs { selector, seat, .. }),
         } => {
-            if seat.is_some() && selector.is_explicit() {
+            if seat.is_some() && selector.pane.is_some() {
                 return Err(invalid("--seat conflicts with pane selectors"));
             }
             // An omitted selector reads as the caller's seat through the daemon's
             // canonical mapping, even when Herdr is unavailable (C4). Only an
-            // explicit human locator needs a live topology read.
-            selector.is_explicit().then(|| selector.clone())
+            // explicit human locator needs a live topology read. With --seat,
+            // --space/--tab narrow the seat name (`seat_narrowing`), not a pane.
+            (seat.is_none() && selector.is_explicit()).then(|| selector.clone())
         }
         Top::Send(args) => {
             if args.seat.is_some()
@@ -2494,6 +2631,7 @@ fn parse_cli_in_registry(
         _ => None,
     };
     let seat_selectors = collect_seat_selectors(&cli.command);
+    let seat_narrowing = collect_seat_narrowing(&cli.command);
     let action = match cli.command {
         Top::Follow(_) => unreachable!("follow was normalized to read"),
         Top::Thread { command } => match command {
@@ -2544,7 +2682,7 @@ fn parse_cli_in_registry(
             }
             ThreadSub::List(args) => CliAction::Wire(WireCommand::Directory(DirectoryQuery {
                 recent: args.recent,
-                membership: args.seat.map(|s| id(s, SeatId::parse)).transpose()?,
+                membership: args.seat.map(|_| placeholder_seat()),
                 membership_filter: if args.joined {
                     DirectoryMembership::Joined
                 } else if args.invited {
@@ -2574,10 +2712,10 @@ fn parse_cli_in_registry(
         },
         Top::Invite(args) => CliAction::Mutation(MutationSpec::Invite {
             thread: thread_id(args.thread)?,
-            seat: id(
-                args.seat.unwrap_or_else(|| "pending-pane-selector".into()),
-                SeatId::parse,
-            )?,
+            seat: args
+                .seat
+                .map(|_| placeholder_seat())
+                .unwrap_or_else(|| SeatId::new("pending-pane-selector")),
             confirmation: (!args.operator).then_some(InvitationConfirmation::RequireAck),
             deadline_millis: deadline(args.deadline)?
                 .map(|millis| {
@@ -2631,16 +2769,14 @@ fn parse_cli_in_registry(
             if args.require_ack.len() > MAX_BATCH_ITEMS {
                 return Err(invalid("too many explicit recipients"));
             }
-            let mut recipients = args
+            // Seat arguments are names or IDs: the runtime stage freezes them, then checks the
+            // direct-ACK rule and dedupes the frozen IDs (`seat_resolution::post_freeze_checks`).
+            let recipients: Vec<SeatId> = args
                 .require_ack
-                .into_iter()
-                .map(|s| id(s, SeatId::parse))
-                .collect::<Result<Vec<_>, _>>()?;
-            let direct_target = args.seat.map(|seat| id(seat, SeatId::parse)).transpose()?;
-            if let Some(target) = &direct_target {
-                check_direct_ack(target, &mut recipients)?;
-            }
-            check_unique_recipients(&recipients)?;
+                .iter()
+                .map(|_| placeholder_seat())
+                .collect();
+            let direct_target = args.seat.map(|_| placeholder_seat());
             let thread = args.thread.map(thread_id).transpose()?;
             let deadline_millis = deadline(args.deadline)?;
             let relays_user = args.relays_user;
@@ -2687,16 +2823,19 @@ fn parse_cli_in_registry(
             pushed: false,
             thread: None,
             claim: None,
-            seat: args.seat.map(|s| id(s, SeatId::parse)).transpose()?,
+            seat: args.seat.map(|_| placeholder_seat()),
             page: page(args.page)?,
         })),
         Top::Warnings(args) => match (
-            args.seat
-                .or_else(|| selected.as_ref().map(|_| "pending-pane-selector".into())),
+            args.seat.map(|_| placeholder_seat()).or_else(|| {
+                selected
+                    .as_ref()
+                    .map(|_| SeatId::new("pending-pane-selector"))
+            }),
             args.active,
         ) {
             (Some(seat), None) => CliAction::Wire(WireCommand::Warnings(WarningsQuery {
-                seat: id(seat, SeatId::parse)?,
+                seat,
                 page: page(args.page)?,
             })),
             (None, Some(thread)) => CliAction::Wire(WireCommand::ActiveWarnings(
@@ -2724,7 +2863,7 @@ fn parse_cli_in_registry(
         }),
         Top::PendingReceipts(args) => {
             CliAction::Wire(WireCommand::PendingReceipts(PendingReceiptsQuery {
-                seat: args.seat.map(|s| id(s, SeatId::parse)).transpose()?,
+                seat: args.seat.map(|_| placeholder_seat()),
                 thread: args.thread.map(thread_id).transpose()?,
                 page: page(args.page)?,
             }))
@@ -2857,9 +2996,9 @@ fn parse_cli_in_registry(
                         .unwrap_or_else(|| "pending-caller-selector".into()),
                 )))
             }
-            SeatSub::Inspect { seat, page: args } => {
+            SeatSub::Inspect { page: args, .. } => {
                 CliAction::Wire(WireCommand::SeatInspect(SeatInspectQuery {
-                    seat: id(seat, SeatId::parse)?,
+                    seat: placeholder_seat(),
                     page: page(args)?,
                 }))
             }
@@ -2869,30 +3008,30 @@ fn parse_cli_in_registry(
                 }))
             }
             SeatSub::Rebind {
-                seat,
                 selector,
                 replace,
                 operator,
+                ..
             } => {
                 if !operator {
                     return Err(invalid("operator required"));
                 }
-                let seat = id(seat, SeatId::parse)?;
+                let seat = placeholder_seat();
                 let pane = locator_hint(selector.pane.expect("explicit pane validated"));
                 CliAction::Mutation(match replace {
-                    Some(replace) => MutationSpec::Replace {
+                    Some(_) => MutationSpec::Replace {
                         seat,
                         pane,
-                        replace: id(replace, SeatId::parse)?,
+                        replace: placeholder_seat(),
                     },
                     None => MutationSpec::Rebind { seat, pane },
                 })
             }
-            SeatSub::Retire { seat, operator } => {
+            SeatSub::Retire { operator, .. } => {
                 if !operator {
                     return Err(invalid("operator required"));
                 }
-                CliAction::Mutation(MutationSpec::Retire(id(seat, SeatId::parse)?))
+                CliAction::Mutation(MutationSpec::Retire(placeholder_seat()))
             }
         },
         Top::Delivery {
@@ -2921,10 +3060,7 @@ fn parse_cli_in_registry(
             page: page(args)?,
         })),
         Top::Diagnostics(args) => CliAction::Wire(WireCommand::Diagnostics(DiagnosticsQuery {
-            seat: args
-                .seat
-                .map(|value| id(value, SeatId::parse))
-                .transpose()?,
+            seat: args.seat.map(|_| placeholder_seat()),
             thread: args.thread.map(thread_id).transpose()?,
             page: page(args.page)?,
         })),
@@ -3059,8 +3195,14 @@ fn parse_cli_in_registry(
                     automatic: !args.new_thread && args.thread.is_none(),
                     new_tab: args.new_tab,
                     existing: args.existing,
-                    selector: args.selector,
-                    seat: args.seat,
+                    // With --seat, its --space/--tab narrow the name (`seat_narrowing`), never
+                    // qualify a pane (root D8a).
+                    selector: if args.seat.is_some() {
+                        super::panes::PaneSelector::default()
+                    } else {
+                        args.selector
+                    },
+                    seat: args.seat.map(|_| SEAT_SELECTOR_PLACEHOLDER.to_owned()),
                     cwd: args.cwd,
                     thread: args.thread,
                     thread_name: args.thread_name,
@@ -3249,6 +3391,7 @@ fn parse_cli_in_registry(
         thread_selector,
         agent_id,
         seat_selectors,
+        seat_narrowing,
     })
 }
 

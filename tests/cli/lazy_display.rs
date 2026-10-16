@@ -272,7 +272,8 @@ fn run_to_writer<C: herdr_threads::ports::LocalClient, W: Write>(
     use herdr_threads::harness::context::{
         ContextJournal, Harness, OccupantContext, Role, SessionReference,
     };
-    let parsed = herdr_threads::cli::commands::parse_argv(argv.iter().copied()).unwrap();
+    let parsed =
+        herdr_threads::cli::commands::parse_argv_exact_seats(argv.iter().copied()).unwrap();
     let context = OccupantContext {
         format_version: 1,
         instance: uuid::Uuid::from_u128(1),

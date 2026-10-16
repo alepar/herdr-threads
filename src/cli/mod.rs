@@ -30,6 +30,7 @@ pub mod panes;
 pub(crate) mod peer_locations;
 mod picker;
 pub mod retry;
+mod seat_resolution;
 pub mod seat_selector;
 pub(crate) mod send_priority;
 pub mod setup;
@@ -721,6 +722,23 @@ fn run_parsed_in_pane<W: Write>(
             _ => Err(invalid_request("unexpected thread resolution result")),
         }
     })?;
+    // Seat arguments become canonical seat IDs before any journal intent, the caller derivation
+    // and the --operator branch's recipient resolution. A retry carries no slots: a no-op there.
+    let seats_resolved = seat_resolution::resolve_cli_seats(
+        &mut parsed,
+        &paths,
+        &connection,
+        &clock,
+        || host.topology(&budget()),
+        || {
+            caller_pane
+                .filter(|pane| !pane.is_empty())
+                .map(|pane| host.current_pane(pane, &budget()))
+                .transpose()
+        },
+        &mut io::stderr(),
+    );
+    seats_resolved.map_err(|error| direct_send::pre_executor_error(error, &parsed, &paths))?;
     if let CliAction::MeInit { operator } = &parsed.action {
         let operator = *operator;
         return me::run_me_init(
@@ -3416,6 +3434,11 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
     clock: &dyn Clock,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    if !parsed.seat_selectors.is_empty() || parsed.seat_narrowing.is_some() {
+        return Err(invalid_request(
+            "seat selectors require runtime resolution before dispatch",
+        ));
+    }
     let _namespace = human::invocation_scope(parsed.actor);
     if let CliAction::Retry(recovery) = &parsed.action {
         retry::preflight_original_actor(

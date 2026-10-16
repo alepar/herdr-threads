@@ -530,7 +530,7 @@ impl HumanLifecycle {
     fn run(&self, args: &[&str], operator: bool) -> Result<(), crate::cli::RunError> {
         let mut argv = vec!["ht", "human"];
         argv.extend_from_slice(args);
-        let mut parsed = crate::cli::commands::parse_argv(argv).unwrap();
+        let mut parsed = crate::cli::commands::parse_argv_exact_seats(argv).unwrap();
         if operator {
             let crate::cli::commands::CliAction::Mutation(
                 crate::cli::commands::MutationSpec::CheckInLifecycle { operator, .. },
