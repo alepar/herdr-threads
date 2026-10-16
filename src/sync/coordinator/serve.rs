@@ -27,6 +27,14 @@ use super::*;
 /// Least gap between two `have` deltas on one link (ms).
 const HAVE_DELTA_EVERY_MS: u64 = 1_000;
 
+/// Most logs one link may have armed for the peer (a `want` beyond it is
+/// ignored).
+const MAX_SUBS_OUT: usize = MAX_HAVE_LOGS;
+
+/// How long one serve job may run (ms on the coordinator's clock) before its
+/// budget is exhausted; the log is retried on the next housekeeping tick.
+const SERVE_JOB_BUDGET_MS: u64 = 5_000;
+
 /// A finished serve job, joined by the actor.
 pub(super) struct ServeDone {
     pub link: u64,
@@ -40,6 +48,10 @@ pub(super) struct ServeDone {
 /// `max_frame`, halving the batch recursively. A single entry that is still
 /// too long goes alone (the link refuses it as `BadSize`). Each body comes
 /// with the last counter it carries.
+///
+/// Terminates: each recursion halves a non-empty slice. With `max_frame` at
+/// least the handshake's floor (`MIN_PEER_MAX_FRAME`) it emits at most one
+/// frame per entry, so at most `batch_entries` frames.
 fn encode_halved(
     envelopes: &[Envelope],
     max_frame: usize,
@@ -86,6 +98,15 @@ impl Actor {
         let Some(entry) = self.links.get_mut(&link_id) else {
             return;
         };
+        if !entry.subs_out.contains_key(&log) && entry.subs_out.len() >= MAX_SUBS_OUT {
+            if !entry.subs_capped_logged {
+                entry.subs_capped_logged = true;
+                (self.deps.log)(&format!(
+                    "sync: link {link_id} wants more than {MAX_SUBS_OUT} logs; ignoring the rest"
+                ));
+            }
+            return;
+        }
         entry.subs_out.insert(log, from.max(1));
         self.push_link(link_id);
     }
@@ -143,9 +164,10 @@ impl Actor {
         let limits = peer_batch_limits(entry.handle.peer());
         let journal = self.deps.journal.clone();
         self.serving.insert(link_id);
+        let deadline = MonoInstant(self.mono().0.saturating_add(SERVE_JOB_BUDGET_MS));
         self.serve_jobs.spawn_blocking(move || {
             let budget = CallBudget {
-                deadline: MonoInstant(u64::MAX),
+                deadline,
                 cancellation: Cancellation::default(),
             };
             let result = journal.serve(&log, from, limits, &budget);
@@ -186,6 +208,9 @@ impl Actor {
                     log.incarnation,
                     e.code
                 ));
+                // Retried on the next tick, not at once: a failing journal
+                // must not hot-loop the actor.
+                self.serve_retry.insert(link);
                 return;
             }
         };
@@ -313,6 +338,12 @@ impl Actor {
             return;
         };
         if !entry.fork_active() {
+            // A peer that speaks fork frames gets an answer (a standby or
+            // closing link serves nothing); one without the cap could not
+            // parse it.
+            if entry.fork_cap() {
+                send_branch_none(entry, &want);
+            }
             return;
         }
         if entry.branch_queue.len() >= MAX_BRANCH_OUTSTANDING {
@@ -344,9 +375,16 @@ impl Actor {
             entry.branch_busy = true;
             let limits = peer_batch_limits(entry.handle.peer());
             let journal = self.deps.journal.clone();
+            let deadline = MonoInstant(
+                self.deps
+                    .clock
+                    .monotonic_now()
+                    .0
+                    .saturating_add(SERVE_JOB_BUDGET_MS),
+            );
             self.branch_jobs.spawn_blocking(move || {
                 let budget = CallBudget {
-                    deadline: MonoInstant(u64::MAX),
+                    deadline,
                     cancellation: Cancellation::default(),
                 };
                 let log = LogKey {
@@ -393,8 +431,12 @@ impl Actor {
                         None
                     }
                 };
-                let sent = batch.is_some_and(|batch| send_branch_entries(entry, &want, &batch));
-                if !sent {
+                // After a partial send the last frame carried `more: true`, so
+                // the requester asks again from there; no `branch_none`.
+                let sent = batch.map_or(BranchSend::None, |batch| {
+                    send_branch_entries(entry, &want, &batch)
+                });
+                if sent == BranchSend::None {
                     send_branch_none(entry, &want);
                 }
             }
@@ -403,8 +445,9 @@ impl Actor {
     }
 
     /// An inbound `branch_entries`/`branch_none`: a shape error drops the
-    /// frame and counts against the source (`on_corrupt`); otherwise the sink
-    /// gets it, and the credit goes back after.
+    /// frame and counts it on the link (`bad_branch`, logged once); it never
+    /// penalizes the log's ordinary rx source, which did not send it.
+    /// Otherwise the sink gets it, and the credit goes back after.
     pub(super) fn on_branch_reply(&mut self, link_id: u64, frame: PeerFrame, wire_len: usize) {
         let len = u32::try_from(wire_len).unwrap_or(u32::MAX);
         let Some(entry) = self.links.get(&link_id) else {
@@ -428,11 +471,16 @@ impl Actor {
                     entries.into_iter().map(Envelope::try_from).collect();
                 let Ok(decoded) = decoded else {
                     self.grant(link_id, len);
-                    let log = LogKey {
-                        node,
-                        incarnation: inc,
-                    };
-                    self.on_corrupt(link_id, log, "malformed branch entry");
+                    if let Some(entry) = self.links.get_mut(&link_id) {
+                        entry.bad_branch += 1;
+                        if entry.bad_branch == 1 {
+                            (self.deps.log)(&format!(
+                                "sync: link {link_id} sent a malformed branch entry for {}/{}; dropped",
+                                uuid8(&node),
+                                inc
+                            ));
+                        }
+                    }
                     return;
                 };
                 self.deps.fork_sink.on_branch(
@@ -511,9 +559,20 @@ fn send_branch_none(entry: &LinkEntry, want: &BranchWant) {
     });
 }
 
+/// How much of a branch reply reached the link's data queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BranchSend {
+    /// Every frame was queued.
+    All,
+    /// The first frame did not fit (or there was nothing to send).
+    None,
+    /// Some frames were queued and a later one failed.
+    Partial,
+}
+
 /// Queue `batch` as `branch_entries` frames halved to the link's
-/// `max_frame`; `false` when any frame did not fit the data queue.
-fn send_branch_entries(entry: &LinkEntry, want: &BranchWant, batch: &[Envelope]) -> bool {
+/// `max_frame`.
+fn send_branch_entries(entry: &LinkEntry, want: &BranchWant, batch: &[Envelope]) -> BranchSend {
     let max_frame = entry.handle.peer().limits.max_frame as usize;
     let build = |part: &[Envelope]| PeerFrame::BranchEntries {
         node: want.node,
@@ -524,8 +583,17 @@ fn send_branch_entries(entry: &LinkEntry, want: &BranchWant, batch: &[Envelope])
     };
     let mut bodies = Vec::new();
     encode_halved(batch, max_frame, &build, &mut bodies);
-    !bodies.is_empty()
-        && bodies
-            .into_iter()
-            .all(|(body, _)| entry.handle.try_send_entries(body).is_ok())
+    let total = bodies.len();
+    let mut sent = 0;
+    for (body, _) in bodies {
+        if entry.handle.try_send_entries(body).is_err() {
+            break;
+        }
+        sent += 1;
+    }
+    match sent {
+        0 => BranchSend::None,
+        n if n == total => BranchSend::All,
+        _ => BranchSend::Partial,
+    }
 }
