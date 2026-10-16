@@ -37,9 +37,13 @@ There are three leaves.
 
 1. **Move-only helper extraction.** This leaf extracts:
    - the `--space`/`--tab` parent resolution from `panes::resolve_selector` into a helper that
-     returns the resolved space and tab IDs, using today's rule;
+     returns the resolved space plus an optional tab. It does no tab defaulting: the caller's tab
+     or sole-tab defaulting stays inside `resolve_selector`'s `--pane` path (root D3 Narrowing,
+     Key abstractions `PaneSelector`);
    - the guarded `allocate` closure in `resolve_recipient_seats` into a named function in
-     `mod.rs`.
+     `mod.rs` that carries its refuse-before-allocate preconditions: the agent-without-session
+     refusal, the p0 send-time receipts capability and the invitation-confirmation capability
+     (root Key abstractions `SeatMapping`).
 
    Behaviour is unchanged. Nothing else waits for this leaf except the stage.
 2. **The stage core plus the parser flip, together.** This leaf adds:
@@ -50,11 +54,16 @@ There are three leaves.
    - the call site in `run_parsed_in_pane`: after `resolve_cli_threads`/`resolve_cli_targets`,
      before `derive_caller`/`resolve_recipient_seats`, never on `retry`;
    - the dispatch guard refusing leftover seat selectors;
-   - in `commands.rs`, switching non-ID strings to placeholders, relaxing `--seat` versus
-     `--space/--tab` (D7) and adding the D7 help line.
+   - in `commands.rs`:
+     - **every** seat-argument string becomes a slot with a placeholder action value, because
+       `SeatId::parse` accepts nearly any ASCII string, so there is no syntactic ID/name split;
+     - `--space`/`--tab` given with `--seat` go to `SeatNarrowing`, never to `pane_selector`
+       (root D3);
+     - relax `--seat` versus `--space/--tab` (D7) and add the D7 help line;
+   - the post-freeze direct-ACK ("names only the target") and duplicate-recipient checks over
+     frozen IDs. The parse-time comparisons are removed in the same change, so no window exists
+     where a name-form recipient is unchecked.
 3. **Command-path integration.** This leaf covers:
-   - the post-freeze direct-ACK and duplicate-recipient checks (reusing `ht-u3ym.2`'s exposed
-     functions), with the parse-time copies removed for slots that now resolve at runtime;
    - lifting the direct-send `--space/--tab` refusal (`--require-ack-pane` stays refused), with
      errors routed through `direct_send::pre_executor_error`;
    - `handoff --existing --seat`: consuming the frozen seat and clearing the narrowing flags so
@@ -72,12 +81,14 @@ to resolve but valid IDs, so its tests could not exercise names.
 
 ### S2. Where the post-freeze checks live
 
-**Chosen:** leaf 3. They only matter once names can produce IDs that differ textually from what
-was typed. Leaf 2 keeps the existing parse-time checks for valid-ID strings, which still runs
-them for exact IDs. Leaf 3 moves them after freezing for every slot.
+**Chosen:** leaf 2, in the same change that turns every seat string into a placeholder slot.
+Every string becomes a placeholder because `SeatId::parse` cannot tell names from IDs, so
+parse-time comparisons over placeholders would be meaningless. Without the post-freeze checks,
+a leaf-2 build would accept `send --seat bob --require-ack carol` with two different seats, and
+would mis-handle a name and an ID naming the same seat.
 
-**Considered:** leaf 2. Rejected to keep leaf 2 reviewable. Leaf 2 works without them, and the
-only exposure is a name and an ID naming the same seat in one command, which leaf 3 closes.
+**Considered:** leaf 3, as first drafted. Rejected (roast r1): it left an unchecked window and
+an undefined syntactic split.
 
 ### S3. Leaf tests
 
@@ -88,10 +99,13 @@ only exposure is a name and an ID naming the same seat in one command, which lea
   - an exact ID works with the host down;
   - a name with the host down fails `host_unavailable`;
   - a read writes no `ResolveSeat` intent;
-  - a leftover selector is refused by the guard.
-- **Leaf 3:**
+  - a leftover selector is refused by the guard;
   - a direct ACK by name and by ID for the same seat deduplicates;
   - a direct ACK naming another seat is refused;
+  - `--seat X --space S` on a multi-tab space searches every tab of `S`;
+  - a refused command (an agent without a session, or a p0 send on a daemon without the
+    capability) journals no `ResolveSeat`.
+- **Leaf 3:**
   - `handoff --existing --seat NAME --tab T` reaches delivery;
   - `seat inspect NAME` returns the mapped seat.
 

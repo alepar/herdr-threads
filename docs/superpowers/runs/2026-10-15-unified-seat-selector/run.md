@@ -9,9 +9,10 @@ branch: super-auto/unified-seat-selector
 base: main
 spec: 2026-10-15-unified-seat-selector-design.md
 epic: ht-u3ym
-roastDesignRound: 1
+roastDesignRound: 2
 roast-design: 2026-10-15-unified-seat-selector-roast-design-1.md
 approvals:
 - top-split · auto · ht-u3ym.1 LEAF, ht-u3ym.2 LEAF, ht-u3ym.3 PROMOTE, ht-u3ym.4 LEAF, ht-u3ym.5 LEAF
 - coverage-round-1 · c1 applied auto, c2 applied auto, c3 applied auto, c4 applied auto, c5 applied auto, c6 applied auto, c7 applied auto, c8 applied auto, c9 applied auto, c10 applied auto, c11 rejected auto · R-list: coverage-round-1-requirements.md (R1–R15; R12–R15 from reviewer R-new) · requirements: 11 · mapped: 11 · unmapped: 0 · NEEDS-SPEC ht-u3ym.3 from review-1 not re-dispatched: its two questions were spec gaps, decided directly (c6, c8)
 - coverage-round-2 · c12–c20 applied auto, c21 rejected auto, c22–c23 applied auto · divergence: findings 11 → 12 · novel 12/12 (100%) · widening: yes (cap holds at two rounds; design roast reviews the settled tree)
+- stepBackDesign-round-1: patch — 9 spec-text inconsistencies in 5 clusters (renderer contract, seat narrowing as its own value, leaf-2 interim checks, refuse-before-allocate gates, cap 32); all fixed inline in specs and beads, no code tasks
