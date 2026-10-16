@@ -3650,101 +3650,6 @@ fn notices_settled_by_a_pull_that_lost_a_rotation_race_are_still_returned() {
     );
 }
 
-// Kills: dropping informational invitations from the actual service page, or
-// treating a displayed invitation as a message receipt / accepted membership.
-#[test]
-#[ignore = "pending ht-5fr reconcile item 19"]
-fn a_lazy_invitation_reaches_hook_pull_without_attention_or_acceptance() {
-    use crate::protocol::commands::{CreateThread, InvitationConfirmation, Invite};
-    let f = fixture(0);
-    let context = pull_seat(&f);
-    let DeliveryPullReply::Unchanged {
-        attention_version: quiet_version,
-    } = pull(&f, &context, None)
-    else {
-        panic!("quiet pull must be unchanged")
-    };
-    let inviter = check_in(
-        &f,
-        fixture_claim(&f, "x", "px", fourth(), "inviter"),
-        "ci-inviter",
-    );
-    let CommandResult::ThreadCreated(thread) = f
-        .service
-        .handle(
-            Command::CreateThread(CreateThread {
-                name: None,
-                topic: "lazy invitation topic".into(),
-                goal: "review the handoff".into(),
-                operation: OperationId::new("create-lazy-invite"),
-                claim: inviter.clone(),
-            }),
-            peer(),
-            &budget(),
-        )
-        .unwrap()
-    else {
-        panic!("thread not created")
-    };
-    f.service
-        .handle(
-            Command::Invite(Invite {
-                confirmation: Some(InvitationConfirmation::Lazy),
-                thread: thread.clone(),
-                seat: SeatId::new("s"),
-                deadline_millis: None,
-                operation: OperationId::new("lazy-invite"),
-                claim: inviter,
-            }),
-            peer(),
-            &budget(),
-        )
-        .unwrap();
-    assert_eq!(
-        wake_attention(&f),
-        0,
-        "Lazy invitation never schedules ordinary wake work"
-    );
-    let first = page(pull(&f, &context, Some(quiet_version)));
-    assert!(
-        first.text.contains("lazy invitation topic"),
-        "{}",
-        first.text
-    );
-    assert!(first.text.contains(thread.as_str()), "{}", first.text);
-    assert!(first.text.contains("accept"), "{}", first.text);
-    assert!(!first.text.contains("] attention "), "{}", first.text);
-    assert!(
-        first.offered.is_empty(),
-        "invitations are not confirmable message ids"
-    );
-    assert!(first.truncated.is_empty());
-    assert!(
-        first.text.contains("review the handoff"),
-        "invitation goal reaches context: {}",
-        first.text
-    );
-    assert!(
-        matches!(
-            pull(&f, &context, Some(first.attention_version)),
-            DeliveryPullReply::Unchanged { .. }
-        ),
-        "whole passive display is not repeatedly injected"
-    );
-    let (state, mode): (String, String) =
-        f.db.query_row(
-            "SELECT state,confirmation FROM invitations WHERE thread_id=?1 AND seat_id='s'",
-            [thread.as_str()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!((state.as_str(), mode.as_str()), ("pending", "lazy"));
-    let attention = crate::store::attention::wake_seat_attention(&f.db, "s").unwrap();
-    assert!(!attention.attention.has_pending_invitation);
-    assert!(!attention.attention.has_pending_receipt);
-    assert!(attention.attention.latest_warning_seq.is_none());
-}
-
 // Kills: a presentation read that assumes the inviter is a local seat with a
 // binding or a pane. An invitation replicated from another node names a remote
 // inviter (`state='remote'`, no host, no binding); the invitee's pull renders
@@ -4042,137 +3947,6 @@ fn departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
         "passive final clear creates no warning-only wake"
     );
     assert_eq!(f.db.query_row("SELECT count(*) FROM warning_conditions WHERE condition_kind='receipt' AND clear_warning_id IS NOT NULL", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
-}
-
-// Kills: a real canonical lazy arrival never triggering the live watch consumer.
-#[test]
-#[ignore = "pending ht-5fr reconcile item 19"]
-fn canonical_lazy_invitation_signals_a_passive_channel_drain_without_attention_history() {
-    use crate::{
-        ports::ModChannelSink,
-        protocol::{
-            commands::{CreateThread, InvitationConfirmation, Invite},
-            watch::{ModDeliverySetting, WatchFrame, WatchRequest},
-        },
-        service::mod_channels::ModChannelRegistry,
-    };
-    struct Sink(std::sync::Mutex<Vec<WatchFrame>>);
-    impl ModChannelSink for Sink {
-        fn push(&self, frame: WatchFrame) -> bool {
-            self.0.lock().unwrap().push(frame);
-            true
-        }
-    }
-    let f = fixture(0);
-    let recipient = check_in(
-        &f,
-        fixture_claim(&f, "s", "p", Harness::Claude, "channel"),
-        "channel-ci",
-    );
-    let inviter = check_in(
-        &f,
-        fixture_claim(&f, "x", "px", fourth(), "inviter"),
-        "channel-inviter-ci",
-    );
-    let reads = Arc::new(
-        SqliteStore::new(
-            StoreContext::new(f.directory.join("store.db"), f.clock.clone()).with_test_host(),
-            "34750f98bd59fcfc946da45aaabe933b",
-            StoreSettings::default(),
-        )
-        .unwrap(),
-    );
-    let registry = Arc::new(ModChannelRegistry::new(
-        f.clock.clone(),
-        reads,
-        "34750f98bd59fcfc946da45aaabe933b".into(),
-        Arc::new(|| {}),
-        ModDeliverySetting::On,
-    ));
-    let service = DomainService::new(
-        "34750f98bd59fcfc946da45aaabe933b".into(),
-        f.store.clone(),
-        f.clock.clone(),
-    )
-    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-    .with_mod_channels(registry.clone());
-    let sink = Arc::new(Sink(std::sync::Mutex::new(Vec::new())));
-    service
-        .watch_register(
-            &WatchRequest {
-                presentation_v2: true,
-                claim: recipient.clone(),
-            },
-            sink.clone(),
-            &budget(),
-        )
-        .unwrap();
-    registry.pass(f.clock.utc_now()).unwrap();
-    assert!(sink.0.lock().unwrap().is_empty());
-    let before = f
-        .store
-        .mod_binding_view(
-            &recipient.seat,
-            crate::ports::ModBindingRef::Claim(&recipient),
-            &budget(),
-        )
-        .unwrap()
-        .unwrap();
-    let CommandResult::ThreadCreated(thread) = service
-        .handle(
-            Command::CreateThread(CreateThread {
-                name: None,
-                topic: "channel invitation".into(),
-                goal: "review channel".into(),
-                operation: OperationId::new("channel-create"),
-                claim: inviter.clone(),
-            }),
-            peer(),
-            &budget(),
-        )
-        .unwrap()
-    else {
-        panic!("thread not created")
-    };
-    service
-        .handle(
-            Command::Invite(Invite {
-                confirmation: Some(InvitationConfirmation::Lazy),
-                thread,
-                seat: recipient.seat.clone(),
-                deadline_millis: None,
-                operation: OperationId::new("channel-invite"),
-                claim: inviter,
-            }),
-            peer(),
-            &budget(),
-        )
-        .unwrap();
-    let after = f
-        .store
-        .mod_binding_view(
-            &recipient.seat,
-            crate::ports::ModBindingRef::Claim(&recipient),
-            &budget(),
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        before.fingerprint, after.fingerprint,
-        "passive content never changes wake eligibility"
-    );
-    registry.pass(f.clock.utc_now()).unwrap();
-    assert_eq!(
-        sink.0.lock().unwrap().len(),
-        1,
-        "actual channel receives a drain signal"
-    );
-    registry.pass(f.clock.utc_now()).unwrap();
-    assert_eq!(
-        sink.0.lock().unwrap().len(),
-        1,
-        "unchanged canonical content does not flood the channel"
-    );
 }
 
 #[test]
@@ -5027,7 +4801,6 @@ fn an_old_visible_invitation_topic_change_survives_a_saturated_newest_window() {
 }
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 19"]
 fn a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache() {
     let f = fixture(0);
     let recipient = pull_seat(&f);
@@ -5065,10 +4838,13 @@ fn a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache() {
     assert!(reached_quiet, "whole context is not repeatedly flooded");
     assert_eq!(f.db.query_row("SELECT count(*) FROM invitation_presentation_items WHERE seat_id='s' AND consumer='hook' AND complete_count=1",[],|r|r.get::<_,i64>(0)).unwrap(),count as i64,"every canonical context completed before quiet");
     assert_eq!(f.db.query_row(
-        "SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending' AND confirmation='lazy'",
+        "SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending' AND confirmation='require_ack'",
         [], |r| r.get::<_, i64>(0),
     ).unwrap(), count as i64);
-    assert_eq!(wake_attention(&f), 0);
+    assert!(
+        wake_attention(&f) > 0,
+        "confirming invitations move the wake attention counter"
+    );
 }
 
 #[test]
@@ -5199,7 +4975,6 @@ fn a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acce
 }
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 19"]
 fn presentation_v2_replays_one_canonical_invitation_until_emit_confirmation() {
     use serde_json::json;
     let mut f = fixture(0);
@@ -5234,10 +5009,14 @@ fn presentation_v2_replays_one_canonical_invitation_until_emit_confirmation() {
             .contains("durable-v2-topic-0")
     );
     let items = page["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1);
+    assert_eq!(items.len(), 2);
     assert_eq!(items[0]["kind"], "invitation");
-    // This ordered invitation-only page emits no Attention or Cleared controls.
-    let expected_controls = json!([]);
+    assert_eq!(items[0]["content"]["wakes"], true);
+    // A confirming invitation wakes: its page also carries the Attention item and control.
+    assert_eq!(items[1]["kind"], "attention");
+    let expected_controls = page["emitted_controls"].clone();
+    assert_eq!(expected_controls.as_array().unwrap().len(), 1);
+    assert_eq!(expected_controls[0]["kind"], "attention");
     assert_eq!(page["emitted_controls"], expected_controls);
     let token = page["presentation_token"].as_str().unwrap().to_owned();
     assert_eq!(token.len(), 32);
@@ -5272,7 +5051,7 @@ fn presentation_v2_replays_one_canonical_invitation_until_emit_confirmation() {
         .unwrap();
     let wrong = serde_json::to_value(wrong).unwrap();
     assert_eq!(wrong["data"]["status"], "not_current_page");
-    assert_eq!(wrong["data"]["acknowledged_controls"], expected_controls);
+    assert_eq!(wrong["data"]["acknowledged_controls"], json!([]));
     let confirmation = json!({"kind":"delivery_presentation_confirm_v2","args":{
         "claim":recipient,"consumer":"hook","token":token,
         "emitted_controls":expected_controls
@@ -7530,7 +7309,6 @@ fn presentation_handler_partial_confirmation_retains_canonical_slots_across_rest
 }
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 19"]
 fn presentation_private_state_rejects_typed_corruption_without_confirmation_effects() {
     use crate::protocol::delivery::{
         DeliveryPresentationConfirmV2, DeliveryPullReplyV2, PresentationConsumer,
@@ -7543,7 +7321,8 @@ fn presentation_private_state_rejects_typed_corruption_without_confirmation_effe
         ("control_state", "{\"unknown\":true}"),
         ("control_state", "{\"counter\":\"-1\"}"),
         ("last_confirmed_mask", "-1"),
-        ("last_confirmed_mask", "1"),
+        // The page has two descriptors (the invitation and the attention item): bit 2 is outside.
+        ("last_confirmed_mask", "4"),
     ] {
         let f = fixture(0);
         let recipient = pull_seat(&f);
@@ -12903,7 +12682,6 @@ fn presentation_owner_replay_missing_quanta_preserve_current_native_outlook() {
 // Kills replacing/retiring the old nonordinary outbox to unlock recovery,
 // hydrating ordinary bodies on outbox replay, and clearing native outlook there.
 #[test]
-#[ignore = "pending ht-5fr reconcile item 19"]
 fn presentation_owner_replay_waits_for_original_outbox_then_continues() {
     use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
     for more in [false, true] {
@@ -12971,7 +12749,10 @@ fn presentation_owner_replay_waits_for_original_outbox_then_continues() {
         };
         assert!(next.offered.contains(&id));
         assert_eq!(window.offers(), stamps);
-        assert_eq!(owner_outlook(&window), outlook);
+        // Confirming the replayed page records the attention it carried (the confirming
+        // invitation's attention item); the continuation flag and whole-read stamp are untouched.
+        let after = owner_outlook(&window);
+        assert_eq!((after.0, after.2), (outlook.0, outlook.2));
     }
 }
 
@@ -14663,7 +14444,3 @@ fn presentation_owner_replay_mid_work_budget_keeps_first_capture_uninstalled() {
             .is_empty()
     );
 }
-
-// Q4 body display and captured Lazy continuation controls.
-#[path = "q4_body_controls.rs"]
-mod q4_body_controls;

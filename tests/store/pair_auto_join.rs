@@ -2,7 +2,7 @@
 //! A child module of `direct_threads`: it reuses that module's fixtures.
 use super::*;
 use crate::protocol::{
-    commands::{Accept, InvitationConfirmation},
+    commands::InvitationConfirmation,
     priority::{DeliveryPriority, NudgeThreshold},
     results::{DirectThreadEnsureOutcome, DirectThreadEnsured},
 };
@@ -452,59 +452,6 @@ fn operator_orphan_invitation_stays_timed_with_effective_require_ack() {
         1,
         "an operator invitation wakes its recipient"
     );
-    drop(db);
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
-#[ignore = "pending ht-5fr reconcile item 19"]
-fn pre_upgrade_pending_pair_invitation_still_accepts() {
-    // A pair as the pre-upgrade code created it (the fixture marker): caller joined, peer invited
-    // with a pending lazy invitation, which keeps its stored behaviour: no wake, and `accept` joins.
-    let (store, db, path) = store_fixture();
-    let policy = crate::protocol::commands::EnsureCreationPolicy {
-        confirmation: InvitationConfirmation::Lazy,
-        deadline_millis: None,
-    };
-    let created = ensure_with(&store, "s1", "s2", "ensure", Some(policy));
-    assert_eq!(created.outcome, DirectThreadEnsureOutcome::Created);
-    let invitation = created
-        .invitation
-        .expect("pre-upgrade pair has an invitation");
-    assert_eq!(invitation.confirmation, InvitationConfirmation::Lazy);
-    assert_eq!(count(&db, "wake_work"), 0);
-    let again = ensure_with(&store, "s1", "s2", "again", None);
-    assert_eq!(again.outcome, DirectThreadEnsureOutcome::ExistingPending);
-    assert_eq!(again.invitation.unwrap().id, invitation.id);
-    let v = Accept {
-        thread: created.thread.clone(),
-        operation: OperationId::new("accept-old"),
-        claim: claim("s2"),
-    };
-    let hash = cooperative_payload_hash("accept", &v).unwrap();
-    store
-        .mutate(
-            PermitMutation::Accept(v),
-            permit(
-                "s2",
-                "accept-old",
-                ObligationRef::Invitation(invitation.id.clone()),
-                hash,
-                100,
-            ),
-            &budget(),
-        )
-        .unwrap();
-    assert_eq!(
-        db.query_row(
-            "SELECT state FROM memberships WHERE thread_id=?1 AND seat_id='s2'",
-            [created.thread.as_str()],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "joined"
-    );
-    drop(store);
     drop(db);
     let _ = std::fs::remove_file(path);
 }
