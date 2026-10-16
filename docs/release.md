@@ -89,6 +89,16 @@ Linux uses musl so one static executable runs on any distribution regardless of 
 
 Linux archives are **experimental**: `herdr-plugin.toml` declares `platforms = ["macos", "linux"]` so the plugin can be linked from a Linux archive, and in an Ubuntu 24.04 arm64 container a locally built release linked into headless Herdr 0.9.3 and ran a healthy daemon ([evidence](evidence/linux-arm64-container/README.md)); x86_64 and harness sessions stay unverified, and a published-release download, upgrade, uninstall and Herdr-down await the clean-machine rehearsal in the follow-on checklist; the host incarnation witness covers Linux through `SO_PEERCRED` and procfs, and the deterministic suite passes there. The workflows pass `actionlint` locally and in CI. Four-target CI release builds, including both Linux architectures and Intel macOS, passed at `8e8e395e`; a release workflow for the final tag and its published archives are separate qualifications.
 
+## Versioning
+
+Every release number follows one rule (the user's standing decision, 2026-10-16):
+
+- **Major:** backwards compatibility is broken, for example a new wire protocol version, a store that older versions cannot open, or removed or changed CLI behaviour that scripts rely on.
+- **Minor:** a new feature, with nothing broken.
+- **Patch:** fixes only.
+
+A release takes the highest level among its changes. A schema migration alone does not force a major bump when the user decides it is a fix release (v1.2.1 adds schema 48 on protocol 8 as a patch). The p2p cross-node sync work (protocol 9 and a fresh node store) is breaking and ships as 2.0.0.
+
 ## Release checklist
 
 1. **Provenance.** Record the reviewed source SHA, `Cargo.lock`, Rust, Herdr, Codex and Claude Code versions, host OS and architecture, and the locked build result. Inspect the archive: manifest, scripts, source and lockfile, built executable path and mode. No runtime state or credentials in it.
