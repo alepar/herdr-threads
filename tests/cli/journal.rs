@@ -2665,3 +2665,110 @@ fn cooperative_semantic_records_the_shape_chosen_for_the_daemon() {
         assert_eq!(mode, want_mode, "{argv:?}");
     }
 }
+
+#[test]
+fn lazy_display_progress_completes_after_a_shorter_restart_and_overlapping_continuations() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let c = claim();
+    let message = MessageId::new("message-lazy-restart");
+    for (start, end, done) in [
+        (0, 16, false),
+        (0, 12, false),
+        (12, 24, false),
+        (24, 36, false),
+        (36, 40, true),
+    ] {
+        assert_eq!(
+            journal
+                .record_lazy_displayed_chunk(&c, &message, start, end, 40)
+                .unwrap(),
+            done,
+            "span {start}..{end}"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn lazy_display_progress_still_refuses_a_gap() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let c = claim();
+    let message = MessageId::new("message-lazy-gap");
+    assert!(
+        !journal
+            .record_lazy_displayed_chunk(&c, &message, 0, 5, 15)
+            .unwrap()
+    );
+    assert!(
+        !journal
+            .record_lazy_displayed_chunk(&c, &message, 10, 15, 15)
+            .unwrap()
+    );
+    let path = journal.lazy_display_path(&c, &message).unwrap();
+    let held: LazyDisplayedProgress =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(held.flushed_through, 5, "a gapped span records nothing");
+    assert!(
+        !journal
+            .record_lazy_displayed_chunk(&c, &message, 5, 10, 15)
+            .unwrap()
+    );
+    assert!(
+        journal
+            .record_lazy_displayed_chunk(&c, &message, 10, 15, 15)
+            .unwrap()
+    );
+    let fresh = MessageId::new("message-lazy-fresh");
+    assert!(
+        !journal
+            .record_lazy_displayed_chunk(&c, &fresh, 3, 15, 15)
+            .unwrap(),
+        "with no prior progress only a span from 0 records"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn displayed_body_progress_completes_after_a_shorter_restart_and_overlapping_continuations() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let c = claim();
+    let message = MessageId::new("message-ordinary-restart");
+    for (start, end, done) in [
+        (0, 16, false),
+        (0, 12, false),
+        (12, 24, false),
+        (24, 36, false),
+        (36, 40, true),
+    ] {
+        assert_eq!(
+            journal
+                .record_displayed_chunk(&c, &message, start, end, 40)
+                .unwrap(),
+            done,
+            "span {start}..{end}"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn advance_displayed_prefix_rule() {
+    for (covered, start, end, want) in [
+        (None, 0, 7, Some(7)),
+        (None, 1, 7, None),
+        (Some(16), 0, 12, Some(16)),
+        (Some(16), 12, 24, Some(24)),
+        (Some(16), 16, 20, Some(20)),
+        (Some(16), 17, 20, None),
+        (Some(16), 3, 9, Some(16)),
+    ] {
+        assert_eq!(
+            advance_displayed_prefix(covered, start, end),
+            want,
+            "{covered:?} {start}..{end}"
+        );
+    }
+}
