@@ -271,34 +271,85 @@ These match the existing `--pane` outcomes, so callers handle no new codes.
   - direct `send --seat NAME` to an empty pane allocates and sends;
   - `retry` of a direct send after a pane relabel keeps the frozen seat.
 
-## Key abstractions
-
-`src/cli/seat_selector.rs`. A spec-level sketch:
-
-```rust
-pub struct SeatSelector { raw: String, narrow: PaneSelector /* space/tab only */ }
-pub enum Tier { Tab, Space, Any }
-pub struct Reading { space: Option<String>, tab: Option<String>, pane: Option<String> }
-pub struct Resolved { pane: HostTargetId, tier: Tier, readings: Vec<Reading>, path: String }
-pub fn resolve_names(sel: &SeatSelector, topo: &HostTopology, caller: Option<&str>)
-    -> Result<Resolved, ApiError>;            // pure; NotFound / Conflict(candidates)
-pub fn verify_nickname(prefix: &str, seat_target: &HostTargetId, topo: &HostTopology)
-    -> Result<(), ApiError>;                  // pure
-```
-
-Runtime glue in `src/cli/mod.rs`:
-- `resolve_cli_seats(parsed, client, host, caller)` runs D2 and D4, freezes the IDs (D5) and
-  emits D6;
-- `ParsedCli.seat_selectors: Vec<SeatSlot>` holds the raw strings;
-- a `seat_slot_mut` setter, analogous to `threads::selector_mut`, writes each frozen ID into the
-  action.
-
 ## Out of scope / follow-on
 
 - Changing `--pane` to tiered resolution.
 - Daemon-side seat name resolution.
 - Messaging the main tab's agent to merge and release. That is the enclosing run's finish step,
   not part of this tree.
+
+## Key abstractions
+
+**`seat_selector`** — new module (`src/cli/seat_selector.rs`), the pure name resolver over one `HostTopology` snapshot.
+- Owns: splitting a selector into readings (whole-string reading + the D3 segment table, with empty and ≥4 segments yielding nothing); per-level matching (space label|ID, tab label|ID, pane label|agent name|ID) and the sole-pane / sole-tab aliases; narrowing by already-resolved space/tab IDs; pooling and deduplicating by pane ID while keeping each pane's matched readings; ranking by `Tier` (closed enum `Tab | Space | Any`) and choosing the first non-empty tier; nickname-prefix verification (the same pool with tiering off, plus a membership test against the seat's mapped target); one path renderer (`space/tab/pane` as labels, else host IDs, `{:?}`-escaped and bounded) used by conflict candidates, the `resolved:` line and the nickname-mismatch message.
+- Hides: which reading matched, the readings table, tier precedence, and the bounded and escaped wire text (8 candidates, `N omitted`, the qualification hint).
+- Must not: read the host or call the daemon, know which command it serves, allocate or look up seats, or print. Topology and caller come in as values; a candidate's seat is supplied by the runtime stage as a fallible lookup closure (rendered `seat=?` on failure), so the module stays pure and unit tests use hand-built topologies and a fake lookup.
+- Relationships: a leaf. It depends only on `host::observation` types and `ApiError`. `panes.rs` keeps its own scoped `--pane` rule (spec D3 "Considered"); the two share only the parent-narrowing helper (see `PaneSelector`).
+- Lifecycle: stateless functions over borrowed snapshots, one call per seat argument.
+- Errors: a typed outcome, one pane (with tier, readings and path), `Ambiguous` (candidates) or `NoMatch`; the nickname check passes, or returns `Mismatch` (with the seat's live path) or `Unverifiable`. Each converts to `ApiError` (`not_found` or `conflict`, D8) in one place inside this module. Callers branch on the typed outcome, never on message text.
+
+**`SeatSlot`** — new closed enum in `commands.rs`, beside `ParsedCli`. It names every action position a seat argument can fill: the seat of inbox, pending-receipts, diagnostics and warnings; the thread-list membership; the invite recipient; the direct-send target; `require-ack[i]`; the seat of inspect, retire and rebind; rebind `--replace`; the handoff existing seat.
+- Owns: two `match` arms per slot. One is the setter that writes the frozen `SeatId` into the action (like `threads::selector_mut`); the other is the slot's D4 pane-to-seat class.
+- Hides: where in each `CliAction`/`MutationSpec` a seat lives, and the D4 table. Today `resolve_recipient_seats` branches on `Invite` to choose allocate versus lookup, and `default_seat`/`resolve_recipient_seats` repeat the read-seat field match. Both go through this setter, so read-seat writes live in one place.
+- Must not: resolve, look up or allocate; the stage does.
+- Relationships: data owned by `ParsedCli`. The stage depends on it; it depends on nothing at runtime.
+- Lifecycle: created in `parse` with its raw string, kept in `ParsedCli.seat_selectors`, drained by the stage. Retry and journal records never see it (spec D5).
+
+**`SeatMapping`** — new two-variant closed enum, `Lookup | Allocate`, returned by `SeatSlot`.
+- Owns: the D4 decision as a value.
+- Hides: which reads, operator commands and handoff paths never allocate (TRUST-POLICY C4/A1).
+- Must not: carry behaviour. The stage maps `Lookup` to the existing `pane_seat` (with `no_seat_for_pane`/`mapping_error` unchanged) and `Allocate` to the existing journaled `ResolveSeat` allocation under the `ServiceAllocation` scope.
+- Relationships: the allocation is extracted once from `resolve_recipient_seats`'s `allocate` closure into a helper in `mod.rs`, shared by the `--pane`/`--require-ack-pane` path and this stage, so two callers exist now.
+
+**`resolve_cli_seats`** — new runtime stage in `src/cli/mod.rs` (spec D1), the only code that turns a `SeatSlot` raw string into a frozen `SeatId`.
+- Owns:
+  - the D2 order per slot: exact ID via `SeatInspect`, then the nickname form, then a direct pane ID, then a name;
+  - a private classification (exact | nickname | pane ID | name) that decides whether mapping is skipped and whether a `resolved:` line prints;
+  - the lazy, once-per-invocation topology and live-caller reads, shared across all slots like `resolve_cli_targets`;
+  - resolving the `--space`/`--tab` narrowing once;
+  - seat annotation of conflict candidates (at most 8 bounded lookups);
+  - mapping through `SeatMapping` and freezing through `SeatSlot`;
+  - the post-freeze ID checks moved out of parse time (D7: direct ACK names only the target; no duplicate recipients after dedup);
+  - clearing the narrowing flags it consumed, so handoff's "seat with space/tab" refusal (`handoff_delivery.rs` ~238/347) does not fire;
+  - writing the `resolved:` lines to stderr before command output (D6).
+- Hides: when the host or daemon is touched. An exact ID never reads topology, so it works with Herdr down.
+- Must not: match names (`seat_selector` does), know command kinds (`SeatSlot` does), write any journal intent other than the existing allocation, or run on `retry`.
+- Relationships: it calls `seat_selector`, `SeatSlot`, the shared allocate helper, `pane_seat` and `SeatInspect` through the lazy connection. It runs after `resolve_cli_threads`/`resolve_cli_targets` and before `derive_caller`, `resolve_recipient_seats` and dispatch; otherwise a read with a placeholder seat could be defaulted to the caller. Direct-send errors pass through the same `direct_send::pre_executor_error` seam as pane resolution.
+- Lifecycle: one call per invocation; it owns nothing afterwards.
+- Errors: `HostUnavailable` (topology read, only for the nickname and name forms); `not_found`/`conflict` (resolver); `invalid_request` (`no_seat_for_pane`, for reads and operator commands); `mapping_error` (a pane with several seats); allocation retry failures as today. No new codes; callers distinguish by `ErrorCode`.
+
+**`ParsedCli`** — extended: gains `seat_selectors` (a list of `SeatSlot` + raw string). Action fields hold a placeholder `SeatId` until the stage freezes them, as `pending-pane-selector` does. `dispatch`'s guard refuses a leftover seat selector, as it does for pane and thread selectors. Parse-time `SeatId` comparisons move into the stage.
+
+**`PaneSelector` / `panes.rs`** — extended: `resolve_selector`'s hard-wired `--space`/`--tab` parent resolution (exact ID or unique label via `unique()`) is extracted into one helper that `resolve_selector` and the seat stage's narrowing both call, so the flag families cannot drift. That helper keeps today's rule: `--tab LABEL` without `--space` is scoped to the caller's space, and outside Herdr it needs `--space` or a tab ID.
+
+**`handoff_delivery` existing-peer path** — extended: it receives an already-frozen seat ID in `request.seat`, and no longer rejects `--seat` with `--space`/`--tab`. Its `--pane` path is unchanged.
+
+Variation:
+- Seat-argument positions grow as commands gain seat arguments. `SeatSlot` absorbs them: a closed enum whose two `match` arms are the one place a slot's kind is chosen, registered where `commands.rs` collects `seat_selectors`.
+- Reading shapes and tier rules are fixed by D3, in `seat_selector`'s single readings table and its `Tier` enum.
+- Level matching (label, agent name, ID) has one matcher per level in `seat_selector`.
+- Pane-to-seat policy is fixed at two kinds, `SeatMapping`.
+
+Walk-through: `send --seat tryout/alice --body hi`.
+1. `parse` records `SeatSlot::DirectTarget("tryout/alice")` and leaves a placeholder target.
+2. The thread and pane stages run.
+3. `resolve_cli_seats` misses on `SeatInspect`; the last segment is not a seat ID, and the string is not a pane ID.
+4. One topology/caller read, then `seat_selector` pools the space/tab, tab/pane and space/pane readings: tier `space` holds one pane, `w4:p7`.
+5. `SeatMapping::Allocate` goes through the shared journaled `ResolveSeat`, which returns `sAb12Cd34`.
+6. The `SeatSlot` setter freezes the target and the direct-ACK check passes. stderr gets `resolved: project/tryout/alice w4:p7 seat=sAb12Cd34 (tier: space)`.
+7. The intent journals only the ID, so `retry` never re-resolves.
+
+Future change: `--seat` on `history` touches one new `SeatSlot` variant (field write + `Lookup`) and one registration in `commands.rs`; the stage and the resolver do not change.
+
+Per spec D1, "Key decisions made": the stage lives in the ~4.3k-line `src/cli/mod.rs`. That is accepted, and it stays thin because matching, slot kinds and mapping class live in their own types. A task may still move it into a sibling file (`src/cli/seat_resolution.rs`) to keep `mod.rs` edits small.
+Per spec D5: raw strings live in `ParsedCli`, so action fields carry placeholders until freezing. `dispatch`'s guard must refuse leftovers, and the stage runs before caller defaulting.
+The spec's sketch of a pure resolver returning `Conflict` is refined. Candidates need daemon seat IDs, so the resolver returns a typed ambiguity, and the error is rendered after the stage supplies the seat-lookup closure.
+
+Digest:
+- seat_selector: owns readings, per-level matching, narrowing, pooling, Tier ranking, nickname verification and the bounded path/conflict text; new reading or matching behaviour goes here; callers never match labels or format candidate paths themselves.
+- SeatSlot: owns where each seat argument lives in an action and its D4 mapping class; a new seat-taking argument is a new variant registered in parse; callers never match action kinds to write a seat or choose allocate versus lookup.
+- SeatMapping: owns the lookup-or-allocate decision as a value; a new class would be added here (the spec commits to none); callers never allocate for a Lookup slot.
+- resolve_cli_seats: owns the D2 order, the lazy host/daemon reads, freezing, post-freeze ID checks and the resolved: lines; new seat-argument forms go into its classification; downstream code never sees a raw seat string and retry never calls it.
 
 ## Post-Implementation Notes
 
