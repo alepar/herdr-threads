@@ -21,3 +21,5 @@
 - [2026-10-16] phase code: ordinary stacked merge paused after first --onto rebase for seam review. On seam-cleared redispatch refreshed base to returned mergeBasefc791495; original stackbase214d160f is no longer ancestor and repeating --onto original base risks replaying integration commits. Explicit guard added to dispatch, no code loss/replay occurred.
 
 - [2026-10-16] Code roast used manual fan-out, inherited GPT family substitutions. Initial judges inherited orchestration context; excluded and replaced with fork_turns=none blind judges before verdicts. All 11 scouts and seven valid judge seats completed.
+
+- [2026-10-16] Code roast round2 manual fan-out with inherited GPT substitutions: all 12 scouts returned no candidates, no judges needed; no degradation.

@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-15-inbox-injection-auto-ack
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: roast-code
+phase: report
 codeMechanism: ordinary-subagents
 
 idea: hooks/channels only direct to call inbox when directly injected messages doesnt cover entire inbox, ie there are more. agent should never need to call inbox explicitly, unless there's a spike of messages received and it overflows the size that hook/channel can inject in a single turn. messages injected by hooks/channels or read via inbox do generate automatic receipt ack. normally, agent should never have the need to call explicit ack cli command. let's fix via $super-auto and communicate to p2p tab (it might care about the second ruling specifically, make sure this auto ack works scross multiple nodes too). fully autonomous, both roasts on.
@@ -31,8 +31,9 @@ codeBuckets:
   worktreesKept:
   processSweep: stopped 0 · survived 0
 roastCodeRound: 2
-roast-code: 2026-10-15-inbox-injection-auto-ack-roast-pr-1.md
+roast-code: 2026-10-15-inbox-injection-auto-ack-roast-pr-1.md, 2026-10-15-inbox-injection-auto-ack-roast-pr-2.md
 stepBackCode-round-1: patch — independent sibling-isolation regression and stale policy wording need focused fixes; neither exposes a flawed design decision.
 scopeFilter-round-1: [Should-fix] src/cli/hook_inbox.rs:365 in-scope — Missing regression coverage for goal-named automatic receipt settlement preserving pending delivery and independent wake eligibility for sibling bindings.
 scopeFilter-round-1: [Nit] TRUST-POLICY.md:1702 punch-list — Correcting superseded historical policy wording is documentation hygiene; the goal names delivery and receipt-settlement behavior, and the operative policy sections already describe that behavior correctly.
 scope-filter: 1 in-scope · 1 punch-listed
+roastCodeExit: converged
