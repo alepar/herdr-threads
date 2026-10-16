@@ -2375,31 +2375,35 @@ where
                     ));
                     kicks.register(Lane::Archival, Arc::clone(&pacer));
                     probe.attach_pacer(Lane::Archival, &pacer);
-                    let started = crate::service::archival::start(
-                        crate::service::archival::ArchivalWorker {
-                            store,
-                            hosts,
-                            writer,
-                            source: crate::archival_legacy::Source::new(&paths, instance, context),
-                            boot,
-                            after_ms,
-                            cancellation: stop,
-                        },
-                        pacer,
-                        status,
-                    );
+                    let gate = stop.clone();
+                    let failed_status = Arc::clone(&status);
+                    let started = start_into_slot(&slot, &gate, || {
+                        crate::service::archival::start(
+                            crate::service::archival::ArchivalWorker {
+                                store,
+                                hosts,
+                                writer,
+                                source: crate::archival_legacy::Source::new(
+                                    &paths, instance, context,
+                                ),
+                                boot,
+                                after_ms,
+                                cancellation: stop,
+                            },
+                            pacer,
+                            status,
+                        )
+                    });
                     match started {
-                        Ok(handle) => match slot.lock() {
-                            Ok(mut workers) => {
-                                workers.push(handle);
-                                log.write_line(&format!(
-                                    "archival lane started (host {})",
-                                    session.host_id().get()
-                                ));
-                            }
-                            Err(_) => log.write_line("archival lane: worker slot poisoned"),
-                        },
-                        Err(error) => log.write_line(&format!("archival lane: {error}")),
+                        Ok(true) => log.write_line(&format!(
+                            "archival lane started (host {})",
+                            session.host_id().get()
+                        )),
+                        Ok(false) => {}
+                        Err(error) => {
+                            archival_start_failed(&failed_status, &error);
+                            log.write_line(&format!("archival lane: {error}"));
+                        }
                     }
                 }));
             }
@@ -3253,5 +3257,103 @@ mod store_identity_tests {
         assert_eq!(after.node_uuid, key.uuid());
         assert_eq!((after.tag_k, after.tag), (2, tag_for(key.uuid(), 2)));
         assert_eq!(after.created_at, before.created_at);
+    }
+}
+
+/// Starts a worker and stores its handle in `slot` unless the daemon is
+/// stopping. The slot lock is taken before the check and held across the
+/// start and the push, and the stop path cancels before it takes the same
+/// lock to drain the slot: either the push happens before the drain (the
+/// handle is joined) or this sees the cancel and starts nothing, so no
+/// thread is left that nobody joins. `Ok(false)`: stopping, nothing started.
+fn start_into_slot(
+    slot: &Mutex<Vec<std::thread::JoinHandle<()>>>,
+    stop: &Cancellation,
+    start: impl FnOnce() -> io::Result<std::thread::JoinHandle<()>>,
+) -> io::Result<bool> {
+    let mut workers = slot
+        .lock()
+        .map_err(|_| io::Error::other("worker slot poisoned"))?;
+    if stop.is_cancelled() {
+        return Ok(false);
+    }
+    workers.push(start()?);
+    Ok(true)
+}
+
+/// Records that the archival lane could not be started on first attach, so
+/// Health shows it degraded instead of the lane being silently absent.
+fn archival_start_failed(status: &crate::service::workers::WorkerStatus, error: &io::Error) {
+    status.record_spawn_failure(Lane::Archival, error);
+}
+
+#[cfg(test)]
+mod start_into_slot_tests {
+    use super::*;
+    use crate::service::workers::WorkerStatus;
+
+    fn slot() -> Mutex<Vec<std::thread::JoinHandle<()>>> {
+        Mutex::new(Vec::new())
+    }
+
+    #[test]
+    fn start_into_slot_after_cancel_starts_nothing() {
+        let slot = slot();
+        let stop = Cancellation::default();
+        stop.cancel();
+        let mut called = false;
+        let started = start_into_slot(&slot, &stop, || {
+            called = true;
+            Ok(std::thread::spawn(|| {}))
+        });
+        assert!(matches!(started, Ok(false)));
+        assert!(!called, "the start closure ran after the cancel");
+        assert!(slot.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn start_into_slot_pushes_under_the_lock() {
+        let slot = slot();
+        let stop = Cancellation::default();
+        let started = start_into_slot(&slot, &stop, || Ok(std::thread::spawn(|| {})));
+        assert!(matches!(started, Ok(true)));
+        let mut workers = slot.lock().unwrap();
+        assert_eq!(workers.len(), 1);
+        workers.pop().unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn start_into_slot_reports_spawn_failure() {
+        let slot = slot();
+        let stop = Cancellation::default();
+        let started = start_into_slot(&slot, &stop, || Err(io::Error::other("no threads")));
+        assert_eq!(started.unwrap_err().to_string(), "no threads");
+        assert!(slot.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn start_into_slot_reports_a_poisoned_slot_without_starting() {
+        let slot = std::sync::Arc::new(slot());
+        let poisoner = std::sync::Arc::clone(&slot);
+        let _ = std::thread::spawn(move || {
+            let _held = poisoner.lock().unwrap();
+            panic!("poison the slot");
+        })
+        .join();
+        let mut called = false;
+        let started = start_into_slot(&slot, &Cancellation::default(), || {
+            called = true;
+            Ok(std::thread::spawn(|| {}))
+        });
+        assert!(started.is_err());
+        assert!(!called);
+    }
+
+    #[test]
+    fn archival_start_failure_is_degraded() {
+        let status = WorkerStatus::default();
+        assert!(status.health().is_none(), "a fresh lane reports ready");
+        archival_start_failed(&status, &io::Error::other("no threads"));
+        assert!(status.health().is_some_and(|h| h.failure.is_some()));
     }
 }

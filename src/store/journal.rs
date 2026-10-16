@@ -466,7 +466,7 @@ fn begin_incarnation_with(
     let ingest_seq = insert_pending(tx, log_ix, &envelope, decision)?;
     tx.execute("UPDATE local_node SET active_log_ix=?1", [log_ix])
         .map_err(store_error)?;
-    let self_tag_k = apply::apply_authored_with(tx, sync, decision, ingest_seq)?;
+    let self_tag_k = apply::apply_authored_with(tx, sync, decision, ingest_seq, 0)?;
     Ok(Authored {
         ingest_seq,
         counter: 1,
@@ -566,17 +566,27 @@ fn author_with<K: FactKind>(
         K::creates(payload),
         needs,
         floor,
+        0,
     )
 }
 
 /// Authors a follow-up a handler queued: the same path as [`author`], over the
 /// kind, payload bytes, `creates` and `needs` captured when it was queued.
+/// `depth` is the follow-up level it is authored at (its trigger's plus one);
+/// past [`apply::MAX_FOLLOW_UP_DEPTH`] nothing is authored.
 pub(crate) fn author_queued(
     tx: &Transaction<'_>,
     sync: &SyncState,
     decision: DecisionInstant,
     fact: &apply::QueuedFact,
+    depth: u8,
 ) -> Result<Authored, ApiError> {
+    if depth > apply::MAX_FOLLOW_UP_DEPTH {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            format!("follow-up chain deeper than {}", apply::MAX_FOLLOW_UP_DEPTH),
+        ));
+    }
     author_encoded(
         tx,
         sync,
@@ -586,6 +596,7 @@ pub(crate) fn author_queued(
         fact.creates.clone(),
         fact.needs.clone(),
         None,
+        depth,
     )
 }
 
@@ -599,6 +610,7 @@ fn author_encoded(
     creates: Option<EntityKey>,
     needs: Vec<EntityKey>,
     floor: Option<HlcStamp>,
+    depth: u8,
 ) -> Result<Authored, ApiError> {
     if bytes.len() > PAYLOAD_MAX {
         return Err(api_error(
@@ -645,7 +657,7 @@ fn author_encoded(
         params![active.log_ix, counter as i64, envelope.hash.as_slice()],
     )
     .map_err(store_error)?;
-    let self_tag_k = apply::apply_authored_with(tx, sync, decision, ingest_seq)?;
+    let self_tag_k = apply::apply_authored_with(tx, sync, decision, ingest_seq, depth)?;
     Ok(Authored {
         ingest_seq,
         counter,
