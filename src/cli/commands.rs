@@ -267,9 +267,8 @@ pub fn check_unique_recipients(recipients: &[SeatId]) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// `--space`/`--tab` given with `--seat` (reads, invite, `handoff --existing`); never `send`
-/// (direct send refuses pane selectors until its own leaf) and never `seat rebind` (its
-/// `--space/--tab/--pane` locate the target pane).
+/// `--space`/`--tab` given with `--seat` (reads, invite, `handoff --existing`, direct send);
+/// never `seat rebind` (its `--space/--tab/--pane` locate the target pane).
 fn collect_seat_narrowing(command: &Top) -> Option<SeatNarrowing> {
     let (selector, seat) = match command {
         Top::Inbox(a) => (&a.selector, &a.seat),
@@ -281,6 +280,7 @@ fn collect_seat_narrowing(command: &Top) -> Option<SeatNarrowing> {
         } => (&a.selector, &a.seat),
         Top::Invite(a) => (&a.selector, &a.seat),
         Top::Handoff(a) if a.existing => (&a.selector, &a.seat),
+        Top::Send(a) => (&a.selector, &a.seat),
         _ => return None,
     };
     (seat.is_some() && (selector.space.is_some() || selector.tab.is_some())).then(|| {
@@ -2563,8 +2563,10 @@ fn parse_cli_in_registry(
             (seat.is_none() && selector.is_explicit()).then(|| selector.clone())
         }
         Top::Send(args) => {
+            // With --seat, --space/--tab narrow the name (`seat_narrowing`); --pane still
+            // names a target (root D7).
             if args.seat.is_some()
-                && (args.selector.is_explicit() || !args.require_ack_pane.is_empty())
+                && (args.selector.pane.is_some() || !args.require_ack_pane.is_empty())
             {
                 return Err(invalid(
                     "direct send accepts only its --seat recipient; pane ACK selectors are not supported",
@@ -2574,7 +2576,10 @@ fn parse_cli_in_registry(
             if args.selector.pane.is_some() {
                 return Err(invalid("send uses --require-ack-pane PANE"));
             }
-            if args.selector.is_explicit() && args.require_ack_pane.is_empty() {
+            if args.seat.is_none()
+                && args.selector.is_explicit()
+                && args.require_ack_pane.is_empty()
+            {
                 return Err(invalid("send parents require --require-ack-pane"));
             }
             None
