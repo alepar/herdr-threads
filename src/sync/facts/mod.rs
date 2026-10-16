@@ -208,7 +208,36 @@ fn erased_apply<K: FactKind>(
             format!("payload decode: {e}"),
         ))
     })?;
+    check_entry_keys::<K>(ctx, &payload)?;
     K::apply(tx, ctx, payload)
+}
+
+/// The signed `creates`/`needs` are what readiness and catch-up suppression
+/// trust, so they must agree with the typed payload: `creates` equal, and
+/// every payload need present (a superset only makes the entry wait). A
+/// context with no entry keys (built outside the engine) is not checked.
+fn check_entry_keys<K: FactKind>(
+    ctx: &ApplyContext<'_>,
+    payload: &K::Payload,
+) -> Result<(), FactError> {
+    let Some((creates, needs)) = &ctx.entry_keys else {
+        return Ok(());
+    };
+    let want_creates = K::creates(payload);
+    let mut want_needs = K::needs(payload);
+    want_needs.sort();
+    want_needs.dedup();
+    let creates_agree = creates.as_deref() == want_creates.as_ref().map(EntityKey::as_str);
+    let needs_covered = want_needs
+        .iter()
+        .all(|key| needs.iter().any(|held| held == key.as_str()));
+    if creates_agree && needs_covered {
+        return Ok(());
+    }
+    Err(FactError::Rejected(ApiError::new(
+        ErrorCode::InvalidRequest,
+        "fact keys differ from its payload",
+    )))
 }
 
 /// The set of kinds this node can apply, keyed by `(kind, major)`.

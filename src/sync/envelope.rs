@@ -252,16 +252,89 @@ impl Body<'_> {
         if self.needs.len() > NEEDS_MAX || self.needs.windows(2).any(|w| w[0] >= w[1]) {
             return Err(malformed("needs"));
         }
-        let edge_ws = |b: Option<&u8>| b.is_none_or(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'));
-        if self.payload.len() > PAYLOAD_MAX
-            || edge_ws(self.payload.first())
-            || edge_ws(self.payload.last())
-            || serde_json::from_slice::<serde::de::IgnoredAny>(self.payload).is_err()
-        {
-            return Err(malformed("payload"));
-        }
-        Ok(())
+        check_payload(self.payload)
     }
+}
+
+/// The payload limits: at most 512 KiB of one JSON value with no leading or
+/// trailing whitespace and no repeated object key at any depth.
+fn check_payload(payload: &[u8]) -> Result<(), EnvelopeError> {
+    let edge_ws = |b: Option<&u8>| b.is_none_or(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'));
+    if payload.len() > PAYLOAD_MAX
+        || edge_ws(payload.first())
+        || edge_ws(payload.last())
+        || reject_duplicate_keys(payload).is_err()
+    {
+        return Err(malformed("payload"));
+    }
+    Ok(())
+}
+
+/// Parses `bytes` as one JSON value and fails on invalid JSON or on an object
+/// that repeats a key anywhere in the value. A derived struct refuses a
+/// repeated known field but silently ignores a repeated unknown one, and a
+/// partial reader (the genesis pubkey) sees only some keys; refusing every
+/// repeat here keeps one parse authoritative for all readers of the signed
+/// bytes. Nesting is bounded by serde_json's recursion limit (128).
+fn reject_duplicate_keys(bytes: &[u8]) -> Result<(), serde_json::Error> {
+    use serde::de::{DeserializeSeed, Deserializer, Error, MapAccess, SeqAccess, Visitor};
+    use std::collections::HashSet;
+
+    struct Unique;
+
+    impl<'de> DeserializeSeed<'de> for Unique {
+        type Value = ();
+        fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+            d.deserialize_any(self)
+        }
+    }
+
+    impl<'de> Visitor<'de> for Unique {
+        type Value = ();
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("any JSON value without a repeated object key")
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_str<E>(self, _: &str) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_unit<E>(self) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_none<E>(self) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+            while seq.next_element_seed(Unique)?.is_some() {}
+            Ok(())
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+            let mut seen = HashSet::new();
+            while let Some(key) = map.next_key::<String>()? {
+                if !seen.insert(key) {
+                    return Err(A::Error::custom("duplicate object key"));
+                }
+                map.next_value_seed(Unique)?;
+            }
+            Ok(())
+        }
+    }
+
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    Unique.deserialize(&mut de)?;
+    de.end()
 }
 
 fn push_key(out: &mut Vec<u8>, key: &EntityKey) {
@@ -363,15 +436,19 @@ impl Envelope {
         sha256(&self.canonical_bytes())
     }
 
-    /// Recompute the hash (`HashMismatch`), then check the signature over it
-    /// with `verify_strict` (`BadSignature`, also for an invalid public key).
+    /// Recompute the hash (`HashMismatch`), check the signature over it with
+    /// `verify_strict` (`BadSignature`, also for an invalid public key), then
+    /// check the payload limits (`Malformed`), so a correctly signed payload
+    /// that repeats an object key is refused on every path that verifies, not
+    /// only the wire decode.
     pub fn verify(&self, pubkey: &[u8; 32]) -> Result<(), EnvelopeError> {
         if self.compute_hash() != self.hash {
             return Err(EnvelopeError::HashMismatch);
         }
         let key = VerifyingKey::from_bytes(pubkey).map_err(|_| EnvelopeError::BadSignature)?;
         key.verify_strict(&self.hash, &Signature::from_bytes(&self.signature))
-            .map_err(|_| EnvelopeError::BadSignature)
+            .map_err(|_| EnvelopeError::BadSignature)?;
+        check_payload(&self.payload)
     }
 
     /// The public key a `node.genesis` v1 entry at counter 1 announces. Parses
@@ -891,6 +968,99 @@ mod tests {
         let round =
             Envelope::try_from(serde_json::from_str::<WireEnvelope>(&text).unwrap()).unwrap();
         assert_eq!(round, g);
+    }
+
+    fn with_payload(payload: &str) -> UnsignedEnvelope {
+        let mut e = full(&identity(1));
+        e.payload = payload.as_bytes().to_vec();
+        e
+    }
+
+    #[test]
+    fn duplicate_key_payload_is_malformed() {
+        for payload in [
+            r#"{"a":1,"a":2}"#,
+            r#"{"a":[{"b":1},{"c":{"d":1,"d":1}}]}"#,
+            r#"[{"x":1,"y":2,"x":3}]"#,
+        ] {
+            assert_eq!(
+                with_payload(payload).validate_shape(),
+                Err(malformed("payload")),
+                "{payload}"
+            );
+        }
+        for payload in [
+            r#"{"a":1,"b":{"a":2}}"#,
+            r#"[{"a":1},{"a":2}]"#,
+            r#"{"a":[1,2],"b":null}"#,
+        ] {
+            assert_eq!(with_payload(payload).validate_shape(), Ok(()), "{payload}");
+        }
+    }
+
+    #[test]
+    fn duplicate_key_wire_envelope_is_refused() {
+        let id = identity(1);
+        let sealed = full(&id).seal(&id);
+        let mut wire = WireEnvelope::from(&sealed);
+        wire.payload = RawValue::from_string(r#"{"id":"a","id":"b"}"#.to_owned()).unwrap();
+        assert_eq!(Envelope::try_from(wire), Err(malformed("payload")));
+    }
+
+    #[test]
+    fn verify_refuses_a_malformed_payload() {
+        let id = identity(1);
+        let sealed = with_payload(r#"{"id":"a","id":"b"}"#).seal(&id);
+        assert_eq!(sealed.hash, sealed.compute_hash());
+        assert_eq!(
+            sealed.verify(&id.public_key()),
+            Err(malformed("payload")),
+            "a correct hash and signature do not excuse a payload the shape refuses"
+        );
+    }
+
+    #[test]
+    fn genesis_pubkey_agrees_with_the_shape_check() {
+        let id = identity(1);
+        let mut g = genesis(&id);
+        g.payload = format!(
+            r#"{{"pubkey":"{}","predecessor":null,"predecessor":null}}"#,
+            hex_encode(&id.public_key())
+        )
+        .into_bytes();
+        let sealed = g.seal(&id);
+        assert_eq!(sealed.validate_shape(), Err(malformed("payload")));
+        assert_eq!(sealed.verify(&id.public_key()), Err(malformed("payload")));
+    }
+
+    #[test]
+    fn non_canonical_payload_reads_identically() {
+        use crate::sync::facts::membership::MembershipPayload;
+        let canonical = r#"{"thread":"tAbc12345678","seat":"sAbc12345678","n":3,"at":1700}"#;
+        let messy = "{ \"at\" : 1700 ,\n\t\"n\":3,\"seat\":\"s\\u0041bc12345678\", \"thread\":\"tAbc12345678\" }";
+        let mut decoded = Vec::new();
+        for text in [canonical, messy] {
+            let e = with_payload(text);
+            assert_eq!(e.validate_shape(), Ok(()), "{text}");
+            decoded.push(serde_json::from_slice::<MembershipPayload>(text.as_bytes()).unwrap());
+        }
+        assert_eq!(decoded[0], decoded[1]);
+        assert_ne!(canonical, messy);
+        assert_ne!(
+            with_payload(canonical).seal(&identity(1)).hash,
+            with_payload(messy).seal(&identity(1)).hash,
+            "the signature covers the bytes as written"
+        );
+        use crate::sync::facts::FactKind;
+        use crate::sync::facts::membership::MembershipJoined;
+        assert_eq!(
+            MembershipJoined::creates(&decoded[0]),
+            MembershipJoined::creates(&decoded[1])
+        );
+        assert_eq!(
+            MembershipJoined::needs(&decoded[0]),
+            MembershipJoined::needs(&decoded[1])
+        );
     }
 
     #[test]

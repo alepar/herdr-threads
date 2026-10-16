@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::node::NodeIdentity;
 use crate::protocol::time::{Cancellation, UtcMillis};
 use crate::store::journal::{self as jr, Authored, OpenReport};
+use crate::sync::envelope::{Envelope, EnvelopeError, UnsignedEnvelope};
 use crate::sync::facts::{FactRegistry, WaitFor};
 use crate::sync::journal_port::IngestOutcome;
 use crate::sync::{BatchLimits, Vector};
@@ -1688,4 +1689,131 @@ fn fork_then_pull_forked_settlement_suppresses_foreign_normal_mode() {
     assert_eq!(x2.seen("f2"), Some(false), "key absent: not suppressed");
     assert_eq!(x2.delivered("f2"), (1, 1));
     let _ = &mut x1;
+}
+
+// ---- payload and key agreement ----------------------------------------------
+
+/// A sealed `test.put` entry at `counter` of `a`'s log, signed by `a`'s own
+/// identity, whose envelope keys are given by hand.
+fn forged_put(
+    a: &Node,
+    counter: u64,
+    payload: &str,
+    creates: Option<&str>,
+    needs: &[&str],
+) -> Envelope {
+    let held = jr::serve(&a.conn, &a.log, counter - 1, BatchLimits::default())
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    UnsignedEnvelope {
+        log: a.log,
+        counter,
+        prev_hash: held.hash,
+        hlc: HlcStamp::from_u64(held.hlc.as_u64() + 1),
+        kind: PutKind::NAME.into(),
+        kind_version: PutKind::MAJOR,
+        deps: Deps::empty(),
+        creates: creates.map(|k| EntityKey::new(k).unwrap()),
+        needs: needs.iter().map(|k| EntityKey::new(*k).unwrap()).collect(),
+        payload: payload.as_bytes().to_vec(),
+    }
+    .seal(&NodeIdentity::from_seed([a.seed; 32]))
+}
+
+#[test]
+fn entry_keys_must_match_the_payload() {
+    let a = Node::new(60, base());
+    // The payload creates e:x; the signed envelope claims e:forged.
+    let lying = forged_put(&a, 2, r#"{"id":"x"}"#, Some("e:forged"), &[]);
+    // A dependent that needs the forged key, plus an honest superset of needs.
+    let dependent = forged_put_after(&a, &lying, 3, r#"{"id":"y"}"#, Some("e:y"), &["e:forged"]);
+    let mut c = Node::new(61, base());
+    c.ship(&a, a.log, 1);
+    let outcome = jr::ingest(
+        &c.ctx,
+        &mut c.conn,
+        &a.log,
+        vec![lying, dependent],
+        &budget(),
+    )
+    .unwrap();
+    assert!(
+        matches!(outcome, IngestOutcome::Stored { stored: 2, .. }),
+        "{outcome:?}"
+    );
+    let revision = c.revision();
+    c.pass();
+    let (state, seq, error) = c.row(&a.log, 2);
+    assert_eq!((state.as_str(), seq), ("failed", None));
+    assert!(
+        error.unwrap().contains("fact keys differ from its payload"),
+        "the keys error is recorded"
+    );
+    assert_eq!(c.revision(), revision, "the handler never ran");
+    assert_eq!(
+        c.state(&a.log, 3),
+        "parked_dep",
+        "a dependent of the forged key stays parked"
+    );
+}
+
+fn forged_put_after(
+    a: &Node,
+    prev: &Envelope,
+    counter: u64,
+    payload: &str,
+    creates: Option<&str>,
+    needs: &[&str],
+) -> Envelope {
+    UnsignedEnvelope {
+        log: a.log,
+        counter,
+        prev_hash: prev.hash,
+        hlc: HlcStamp::from_u64(prev.hlc.as_u64() + 1),
+        kind: PutKind::NAME.into(),
+        kind_version: PutKind::MAJOR,
+        deps: Deps::empty(),
+        creates: creates.map(|k| EntityKey::new(k).unwrap()),
+        needs: needs.iter().map(|k| EntityKey::new(*k).unwrap()).collect(),
+        payload: payload.as_bytes().to_vec(),
+    }
+    .seal(&NodeIdentity::from_seed([a.seed; 32]))
+}
+
+#[test]
+fn entry_keys_superset_of_needs_applies() {
+    let a = Node::new(62, base());
+    let honest = forged_put(&a, 2, r#"{"id":"x"}"#, Some("e:x"), &[]);
+    let mut c = Node::new(63, base());
+    c.ship(&a, a.log, 1);
+    jr::ingest(&c.ctx, &mut c.conn, &a.log, vec![honest], &budget()).unwrap();
+    c.pass();
+    assert_eq!(c.state(&a.log, 2), "applied");
+}
+
+#[test]
+fn duplicate_key_entry_is_refused_at_ingest() {
+    let a = Node::new(64, base());
+    let dup = forged_put(&a, 2, r#"{"id":"x","id":"y"}"#, Some("e:x"), &[]);
+    let mut c = Node::new(65, base());
+    c.ship(&a, a.log, 1);
+    let outcome = jr::ingest(&c.ctx, &mut c.conn, &a.log, vec![dup], &budget()).unwrap();
+    assert!(
+        matches!(
+            outcome,
+            IngestOutcome::Corrupt {
+                counter: 2,
+                reason: EnvelopeError::Malformed { field: "payload" },
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        c.count("SELECT COUNT(*) FROM journal WHERE counter=2"),
+        0,
+        "nothing stored"
+    );
 }

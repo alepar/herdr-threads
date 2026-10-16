@@ -186,7 +186,10 @@ fn signed_entry(log: LogKey, counter: u64, prev_hash: [u8; 32], payload: &str) -
         kind: "test.put".into(),
         kind_version: 1,
         deps: Deps::empty(),
-        creates: None,
+        // What `PutKind` derives from the payload, so the entry applies.
+        creates: serde_json::from_str::<serde_json::Value>(payload)
+            .ok()
+            .and_then(|v| EntityKey::new(format!("e:{}", v["id"].as_str()?)).ok()),
         needs: Vec::new(),
         payload: payload.as_bytes().to_vec(),
     }
