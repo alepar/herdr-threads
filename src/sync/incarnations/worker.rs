@@ -375,11 +375,19 @@ impl Core {
 
     // ---- Failure path ------------------------------------------------------
 
+    /// Records a store failure on the sync lane, except one that shutdown
+    /// itself caused (the cancelled call is not a lane fault).
+    fn record_failure(&self, error: &ApiError) {
+        if !self.d.cancel.is_cancelled() {
+            self.d.status.record_failure(Lane::Sync, error);
+        }
+    }
+
     /// A store failure of a non-job unit (re-issue, evidence, restore
     /// derivation): record it, back the worker off 1 s doubling to 60 s. A
     /// failing job backs off on its own (`run_item`).
     fn fail(&mut self, error: &ApiError) {
-        self.d.status.record_failure(Lane::Sync, error);
+        self.record_failure(error);
         self.failing = true;
         let at = self.now().0.saturating_add(self.delay_ms);
         self.retry_at = Some(MonoInstant(at));
@@ -594,7 +602,7 @@ impl Core {
         match self.dispatch(&item.job, item.queued_at) {
             Ok(()) => self.succeed(),
             Err(e) if Self::retryable(&e) => {
-                self.d.status.record_failure(Lane::Sync, &e);
+                self.record_failure(&e);
                 self.failing = true;
                 item.retry_at = Some(MonoInstant(self.now().0.saturating_add(item.delay_ms)));
                 item.delay_ms = item.delay_ms.saturating_mul(2).min(BACKOFF_MAX_MS);
@@ -605,7 +613,7 @@ impl Core {
                 if let Job::Branch { want, .. } = &item.job {
                     self.d.sink.clear_request(&BranchKey::of(want));
                 }
-                self.d.status.record_failure(Lane::Sync, &e);
+                self.record_failure(&e);
                 self.failing = true;
                 self.log(&format!(
                     "sync: dropped a {} repair job: {}",

@@ -133,8 +133,15 @@ impl HerdrCli {
         }
     }
 
-    /// `$HERDR_BIN_PATH` when set, else `herdr` on PATH.
+    /// `$HERDR_BIN_PATH` when set, else `herdr` on PATH. A `test-support`
+    /// build lets `HT_TEST_MACHINE_LIST_PROGRAM` name the program instead, so a
+    /// test daemon never lists the machines of the real `herdr` on PATH and
+    /// dials them (`TestIsolation::command` points it at nothing).
     pub fn from_env() -> Self {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(program) = std::env::var_os("HT_TEST_MACHINE_LIST_PROGRAM") {
+            return Self::new(program);
+        }
         Self::new(std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into()))
     }
 }

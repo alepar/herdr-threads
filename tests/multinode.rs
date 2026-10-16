@@ -207,3 +207,6 @@ mod config_wipe;
 
 #[path = "multinode/config_clone.rs"]
 mod config_clone;
+
+#[path = "multinode/sweep.rs"]
+mod sweep;
