@@ -6240,7 +6240,7 @@ fn presence_bounds_disconnected_subagent_bindings() {
     );
     let CommandResult::SeatInspect(inspection) = query(
         &store,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &Command::SeatInspect(SeatInspectQuery {
             seat: SeatId::new("s"),
             page: default_page.clone(),
@@ -6254,7 +6254,7 @@ fn presence_bounds_disconnected_subagent_bindings() {
     assert_eq!(shape(&inspection.summary.bindings), want);
     let CommandResult::Seats(seats) = query(
         &store,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &Command::Seats(SeatsQuery {
             page: default_page.clone(),
             target: None,
@@ -6269,7 +6269,7 @@ fn presence_bounds_disconnected_subagent_bindings() {
     assert_eq!(shape(&item.bindings), want);
     let CommandResult::Participants(participants) = query(
         &store,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &Command::Participants(ParticipantsQuery {
             thread: ThreadId::new("t"),
             page: default_page,
