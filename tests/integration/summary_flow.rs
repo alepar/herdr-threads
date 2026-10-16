@@ -2970,6 +2970,57 @@ fn inbox_history_fixture(history_count: i64) -> Fixture {
     inbox_history_fixture_at(history_count, Stage::Sent)
 }
 fn inbox_history_fixture_at(history_count: i64, stage: Stage) -> Fixture {
+    let fx = inbox_history_fixture_base(stage);
+    // The history is real traffic: require-ACK sends from A, ACKed by B in batches of at most
+    // `MAX_BATCH_ITEMS` = 100 IDs after B's display advanced its cursors (an ACK alone does not),
+    // so every row has its `message.sent` fact and a retained settled receipt. The earlier
+    // unrelated `warn` rows have no cheap real-traffic equivalent (they come from lapsed
+    // deadlines), so this history is settled mail only.
+    let history = fx.publish_as_a_in_process(history_count as usize, "settled history");
+    for chunk in history.chunks(100) {
+        let mut ack = vec!["ack"];
+        ack.extend(chunk.iter().map(String::as_str));
+        fx.world
+            .cli(Some(fx.caller_b()), None, &ack)
+            .data("settle history");
+        fx.world
+            .daemon_call(herdr_threads::protocol::commands::Command::AdvanceCursors(
+                herdr_threads::protocol::commands::AdvanceCursors {
+                    in_turn: false,
+                    invitations: Vec::new(),
+                    claim: fx.world.seat_claim(&fx.b),
+                    operation: herdr_threads::protocol::ids::OperationId::new(format!(
+                        "history-displayed-{}",
+                        chunk[0]
+                    )),
+                    displayed: chunk
+                        .iter()
+                        .map(|id| herdr_threads::protocol::ids::MessageId::new(id.as_str()))
+                        .collect(),
+                },
+            ))
+            .expect("advance B's cursors over the displayed history");
+    }
+    eprintln!(
+        "VERSION-BOUND CLI+DAEMON {} settled={history_count}",
+        fx.world.binary
+    );
+    fx
+}
+
+/// Retained physical history for the bounded-scan cap test only. Direct SQL rows with no
+/// `message.sent` facts: the cap (`INBOX_DISPLAY_PAGE_READ_LIMIT` source pages of settled
+/// candidates) is reachable only through this shape. Settled real-traffic history (see
+/// `inbox_history_fixture_at`) is skipped by the v2 reader without walking it, whatever the
+/// pending mail's shape (checked with plain, require-ACK, displayed and undisplayed history), so
+/// real sends cannot drive 800+ scanned candidates. The rows are history the reader only skips:
+/// the useful mail itself is a real send and no ACK writes a journaled entity for them.
+fn inbox_history_fixture_physical(history_count: i64) -> Fixture {
+    let fx = inbox_history_fixture_base(Stage::Sent);
+    inbox_physical_history(&fx, history_count);
+    fx
+}
+fn inbox_history_fixture_base(stage: Stage) -> Fixture {
     let binary = std::env::var("HT_INBOX_FIXTURE_BINARY").unwrap_or_else(|_| BIN.to_owned());
     // A long require-ACK deadline: these tests never wait on it, and the
     // fixture's 3 s one can lapse on a loaded host before B settles it,
@@ -2981,6 +3032,10 @@ fn inbox_history_fixture_at(history_count: i64, stage: Stage) -> Fixture {
         .exec_in_pane(None, Some(PANE_B), None, &["inbox"], false);
     assert_eq!(original.code, 0, "{}", original.stderr);
     assert!(fx.world.pending(&fx.b).is_empty());
+    fx
+}
+
+fn inbox_physical_history(fx: &Fixture, history_count: i64) {
     let mut db = rusqlite::Connection::open(fx.world.node_dir.join("herdr-threads.db")).unwrap();
     db.busy_timeout(Duration::from_secs(5)).unwrap();
     // One write transaction for the whole history: one commit (one fsync)
@@ -3021,10 +3076,9 @@ fn inbox_history_fixture_at(history_count: i64, stage: Stage) -> Fixture {
     .unwrap();
     db.commit().unwrap();
     eprintln!(
-        "VERSION-BOUND CLI+DAEMON {} settled={history_count} unrelated-warnings={history_count}",
+        "VERSION-BOUND CLI+DAEMON {} physical-settled={history_count} unrelated-warnings={history_count}",
         fx.world.binary
     );
-    fx
 }
 
 /// The useful pending mail: a real send (so `message.sent` creates it) behind the fixture's
@@ -3172,17 +3226,6 @@ fn inbox_first_useful_page_historical_only_reaches_empty(
             out.stdout, "empty\n",
             "historical-only fixture should report empty"
         );
-        assert_eq!(
-            fx.world
-                .db()
-                .query_row(
-                    "SELECT count(*) FROM messages WHERE id LIKE 'historical-warning-%'",
-                    [],
-                    |r| r.get::<_, i64>(0)
-                )
-                .unwrap(),
-            120
-        );
         assert_reader(proxy, mark, v1);
     }
 }
@@ -3192,7 +3235,7 @@ fn inbox_first_useful_page_scan_cap_preserves_pending_and_exact_continuation() {
     // More settled rows than one display selection reads
     // (`INBOX_DISPLAY_PAGE_READ_LIMIT` = 8 source pages of `CANDIDATE_LIMIT`
     // = 100): the first invocation must stop on a continuation.
-    let fx = inbox_history_fixture(900);
+    let fx = inbox_history_fixture_physical(900);
     let proxy = useful_page_proxy(&fx);
     // Only the v2 reader: a real require-ACK receipt is a manifest-sourced candidate that the v1
     // reader orders ahead of the physical history (its body is on the first page), so the bounded
