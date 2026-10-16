@@ -718,7 +718,7 @@ pub struct Health {
     /// One entry per attached Herdr server, ascending by `host_id`, at most
     /// [`MAX_HEALTH_HOSTS`]. Empty means a store-only daemon (doctor's
     /// `store-only` label). `host` above is the aggregate over these entries.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<AttachedHostHealth>,
 }
 
