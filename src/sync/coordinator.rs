@@ -106,6 +106,13 @@ pub const PEER_INTAKE_SLOTS: usize = 16;
 const DIALED_SLOTS: usize = 16;
 /// Link events the actor may have waiting.
 const LINK_EVENT_SLOTS: usize = 256;
+/// Tokens a link's control-frame bucket holds: a full `want` per wantable log
+/// (`MAX_HAVE_LOGS`) plus a little slack.
+const CONTROL_BUCKET: u64 = MAX_HAVE_LOGS as u64 + 64;
+/// Tokens the bucket regains per second.
+const CONTROL_REFILL_PER_S: u64 = 1_024;
+/// Control frames dropped on one link before it is closed `ProtocolError`.
+const MAX_THROTTLED: u64 = 10_000;
 /// Requests (snapshots) the actor may have waiting.
 const REQUEST_SLOTS: usize = 16;
 /// Most links a snapshot lists.
@@ -491,6 +498,11 @@ pub struct LinkStatus {
     /// `entries` frames dropped because this link was not the log's rx
     /// source (their credit was granted back).
     pub unsolicited: u64,
+    /// Control frames (`want`, `unwant`, `have`, `branch_want`) dropped
+    /// because the link's token bucket was empty.
+    pub throttled: u64,
+    /// Logs the peer has armed a subscription for.
+    pub subscriptions: u32,
     pub last_error: Option<String>,
 }
 
@@ -660,6 +672,7 @@ impl SyncCoordinator {
             dialer,
             serve_jobs: JoinSet::new(),
             serving: BTreeSet::new(),
+            serve_retry: BTreeSet::new(),
             branch_jobs: JoinSet::new(),
             ingest_jobs: jobs_tx,
             worker: Some(worker),
@@ -742,6 +755,16 @@ struct LinkEntry {
     push_cursor: Option<LogKey>,
     /// `entries` frames dropped as unsolicited.
     unsolicited: u64,
+    /// Inbound control frames dropped by the token bucket.
+    throttled: u64,
+    /// The bucket's tokens, in thousandths (a frame costs 1000).
+    bucket: u64,
+    /// When the bucket was last refilled.
+    bucket_at: MonoInstant,
+    /// The `subs_out` cap was already logged for this link.
+    subs_capped_logged: bool,
+    /// `branch_entries`/`branch_none` frames dropped for a shape error.
+    bad_branch: u64,
     /// `branch_want`s the peer has outstanding, oldest first; the front is
     /// the one being served while `branch_busy`.
     branch_queue: VecDeque<BranchWant>,
@@ -828,6 +851,8 @@ struct Actor {
     serve_jobs: JoinSet<ServeDone>,
     /// Links with a serve job in flight.
     serving: BTreeSet<u64>,
+    /// Links whose last serve job failed; pushed again on the next tick.
+    serve_retry: BTreeSet<u64>,
     /// `journal.serve_branch` reads in flight (at most one per link).
     branch_jobs: JoinSet<BranchDone>,
     /// The ingest worker's FIFO.
@@ -1043,6 +1068,7 @@ impl Actor {
                             .is_some_and(|l| !l.closing && l.handle.peer().boot != boot)
                     })
                 });
+                let now = self.mono();
                 self.links.insert(
                     link_id,
                     LinkEntry {
@@ -1059,6 +1085,11 @@ impl Actor {
                         subs_out: BTreeMap::new(),
                         push_cursor: None,
                         unsolicited: 0,
+                        throttled: 0,
+                        bucket: CONTROL_BUCKET * 1_000,
+                        bucket_at: now,
+                        subs_capped_logged: false,
+                        bad_branch: 0,
                         branch_queue: VecDeque::new(),
                         branch_busy: false,
                         last_have_sent: Vector::default(),
@@ -1352,6 +1383,25 @@ impl Actor {
         let (node, usable) = (entry.handle.peer().node, entry.ranked && !entry.closing);
         let wall = self.wall();
         self.contacts.record_direct(node, wall);
+        if matches!(
+            frame,
+            PeerFrame::Want { .. }
+                | PeerFrame::Unwant { .. }
+                | PeerFrame::Have { .. }
+                | PeerFrame::BranchWant(_)
+        ) && !self.admit_control(link_id)
+        {
+            return;
+        }
+        // A `branch_want` is answered even by a link that is not the node's
+        // active one (`branch_none`), never silently dropped.
+        let frame = match frame {
+            PeerFrame::BranchWant(want) => {
+                self.on_branch_want(link_id, want);
+                return;
+            }
+            other => other,
+        };
         if !usable {
             return;
         }
@@ -1410,12 +1460,45 @@ impl Actor {
             PeerFrame::Entries { node, inc, entries } => {
                 self.on_entries(link_id, node, inc, entries, wire_len);
             }
-            PeerFrame::BranchWant(want) => self.on_branch_want(link_id, want),
             reply @ (PeerFrame::BranchEntries { .. } | PeerFrame::BranchNone { .. }) => {
                 self.on_branch_reply(link_id, reply, wire_len);
             }
             _ => {}
         }
+    }
+
+    /// Spend one token of the link's control bucket (refilled
+    /// [`CONTROL_REFILL_PER_S`] a second). With none left the frame is
+    /// dropped and counted; past [`MAX_THROTTLED`] drops the link is closed.
+    fn admit_control(&mut self, link_id: u64) -> bool {
+        let now = self.mono();
+        let Some(entry) = self.links.get_mut(&link_id) else {
+            return false;
+        };
+        if entry.closing {
+            return false;
+        }
+        let elapsed = now.0.saturating_sub(entry.bucket_at.0);
+        entry.bucket_at = now;
+        // One token is 1000 units and `CONTROL_REFILL_PER_S` a second is that
+        // many units per millisecond.
+        entry.bucket = entry
+            .bucket
+            .saturating_add(elapsed.saturating_mul(CONTROL_REFILL_PER_S))
+            .min(CONTROL_BUCKET * 1_000);
+        if entry.bucket >= 1_000 {
+            entry.bucket -= 1_000;
+            return true;
+        }
+        entry.throttled += 1;
+        if entry.throttled > MAX_THROTTLED {
+            entry.closing = true;
+            let _ = entry.handle.close(CloseReason::ProtocolError);
+            (self.deps.log)(&format!(
+                "sync: link {link_id} flooded control frames; closing"
+            ));
+        }
+        false
     }
 
     /// Merge a peer's `have` into its `peer_vector` and re-pick the rx source
@@ -1760,6 +1843,9 @@ impl Actor {
         self.failover(now);
         self.flush_have_deltas(now);
         self.drain_fork_outbox();
+        for id in std::mem::take(&mut self.serve_retry) {
+            self.push_link(id);
+        }
         self.poll_contacts();
         let ids: Vec<u64> = self.links.keys().copied().collect();
         for id in ids {
@@ -2078,6 +2164,8 @@ impl Actor {
                             )
                             .unwrap_or(u32::MAX),
                             unsolicited: entry.unsolicited,
+                            throttled: entry.throttled,
+                            subscriptions: u32::try_from(entry.subs_out.len()).unwrap_or(u32::MAX),
                             last_error: None,
                         }
                     })
@@ -3179,6 +3267,171 @@ mod tests {
         }
     }
 
+    /// [`two_links`] with the fork capability on both.
+    async fn two_fork_links(rig: &Rig) -> (TestPeer, TestPeer) {
+        let mut first = connect(rig, 0, &fork_hello(2)).await;
+        first.expect_have().await;
+        let mut second = connect(rig, 1, &fork_hello(2)).await;
+        listed(rig, 2).await;
+        let order = expected_order(&[&first, &second]);
+        if order[0] == 0 {
+            second.quiet().await;
+            (first, second)
+        } else {
+            second.expect_have().await;
+            first.quiet().await;
+            (second, first)
+        }
+    }
+
+    // -- Serve resource bounds (ht-5fr.41) ----------------------------------
+
+    fn want_of(i: u128) -> PeerFrame {
+        PeerFrame::Want {
+            node: NodeUuid::from_u128(0x1000 + i),
+            inc: 1,
+            from: 1,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn want_flood_is_capped() {
+        let (rig, _journal) = node(1, 0, 0);
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        for i in 0..5_000u128 {
+            peer.send(want_of(i)).await;
+        }
+        peer.pump(500).await;
+        let snap = snapshot(&rig).await;
+        assert_eq!(snap.links[0].subscriptions, 4_096, "capped, still up");
+        assert!(
+            rig.lines
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.contains("wants more than 4096 logs"))
+                .count()
+                == 1,
+            "logged once: {:?}",
+            rig.lines.lock().unwrap()
+        );
+        // An already armed log is re-armed, and the coordinator answers
+        // (after the bucket refilled).
+        peer.pump(2_000).await;
+        peer.send(want_of(0)).await;
+        peer.send(PeerFrame::Unwant {
+            node: NodeUuid::from_u128(0x1000),
+            inc: 1,
+        })
+        .await;
+        peer.pump(500).await;
+        assert_eq!(snapshot(&rig).await.links[0].subscriptions, 4_095);
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn inbound_control_rate_is_throttled() {
+        let (rig, _journal) = node(1, 0, 0);
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        // The bucket holds 4 160 frames; the rest of a burst is dropped.
+        for _ in 0..4_300 {
+            peer.send(want_of(0)).await;
+        }
+        peer.pump(100).await;
+        let throttled = snapshot(&rig).await.links[0].throttled;
+        assert!(
+            (100..1_000).contains(&throttled),
+            "{throttled} frames throttled"
+        );
+        // Far past 10 000 drops the link is closed.
+        for _ in 0..12_000 {
+            peer.send(want_of(0)).await;
+        }
+        assert_eq!(peer.expect_close().await, CloseReason::ProtocolError);
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn serve_job_deadline_fires() {
+        let (rig, journal) = node(1, 2, 0);
+        let own = journal.inner.self_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        // The job is held in the journal; it carries a finite deadline, and
+        // when that runs out it fails like any serve error.
+        journal.serve_gate.store(true, Ordering::SeqCst);
+        journal
+            .serve_script
+            .lock()
+            .unwrap()
+            .push_back(ErrorCode::DeadlineExceeded);
+        let before = rig.clock.monotonic_now().0;
+        peer.send(PeerFrame::Want {
+            node: own.node,
+            inc: own.incarnation,
+            from: 1,
+        })
+        .await;
+        // Real-time poll: paused time does not advance while a blocking job
+        // is in flight.
+        for _ in 0..5_000 {
+            if !journal.serve_deadlines.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let after = rig.clock.monotonic_now().0;
+        let deadline = journal.serve_deadlines.lock().unwrap()[0].0;
+        assert!(
+            (before + 5_000..=after + 5_000).contains(&deadline),
+            "deadline {deadline} is not now + 5 s ({before}..{after})"
+        );
+        journal.serve_gate.store(false, Ordering::SeqCst);
+        // The failed job ends; the next tick pushes the subscription again.
+        let (log, counters) = peer.next_entries().await;
+        assert_eq!(log, own);
+        assert_eq!(counters, [1, 2, 3]);
+        assert_eq!(journal.serve_deadlines.lock().unwrap().len(), 2);
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn serve_error_is_retried_on_the_tick() {
+        let (rig, journal) = node(1, 2, 0);
+        let own = journal.inner.self_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        journal
+            .serve_script
+            .lock()
+            .unwrap()
+            .push_back(ErrorCode::StoreBusy);
+        peer.send(PeerFrame::Want {
+            node: own.node,
+            inc: own.incarnation,
+            from: 1,
+        })
+        .await;
+        until(|| journal.serve_deadlines.lock().unwrap().len() == 1).await;
+        let started = tokio::time::Instant::now();
+        let (_, counters) = peer.next_entries().await;
+        assert_eq!(counters, [1, 2, 3]);
+        assert!(
+            started.elapsed() <= Duration::from_millis(1_500),
+            "retried within a tick: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            journal.serve_deadlines.lock().unwrap().len(),
+            2,
+            "one failed call, one retry, no hot loop"
+        );
+        stop(rig).await;
+    }
+
     #[tokio::test(start_paused = true)]
     async fn activation_sends_full_have() {
         let (rig, journal) = rig_with_self_log();
@@ -3824,6 +4077,12 @@ mod tests {
         ingests: AtomicUsize,
         /// While set, `serve_branch` waits (holds requests outstanding).
         branch_gate: AtomicBool,
+        /// While set, `serve` waits.
+        serve_gate: AtomicBool,
+        /// Errors the next `serve` calls return, front first.
+        serve_script: Mutex<VecDeque<ErrorCode>>,
+        /// The budget deadline of every `serve` call.
+        serve_deadlines: Mutex<Vec<MonoInstant>>,
     }
 
     impl TestJournal {
@@ -3834,6 +4093,9 @@ mod tests {
                 stored: AtomicUsize::new(0),
                 ingests: AtomicUsize::new(0),
                 branch_gate: AtomicBool::new(false),
+                serve_gate: AtomicBool::new(false),
+                serve_script: Mutex::default(),
+                serve_deadlines: Mutex::default(),
             })
         }
 
@@ -3865,6 +4127,13 @@ mod tests {
             limits: BatchLimits,
             budget: &CallBudget,
         ) -> Result<Vec<Envelope>, ApiError> {
+            self.serve_deadlines.lock().unwrap().push(budget.deadline);
+            while self.serve_gate.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if let Some(code) = self.serve_script.lock().unwrap().pop_front() {
+                return Err(ApiError::new(code, "scripted serve error"));
+            }
             self.inner.serve(log, from, limits, budget)
         }
         fn serve_branch(
@@ -5282,9 +5551,100 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|l| l.contains("corrupt") && l.contains("malformed branch entry")),
-            "counted against the source: {:?}",
+                .any(|l| l.contains("malformed branch entry") && l.contains("dropped")),
+            "logged once on the link: {:?}",
             rig.lines.lock().unwrap()
+        );
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn malformed_branch_reply_does_not_penalize_the_rx_source() {
+        let (rig, _journal) = node(1, 0, 0);
+        let f = foreign(9, 2);
+        let mut peer = connect(&rig, 0, &fork_hello(2)).await;
+        peer.expect_have().await;
+        peer.send_have(
+            true,
+            false,
+            vec![have_log(f.log.node, f.log.incarnation, 3)],
+        )
+        .await;
+        peer.find_want(f.log.node, f.log.incarnation, 1).await;
+        let mut entries: Vec<WireEnvelope> = f.envs.iter().map(WireEnvelope::from).collect();
+        entries[1].sig = "zz".into();
+        peer.send(PeerFrame::BranchEntries {
+            node: f.log.node,
+            inc: f.log.incarnation,
+            tip_hash: "cc".repeat(32),
+            entries,
+            more: false,
+        })
+        .await;
+        let frames = peer.pump(2_000).await;
+        assert!(
+            !frames.iter().any(|f| matches!(f, PeerFrame::Unwant { .. })),
+            "the rx subscription was dropped: {frames:?}"
+        );
+        assert_eq!(snapshot(&rig).await.links[0].rx_logs, 1, "still the source");
+        assert!(
+            !rig.lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("source penalized")),
+            "{:?}",
+            rig.lines.lock().unwrap()
+        );
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn branch_want_on_a_standby_fork_link_gets_branch_none() {
+        let (rig, journal) = node(1, 3, 0);
+        let (mut active, mut standby) = two_fork_links(&rig).await;
+        active.pump(500).await;
+        standby.pump(500).await;
+        let want = want_own(&journal, 1);
+        standby.send(PeerFrame::BranchWant(want.clone())).await;
+        let hash = standby
+            .find(|f| match f {
+                PeerFrame::BranchNone { tip_hash, .. } => Some(tip_hash.clone()),
+                PeerFrame::BranchEntries { .. } => panic!("a standby link served a branch"),
+                _ => None,
+            })
+            .await;
+        assert_eq!(hash, want.tip.hash);
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn partial_branch_entries_send_no_branch_none() {
+        // 40 entries of about 600 bytes at a 4 KiB frame: far more frames than
+        // the data queue and the credit window take at once.
+        let (rig, journal) = node(1, 40, 600);
+        let mut hello = fork_hello(2);
+        hello.limits.max_frame = 4_096;
+        hello.limits.credit = 8_192;
+        let mut peer = connect(&rig, 0, &hello).await;
+        peer.expect_have().await;
+        peer.send(PeerFrame::BranchWant(want_own(&journal, 1)))
+            .await;
+        let frames = peer.pump(3_000).await;
+        let entries: Vec<bool> = frames
+            .iter()
+            .filter_map(|f| match f {
+                PeerFrame::BranchEntries { more, .. } => Some(*more),
+                _ => None,
+            })
+            .collect();
+        assert!(!entries.is_empty(), "some frames were sent: {frames:?}");
+        assert_eq!(entries.last(), Some(&true), "the last frame asks for more");
+        assert!(
+            !frames
+                .iter()
+                .any(|f| matches!(f, PeerFrame::BranchNone { .. })),
+            "branch_none after partial branch_entries: {frames:?}"
         );
         stop(rig).await;
     }

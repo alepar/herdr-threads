@@ -33,8 +33,8 @@ use uuid::Uuid;
 use super::envelope::{hex_decode, hex_encode};
 use super::frame::{
     BASE_CAP, CloseClass, CloseReason, MAX_CAP_BYTES, MAX_FRAME_ENTRIES, MAX_HELLO_BYTES,
-    MAX_HELLO_CAPS, PREAMBLE, PREAMBLE_NOISE_WINDOW, PeerFrame, PeerHello, PeerLimits, Role,
-    write_peer_frame,
+    MAX_HELLO_CAPS, MIN_PEER_MAX_FRAME, PREAMBLE, PREAMBLE_NOISE_WINDOW, PeerFrame, PeerHello,
+    PeerLimits, Role, write_peer_frame,
 };
 use crate::daemon::transport::{self, MAX_FRAME_BYTES};
 use crate::node::{NodeIdentity, NodeTag, NodeUuid};
@@ -438,6 +438,14 @@ fn check_peer_hello(
         }));
     }
     if hello.caps.len() > MAX_HELLO_CAPS || hello.caps.iter().any(|c| c.len() > MAX_CAP_BYTES) {
+        return Err(Refuse(CloseReason::ProtocolError));
+    }
+    let l = &hello.limits;
+    if l.max_frame < MIN_PEER_MAX_FRAME
+        || l.credit < MIN_PEER_MAX_FRAME
+        || l.batch_entries == 0
+        || l.batch_bytes == 0
+    {
         return Err(Refuse(CloseReason::ProtocolError));
     }
     let Some(nonce) = hex_decode::<32>(&hello.nonce) else {
@@ -1050,6 +1058,46 @@ mod tests {
             LinkError::Refused(CloseReason::EnvelopeUnsupported)
         ));
         assert_eq!(err.class(), CloseClass::StopDialing);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hello_with_tiny_limits_is_refused() {
+        let floor = MIN_PEER_MAX_FRAME;
+        let tiny: [fn(&mut PeerLimits); 4] = [
+            |l| l.max_frame = 100,
+            |l| l.credit = 100,
+            |l| l.batch_entries = 0,
+            |l| l.batch_bytes = 0,
+        ];
+        for shrink in tiny {
+            let dialer = local(1, 10);
+            let (a, mut b) = duplex(BIG);
+            let other = NodeIdentity::from_seed([2; 32]);
+            let (mut hello, _) = manual_hello(&other, 20, Role::Dialed);
+            shrink(&mut hello.limits);
+            let reply = PeerFrame::Hello(hello).encode().unwrap();
+            let (res, ()) = tokio::join!(
+                handshake(a, &dialer, Role::Dialer, None, deadline()),
+                async {
+                    manual_answer(&mut b, &reply).await;
+                    expect_close(recv(&mut b).await, CloseReason::ProtocolError);
+                }
+            );
+            assert!(matches!(
+                res.err().unwrap(),
+                LinkError::Refused(CloseReason::ProtocolError)
+            ));
+        }
+        // Exactly the floor is accepted by the check.
+        let me = local(1, 10);
+        let other = NodeIdentity::from_seed([2; 32]);
+        let (mut hello, _) = manual_hello(&other, 20, Role::Dialed);
+        hello.limits.max_frame = floor;
+        hello.limits.credit = floor;
+        hello.limits.batch_entries = 1;
+        hello.limits.batch_bytes = 1;
+        let bytes = PeerFrame::Hello(hello).encode().unwrap();
+        assert!(check_peer_hello(&me, &bytes).is_ok());
     }
 
     #[tokio::test(start_paused = true)]

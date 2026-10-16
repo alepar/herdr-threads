@@ -46,6 +46,10 @@ pub const MAX_HAVE_LOGS: usize = 4096;
 pub const MAX_SEEN_AGES: usize = 4096;
 /// Most entries in one `entries` frame.
 pub const MAX_FRAME_ENTRIES: usize = 256;
+/// Least `max_frame` (and `credit`) a peer hello may declare; a smaller one
+/// is refused `ProtocolError`, so frame halving always terminates with at
+/// most one frame per entry.
+pub const MIN_PEER_MAX_FRAME: u32 = 4_096;
 
 /// Which side opened the connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
