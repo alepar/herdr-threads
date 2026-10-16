@@ -2095,8 +2095,9 @@ impl Smoke {
         watch
     }
 
-    /// The pane's one non-shell foreground process, as Herdr reports it.
-    fn foreground_pid(&self, pane: &str) -> Option<i64> {
+    /// The intended foreground process, not a transient child of the pane's starting shell.
+    fn foreground_pid(&self, pane: &str, expected_argv: &[&str]) -> Option<i64> {
+        use herdr_threads::ports::ProcessInfo;
         let out = self
             .herdr
             .command("herdr")
@@ -2110,7 +2111,21 @@ impl Smoke {
             .as_array()?
             .iter()
             .filter_map(|p| p["pid"].as_i64())
-            .filter(|pid| Some(*pid) != shell);
+            .filter(|pid| Some(*pid) != shell)
+            .filter(|pid| {
+                u32::try_from(*pid)
+                    .ok()
+                    .and_then(|pid| {
+                        herdr_threads::host::process_table::HostProcessTable.process(pid)
+                    })
+                    .is_some_and(|process| {
+                        process
+                            .argv
+                            .iter()
+                            .map(String::as_str)
+                            .eq(expected_argv.iter().copied())
+                    })
+            });
         let pid = pids.next()?;
         pids.next().is_none().then_some(pid)
     }
@@ -2132,7 +2147,7 @@ fn config9_foreground_and_background_agents_in_one_pane() {
     let run = smoke
         .herdr
         .command("herdr")
-        .args(["pane", "run", &pane, "sleep 86400"])
+        .args(["pane", "run", &pane, "/bin/sleep 86400"])
         .output()
         .unwrap();
     assert!(run.status.success(), "{run:?}");
@@ -2141,7 +2156,9 @@ fn config9_foreground_and_background_agents_in_one_pane() {
         "Herdr to report the pane's foreground process",
         Duration::from_secs(20),
         || {
-            foreground_pid = smoke.foreground_pid(&pane);
+            // A starting shell can briefly have another foreground child. Its pid can die
+            // before SessionStart, leaving no harness fingerprint or lifecycle context.
+            foreground_pid = smoke.foreground_pid(&pane, &["/bin/sleep", "86400"]);
             foreground_pid.is_some()
         },
     );
