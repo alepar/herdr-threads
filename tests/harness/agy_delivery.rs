@@ -1688,7 +1688,7 @@ mod daemon {
     }
     fn canonical_v2_allocations_fit_actual_native_codec(user: bool) {
         use crate::protocol::{
-            commands::{CreateThread, InvitationConfirmation, Invite},
+            commands::{CreateThread, Invite},
             delivery::DeliveryPageV2,
         };
         let world = world();
@@ -1763,7 +1763,8 @@ mod daemon {
                 .service
                 .handle(
                     Command::Invite(Invite {
-                        confirmation: Some(InvitationConfirmation::Lazy),
+                        // Every new invitation is confirming (ht-yha.6 / reconcile items 8-10); this test's subject is the page codec, not the mode.
+                        confirmation: None,
                         thread,
                         seat: recipient.seat.clone(),
                         deadline_millis: None,
@@ -1776,7 +1777,7 @@ mod daemon {
                 .unwrap();
         }
         let counts: (i64, i64) = world.db.query_row(
-            "SELECT (SELECT count(*) FROM invitations i JOIN threads t ON t.id=i.thread_id WHERE i.seat_id=?1 AND t.instance_id=?2 AND i.state='pending' AND i.confirmation='lazy'),(SELECT count(*) FROM digest_pending_invitations d JOIN threads t ON t.id=d.thread_id WHERE d.seat_id=?1 AND t.instance_id=?2)",
+            "SELECT (SELECT count(*) FROM invitations i JOIN threads t ON t.id=i.thread_id WHERE i.seat_id=?1 AND t.instance_id=?2 AND i.state='pending' AND i.confirmation='require_ack'),(SELECT count(*) FROM digest_pending_invitations d JOIN threads t ON t.id=d.thread_id WHERE d.seat_id=?1 AND t.instance_id=?2)",
             rusqlite::params![recipient.seat.as_str(), recipient.instance],
             |row| Ok((row.get(0)?, row.get(1)?)),
         ).unwrap();
@@ -2007,7 +2008,7 @@ mod daemon {
             largest > 32_768,
             "exercise real aggregate escaping, not just tiny pages"
         );
-        let pending: i64 = world.db.query_row("SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending' AND confirmation='lazy'", [], |row| row.get(0)).unwrap();
+        let pending: i64 = world.db.query_row("SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending' AND confirmation='require_ack'", [], |row| row.get(0)).unwrap();
         assert_eq!(
             pending, 24,
             "emission confirmation is not invitation acceptance"
