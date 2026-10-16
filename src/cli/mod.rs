@@ -612,10 +612,17 @@ fn run_parsed_in_pane<W: Write>(
     if topology_runtime::run_operator(&parsed, &context, &paths, &clock, writer)? {
         return Ok(());
     }
-    let host = crate::host::native::NativeCli::new(
-        context.require_host().map_err(context_error)?.to_path_buf(),
-        Arc::clone(&clock),
-    );
+    // The claim host's adapter, built only when a pane selector needs the host:
+    // a store-only command (sync, peer, daemon, pending-ops) never asks.
+    let host = || -> Result<crate::host::native::NativeCli, ApiError> {
+        Ok(crate::host::native::NativeCli::new(
+            context
+                .require_host()
+                .map_err(host_context_error)?
+                .to_path_buf(),
+            Arc::clone(&clock),
+        ))
+    };
     // Canonical terminal cleanup precedes caller selection,
     // SeatInspect and local selected-generation guards. Exact IDs need no host I/O.
     let historical_retry = matches!(&parsed.action, CliAction::Retry(_));
@@ -667,22 +674,22 @@ fn run_parsed_in_pane<W: Write>(
             &mut parsed,
             &client,
             clock.as_ref(),
-            || host.topology(&budget()),
+            || host()?.topology(&budget()),
             || {
                 caller_pane
                     .filter(|pane| !pane.is_empty())
-                    .map(|pane| host.current_pane(pane, &budget()))
+                    .map(|pane| host().and_then(|h| h.current_pane(pane, &budget())))
                     .transpose()
             },
         )
     } else {
         panes::resolve_cli_targets(
             &mut parsed,
-            || host.topology(&budget()),
+            || host()?.topology(&budget()),
             || {
                 caller_pane
                     .filter(|pane| !pane.is_empty())
-                    .map(|pane| host.current_pane(pane, &budget()))
+                    .map(|pane| host().and_then(|h| h.current_pane(pane, &budget())))
                     .transpose()
             },
         )
@@ -840,22 +847,23 @@ fn run_parsed_in_pane<W: Write>(
             operator_semantic(mutation, &context).expect("operator mutation selected above")?;
         return run_operator(semantic, &parsed, &paths, &clock, writer);
     }
-    let seat_labels =
-        if matches!(&parsed.action, CliAction::Wire(Command::Seats(_))) && output::human_active() {
-            crate::host::native::NativeCli::new(
-                context.require_host().map_err(context_error)?.to_path_buf(),
-                Arc::clone(&clock),
-            )
-            .seat_labels(&budget())
-            .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-    let peer_source = crate::host::native::NativeCli::new(
-        context.require_host().map_err(context_error)?.to_path_buf(),
-        Arc::clone(&clock),
-    );
-    let Some(parsed) = peer_locations::with_source(peer_source, || {
+    // Labels and peer locations are host data: with no host they are absent.
+    let seat_labels = match &context.host_endpoint {
+        Some(endpoint)
+            if matches!(&parsed.action, CliAction::Wire(Command::Seats(_)))
+                && output::human_active() =>
+        {
+            crate::host::native::NativeCli::new(endpoint.clone(), Arc::clone(&clock))
+                .seat_labels(&budget())
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    };
+    let peer_source = context
+        .host_endpoint
+        .as_ref()
+        .map(|endpoint| crate::host::native::NativeCli::new(endpoint.clone(), Arc::clone(&clock)));
+    let run = || {
         human::with_seat_labels(seat_labels, || {
             run_caller_scoped(
                 parsed,
@@ -868,8 +876,12 @@ fn run_parsed_in_pane<W: Write>(
                 writer,
             )
         })
-    })?
-    else {
+    };
+    let outcome = match peer_source {
+        Some(source) => peer_locations::with_source(source, run),
+        None => run(),
+    }?;
+    let Some(parsed) = outcome else {
         return Ok(());
     };
     let max_bytes = match &parsed.action {

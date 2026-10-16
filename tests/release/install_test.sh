@@ -314,11 +314,11 @@ expect "next steps: daemon running, no start-Herdr step" bash -c "! grep -qF 'St
     : > "$root/stop.fail"
     (exec -a "herdr-threads daemon run --state-dir $root/fake" sleep 300) &
     fake_pid=$!
-    fake_instance="$root/st/herdr/plugins/herdr-threads/instances/fake"
+    fake_instance="$root/st/herdr/plugins/herdr-threads/node"
     mkdir -p "$fake_instance"
+    chmod 700 "$fake_instance"
     printf '{"software_version":"0.1.1","protocol_version":1,"pid":%s,"socket_inode":1}\n' \
         "$fake_pid" > "$fake_instance/endpoint.json"
-    printf '%s' "$root/h.sock" > "$fake_instance/locator"
     : > "$root/actions"
     : > "$root/action-versions"
     install --version v0.1.0

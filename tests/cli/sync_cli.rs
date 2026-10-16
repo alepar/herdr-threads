@@ -61,11 +61,11 @@ impl Fixture {
         if human {
             command.arg("human");
         }
+        // `PATH` holds no `herdr`: the host resolves to none, deterministically.
         command
+            .env("PATH", "/usr/bin:/bin")
             .arg("--state-dir")
-            .arg(&self.state)
-            .arg("--host-endpoint")
-            .arg(self.iso.path("no-host.sock"));
+            .arg(&self.state);
         command
     }
 
@@ -109,6 +109,30 @@ fn ok(output: &Output) -> String {
 fn refused(output: &Output) -> String {
     assert!(!output.status.success(), "{output:?}");
     err(output)
+}
+
+// Kills: a node-scoped command that needs a state-dir flag or a Herdr host
+// (exit 2 "host endpoint missing"): the context comes from
+// HERDR_PLUGIN_STATE_DIR alone.
+#[test]
+fn sync_and_peer_commands_run_with_env_state_dir_and_no_host() {
+    let fx = Fixture::new("sync-cli-no-host");
+    let env_cmd = |args: &[&str]| {
+        fx.iso
+            .command(BIN)
+            .env("PATH", "/usr/bin:/bin")
+            .env("HERDR_PLUGIN_STATE_DIR", &fx.state)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(ok(&env_cmd(&["sync", "status"])).starts_with("sync_status"));
+    assert_eq!(
+        ok(&env_cmd(&["peer", "list"])).lines().next(),
+        Some("peers")
+    );
+    ok(&env_cmd(&["daemon", "health"]));
+    ok(&env_cmd(&["daemon", "stop"]));
 }
 
 // Kills: an add that is not listed, a list that hides a forgotten target, a

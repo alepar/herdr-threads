@@ -114,7 +114,13 @@ fn main() {
     }
     // `peer --stdio`: the stateless ssh-side pump, kept off the clap path.
     if let Some(peer) = cli::peer::parse_peer_stdio_argv(&args) {
-        let code = match RuntimeContext::from_environment(peer.state_dir, peer.host_endpoint) {
+        // The shared node-scoped resolver: flag, `HERDR_PLUGIN_STATE_DIR`, then the
+        // default state dir; the host stays an optional attach hint.
+        let resolved = cli::instance::resolve_context(
+            &cli::instance::InstanceInputs::from_process(peer.state_dir, peer.host_endpoint),
+        )
+        .map(|(context, _)| context);
+        let code = match resolved {
             Ok(context) => cli::peer::run_stdio(&context),
             Err(error) => {
                 eprintln!("herdr-threads peer: daemon unavailable: {error}");
