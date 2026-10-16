@@ -281,19 +281,28 @@ impl Matrix {
 
     /// `launch --kind codex` into an empty pane; the stand-in's SessionStart
     /// hook checks its seat in. Returns the seat.
+    /// `launch --kind KIND` into `pane`. A just-created pane's shell may not be
+    /// interactive yet, and older Herdr releases (0.9.1) then refuse the start
+    /// with `agent_pane_busy` before anything runs, so that refusal is retried.
+    fn launch(&self, kind: &str, pane: &str) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let mut cmd = self.cli();
+            self.globals(&mut cmd);
+            cmd.args(["launch", "--kind", kind, "--pane", pane, "--harness-binary"])
+                .arg(self.bin.join(kind));
+            let out = cmd.output().unwrap();
+            let busy = String::from_utf8_lossy(&out.stderr).contains("agent_pane_busy");
+            if !out.status.success() && busy && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+            return json(&out, &format!("launch {kind}"))["launch"].clone();
+        }
+    }
+
     fn launch_codex(&self, pane: &str) -> String {
-        let mut cmd = self.cli();
-        self.globals(&mut cmd);
-        cmd.args([
-            "launch",
-            "--kind",
-            "codex",
-            "--pane",
-            pane,
-            "--harness-binary",
-        ])
-        .arg(self.bin.join("codex"));
-        let launched = json(&cmd.output().unwrap(), "launch codex")["launch"].clone();
+        let launched = self.launch("codex", pane);
         assert_eq!(launched["outcome"], "started", "{launched}");
         assert_eq!(launched["pane"], pane, "{launched}");
         let seat = launched["seat"].as_str().unwrap().to_owned();
@@ -606,18 +615,7 @@ fn herdr_release_launch_and_handoff() {
     let caller_pane = m.workspace("handoff-caller");
     let caller = m.launch_codex(&caller_pane);
     let claude_pane = m.tab(&caller_pane, "launch-claude");
-    let mut cmd = m.cli();
-    m.globals(&mut cmd);
-    cmd.args([
-        "launch",
-        "--kind",
-        "claude",
-        "--pane",
-        &claude_pane,
-        "--harness-binary",
-    ])
-    .arg(m.bin.join("claude"));
-    let claude = json(&cmd.output().unwrap(), "launch claude")["launch"].clone();
+    let claude = m.launch("claude", &claude_pane);
     assert_eq!(claude["outcome"], "started", "{claude}");
 
     let home = m.home();
