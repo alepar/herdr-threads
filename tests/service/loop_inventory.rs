@@ -345,6 +345,21 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
     ),
     (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_secs(9))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_secs(12))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
+        "src/sync/coordinator.rs",
+        "tokio::time::sleep(Duration::from_secs(30))",
+        "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
+    ),
+    (
         "src/sync/dialer.rs",
         "sleep(Duration::from_millis(10))",
         "dialer unit test: polls a condition or lets reloads settle; not daemon code",
