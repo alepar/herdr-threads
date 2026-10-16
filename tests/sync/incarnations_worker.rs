@@ -1015,10 +1015,16 @@ fn stale_branch_reply_is_dropped_not_penalized() {
         more: true,
     };
     w.a.sink.on_branch(s, reply());
-    // The timer's pull runs before the worker saw the reply: same `from` again.
+    // The answered request now holds the branch, so the sink refuses the
+    // timer's second ask; a duplicate reply is queued directly (the stale
+    // path stays a defence against one that still arrives).
     w.a.sink.note_tip_source(w.log, &hex(&w.b4.hash), s);
-    assert_eq!(w.a.sink.request_branch(want.clone()), Some(s));
-    w.a.sink.on_branch(s, reply());
+    assert_eq!(w.a.sink.request_branch(want.clone()), None);
+    w.a.sink.enqueue(Job::Branch {
+        source: s,
+        want: want.clone(),
+        reply: reply(),
+    });
     core.work();
 
     assert!(

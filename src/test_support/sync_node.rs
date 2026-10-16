@@ -171,6 +171,7 @@ impl SyncNode {
             signals: handle.signals(),
             clock,
             log,
+            sync_pacer: None,
             cancel: worker_cancel.clone(),
         })
         .expect("spawn the incarnations worker");

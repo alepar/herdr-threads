@@ -1232,6 +1232,7 @@ impl Core {
             // makes the second reply look like a bad one. Neither the source
             // nor the row is at fault: drop it; the next pull asks from
             // `next_from`.
+            self.d.sink.clear_request(key);
             return self.schedule_pulls();
         }
         let verdict = quantum!(self, |tx, _ctx, _decision| store::branch_progress(
