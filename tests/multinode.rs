@@ -175,6 +175,9 @@ mod support;
 #[path = "multinode/config_direct.rs"]
 mod config_direct;
 
+#[path = "multinode/config_auto_ack.rs"]
+mod config_auto_ack;
+
 #[path = "multinode/config_relay.rs"]
 mod config_relay;
 
