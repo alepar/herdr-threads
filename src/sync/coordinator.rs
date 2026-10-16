@@ -123,6 +123,8 @@ pub const SNAPSHOT_MAX_ADVERTISED: usize = 1024;
 pub const DIAL_REPORT_SLOTS: usize = 2;
 /// How long the actor waits on its pacer before looping.
 const PACER_TICK: Duration = Duration::from_secs(1);
+/// Most unheld own-log claims tracked per link; claims beyond never count.
+const MAX_OWN_CLAIMS: usize = 64;
 /// The housekeeping interval.
 const HOUSEKEEPING_TICK: Duration = Duration::from_secs(1);
 /// Each active link gets a `seen` this often.
@@ -745,6 +747,11 @@ struct LinkEntry {
     closing: bool,
     /// What the peer advertises. Only an active link keeps one.
     peer_vector: Vector,
+    /// Own logs this node does not hold that the peer advertises: when the
+    /// link first advertised each. A `Have` is unsigned; such a claim holds
+    /// the own history only within [`routing::OWN_CLAIM_PROOF_MS`] of this
+    /// time unless the log's genesis arrives. Cleared with `peer_vector`.
+    own_claims: BTreeMap<LogKey, OwnClaim>,
     /// A `have` is owed to the peer (`Some(ask)`) once `local` is fresh.
     have_pending: Option<bool>,
     /// This activation's first `have` has gone out; until then the link is
@@ -790,6 +797,13 @@ struct LinkEntry {
     polled_inbound: u64,
     /// Held so the transport's slot is released when the link is.
     _permit: Option<PeerPermit>,
+}
+
+/// One unheld own-log claim of a link (see `LinkEntry::own_claims`).
+struct OwnClaim {
+    first_seen: MonoInstant,
+    /// The expiry has been logged.
+    logged: bool,
 }
 
 impl LinkEntry {
@@ -1089,6 +1103,7 @@ impl Actor {
                         ranked: false,
                         closing: false,
                         peer_vector: Vector::default(),
+                        own_claims: BTreeMap::new(),
                         have_pending: None,
                         announced: false,
                         errors: BTreeMap::new(),
@@ -1290,6 +1305,7 @@ impl Actor {
         };
         entry.mode = LinkMode::Standby;
         entry.peer_vector = Vector::default();
+        entry.own_claims.clear();
         entry.have_pending = None;
         entry.announced = false;
         entry.errors.clear();
@@ -1888,6 +1904,7 @@ impl Actor {
             self.send_seen_if_due(id, now);
         }
         self.flush_contacts();
+        self.update_own_history();
         self.update_rounds();
         if self.refresh.is_empty() && self.links.values().any(|l| l.have_pending.is_some()) {
             // A read that failed leaves `have`s owed: try again.
@@ -1897,14 +1914,75 @@ impl Actor {
 
     /// Set the own-history `Links` flag from the active links' vectors and
     /// the local one (the pure [`routing::own_history_on`]).
+    ///
+    /// An own log a peer advertises that this node does not hold is an
+    /// unsigned claim: its link gets a proof window from the first
+    /// advertisement, and once it has run out without the genesis the claim
+    /// is ignored for the link's lifetime.
     fn update_own_history(&mut self) {
+        let own = self.deps.identity.uuid();
+        let now = self.mono();
+        let mut expired: Vec<(NodeUuid, LogKey)> = Vec::new();
+        for entry in self.links.values_mut() {
+            if entry.mode != LinkMode::Active {
+                entry.own_claims.clear();
+                continue;
+            }
+            let local = &self.local;
+            let unheld = |log: &LogKey, adv: &LogHead| {
+                log.node == own
+                    && adv.counter > 0
+                    && local.0.get(log).is_none_or(|head| head.counter == 0)
+            };
+            // A claim whose log arrived or was withdrawn is forgotten.
+            entry
+                .own_claims
+                .retain(|log, _| entry.peer_vector.0.get(log).is_some_and(|a| unheld(log, a)));
+            for (log, adv) in &entry.peer_vector.0 {
+                if unheld(log, adv)
+                    && !entry.own_claims.contains_key(log)
+                    && entry.own_claims.len() < MAX_OWN_CLAIMS
+                {
+                    entry.own_claims.insert(
+                        *log,
+                        OwnClaim {
+                            first_seen: now,
+                            logged: false,
+                        },
+                    );
+                }
+            }
+            for (log, claim) in &mut entry.own_claims {
+                if now.0.saturating_sub(claim.first_seen.0) >= routing::OWN_CLAIM_PROOF_MS
+                    && !claim.logged
+                {
+                    claim.logged = true;
+                    expired.push((entry.handle.peer().node, *log));
+                }
+            }
+        }
+        for (peer, log) in expired {
+            (self.deps.log)(&format!(
+                "sync: {} advertises own log {} it cannot serve; ignored",
+                uuid8(&peer),
+                log.incarnation
+            ));
+        }
         let on = routing::own_history_on(
-            self.deps.identity.uuid(),
+            own,
             &self.local,
             self.links
-                .values()
-                .filter(|l| l.mode == LinkMode::Active && l.ranked && !l.closing)
-                .map(|l| &l.peer_vector),
+                .iter()
+                .filter(|(_, l)| l.mode == LinkMode::Active && l.ranked && !l.closing)
+                .map(|(id, l)| (*id, &l.peer_vector)),
+            |id, log| {
+                self.links
+                    .get(id)
+                    .and_then(|l| l.own_claims.get(log))
+                    .is_some_and(|claim| {
+                        now.0.saturating_sub(claim.first_seen.0) < routing::OWN_CLAIM_PROOF_MS
+                    })
+            },
         );
         if on != self.own_history_on {
             self.own_history_on = on;
@@ -4252,6 +4330,68 @@ mod tests {
         until(|| hold_on(&rig)).await;
         peer.end();
         until(|| !hold_on(&rig)).await;
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    // Kills: a Links hold that an unsigned `Have` can keep on with an own log
+    // the node cannot be served (no genesis), and a window that never ends or
+    // never starts.
+    #[tokio::test(start_paused = true)]
+    async fn unproven_own_log_claim_lifts_the_hold() {
+        let (rig, journal) = rig_with_self_log();
+        let own = journal.self_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        assert!(!hold_on(&rig));
+        // An own incarnation this node has never held, counter 50; the peer
+        // never serves its genesis.
+        peer.send_have(true, false, vec![have_log(own.node, 9, 50)])
+            .await;
+        until(|| hold_on(&rig)).await;
+        tokio::time::sleep(Duration::from_secs(9)).await;
+        assert!(hold_on(&rig), "inside the 10 s proof window");
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(!hold_on(&rig), "the unproven claim no longer holds");
+        let ignored = rig
+            .lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains("advertises own log 9 it cannot serve; ignored"))
+            .count();
+        assert_eq!(ignored, 1, "logged once");
+        // The same claim restated does not reopen the window.
+        peer.send_have(false, false, vec![have_log(own.node, 9, 51)])
+            .await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(!hold_on(&rig));
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    // The accepted residual: a peer that really holds one of this node's own
+    // logs can overstate its counter; the hold lasts until the 5 min cap.
+    #[tokio::test(start_paused = true)]
+    async fn held_own_log_claim_holds_until_the_cap() {
+        let (rig, journal) = rig_with_self_log();
+        let own = journal.self_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        peer.send_have(true, false, vec![have_log(own.node, own.incarnation, 500)])
+            .await;
+        until(|| hold_on(&rig)).await;
+        // The peer stays alive with pings; it never serves the entries.
+        for n in 0..5 {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            peer.send(PeerFrame::Ping { n }).await;
+        }
+        assert!(hold_on(&rig), "a held log's claim is not a proof window");
+        for n in 5..11 {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            peer.send(PeerFrame::Ping { n }).await;
+        }
+        assert!(!hold_on(&rig), "the 5 min cap ends it");
         rig.cancel.cancel();
         rig.join.await.unwrap();
     }
