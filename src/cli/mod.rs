@@ -80,6 +80,9 @@ pub enum RunError {
     /// Usage text for an invocation without a command: printed verbatim on
     /// stderr (no error prefix or code) with the invalid-arguments status.
     Usage(String),
+    /// A generic availability error before watch's own exit contract ran.
+    /// Keep its diagnostic, but reserve watch exit 3 for explicit stops.
+    RetryableWatchStartup(Box<RunError>),
 }
 impl From<ApiError> for RunError {
     fn from(value: ApiError) -> Self {
@@ -416,11 +419,12 @@ where
     };
     let _namespace = human::invocation_scope(parsed.actor);
     let retry = matches!(parsed.action, CliAction::Retry(_));
+    let watch = matches!(parsed.action, CliAction::Watch(_));
     run_parsed_in_pane(parsed, caller_pane, writer).map_err(|mut error| {
         if !retry && let RunError::Api(api) = &mut error {
             crate::protocol::output::namespace_error(api);
         }
-        error
+        if watch { error.for_watch() } else { error }
     })
 }
 

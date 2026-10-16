@@ -77,12 +77,23 @@ fn write_api(f: &mut fmt::Formatter<'_>, error: &ApiError) -> fmt::Result {
 }
 
 impl RunError {
+    /// The generic CLI uses 3 for unavailable; watch uses it for an explicit
+    /// permanent stop. Only dedicated watch paths may return Exit(3).
+    pub(super) fn for_watch(self) -> Self {
+        if !matches!(self, Self::Exit(_)) && self.exit_code() == EXIT_UNAVAILABLE {
+            Self::RetryableWatchStartup(Box::new(self))
+        } else {
+            self
+        }
+    }
+
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::Api(error) | Self::Output(OutputError::Api(error)) => api_exit_code(&error.code),
             Self::Io(error) | Self::Output(OutputError::Io(error)) => io_exit_code(error),
             Self::Exit(code) => *code,
             Self::Usage(_) => EXIT_USAGE,
+            Self::RetryableWatchStartup(_) => crate::protocol::watch::WATCH_EXIT_RETRY,
         }
     }
 }
@@ -94,6 +105,7 @@ impl fmt::Display for RunError {
             Self::Io(error) | Self::Output(OutputError::Io(error)) => write!(f, "{error}"),
             Self::Exit(code) => write!(f, "exit status {code}"),
             Self::Usage(text) => f.write_str(text.trim_end()),
+            Self::RetryableWatchStartup(error) => fmt::Display::fmt(error, f),
         }
     }
 }
@@ -104,6 +116,68 @@ impl std::error::Error for RunError {}
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn watch_startup_unavailable_errors_retry_without_losing_diagnostics() {
+        use ErrorCode::*;
+        for code in [
+            HostUnavailable,
+            DaemonVersionMismatch,
+            UnknownWireVersion,
+            InstanceMismatch,
+            DaemonBootChanged,
+            ServiceBusy,
+            StoreBusy,
+            DeadlineExceeded,
+            Cancelled,
+        ] {
+            for error in [
+                RunError::Api(ApiError::new(code.clone(), "restart window")),
+                RunError::Output(OutputError::Api(ApiError::new(
+                    code.clone(),
+                    "restart window",
+                ))),
+            ] {
+                assert_eq!(error.exit_code(), EXIT_UNAVAILABLE, "{code:?}");
+                let diagnostic = error.to_string();
+                let retry = error.for_watch();
+                assert_eq!(
+                    retry.exit_code(),
+                    crate::protocol::watch::WATCH_EXIT_RETRY,
+                    "{code:?}"
+                );
+                assert_eq!(retry.to_string(), diagnostic);
+            }
+        }
+        for kind in [
+            io::ErrorKind::ConnectionRefused,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::TimedOut,
+            io::ErrorKind::WouldBlock,
+        ] {
+            for error in [
+                RunError::Io(io::Error::from(kind)),
+                RunError::Output(OutputError::Io(io::Error::from(kind))),
+            ] {
+                let diagnostic = error.to_string();
+                let retry = error.for_watch();
+                assert_eq!(retry.exit_code(), crate::protocol::watch::WATCH_EXIT_RETRY);
+                assert_eq!(retry.to_string(), diagnostic);
+            }
+        }
+    }
+
+    #[test]
+    fn watch_explicit_stop_and_other_exit_codes_are_preserved() {
+        for code in 0..=5 {
+            assert!(
+                matches!(RunError::Exit(code).for_watch(), RunError::Exit(actual) if actual == code)
+            );
+        }
+        let error = RunError::Api(ApiError::invalid_request("bad args")).for_watch();
+        assert_eq!(error.exit_code(), EXIT_USAGE);
+        assert!(matches!(error, RunError::Api(_)));
+    }
 
     /// An unsafe state root surfacing as a local Io error (for example from
     /// the cooperative path's `prepare_instance_dir`) is invalid local

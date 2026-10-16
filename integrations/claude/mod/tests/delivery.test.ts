@@ -891,7 +891,7 @@ test('acks are capped at 100 ids per watch ack invocation', async () => {
   expect(Object.keys(r.core.snapshot().rec.unacked)).toEqual([])
 })
 
-test('child exit 0/1/2 restart with backoff 1, 2, 5, 10, 30, 30 s; exit 3 stops until reload', async () => {
+test('child exit 0/1/2 restart with capped backoff; a deliberate exit 3 stops until reload', async () => {
   const h = await harness({ state: IDLE }).boot()
   const ladder = [1, 2, 5, 10, 30, 30]
   const codes = [0, 1, 2, 0, 1, 2]
@@ -907,10 +907,57 @@ test('child exit 0/1/2 restart with backoff 1, 2, 5, 10, 30, 30 s; exit 3 stops 
     codes.map((c) => `exit:${c}`),
   )
   const n = h.spawns.length
+  h.line(status('refused', 'disabled', 3))
   h.exit(3)
   await h.advance(3_600_000)
   expect(h.spawns.length).toBe(n)
   expect(h.core.snapshot().stopped).toBe(true)
+})
+
+test('daemon restart followed by an unframed exit 3 reconnects and delivers again', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.line(status('closing', 'stream_ended', 0))
+  h.exit(0)
+  await h.advance(1000)
+  // A retry starts in the restart window; generic CLI startup fails before
+  // watch can print any status. Older binaries used 3 for unavailable too.
+  h.exit(3)
+  expect(h.core.snapshot().stopped).toBe(false)
+  await h.advance(2000)
+  expect(h.spawns.length).toBe(3)
+  await h.connect()
+  h.line(msg('after-restart', { wakes: true }))
+  await flush()
+  expect(h.appends.length).toBe(1)
+  expect(h.submits).toEqual([WAKE])
+})
+
+test('only a recognized terminal status from this child makes exit 3 permanent', async () => {
+  for (const state of ['refused', 'closing']) {
+    for (const reason of ['not_claude', 'disabled', 'replaced', 'no_pane', 'env_disabled', 'unsupported']) {
+      const h = await harness({ state: IDLE }).boot()
+      h.line(status(state, reason, 3))
+      h.exit(3)
+      await h.advance(60_000)
+      expect(h.spawns.length).toBe(1)
+      expect(h.core.snapshot().stopped).toBe(true)
+    }
+  }
+  for (const line of [status('refused', 'busy', 3), status('closing', 'stopping', 3), status('refused', 'disabled', 2)]) {
+    const h = await harness({ state: IDLE }).boot()
+    h.line(line)
+    h.exit(3)
+    await h.advance(1000)
+    expect(h.spawns.length).toBe(2)
+  }
+  const h = await harness({ state: IDLE }).boot()
+  const old = h.child()
+  h.exit(0)
+  await h.advance(1000)
+  old.cb.line(status('refused', 'disabled', 3))
+  h.exit(3)
+  await h.advance(2000)
+  expect(h.spawns.length).toBe(3)
 })
 
 test('the backoff resets after 60 s connected', async () => {

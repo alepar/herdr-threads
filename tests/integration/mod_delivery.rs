@@ -4979,6 +4979,47 @@ fn daemon_restart_ends_watch_and_restart_reregisters() {
     rig.wait_channel(Some("live"));
 }
 
+/// Real mod core and watch children against the elected isolated daemon.
+/// The first reconnect simulates the old binary's pre-status unavailable 3;
+/// a child exit alone must never disable delivery for the rest of the session.
+#[test]
+fn mod_core_reregisters_after_daemon_restart_and_unframed_exit_3() {
+    let node = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("node"))
+            .find(|path| path.is_file())
+    });
+    let Some(node) = node else {
+        eprintln!("skipped: node unavailable (real mod core restart test)");
+        return;
+    };
+    let mut rig = Rig::new();
+    let argv = vec![
+        node.to_str().unwrap().to_owned(),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/native/claude_mod/restart.mjs"
+        )
+        .into(),
+        BIN.into(),
+        rig.state.to_str().unwrap().into(),
+        rig.socket.to_str().unwrap().into(),
+        SESSION_B.into(),
+    ];
+    let mut driver = Watch::spawn(rig.raw_command(PANE_B, &argv));
+    driver.wait_connected();
+    rig.restart_daemon();
+    driver.wait_line("the ambiguous startup exit", STEP, |line| {
+        line["kind"] == "startup_failure"
+    });
+    driver.wait_connected();
+    rig.wait_channel(Some("live"));
+    let id = rig.send_ordinary("after mod reconnect");
+    driver.wait_line("mod append after reconnect", STEP, |line| {
+        line["kind"] == "append" && line["text"].as_str().is_some_and(|text| text.contains(&id))
+    });
+}
+
 /// Spec D7: while a channel is live, neither the `PreToolUse(Bash)` nor the
 /// `SessionStart` hook prints an attention digest; without a channel the same
 /// hooks do (the control).

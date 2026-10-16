@@ -35,10 +35,14 @@ The `watch` child polls `getppid()` each second and exits when its parent is gon
 |---|---|---|
 | 0 | stream ended (any Close except `disabled`/`replaced`) | restart with backoff |
 | 1 | other error (`daemon_unavailable`, `error`) | restart with backoff |
-| 2 | refused: `no_binding`, `session_mismatch`, `held`, `unresolved`, `cooldown`, `busy`, `stopping` | retry after 1, 2, 5, 10 s, then every 30 s |
-| 3 | permanent: `not_claude`, `disabled`, `replaced`, `no_pane`, `env_disabled`, `unsupported` | stop until reload |
+| 2 | startup availability error or refused: `no_binding`, `session_mismatch`, `held`, `unresolved`, `cooldown`, `busy`, `stopping` | retry after 1, 2, 5, 10 s, then every 30 s |
+| 3 | permanent: `not_claude`, `disabled`, `replaced`, `no_pane`, `env_disabled`, `unsupported` | stop until reload only after a matching terminal status; otherwise retry |
 
-One `status` JSON line is printed before a non-zero exit.
+Watch prints a `status` JSON line before its own non-zero exits. An availability failure in
+the CLI startup before watch runs retains its stderr diagnostic and exits 2, reserving 3 for
+deliberate stops. The mod requires both exit 3 and this child's `refused` or `closing` status
+with exit 3 and one of the permanent reasons above, so older binaries' unframed availability
+exit 3 also retries.
 
 ## stdout JSON lines
 
@@ -145,7 +149,8 @@ builds `io` from `$`. Rules (spec D5, D6):
   with the reason of the last `session.end`: `clear` starts an empty record, `resume` loads the
   new key. Attention items are delivered once per watch run (re-sent after each restart).
 - **Child.** Exit 0/1 restart after 1, 2, 5, 10, 30 s (reset after 60 s connected); exit 2
-  retries on the same ladder; exit 3 stops until reload. A ledger `restart` line records each.
+  retries on the same ladder; exit 3 with a matching permanent status stops until reload.
+  An unframed exit 3 retries indefinitely on the capped ladder. A ledger `restart` line records each.
   A `refused` `session_mismatch` or a `closing` `binding_changed` makes each tick re-read the
   session id while no child runs. A changed id restarts at once with the ladder reset; an
   unchanged one waits for the ladder.
