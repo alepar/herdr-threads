@@ -17,3 +17,7 @@ approvals:
 - coverage-round-2 · c12–c20 applied auto, c21 rejected auto, c22–c23 applied auto · divergence: findings 11 → 12 · novel 12/12 (100%) · widening: yes (cap holds at two rounds; design roast reviews the settled tree)
 - stepBackDesign-round-1: patch — 9 spec-text inconsistencies in 5 clusters (renderer contract, seat narrowing as its own value, leaf-2 interim checks, refuse-before-allocate gates, cap 32); all fixed inline in specs and beads, no code tasks
 - roast-design exit: converged at round 2 (Should-fix (6 confirmed) [converged], 0 Blocking, no escalations, no qualifiers); punch list of 6 sub-Blocking findings applied inline to specs and beads (no re-roast, per the converged exit)
+graph-pass: depth 5→5 · width 1.6→1.6 · applied 0 · parked 2
+parked:
+- graph-pass · graph-change · "narrow ht-u3ym.5 <- ht-u3ym.3.3 to ht-u3ym.5 <- ht-u3ym.3.2 (safe no; docs could overlap 3.3)"
+- graph-pass · graph-change · "fold move-only ht-u3ym.3.1 into ht-u3ym.3.2 as its first commit (depth 5→4; proposal, never safe)"

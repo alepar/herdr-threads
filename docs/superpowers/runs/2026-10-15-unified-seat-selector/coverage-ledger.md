@@ -22,3 +22,10 @@ c20 · r2 · UNOWNED-SEAM · nickname no-read wording vs host down · applied �
 c21 · r2 · UNOWNED-SEAM · TRUST-POLICY same-commit · rejected — the AGENTS.md same-commit rule applies to weakening an invariant or adding an accepted limit; spec D9 decides no invariant is weakened and the sentences are clarifying, so they stay with the docs bead
 c22 · r2 · UNOWNED-SEAM · agy plugin skill copy · applied — ht-u3ym.5 owns confirming and updating any derived copy
 c23 · r2 · GAP · tiers end to end / no caller · applied — ht-u3ym.4 tier rows
+g1 · graph · GRAPH-EDGE · ht-u3ym.3.3 <- ht-u3ym.3.2 · kept — consumes seat_resolution.rs stage and parser flip
+g2 · graph · GRAPH-EDGE · ht-u3ym.3.2 <- ht-u3ym.3.1 · kept — consumes extracted helpers
+g3 · graph · GRAPH-EDGE · ht-u3ym.3.2 <- ht-u3ym.2 · kept — consumes SeatSlot/SeatMapping
+g4 · graph · GRAPH-EDGE · ht-u3ym.3.2 <- ht-u3ym.1 · kept — consumes seat_selector API
+g5 · graph · GRAPH-EDGE · ht-u3ym.5 <- ht-u3ym.3.3 · parked — narrow to ht-u3ym.3.2 (safe no; lets docs overlap 3.3, not on the critical path)
+g6 · graph · GRAPH-EDGE · ht-u3ym.4 <- ht-u3ym.3.3 · kept — tests what 3.3 delivers
+g7 · graph · PROPOSAL · ht-u3ym.3.1, ht-u3ym.3.2 · parked — fold the move-only helper extraction into 3.2 (depth 5→4), never safe
