@@ -30,7 +30,7 @@ Recommended: reuse canonical automatic settlement with a source that honestly de
 
 The daemon revalidates the claim and exact IDs against its canonical transaction view, including A2, role, liveness, addressed receipt, and allowed delivery source. The operation is idempotent and settles only pending agent receipt obligations. Already settled or ineligible rows do not become new obligations. Non-ACK messages advance ordinary presentation bookkeeping only. Invitations still require explicit acceptance or rejection. There is no implicit agreement, adoption or task completion. Preserve `in_turn` and invitation bookkeeping where applicable; automatic receipt settlement must not turn cursor advancement into authority or alter invitation wake eligibility.
 
-Define an additive negotiated capability for standard-hook receipt completion if a new command or variant is needed. The implementation may extend the existing display settlement request with an explicit hook-context source or introduce a focused equivalent; it must not accept the hook claim through a source intended for transcript-confirmed hook-pull delivery. Payload digests must freeze the source and original full caller claim. Old daemons never receive unsupported claims. They may leave receipts pending for a later supported delivery or text inbox and issue conditional retrieval recovery, rather than falsely report automatic settlement. Do not add harness names to neutral core branches.
+Extend CompleteInboxDelivery with an optional default-empty exact receipt-candidate list, permitted only with via=hook_context and negotiated through an additive capability; omit the extension for older daemons. Its existing messages list remains lazy completion and the new list remains receipt completion. The request accepts a receipt-only hook completion without synthetic lazy IDs. It must not accept the hook claim through a source intended for transcript-confirmed hook-pull delivery. Payload digests must freeze the source and original full caller claim. Old daemons never receive unsupported claims. They may leave receipts pending for a later supported delivery or text inbox and issue conditional retrieval recovery, rather than falsely report automatic settlement. Do not add harness names to neutral core branches.
 
 ### 3. Failure, retries and oversized content
 
@@ -67,6 +67,27 @@ Run focused tests with `nice cargo test --locked --all-features <filter>`, `carg
 ## Scope and non-goals
 
 Scope includes native hook coverage state, automatic receipt settlement for complete native context, channel fallback consistency, documentation/trust policy and cross-node settlement integration verification. Preserve sender receipt selection, priorities/deadlines, invitation consent, native harness limits and read-only command semantics. No new polling, blanket historical read ACK, receipt creation for ordinary sends, receipt proof of cognition, wake-policy redesign, deployment or release.
+
+## Key abstractions
+
+**DeliveryCoverage** — new neutral enum, records whether a delivery opportunity leaves content requiring retrieval.
+- Owns: complete snapshot, incomplete delivery, unavailable/failed delivery, and delegation to a live channel as distinct outcomes. Empty successful reads are complete; continuation, truncation, withheld items and exhausted rendering budgets are incomplete.
+- Hides: whether the limitation came from page bounds, context encoding, channel batch selection or read failure.
+- Must not: infer coverage from an empty optional offer, ACK anything, or describe delegation as a completed read.
+- Relationships: native hook readers/renderers and channel batch selection produce coverage; shared ready-command/context assembly consumes it to emit one routed inbox continuation only when needed. Existing adapter selection remains in the harness registry.
+- Lifecycle: request-local value, owned by the delivery attempt and retained until final context assembly; no persistent or global state.
+- Errors: failed/unavailable reads preserve unknown coverage; delegated delivery suppresses duplicate native fallback without claiming success.
+
+**CompleteInboxDelivery / LazyCommit** — extended: use the existing post-output completion request for native-hook receipt candidates as well as lazy completion. Add an optional, default-empty exact receipt-candidate list, negotiated through a new additive capability. Receipt candidates are permitted only with via=hook_context; an absent source retains existing default-text-inbox semantics. The request digest includes candidate list, source and original full caller claim. LazyCommit submits candidates only after successful write, flush and adapter confirmation that context was carried; old daemons never receive the new field. Retain separate displayed-message and invitation lists for binding-local cursor and in-turn bookkeeping.
+
+**Canonical receipt settlement** — extended: the CompleteInboxDelivery handler revalidates native-hook candidates against the canonical transaction view and delegates eligible pending receipt transitions to the same settlement writer used by text inbox, mod and hook-pull delivery. It records cooperative_hook_context, preserving binding observation provenance. It must not route through transcript-confirmed DeliveryConfirm, mislabel the action as explicit Ack, duplicate receipt SQL, or advance siblings' cursors. The cross-node writer authors the existing receipt.settled fact; settlement-source serialization and remote materialization preserve this provenance. Complete lazy display and receipt settlement remain distinct operations even when carried in one request.
+
+Variation: delivery mechanisms and context encoders vary by harness through existing adapter registry and policies; coverage is a fixed result set represented by the neutral enum. Receipt evidence varies by supported source through existing canonical settlement entry points, with native hook completion distinguished from transcript-confirmed hook-pull delivery.
+
+Walk-through: a hook reads a page, selects a complete prefix and records coverage plus exact completion candidates; shared rendering adds an inbox continuation only for incomplete/unavailable coverage; successful output submits negotiated completion; the daemon settles eligible receipts once and advances only the displaying binding's stream. A future harness adapter reuses coverage and native-hook completion through its registration; it adds no receipt-writing path.
+
+Digest:
+- DeliveryCoverage: owns retrieval necessity for one bounded delivery opportunity; new outcomes belong in the neutral enum and shared fallback rendering; callers never infer completeness from missing rendered content.
 
 ## Post-Implementation Notes
 
