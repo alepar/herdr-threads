@@ -875,6 +875,40 @@ fn local_recovery_reference_is_not_an_ack_id() {
 }
 
 #[test]
+fn retry_carries_no_seat_selectors_or_narrowing() {
+    // Retry replays frozen seat IDs; the runtime stage must have nothing to resolve for it.
+    let parsed = parse_argv(["herdr-threads", "retry", "local:R_123"]).unwrap();
+    assert!(parsed.seat_selectors.is_empty());
+    assert!(parsed.seat_narrowing.is_none());
+}
+
+#[test]
+fn every_seat_taking_command_help_states_the_name_form() {
+    // The D7 line sits on each seat-valued argument's help; no help may still say exact-only.
+    let line = "an exact seat ID, or a name path SPACE/TAB/PANE";
+    for argv in [
+        &["inbox"][..],
+        &["pending-receipts"],
+        &["diagnostics"],
+        &["warnings"],
+        &["thread", "list"],
+        &["invite"],
+        &["send"],
+        &["handoff"],
+        &["seat", "inspect"],
+        &["seat", "retire"],
+        &["seat", "rebind"],
+    ] {
+        let mut full = vec!["herdr-threads"];
+        full.extend_from_slice(argv);
+        full.push("--help");
+        let help = parse_argv(full).unwrap_err().detail;
+        assert!(help.contains(line), "{argv:?} help lacks the name form:\n{help}");
+        assert!(!help.contains("Seat ID to invite"), "{argv:?}: {help}");
+    }
+}
+
+#[test]
 fn create_uses_supplied_topic_as_default_goal() {
     let parsed = parse_argv(["herdr-threads", "thread", "create", "--topic", "Orbit 雪"]).unwrap();
     let CliAction::Mutation(MutationSpec::Create { topic, goal, .. }) = parsed.action else {
