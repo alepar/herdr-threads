@@ -10,8 +10,9 @@ use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
 
 use super::payload::{ReferencedSeats, SeatKind, seat_key};
-use super::{ApplyContext, FactError, FactKind, with_input};
+use super::{ApplyContext, FactError, FactKind, WaitFor, with_input};
 use crate::protocol::ids::SeatId;
+use crate::protocol::results::ErrorCode;
 use crate::store::materialize::{AuthorRule, require_author};
 use crate::store::seats;
 use crate::sync::EntityKey;
@@ -56,6 +57,14 @@ impl FactKind for SeatCreated {
         with_input(cx, |m| {
             require_author(tx, m, Self::NAME, &AuthorRule::OwnTag(payload.seat.clone()))?;
             seats::materialize_seat_created(tx, m, &payload)
+        })
+        // The one wait: an own seat restore with no attached host.
+        .map_err(|e| match e {
+            FactError::Rejected(err) if err.code == ErrorCode::HostUnavailable => FactError::Wait {
+                on: WaitFor::Host,
+                error: err,
+            },
+            other => other,
         })
     }
 }

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::node::NodeIdentity;
 use crate::protocol::time::{Cancellation, UtcMillis};
 use crate::store::journal::{self as jr, Authored, OpenReport};
-use crate::sync::facts::FactRegistry;
+use crate::sync::facts::{FactRegistry, WaitFor};
 use crate::sync::journal_port::IngestOutcome;
 use crate::sync::{BatchLimits, Vector};
 
@@ -175,6 +175,19 @@ impl FactKind for RemoteKind {
                 ErrorCode::NotFound,
                 "x".repeat(2000),
             ))),
+            "wait_host" => {
+                let hosts: i64 = tx
+                    .query_row("SELECT count(*) FROM herdr_hosts", [], |r| r.get(0))
+                    .map_err(|e| FactError::from_api(store_error(e)))?;
+                if hosts == 0 {
+                    Err(FactError::Wait {
+                        on: WaitFor::Host,
+                        error: ApiError::new(ErrorCode::HostUnavailable, "needs a host"),
+                    })
+                } else {
+                    Ok(())
+                }
+            }
             "store" => Err(FactError::Store(ApiError::new(
                 ErrorCode::StoreBusy,
                 "busy",
@@ -696,6 +709,86 @@ fn parked_dep_reattempted_same_pass() {
         "late position after its creator"
     );
     assert_eq!(c.log_row(&d.log), (2, 2, None));
+}
+
+/// A node holding a remote `wait_host` entry and an entry that needs it.
+fn host_wait_fixture(seeds: (u8, u8)) -> (Node, Node) {
+    let mut a = Node::new(seeds.0, base());
+    a.author::<RemoteKind>(&remote("w", "wait_host")); // A@2 creates e:w
+    a.author::<PutKind>(&put_needing("y", "e:w")); // A@3
+    let mut c = Node::new(seeds.1, base());
+    c.ship(&a, a.log, 3);
+    (a, c)
+}
+
+fn attach_fake_host(c: &Node) {
+    c.conn
+        .execute(
+            "INSERT INTO herdr_hosts(node_id,endpoint,created_at,last_attached_at) \
+             SELECT id,'/h.sock',0,0 FROM local_node",
+            [],
+        )
+        .unwrap();
+}
+
+fn parked_on(c: &Node, log: &LogKey, counter: u64) -> Option<String> {
+    c.conn
+        .query_row(
+            "SELECT j.parked_on FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix \
+             WHERE l.node_uuid=?1 AND l.incarnation=?2 AND j.counter=?3",
+            params![log.node.to_string(), log.incarnation, counter as i64],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn host_wait_parks_then_applies_once_a_host_row_exists() {
+    let (a, mut c) = host_wait_fixture((60, 61));
+    let progress = c.pass();
+    assert_eq!(progress.parked, 2, "{progress:?}");
+    let (state, _, error) = c.row(&a.log, 2);
+    assert_eq!(state, "parked_dep");
+    assert!(error.unwrap().contains("needs a host"));
+    assert_eq!(parked_on(&c, &a.log, 2).as_deref(), Some("wait:host"));
+    assert_eq!(c.state(&a.log, 3), "parked_dep");
+    assert_eq!(parked_on(&c, &a.log, 3).as_deref(), Some("e:w"));
+
+    // No host: nothing changes and the pass does not loop.
+    let progress = c.pass();
+    assert!(!progress.has_more, "{progress:?}");
+    assert_eq!(progress.applied, 0, "{progress:?}");
+    assert_eq!(c.state(&a.log, 2), "parked_dep");
+
+    attach_fake_host(&c);
+    let progress = c.pass();
+    assert_eq!(progress.applied, 2, "{progress:?}");
+    assert_eq!(c.state(&a.log, 2), "applied");
+    assert_eq!(c.state(&a.log, 3), "applied");
+}
+
+#[test]
+fn startup_replay_takes_host_waiting_entries_when_a_host_exists() {
+    let (a, mut c) = host_wait_fixture((62, 63));
+    c.pass();
+    assert_eq!(c.state(&a.log, 2), "parked_dep");
+
+    // No host row: startup leaves the waiting entry alone.
+    let progress = c.replay(ReplayScope::Startup);
+    assert_eq!(progress.applied, 0, "{progress:?}");
+    assert_eq!(c.state(&a.log, 2), "parked_dep");
+
+    attach_fake_host(&c);
+    let progress = c.replay(ReplayScope::Startup);
+    assert_eq!(progress.applied, 2, "{progress:?}");
+    assert_eq!(c.state(&a.log, 2), "applied");
+    assert_eq!(c.state(&a.log, 3), "applied");
+}
+
+#[test]
+fn wait_parked_on_matches_the_ready_predicate() {
+    assert_eq!(WaitFor::Host.parked_on(), "wait:host");
+    assert!(PARKED_READY.contains(WaitFor::Host.parked_on()));
 }
 
 #[test]

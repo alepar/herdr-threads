@@ -235,8 +235,10 @@ pub fn ensure_published(
 /// - Row absent, origin is this node (an own old incarnation pulled back after
 ///   a wipe): insert a local `unresolved` seat on the `herdr_hosts` row with
 ///   the greatest `last_attached_at`; with no such row it is
-///   `InvalidRequest "own seat restore needs an attached host"`, which the
-///   handler maps to `Rejected` and `sync unapplied replay` re-attempts.
+///   `HostUnavailable "own seat restore needs an attached host"`, which the
+///   handler maps to `FactError::Wait { on: Host }`: the entry parks on
+///   `wait:host` and is re-attempted at startup and when the first host
+///   attaches.
 pub fn materialize_seat_created(
     tx: &Transaction<'_>,
     m: &MaterializeInput<'_>,
@@ -279,7 +281,7 @@ pub fn materialize_seat_created(
                 .map_err(store_error)?;
             let Some(host) = host else {
                 return Err(api_error(
-                    ErrorCode::InvalidRequest,
+                    ErrorCode::HostUnavailable,
                     "own seat restore needs an attached host",
                 ));
             };

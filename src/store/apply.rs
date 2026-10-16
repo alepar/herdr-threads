@@ -17,7 +17,8 @@
 //!   outcome (`applied`, `parked_unknown`, `parked_dep`, `failed`), the row's
 //!   `apply_*` columns, `sync_logs.applied_through`/`blocked_on`, the one local
 //!   position per applied entry, re-attempting `parked_dep` entries whose
-//!   creator applied (by the indexed `creates` query, no in-memory map) and
+//!   creator applied, or that wait for a host once one is attached (by the
+//!   indexed `creates` query, no in-memory map) and
 //!   the startup and operator replay passes.
 //! - Must not: verify or append envelopes (Journal), know what any kind means
 //!   (FactRegistry handlers do), record `failed` for a locally authored entry
@@ -653,6 +654,24 @@ fn apply_entry(
             rollback_savepoint(tx)?;
             Err(error)
         }
+        Err(FactError::Wait { on, error }) => {
+            rollback_savepoint(tx)?;
+            if authored {
+                return Err(error);
+            }
+            record_unapplied(
+                tx,
+                &row,
+                ingest_seq,
+                mode,
+                "parked_dep",
+                Some(on.parked_on()),
+                &error_text(&error),
+            )?;
+            Ok(Entered::plain(ApplyOutcome::ParkedDep {
+                on: on.parked_on().to_owned(),
+            }))
+        }
     }
 }
 
@@ -696,7 +715,8 @@ impl ApplyState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplayScope<'a> {
     /// Daemon start: `parked_unknown` entries the registry now knows, plus
-    /// `parked_dep` entries whose creator has applied.
+    /// `parked_dep` entries whose creator has applied or that wait for a host
+    /// while one is attached.
     Startup,
     /// `sync unapplied replay`: every entry in the named states.
     Unapplied { states: &'a [ApplyState] },
@@ -873,13 +893,20 @@ fn next_ready_head(tx: &Transaction<'_>, only_self_log: bool) -> Result<Option<i
     Ok(None)
 }
 
-/// The `parked_dep` entry with the smallest `ingest_seq` whose `parked_on`
-/// key now has an applied creator.
+/// A `parked_dep` row `p` may be re-attempted: its creator applied, or it
+/// waits for a host and `herdr_hosts` holds a row (the materializer's own
+/// condition, so a re-attempt never re-parks on the host).
+const PARKED_READY: &str = "(EXISTS(SELECT 1 FROM journal c WHERE c.creates=p.parked_on AND c.apply_state='applied') \
+     OR (p.parked_on='wait:host' AND EXISTS(SELECT 1 FROM herdr_hosts)))";
+
+/// The `parked_dep` entry with the smallest `ingest_seq` that may be
+/// re-attempted ([`PARKED_READY`]).
 fn next_reattemptable(tx: &Transaction<'_>) -> Result<Option<i64>, ApiError> {
     tx.query_row(
-        "SELECT p.ingest_seq FROM journal p WHERE p.apply_state='parked_dep' AND EXISTS \
-         (SELECT 1 FROM journal c WHERE c.creates=p.parked_on AND c.apply_state='applied') \
-         ORDER BY p.ingest_seq LIMIT 1",
+        &format!(
+            "SELECT p.ingest_seq FROM journal p WHERE p.apply_state='parked_dep' AND {PARKED_READY} \
+             ORDER BY p.ingest_seq LIMIT 1"
+        ),
         [],
         |r| r.get(0),
     )
@@ -911,8 +938,8 @@ fn reattempt_parked(
 /// outcome; a head that is not ready gets `blocked_on` set and is skipped.
 /// While the own-history hold is active ([`crate::store::connection::OwnHistoryHold`]) only the active
 /// self log's head is considered; other heads stay `pending`.
-/// Between heads, `parked_dep` entries whose creator has applied are
-/// re-attempted. Stops when nothing is ready, or at `limits` with
+/// Between heads, `parked_dep` entries whose creator has applied (or that
+/// wait for a host, once one is attached) are re-attempted. Stops when nothing is ready, or at `limits` with
 /// `has_more` set. A `Store` error aborts the pass: the caller rolls the whole
 /// quantum back. `applied` counts every entry that applied, `replayed` the
 /// re-attempts among all outcomes.
@@ -994,7 +1021,7 @@ fn replay_candidates(
     let mut statement = tx
         .prepare(&format!(
             "SELECT p.ingest_seq,p.apply_state,p.kind,p.kind_version,\
-             EXISTS(SELECT 1 FROM journal c WHERE c.creates=p.parked_on AND c.apply_state='applied') \
+             {PARKED_READY} \
              FROM journal p WHERE p.apply_state IN ({states}) ORDER BY p.ingest_seq"
         ))
         .map_err(store_error)?;
@@ -1011,13 +1038,13 @@ fn replay_candidates(
         .map_err(store_error)?;
     let mut out = Vec::new();
     for row in rows {
-        let (ingest_seq, state, kind, major, creator_applied) = row.map_err(store_error)?;
+        let (ingest_seq, state, kind, major, ready) = row.map_err(store_error)?;
         let selected = match scope {
             ReplayScope::Unapplied { .. } => true,
             ReplayScope::Startup if state == "parked_unknown" => u32::try_from(major)
                 .ok()
                 .is_some_and(|major| sync.registry.lookup(&kind, major).is_some()),
-            ReplayScope::Startup => creator_applied,
+            ReplayScope::Startup => ready,
         };
         if selected {
             out.push(ingest_seq);

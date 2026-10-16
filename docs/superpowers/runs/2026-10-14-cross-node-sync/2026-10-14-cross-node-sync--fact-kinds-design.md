@@ -228,7 +228,7 @@ Handlers build it from `ApplyContext`, using `decision_seq`, `origin.node`, `ori
   - row exists and is local: set `published = 1` (the authoring node);
   - row exists and is remote: no-op;
   - row absent and `home_node ≠ self`: insert `seats(id, instance_id = self node, state = 'remote', role = 'native', home_node = origin, is_local = 0, remote_kind = kind, published = 1, generation = 0, created_at = origin_ms, host_id/target_id/structural columns NULL)`;
-  - row absent and home is self (own-old-incarnation pull-back after a wipe): insert a local `unresolved` seat (`unresolved_reason = 'other'`, `published = 1`) on the `herdr_hosts` row with the greatest `last_attached_at`. With no `herdr_hosts` row it is `Rejected` "own seat restore needs an attached host", which `sync unapplied replay` re-attempts. The seat cannot resume until C1 or an operator rebinds it, as with any unresolved seat.
+  - row absent and home is self (own-old-incarnation pull-back after a wipe): insert a local `unresolved` seat (`unresolved_reason = 'other'`, `published = 1`) on the `herdr_hosts` row with the greatest `last_attached_at`. With no `herdr_hosts` row the handler returns `FactError::Wait { on: Host }`: the entry is `parked_dep` on `wait:host` (not `failed`), and it and the entries parked behind it apply at daemon start when a host row exists and when the daemon's first host attaches (the attach kicks the Apply lane); no operator replay is needed. The seat cannot resume until C1 or an operator rebinds it, as with any unresolved seat.
 - **`seat.retired` v1** payload `{seat, reason: "closed"|"operator", retired_at}`.
   - **Author side.** `control::begin_retirement_fence` authors it when the seat is published, after its existing local fence writes (bindings end, offers cleared, `wake_work` reset). The handler then performs only the replicated part, which for the local origin is a no-op on the already-retired row plus the derived audit.
   - **Remote side** (`materialize_seat_retired` when the seat is remote):
@@ -550,8 +550,9 @@ impl DeliveryTail {
 - a `thread.direct` ID mismatch;
 - an unknown recipient seat (the needs overflow case);
 - the local-branch audience mismatch, which only occurs at authoring and so aborts the command;
-- `own seat restore needs an attached host`;
 - constraint violations (`Conflict` from `store_error`).
+
+The one `Wait` case is the own seat restore with no attached host (`seat.created`, section 4).
 
 Store errors pass through as `FactError::Store` via `from_api`. No handler rejects because of the local membership, archive or eligibility view (root §6). The authority check above is not a view check: it compares the origin with replicated identity that every node holds identically, so it never rejects a fact the authorized author allowed.
 
