@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-15-unified-seat-selector
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: fix-loop
+phase: roast-code
 codeMechanism: Workflow
 
 idea: Unified seat selector across the herdr-threads CLI. Every place that accepts a seat (send --seat for 1:1 direct send, send --require-ack, invite --seat, inbox/pending-receipts/diagnostics/warnings/thread list --seat, handoff --existing --seat, seat inspect/retire/rebind SEAT and rebind --replace) accepts either an exact seat ID or a name selector. Parse order: exact existing seat ID wins; live pane ID; whole string as one label (labels may contain '/'); then split on '/' into segments assigned to space/tab/pane in order with skipping (1 segment: pane | sole-pane tab | sole-tab-sole-pane space; 2 segments: space/tab, tab/pane, space/pane; 3: space/tab/pane); also accept the read-output agent nickname form SPACE/PANE/SEAT_ID where the trailing seat ID wins and earlier segments must agree with its live location else Conflict. Pane names match pane labels and live agent names. Pool matches from all interpretations, dedupe by pane, then tier by proximity to caller: same tab, same space, anywhere; first nonempty tier wins; multiple distinct panes in that tier -> Conflict listing each candidate with matched interpretation, space/tab/pane path, pane ID, seat ID (bounded, escaped). Missing -> NotFound; host unavailable -> HostUnavailable, never pass names through. --space/--tab may narrow --seat. Read filters only look up existing canonical mappings, never allocate; invite/send/handoff keep ordinary guarded resolution that can allocate for an empty pane. Freeze resolved seat IDs before journal/intent; retries never re-resolve. When a name (not an exact ID) was resolved, print one compact line e.g. `resolved: project/tryout/alice w4:p7 seat=sAb12Cd34 (tier: space)` (~60 bytes); exact IDs print nothing extra. Keep --pane / --require-ack-pane working. Update docs/agent-usage.md (supersedes the no-implicit-cross-space/tab rule), skill text, TRUST-POLICY.md if invariants are touched. Finish: when the integration branch is ready, message the main tab's agent via herdr-threads to merge into main and cut a minor-version release; do not merge or release ourselves.
@@ -10,7 +10,7 @@ base: main
 spec: 2026-10-15-unified-seat-selector-design.md
 epic: ht-u3ym
 roastDesignRound: 2
-roastCodeRound: 1
+roastCodeRound: 2
 roast-code: 2026-10-16-unified-seat-selector-roast-pr-1.md
 roast-design: 2026-10-15-unified-seat-selector-roast-design-1.md, 2026-10-15-unified-seat-selector-roast-design-2.md
 approvals:
@@ -24,12 +24,12 @@ parked:
 - graph-pass · graph-change · "narrow ht-u3ym.5 <- ht-u3ym.3.3 to ht-u3ym.5 <- ht-u3ym.3.2 (safe no; docs could overlap 3.3)"
 - graph-pass · graph-change · "fold move-only ht-u3ym.3.1 into ht-u3ym.3.2 as its first commit (depth 5→4; proposal, never safe)"
 codeBuckets:
-  completed: ht-u3ym.3.1, ht-u3ym.2, ht-u3ym.1, ht-u3ym.3.2, ht-u3ym.3.3, ht-u3ym.5, ht-u3ym.4, ht-u3ym.6
+  completed: ht-u3ym.3.1, ht-u3ym.2, ht-u3ym.1, ht-u3ym.3.2, ht-u3ym.3.3, ht-u3ym.5, ht-u3ym.4, ht-u3ym.6, ht-u3ym.11
   escalated: 
   pendingRetry: 
   parked: 
   stalled: false
-  review: not ready (gates unrun under deferSweep: full suite, clippy -D warnings, check-default-features, fmt; TRUST-POLICY C1 direct-send allocation wording)
+  review: not ready (M1: seat stage pass 1 runs before the agent-without-session refusal; full suite unrun under deferSweep) — final-review-reentry-1.md
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: round 1: graph-bound — 8 open beads, depth 5, achievable width 2 vs cap 8; edge audit armed now (no changes)
   worktreesKept: 
