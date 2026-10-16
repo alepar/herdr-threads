@@ -1,0 +1,151 @@
+{
+  "mechanism": "manual fan-out; no Workflow tool",
+  "modelSubstitution": "GPT inherited model for all roles; requested opus/sonnet/fable names unavailable",
+  "artifact": "aba89049b367c22ddb3330b16ecfa14415b96b7a",
+  "base": "3ff902c77c8df3dbcadf02119bacd9e344f7e59b",
+  "isolation": "Scouts fresh agents inherited orchestration context without other scout findings at dispatch. Initial judge dispatches inherited dedupe grading context; all seven were interrupted and excluded. Counted judge votes are fresh fork_turns=none agents reading blind prompts only. Reporter fork_turns=none.",
+  "computation": "Canonical assembled super-roast engine replayed with collected results; computes mergeGroup/caps/routes/coverage/seatAgreement/enforcement. Evidence in stage results is a normalized summary of each seat response, not a transcript.",
+  "tests": "No tests run in roast. Cross-node combined-candidate final proof caller owned and not established here.",
+  "friction": [
+    "Workflow absent: manual fan-out",
+    "Conditional observability/hygiene-docs queued until slots available; both returned",
+    "Inherited judge-context contamination caught before adjudication; all seven initial seats excluded and re-dispatched without history"
+  ],
+  "results": {
+    "triage": {
+      "lanes": [
+        "deploy-safety",
+        "api-contract",
+        "observability",
+        "testing",
+        "hygiene-docs"
+      ],
+      "domains": []
+    },
+    "scout:security": {
+      "findings": []
+    },
+    "scout:hot-path-perf": {
+      "findings": []
+    },
+    "scout:simplicity-design": {
+      "findings": []
+    },
+    "scout:correctness": {
+      "findings": []
+    },
+    "scout:premortem": {
+      "findings": []
+    },
+    "scout:concurrency-async": {
+      "findings": []
+    },
+    "scout:deploy-safety": {
+      "findings": []
+    },
+    "scout:observability": {
+      "findings": []
+    },
+    "scout:api-contract": {
+      "findings": []
+    },
+    "scout:testing": {
+      "findings": [
+        {
+          "claim": "The new native-hook receipt settlement path has no regression test proving that settling one binding's seat-level receipt preserves a sibling binding's unread delivery and wake eligibility.",
+          "location": "src/cli/hook_inbox.rs:365",
+          "category": "testing",
+          "external": false,
+          "evidence": "LazyCommit::submit now settles receipt_candidates through CompleteInboxDelivery before advancing the displaying binding's cursors. This changes seat-level receipt attention while presentation remains binding-specific. Design section 5 explicitly requires a sibling to retain its own unread stream and independent delivery-row wake after another binding settles the receipt. The new native process regressions at tests/hook_entrypoint.rs:2644 and :7617 create only one recipient binding. Existing tests/hook_entrypoint.rs:2279 exercises two bindings with a default lazy pair opener and text accept, without any requested receipt; tests/store/receipts.rs:5324 tests two AckDisplayed calls and first-settler attribution but does not invoke native hooks or assert sibling delivery/wake. tests/integration/lazy_attention.rs:1222 covers sibling invitation service, without native receipt completion. These tests would still pass if native automatic settlement suppressed a sibling's independent ordinary-message delivery or wake.",
+          "kind": "ISSUE"
+        }
+      ]
+    },
+    "scout:hygiene-docs": {
+      "findings": [
+        {
+          "claim": "The normative trust policy still describes delivery auto-ACK as a mod-only exception and documents the removed body-plus-ack truncation recipe.",
+          "location": "TRUST-POLICY.md:1702",
+          "category": "hygiene-docs",
+          "external": false,
+          "evidence": "The decision paragraph says delivery auto-ACK is forbidden except for the bundled Claude mod, then says its truncation marker names body followed by ack (lines 1702\u20131706). This PR authorizes standard native-hook receipt completion and changes src/protocol/watch.rs::truncation_marker_for to emit only an inbox continuation. The design section 4 explicitly requires updating the old mod-only exception wording, but this paragraph retains both superseded statements without an amendment or historical qualification.",
+          "kind": "ISSUE"
+        },
+        {
+          "claim": "The public completion-command documentation still promises that CompleteInboxDelivery never ACKs, although its new receipt_candidates field now authorizes receipt settlement.",
+          "location": "src/protocol/commands.rs:114; src/protocol/commands.rs:1588",
+          "category": "hygiene-docs",
+          "external": false,
+          "evidence": "Both Command::CompleteInboxDelivery and SemanticMutation::CompleteInboxDelivery retain the documentation 'Presentation bookkeeping only; never an ACK or adoption.' The same file now introduces receipt_candidates requiring hook.context_receipts_v1 and via=hook_context (lines 948\u2013951), and the changed store handler calls complete_hook_context to settle those receipts. These are public protocol/API comments about the operation's authority boundary, and they now contradict its implemented side effects.",
+          "kind": "ISSUE"
+        }
+      ]
+    },
+    "dedupe": {
+      "groups": [
+        {
+          "ids": [
+            0
+          ],
+          "suggestedSeverity": "Should-fix",
+          "rank": 1
+        },
+        {
+          "ids": [
+            1
+          ],
+          "suggestedSeverity": "Should-fix",
+          "rank": 2
+        },
+        {
+          "ids": [
+            2
+          ],
+          "suggestedSeverity": "Nit",
+          "rank": 3
+        }
+      ]
+    },
+    "judge:reproduce#0": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "The change explicitly requires this verification: design \u00a75 says a sibling must retain its unread stream after seat-level receipt settlement and says to verify that settlement does not suppress its independent delivery-row wake; \u00a78 includes same-seat siblings in acceptance coverage. The new path at src/cli/hook_inbox.rs:365 submits receipt_candidates through CompleteInboxDelivery before advancing the displaying binding. Native receipt regressions at tests/hook_entrypoint.rs:2644 and :7617 each establish only one recipient binding. Two-binding hook tests at :2279 and :2332 use default sends without requested receipts. tests/store/receipts.rs:5324 checks two AckDisplayed calls and first-settler attribution, without sibling delivery or wake assertions. Existing settled-but-unread tests (tests/store/attention.rs:4131, tests/store/invitation_content.rs:800), in-turn service (tests/store/wake.rs:2624), invitation service (tests/integration/lazy_attention.rs:1222) do not couple actual native completion with sibling delivery/wake. Missing explicitly required regression coverage, not proven runtime failure. Base has no receipt-candidate completion path."
+    },
+    "judge:refute#0": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "(a) Searched native-hook, completion, sibling, settled-unread and wake tests. No test exercises nonempty CompleteInboxDelivery.receipt_candidates with sibling bindings then checks sibling unread delivery and independent delivery-row wake. New store tests at tests/store/lazy_inbox.rs:244\u2013525 and native process regressions at tests/hook_entrypoint.rs:2644,:7617 enroll one recipient binding. tests/store/receipts.rs:5324 verifies AckDisplayed first-settler attribution without delivery/wake. tests/service/lazy_hook_pull.rs:509 and tests/service/delivery_pull.rs:557 cover different paths; tests/integration/lazy_attention.rs:1149,:1222 cover binding wake without native receipt settlement. (b) No accepted tradeoff: design \u00a75,\u00a78 require siblings. (c) Inside stated scope. (d) Material new composition of seat-level settlement before binding cursor. Missing coverage, not observed runtime failure. (e) Base only advances cursors/completes lazy IDs. (f) Behavioral coverage, not linter territory."
+    },
+    "judge:ground#0": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Design section5 explicitly requires verifying settlement clears receipt attention without suppressing sibling independent delivery-row wake; section8 requires same-seat sibling coverage. src/cli/hook_inbox.rs:365 now submits receipt completion before displaying binding cursor advance, unlike base. Searches found no native completion+sibling unread/wake test. New hook process tests :2644,:7617 have one binding; tests/store/lazy_inbox.rs:327 canonical native completion likewise one binding. Existing tests cover distinct mechanisms: hook_entrypoint.rs:2279 default send without receipt; store/receipts.rs:5324 AckDisplayed first-settler; service/lazy_hook_pull.rs:509 transcript-confirmed hook pull; store/attention.rs:4131 seeded settled-state recovery; integration/lazy_attention.rs:1222 invitation wake. New-path acceptance-test gap, not proof of runtime violation."
+    },
+    "judge:reproduce#1": {
+      "verdict": "CONFIRM",
+      "severity": "Nit",
+      "evidence": "Design section4 line45 explicitly requires updating old mod-only exception wording. TRUST-POLICY.md:1702\u20131706 retains it and body-followed-by-ack truncation recipe. src/protocol/watch.rs:108\u2013124 now emits only routed inbox continuation. Policy :206,:538,:930\u2013939 authorizes native-hook completion. Leaves contradictory normative guidance and misses explicit docs requirement. Paragraph existed on base but new behavior makes it obsolete. Dated Decision record plus correct operational sections limits impact to documentation Nit; no runtime failure."
+    },
+    "judge:refute#1": {
+      "verdict": "CONFIRM",
+      "severity": "Nit",
+      "evidence": "(a) Updated policy :206,:538,:927\u2013940,:1549\u20131557 does not amend/qualify conflicting :1702\u20131707 mod-only and body-then-ack paragraph. Actual marker src/protocol/watch.rs:108\u2013126 is inbox only. (b) No accepted tradeoff: design4 line45 requires old wording update. (c) Policy in scope. (d) Low impact: main policy correct, contradiction violates explicit docs requirement. (e) Paragraph on base :1689\u20131696 but new native authority and marker materially worsen accuracy. (f) Semantic drift not linter territory."
+    },
+    "judge:ground#1": {
+      "verdict": "CONFIRM",
+      "severity": "Nit",
+      "evidence": "TRUST-POLICY.md:1702\u20131706 retains mod-only auto-ACK/body-followed-by-ack wording unchanged from base. New policy :538,:927\u2013938 authorizes native-hook completion implemented in hook_inbox.rs:365\u2013373 and receipts::complete_hook_context; watch::truncation_marker_for now inbox-only. Design4 line45 requires wording update. No amendment identifies paragraph as superseded. Dated Decision record and correctly updated operative sections limit to low-impact documentation inconsistency. Inaccuracy introduced by behavior, not preexisting on base."
+    },
+    "spot#2": {
+      "verdict": "CONFIRM",
+      "severity": "Nit",
+      "evidence": "(a) Field docs commands.rs:948\u2013951 and TRUST policy explain receipt completion but contradictory variant comments :114,:1588 still say 'Presentation bookkeeping only; never an ACK or adoption.' (b) Not accepted tradeoff: design2 extends operation to receipt settlement. (c) Documentation consistency in scope (\u00a77, Scope). (d) Public operation side effects incorrectly described; accurate field docs/canonical validation limit to Nit. store/control.rs:2807 invokes complete_hook_context which calls settle_pending receipts.rs:119. (e) Base complete_inbox_delivery had only lazy presentation, so newly false. (f) Semantic docs contradiction, not formatter/linter."
+    },
+    "reporter": {
+      "verdict": "Should-fix (2 confirmed)",
+      "reportMarkdown": "---\nsuper-roast verdict: Should-fix (2 confirmed)\nmode: pr        iteration: 1 of 3\nprofile (assumed): Production local cooperative messaging plugin. False receipt completion can hide a pending obligation and missed delivery can stall collaboration. Same-user local inputs are cooperative; assess canonical ownership and output completion rather than adding adversarial caller verification.\ninputs: super-auto/inbox-injection-auto-ack@aba89049b367c22ddb3330b16ecfa14415b96b7a vs main@3ff902c77c8df3dbcadf02119bacd9e344f7e59b\ncoverage: scouts 11/11 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, deploy-safety, api-contract, observability, testing, hygiene-docs) \u00b7 raw 3 \u2192 deduped 3 \u2192 panel 2 \u00b7 spot 1 \u00b7 promoted 0 \u00b7 judge completion 100% \u00b7 remainder-capped: 0\nindependence: same-family (GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nseat-agreement: panels 2 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=2) \u00b7 reproduce 2/0/0 \u00b7 refute 2/0/0 \u00b7 ground 2/0/0\n\nAll 11 scouts returned. Both full panels unanimously confirmed their findings; the spot check confirmed one Nit with lower verification strength. Ordinary manual fan-out used GPT-family seats in place of the skill's fable reporter. This local review does not establish final combined cross-node readiness; the caller has deferred that proof.\n\n## Confirmed findings\n\n- [Should-fix] src/cli/hook_inbox.rs:365 \u2014 The native-hook receipt settlement path lacks the required regression proving that settlement by one binding preserves a sibling binding's unread delivery and independent wake eligibility.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: Design \u00a75 explicitly requires sibling unread delivery and independent delivery-row wake after seat-level receipt settlement; \u00a78 includes same-seat siblings in acceptance coverage.\n  evidence: LazyCommit::submit now sends receipt_candidates through CompleteInboxDelivery before advancing the displaying binding's cursors. Native regressions at tests/hook_entrypoint.rs:2644 and :7617 use one recipient binding.\n  evidence: The refute seat found no test combining nonempty native receipt completion with sibling unread delivery and wake assertions. tests/store/receipts.rs:5324 covers AckDisplayed first-settler attribution; tests/integration/lazy_attention.rs:1222 covers invitation service. Neither exercises this composition.\n  evidence: This is missing required regression coverage, not a proven runtime defect. The new seat-level settlement makes the gap material in this messaging plugin.\n  fix-shape hint: Add a native-hook regression with same-seat sibling bindings that settles the receipt through one binding and verifies the sibling's unread delivery and independent delivery-row wake.\n\n- [Nit] TRUST-POLICY.md:1702 \u2014 The normative policy retains the superseded mod-only auto-ACK exception and body-plus-ack truncation recipe.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: TRUST-POLICY.md:1702\u20131706 still restricts delivery auto-ACK to the bundled Claude mod and describes body followed by ack. Updated operative sections at :538 and :927\u2013940 authorize native-hook completion; src/protocol/watch.rs:108\u2013126 now emits only an inbox continuation.\n  evidence: Design \u00a74 explicitly requires updating the old mod-only wording. The paragraph was accurate on base; the new behavior makes it contradictory. Its dated decision-record context and the corrected operative sections limit the impact to Nit.\n  fix-shape hint: Amend or explicitly mark the old decision paragraph as superseded, including its truncation instructions.\n\n## Not verified (beyond panel cap)\n\n- none\n\n## Not verified (dedupe failed or judge lost)\n\n- none\n\n## Beyond remainder cap (count only)\n\n- none\n\n## Rejected (with reason)\n\n- none\n\n## Unverified nits (spot-checked)\n\n- [Nit] src/protocol/commands.rs:114; src/protocol/commands.rs:1588 \u2014 CompleteInboxDelivery documentation still promises presentation bookkeeping only and never an ACK, although receipt_candidates now authorizes receipt settlement.\n  evidence: The refute spot check confirmed that both variant comments retain the old authority description. Field documentation at :948\u2013951 and the trust policy describe the new authority; src/store/control.rs:2807 calls complete_hook_context, which settles pending receipts in src/store/receipts.rs:119.\n  verification: One refute-seat CONFIRM; no full panel. Correct field documentation and canonical validation limit this to Nit.\n  fix-shape hint: Update both operation comments to distinguish presentation bookkeeping from authorized hook-context receipt completion.\n\n## Escalations (need human)\n\n- none\n---",
+      "confirmedCount": 2,
+      "escalations": []
+    }
+  }
+}

@@ -19,3 +19,5 @@
 - [2026-10-16] phase code: .1 early checkpoint initializer adaptation mistakenly added receipt_candidates to SemanticMutation variants in three files; .2 found compiler E0559. Upstream explicit followup commits fixed sites; final canonical/source tests and clippy passed before review.
 
 - [2026-10-16] phase code: ordinary stacked merge paused after first --onto rebase for seam review. On seam-cleared redispatch refreshed base to returned mergeBasefc791495; original stackbase214d160f is no longer ancestor and repeating --onto original base risks replaying integration commits. Explicit guard added to dispatch, no code loss/replay occurred.
+
+- [2026-10-16] Code roast used manual fan-out, inherited GPT family substitutions. Initial judges inherited orchestration context; excluded and replaced with fork_turns=none blind judges before verdicts. All 11 scouts and seven valid judge seats completed.
