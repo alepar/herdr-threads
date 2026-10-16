@@ -81,6 +81,9 @@ const HANG_FOR: Duration = Duration::from_millis(3000);
 const DROP: u8 = 3;
 /// Withhold the capability response beyond the production tool deadline.
 const WITHHOLD_CAPABILITIES: u8 = 4;
+const FAIL_COMPLETION: u8 = 5;
+const LOSE_COMPLETION_RESPONSE: u8 = 6;
+const FAIL_CURSOR: u8 = 7;
 
 /// Where a scripted arrival lands relative to the hook's calls.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -317,6 +320,40 @@ struct Counting {
     phases: Arc<HookPhases>,
 }
 impl Counting {
+    fn before_completion(
+        &self,
+        command: &Command,
+    ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        if (matches!(command, Command::CompleteInboxDelivery(_))
+            && self.mode.load(Ordering::SeqCst) == FAIL_COMPLETION)
+            || (matches!(command, Command::AdvanceCursors(_))
+                && self.mode.load(Ordering::SeqCst) == FAIL_CURSOR)
+        {
+            return Err(herdr_threads::protocol::results::ApiError::new(
+                herdr_threads::protocol::results::ErrorCode::DeadlineExceeded,
+                "completion refused before commit",
+            ));
+        }
+        Ok(())
+    }
+
+    fn completion_result(
+        &self,
+        command: &Command,
+        result: Result<CommandResult, herdr_threads::protocol::results::ApiError>,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        if result.is_ok()
+            && matches!(command, Command::CompleteInboxDelivery(_))
+            && self.mode.load(Ordering::SeqCst) == LOSE_COMPLETION_RESPONSE
+        {
+            return Err(herdr_threads::protocol::results::ApiError::new(
+                herdr_threads::protocol::results::ErrorCode::DeadlineExceeded,
+                "response lost after canonical commit",
+            ));
+        }
+        result
+    }
+
     fn after(&self, command: &Command) {
         use herdr_threads::protocol::commands::CheckInMode;
         let stage = match command {
@@ -361,6 +398,7 @@ impl Counting {
         }
     }
     fn observe(&self, command: &Command) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        self.before_completion(command)?;
         self.withhold_capabilities(command);
         if matches!(command, Command::HookParseFailure(_)) {
             self.parse_failures.fetch_add(1, Ordering::SeqCst);
@@ -412,8 +450,11 @@ impl herdr_threads::ports::LocalService for Counting {
         if matches!(command, Command::HookParseFailure(_)) {
             self.parse_failures.fetch_add(1, Ordering::SeqCst);
         }
-        self.inner
-            .service_control(command, peer, instance, boot, gate, budget)
+        self.before_completion(&command)?;
+        let result =
+            self.inner
+                .service_control(command.clone(), peer, instance, boot, gate, budget);
+        self.completion_result(&command, result)
     }
     fn audit_service_disconnect(
         &self,
@@ -450,7 +491,7 @@ impl herdr_threads::ports::LocalService for Counting {
         if result.is_ok() {
             self.after(&command);
         }
-        result
+        self.completion_result(&command, result)
     }
     fn handle_with_output(
         &self,
@@ -467,7 +508,7 @@ impl herdr_threads::ports::LocalService for Counting {
         if result.is_ok() {
             self.after(&command);
         }
-        result
+        self.completion_result(&command, result)
     }
 }
 
@@ -2453,8 +2494,8 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
 // message, with nothing else pending, moves the digest so the next Bash
 // PreToolUse presents it, and the hook injects the actual inbox rows (not just
 // an inbox pointer). Whole lazy bodies shown are completed after delivery;
-// ACK-required messages are shown with an exact ack command, never ACKed by
-// the hook. Subagent calls never see or complete anything; a body too large
+// ACK-required messages settle automatically after complete output flush.
+// Subagent calls never see or complete anything; a body too large
 // for the bound is never shown or completed and the next call stays quiet.
 // Kills: a lazy-only arrival that leaves the hook quiet (digest unchanged), a
 // pointer-only hook, completion before or without whole display, a hook ACK
@@ -2540,7 +2581,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert_eq!(displayed(), 1);
 
     // 3. Ordinary and lazy together: both rows injected, the ACK-required
-    // one with an exact ack command and left unACKed; the lazy one completed.
+    // one automatically ACKed after delivery; the lazy one completed.
     let ordinary = data(fx.cooperative(
         "peer",
         "w9:p2",
@@ -2557,14 +2598,13 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert!(context.contains("needs a receipt"), "{context}");
     assert!(context.contains("lazy for the top level only"), "{context}");
     assert!(context.contains(&second), "{context}");
-    assert!(context.contains(&format!(" ack {ordinary}")), "{context}");
+    assert!(!context.contains(&format!(" ack {ordinary}")), "{context}");
     assert_eq!(displayed(), 2);
     assert_eq!(
         fx.count("SELECT count(*) FROM receipt_state WHERE state='acked'"),
-        0,
-        "the hook never ACKs"
+        1,
+        "the complete hook display automatically ACKs"
     );
-    fx.cooperative("seat", "w9:p1", &["ack", &ordinary]);
     quiet("after mixed");
 
     // 4. A body larger than the bound moves the digest, but is never shown
@@ -2579,7 +2619,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert!(!context.contains(&big[..100]), "{context}");
     assert!(!context.contains(INBOX_HEADER), "{context}");
     assert!(
-        context.contains("do not fit this hook's context"),
+        context.contains("More inbox content may remain"),
         "{context}"
     );
     assert!(context.len() <= 4096, "{}", context.len());
@@ -2594,6 +2634,68 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
             )),
             0,
             "{table}"
+        );
+    }
+}
+
+// Actual eligible hooks retry after completion uncertainty without an arrival,
+// explicit inbox/ACK, timer or local retry journal. Covers receipt-only requests.
+#[test]
+fn native_hook_completion_failures_retry_on_the_next_unchanged_attention_hook() {
+    for failure in [FAIL_COMPLETION, FAIL_CURSOR, LOSE_COMPLETION_RESPONSE] {
+        let fx = Fixture::start();
+        fx.register("w9:p1", "sess-1");
+        fx.register("w9:p2", "peer-sess");
+        let thread = data(fx.cooperative(
+            "peer",
+            "w9:p2",
+            &["thread", "create", "--topic", "retry-hook"],
+        ));
+        fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+        fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+        // Drain enrollment/invitation attention before the one receipt arrival.
+        fx.hook("w9:p1", &tool("sess-1"));
+        let message = data(fx.cooperative(
+            "peer",
+            "w9:p2",
+            &[
+                "send",
+                &thread,
+                "--body",
+                "receipt-only recovery",
+                "--require-ack",
+                "seat",
+            ],
+        ));
+        fx.mode.store(failure, Ordering::SeqCst);
+        let first = fx.hook("w9:p1", &tool("sess-1"));
+        assert!(context_of(&first).contains("receipt-only recovery"));
+        assert!(
+            first.stderr.contains("delivery completion uncertain"),
+            "{}",
+            first.stderr
+        );
+        let acked = || {
+            fx.count(&format!(
+                "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+            ))
+        };
+        assert_eq!(acked(), i64::from(failure != FAIL_COMPLETION));
+        fx.mode.store(PASS, Ordering::SeqCst);
+        // No new message or manual settlement between these two hook invocations.
+        let next = fx.hook("w9:p1", &tool("sess-1"));
+        assert!(
+            context_of(&next).contains("receipt-only recovery"),
+            "{}",
+            next.stderr
+        );
+        assert!(next.stderr.is_empty(), "{}", next.stderr);
+        assert_eq!(acked(), 1);
+        let quiet = fx.hook("w9:p1", &tool("sess-1"));
+        assert!(
+            quiet.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&quiet.stdout)
         );
     }
 }

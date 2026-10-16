@@ -717,10 +717,10 @@ fn instruction_is_short_and_the_child_rule_forbids_every_write() {
         assert!(!top.contains(shape), "{shape} duplicated in {top}");
     }
     assert!(top.len() <= 1024, "{}", top.len());
-    assert!(top.contains("Use inbox; follow its next: commands"));
-    assert!(top.contains("text inbox ACKs only complete pending agent messages"));
-    assert!(top.contains("it fully displays, after output is written and flushed"));
-    assert!(top.contains("Do not reread or re-ACK these messages"));
+    assert!(top.contains("Complete hook/channel deliveries and default text inbox displays"));
+    assert!(top.contains("ACK eligible receipts automatically after output is written and flushed"));
+    assert!(top.contains("Call inbox only for a printed continuation or unavailable delivery"));
+    assert!(top.contains("Do not reread or re-ACK them"));
     assert!(top.contains("JSON/--machine inbox, read and pending-receipts are read-only"));
     assert!(top.contains("explicitly ACK exact IDs read elsewhere"));
     assert!(top.contains("Do not poll or run follow to wait"));
@@ -1688,6 +1688,7 @@ fn final_fallback_never_exceeds_max_context() {
     let (notice_line, history_lines, digest_lines) =
         split_summary(Some("attention digest: x\noffered notices: 1"));
     let parts = ContextParts {
+        continuation_managed: false,
         instruction: &instruction,
         actions: Some(&actions),
         overview: Some(&overview),
@@ -3335,7 +3336,7 @@ mod continuity_gate {
                 .expect("reattached");
             assert!(
                 String::from_utf8_lossy(&done.text)
-                    .starts_with("Use inbox; follow its next: commands"),
+                    .starts_with("Complete hook/channel deliveries and default text inbox displays"),
                 "a resumed session gets the standing instruction"
             );
             let requests = daemon.continuity_requests();
@@ -5578,6 +5579,7 @@ mod mod_channel_live {
         assert_eq!(history_lines.len(), 2);
         let fallback = vec!["herdr-threads".to_owned(), "inbox".to_owned()];
         let parts = ContextParts {
+            continuation_managed: false,
             instruction: &instruction,
             actions: None,
             overview: None,
@@ -8801,7 +8803,10 @@ mod registered_resume {
         );
         assert!(context.contains("hermes lazy body"), "{context}");
         assert!(!context.contains("a partial"), "{context}");
-        assert!(context.contains("More inbox content remains"), "{context}");
+        assert!(
+            context.contains("More inbox content may remain"),
+            "{context}"
+        );
         assert_eq!(
             outcome.lazy.as_ref().map(|lazy| lazy.messages.clone()),
             Some(vec![crate::protocol::ids::MessageId::new("m-whole")])
