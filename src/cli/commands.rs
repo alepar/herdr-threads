@@ -103,6 +103,18 @@ impl SeatSlot {
         }
     }
 
+    /// How a name in this slot ranks its candidates. Operator seat repair (`seat retire`,
+    /// `seat rebind SEAT`, `--replace`) is irreversible, so it never lets a nearer pane win: a
+    /// name matching more than one seat anywhere is refused with the candidates.
+    pub fn tiering(self) -> super::seat_selector::Tiering {
+        match self {
+            Self::RetireSeat | Self::RebindSeat | Self::RebindReplace => {
+                super::seat_selector::Tiering::Global
+            }
+            _ => super::seat_selector::Tiering::Proximity,
+        }
+    }
+
     /// Write a frozen seat into the action. Errors when the action has no such slot (or a
     /// `RequireAck` index is out of range): a bug-class error.
     pub fn set(self, action: &mut CliAction, seat: SeatId) -> Result<(), ApiError> {

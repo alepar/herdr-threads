@@ -98,8 +98,10 @@ ACK-recipient names allocate where their pane forms (`--pane`, `--require-ack-pa
 or pane ID (`send --seat`) is a new guarded allocation surface (spec D4), with no prior pane form. Every such
 allocation is an ordinary guarded `ResolveSeat` that runs only after every seat argument has resolved and after the
 caller derivation and the stage's capability gates; refusals that run later (the selection and mapping checks, the direct-send claim and caller-binding checks) can leave an idempotent guarded seat for a real pane. Operator repair by name (`seat retire`, `rebind`,
-`--replace`) acts only on the one seat the name uniquely resolves to through the current canonical mapping (lookup,
-never allocation), shown on the `resolved:` line, with the operator still deciding via `--operator`; the name is
+`--replace`) acts only on the one seat the name resolves to through the current canonical mapping (lookup,
+never allocation) when the name matches exactly one pane anywhere in the topology: it never uses proximity tiering,
+and a name matching more than one pane is refused with the candidate list, requiring the seat ID. The chosen seat is
+shown on the `resolved:` line, with the operator still deciding via `--operator`; the name is
 not heuristic continuity evidence and moves no seat by itself.
 
 **C2. Restore holds.** After a new or unknown Herdr incarnation while nonretired seats exist, every saved

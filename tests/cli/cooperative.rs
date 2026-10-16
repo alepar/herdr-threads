@@ -4041,6 +4041,58 @@ mod scoped_runtime {
             );
         }
 
+        /// Operator repair never uses proximity tiering: a name matching seats in the caller's
+        /// space and elsewhere is refused with the candidates, and nothing is retired.
+        #[test]
+        fn seat_repair_by_name_refuses_any_multiple_match() {
+            for args in [
+                vec!["human", "seat", "retire", "alice", "--operator"],
+                vec![
+                    "human",
+                    "seat",
+                    "rebind",
+                    "alice",
+                    "--pane",
+                    "w1:p4",
+                    "--operator",
+                ],
+                vec![
+                    "human",
+                    "seat",
+                    "rebind",
+                    "project/main/bob",
+                    "--pane",
+                    "w1:p4",
+                    "--replace",
+                    "alice",
+                    "--operator",
+                ],
+            ] {
+                let runtime = matrix_runtime();
+                let result = runtime.run(&args);
+                let Err(crate::cli::RunError::Api(error)) = result else {
+                    panic!("{args:?}: expected a conflict, got {result:?}");
+                };
+                assert_eq!(
+                    error.code,
+                    crate::protocol::results::ErrorCode::Conflict,
+                    "{args:?}: {error:?}"
+                );
+                assert!(
+                    error.detail.contains("w1:p2") && error.detail.contains("w2:p1"),
+                    "{args:?}: {}",
+                    error.detail
+                );
+                assert!(
+                    journaled(&runtime, "operator_retire").is_empty()
+                        && !journal_text(&runtime).contains("operator_rebind")
+                        && !journal_text(&runtime).contains("\"replace\""),
+                    "{args:?}: {}",
+                    journal_text(&runtime)
+                );
+            }
+        }
+
         #[test]
         fn d4_seat_repair_by_name_and_id() {
             // `single`/`double`: resolved lines printed for one name / for two names.

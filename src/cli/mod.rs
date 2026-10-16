@@ -726,8 +726,10 @@ fn run_parsed_in_pane<W: Write>(
     // argument resolves to a canonical seat ID (lookups,
     // exact IDs) or a pane, before the caller derivation and the --operator branch's recipient
     // resolution, with no journal write. Allocate panes wait in `deferred` for pass 2, which runs
-    // after the caller derivation / actor refusal and the capability gates, so a refused command
-    // allocates nothing. A retry carries no slots: a no-op there.
+    // after the caller derivation / actor refusal and the capability gates; refusals that run
+    // later (selection and mapping checks, the direct-send claim and caller-binding checks) can
+    // still leave an idempotent guarded seat for a real pane. A retry carries no slots: a no-op
+    // there.
     // The agent-without-session refusal precedes pass 1: it needs no seat, so a refused agent
     // issues no SeatInspect, Seats or topology call.
     derive_refusing_origin(&parsed)?;

@@ -345,7 +345,8 @@ reasoned exclusion list, so a future seat argument cannot bypass resolution.
   resolution, and never moves a seat or ends a binding. No invariant is weakened. The sentence
   makes explicit that name selection is the same locator path as the existing `--pane` forms.
   A second sentence covers operator repair by name (`seat retire`/`rebind`/`--replace`): it acts
-  only on the one seat the name uniquely resolves to through the current canonical mapping
+  only on the one seat the name resolves to through the current canonical mapping when it matches exactly one
+  pane anywhere (no proximity tiering; any second match is a conflict that needs the seat ID)
   (lookup, never allocation). That seat is shown on the `resolved:` line, and the operator still
   decides with `--operator`. The name is not heuristic continuity evidence: it moves no seat by
   itself.
@@ -459,3 +460,5 @@ Digest:
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+- 2026-10-16: user decision at merge review (relayed by the main tab): operator seat repair by name (`seat retire`, `seat rebind SEAT`, `--replace`) must not use proximity tiering. Implemented as `seat_selector::Tiering::Global`, chosen by `SeatSlot::tiering()`: a name matching more than one pane anywhere is a `conflict` listing every candidate (header `tier: mixed` when they span tiers) and requires the seat ID; a single global match acts. Reads, sends and other lookups keep D3 tiering. Also: an empty seat argument now matches nothing (it could match an empty label), and the stale "a refused command allocates nothing" comments were narrowed to match TRUST-POLICY C1.

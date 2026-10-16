@@ -263,6 +263,16 @@ fn tier_of(topology: &HostTopology, caller: Option<&HostTargetId>, pane: &Topolo
     }
 }
 
+/// How candidates are ranked. `Proximity` is spec D3's rule for every ordinary seat argument;
+/// `Global` is for operator seat repair (`seat retire`/`rebind`/`--replace`), which never lets a
+/// nearer pane win: any second match anywhere is a conflict, so an irreversible repair acts
+/// only on a name that is unique in the whole topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tiering {
+    Proximity,
+    Global,
+}
+
 /// Resolve `selector` (spec D3): pool every reading, narrow, rank by tier, take the first
 /// non-empty tier.
 pub fn resolve(
@@ -271,6 +281,21 @@ pub fn resolve(
     caller: Option<&HostTargetId>,
     narrowing: &Narrowing,
 ) -> Outcome {
+    resolve_with(selector, topology, caller, narrowing, Tiering::Proximity)
+}
+
+/// [`resolve`] with an explicit [`Tiering`]. An empty selector never matches (not even an empty
+/// label).
+pub fn resolve_with(
+    selector: &str,
+    topology: &HostTopology,
+    caller: Option<&HostTargetId>,
+    narrowing: &Narrowing,
+    tiering: Tiering,
+) -> Outcome {
+    if selector.is_empty() {
+        return Outcome::NoMatch;
+    }
     let mut tiered: Vec<Candidate> = pool(selector, topology, narrowing)
         .into_iter()
         .map(|(pane, readings)| Candidate {
@@ -283,7 +308,9 @@ pub fn resolve(
     let Some(best) = tiered.iter().map(|c| c.tier).min() else {
         return Outcome::NoMatch;
     };
-    tiered.retain(|c| c.tier == best);
+    if tiering == Tiering::Proximity {
+        tiered.retain(|c| c.tier == best);
+    }
     if tiered.len() == 1 {
         Outcome::Resolved(tiered.remove(0))
     } else {
@@ -456,12 +483,17 @@ impl Outcome {
                 echo(selector)
             ))),
             Outcome::Ambiguous(candidates) => {
-                let tier = candidates.first().map_or(Tier::Any, |c| c.tier);
+                let first = candidates.first().map_or(Tier::Any, |c| c.tier);
+                // Global tiering (seat repair) keeps candidates from every tier.
+                let tier = if candidates.iter().all(|c| c.tier == first) {
+                    first.as_str()
+                } else {
+                    "mixed"
+                };
                 let mut lines = vec![format!(
-                    "ambiguous seat {}: {} candidates (tier: {})",
+                    "ambiguous seat {}: {} candidates (tier: {tier})",
                     echo(selector),
                     candidates.len(),
-                    tier.as_str()
                 )];
                 for candidate in candidates.iter().take(CONFLICT_CAP) {
                     let readings = candidate

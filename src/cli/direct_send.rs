@@ -266,7 +266,8 @@ fn inspect<C: LocalClient + ?Sized>(
 /// The capability refusals `start` applies before it inspects the caller: send-time receipts for
 /// an ordinary-mode request, then the direct-thread protocol (always with the creation policy
 /// `start` sets, and the lazy-send capability for a lazy request). The seat stage's allocation
-/// gate calls this too, so a refused direct send allocates nothing.
+/// gate calls this too, so a capability refusal comes before any allocation (the claim and
+/// caller-binding checks in `start` still run after it).
 pub(crate) fn require_capabilities<C: LocalClient + ?Sized>(
     request: &Request,
     client: &C,

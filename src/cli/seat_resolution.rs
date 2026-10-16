@@ -345,7 +345,9 @@ where
 /// Pass 2: run the journaled `ResolveSeat` for each deferred Allocate slot, freeze the result and
 /// write the name slots' `resolved:` lines. The caller runs this only after every slot resolved
 /// and after the caller derivation (or, for `--operator`, the non-Human refusal); it is the one
-/// place `run_gates` runs, so a refused command journals no `ResolveSeat`.
+/// place `run_gates` runs, so those refusals journal no `ResolveSeat`. Refusals that run later
+/// (selection and mapping checks, the direct-send claim and caller-binding checks) can still
+/// leave an idempotent guarded seat for a real pane.
 pub(crate) fn allocate_deferred_seats<C, F, W>(
     deferred: DeferredSeats,
     parsed: &mut ParsedCli,
@@ -559,20 +561,21 @@ where
         let caller = self.caller().map_err(run_error)?;
         let (_, client) = self.connection.get()?;
         let clock = self.clock.as_ref();
-        let candidate = seat_selector::resolve(raw, topology, caller, &narrowing)
-            .into_result(raw, |pane| {
-                match super::collect_pane_seats(pane, |command| {
-                    client.call(command, &super::cooperative_budget(clock))
-                }) {
-                    Ok(seats) => match seats.resolved.as_slice() {
-                        [one] => Ok(Some(one.seat.clone())),
-                        [] => Ok(None),
-                        _ => Err(()),
-                    },
-                    Err(_) => Err(()),
-                }
-            })
-            .map_err(run_error)?;
+        let candidate =
+            seat_selector::resolve_with(raw, topology, caller, &narrowing, slot.tiering())
+                .into_result(raw, |pane| {
+                    match super::collect_pane_seats(pane, |command| {
+                        client.call(command, &super::cooperative_budget(clock))
+                    }) {
+                        Ok(seats) => match seats.resolved.as_slice() {
+                            [one] => Ok(Some(one.seat.clone())),
+                            [] => Ok(None),
+                            _ => Err(()),
+                        },
+                        Err(_) => Err(()),
+                    }
+                })
+                .map_err(run_error)?;
         let path = candidate.path.clone();
         let tier = candidate.tier.as_str().to_owned();
         match self.map_pane(parsed, slot, candidate.pane.clone())? {

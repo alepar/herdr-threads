@@ -825,3 +825,50 @@ fn reading_display_omits_unassigned_levels() {
     assert_eq!(Tier::Any.as_str(), "any");
     assert!(Tier::Tab < Tier::Space && Tier::Space < Tier::Any);
 }
+
+#[test]
+fn seat_repair_tiering_refuses_a_near_match_when_another_exists_elsewhere() {
+    let t = base();
+    let caller = id("w1:p1");
+    // Proximity tiering picks the caller's own tab...
+    assert_eq!(
+        resolved(resolve("alice", &t, Some(&caller), &none())).pane,
+        id("w1:p1")
+    );
+    // ...but seat repair sees every match, wherever it is.
+    let c = ambiguous(resolve_with(
+        "alice",
+        &t,
+        Some(&caller),
+        &none(),
+        Tiering::Global,
+    ));
+    assert_eq!(panes_of(&c), vec!["w1:p1", "w1:p2", "w3:p1"]);
+}
+
+#[test]
+fn seat_repair_tiering_acts_on_a_single_global_match() {
+    let t = base();
+    let caller = id("w1:p2");
+    let c = resolved(resolve_with(
+        "carol",
+        &t,
+        Some(&caller),
+        &none(),
+        Tiering::Global,
+    ));
+    assert_eq!(c.pane, id("w1:p4"));
+}
+
+#[test]
+fn an_empty_selector_never_matches_an_empty_label() {
+    let mut t = base();
+    t.panes.push(pane("w3:p2", "w3", "w3:t1", "", &[]));
+    t.tabs.push(tab("w3:t2", "w3", ""));
+    t.panes.push(pane("w3:p3", "w3", "w3:t2", "x", &[]));
+    assert_eq!(resolve("", &t, None, &none()), Outcome::NoMatch);
+    assert_eq!(
+        resolve_with("", &t, None, &none(), Tiering::Global),
+        Outcome::NoMatch
+    );
+}
