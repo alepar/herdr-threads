@@ -20,7 +20,9 @@ Rows (variant/case), all required:
                                    last_error, reached within a bound (no prompt hang)
   local-bin/default-command        default remote command finds ~/.local/bin/herdr-threads: the target links
   local-bin/converge               both nodes hold the same vector of origin logs
-  local-bin/send-ack               a person seat on A sends --require-ack to a seat on B; B displays it; A sees the ACK
+  local-bin/send-ack               a person seat on A sends to a person seat on B; B sees it, replies, and A sees the
+                                   reply (person seats owe no ACK receipt under D9, so the round trip is the check;
+                                   cross-node ACK settlement is covered by tests/multinode with signed facts)
   local-bin/daemon-stop-reaps-ssh  `daemon stop` on A kills and reaps the ssh child (no process, no zombie)
   local-bin/no-leaks               no herdr-threads, ssh or pump process is left in either container
   on-path/default-command          default remote command finds herdr-threads on PATH: the target links
@@ -496,8 +498,7 @@ class Driver:
         sent = {}
 
         def send():
-            rc, doc, text = a.ht("send", "--seat", b.seat, "--body", body, "--require-ack", b.seat,
-                                 human=True, pane=a.pane)
+            rc, doc, text = a.ht("send", "--seat", b.seat, "--body", body, human=True, pane=a.pane)
             data = (doc or {}).get("result", {}).get("data") if isinstance(doc, dict) else None
             if rc == 0 and isinstance(data, str) and data:
                 sent["id"] = data
@@ -508,19 +509,25 @@ class Driver:
             self.row(f"{v}/send-ack", False, f"send never accepted: {sent.get('error')}")
             return
 
-        def shown():  # reading B's inbox displays (and so ACKs) the message
-            rc, doc, text = b.ht("inbox", human=False, pane=b.pane)
-            return mid in text or body in text
+        def shown(node, wanted, text_body):
+            rc, doc, text = node.ht("inbox", pane=node.pane)
+            return wanted in text or text_body in text
 
-        arrived = self.poll("message on B", SEAT_WAIT_S, shown, every=3.0)
+        arrived = self.poll("message on B", SEAT_WAIT_S, lambda: shown(b, mid, body), every=3.0)
+        reply_body = f"reply-{self.run_id}"
+        replied = {}
 
-        def status():
-            rc, doc, _ = a.ht("delivery", "recipients", mid, human=True)
-            for r in walk(doc):
-                if r.get("seat") == b.seat and "effective_status" in r:
-                    return r["effective_status"] if r["effective_status"] in ("acknowledged", "displayed", "read") else None
-        got = self.poll("ACK on A", SEAT_WAIT_S, status, every=3.0) if arrived else None
-        self.row(f"{v}/send-ack", bool(arrived) and bool(got), f"message {mid} on B: {bool(arrived)}; A sees: {got}")
+        def reply():
+            rc, doc, text = b.ht("send", "--seat", a.seat, "--body", reply_body, human=True, pane=b.pane)
+            data = (doc or {}).get("result", {}).get("data") if isinstance(doc, dict) else None
+            if rc == 0 and isinstance(data, str) and data:
+                replied["id"] = data
+                return data
+            replied["error"] = text.strip()[:200]
+        rid = self.poll("B replies", SEAT_WAIT_S, reply, every=3.0) if arrived else None
+        back = self.poll("reply on A", SEAT_WAIT_S, lambda: shown(a, rid, reply_body), every=3.0) if rid else None
+        self.row(f"{v}/send-ack", bool(arrived) and bool(back),
+                 f"message {mid} on B: {bool(arrived)}; reply {rid or replied.get('error')} on A: {bool(back)}")
 
     def stop_reaps(self, v, a):
         def children():
