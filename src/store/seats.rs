@@ -2730,10 +2730,12 @@ pub(crate) fn current_resolution_owner(
         params![instance,proof.target().as_str()], |r| r.get(0),
     ).map_err(store_error)?;
     if held {
-        return Err(api_error(
-            ErrorCode::TargetUnresolved,
-            "resolution target is held for repair",
-        ));
+        return Err(resolution_recovery_refusal(
+            tx,
+            instance,
+            proof.target().as_str(),
+            "explicit restore hold",
+        )?);
     }
     type OwnerColumns = Option<(
         String,
@@ -2774,6 +2776,32 @@ pub(crate) fn current_resolution_owner(
     Ok(Some(SeatId::new(seat)))
 }
 
+fn resolution_recovery_refusal(
+    tx: &Transaction<'_>,
+    instance: &str,
+    target: &str,
+    cause: &str,
+) -> Result<ApiError, ApiError> {
+    let pane = shlex::try_quote(target)
+        .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid target"))?;
+    let mut blockers = tx.prepare("SELECT id FROM seats WHERE instance_id=?1 AND state='unresolved' ORDER BY ordinal LIMIT 3").map_err(store_error)?;
+    let seats = blockers
+        .query_map([instance], |row| row.get::<_, String>(0))
+        .map_err(store_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(store_error)?;
+    let repair = seats.iter().map(|seat| {
+            let seat = shlex::try_quote(seat).unwrap_or_else(|_| "SEAT".into());
+            format!("inspect `herdr-threads seat inspect {seat}`; rebind if this is its pane: `herdr-threads human seat rebind {seat} --pane {pane} --operator`")
+        }).collect::<Vec<_>>().join("; ");
+    Ok(api_error(
+        ErrorCode::TargetUnresolved,
+        format!(
+            "{cause} on {pane}; fresh-seat repair: `herdr-threads human seat resolve --pane {pane} --new-seat --operator`; {repair}; `herdr-threads daemon health` lists unresolved blockers (up to 3 shown here); baseline holds lift when no unresolved seats remain"
+        ),
+    ))
+}
+
 fn validate_resolution_allocation(
     tx: &Transaction<'_>,
     instance: &str,
@@ -2787,20 +2815,32 @@ fn validate_resolution_allocation(
         )
         .optional()
         .map_err(store_error)?;
-    let clear = matches!(
-        effective::effective_recovery_disposition(tx, instance, proof.target().as_str())?,
+    let disposition =
+        effective::effective_recovery_disposition(tx, instance, proof.target().as_str())?;
+    let cause = match disposition {
         EffectiveRecoveryDisposition::UnambiguousUnclaimed
-            | EffectiveRecoveryDisposition::CreatedAfterBaseline
-    );
-    if !clear
-        || !recovery.is_some_and(|(boot, epoch)| {
-            boot.as_deref() == Some(proof.host_boot().as_str())
-                && epoch.is_some_and(|epoch| epoch >= 0 && epoch <= proof.host_epoch() as i64)
-        })
-    {
+        | EffectiveRecoveryDisposition::CreatedAfterBaseline => None,
+        EffectiveRecoveryDisposition::BaselineHeld => Some("restore baseline hold"),
+        EffectiveRecoveryDisposition::ExplicitHold => Some("explicit restore hold"),
+        EffectiveRecoveryDisposition::Unknown => Some("durable recovery baseline unknown"),
+        EffectiveRecoveryDisposition::Released => Some("released target has no resolved seat"),
+        EffectiveRecoveryDisposition::Owned(_) => Some("target already owned"),
+    };
+    if let Some(cause) = cause {
+        return Err(resolution_recovery_refusal(
+            tx,
+            instance,
+            proof.target().as_str(),
+            cause,
+        )?);
+    }
+    if !recovery.is_some_and(|(boot, epoch)| {
+        boot.as_deref() == Some(proof.host_boot().as_str())
+            && epoch.is_some_and(|epoch| epoch >= 0 && epoch <= proof.host_epoch() as i64)
+    }) {
         return Err(api_error(
             ErrorCode::TargetUnresolved,
-            "target lacks a clear durable recovery baseline",
+            "recovery boot/epoch does not match current target evidence; inspect `herdr-threads daemon health` and retry after reconciliation",
         ));
     }
     Ok(())

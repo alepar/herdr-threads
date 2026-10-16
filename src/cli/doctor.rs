@@ -936,6 +936,8 @@ fn report_captured(
                         "version_matches": version_matches,
                         "boot_id": health.boot_id,
                         "host_reachability": health.host.reachability,
+                        "unresolved_seats": health.unresolved_seats,
+                        "held_targets": health.held_targets,
                         "harness_claude": harness_state(health.harness.claude),
                         "harness_codex": harness_state(health.harness.codex),
                         "settings": health.settings,

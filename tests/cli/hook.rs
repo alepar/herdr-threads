@@ -10310,3 +10310,22 @@ fn claude_rewrite_survives_an_unavailable_daemon() {
         "ht --agent-id=a-1 inbox"
     );
 }
+
+// A lifecycle refusal must carry repair guidance into model context, not only stderr.
+#[test]
+fn restore_hold_hook_context_keeps_the_daemons_operator_guidance() {
+    let failure = api_failure(
+        "seat enrollment",
+        &ApiError::new(
+            ErrorCode::TargetUnresolved,
+            "restore baseline hold on w9:p1; repair: `herdr-threads human seat resolve --pane w9:p1 --new-seat --operator`",
+        ),
+    );
+    let Failure::UnavailableDetail(reason, _) = failure else {
+        panic!("expected detailed failure")
+    };
+    assert!(
+        reason.contains("--pane w9:p1 --new-seat --operator"),
+        "{reason}"
+    );
+}

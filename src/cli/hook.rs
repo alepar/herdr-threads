@@ -337,7 +337,14 @@ enum Failure {
 }
 
 fn api_failure(stage: &str, error: &ApiError) -> Failure {
-    Failure::UnavailableDetail(format!("{stage}: {:?}", error.code), error.detail.clone())
+    let mut reason = format!("{stage}: {:?}", error.code);
+    // Restore refusals carry the daemon's canonical cause and repair argv.
+    // Lifecycle context must keep that guidance, as stderr alone is invisible
+    // to the agent. Other failures retain their compact stage/code report.
+    if error.code == ErrorCode::TargetUnresolved {
+        reason.push_str(&format!(": {}", error.detail.escape_debug()));
+    }
+    Failure::UnavailableDetail(reason, error.detail.clone())
 }
 
 /// Registered operational input contract, independent of PATH and runtime

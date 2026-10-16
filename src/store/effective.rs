@@ -185,6 +185,38 @@ pub fn effective_recovery_disposition(
     }
 }
 
+pub(crate) const RECOVERY_HOLD_TARGETS_SQL: &str = "WITH held(target_id) AS (
+            SELECT h.target_id FROM recovery_holds h JOIN host_instances i ON i.id=h.instance_id
+            WHERE i.id=?1 AND h.baseline_boot=i.host_boot AND h.baseline_epoch=i.host_epoch AND h.released_at IS NULL
+            UNION
+            SELECT t.target_id FROM host_instances i JOIN snapshot_targets t ON t.generation_id=i.recovery_baseline_generation_id
+            WHERE i.id=?1 AND i.baseline_hold_unclaimed<>0
+            AND NOT EXISTS(SELECT 1 FROM recovery_baseline_releases r WHERE r.instance_id=i.id AND r.baseline_generation_id=i.recovery_baseline_generation_id AND r.target_id=t.target_id)
+        ) SELECT target_id FROM held h WHERE NOT EXISTS(
+            SELECT 1 FROM seats s WHERE s.instance_id=?1 AND s.target_id=h.target_id AND s.state='resolved'
+        ) ORDER BY target_id";
+
+/// Count durable held targets once, excluding current owners, released baseline
+/// targets and holds from another recovery epoch. Work is proportional to the
+/// retained baseline and current explicit holds, not seat or binding history.
+pub(crate) fn recovery_hold_summary(
+    db: &Connection,
+    instance: &str,
+) -> Result<crate::ports::RecoveryHoldSummary, ApiError> {
+    let mut statement = db.prepare(RECOVERY_HOLD_TARGETS_SQL).map_err(store_error)?;
+    let mut rows = statement.query([instance]).map_err(store_error)?;
+    let mut summary = crate::ports::RecoveryHoldSummary::default();
+    while let Some(row) = rows.next().map_err(store_error)? {
+        summary.count += 1;
+        if summary.sample.len() < crate::ports::UNRESOLVED_SEAT_SAMPLE {
+            summary.sample.push(crate::protocol::ids::HostTargetId::new(
+                row.get::<_, String>(0).map_err(store_error)?,
+            ));
+        }
+    }
+    Ok(summary)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectiveReceiptState {
     Pending,

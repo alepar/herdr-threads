@@ -12745,3 +12745,132 @@ fn invitation_policy_binding(conn: &Connection, seat: &str) -> BindingId {
     .expect("invitation policy fixture has this exact open binding")
     .binding_id
 }
+
+// A restore baseline must be visible even when the caller's pane never had a seat.
+#[test]
+fn restore_hold_health_names_unowned_targets_and_excludes_released_owned_and_foreign() {
+    let (context, mut conn, path, _) = fixture(100);
+    b5_published_baseline(
+        &context,
+        &mut conn,
+        &["held-a", "held-b", "released", "owned"],
+    );
+    conn.execute(
+        "UPDATE host_instances SET baseline_hold_unclaimed=1 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    conn.execute("UPDATE seats SET target_id='owned' WHERE id='s2'", [])
+        .unwrap();
+    conn.execute("INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) SELECT 'i',recovery_baseline_generation_id,'released',1 FROM host_instances WHERE id='i'", []).unwrap();
+    conn.execute(
+        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('foreign',0,'b',1)",
+        [],
+    )
+    .unwrap();
+    b5_add_hold(&conn, "foreign", "foreign-held");
+    // A stale explicit hold from a previous boot must not count.
+    conn.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','stale-held','old',1,'stale')", []).unwrap();
+    // An explicit hold on a baseline-held target counts once.
+    b5_add_hold(&conn, "i", "held-a");
+    let summary =
+        crate::store::queries::unresolved_seat_summary(&context, "i", &b5_budget()).unwrap();
+    let mut inputs =
+        crate::daemon::health::HealthInputs::unknown(uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    inputs.unresolved = Some(summary);
+    let health = inputs.assemble();
+    assert_eq!(health.held_targets, Some(2));
+    let text = health.limitations.join("\n");
+    assert!(text.contains("held-a") && text.contains("held-b"), "{text}");
+    assert!(text.contains("no unresolved seats remain"), "{text}");
+    assert_eq!(health.validate(), Ok(()));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn restore_hold_refusal_names_cause_blockers_and_exact_operator_repairs() {
+    use crate::ports::{OrdinaryResolutionAttempt as Attempt, OrdinaryResolutionGuard, StorePort};
+    use crate::protocol::commands::ResolveSeat;
+    let (_context, conn, path, store, observation, budget) = ordinary_resolution_fixture();
+    let request = ResolveSeat {
+        target: observation.target.clone(),
+        operation: OperationId::new("held-resolve"),
+    };
+    let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
+    conn.execute(
+        "UPDATE host_instances SET baseline_hold_unclaimed=1 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('blocking-seat','i','unresolved','native',1,0)", []).unwrap();
+    let err = store
+        .resolve_seat(
+            request.clone(),
+            Attempt::Observed(
+                OrdinaryResolutionGuard::try_new(&request, current, &admission).unwrap(),
+            ),
+            &budget,
+        )
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::TargetUnresolved);
+    assert!(
+        err.detail.contains("restore baseline hold"),
+        "{}",
+        err.detail
+    );
+    assert!(
+        err.detail
+            .contains("herdr-threads human seat resolve --pane pane-new --new-seat --operator"),
+        "{}",
+        err.detail
+    );
+    assert!(
+        err.detail
+            .contains("herdr-threads seat inspect blocking-seat")
+    );
+    assert!(
+        err.detail
+            .contains("herdr-threads human seat rebind blocking-seat --pane pane-new --operator")
+    );
+    drop(store);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn restore_hold_explicit_refusal_carries_exact_repair_guidance() {
+    use crate::ports::{OrdinaryResolutionAttempt as Attempt, OrdinaryResolutionGuard, StorePort};
+    use crate::protocol::commands::ResolveSeat;
+    let (_context, conn, path, store, observation, budget) = ordinary_resolution_fixture();
+    let request = ResolveSeat {
+        target: observation.target.clone(),
+        operation: OperationId::new("explicit-resolve"),
+    };
+    let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
+    b5_add_hold(&conn, "i", "pane-new");
+    let err = store
+        .resolve_seat(
+            request.clone(),
+            Attempt::Observed(
+                OrdinaryResolutionGuard::try_new(&request, current, &admission).unwrap(),
+            ),
+            &budget,
+        )
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::TargetUnresolved);
+    assert!(
+        err.detail.contains("explicit restore hold"),
+        "{}",
+        err.detail
+    );
+    assert!(
+        err.detail
+            .contains("herdr-threads human seat resolve --pane pane-new --new-seat --operator"),
+        "{}",
+        err.detail
+    );
+    drop(store);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}

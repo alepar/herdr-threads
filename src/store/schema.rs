@@ -84,7 +84,8 @@ const V44: &str = include_str!("../../migrations/0044_automatic_handoff_body_bou
 const V45: &str = include_str!("../../migrations/0045_invitation_presentation.sql");
 const V46: &str = include_str!("../../migrations/0046_presentation_relevance.sql");
 const V47: &str = include_str!("../../migrations/0047_message_priority.sql");
-pub(crate) const LATEST_VERSION: i64 = 47;
+const V48: &str = include_str!("../../migrations/0048_recovery_hold_health.sql");
+pub(crate) const LATEST_VERSION: i64 = 48;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -852,7 +853,26 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_message_priority_schema(conn)
+    verify_message_priority_schema(conn)?;
+    if version <= 47 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V48)
+            .map_err(store_error)
+            .and_then(|_| verify_ddl(conn, V48, "recovery hold health"))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 48)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_ddl(conn, V48, "recovery hold health")
 }
 
 /// Every `CREATE` statement of V47 as `(kind, name, sql without the trailing ';')`, the shape

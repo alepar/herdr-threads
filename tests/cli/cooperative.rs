@@ -7794,3 +7794,68 @@ fn subagent_text_inbox_without_binding_cursors_is_a_read_only_read() {
     assert!(reads >= 1, "the read reached the daemon: {calls:?}");
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn restore_hold_bare_diagnostics_without_a_seat_falls_back_to_health() {
+    use crate::protocol::pagination::{Consistency, Page, StopReason};
+    struct Unowned;
+    impl crate::ports::LocalClient for Unowned {
+        fn call_with_output(
+            &self,
+            c: Command,
+            _: &crate::protocol::output::OutputSpec,
+            b: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.call(c, b)
+        }
+        fn call(
+            &self,
+            c: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            assert!(
+                matches!(c, Command::Seats(_)),
+                "diagnostics must not allocate: {c:?}"
+            );
+            Ok(CommandResult::Seats(Page {
+                items: vec![],
+                next_cursor: None,
+                next_argv: None,
+                high_water_ordinal: 0,
+                scope_revision: None,
+                has_more: false,
+                stop_reason: StopReason::Complete,
+                consistency: Consistency::BoundedLive,
+            }))
+        }
+    }
+    let root = crate::test_support::scratch::temp_path(format!(
+        "diagnostics-unowned-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let runtime = crate::daemon::paths::RuntimeContext::explicit(
+        root.join("state"),
+        root.join("host.sock"),
+        None,
+    )
+    .unwrap();
+    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+    let connection = crate::cli::LazyConnection::new(|| Ok((uuid::Uuid::nil(), Unowned)));
+    let clock: std::sync::Arc<dyn crate::protocol::time::Clock> =
+        std::sync::Arc::new(crate::app::SystemClock::new());
+    let mut parsed = crate::cli::commands::parse_argv(["herdr-threads", "diagnostics"]).unwrap();
+    crate::cli::derive_caller(
+        &mut parsed,
+        Some("held-pane"),
+        &runtime,
+        &paths,
+        &connection,
+        &clock,
+    )
+    .unwrap();
+    assert!(matches!(
+        parsed.action,
+        crate::cli::commands::CliAction::Daemon(crate::cli::commands::DaemonAction::Health)
+    ));
+}

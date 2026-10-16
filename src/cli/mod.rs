@@ -859,6 +859,17 @@ fn run_parsed_in_pane<W: Write>(
         };
     let peer_source =
         crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock));
+    // Retain the requested read bound if caller derivation substitutes a
+    // recovery Health report for an unmapped pane's diagnostics.
+    let max_bytes = match &parsed.action {
+        CliAction::Wire(command) => command
+            .page()
+            .map_or(crate::protocol::pagination::MAX_PAGE_BYTES, |page| {
+                page.max_bytes
+            }),
+        CliAction::PendingOps(page) => page.max_bytes,
+        _ => crate::protocol::pagination::MAX_PAGE_BYTES,
+    };
     let Some(parsed) = peer_locations::with_source(peer_source, || {
         human::with_seat_labels(seat_labels, || {
             run_caller_scoped_deferred(
@@ -876,15 +887,6 @@ fn run_parsed_in_pane<W: Write>(
     })?
     else {
         return Ok(());
-    };
-    let max_bytes = match &parsed.action {
-        CliAction::Wire(command) => command
-            .page()
-            .map_or(crate::protocol::pagination::MAX_PAGE_BYTES, |page| {
-                page.max_bytes
-            }),
-        CliAction::PendingOps(page) => page.max_bytes,
-        _ => crate::protocol::pagination::MAX_PAGE_BYTES,
     };
     let result = match parsed.action {
         CliAction::Wire(_) => unreachable!("wire reads run in run_caller_scoped"),
@@ -3131,6 +3133,15 @@ where
                     let (_, client) = connection.get()?;
                     match pane_seat(client, &parsed.output, &pane, clock.as_ref())? {
                         Some(seat) => Some(seat),
+                        None if parsed.caller_read_default
+                            && matches!(&parsed.action, CliAction::Wire(Command::Diagnostics(q)) if q.page.cursor.is_none()) =>
+                        {
+                            // A never-seated or unresolved pane cannot scope a
+                            // mailbox query. Show recovery health, without
+                            // broadening its mail query or allocating a seat.
+                            parsed.action = CliAction::Daemon(DaemonAction::Health);
+                            return Ok(None);
+                        }
                         None if required => return Err(no_seat_for_pane(&pane)),
                         None => None,
                     }

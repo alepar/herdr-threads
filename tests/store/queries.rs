@@ -6864,3 +6864,90 @@ fn presentation_q3_publication_recipient_keys_have_constant_sqlite_work() {
 
 #[path = "query_work_q4.rs"]
 mod query_work_q4;
+
+// Diagnostics must surface restore holds even without overdue mail, once per walk.
+#[test]
+fn restore_hold_diagnostics_is_paged_and_thread_filters_do_not_leak_instance_state() {
+    let (store, db) = fixture();
+    db.execute(
+        "UPDATE host_instances SET host_boot='b',host_epoch=1 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','pane-held','b',1,'restore')", []).unwrap();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('inv','t','s',1,'pending',0,10,10,1)", []).unwrap();
+    for scoped_thread in [false, true] {
+        let mut cursor = None;
+        let mut subjects = Vec::new();
+        for _ in 0..4 {
+            let mut p = page(cursor.take());
+            p.limit = 1;
+            let q = Command::Diagnostics(DiagnosticsQuery {
+                seat: None,
+                thread: scoped_thread.then(|| ThreadId::new("t")),
+                page: p,
+            });
+            let CommandResult::Diagnostics(result) = query(&store, "i", &q, &budget()).unwrap()
+            else {
+                panic!()
+            };
+            for row in &result.items {
+                if row.subject == "restore_holds" {
+                    assert!(row.detail_data.contains("pane-held"));
+                }
+                subjects.push(row.subject.clone());
+            }
+            cursor = result.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(cursor.is_none(), "continuation made no progress");
+        if scoped_thread {
+            assert_eq!(subjects, ["overdue_invitation:inv"]);
+        } else {
+            assert_eq!(subjects, ["restore_holds", "overdue_invitation:inv"]);
+        }
+    }
+}
+
+#[test]
+fn restore_hold_health_query_work_ignores_released_and_stale_history() {
+    let (_store, db) = fixture();
+    db.execute(
+        "UPDATE host_instances SET host_boot='b',host_epoch=1 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    db.execute_batch("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<2000)
+        INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason,released_at)
+        SELECT 'i','released-'||x,'b',1,'old',1 FROM n;
+        WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<2000)
+        INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason)
+        SELECT 'i','stale-'||x,'old',1,'stale' FROM n;
+        INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','held','b',1,'current');").unwrap();
+    // Upgrade a protocol-8 schema-47 store without rewriting any hold history.
+    db.execute_batch("DROP INDEX IF EXISTS recovery_holds_current_open; PRAGMA user_version=47;")
+        .unwrap();
+    super::super::schema::initialize(&db, || UtcMillis(100)).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM recovery_holds", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        4001
+    );
+    let mut statement = db
+        .prepare(super::super::effective::RECOVERY_HOLD_TARGETS_SQL)
+        .unwrap();
+    let targets: Vec<String> = statement
+        .query_map(["i"], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(targets, ["held"]);
+    let steps = statement.get_status(rusqlite::StatementStatus::VmStep);
+    assert!(
+        steps < 2000,
+        "health query walked retained hold history: {steps} VM steps"
+    );
+}

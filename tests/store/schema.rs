@@ -6449,7 +6449,7 @@ fn v28_upgrade_migrates_bindings_to_session_keyed_v32() {
             .unwrap(),
         schema::LATEST_VERSION
     );
-    assert_eq!(schema::LATEST_VERSION, 47);
+    assert_eq!(schema::LATEST_VERSION, 48);
     // ordinals, sequence and archival guards survive the rebuild
     assert_eq!(
         db.query_row(
@@ -7317,14 +7317,14 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         // (preparation_priority_immutable, lazy_recipient_priority_immutable,
         // lazy_recipient_decision_seq_once and the seven binding_pending_* view triggers);
         // messages_immutable, lazy_recipient_source, lazy_recipient_display_published and lazy_manifest_source are
-        // recreated one for one.
+        // recreated one for one. V48 adds recovery_holds_current_open (+1 index).
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
             98
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            171
+            172
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
@@ -8064,7 +8064,7 @@ fn presentation_schema_populated_v39_upgrade_is_additive_and_reopens() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        47
+        schema::LATEST_VERSION
     );
     schema::initialize(&db, || UtcMillis(20000)).unwrap();
     assert_eq!(presentation_retained_rows(&db), after);
@@ -8213,7 +8213,7 @@ fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        47
+        schema::LATEST_VERSION
     );
     assert_eq!(presentation_schema_catalog(&db), upgraded_catalog);
     presentation_assert_retained_tables(&db, &upgraded);
@@ -8314,7 +8314,7 @@ fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() 
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        47
+        schema::LATEST_VERSION
     );
     schema::initialize(&db, || UtcMillis(10001)).unwrap();
     assert_eq!(read_old(&db), before);

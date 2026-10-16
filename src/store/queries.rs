@@ -151,10 +151,12 @@ pub fn unresolved_seat_summary(
             });
         }
     }
+    let holds = super::effective::recovery_hold_summary(&db, instance)?;
     db.execute_batch("COMMIT")
         .map_err(|error| db.map_error(error))?;
     db.check_budget()?;
     Ok(UnresolvedSeatSummary {
+        holds,
         count: u64::try_from(count).unwrap_or(0),
         sample,
     })
@@ -4121,6 +4123,7 @@ fn diagnostics_cursor(
     instance: &str,
     filter: &str,
     phase: SearchPhase,
+    recovery_done: bool,
     invitation_after: u64,
     invitation_high: u64,
     receipts: &ReceiptScanPosition,
@@ -4146,7 +4149,7 @@ fn diagnostics_cursor(
         phase,
         topic_high_water: invitation_high,
         body_high_water: high,
-        topic_revision: 0,
+        topic_revision: u64::from(recovery_done),
         last_decision_seq: None,
         last_event_offset: None,
     });
@@ -4159,6 +4162,7 @@ fn diagnostics_cursor(
 #[derive(Clone)]
 struct DiagnosticsWalk {
     phase: SearchPhase,
+    recovery_done: bool,
     invitation_after: u64,
     receipts: ReceiptScanPosition,
     high: u64,
@@ -4183,7 +4187,7 @@ fn diagnostics(
         &filter,
         CursorDirection::Ascending,
     )?;
-    let (mut phase, mut invitation_after, invitation_high, mut receipts) =
+    let (mut phase, mut recovery_done, mut invitation_after, invitation_high, mut receipts) =
         if let Some(c) = cursor.as_ref() {
             let phase = c
                 .search
@@ -4192,6 +4196,9 @@ fn diagnostics(
                 .phase;
             (
                 phase,
+                c.search
+                    .as_ref()
+                    .is_some_and(|state| state.topic_revision != 0),
                 c.filter_revision.ok_or_else(|| {
                     api_error(ErrorCode::InvalidCursor, "invitation position missing")
                 })?,
@@ -4222,6 +4229,7 @@ fn diagnostics(
                 .map_err(|e| db.map_error(e))?;
             (
                 SearchPhase::Topic,
+                false,
                 0,
                 invitation_high as u64,
                 ReceiptScanPosition {
@@ -4242,6 +4250,37 @@ fn diagnostics(
     let mut items = Vec::new();
     let mut examined = 0usize;
     let mut stop = StopReason::Complete;
+    if !recovery_done {
+        // Instance-wide diagnostics only; a scoped receipt/invitation query keeps
+        // its existing scope. One compact recovery row per walk, including when
+        // the first page is exactly full or bytes cut the following mail row.
+        if q.seat.is_none() && q.thread.is_none() {
+            let holds = super::effective::recovery_hold_summary(db, instance)?;
+            if holds.count > 0 {
+                let targets = holds
+                    .sample
+                    .iter()
+                    .map(|target| target.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let raw = diagnostics_cursor(
+                    instance,
+                    &filter,
+                    phase,
+                    true,
+                    invitation_after,
+                    invitation_high,
+                    &receipts,
+                )?;
+                items.push(Cand {
+                    item: Diagnostic { subject: "restore_holds".into(), detail_data: format!("held_targets={} sample={targets}; baseline holds lift when no unresolved seats remain; inspect `herdr-threads daemon health`; fresh-seat repair: `herdr-threads human seat resolve --pane PANE --new-seat --operator`", holds.count) },
+                    argv: diagnostics_argv(q, &raw), raw,
+                    before: DiagnosticsWalk { phase, recovery_done: false, invitation_after, receipts: receipts.clone(), high: invitation_high.max(receipts.physical_high_water.max(receipts.manifest_high_water) as u64) },
+                });
+            }
+        }
+        recovery_done = true;
+    }
     while examined < CANDIDATE_LIMIT {
         if items.len() == q.page.limit as usize {
             stop = StopReason::Rows;
@@ -4288,6 +4327,7 @@ fn diagnostics(
                             instance,
                             &filter,
                             phase,
+                            recovery_done,
                             ordinal as u64,
                             invitation_high,
                             &receipts,
@@ -4298,6 +4338,7 @@ fn diagnostics(
                             raw,
                             before: DiagnosticsWalk {
                                 phase,
+                                recovery_done,
                                 invitation_after,
                                 receipts: receipts.clone(),
                                 high: invitation_high.max(
@@ -4354,6 +4395,7 @@ fn diagnostics(
                         instance,
                         &filter,
                         phase,
+                        recovery_done,
                         invitation_after,
                         invitation_high,
                         &slice.position,
@@ -4364,6 +4406,7 @@ fn diagnostics(
                         raw,
                         before: DiagnosticsWalk {
                             phase,
+                            recovery_done,
                             invitation_after,
                             receipts: before.clone(),
                             high: invitation_high.max(
@@ -4396,6 +4439,7 @@ fn diagnostics(
     )?;
     if let Some(before) = cut {
         phase = before.phase;
+        recovery_done = before.recovery_done;
         invitation_after = before.invitation_after;
         receipts = before.receipts;
         stop = StopReason::Bytes;
@@ -4415,6 +4459,7 @@ fn diagnostics(
             instance,
             &filter,
             phase,
+            recovery_done,
             invitation_after,
             invitation_high,
             &receipts,

@@ -111,6 +111,7 @@ fn real_problem_during_startup_is_degraded() {
         // coherent snapshot: conservatively degraded, not starting.
         ("unresolved seats", |inputs| {
             inputs.unresolved = Some(crate::ports::UnresolvedSeatSummary {
+                holds: Default::default(),
                 count: 1,
                 sample: Vec::new(),
             })

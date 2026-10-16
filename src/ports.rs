@@ -593,8 +593,15 @@ pub struct BindingEvidenceStartup {
 /// [`UNRESOLVED_SEAT_SAMPLE`] of them, oldest first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UnresolvedSeatSummary {
+    pub holds: RecoveryHoldSummary,
     pub count: u64,
     pub sample: Vec<UnresolvedSeatSample>,
+}
+/// Durable unowned restore holds, with at most three target samples.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecoveryHoldSummary {
+    pub count: u64,
+    pub sample: Vec<HostTargetId>,
 }
 pub const UNRESOLVED_SEAT_SAMPLE: usize = 3;
 #[derive(Debug, Clone, PartialEq, Eq)]

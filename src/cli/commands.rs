@@ -1039,6 +1039,7 @@ enum Top {
     /// List overdue obligations across seats and threads.
     Overdue(PageArgs),
     /// Read service diagnostics, optionally filtered by seat or thread.
+    /// Show caller diagnostics; an unmapped pane shows daemon recovery health.
     Diagnostics(DiagnosticsArgs),
     /// Check, start or stop the local herdr-threads daemon.
     Daemon {
