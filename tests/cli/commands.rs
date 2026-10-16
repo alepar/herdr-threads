@@ -4190,6 +4190,61 @@ fn seat_conflicts_with_pane_but_not_space_tab_at_parse() {
 }
 
 #[test]
+fn direct_send_seat_narrows_by_space_tab_but_refuses_pane_selectors() {
+    let parsed = parse_argv([
+        "herdr-threads", "send", "--seat", "x", "--tab", "t", "--body", "b",
+    ])
+    .unwrap();
+    assert_eq!(
+        parsed.seat_narrowing,
+        Some(SeatNarrowing {
+            space: None,
+            tab: Some("t".into())
+        })
+    );
+    assert!(parsed.pane_selector.is_none());
+    assert!(matches!(
+        &parsed.action,
+        CliAction::Mutation(MutationSpec::DirectSend(_))
+    ));
+    let parsed = parse_argv([
+        "herdr-threads", "send", "--seat", "x", "--space", "s", "--body", "b",
+    ])
+    .unwrap();
+    assert_eq!(
+        parsed.seat_narrowing,
+        Some(SeatNarrowing {
+            space: Some("s".into()),
+            tab: None
+        })
+    );
+    assert!(parsed.pane_selector.is_none());
+    assert!(
+        parse_argv(["herdr-threads", "send", "--seat", "x", "--body", "b"])
+            .unwrap()
+            .seat_narrowing
+            .is_none()
+    );
+    for extra in [["--pane", "p"], ["--require-ack-pane", "p"]] {
+        let error = parse_argv([
+            "herdr-threads", "send", "--seat", "x", extra[0], extra[1], "--body", "b",
+        ])
+        .unwrap_err();
+        assert!(
+            error.detail.contains("direct send accepts only its --seat recipient"),
+            "{error:?}"
+        );
+    }
+    // Thread sends keep --space/--tab as --require-ack-pane scope.
+    let error = parse_argv(["herdr-threads", "send", "t1", "--body", "b", "--tab", "t"])
+        .unwrap_err();
+    assert!(
+        error.detail.contains("send parents require --require-ack-pane"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn post_freeze_checks_dedupe_and_direct_ack_rule() {
     let check = crate::cli::seat_resolution::post_freeze_checks;
     let s1 = SeatId::new("s1");

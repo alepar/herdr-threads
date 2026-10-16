@@ -3246,6 +3246,161 @@ mod scoped_runtime {
         );
     }
 
+    // ---- command-path integration (ht-u3ym.3.3) -------------------------------------------
+
+    /// `seat_snapshot()` with `w1:p3` labelled "bob" (tab `main`) and seat `peer` mapped to it.
+    fn bob_runtime() -> Runtime {
+        let mut host = seat_snapshot();
+        host["panes"][2]["label"] = json!("bob");
+        let mut seats = default_seats();
+        seats.push(FixtureSeat::mapped("peer", Some("w1:p3")));
+        Runtime::with_seats(host, seats)
+    }
+
+    #[test]
+    fn handoff_existing_seat_name_with_tab_reaches_delivery() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = bob_runtime();
+        runtime.capabilities.lock().unwrap().extend([
+            crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned(),
+            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.to_owned(),
+            crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1.to_owned(),
+        ]);
+        runtime.install_context("w1:p2");
+        let result = runtime.run_mode_in_pane(
+            &[
+                "handoff",
+                "--existing",
+                "--seat",
+                "bob",
+                "--tab",
+                "main",
+                "--thread",
+                "t123",
+                "--",
+                "work",
+            ],
+            false,
+            "w1:p2",
+        );
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("w1:p3 seat=peer"), "{lines:?}");
+        if let Err(crate::cli::RunError::Api(error)) = &result {
+            assert!(
+                !error
+                    .detail
+                    .contains("invalid existing-peer delivery request")
+                    && !error
+                        .detail
+                        .contains("invalid automatic existing-peer request"),
+                "{error:?}"
+            );
+        }
+        let calls = runtime.calls.lock().unwrap();
+        let lookup = calls
+            .iter()
+            .position(|c| matches!(c, Command::Seats(_)))
+            .expect("the stage looks the pane's seat up");
+        assert!(
+            calls
+                .iter()
+                .skip(lookup)
+                .any(|c| matches!(c, Command::SeatInspect(q) if q.seat.as_str() == "peer")),
+            "the delivery path never inspected the frozen seat: {calls:?}\n{result:?}"
+        );
+        drop(calls);
+        no_resolve_seat_journal(&runtime);
+    }
+
+    #[test]
+    fn seat_inspect_name_returns_the_mapped_seat() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = bob_runtime();
+        let (result, stdout) = runtime.run_capture(&["seat", "inspect", "bob"], true);
+        result.unwrap();
+        let text = String::from_utf8(stdout).unwrap();
+        assert!(text.contains("\"peer\""), "{text}");
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.last(), Some(Command::SeatInspect(q)) if q.seat.as_str() == "peer"),
+            "{calls:?}"
+        );
+        drop(calls);
+        assert_eq!(
+            crate::cli::seat_resolution::take_resolved_lines_for_test().len(),
+            1
+        );
+        no_resolve_seat_journal(&runtime);
+    }
+
+    #[test]
+    fn seat_repair_by_name_freezes_ids() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = bob_runtime();
+        // The fixture refuses the operator commands themselves; the journaled intent is what
+        // counts.
+        let _ = runtime.run(&[
+            "human",
+            "seat",
+            "retire",
+            "project/tryout/alice",
+            "--operator",
+        ]);
+        let _ = runtime.run(&[
+            "human",
+            "seat",
+            "rebind",
+            "project/tryout/alice",
+            "--pane",
+            "w1:p3",
+            "--replace",
+            "project/main/bob",
+            "--operator",
+        ]);
+        let journals = runtime.journals.lock().unwrap();
+        let text = journals.iter().map(Value::to_string).collect::<String>();
+        assert!(
+            journals
+                .iter()
+                .any(|e| e["semantic"]["kind"] == "operator_retire"
+                    && e["semantic"]["seat"] == "recipient"),
+            "{text}"
+        );
+        assert!(
+            journals.iter().any(|e| e["semantic"]["seat"] == "recipient"
+                && e["semantic"]["replace"] == "peer"),
+            "{text}"
+        );
+        assert!(!text.contains("pending-seat-selector"), "{text}");
+        drop(journals);
+        no_resolve_seat_journal(&runtime);
+        assert!(resolve_seat_calls(&runtime).is_empty());
+    }
+
+    #[test]
+    fn direct_send_seat_name_with_space_narrows() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        let result = runtime.run(&[
+            "send", "--seat", "alice", "--space", "other", "--body", "hi",
+        ]);
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}\n{result:?}");
+        assert!(lines[0].contains("other/"), "{lines:?}");
+        assert!(lines[0].contains("w2:p1 seat="), "{lines:?}");
+        assert_eq!(resolve_seat_calls(&runtime), vec!["w2:p1".to_owned()]);
+        if let Err(crate::cli::RunError::Api(error)) = result {
+            assert!(
+                !matches!(
+                    error.code,
+                    ErrorCode::NotFound | ErrorCode::Conflict | ErrorCode::HostUnavailable
+                ),
+                "{error:?}"
+            );
+        }
+    }
+
     #[test]
     fn refused_commands_journal_no_resolve_seat() {
         // (a) an agent without a session is refused before the recipient is allocated.
@@ -3300,11 +3455,10 @@ mod scoped_runtime {
     fn name_and_id_for_same_seat_dedupe_in_direct_ack() {
         let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
         let runtime = Runtime::new(seat_snapshot());
-        runtime
-            .capabilities
-            .lock()
-            .unwrap()
-            .push(crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned());
+        runtime.capabilities.lock().unwrap().extend([
+            crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned(),
+            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.to_owned(),
+        ]);
         let result = runtime.run(&[
             "send",
             "--seat",
@@ -3326,11 +3480,10 @@ mod scoped_runtime {
     fn repeated_name_resolves_and_prints_once() {
         let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
         let runtime = Runtime::new(seat_snapshot());
-        runtime
-            .capabilities
-            .lock()
-            .unwrap()
-            .push(crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned());
+        runtime.capabilities.lock().unwrap().extend([
+            crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned(),
+            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.to_owned(),
+        ]);
         let _ = runtime.run(&[
             "send",
             "t123",
