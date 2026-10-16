@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-15-unified-seat-selector
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: report
+phase: finish
 roastCodeExit: converged
 codeMechanism: Workflow
 
