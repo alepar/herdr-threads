@@ -1934,10 +1934,11 @@ impl Actor {
                     && adv.counter > 0
                     && local.0.get(log).is_none_or(|head| head.counter == 0)
             };
-            // A claim whose log arrived or was withdrawn is forgotten.
+            // A claim whose log arrived is forgotten. One the peer later
+            // omits stays, so restating it cannot open a fresh window.
             entry
                 .own_claims
-                .retain(|log, _| entry.peer_vector.0.get(log).is_some_and(|a| unheld(log, a)));
+                .retain(|log, _| local.0.get(log).is_none_or(|head| head.counter == 0));
             for (log, adv) in &entry.peer_vector.0 {
                 if unheld(log, adv)
                     && !entry.own_claims.contains_key(log)
@@ -4366,6 +4367,30 @@ mod tests {
             .await;
         tokio::time::sleep(Duration::from_secs(2)).await;
         assert!(!hold_on(&rig));
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    // An unproven claim stays expired when the peer omits the log from a
+    // full Have and restates it later.
+    #[tokio::test(start_paused = true)]
+    async fn omitted_then_restated_own_log_claim_stays_expired() {
+        let (rig, journal) = rig_with_self_log();
+        let own = journal.self_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        peer.send_have(true, false, vec![have_log(own.node, 9, 50)])
+            .await;
+        until(|| hold_on(&rig)).await;
+        tokio::time::sleep(Duration::from_secs(12)).await;
+        assert!(!hold_on(&rig));
+        // A full Have without the log, then a full Have restating it.
+        peer.send_have(true, false, vec![]).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        peer.send_have(true, false, vec![have_log(own.node, 9, 60)])
+            .await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(!hold_on(&rig), "restating does not reopen the window");
         rig.cancel.cancel();
         rig.join.await.unwrap();
     }
