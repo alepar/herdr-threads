@@ -3564,6 +3564,103 @@ fn lazy_row_appended_then_completed() {
     assert_eq!(again["result"], "already_settled", "{again}");
 }
 
+/// A lazy backlog A sends B, streamed to B's live watch, then left undisplayed across B's
+/// `leave` and A's re-invitation, so B's generic `accept` of `rig.thread` finds it seat-pending.
+fn ordinary_backlog_streamed(rig: &Rig, watch: &mut Watch, body: &str) -> String {
+    let id = rig.send_lazy(body);
+    let line = watch.wait_item(&id);
+    assert_eq!(line["kind"], "lazy", "{line}");
+    assert_eq!(line["body"], body);
+    rig.cli(Some((&rig.b, PANE_B)), &["leave", &rig.thread])
+        .data("leave");
+    rig.cli(
+        Some((&rig.a, PANE_A)),
+        &["invite", &rig.thread, "--seat", &rig.b],
+    )
+    .data("invite");
+    assert_eq!(
+        rig.lazy_state(&id),
+        "pending",
+        "leave and re-invite keep it"
+    );
+    id
+}
+
+/// ht-br0 handshake on an ordinary-thread invitation, channel in time: B's live mod channel
+/// completes the backlog (its `append` ack) while B's text `accept` is still running. The accept
+/// waits for that completion within its bounded grace and prints no body.
+#[test]
+fn text_accept_with_a_live_mod_channel_prints_nothing_when_the_channel_completes_in_time_on_an_ordinary_invitation()
+ {
+    let rig = Rig::new();
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    let body = "ordinary backlog via mod";
+    let id = ordinary_backlog_streamed(&rig, &mut watch, body);
+    let accept = std::thread::scope(|scope| {
+        let accept = scope.spawn(|| {
+            rig.cli_text_b_env(
+                &["accept", &rig.thread],
+                &[(
+                    herdr_threads::cli::accept_delivery::CHANNEL_GRACE_ENV,
+                    "20000",
+                )],
+            )
+        });
+        // The channel acks only once the accept committed, so the accept is inside its grace
+        // (or has not peeked yet) when the completion lands.
+        wait_until("B joined the thread again", STEP, || {
+            rig.db()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM memberships WHERE thread_id=?1 AND seat_id=?2 AND state='joined')",
+                    [rig.thread.as_str(), rig.b.as_str()],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+                .then_some(())
+        });
+        let result = rig.ack_result(SESSION_B, "append", &id);
+        assert_eq!(result["result"], "settled", "{result}");
+        accept.join().unwrap()
+    });
+    assert_eq!(accept.code, 0, "{}{}", accept.stdout, accept.stderr);
+    assert!(accept.stdout.starts_with("accepted"), "{}", accept.stdout);
+    assert!(!accept.stdout.contains(body), "{}", accept.stdout);
+    assert!(accept.stderr.is_empty(), "{}", accept.stderr);
+    assert_eq!(rig.lazy_state(&id), "displayed");
+    // The re-join may re-offer the still-pending row before the ack; only copies after
+    // settlement count.
+    watch.seen.clear();
+    watch.assert_no_line("a copy after settlement", QUIET, |line| line["id"] == id);
+}
+
+/// ht-br0 handshake on an ordinary-thread invitation, channel late: the mod never completes the
+/// backlog. After its bounded grace (shortened here) B's text `accept` shows the body itself and
+/// settles it; the channel's late `append` ack then finds it already settled (at least once).
+#[test]
+fn text_accept_with_a_live_mod_channel_shows_the_backlog_after_the_grace_on_an_ordinary_invitation()
+{
+    let rig = Rig::new();
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    let body = "ordinary backlog the mod missed";
+    let id = ordinary_backlog_streamed(&rig, &mut watch, body);
+    let accept = rig.cli_text_b_env(
+        &["accept", &rig.thread],
+        &[(
+            herdr_threads::cli::accept_delivery::CHANNEL_GRACE_ENV,
+            "200",
+        )],
+    );
+    assert_eq!(accept.code, 0, "{}{}", accept.stdout, accept.stderr);
+    assert!(accept.stdout.starts_with("accepted"), "{}", accept.stdout);
+    assert_eq!(accept.stdout.matches(body).count(), 1, "{}", accept.stdout);
+    assert!(accept.stderr.is_empty(), "{}", accept.stderr);
+    assert_eq!(rig.lazy_state(&id), "displayed");
+    let late = rig.ack_result(SESSION_B, "append", &id);
+    assert_eq!(late["result"], "already_settled", "{late}");
+}
+
 /// Spec D4: a body over 8 KiB streams as its first 8 KiB plus the marker with
 /// `truncated: true`; the mod must not ack it, and when it does the ack is a
 /// terminal refusal decided by the daemon from the stored length (the local
