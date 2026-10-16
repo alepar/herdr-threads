@@ -998,6 +998,158 @@ fn failed_follow_up_marks_trigger_failed() {
     assert_eq!(b.log_row(&a.log), (2, 2, None));
 }
 
+// ---- follow-up tag and depth ------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+struct Tag {
+    id: String,
+}
+
+/// A follow-up whose handler raises the tag counter.
+struct TagChildKind;
+impl FactKind for TagChildKind {
+    const NAME: &'static str = "test.tagchild";
+    const MAJOR: u32 = 1;
+    type Payload = Tag;
+    fn creates(p: &Tag) -> Option<EntityKey> {
+        key(format!("e:{}", p.id))
+    }
+    fn needs(_: &Tag) -> Vec<EntityKey> {
+        Vec::new()
+    }
+    fn apply(_: &Transaction<'_>, cx: &mut ApplyContext<'_>, _: Tag) -> Result<(), FactError> {
+        cx.set_self_tag_k(7);
+        Ok(())
+    }
+}
+
+/// Always queues the tag-raising child, on any origin.
+struct TagParentKind;
+impl FactKind for TagParentKind {
+    const NAME: &'static str = "test.tagparent";
+    const MAJOR: u32 = 1;
+    type Payload = Tag;
+    fn creates(p: &Tag) -> Option<EntityKey> {
+        key(format!("e:{}", p.id))
+    }
+    fn needs(_: &Tag) -> Vec<EntityKey> {
+        Vec::new()
+    }
+    fn apply(_: &Transaction<'_>, cx: &mut ApplyContext<'_>, p: Tag) -> Result<(), FactError> {
+        cx.follow_up::<TagChildKind>(&Tag {
+            id: format!("c-{}", p.id),
+        })
+        .map_err(|e| FactError::Rejected(ApiError::new(ErrorCode::InvalidRequest, e.to_string())))
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct Link {
+    id: String,
+    depth: u32,
+}
+
+/// Queues itself (a fresh `creates` each time) once it is a follow-up or
+/// arrived from another node: an unbounded chain. A depth-0 entry authored
+/// locally queues nothing.
+struct LinkKind;
+impl FactKind for LinkKind {
+    const NAME: &'static str = "test.link";
+    const MAJOR: u32 = 1;
+    type Payload = Link;
+    fn creates(p: &Link) -> Option<EntityKey> {
+        key(format!("e:{}-{}", p.id, p.depth))
+    }
+    fn needs(_: &Link) -> Vec<EntityKey> {
+        Vec::new()
+    }
+    fn apply(tx: &Transaction<'_>, cx: &mut ApplyContext<'_>, p: Link) -> Result<(), FactError> {
+        bump(tx)?;
+        if !cx.is_local_origin() || p.depth > 0 {
+            cx.follow_up::<LinkKind>(&Link {
+                id: p.id,
+                depth: p.depth + 1,
+            })
+            .map_err(|e| {
+                FactError::Rejected(ApiError::new(ErrorCode::InvalidRequest, e.to_string()))
+            })?;
+        }
+        Ok(())
+    }
+}
+
+fn chain() -> &'static FactRegistry {
+    FactRegistry::builtins_plus(|b| {
+        b.with::<TagParentKind>()
+            .with::<TagChildKind>()
+            .with::<LinkKind>()
+    })
+}
+
+#[test]
+fn follow_up_self_tag_reaches_apply_progress() {
+    let mut a = Node::new(80, chain());
+    a.author::<TagParentKind>(&Tag { id: "p".into() }); // A@2
+    let mut b = Node::new(81, chain());
+    b.ship(&a, a.log, 2);
+    let progress = b.pass();
+    assert_eq!(progress.self_tag_k, Some(7), "{progress:?}");
+
+    // Authored by a command, the follow-up's raise reaches the caller.
+    let mut c = Node::new(82, chain());
+    let authored = c.author::<TagParentKind>(&Tag { id: "q".into() });
+    assert_eq!(authored.self_tag_k, Some(7));
+}
+
+#[test]
+fn unbounded_follow_up_chain_fails_its_trigger() {
+    let mut a = Node::new(83, chain());
+    a.author::<LinkKind>(&Link {
+        id: "l".into(),
+        depth: 0,
+    }); // A@2, queues nothing locally
+    let mut b = Node::new(84, chain());
+    let revision = b.revision();
+    b.ship(&a, a.log, 2);
+    let progress = b.pass();
+    assert_eq!((progress.applied, progress.failed), (1, 1), "{progress:?}");
+    let (state, seq, error) = b.row(&a.log, 2);
+    assert_eq!((state.as_str(), seq), ("failed", None));
+    let error = error.unwrap();
+    assert!(error.contains("follow-up chain deeper than 4"), "{error}");
+    assert_eq!(b.log_row(&b.log), (1, 1, None), "no follow-up row survives");
+    assert_eq!(b.revision(), revision, "the whole chain rolled back");
+
+    // Authored by a command, the same chain fails the command.
+    let mut c = Node::new(85, chain());
+    let before = c.log_row(&c.log);
+    let ctx = &c.ctx;
+    let error = ctx
+        .execute_decision(
+            &mut c.conn,
+            |_| Ok(()),
+            |tx, d, ()| {
+                jr::author::<LinkKind>(
+                    tx,
+                    ctx,
+                    d,
+                    &Link {
+                        id: "m".into(),
+                        depth: 1,
+                    },
+                )
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert!(
+        error.detail.contains("follow-up chain deeper than 4"),
+        "{}",
+        error.detail
+    );
+    assert_eq!(c.log_row(&c.log), before, "nothing committed");
+}
+
 // ---- replay -----------------------------------------------------------------
 
 #[test]

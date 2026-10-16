@@ -294,6 +294,11 @@ pub enum ApplyOutcome {
 /// Longest `apply_error` kept, in bytes.
 const APPLY_ERROR_MAX: usize = 512;
 
+/// How many follow-up levels a trigger may chain: a follow-up authored at a
+/// deeper level fails its trigger instead of recursing. v1 kinds queue one
+/// level at most, so an honest chain never reaches it.
+pub(crate) const MAX_FOLLOW_UP_DEPTH: u8 = 4;
+
 /// Applies the `journal` row `ingest_seq` and records the outcome.
 ///
 /// A registry miss parks the entry (`parked_unknown`); an unapplied creator of
@@ -308,7 +313,8 @@ pub fn apply_one(
     ingest_seq: i64,
     mode: ApplyMode,
 ) -> Result<ApplyOutcome, ApiError> {
-    apply_entry(tx, ctx.sync()?, decision, ingest_seq, mode, false).map(|entered| entered.outcome)
+    apply_entry(tx, ctx.sync()?, decision, ingest_seq, mode, false, 0)
+        .map(|entered| entered.outcome)
 }
 
 /// Applies the just-authored head entry `ingest_seq`. Readiness holds by
@@ -320,20 +326,22 @@ pub fn apply_authored(
     decision: DecisionInstant,
     ingest_seq: i64,
 ) -> Result<(), ApiError> {
-    apply_authored_with(tx, ctx.sync()?, decision, ingest_seq).map(|_| ())
+    apply_authored_with(tx, ctx.sync()?, decision, ingest_seq, 0).map(|_| ())
 }
 
 /// [`apply_authored`] over an explicit runtime, for `journal::open`, which
 /// applies the bootstrap genesis before the runtime is installed. Returns the
 /// tag counter the entry (or a follow-up it queued) raised, for the caller to
-/// pass on as [`ApplyProgress::self_tag_k`].
+/// pass on as [`ApplyProgress::self_tag_k`]. `depth` is the follow-up level
+/// of the entry (0 for a trigger).
 pub(crate) fn apply_authored_with(
     tx: &Transaction<'_>,
     sync: &SyncState,
     decision: DecisionInstant,
     ingest_seq: i64,
+    depth: u8,
 ) -> Result<Option<u32>, ApiError> {
-    apply_entry(tx, sync, decision, ingest_seq, ApplyMode::Head, true)
+    apply_entry(tx, sync, decision, ingest_seq, ApplyMode::Head, true, depth)
         .map(|entered| entered.self_tag_k)
 }
 
@@ -550,6 +558,7 @@ fn apply_entry(
     ingest_seq: i64,
     mode: ApplyMode,
     authored: bool,
+    depth: u8,
 ) -> Result<Entered, ApiError> {
     let row = load_entry(tx, ingest_seq)?;
     let not_applicable = |reason: String| {
@@ -630,7 +639,7 @@ fn apply_entry(
             // its savepoint, so their deps include the trigger.
             let mut self_tag_k = handled.self_tag_k;
             for fact in &handled.follow_ups {
-                let error = match journal::author_queued(tx, sync, decision, fact) {
+                let error = match journal::author_queued(tx, sync, decision, fact, depth + 1) {
                     Ok(authored) => {
                         self_tag_k = self_tag_k.max(authored.self_tag_k);
                         continue;
@@ -786,7 +795,7 @@ impl<'a> Run<'a> {
     ) -> Result<(), ApiError> {
         self.attempts += 1;
         self.attempted.insert(ingest_seq);
-        let entered = apply_entry(tx, sync, decision, ingest_seq, mode, false)?;
+        let entered = apply_entry(tx, sync, decision, ingest_seq, mode, false, 0)?;
         match entered.outcome {
             ApplyOutcome::Applied => self.progress.applied += 1,
             ApplyOutcome::ParkedUnknown | ApplyOutcome::ParkedDep { .. } => {
