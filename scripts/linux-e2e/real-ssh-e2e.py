@@ -74,7 +74,8 @@ LEAK_PATTERN = re.compile(r"herdr-threads|herdr server|ssh -o BatchMode|peer --s
 SSHD_SETUP = r"""set -e
 mkdir -p /run/sshd /etc/ssh/sshd_config.d
 ssh-keygen -A >/dev/null
-usermod -p '*' tester
+# Unlock tester for key-only login (a '!' password locks sshd out with UsePAM no); the image has no usermod.
+sed -i -E 's/^(tester:)[^:]*:/\1*:/' /etc/shadow
 printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PubkeyAuthentication yes' \
   'UsePAM no' 'PermitRootLogin no' 'AllowUsers tester' > /etc/ssh/sshd_config.d/10-ht.conf
 install -d -m 700 -o tester -g tester /home/tester/.ssh
