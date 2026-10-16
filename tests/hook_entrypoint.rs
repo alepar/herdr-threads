@@ -7609,3 +7609,86 @@ fn versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capab
     // The withheld response outlasted the hook: release it only now.
     fx.mode.store(PASS, Ordering::SeqCst);
 }
+
+/// The installed hook must leave both receipt and binding progress untouched
+/// when its actual stdout cannot deliver the encoded context. The next normal
+/// hook recovers without a new arrival or an explicit inbox/ACK command.
+#[test]
+fn native_hook_broken_stdout_does_not_settle_or_hide_receipt_mail() {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+
+    let fx = Fixture::start();
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "broken-output"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    fx.hook("w9:p1", &tool("sess-1"));
+    let message = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &[
+            "send",
+            &thread,
+            "--body",
+            "receipt survives broken native output",
+            "--require-ack",
+            "seat",
+        ],
+    ));
+    let cursor_sql = format!(
+        "SELECT COALESCE(sum(c.seq),0) FROM binding_cursors c \
+         JOIN occupant_bindings b ON b.binding_id=c.binding_id \
+         WHERE b.seat_id='seat' AND c.thread_id='{thread}'"
+    );
+    let before = fx.count(&cursor_sql);
+    // A real open output descriptor with no reader yields EPIPE. Closing fd 1
+    // before exec is insufficient: a runtime may reopen it onto /dev/null.
+    let (sink, reader) = UnixStream::pair().unwrap();
+    drop(reader);
+    let sink: OwnedFd = sink.into();
+    let mut command = herdr_threads::test_support::harness_shim::under_harness(
+        "claude",
+        Path::new("/bin/sh"),
+        &["-c", &fx.command],
+        &[],
+    );
+    command
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", "w9:p1")
+        .env("HERDR_SOCKET_PATH", &fx.host)
+        .env("PATH", harness_path(&fx.host))
+        .env_remove("HERDR_PLUGIN_STATE_DIR")
+        .env_remove("HERDR_BIN_PATH")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(sink))
+        .stderr(Stdio::piped());
+    let mut child = command.spawn_owned().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&tool("sess-1"))
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    assert_eq!(
+        fx.count(&cursor_sql),
+        before,
+        "failed output moved the cursor"
+    );
+    let receipt_sql = format!(
+        "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+    );
+    assert_eq!(fx.count(&receipt_sql), 0, "failed output ACKed a receipt");
+    let retry = fx.hook("w9:p1", &tool("sess-1"));
+    assert!(context_of(&retry).contains("receipt survives broken native output"));
+    assert_eq!(fx.count(&receipt_sql), 1);
+    assert!(fx.count(&cursor_sql) > before);
+    assert!(fx.hook("w9:p1", &tool("sess-1")).stdout.is_empty());
+}

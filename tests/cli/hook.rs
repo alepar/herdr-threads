@@ -4667,6 +4667,50 @@ fn adapter_budget_caps_and_encoding_delivery_are_conservative() {
     assert!(!output_bytes(Err(EncodeFailure::Invalid("test".into()))).1);
 }
 
+// The native process treats this result as permission for receipt/cursor
+// completion. In particular, accepting all bytes but failing flush is not a
+// completed display. The installed-hook broken-stdout test checks the canonical
+// consequences of a false result through the process boundary.
+#[test]
+fn native_output_requires_successful_write_and_flush() {
+    struct Sink {
+        fail_write: bool,
+        fail_flush: bool,
+        bytes: Vec<u8>,
+        flushes: usize,
+    }
+    impl std::io::Write for Sink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.fail_write {
+                return Err(std::io::Error::other("native write failed"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes += 1;
+            if self.fail_flush {
+                return Err(std::io::Error::other("native flush failed"));
+            }
+            Ok(())
+        }
+    }
+    for (fail_write, fail_flush) in [(true, false), (false, true), (false, false)] {
+        let mut sink = Sink {
+            fail_write,
+            fail_flush,
+            bytes: vec![],
+            flushes: 0,
+        };
+        let delivered = write_and_flush(b"complete encoded native context", &mut sink);
+        assert_eq!(delivered, !fail_write && !fail_flush);
+        assert_eq!(sink.flushes, usize::from(!fail_write));
+        if !fail_write {
+            assert_eq!(sink.bytes, b"complete encoded native context");
+        }
+    }
+}
+
 // Catches child output bypassing policy composition and entering canonical work.
 fn child_lifecycle_context(harness: Harness, native_event: &str) -> String {
     use crate::daemon::ownership::OwnerLock;
