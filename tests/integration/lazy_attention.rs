@@ -429,6 +429,7 @@ fn guide_send_passive_and_explicit_receipt_controls() {
             assert_eq!(f.inbox("agent").as_slice(), std::slice::from_ref(&id));
             f.mutate(PermitMutation::CompleteInboxDelivery(
                 CompleteInboxDelivery {
+                    receipt_candidates: Vec::new(),
                     via: None,
                     messages: vec![id],
                     operation: OperationId::new("display-complete"),
@@ -866,6 +867,7 @@ fn lazy_addressed_survives_leave_retire_archive_and_excludes_postjoin() {
     );
     f.mutate(PermitMutation::CompleteInboxDelivery(
         CompleteInboxDelivery {
+            receipt_candidates: Vec::new(),
             via: None,
             messages: vec![id.clone()],
             operation: OperationId::new("display-human"),
@@ -924,6 +926,7 @@ fn lazy_addressed_survives_leave_retire_archive_and_excludes_postjoin() {
     let error = f
         .mutate(PermitMutation::CompleteInboxDelivery(
             CompleteInboxDelivery {
+                receipt_candidates: Vec::new(),
                 via: None,
                 messages: vec![id],
                 operation: OperationId::new("retired"),
@@ -1007,6 +1010,7 @@ fn lazy_attention_backlog_allows_qualified_quiet_archive() {
     assert_eq!(f.inbox("agent").as_slice(), std::slice::from_ref(&id));
     f.mutate(PermitMutation::CompleteInboxDelivery(
         CompleteInboxDelivery {
+            receipt_candidates: Vec::new(),
             via: None,
             messages: vec![id],
             operation: OperationId::new("after-archive"),

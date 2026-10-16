@@ -38,6 +38,98 @@ pub fn ack_displayed_payload(request: &Ack) -> Value {
     json!({"kind":"ack_displayed", "messages":request.messages,"claim":request.claim})
 }
 
+/// Validate complete native-context claims against canonical state before the resolver can
+/// reconnect a binding. This source never enrolls, reconnects or invents an obligation.
+pub(super) fn validate_hook_context(
+    tx: &Transaction<'_>,
+    claim: &CallerClaim,
+    messages: &[MessageId],
+) -> Result<(), ApiError> {
+    if claim.role != crate::protocol::authority::CallerRole::TopLevel
+        || crate::harness::registry::builtins()
+            .agent(claim.harness.as_str())
+            .is_err()
+        || crate::delivery::declares(claim.harness.as_str(), DeliveryMechanism::HookPull)
+    {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "native context completion requires a standard-hook agent",
+        ));
+    }
+    let exact: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND s.instance_id=?2 AND s.state!='retired' AND b.generation=?3 AND b.harness=?4 AND b.native_session=?5 AND b.execution_id=?6 AND b.target_id=?7 AND b.ended_at IS NULL AND b.liveness='connected' AND b.role='top_level' AND b.agent_id='' AND b.registered_at IS NOT NULL)",
+        params![claim.seat.as_str(),claim.instance,i64::try_from(claim.binding_generation).map_err(|_| api_error(ErrorCode::CallerUnverified,"binding generation exceeds storage range"))?,claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str(),claim.target.as_str()], |r| r.get(0),
+    ).map_err(store_error)?;
+    if !exact {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "native context completion requires the exact connected top-level binding",
+        ));
+    }
+    for id in messages {
+        let addressed: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages m JOIN memberships mm ON mm.thread_id=m.thread_id AND mm.seat_id=?2 AND mm.state='joined' WHERE m.id=?1 AND m.instance_id=?3 AND m.kind='ordinary')",
+            params![id.as_str(),claim.seat.as_str(),claim.instance], |r|r.get(0),
+        ).map_err(store_error)?;
+        let eligible = effective::effective_receipt(tx, id.as_str(), claim.seat.as_str())?
+            .is_some_and(|r| {
+                matches!(
+                    r.state,
+                    EffectiveReceiptState::Pending | EffectiveReceiptState::Acknowledged
+                )
+            });
+        if !addressed || !eligible {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "native context receipt is not an addressed agent obligation",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// One native-hook source adapter into the common receipt writer. The original caller and
+/// source remain in the enclosing accountable digest; observation preserves binding provenance.
+pub(super) fn complete_hook_context(
+    tx: &Transaction<'_>,
+    decision: DecisionInstant,
+    actor: &super::control::AccountableActor,
+    claim: &CallerClaim,
+    operation: &OperationId,
+    messages: &[MessageId],
+) -> Result<(), ApiError> {
+    validate_hook_context(tx, claim, messages)?;
+    let mut newly = Vec::new();
+    for id in messages {
+        if effective::effective_receipt(tx, id.as_str(), claim.seat.as_str())?
+            .is_some_and(|r| r.state == EffectiveReceiptState::Pending)
+        {
+            newly.push(id.clone());
+        }
+    }
+    let mut observation: Value =
+        serde_json::from_str(&actor.observation(decision.utc.0)).map_err(|_| {
+            api_error(
+                ErrorCode::StoreCorrupt,
+                "native context observation malformed",
+            )
+        })?;
+    observation["action_provenance"] =
+        json!(crate::protocol::authority::COOPERATIVE_HOOK_CONTEXT_PROVENANCE);
+    observation["via"] = json!("hook_context");
+    settle_pending(
+        tx,
+        decision,
+        &claim.seat,
+        operation,
+        &newly,
+        &observation.to_string(),
+        actor.binding_generation,
+        &actor.binding_id,
+        "ack_hook",
+    )
+}
+
 pub fn ack(
     context: &StoreContext,
     conn: &mut Connection,

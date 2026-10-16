@@ -152,6 +152,7 @@ where
             messages: candidates.ordinary,
         }),
         (!candidates.lazy.is_empty()).then_some(SemanticMutation::CompleteInboxDelivery {
+            receipt_candidates: Vec::new(),
             messages: candidates.lazy,
         }),
     ];

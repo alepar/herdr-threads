@@ -2720,7 +2720,7 @@ pub fn cooperative_payload_hash<T: serde::Serialize>(
 #[path = "../../tests/store/task48_budget.rs"]
 mod task48_budget_tests;
 
-/// Monotonic passive presentation bookkeeping, never receipt attribution.
+/// Complete passive presentation, and negotiated exact native-hook receipt candidates.
 pub fn complete_inbox_delivery(
     context: &StoreContext,
     conn: &mut Connection,
@@ -2730,10 +2730,15 @@ pub fn complete_inbox_delivery(
 ) -> Result<CommandResult, ApiError> {
     use crate::protocol::authority::CallerRole;
     let distinct: std::collections::BTreeSet<_> = request.messages.iter().collect();
+    let receipt_distinct: std::collections::BTreeSet<_> =
+        request.receipt_candidates.iter().collect();
     if request.claim.role == CallerRole::Subagent
-        || request.messages.is_empty()
-        || request.messages.len() > 100
+        || request.messages.len() + request.receipt_candidates.len() == 0
+        || request.messages.len() + request.receipt_candidates.len() > 100
         || distinct.len() != request.messages.len()
+        || receipt_distinct.len() != request.receipt_candidates.len()
+        || (!request.receipt_candidates.is_empty()
+            && request.via != Some(crate::protocol::commands::LazyCompletionVia::HookContext))
     {
         return Err(api_error(
             ErrorCode::InvalidRequest,
@@ -2764,6 +2769,13 @@ pub fn complete_inbox_delivery(
         request.operation.as_str(),
         digest,
         |tx| {
+            if !request.receipt_candidates.is_empty() {
+                super::receipts::validate_hook_context(
+                    tx,
+                    &request.claim,
+                    &request.receipt_candidates,
+                )?;
+            }
             for id in &request.messages {
                 if !tx
                     .query_row(
@@ -2782,7 +2794,7 @@ pub fn complete_inbox_delivery(
             Ok(())
         },
         |tx, decision| {
-            decide_accountable(
+            let actor = decide_accountable(
                 tx,
                 decision,
                 &mut permit,
@@ -2792,6 +2804,16 @@ pub fn complete_inbox_delivery(
                 &ObligationRef::CheckIn(seat.clone()),
                 &digest,
             )?;
+            if !request.receipt_candidates.is_empty() {
+                super::receipts::complete_hook_context(
+                    tx,
+                    decision,
+                    &actor,
+                    &request.claim,
+                    &request.operation,
+                    &request.receipt_candidates,
+                )?;
+            }
             // The display counts for the claim's binding; a claim matching no open binding (a
             // pre-binding client) completes for the whole seat, as before V34.
             let binding = super::bindings::match_claim(

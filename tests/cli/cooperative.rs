@@ -3770,6 +3770,7 @@ fn lazy_selected_human_retry_root_refuses_before_client() {
             },
             SemanticMutation::freeze(
                 SemanticMutation::CompleteInboxDelivery {
+                    receipt_candidates: Vec::new(),
                     messages: vec![MessageId::new("lazy")],
                 },
                 saved.clone(),

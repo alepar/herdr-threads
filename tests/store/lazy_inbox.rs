@@ -11,7 +11,7 @@ use herdr_threads::protocol::{
 };
 use herdr_threads::store::{connection::StoreContext, messages};
 use herdr_threads::test_support::isolation::TestIsolation;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::sync::Arc;
 
 struct FixedClock;
@@ -232,6 +232,170 @@ fn complete(
     )?;
     store.mutate(mutation, permit, &budget())
 }
+
+#[test]
+fn hook_receipt_completion_is_canonical_and_idempotent() {
+    let (iso, context, mut conn) = fixture("hook-receipt-completion");
+    let id = send(
+        &iso,
+        &context,
+        &mut conn,
+        "receipt-send",
+        "complete",
+        DeliveryMode::Ordinary,
+    );
+    let value = serde_json::json!({"messages":[],"receipt_candidates":[id],"operation":"hook-receipt","claim":claim(),"via":"hook_context"});
+    let request: CompleteInboxDelivery = serde_json::from_value(value).unwrap();
+    complete(&iso, request.clone()).unwrap();
+    complete(&iso, request.clone()).unwrap();
+    let (state, observation): (String, String) = conn
+        .query_row(
+            "SELECT state,ack_observation FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+            [id.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "acked");
+    let observation: serde_json::Value = serde_json::from_str(&observation).unwrap();
+    assert_eq!(observation["action_provenance"], "cooperative_hook_context");
+    assert_eq!(observation["provenance"], "cooperative_top_level");
+    let mut changed = request;
+    changed.via = None;
+    assert!(complete(&iso, changed).is_err());
+}
+
+#[test]
+fn hook_receipt_completion_refuses_ineligible_claims_atomically() {
+    for case in [
+        "disconnected",
+        "stale",
+        "foreign",
+        "subagent",
+        "unjoined",
+        "unknown",
+        "wrong-source",
+        "hook-pull",
+        "duplicate",
+    ] {
+        let (iso, context, mut conn) = fixture("hook-receipt-refusal");
+        let id = send(
+            &iso,
+            &context,
+            &mut conn,
+            "receipt-send",
+            "complete",
+            DeliveryMode::Ordinary,
+        );
+        let mut value = serde_json::json!({"messages":[],"receipt_candidates":[id],"operation":"hook-receipt","claim":claim(),"via":"hook_context"});
+        match case {
+            "disconnected" => {
+                conn.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason='superseded' WHERE seat_id='b'", []).unwrap();
+            }
+            "stale" => {
+                value["claim"]["execution"] =
+                    serde_json::json!("00000000-0000-4000-8000-000000000099")
+            }
+            "foreign" => value["claim"]["instance"] = serde_json::json!("other"),
+            "subagent" => value["claim"]["role"] = serde_json::json!("subagent"),
+            "unjoined" => {
+                conn.execute("UPDATE memberships SET state='left' WHERE seat_id='b'", [])
+                    .unwrap();
+            }
+            "unknown" => value["receipt_candidates"] = serde_json::json!(["unknown"]),
+            "wrong-source" => {
+                value.as_object_mut().unwrap().remove("via");
+            }
+            "hook-pull" => {
+                conn.execute(
+                    "UPDATE occupant_bindings SET harness='agy' WHERE seat_id='b'",
+                    [],
+                )
+                .unwrap();
+                value["claim"]["harness"] = serde_json::json!("agy");
+            }
+            "duplicate" => value["receipt_candidates"] = serde_json::json!([id, id]),
+            _ => unreachable!(),
+        }
+        let request = serde_json::from_value(value).unwrap();
+        assert!(complete(&iso, request).is_err(), "{case}");
+        assert_eq!(
+            conn.query_row(
+                "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+                [id.as_str()],
+                |r| r.get::<_, String>(0)
+            )
+            .optional()
+            .unwrap()
+            .as_deref()
+            .unwrap_or("pending"),
+            "pending",
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn hook_receipt_completion_mixed_batch_keeps_obligations_separate() {
+    let (iso, context, mut conn) = fixture("hook-receipt-mixed");
+    let receipt = send(
+        &iso,
+        &context,
+        &mut conn,
+        "receipt-send",
+        "complete",
+        DeliveryMode::Ordinary,
+    );
+    let lazy = send(
+        &iso,
+        &context,
+        &mut conn,
+        "lazy-send",
+        "quiet",
+        DeliveryMode::Lazy,
+    );
+    let omitted: CompleteInboxDelivery = serde_json::from_value(serde_json::json!({"messages":[lazy],"operation":"only-lazy","claim":claim(),"via":"hook_context"})).unwrap();
+    complete(&iso, omitted).unwrap();
+    assert!(
+        conn.query_row(
+            "SELECT acked_at FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+            [receipt.as_str()],
+            |r| r.get::<_, Option<i64>>(0)
+        )
+        .optional()
+        .unwrap()
+        .flatten()
+        .is_none()
+    );
+    let mixed: CompleteInboxDelivery = serde_json::from_value(serde_json::json!({"messages":[lazy],"receipt_candidates":[receipt],"operation":"mixed","claim":claim(),"via":"hook_context"})).unwrap();
+    complete(&iso, mixed).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='b'",
+            [lazy.as_str()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "displayed"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM receipt_state WHERE message_id=?1 AND state='acked'",
+            [receipt.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM receipt_state WHERE message_id=?1",
+            [lazy.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
 #[test]
 fn lazy_inbox_v2_bounded_priority_opportunity() {
     // Rotation is gone: the explicit-ACK receipt (p0, with a deadline) precedes the p1 delivery
@@ -444,6 +608,7 @@ fn lazy_inbox_completion_exact_id_idempotent_authority() {
         DeliveryMode::Ordinary,
     );
     let request = CompleteInboxDelivery {
+        receipt_candidates: Vec::new(),
         via: None,
         messages: vec![id.clone()],
         operation: OperationId::new("done"),
@@ -528,6 +693,7 @@ fn lazy_inbox_addressed_leave_retire_archive() {
             .any(|i| matches!(i,InboxBatchV2Item::LazyMessage{message,..} if message==&id))
     );
     let done = CompleteInboxDelivery {
+        receipt_candidates: Vec::new(),
         via: None,
         messages: vec![id],
         operation: OperationId::new("human-done"),
@@ -684,6 +850,7 @@ fn lazy_inbox_v2_late_publication_and_completion_do_not_hide_other_mail() {
     complete(
         &iso,
         CompleteInboxDelivery {
+            receipt_candidates: Vec::new(),
             via: None,
             messages: vec![first],
             operation: OperationId::new("settle-first"),
@@ -915,6 +1082,7 @@ fn lazy_inbox_completion_prevalidates_all_ids_and_authority_before_progress() {
         DeliveryMode::Lazy,
     );
     let request = CompleteInboxDelivery {
+        receipt_candidates: Vec::new(),
         via: None,
         messages: vec![id.clone(), MessageId::new("missing")],
         operation: OperationId::new("mixed-bad"),
@@ -935,6 +1103,7 @@ fn lazy_inbox_completion_prevalidates_all_ids_and_authority_before_progress() {
             _ => caller = send_request().claim,
         }
         let request = CompleteInboxDelivery {
+            receipt_candidates: Vec::new(),
             via: None,
             messages: vec![id.clone()],
             operation: OperationId::new(format!("bad-claim-{bad}")),
@@ -994,6 +1163,7 @@ fn lazy_inbox_retirement_retains_pending_rows_and_excludes_new_sends() {
         complete(
             &iso,
             CompleteInboxDelivery {
+                receipt_candidates: Vec::new(),
                 via: None,
                 messages: vec![id],
                 operation: OperationId::new("retired-done"),
@@ -1028,6 +1198,7 @@ fn lazy_inbox_completion_mismatched_permit_is_write_free() {
     )
     .unwrap();
     let request = CompleteInboxDelivery {
+        receipt_candidates: Vec::new(),
         via: None,
         messages: vec![id],
         operation: OperationId::new("original-done"),
@@ -1094,6 +1265,7 @@ fn lazy_inbox_fix_partial_concurrent_completion() {
     complete(
         &iso,
         CompleteInboxDelivery {
+            receipt_candidates: Vec::new(),
             via: None,
             messages: vec![first],
             operation: OperationId::new("concurrent"),

@@ -105,6 +105,8 @@ pub const COOPERATIVE_MOD_DELIVERY_PROVENANCE: &str = "cooperative_mod_delivery"
 /// `DeliveryPull` and the hook reported found in the session's transcript
 /// (delivery-policy DP5/DP6). Not proof of reading.
 pub const COOPERATIVE_HOOK_DELIVERY_PROVENANCE: &str = "cooperative_hook_delivery";
+/// Complete native-hook context was written and flushed. Not transcript or cognition proof.
+pub const COOPERATIVE_HOOK_CONTEXT_PROVENANCE: &str = "cooperative_hook_context";
 
 /// TRUST-POLICY A3: a plain cooperative call enrolled its session's binding (and a Codex or
 /// Hermes subagent attached to its parent) from the harness environment, without a hook.

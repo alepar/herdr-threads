@@ -1128,6 +1128,7 @@ fn presentation_q3_complete_inbox_delivery_coalesces_many_real_thread_gaps() {
     let sibling_cursors = q3_cursors(&f, &b);
     let receipts = q3_receipt_snapshot(&f);
     let request = CompleteInboxDelivery {
+        receipt_candidates: Vec::new(),
         messages: messages.clone(),
         operation: OperationId::new("q3-many-complete"),
         claim: a.clone(),
@@ -1190,6 +1191,7 @@ fn presentation_q3_complete_inbox_delivery_coalesces_many_real_thread_gaps() {
     f.service
         .handle(
             Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                receipt_candidates: Vec::new(),
                 operation: OperationId::new("q3-many-complete-noop"),
                 ..request
             }),
@@ -10229,6 +10231,7 @@ fn presentation_reclamation_requires_published_addressed_lazy_completion() {
         .service
         .handle(
             Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                receipt_candidates: Vec::new(),
                 messages: shown.clone(),
                 operation: OperationId::new("reclamation-full-lazy-display"),
                 claim: recipient.clone(),
@@ -12033,6 +12036,7 @@ fn presentation_capacity_due_walk_preserves_partial_body_until_real_ack() {
                 .handle(
                     Command::CompleteInboxDelivery(
                         crate::protocol::commands::CompleteInboxDelivery {
+                            receipt_candidates: Vec::new(),
                             messages: vec![first.clone()],
                             operation: OperationId::new("partial-lazy-completion"),
                             claim: window.recipient.clone(),
@@ -13418,6 +13422,7 @@ fn presentation_owner_replay_preserves_partial_body_until_real_ack() {
                 .handle(
                     Command::CompleteInboxDelivery(
                         crate::protocol::commands::CompleteInboxDelivery {
+                            receipt_candidates: Vec::new(),
                             messages: vec![first.clone()],
                             operation: OperationId::new("partial-lazy-completion"),
                             claim: window.recipient.clone(),

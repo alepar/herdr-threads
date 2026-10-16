@@ -908,6 +908,7 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
             scope.clone(),
             SemanticMutation::freeze(
                 SemanticMutation::CompleteInboxDelivery {
+                    receipt_candidates: Vec::new(),
                     messages: vec![MessageId::new("m")],
                 },
                 claim.clone(),

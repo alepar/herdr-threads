@@ -269,6 +269,7 @@ impl AcceptRig {
             .service
             .handle(
                 Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                    receipt_candidates: Vec::new(),
                     claim: q.window.recipient.clone(),
                     messages: vec![seed.clone()],
                     via: None,

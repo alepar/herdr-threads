@@ -270,6 +270,7 @@ impl Q4WriterReaders {
     fn complete(&self, caller: &CallerClaim, shown: &[MessageId], key: &str) {
         assert!(matches!(
             self.call(Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                receipt_candidates: Vec::new(),
                 claim: caller.clone(),
                 messages: shown.to_vec(),
                 operation: OperationId::new(key),
