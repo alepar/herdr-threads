@@ -52,8 +52,14 @@ One object per line, `schema: 1`; consumers ignore unknown keys.
 | `attention_cleared` | `attention_cleared:<version>` | after an attention line, nothing it pointed at is still pending; the mod drops unsent attention items |
 | `status` | `status:<n>` | `state` connected, refused or closing; optional `reason`, `exit` |
 
-Bodies over 8 KiB are cut at a char boundary, followed by the truncation marker, with
-`truncated: true`; the mod never acks a truncated item. Pages hold at most 32 items and 64 KiB.
+Bodies over 8 KiB are cut at a char boundary, followed by an inbox continuation, with
+`truncated: true`; the mod never acks a truncated item. Text inbox automatically completes
+fully displayed messages and settles existing requested receipts.
+Every tool-context or append batch holds at most 32 items and 64 KiB of rendered UTF-8,
+including framing and a single routed inbox continuation when content remains.
+Unselected items stay queued for later opportunities. An individually oversized item
+gets recovery once per watch run and stays queued without blocking later items or claiming a receipt.
+Complete batches carry no retrieval or ACK instructions.
 Peer text is framed under one lead line (bodies indented); a submit never starts with `/`.
 
 **Framing.** The fixed header, then one block per item: `[herdr-threads] <kind> <id> in <thread id> "<thread name>" from <sender id> "<sender name>"[ markers]:` and the body. The names are what `watch` supplies (the thread's topic; the sender seat id, or `service`), flattened to one line, quoted, and left out when absent or equal to the id. Markers are `[human]`, `[relays user]`, then `[query]`/`[request]`/`[rule]`, the same fixed text as every other read path. Attention blocks are `[herdr-threads] attention <id>:` and the marker.

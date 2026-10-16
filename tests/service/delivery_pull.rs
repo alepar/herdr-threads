@@ -2527,7 +2527,7 @@ fn the_marker_prefix_reaches_the_truncation_marker() {
     else {
         panic!("not a pull reply");
     };
-    assert!(page(reply).text.contains("/opt/ht --state-dir /s body big"));
+    assert!(page(reply).text.contains("/opt/ht --state-dir /s inbox"));
 }
 
 /// One pending invitation for seat `s` (what wakes a seat without a message).
@@ -11899,7 +11899,7 @@ fn presentation_capacity_due_promoted_lazy_defers_oversize_render_then_retries()
                     assert!(content.truncated);
                     assert_eq!(content.body_len, 65536);
                     assert_eq!(
-                        content.body.matches("herdr-threads body").count(),
+                        content.body.matches("herdr-threads inbox").count(),
                         1,
                         "one producer marker"
                     );
@@ -12527,7 +12527,7 @@ fn presentation_owner_replay_nonfull_once_per_lease_preserves_physical_metadata(
         assert_eq!(message.0, mode == DeliveryMode::Lazy && !promoted);
         assert_eq!(message.1.truncated, large);
         assert_eq!(
-            message.1.body.matches("herdr-threads body").count(),
+            message.1.body.matches("herdr-threads inbox").count(),
             usize::from(large)
         );
         if mode == DeliveryMode::Lazy {
