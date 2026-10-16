@@ -14,6 +14,8 @@ use herdr_threads::protocol::ids::{
     ExecutionId, HostTargetId, NativeSessionId, RetirementJobId, SeatId, ThreadId,
 };
 use herdr_threads::store::control;
+use herdr_threads::sync::facts::invitation::InvitationCreatedPayload;
+use herdr_threads::sync::facts::payload::InviterKind;
 use herdr_threads::test_support::journal_oracle::{replicated_projection, replicated_tables};
 use herdr_threads::test_support::{assert_no_local_delivery_for_remote, fact_exchange};
 
@@ -495,5 +497,56 @@ fn invitation_row_reads_the_same_on_every_node() {
     // B alone wakes for it: the invitee is its local seat.
     assert!(w.b.attention(&w.invitee).is_some());
     assert!(w.a.attention(&w.invitee).is_none() && w.x.attention(&w.invitee).is_none());
+    no_remote_delivery(&[&w.a, &w.b, &w.x]);
+}
+
+// Kills: a `confirmation` that depends on the node (it is derived from the
+// issuer kind alone), a service or operator invitation that owes an ACK, an
+// invitee whose home node is not woken, and a deadline other than
+// `created_at + frozen_duration_ms` (reconcile 1.2).
+#[test]
+fn confirmation_per_issuer_on_both_nodes() {
+    let w = world(230);
+    let svc_invitee = w.b.local_seat();
+    w.b.publish(&svc_invitee).unwrap();
+    let op_invitee = w.b.local_seat();
+    w.b.publish(&op_invitee).unwrap();
+    sync_all(&[&w.a, &w.b, &w.x]);
+
+    let seat_id = w.a.invite_fact(&w.thread, &w.inviter, &w.invitee);
+    let service = InvitationCreatedPayload {
+        inviter: None,
+        inviter_kind: InviterKind::Service,
+        actor_label: Some("svc-author".into()),
+        ..w.a.created_payload(&w.thread, &w.inviter, &svc_invitee)
+    };
+    w.a.author_created(&service).unwrap();
+    let operator = InvitationCreatedPayload {
+        inviter: None,
+        inviter_kind: InviterKind::Operator,
+        actor_label: Some("operator:local-user:501".into()),
+        invitation: w.a.mint_invitation(),
+        ..w.a.created_payload(&w.thread, &w.inviter, &op_invitee)
+    };
+    w.a.author_created(&operator).unwrap();
+    sync_all(&[&w.a, &w.b, &w.x]);
+
+    let expected = [
+        (&seat_id, Some("require_ack"), &w.invitee),
+        (&service.invitation, None, &svc_invitee),
+        (&operator.invitation, None, &op_invitee),
+    ];
+    for node in [&w.a, &w.b] {
+        for (id, confirmation, invitee) in expected {
+            let row = node.invitation(id).unwrap();
+            assert_eq!(row.confirmation.as_deref(), confirmation, "{id:?}");
+            assert_eq!(
+                row.deadline_at,
+                service.created_at + service.duration_ms,
+                "deadline is created_at + the frozen duration"
+            );
+            assert_eq!(node.attention(invitee).is_some(), node.id == w.b.id);
+        }
+    }
     no_remote_delivery(&[&w.a, &w.b, &w.x]);
 }

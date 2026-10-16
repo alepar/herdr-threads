@@ -152,6 +152,8 @@ pub const CONVERTED_TABLES: &[TableSpec] = &[
         src_column: None,
     },
     TableSpec {
+        // `nudge_threshold` and `wake_on` are node-local (reconcile 1.1) and
+        // deliberately not projected.
         name: "seats",
         filter: Some("published=1"),
         key_columns: &["id"],
@@ -217,6 +219,8 @@ pub const CONVERTED_TABLES: &[TableSpec] = &[
             "body",
             "decision_at",
             "origin_node",
+            "priority",
+            "delivery_mode",
         ],
         origin_column: None,
         position_columns: &[],
@@ -257,6 +261,24 @@ pub const CONVERTED_TABLES: &[TableSpec] = &[
         src_column: None,
     },
 ];
+
+/// The delivery rows of the replaying node's own seats, for per-node
+/// comparisons only: a node against a replay of its own logs, or against the
+/// rows a test expects. A remote seat has no row on the replaying node, so
+/// this is never part of [`replicated_tables`] and two nodes' projections of
+/// it are not expected to match.
+pub const LOCAL_DELIVERY_ROWS: TableSpec = TableSpec {
+    name: "lazy_recipients",
+    filter: Some(
+        "seat_id IN (SELECT id FROM seats WHERE is_local=1) AND \
+         thread_id IN (SELECT id FROM threads WHERE journaled=1)",
+    ),
+    key_columns: &["message_id AS message", "seat_id AS seat"],
+    replicated_columns: &["priority"],
+    origin_column: None,
+    position_columns: &[],
+    src_column: None,
+};
 
 /// [`CORE_TABLES`] and [`CONVERTED_TABLES`]: every replicated table.
 pub fn replicated_tables() -> Vec<TableSpec> {
