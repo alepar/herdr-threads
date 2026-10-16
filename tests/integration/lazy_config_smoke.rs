@@ -1,5 +1,5 @@
 //! Actual executable/current-daemon configuration matrix. Legacy means inbox-v1
-//! capabilities on wire protocol 7, never a historical executable or protocol-1 daemon.
+//! capabilities on wire protocol 9, never a historical executable or protocol-1 daemon.
 use herdr_threads::{
     daemon::{
         ownership::{read_descriptor, read_node_uuid_hint},
@@ -437,7 +437,7 @@ fn lazy_config_default_text_settles() {
     let ordinary = w.send("ordinary independent body", &["--require-ack", &w.seats[1]]);
     let out = w.text(1, false, &["inbox"]);
     assert!(
-        out.contains("complete passive body") && out.contains(&lazy) && out.contains("[lazy]"),
+        out.contains("complete passive body") && out.contains(&lazy) && !out.contains("[lazy]"),
         "{out}"
     );
     assert!(out.contains("ordinary independent body"), "{out}");
@@ -488,89 +488,6 @@ fn lazy_config_json_machine_explicit_seat_are_readonly() {
     }
     w.text(1, false, &["inbox"]);
     assert_eq!(w.state(&m, 1), "displayed");
-}
-#[test]
-fn lazy_config_current_cli_inbox_v1_daemon_refuses_lazy_before_intent() {
-    let w = World::agents_only();
-    let ordinary = w.send("ordinary legacy fallback", &["--require-ack", &w.seats[1]]);
-    let p = Proxy::new(w.paths(), &w.root);
-    p.mode.store(1, Ordering::SeqCst);
-    let before = w.intents();
-    let count: i64 = w
-        .db()
-        .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
-        .unwrap();
-    for extra in [vec![], vec!["--lazy"]] {
-        let mut a = vec!["send", &w.thread, "--body", "must never be sent"];
-        a.extend(extra);
-        let o = w.raw(Some(0), false, &a);
-        assert!(!o.status.success(), "argv={a:?}");
-        assert!(String::from_utf8_lossy(&o.stderr).contains("send.lazy_v1"));
-        assert_eq!(w.intents(), before);
-        assert_eq!(
-            w.db()
-                .query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            count
-        );
-    }
-    let out = w.text(1, false, &["inbox", "--machine"]);
-    assert!(
-        out.contains(&w.thread) && out.contains("receipts=1"),
-        "{out}"
-    );
-    let body = w.text(1, false, &["body", &ordinary]);
-    assert!(body.contains("ordinary legacy fallback"), "{body}");
-    // The daemon's materialization work projects the receipt row after the
-    // send commits, so under load it can still be absent here: wait for it.
-    let until = std::time::Instant::now() + Duration::from_secs(10);
-    let receipt = loop {
-        let state = w.db().query_row(
-            "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2 UNION SELECT state FROM receipts WHERE message_id=?1 AND seat_id=?2",
-            [&ordinary, &w.seats[1]],
-            |r| r.get::<_, String>(0),
-        );
-        match state {
-            Err(rusqlite::Error::QueryReturnedNoRows) if std::time::Instant::now() < until => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            state => break state.unwrap(),
-        }
-    };
-    assert_eq!(receipt, "pending");
-    let kinds: Vec<_> = p
-        .requests()
-        .iter()
-        .map(|q| q["command"]["kind"].as_str().unwrap().to_owned())
-        .collect();
-    assert!(kinds.contains(&"inbox".into()), "{kinds:?}");
-    assert!(
-        !kinds.iter().any(|k| matches!(
-            k.as_str(),
-            "send_message" | "inbox_batch_v2" | "complete_inbox_delivery" | "ack_displayed"
-        )),
-        "{kinds:?}"
-    );
-    let compatible = w.send("explicit nudge remains compatible", &["--nudge"]);
-    assert_eq!(
-        w.db()
-            .query_row(
-                "SELECT delivery_mode FROM messages WHERE id=?1",
-                [&compatible],
-                |r| r.get::<_, String>(0)
-            )
-            .unwrap(),
-        "ordinary"
-    );
-    let wire = p
-        .requests()
-        .into_iter()
-        .find(|q| q["command"]["kind"] == "send_message")
-        .expect("ordinary send submitted");
-    assert!(
-        wire["command"]["args"].get("delivery_mode").is_none(),
-        "legacy ordinary wire must omit mode: {wire}"
-    );
 }
 #[test]
 fn lazy_config_inbox_v1_client_current_daemon_ordinary_shapes() {

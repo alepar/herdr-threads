@@ -1,0 +1,23 @@
+[Should-fix] src/store/lazy_delivery/wake.rs:80; src/store/lazy_delivery/wake.rs:50
+[Nit] src/store/handoff/automatic.rs:320
+[Nit] src/store/read_cursors.rs:497; src/store/read_cursors.rs:496
+[Nit] src/store/control.rs:2242
+[FYI] integrations/claude/mod/hooks/register.js:357
+[FYI] docs/superpowers/runs/2026-10-13-message-priority-delivery/run.md:21
+[FYI] src/store/schema.rs:835; src/store/schema.rs:836
+[Should-fix] src/store/lazy_delivery/inbox.rs:335
+[Should-fix] src/store/lazy_delivery/mod.rs:112
+[Should-fix] tests/store/binding_lazy.rs:207
+[Nit] src/cli/send_priority.rs:91
+[final review] A: rows stay in the state='pending' index forever via a never-returning process-exited sibling binding or a cursor-only body read; first inbox/hook pages degrade after ~100 such rows; has_wake_rows unbounded (super-code-final-review-wf_ecf6a4ce-925.md)
+[final review] markers_ok in scripts/wake-e2e.py:192 passes vacuously when no header is on screen
+[final review] D: docs/agent-usage.md:79 says a human --require-ack recipient gets a human receipt (D9: p0 delivery row); three wake_on: all doc comments
+[final review] F4: nudge-threshold treats a failed capability probe as an old daemon
+[final review] complete_addressed unused and bypasses MARK_DISPLAYED_SQL
+[final review] B: mod_stall_oldest counts only pending receipts, so a wedged registered mod holding a p0 delivery row (bare --nudge, first p0 pair message) is never stall-closed and the seat never wakes (super-code-final-review-wf_33b8fe4a-079.md)
+[final review] body --max-bytes 256..~342 refused for every p0 message (fit_annotated_read gives up below 256 after the [p0] row)
+[final review] C: a new client shows [lazy] against an old daemon and [p0] against a new one (upgrade window only)
+[sweep] session_bindings_smoke::config5_resume_within_a_page_and_past_it fails 3/3 at e8ecb681 (passed at dae11184 with identical src): --json inbox page items [] with has_more — same symptom as punch-list item A
+[post-cap audit] [Should-fix] src/ports.rs:2188; tests/scheduler/dispatch.rs:5335 — merge seam: lazy in for_seat_attention re-nudges a one-process sibling after in-turn service; guard test weakened
+[post-cap audit] [Should-fix] tests/integration/token_diet.rs:274; tests/integration/token_diet.rs:271 — ht-yha.41 raised the test bound instead of fixing fit_annotated_read (body/read/search with documented small bounds refused for p0)
+[post-cap audit] [FYI] src/store/lazy_delivery/mod.rs:131; src/store/lazy_delivery/mod.rs:128 — process-exited bindings (every Claude session end) pin delivery rows pending (= item A; branch-introduced vs main)

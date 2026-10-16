@@ -6,7 +6,8 @@ use crate::protocol::{
     commands::{Command as WireCommand, *},
     ids::*,
     output::{ContinuationContext, OutputFormat, OutputSpec},
-    pagination::{DEFAULT_PAGE_BYTES, DEFAULT_PAGE_LIMIT, PageRequest},
+    pagination::{DEFAULT_PAGE_BYTES, DEFAULT_PAGE_LIMIT, MIN_PAGE_BYTES, PageRequest},
+    priority::{DeliveryPriority, NudgeThreshold},
     results::{ApiError, CommandResult, ErrorCode},
     summary::UserIntent,
 };
@@ -154,6 +155,9 @@ pub enum CliAction {
     /// acts as the seat (cooperative claim from its saved context), never
     /// journaled.
     WakeOn(Option<crate::protocol::commands::WakeOn>),
+    /// `nudge-threshold [N]`: read or set the invoking seat's nudge threshold; same
+    /// caller rules as `wake-on`.
+    NudgeThreshold(Option<NudgeThreshold>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -306,7 +310,8 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::Picker(_)
         | CliAction::Follow(_)
         | CliAction::Summary(_)
-        | CliAction::WakeOn(_) => {
+        | CliAction::WakeOn(_)
+        | CliAction::NudgeThreshold(_) => {
             return Err(ApiError::unsupported(
                 "setup, launch and skill are local compositions without a daemon backend",
             ));
@@ -354,7 +359,7 @@ pub enum MutationSpec {
     Leave(ThreadId),
     DirectSend(super::direct_send::Request),
     Send {
-        delivery_mode: DeliveryMode,
+        priority: DeliveryPriority,
         thread: ThreadId,
         body: String,
         require_ack: Vec<SeatId>,
@@ -509,25 +514,29 @@ impl MutationSpec {
                 ));
             }
             Self::Send {
-                delivery_mode,
+                priority,
                 thread,
                 body,
                 require_ack,
                 deadline_millis,
                 relays_user,
                 user_intent,
-            } => WireCommand::SendMessage(SendMessage {
-                delivery_mode,
-                thread,
-                body,
-                direct_recipient: None,
-                invited_recipients: require_ack,
-                deadline_millis,
-                operation,
-                claim: claim.unwrap(),
-                relays_user,
-                user_intent,
-            }),
+            } => {
+                // The current wire shape: the priority is carried and `delivery_mode` is omitted.
+                WireCommand::SendMessage(SendMessage {
+                    priority: Some(priority),
+                    delivery_mode: DeliveryMode::Ordinary,
+                    thread,
+                    body,
+                    direct_recipient: None,
+                    invited_recipients: require_ack,
+                    deadline_millis,
+                    operation,
+                    claim: claim.unwrap(),
+                    relays_user,
+                    user_intent,
+                })
+            }
             Self::Ack(messages) => WireCommand::Ack(Ack {
                 messages,
                 operation,
@@ -683,9 +692,9 @@ enum Top {
     /// Leave a thread without changing other participants.
     Leave { thread: String },
     /// Send to THREAD or use --seat SEAT for its canonical automatic pair channel.
-    /// Lazy by default (--body TEXT, --file PATH or --stdin); --nudge notifies.
+    /// Priority 1 by default (--body TEXT, --file PATH or --stdin); -p N sets 0..9, --nudge is -p 0.
     /// Direct ACK requests name only the target; --require-ack-pane is refused.
-    /// Creation invites the peer without accepting; lifecycle repair is explicit.
+    /// Creation joins both seats (no invitation); lifecycle repair is explicit.
     /// Immediate human send uses the same recipient routing.
     Send(SendArgs),
     /// ACK exact message IDs after reading them.
@@ -828,11 +837,13 @@ enum Top {
     /// section of `herdr-threads skill`).
     #[command(args_conflicts_with_subcommands = true)]
     Summary(SummaryArgs),
-    /// Show or set whether pending lazy messages also wake this seat when it
-    /// is idle: `nudge` (default) keeps the ordinary wake policy, `all` wakes
-    /// for every pending message. A preference only: it never ACKs or
+    /// Alias of `nudge-threshold`: `nudge` is threshold 0 (default), `all` is -1
+    /// (wake for every pending message). A preference only: it never ACKs or
     /// changes receipts.
     WakeOn(WakeOnArgs),
+    /// Show or set this seat's nudge threshold T (-1..=9, default 0): an idle seat wakes on a
+    /// pending message iff its priority is at most T; a negative value wakes for every message.
+    NudgeThreshold(NudgeThresholdArgs),
     /// Mod delivery child: streams herdr-threads deliveries as JSON lines.
     #[command(
         hide = true,
@@ -913,6 +924,13 @@ enum DoctorSub {
 struct WakeOnArgs {
     /// The new preference; omit to print the current one.
     #[arg(value_parser = ["nudge", "all"])]
+    value: Option<String>,
+}
+
+#[derive(Args)]
+struct NudgeThresholdArgs {
+    /// The new threshold; omit to print the current one. Negative means -1 (wake for all).
+    #[arg(allow_negative_numbers = true)]
     value: Option<String>,
 }
 
@@ -1271,18 +1289,18 @@ struct InviteArgs {
     /// Seat ID to invite.
     #[arg(long)]
     seat: Option<String>,
-    /// Leave the invitation discoverable without timed confirmation (default).
-    #[arg(long, conflicts_with_all = ["require_ack", "deadline", "operator"])]
-    lazy: bool,
-    /// Require explicit acceptance by the invitation deadline.
-    #[arg(long, conflicts_with = "operator")]
-    require_ack: bool,
-    /// Acceptance deadline in positive seconds; implies --require-ack.
+    /// Acceptance deadline in positive seconds.
     #[arg(long)]
     deadline: Option<u64>,
     /// Mark this as an explicit operator invitation.
     #[arg(long)]
     operator: bool,
+    /// Removed: invitations always confirm.
+    #[arg(long, hide = true)]
+    lazy: bool,
+    /// Removed: invitations always require acceptance.
+    #[arg(long = "require-ack", hide = true)]
+    require_ack: bool,
 }
 #[derive(Args)]
 struct SendArgs {
@@ -1311,13 +1329,22 @@ struct SendArgs {
     /// Deduplicates with --require-ack seats without changing the sender.
     #[arg(long = "require-ack-pane", action = ArgAction::Append)]
     require_ack_pane: Vec<String>,
-    /// Passive delivery at the next explicit inbox check (the default); no wake or ACK obligation.
-    #[arg(long, conflicts_with = "nudge")]
-    lazy: bool,
-    /// Enable ordinary attention and wake behavior; explicit ACK recipients imply this mode.
-    #[arg(long)]
+    /// Delivery priority 0 (most urgent) to 9; default 1. An idle recipient wakes only when the
+    /// priority is at or below its nudge threshold (default 0).
+    #[arg(
+        short = 'p',
+        long = "priority",
+        value_name = "N",
+        value_parser = clap::value_parser!(u8).range(0..=9)
+    )]
+    priority: Option<u8>,
+    /// Alias for --priority 0: wakes an idle recipient.
+    #[arg(long, conflicts_with = "priority")]
     nudge: bool,
-    /// ACK deadline in positive seconds; requires --nudge or explicit ACK recipients.
+    /// Removed: sends default to priority 1.
+    #[arg(long, hide = true)]
+    lazy: bool,
+    /// ACK deadline in positive seconds; requires --require-ack recipients.
     #[arg(long)]
     deadline: Option<u64>,
     #[arg(
@@ -1500,10 +1527,7 @@ struct HandoffArgs {
     /// Addressed instructions receipt deadline in positive seconds.
     #[arg(long)]
     deadline: Option<u64>,
-    /// Request timed invitation acceptance independently of message receipt.
-    #[arg(long)]
-    require_invite_ack: bool,
-    /// Invitation acceptance deadline in positive seconds; implies --require-invite-ack.
+    /// Invitation acceptance deadline in positive seconds.
     #[arg(long)]
     invite_deadline: Option<u64>,
     #[arg(long, conflicts_with_all = ["existing", "tab", "pane", "seat"])]
@@ -1549,6 +1573,10 @@ struct HandoffArgs {
     /// Read the complete durable instructions from standard input.
     #[arg(long)]
     stdin: bool,
+    /// Removed: handoff invitations always require acceptance. Declared last so the visible
+    /// options keep their help order (clap numbers display order by declaration).
+    #[arg(long, hide = true)]
+    require_invite_ack: bool,
 }
 
 #[derive(Args)]
@@ -1744,6 +1772,42 @@ fn harness_arg(
 
 fn invalid(detail: impl Into<String>) -> ApiError {
     ApiError::invalid_request(detail)
+}
+
+/// Flags removed by priority delivery (ht-yha.61): still parsed (hidden) and refused with what replaced them,
+/// like `send --lazy`, before the selector pass, any body read or any side effect.
+fn refuse_removed_flags(command: &Top) -> Result<(), ApiError> {
+    match command {
+        Top::Invite(args) if args.lazy => Err(invalid(
+            "--lazy was removed: invitations always confirm (priority 0, deadline, wake); omit it",
+        )),
+        Top::Invite(args) if args.require_ack => Err(invalid(
+            "--require-ack was removed: invitations always require acceptance; omit it",
+        )),
+        Top::Handoff(args) if args.require_invite_ack => Err(invalid(
+            "--require-invite-ack was removed: handoff invitations always require acceptance; omit it",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The send flags resolved to a delivery priority (D3/D4); runs before any body is read.
+fn send_priority_of(args: &SendArgs) -> Result<DeliveryPriority, ApiError> {
+    if args.lazy {
+        return Err(invalid(
+            "--lazy was removed: sends default to priority 1, which wakes nobody at the default threshold; omit it",
+        ));
+    }
+    super::send_priority::resolve(super::send_priority::SendPriorityFlags {
+        priority: args
+            .priority
+            .map(DeliveryPriority::new)
+            .transpose()
+            .map_err(invalid)?,
+        nudge: args.nudge,
+        explicit_ack: !args.require_ack.is_empty() || !args.require_ack_pane.is_empty(),
+        deadline: args.deadline.is_some(),
+    })
 }
 fn validation_error(detail: &'static str) -> ApiError {
     let code = if detail.contains("cursor") {
@@ -1976,13 +2040,6 @@ where
             1
         };
     }
-    if actor == InvocationActor::Human
-        && matches!(&cli.command, Top::Invite(args) if args.lazy || args.require_ack)
-    {
-        return Err(ParseFailure::Invalid(invalid(
-            "--lazy and --require-ack apply only to ordinary agent invitations",
-        )));
-    }
     let mut parsed = parse_cli_in_registry(cli, registry).map_err(|error| {
         if actor == InvocationActor::Agent && error.detail == "operator required" {
             invalid(format!(
@@ -2149,6 +2206,7 @@ fn parse_cli_in_registry(
         }),
         command => command,
     };
+    refuse_removed_flags(&cli.command)?;
     let cooperative_selector =
         cli.cooperative_target
             .as_ref()
@@ -2288,17 +2346,7 @@ fn parse_cli_in_registry(
                     "direct send accepts only its --seat recipient; pane ACK selectors are not supported",
                 ));
             }
-            let explicit_ack = !args.require_ack.is_empty() || !args.require_ack_pane.is_empty();
-            if args.lazy && (explicit_ack || args.deadline.is_some()) {
-                return Err(invalid(
-                    "--lazy cannot be combined with explicit ACK recipients or a deadline",
-                ));
-            }
-            if args.deadline.is_some() && !args.nudge && !explicit_ack {
-                return Err(invalid(
-                    "lazy sends cannot have a deadline; use --nudge or explicit ACK recipients",
-                ));
-            }
+            send_priority_of(args)?;
             if args.selector.pane.is_some() {
                 return Err(invalid("send uses --require-ack-pane PANE"));
             }
@@ -2442,13 +2490,7 @@ fn parse_cli_in_registry(
                 args.seat.unwrap_or_else(|| "pending-pane-selector".into()),
                 SeatId::parse,
             )?,
-            confirmation: (!args.operator).then_some(
-                if args.require_ack || args.deadline.is_some() {
-                    InvitationConfirmation::RequireAck
-                } else {
-                    InvitationConfirmation::Lazy
-                },
-            ),
+            confirmation: (!args.operator).then_some(InvitationConfirmation::RequireAck),
             deadline_millis: deadline(args.deadline)?
                 .map(|millis| {
                     i64::try_from(millis)
@@ -2497,14 +2539,7 @@ fn parse_cli_in_registry(
         }
         Top::Leave { thread } => CliAction::Mutation(MutationSpec::Leave(thread_id(thread)?)),
         Top::Send(args) => {
-            let delivery_mode = if args.nudge
-                || !args.require_ack.is_empty()
-                || !args.require_ack_pane.is_empty()
-            {
-                DeliveryMode::Ordinary
-            } else {
-                DeliveryMode::Lazy
-            };
+            let priority = send_priority_of(&args)?;
             if args.require_ack.len() > MAX_BATCH_ITEMS {
                 return Err(invalid("too many explicit recipients"));
             }
@@ -2535,7 +2570,8 @@ fn parse_cli_in_registry(
             if let Some(target) = direct_target {
                 CliAction::Mutation(MutationSpec::DirectSend(super::direct_send::Request {
                     target,
-                    delivery_mode,
+                    delivery_mode: DeliveryMode::Ordinary,
+                    priority: Some(priority),
                     body,
                     require_ack: recipients,
                     deadline_millis,
@@ -2544,7 +2580,7 @@ fn parse_cli_in_registry(
                 }))
             } else {
                 CliAction::Mutation(MutationSpec::Send {
-                    delivery_mode,
+                    priority,
                     thread: thread.expect("clap requires selector"),
                     body,
                     require_ack: recipients,
@@ -2570,6 +2606,7 @@ fn parse_cli_in_registry(
         Top::Archive { thread } => CliAction::Mutation(MutationSpec::Archive(thread_id(thread)?)),
         Top::Reopen { thread } => CliAction::Mutation(MutationSpec::Reopen(thread_id(thread)?)),
         Top::Inbox(args) => CliAction::Wire(WireCommand::Inbox(InboxQuery {
+            pushed: false,
             thread: None,
             claim: None,
             seat: args.seat.map(|s| id(s, SeatId::parse)).transpose()?,
@@ -2697,14 +2734,22 @@ fn parse_cli_in_registry(
                 full_bodies: false,
             }))
         }
-        Top::Body(args) => CliAction::Wire(WireCommand::Message(MessageQuery {
-            message: message_id(args.message)?,
-            body: BodyReadRequest {
-                cursor: args.cursor,
-                offset: args.offset,
-                max_bytes: args.max_bytes.unwrap_or(DEFAULT_PAGE_BYTES),
-            },
-        })),
+        Top::Body(args) => {
+            let max_bytes = args.max_bytes.unwrap_or(DEFAULT_PAGE_BYTES);
+            // The wire accepts a lower bound for the annotated-read refit; a user
+            // keeps the documented floor (ht-yha.50).
+            if max_bytes < MIN_PAGE_BYTES {
+                return Err(validation_error("invalid body output byte bound"));
+            }
+            CliAction::Wire(WireCommand::Message(MessageQuery {
+                message: message_id(args.message)?,
+                body: BodyReadRequest {
+                    cursor: args.cursor,
+                    offset: args.offset,
+                    max_bytes,
+                },
+            }))
+        }
         Top::Search(args) => CliAction::Wire(WireCommand::Search(SearchQuery {
             literal: bounded(args.literal, "search")?,
             thread: args.thread.map(thread_id).transpose()?,
@@ -2918,13 +2963,7 @@ fn parse_cli_in_registry(
             }
             let policy = crate::protocol::handoff::HandoffPolicy {
                 deadline_millis: deadline(args.deadline)?,
-                invitation_confirmation: if args.require_invite_ack
-                    || args.invite_deadline.is_some()
-                {
-                    InvitationConfirmation::RequireAck
-                } else {
-                    InvitationConfirmation::Lazy
-                },
+                invitation_confirmation: InvitationConfirmation::RequireAck,
                 invite_deadline_millis: deadline(args.invite_deadline)?,
             };
             policy.validate().map_err(invalid)?;
@@ -3010,6 +3049,11 @@ fn parse_cli_in_registry(
                     crate::protocol::commands::WakeOn::parse(&value)
                         .ok_or_else(|| invalid("wake-on takes `nudge` or `all`"))
                 })
+                .transpose()?,
+        ),
+        Top::NudgeThreshold(args) => CliAction::NudgeThreshold(
+            args.value
+                .map(|value| NudgeThreshold::parse(&value).map_err(invalid))
                 .transpose()?,
         ),
         Top::Summary(args) => {

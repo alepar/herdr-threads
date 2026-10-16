@@ -2132,6 +2132,84 @@ fn handoff_parser_requires_one_thread_explicit_pane_and_one_body() {
         );
     }
 }
+// ht-yha.61 (main review I2): flags removed by priority delivery stay parseable (hidden) and fail with the
+// explicit removal message, like `send --lazy`, before any body or selector is read. Exit 2.
+#[test]
+fn removed_invitation_flags_name_their_replacement() {
+    use crate::protocol::results::ErrorCode;
+    for (argv, flag) in [
+        (
+            vec!["ht", "invite", "t1", "--seat", "s1", "--lazy"],
+            "--lazy was removed: invitations always confirm",
+        ),
+        (
+            vec!["ht", "invite", "t1", "--seat", "s1", "--require-ack"],
+            "--require-ack was removed: invitations always require acceptance",
+        ),
+        (
+            vec!["ht", "invite", "t1", "--seat", "s1", "--lazy", "--deadline", "5"],
+            "--lazy was removed: invitations always confirm",
+        ),
+        (
+            vec!["ht", "human", "invite", "t1", "--seat", "s1", "--lazy"],
+            "--lazy was removed: invitations always confirm",
+        ),
+        (
+            vec![
+                "ht",
+                "handoff",
+                "--pane",
+                "w1:p2",
+                "--kind",
+                "codex",
+                "--thread",
+                "t1",
+                "--require-invite-ack",
+                "--",
+                "go",
+            ],
+            "--require-invite-ack was removed",
+        ),
+        (
+            // No --pane: the selector pass would refuse "handoff requires --pane PANE"; the removal wins.
+            vec![
+                "ht",
+                "handoff",
+                "--kind",
+                "codex",
+                "--thread",
+                "t1",
+                "--require-invite-ack",
+                "--",
+                "go",
+            ],
+            "--require-invite-ack was removed",
+        ),
+        (
+            vec![
+                "ht",
+                "handoff",
+                "--new-tab",
+                "w",
+                "--kind",
+                "codex",
+                "--require-invite-ack",
+                "--file",
+                "/nonexistent/handoff-body",
+            ],
+            "--require-invite-ack was removed",
+        ),
+    ] {
+        // `parse_argv` returns `ApiError`; a clap usage error is also mapped to `InvalidRequest` (its detail
+        // is clap's text), so the detail is what tells the removal message from a bare clap error.
+        let api = parse_argv(argv.clone())
+            .err()
+            .unwrap_or_else(|| panic!("{argv:?} parsed"));
+        assert_eq!(api.code, ErrorCode::InvalidRequest, "{argv:?}");
+        assert!(api.detail.contains(flag), "{argv:?}: {api:?}");
+        assert_eq!(crate::cli::exit::api_exit_code(&api.code), 2, "{argv:?}");
+    }
+}
 #[test]
 fn handoff_parser_preserves_native_elements_and_distinct_names() {
     let parsed = parse_argv([
@@ -3035,48 +3113,53 @@ fn inbox_v2_continuation_validates_without_changing_own_text_action() {
     use crate::protocol::{
         ids::{ExecutionId, MessageId, SeatId},
         pagination::{
+            DeadlineCursor, DeadlineHighWaters, DeadlineWalks, DeliveryRowsCursor,
             InboxBatchV2BodyPosition, InboxBatchV2CursorState as State,
-            InboxBatchV2Source as Source, ReceiptAttentionCursorState, SeatAttentionCursorState,
+            InboxBatchV2Source as Source, WarningsCursor,
         },
     };
     let state = State {
         seat: SeatId::new("s"),
         binding_generation: Some(1),
         execution: Some(ExecutionId::new("execution")),
-        source: Source::Lazy,
-        lazy_after_ordinal: 0,
-        lazy_high_water_ordinal: 2,
         publication_decision_high_water: 4,
-        body: Some(InboxBatchV2BodyPosition {
-            message: MessageId::new("m"),
-            offset: 2,
-            body_len: 10,
-        }),
-        unread: None,
-        attention: SeatAttentionCursorState {
-            invitation_after_seq: 0,
-            invitation_after_ordinal: 0,
-            invitations_done: false,
-            has_pending_invitation: false,
-            invitation_frontier: Some((0, 2)),
-            receipts: Some(ReceiptAttentionCursorState {
+        last: None,
+        rows: DeliveryRowsCursor {
+            after: None,
+            done: false,
+        },
+        deadline: DeadlineCursor {
+            high: DeadlineHighWaters {
+                invitation: 2,
+                unread: None,
+                physical: 2,
+                manifest: 2,
+            },
+            window_start: DeadlineWalks {
+                invitation_after: 0,
+                unread_after: None,
                 physical_after: 0,
                 manifest_after: 0,
-                physical_high_water: 2,
-                manifest_high_water: 2,
                 next_manifest: false,
-            }),
-            receipts_done: false,
-            has_pending_receipt: false,
-            receipt_frontier_seq: Some(4),
-            physical_warning_after: 0,
-            physical_warning_high_water: 4,
-            manifest_warning_after: 0,
-            manifest_warning_high_water: 4,
-            next_manifest_warning: false,
-            latest_warning_seq: None,
-            latest_warning_offset: Some(0),
+            },
+            window_end: None,
+            window_last: None,
+            done: false,
         },
+        warnings: WarningsCursor {
+            physical_after: 0,
+            manifest_after: 0,
+            offered: 0,
+            done: false,
+        },
+        body: Some((
+            Source::Lazy,
+            InboxBatchV2BodyPosition {
+                message: MessageId::new("m"),
+                offset: 2,
+                body_len: 10,
+            },
+        )),
     };
     let raw = state.encode("fixture-instance").unwrap();
     let parsed = parse_argv(["ht", "inbox", "--cursor", &raw]).unwrap();
@@ -3592,18 +3675,11 @@ fn adapters_discovery_refuses_invalid_provider_before_daemon_dispatch() {
 }
 
 #[test]
-fn invitation_policy_defaults_lazy_and_materializes_explicit_timing() {
-    use crate::protocol::commands::InvitationConfirmation::{Lazy, RequireAck};
+fn invitation_policy_defaults_to_require_ack_and_materializes_explicit_timing() {
+    use crate::protocol::commands::InvitationConfirmation::RequireAck;
     for (flags, mode, millis) in [
-        (vec![], Lazy, None),
-        (vec!["--lazy"], Lazy, None),
-        (vec!["--require-ack"], RequireAck, None),
+        (vec![], RequireAck, None),
         (vec!["--deadline", "7"], RequireAck, Some(7000)),
-        (
-            vec!["--require-ack", "--deadline", "7"],
-            RequireAck,
-            Some(7000),
-        ),
     ] {
         let mut argv = vec!["ht", "invite", "t1", "--seat", "s1"];
         argv.extend(flags);
@@ -3625,6 +3701,8 @@ fn invitation_policy_defaults_lazy_and_materializes_explicit_timing() {
 #[test]
 fn invitation_policy_conflicts_and_invalid_deadlines_refuse_at_parse() {
     for flags in [
+        vec!["--lazy"],
+        vec!["--require-ack"],
         vec!["--lazy", "--require-ack"],
         vec!["--lazy", "--deadline", "7"],
         vec!["--deadline", "0"],
@@ -3639,14 +3717,16 @@ fn invitation_policy_conflicts_and_invalid_deadlines_refuse_at_parse() {
 
 #[test]
 fn invitation_policy_explicit_flags_parse_and_human_keeps_legacy_semantics() {
-    for flags in [
-        vec!["--lazy"],
-        vec!["--require-ack"],
-        vec!["--deadline", "7"],
-    ] {
+    for flags in [vec![], vec!["--deadline", "7"]] {
         let mut argv = vec!["ht", "invite", "t1", "--seat", "s1"];
         argv.extend(flags);
         assert!(parse_argv(argv.clone()).is_ok(), "{argv:?}");
+    }
+    for flag in ["--lazy", "--require-ack"] {
+        assert!(
+            parse_argv(["ht", "invite", "t1", "--seat", "s1", flag]).is_err(),
+            "{flag}"
+        );
     }
     for flags in [vec![], vec!["--deadline", "7"]] {
         let mut argv = vec!["ht", "human", "invite", "t1", "--seat", "s1"];
@@ -3799,7 +3879,8 @@ fn direct_send_file_and_options_preserve_frozen_input() {
         "seat-b",
         "--file",
         path.to_str().unwrap(),
-        "--nudge",
+        "--require-ack",
+        "seat-b",
         "--deadline",
         "30",
         "--relays-user",
@@ -3809,7 +3890,7 @@ fn direct_send_file_and_options_preserve_frozen_input() {
     .unwrap();
     std::fs::remove_file(path).unwrap();
     assert!(
-        matches!(parsed.action, CliAction::Mutation(MutationSpec::DirectSend(request)) if request.target.as_str() == "seat-b" && request.body == "first\n雪\n" && request.delivery_mode == DeliveryMode::Ordinary && request.deadline_millis == Some(30_000) && request.relays_user && request.user_intent == Some(UserIntent::Request))
+        matches!(parsed.action, CliAction::Mutation(MutationSpec::DirectSend(request)) if request.target.as_str() == "seat-b" && request.body == "first\n雪\n" && request.priority == Some(crate::protocol::priority::DeliveryPriority::p0()) && request.deadline_millis == Some(30_000) && request.relays_user && request.user_intent == Some(UserIntent::Request))
     );
     for argv in [
         vec![
@@ -3978,4 +4059,27 @@ fn tagged_and_direct_ids_are_public_ids_and_parse_from_arguments() {
     let body = parse_argv(["herdr-threads", "body", "mQ7aEf56Gh78"]).unwrap();
     assert!(matches!(body.action,
         CliAction::Wire(Command::Message(q)) if q.message.as_str() == "mQ7aEf56Gh78"));
+}
+
+#[test]
+fn user_max_bytes_floor_stays_256_for_annotated_reads() {
+    use crate::protocol::results::ErrorCode;
+    for argv in [
+        ["body", "m1"],
+        ["read", "t1"],
+        ["search", "word"],
+    ] {
+        for (bound, ok) in [("255", false), ("256", true)] {
+            let mut full = vec!["herdr-threads"];
+            full.extend(argv);
+            full.extend(["--max-bytes", bound]);
+            match parse_argv(full) {
+                Ok(_) => assert!(ok, "{argv:?} {bound} parsed"),
+                Err(e) => {
+                    assert!(!ok, "{argv:?} {bound}: {e:?}");
+                    assert_eq!(e.code, ErrorCode::InvalidBudget, "{argv:?}");
+                }
+            }
+        }
+    }
 }

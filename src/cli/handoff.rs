@@ -210,9 +210,20 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
     }
     *phase = "send";
     if progress.message.is_none() {
+        // The addressed instructions always require the recipient's ACK: priority 0.
+        let priority = super::send_priority::resolve(super::send_priority::SendPriorityFlags {
+            explicit_ack: true,
+            deadline: plan.policy.is_some_and(|p| p.deadline_millis.is_some()),
+            ..Default::default()
+        })?;
+        debug_assert_eq!(priority, crate::protocol::priority::DeliveryPriority::p0());
+        // p0 in the spelling a handoff journaled before the priority field used: the handoff plan
+        // freezes no wire shape, so a retry of such a handoff must replay its first attempt byte
+        // for byte (the daemon derives ordinary -> p0).
         let result = call(
             SemanticMutation::SendMessage {
                 delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+                priority: None,
                 thread,
                 body: plan.body.into(),
                 direct_recipient: None,
@@ -2448,7 +2459,7 @@ pub(crate) fn validate_automatic_presentation_admission(
     Ok(())
 }
 
-pub(crate) const AUTOMATIC_PENDING_GUIDANCE: &str = "Retry the exact original reference after inspecting the pair lifecycle. Ensure creates the initial invitation once; a reject or leave needs explicit repair on the same pair. A possible native start must be inspected before any manual launch. No automatic invitation acceptance, ACK or topology cleanup occurs.";
+pub(crate) const AUTOMATIC_PENDING_GUIDANCE: &str = "Retry the exact original reference after inspecting the pair lifecycle. Ensure auto-joins both seats of a new pair (no invitation); a seat that left or rejected needs explicit repair on the same pair. A possible native start must be inspected before any manual launch. No automatic invitation acceptance, ACK or topology cleanup occurs.";
 pub(crate) const AUTOMATIC_BOOTSTRAP_GUIDANCE: &str = "Inspect the exact original namespace and attempt. Retry retains original body and keys; unknown native creation or start never grants another automatic submission. No topology cleanup, invitation acceptance or ACK.";
 
 /// Output projection only; the retained canonical/local argv remains exact.

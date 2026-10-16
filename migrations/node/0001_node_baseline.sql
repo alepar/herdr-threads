@@ -435,6 +435,7 @@ CREATE TABLE seats (
     retired_seq INTEGER CHECK(retired_seq > 0),
     unavailability_episode INTEGER NOT NULL DEFAULT 1 CHECK(unavailability_episode > 0),
     unavailability_open INTEGER NOT NULL DEFAULT 1 CHECK(unavailability_open IN (0,1)), wake_on TEXT NOT NULL DEFAULT 'nudge' CHECK(wake_on IN ('nudge','all')),
+    nudge_threshold INTEGER NOT NULL DEFAULT 0 CHECK(nudge_threshold BETWEEN -1 AND 9),
     home_node TEXT NOT NULL CHECK(length(home_node)=32 AND home_node NOT GLOB '*[^0-9a-f]*'),
     is_local INTEGER NOT NULL CHECK(is_local IN (0,1)),
     remote_kind TEXT CHECK(remote_kind IN ('agent','human')),
@@ -552,6 +553,7 @@ CREATE TABLE messages (
     CHECK(relays_user IN (0, 1)), author_role_backfilled INTEGER NOT NULL DEFAULT 0
     CHECK(author_role_backfilled IN (0, 1)), user_intent TEXT
     CHECK (user_intent IN ('query', 'request', 'rule')), delivery_mode TEXT NOT NULL DEFAULT 'ordinary' CHECK(delivery_mode IN ('ordinary','lazy')), sender_binding_id TEXT,
+    priority INTEGER NOT NULL DEFAULT 0 CHECK(priority BETWEEN 0 AND 9),
     origin_node TEXT CHECK(origin_node IS NULL OR length(origin_node)=32),
     UNIQUE(id, thread_id),
     UNIQUE(thread_id, sequence),
@@ -578,6 +580,7 @@ CREATE TABLE send_preparations (
     warning_count INTEGER NOT NULL DEFAULT 0 CHECK(warning_count >= 0),
     earliest_lease_deadline INTEGER,
     status TEXT NOT NULL CHECK(status IN ('building','sealed','discarded')), prepared_at INTEGER, delivery_mode TEXT NOT NULL DEFAULT 'ordinary' CHECK(delivery_mode IN ('ordinary','lazy')),
+    priority INTEGER NOT NULL DEFAULT 0 CHECK(priority BETWEEN 0 AND 9),
     origin TEXT NOT NULL DEFAULT 'local' CHECK(origin IN ('local','replicated')),
     UNIQUE(instance_id, operation_scope, operation_key)
 ) STRICT;
@@ -1130,6 +1133,8 @@ CREATE TABLE lazy_recipients (
     thread_id TEXT NOT NULL REFERENCES threads(id),
     seat_id TEXT NOT NULL REFERENCES seats(id),
     state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','displayed')), legacy_pending INTEGER NOT NULL DEFAULT 0 CHECK(legacy_pending IN (0,1)),
+    priority INTEGER NOT NULL DEFAULT 1 CHECK(priority BETWEEN 0 AND 9),
+    decision_seq INTEGER CHECK(decision_seq IS NULL OR decision_seq>0),
     UNIQUE(preparation_id,seat_id),
     UNIQUE(message_id,seat_id),
     CHECK(message_id IS CASE
@@ -2712,16 +2717,16 @@ BEGIN SELECT RAISE(ABORT, 'lazy delivery progress cannot regress'); END;
 
 CREATE TRIGGER lazy_recipient_source BEFORE INSERT ON lazy_recipients
 BEGIN
-    SELECT RAISE(ABORT, 'lazy recipient source mismatch') WHERE NEW.state<>'pending' OR NOT EXISTS (
+    SELECT RAISE(ABORT, 'lazy recipient source mismatch') WHERE NEW.state<>'pending' OR NEW.decision_seq IS NOT NULL OR NOT EXISTS (
         SELECT 1 FROM send_preparations p JOIN seats s ON s.id=NEW.seat_id AND s.instance_id=p.instance_id
-        WHERE p.id=NEW.preparation_id AND p.thread_id=NEW.thread_id AND p.delivery_mode='lazy' AND p.status='building'
+        WHERE p.id=NEW.preparation_id AND p.thread_id=NEW.thread_id AND p.status='building' AND p.priority=NEW.priority
     ) OR EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=NEW.preparation_id);
 END;
 
 CREATE TRIGGER lazy_recipient_display_published BEFORE UPDATE OF state ON lazy_recipients
 WHEN NEW.state='displayed' AND NOT EXISTS (
     SELECT 1 FROM send_manifests sm JOIN messages m ON m.id=sm.message_id
-    WHERE sm.preparation_id=OLD.preparation_id AND sm.message_id=OLD.message_id AND sm.thread_id=OLD.thread_id AND m.delivery_mode='lazy'
+    WHERE sm.preparation_id=OLD.preparation_id AND sm.message_id=OLD.message_id AND sm.thread_id=OLD.thread_id
 )
 BEGIN SELECT RAISE(ABORT, 'unpublished lazy delivery cannot complete'); END;
 
@@ -2733,8 +2738,9 @@ CREATE TRIGGER lazy_manifest_source BEFORE INSERT ON send_manifests
 BEGIN
     SELECT RAISE(ABORT, 'lazy manifest source mismatch') WHERE
         (SELECT delivery_mode FROM send_preparations WHERE id=NEW.preparation_id) IS NOT (SELECT delivery_mode FROM messages WHERE id=NEW.message_id)
-        OR ((SELECT delivery_mode FROM send_preparations WHERE id=NEW.preparation_id)='lazy' AND NEW.message_id IS NOT CASE WHEN substr(NEW.preparation_id,1,5)='prep-' AND length(NEW.preparation_id)>5 THEN 'msg-'||substr(NEW.preparation_id,6) WHEN length(NEW.preparation_id)=12 AND substr(NEW.preparation_id,1,1)='p' AND substr(NEW.preparation_id,2) NOT GLOB '*[^A-Za-z0-9]*' THEN 'm'||substr(NEW.preparation_id,2) ELSE NULL END)
-        OR ((SELECT delivery_mode FROM messages WHERE id=NEW.message_id)='lazy' AND NEW.warning_count<>0);
+        OR (SELECT priority FROM send_preparations WHERE id=NEW.preparation_id) IS NOT (SELECT priority FROM messages WHERE id=NEW.message_id)
+        OR (((SELECT delivery_mode FROM send_preparations WHERE id=NEW.preparation_id)='lazy' OR EXISTS(SELECT 1 FROM lazy_recipients WHERE preparation_id=NEW.preparation_id)) AND NEW.message_id IS NOT CASE WHEN substr(NEW.preparation_id,1,5)='prep-' AND length(NEW.preparation_id)>5 THEN 'msg-'||substr(NEW.preparation_id,6) WHEN length(NEW.preparation_id)=12 AND substr(NEW.preparation_id,1,1)='p' AND substr(NEW.preparation_id,2) NOT GLOB '*[^A-Za-z0-9]*' THEN 'm'||substr(NEW.preparation_id,2) ELSE NULL END)
+        OR (NEW.warning_count<>0 AND (SELECT priority FROM messages WHERE id=NEW.message_id)>=1 AND NOT EXISTS(SELECT 1 FROM prepared_recipients WHERE preparation_id=NEW.preparation_id));
 END;
 
 CREATE TRIGGER bootstrap_attempt_identity BEFORE UPDATE ON bootstrap_attempts
@@ -3985,6 +3991,94 @@ BEGIN
     SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
         THEN RAISE(ABORT,'presentation warning fence exhausted') END;
     UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
+END;
+
+-- Message delivery priority (ht-yha, folded from v47; reconcile C8).
+
+CREATE TRIGGER preparation_priority_immutable BEFORE UPDATE OF priority ON send_preparations
+WHEN NEW.priority IS NOT OLD.priority
+BEGIN SELECT RAISE(ABORT, 'preparation priority is immutable'); END;
+
+CREATE TRIGGER lazy_recipient_priority_immutable BEFORE UPDATE OF priority ON lazy_recipients
+WHEN NEW.priority IS NOT OLD.priority
+BEGIN SELECT RAISE(ABORT, 'delivery row priority is immutable'); END;
+
+CREATE TRIGGER lazy_recipient_decision_seq_once BEFORE UPDATE OF decision_seq ON lazy_recipients
+WHEN OLD.decision_seq IS NOT NULL AND NEW.decision_seq IS NOT OLD.decision_seq
+BEGIN SELECT RAISE(ABORT, 'delivery row publication is immutable'); END;
+
+CREATE TABLE binding_row_displays (
+    binding_id TEXT NOT NULL REFERENCES occupant_bindings(binding_id),
+    message_id TEXT NOT NULL CHECK(length(CAST(message_id AS BLOB)) BETWEEN 1 AND 128),
+    PRIMARY KEY(binding_id, message_id)
+) STRICT;
+
+CREATE TABLE binding_pending (
+    binding_id TEXT NOT NULL REFERENCES occupant_bindings(binding_id),
+    ordinal INTEGER NOT NULL REFERENCES lazy_recipients(ordinal),
+    thread_id TEXT NOT NULL,
+    priority INTEGER NOT NULL CHECK(priority BETWEEN 0 AND 9),
+    decision_seq INTEGER NOT NULL CHECK(decision_seq>0),
+    PRIMARY KEY(binding_id, ordinal)
+) STRICT;
+
+CREATE INDEX binding_pending_order ON binding_pending(binding_id,priority,decision_seq,ordinal);
+
+CREATE INDEX binding_pending_thread_order ON binding_pending(binding_id,thread_id,priority,decision_seq,ordinal);
+
+CREATE INDEX lazy_recipients_legacy_order ON lazy_recipients(seat_id,priority,decision_seq,ordinal) WHERE legacy_pending=1 AND decision_seq IS NOT NULL;
+
+CREATE TRIGGER binding_pending_publish AFTER UPDATE OF decision_seq ON lazy_recipients
+WHEN OLD.decision_seq IS NULL AND NEW.decision_seq IS NOT NULL
+BEGIN
+    INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq)
+    SELECT b.binding_id,NEW.ordinal,NEW.thread_id,NEW.priority,NEW.decision_seq FROM occupant_bindings b
+    WHERE b.seat_id=NEW.seat_id AND (b.ended_at IS NULL AND b.liveness='connected')
+      AND (EXISTS(SELECT 1 FROM binding_cursors lc WHERE lc.binding_id=b.binding_id AND lc.thread_id=NEW.thread_id) OR EXISTS(SELECT 1 FROM memberships lm WHERE lm.thread_id=NEW.thread_id AND lm.seat_id=NEW.seat_id AND (lm.state='joined' OR (lm.state='invited' AND COALESCE(lm.voluntary_state,lm.state)='invited' AND EXISTS(SELECT 1 FROM direct_threads ld JOIN seats ls ON ls.id=NEW.seat_id JOIN invitations li ON li.thread_id=ld.thread_id AND li.seat_id=ls.id AND li.episode=lm.episode WHERE ld.thread_id=NEW.thread_id AND ld.instance_id=(SELECT si.instance_id FROM seats si WHERE si.id=NEW.seat_id) AND (ls.id=ld.seat_a OR ls.id=ld.seat_b) AND ls.instance_id=(SELECT si.instance_id FROM seats si WHERE si.id=NEW.seat_id) AND ls.state<>'retired' AND ls.retired_at IS NULL AND li.state='pending' AND NEW.decision_seq>li.created_decision_seq)))));
+END;
+
+CREATE TRIGGER binding_pending_legacy_set AFTER UPDATE OF legacy_pending ON lazy_recipients
+WHEN OLD.legacy_pending=0 AND NEW.legacy_pending=1 AND NEW.decision_seq IS NOT NULL
+BEGIN
+    INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq)
+    SELECT b.binding_id,NEW.ordinal,NEW.thread_id,NEW.priority,NEW.decision_seq FROM occupant_bindings b
+    WHERE b.seat_id=NEW.seat_id AND (b.ended_at IS NULL AND b.liveness='connected') AND b.role='top_level';
+END;
+
+CREATE TRIGGER binding_pending_legacy_clear AFTER UPDATE OF legacy_pending ON lazy_recipients
+WHEN OLD.legacy_pending=1 AND NEW.legacy_pending=0
+BEGIN
+    DELETE FROM binding_pending WHERE ordinal=NEW.ordinal
+      AND (binding_id IN (SELECT c.binding_id FROM binding_cursors c WHERE c.thread_id=NEW.thread_id AND c.seq>=(SELECT m.sequence FROM messages m WHERE m.id=NEW.message_id))
+        OR binding_id IN (SELECT d.binding_id FROM binding_row_displays d WHERE d.message_id=NEW.message_id));
+END;
+
+CREATE TRIGGER binding_pending_cursor_insert AFTER INSERT ON binding_cursors
+BEGIN
+    DELETE FROM binding_pending WHERE binding_id=NEW.binding_id AND thread_id=NEW.thread_id
+      AND (SELECT m.sequence FROM lazy_recipients r JOIN messages m ON m.id=r.message_id WHERE r.ordinal=binding_pending.ordinal)<=NEW.seq
+      AND NOT EXISTS(SELECT 1 FROM lazy_recipients r JOIN occupant_bindings ob ON ob.binding_id=NEW.binding_id WHERE r.ordinal=binding_pending.ordinal AND r.legacy_pending=1 AND ob.role='top_level');
+END;
+
+CREATE TRIGGER binding_pending_cursor_advance AFTER UPDATE OF seq ON binding_cursors
+WHEN NEW.seq>OLD.seq
+BEGIN
+    DELETE FROM binding_pending WHERE binding_id=NEW.binding_id AND thread_id=NEW.thread_id
+      AND (SELECT m.sequence FROM lazy_recipients r JOIN messages m ON m.id=r.message_id WHERE r.ordinal=binding_pending.ordinal)<=NEW.seq
+      AND NOT EXISTS(SELECT 1 FROM lazy_recipients r JOIN occupant_bindings ob ON ob.binding_id=NEW.binding_id WHERE r.ordinal=binding_pending.ordinal AND r.legacy_pending=1 AND ob.role='top_level');
+END;
+
+CREATE TRIGGER binding_pending_row_display AFTER INSERT ON binding_row_displays
+BEGIN
+    DELETE FROM binding_pending WHERE binding_id=NEW.binding_id AND ordinal IN (
+        SELECT r.ordinal FROM lazy_recipients r JOIN occupant_bindings ob ON ob.binding_id=NEW.binding_id AND ob.seat_id=r.seat_id
+        WHERE r.message_id=NEW.message_id AND NOT (r.legacy_pending=1 AND ob.role='top_level'));
+END;
+
+CREATE TRIGGER binding_pending_binding_end AFTER UPDATE OF ended_at ON occupant_bindings
+WHEN OLD.ended_at IS NULL AND NEW.ended_at IS NOT NULL
+BEGIN
+    DELETE FROM binding_pending WHERE binding_id=NEW.binding_id;
 END;
 
 INSERT INTO "schema_identity"("marker") VALUES('herdr-threads-node-v1');

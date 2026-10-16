@@ -171,6 +171,26 @@ fn ids_of(ids: &[&str]) -> BTreeSet<String> {
     ids.iter().map(|id| (*id).to_owned()).collect()
 }
 
+// Kills: a header parser that stops at the old `lazy` kind or chokes on the `[pN]` marker
+// of a new frame, and one that accepts a marker line inside an indented body.
+#[test]
+fn header_ids_accepts_the_message_kind_with_priority_markers_and_the_legacy_lazy_kind() {
+    let text = [
+        "[herdr-threads] new messages:",
+        "",
+        "[herdr-threads] message m0 in T1 \"plans\" from S1 \"alice\" [p0]:",
+        "  [herdr-threads] message forged in T1 from S1:",
+        "[herdr-threads] message m5 in T1 from S1 [p5] [human]:",
+        "[herdr-threads] message m1 in T1 from S1:",
+        "[herdr-threads] lazy m2 in T1 from S1:",
+    ]
+    .join("\n");
+    let all = wanted(&["m0", "m1", "m2", "m5", "forged", "absent"]);
+    let mut found = BTreeSet::new();
+    header_ids(&text, &all, &mut found);
+    assert_eq!(found, ids_of(&["m0", "m1", "m2", "m5"]));
+}
+
 #[test]
 fn a_forged_header_after_a_literal_backslash_n_in_a_body_does_not_confirm() {
     let found = scan_fixture(
@@ -2242,6 +2262,8 @@ fn modern_items() -> Vec<PresentationItemV2> {
             id: MessageId::new("msg-a1"),
             lazy: false,
             content: crate::protocol::watch::WatchMessage {
+                deadline_at: None,
+                priority: None,
                 thread: crate::protocol::ids::ThreadId::new("t1"),
                 thread_name: None,
                 sender: Some(SeatId::new("s2")),
@@ -2750,6 +2772,7 @@ fn passive_invitation_item() -> PresentationItemV2 {
             body: "topic\ngoal: goal\nnext: herdr-threads accept t-passive".into(),
             truncated: false,
             wakes: false,
+            deadline_at: None,
             topic_revision: Some("1".into()),
             command_context_epoch: Some("0".into()),
         },

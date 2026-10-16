@@ -8,9 +8,9 @@
 //! (`Command::Capabilities`, `Command::HookParseFailure`, or a `full_bodies`
 //! field under its deny_unknown_fields) and forwards the rest unchanged.
 //! "Old CLI" frames are frozen under `tests/fixtures/old_wire/`; they are
-//! protocol 1, six protocols behind this protocol-7 build (B5 moved to 2, thread
-//! summaries to 3, thread names to 4, recorded intent to 5, handoff fences to 6, and session-keyed
-//! binding claims to 7), so they exercise the decodable skew reply.
+//! protocol 1, eight protocols behind this protocol-9 build (B5 moved to 2, thread
+//! summaries to 3, thread names to 4, recorded intent to 5, handoff fences to 6, session-keyed
+//! binding claims to 7, and message delivery priority to 8), so they exercise the decodable skew reply.
 
 use super::sweep::{FakeHost, Scratch, pane};
 use herdr_threads::test_support::spawn::SpawnOwned;
@@ -337,8 +337,9 @@ impl World {
         plugin.ok(Some(hatter), &["accept", &thread]);
         plugin.ok(
             Some(alice),
-            // This fixture compares ordinary legacy/current renderer bytes;
-            // explicitly retain attention delivery after native send became lazy.
+            // This fixture compares ordinary legacy/current renderer bytes. The
+            // opener is a p0 delivery-row send (no ACK recipient), the one kind
+            // the current daemon annotates with a `[p0]` row (ht-yha.66).
             &["send", &thread, "--body", "a short opening line", "--nudge"],
         );
         for (agent, word) in [(hatter, "tea"), (alice, "jam"), (hatter, "bat")] {
@@ -347,7 +348,23 @@ impl World {
                 format!("{word} and more {word}. ").repeat(30)
             );
             assert!(long.chars().count() > 256 && long.len() < 4000);
-            plugin.ok(Some(agent), &["send", &thread, "--body", &long, "--nudge"]);
+            let other = if agent == hatter {
+                &alice_seat
+            } else {
+                &hatter_seat
+            };
+            plugin.ok(
+                Some(agent),
+                &[
+                    "send",
+                    &thread,
+                    "--body",
+                    &long,
+                    "--nudge",
+                    "--require-ack",
+                    other,
+                ],
+            );
         }
         Self {
             _scratch: scratch,
@@ -421,10 +438,31 @@ fn cli_against_an_old_fixture_daemon_never_sends_full_bodies() {
         3,
         "one fetch per clipped preview: {kinds:?}"
     );
+    // Priorities postdate the old daemon: it never shows `[pN]` rows, while the
+    // current daemon annotates each p0 delivery-row send exactly once and an
+    // explicit-ACK send not at all (its ACK line marks it: ht-yha.66).
+    // Everything else renders byte for byte the same.
+    let (old_out, current_out) = (text(&old.stdout), text(&current.stdout));
+    assert!(
+        !old_out.lines().any(|l| l.starts_with("[p")),
+        "no [pN] row from an old daemon: {old_out}"
+    );
+    let (p0_rows, rest): (Vec<&str>, Vec<&str>) =
+        current_out.lines().partition(|l| l.starts_with("[p0] "));
+    let p0_messages = 1; // the opener; the three long bodies are --require-ack sends
+    assert_eq!(p0_rows.len(), p0_messages, "{current_out}");
+    let mut ids: Vec<&str> = p0_rows.iter().map(|l| l["[p0] ".len()..].trim()).collect();
+    assert!(
+        ids.iter().all(|id| !id.is_empty() && !id.contains(' ')),
+        "{p0_rows:?}"
+    );
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), p0_messages, "one row per message: {p0_rows:?}");
     assert_eq!(
-        text(&old.stdout),
-        text(&current.stdout),
-        "identical rendered bytes"
+        old_out.lines().collect::<Vec<_>>(),
+        rest,
+        "remaining rendered lines identical"
     );
     assert_eq!(old.stderr, current.stderr);
 }
@@ -442,9 +480,9 @@ fn skewed_protocol_version_still_yields_the_stop_then_ensure_report() {
     let software = "0.2.4";
     let mut skewed = published.clone();
     skewed["software_version"] = json!(software);
-    // Immediate previous relay wire contract against the fenced-handoff CLI.
-    const OLD_PROTOCOL: u16 = 7;
-    assert_eq!(PROTOCOL_VERSION, 8);
+    // Immediate previous wire contract (v1.0.x, protocol 8) against this protocol-9 CLI.
+    const OLD_PROTOCOL: u16 = 8;
+    assert_eq!(PROTOCOL_VERSION, 9);
     assert_eq!(OLD_PROTOCOL, PROTOCOL_VERSION - 1);
     skewed["protocol_version"] = json!(OLD_PROTOCOL);
     write_private(
@@ -503,7 +541,7 @@ fn skewed_protocol_version_still_yields_the_stop_then_ensure_report() {
 }
 
 /// Kills: a protocol-1 CLI (the frozen pre-B5 frames, four protocols behind
-/// this protocol-7 daemon) that gets a closed socket or a reply
+/// this protocol-9 daemon) that gets a closed socket or a reply
 /// it cannot decode (a key outside its deny_unknown_fields types) instead of
 /// the decodable skew error naming the stop-then-ensure remedy; and a skewed
 /// request that reaches the service.

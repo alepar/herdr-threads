@@ -4093,6 +4093,7 @@ fn inbox_empty_work_selection_preserves_bounds_and_continuations() {
                 requests: Mutex::new(vec![]),
             };
             let request = InboxQuery {
+                pushed: false,
                 thread: None,
                 claim: None,
                 seat: Some(SeatId::new("seat")),
@@ -4183,6 +4184,7 @@ fn inbox_drained_page_refit_retains_selected_cursor_and_body_offset() {
             };
             Ok(CommandResult::InboxBatchV2(Page {
                 items: vec![InboxBatchV2Item::LazyMessage {
+                    priority: None,
                     thread: ThreadId::new("thread"),
                     topic_data: "topic".into(),
                     message: MessageId::new("lazy"),
@@ -4216,6 +4218,7 @@ fn inbox_drained_page_refit_retains_selected_cursor_and_body_offset() {
     }
     let client = Client(Mutex::new(vec![]));
     let command = Command::InboxBatchV2(InboxQuery {
+        pushed: false,
         thread: None,
         claim: None,
         seat: Some(SeatId::new("seat")),
@@ -4591,9 +4594,7 @@ mod main539_composition {
     #[test]
     fn invitation_policy_public_cli_freezes_modes_and_duplicate_keeps_episode() {
         for (flags, expected, duration) in [
-            (vec![], "lazy", 300_000),
-            (vec!["--lazy"], "lazy", 300_000),
-            (vec!["--require-ack"], "require_ack", 300_000),
+            (vec![], "require_ack", 300_000),
             (vec!["--deadline", "7"], "require_ack", 7000),
         ] {
             let f = Fixture::new(false);
@@ -4628,19 +4629,15 @@ mod main539_composition {
                 expected
             );
             drop(commands);
-            let duplicate = if expected == "lazy" {
-                vec![
-                    "ht",
-                    "invite",
-                    "t",
-                    "--seat",
-                    "recipient",
-                    "--deadline",
-                    "9",
-                ]
-            } else {
-                vec!["ht", "invite", "t", "--seat", "recipient"]
-            };
+            let duplicate = vec![
+                "ht",
+                "invite",
+                "t",
+                "--seat",
+                "recipient",
+                "--deadline",
+                "9",
+            ];
             f.run(
                 duplicate.into_iter().map(str::to_owned).collect(),
                 &mut Vec::new(),
@@ -4874,13 +4871,14 @@ mod main539_composition {
             db.query_row("SELECT confirmation FROM invitations", [], |r| r
                 .get::<_, Option<String>>(0))
                 .unwrap(),
-            None
+            // Every new invitation is recorded confirming (ht-yha.6), also for a legacy retry.
+            Some("require_ack".to_owned())
         );
     }
 
     #[test]
     fn invitation_policy_modern_failed_submission_retains_frozen_mode_and_duration() {
-        for flags in [vec![], vec!["--require-ack"], vec!["--deadline", "7"]] {
+        for flags in [vec![], vec!["--deadline", "7"]] {
             let f = Fixture::new(false);
             let client = InvitationClient {
                 base: &f.client,
@@ -4918,11 +4916,7 @@ mod main539_composition {
             };
             assert_eq!(
                 invite.confirmation,
-                Some(if flags.is_empty() {
-                    crate::protocol::commands::InvitationConfirmation::Lazy
-                } else {
-                    crate::protocol::commands::InvitationConfirmation::RequireAck
-                })
+                Some(crate::protocol::commands::InvitationConfirmation::RequireAck)
             );
             assert_eq!(
                 invite.deadline_millis,
@@ -5832,6 +5826,7 @@ fn subagent_own_inbox_displays_advances_only_its_cursor_and_machine_read_carries
                 })),
                 Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(Page {
                     items: vec![InboxBatchV2Item::Message {
+                        priority: None,
                         thread: ThreadId::new("thread"),
                         message: MessageId::new("message-1"),
                         sequence: 1,
@@ -5846,6 +5841,7 @@ fn subagent_own_inbox_displays_advances_only_its_cursor_and_machine_read_carries
                         body_end: 5,
                         body_len: 5,
                         ack_candidate: Some(MessageId::new("message-1")),
+                        deadline_at: None,
                     }],
                     next_cursor: None,
                     next_argv: None,
@@ -5938,7 +5934,11 @@ fn subagent_own_inbox_displays_advances_only_its_cursor_and_machine_read_carries
     let mut advances = 0;
     for call in &calls {
         match call {
-            Command::InboxBatchV2(InboxQuery { claim, .. }) => {
+            Command::InboxBatchV2(InboxQuery {
+                pushed: false,
+                claim,
+                ..
+            }) => {
                 subagent_claim(claim.as_ref().expect("the read carries the claim"));
                 reads += 1;
             }
@@ -6015,6 +6015,7 @@ fn subagent_text_inbox_without_binding_cursors_is_a_read_only_read() {
                 })),
                 Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(Page {
                     items: vec![InboxBatchV2Item::Message {
+                        priority: None,
                         thread: ThreadId::new("thread"),
                         message: MessageId::new("message-1"),
                         sequence: 1,
@@ -6029,6 +6030,7 @@ fn subagent_text_inbox_without_binding_cursors_is_a_read_only_read() {
                         body_end: 5,
                         body_len: 5,
                         ack_candidate: Some(MessageId::new("message-1")),
+                        deadline_at: None,
                     }],
                     next_cursor: None,
                     next_argv: None,
@@ -6105,7 +6107,11 @@ fn subagent_text_inbox_without_binding_cursors_is_a_read_only_read() {
     let mut reads = 0;
     for call in &calls {
         match call {
-            Command::InboxBatchV2(InboxQuery { claim, .. }) => {
+            Command::InboxBatchV2(InboxQuery {
+                pushed: false,
+                claim,
+                ..
+            }) => {
                 assert!(claim.is_none(), "a read-only read carries no claim");
                 reads += 1;
             }

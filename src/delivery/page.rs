@@ -1,8 +1,13 @@
 //! The page drain loop, moved verbatim from the `watch` CLI (delivery-policy
 //! spec DP2): page `InboxBatchV2` for a seat until exhausted, feed every item
-//! to an [`Assembler`] and report what came out as [`DrainEvent`]s.
+//! to an [`Assembler`] and report what came out as [`DrainEvent`]s. Each page is
+//! emitted (sorted within the page) as it arrives, so a sink's `Halt` bounds the
+//! store reads.
 
-use super::assemble::{AssembleError, Assembled, Assembler, DeliveryInvitation, DeliveryItem};
+use super::assemble::{
+    AssembleError, Assembled, Assembler, DeliveryInvitation, DeliveryItem, batch_order,
+    invitation_order_key, item_order_key,
+};
 use crate::protocol::{pagination::Page, results::InboxBatchV2Item};
 
 pub use crate::protocol::watch::{
@@ -43,6 +48,12 @@ pub enum DrainEvent {
     },
     /// The last page was read.
     Exhausted,
+}
+
+/// One entry of a page's ordered batch.
+enum Batched {
+    Item(DeliveryItem),
+    Invitation(DeliveryInvitation),
 }
 
 /// A sink's verdict on one event.
@@ -88,15 +99,29 @@ pub fn drain_pages<E>(
     let mut saw_attention = false;
     for _ in 0..max_pages {
         let page = source.page(cursor.take()).map_err(DrainPagesError::Page)?;
+        // Each page goes out as it arrives, sorted within the page only (the inbox merge already
+        // orders across pages), so a sink's `Halt` stops before the next page is fetched.
+        // Invitations ride the same batch, keyed p0 plus their deadline.
+        let mut batch: Vec<Batched> = Vec::new();
         for item in page.items {
             match assembler.push(item).map_err(DrainPagesError::Assemble)? {
-                Assembled::Item(item) => emit!(DrainEvent::Item(item)),
+                Assembled::Item(item) => batch.push(Batched::Item(item)),
                 Assembled::Invitation(item) => {
                     saw_attention |= item.content.wakes;
-                    emit!(DrainEvent::Invitation(item));
+                    batch.push(Batched::Invitation(item));
                 }
                 Assembled::Attention => saw_attention = true,
                 Assembled::Pending | Assembled::InformationalNotice | Assembled::Duplicate => {}
+            }
+        }
+        batch_order(&mut batch, |entry| match entry {
+            Batched::Item(item) => item_order_key(item),
+            Batched::Invitation(item) => invitation_order_key(item),
+        });
+        for entry in batch {
+            match entry {
+                Batched::Item(item) => emit!(DrainEvent::Item(item)),
+                Batched::Invitation(item) => emit!(DrainEvent::Invitation(item)),
             }
         }
         match page.next_cursor {

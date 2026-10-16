@@ -63,6 +63,7 @@ impl Drop for Fixture {
 fn page(start: u64, end: u64) -> CommandResult {
     CommandResult::InboxBatchV2(Page {
         items: vec![InboxBatchV2Item::LazyMessage {
+            priority: None,
             thread: ThreadId::new("thread"),
             topic_data: "topic".into(),
             message: MessageId::new("lazy"),
@@ -212,7 +213,9 @@ impl herdr_threads::ports::LocalClient for Client {
                     let after = query.page.cursor.as_ref().map_or(0, |cursor| {
                         herdr_threads::protocol::pagination::InboxBatchV2CursorState::decode(cursor)
                             .unwrap()
-                            .lazy_after_ordinal
+                            .rows
+                            .after
+                            .map_or(0, |position| position.ordinal)
                     });
                     let next = test_cursor_after(after + 1);
                     page.next_cursor = Some(next.clone());
@@ -374,10 +377,16 @@ fn lazy_display_json_machine_explicit_selector_readonly() {
 #[test]
 fn lazy_display_default_text_routes_v2_settles_complete_body() {
     let f = Fixture::new();
+    let mut result = page(0, 10);
+    if let CommandResult::InboxBatchV2(p) = &mut result
+        && let InboxBatchV2Item::LazyMessage { priority, .. } = &mut p.items[0]
+    {
+        *priority = Some(herdr_threads::protocol::priority::DeliveryPriority::new(2).unwrap());
+    }
     let c = Client {
         calls: std::sync::Mutex::new(vec![]),
         v2: true,
-        result: page(0, 10),
+        result,
     };
     let out = run(
         &f,
@@ -385,7 +394,11 @@ fn lazy_display_default_text_routes_v2_settles_complete_body() {
         &c,
         herdr_threads::harness::context::Role::TopLevel,
     );
-    assert!(String::from_utf8(out).unwrap().contains("[lazy]"));
+    assert!(
+        String::from_utf8(out)
+            .unwrap()
+            .contains("from service [p2]")
+    );
     assert!(
         !has_lazy_progress(&f),
         "successful settlement clears its proof"
@@ -555,6 +568,7 @@ fn lazy_display_mixed_candidates_and_human_policy() {
         unreachable!()
     };
     p.items.push(InboxBatchV2Item::Message {
+        priority: None,
         thread: ThreadId::new("thread"),
         topic_data: "topic".into(),
         message: MessageId::new("ordinary"),
@@ -569,6 +583,7 @@ fn lazy_display_mixed_candidates_and_human_policy() {
         body_end: 4,
         body_len: 4,
         ack_candidate: Some(MessageId::new("ordinary")),
+        deadline_at: None,
     });
     let result = CommandResult::InboxBatchV2(p);
     let c = write_page(
@@ -760,44 +775,52 @@ fn test_cursor() -> String {
 }
 
 fn test_cursor_after(after: u64) -> String {
-    use herdr_threads::protocol::pagination::{
-        InboxBatchV2CursorState, InboxBatchV2Source, ReceiptAttentionCursorState,
-        SeatAttentionCursorState,
+    use herdr_threads::protocol::{
+        pagination::{
+            DeadlineCursor, DeadlineHighWaters, DeadlineWalks, DeliveryRowsCursor,
+            DeliveryRowsPosition, InboxBatchV2CursorState, WarningsCursor,
+        },
+        priority::DeliveryPriority,
     };
     InboxBatchV2CursorState {
         seat: SeatId::new("seat"),
         binding_generation: Some(1),
         execution: Some(ExecutionId::new(uuid::Uuid::from_u128(2).to_string())),
-        source: InboxBatchV2Source::Lazy,
-        lazy_after_ordinal: after,
-        lazy_high_water_ordinal: 100,
-        publication_decision_high_water: 4,
-        body: None,
-        unread: None,
-        attention: SeatAttentionCursorState {
-            invitation_after_seq: 0,
-            invitation_after_ordinal: 0,
-            invitations_done: false,
-            has_pending_invitation: false,
-            invitation_frontier: Some((0, 2)),
-            receipts: Some(ReceiptAttentionCursorState {
+        publication_decision_high_water: 4 + after,
+        last: None,
+        rows: DeliveryRowsCursor {
+            after: (after > 0).then_some(DeliveryRowsPosition {
+                priority: DeliveryPriority::DEFAULT,
+                decision_seq: after,
+                ordinal: after,
+            }),
+            done: false,
+        },
+        deadline: DeadlineCursor {
+            high: DeadlineHighWaters {
+                invitation: 2,
+                unread: None,
+                physical: 2,
+                manifest: 2,
+            },
+            window_start: DeadlineWalks {
+                invitation_after: 0,
+                unread_after: None,
                 physical_after: 0,
                 manifest_after: 0,
-                physical_high_water: 2,
-                manifest_high_water: 2,
                 next_manifest: false,
-            }),
-            receipts_done: false,
-            has_pending_receipt: false,
-            receipt_frontier_seq: Some(4),
-            physical_warning_after: 0,
-            physical_warning_high_water: 4,
-            manifest_warning_after: 0,
-            manifest_warning_high_water: 4,
-            next_manifest_warning: false,
-            latest_warning_seq: None,
-            latest_warning_offset: Some(0),
+            },
+            window_end: None,
+            window_last: None,
+            done: false,
         },
+        warnings: WarningsCursor {
+            physical_after: 0,
+            manifest_after: 0,
+            offered: 0,
+            done: false,
+        },
+        body: None,
     }
     .encode(&uuid::Uuid::from_u128(1).to_string())
     .unwrap()
@@ -829,6 +852,7 @@ fn continuation_mixed_sources_preserve_invocation() {
             informational: false,
         },
         InboxBatchV2Item::Message {
+            priority: None,
             thread: ThreadId::new("thread"),
             topic_data: "topic".into(),
             message: MessageId::new("ordinary"),
@@ -843,6 +867,7 @@ fn continuation_mixed_sources_preserve_invocation() {
             body_end: 8,
             body_len: 8,
             ack_candidate: Some(MessageId::new("ordinary")),
+            deadline_at: None,
         },
     ]);
     p.has_more = true;

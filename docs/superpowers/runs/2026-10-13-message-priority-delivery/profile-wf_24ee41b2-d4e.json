@@ -1,0 +1,1824 @@
+{
+  "version": 1,
+  "epic": "ht-yha",
+  "cap": 8,
+  "earlyUnblock": true,
+  "runtimeSlots": 10,
+  "invocations": [
+    {
+      "runId": "wf_d4c24927-f22",
+      "dir": "/Users/alepar/.aisw/profiles/claude/claude-2/projects/-Users-alepar-AleCode-herdr-threads/2fba7abe-bee7-4e80-a8ef-aec7e11233da/subagents/workflows/wf_d4c24927-f22",
+      "source": "workflow",
+      "start": "2026-10-13T18:59:29.205Z",
+      "end": "2026-10-14T03:52:17.629Z",
+      "agents": 115,
+      "timed": 115,
+      "journal": true
+    },
+    {
+      "runId": "wf_24ee41b2-d4e",
+      "dir": "/Users/alepar/.aisw/profiles/claude/claude-2/projects/-Users-alepar-AleCode-herdr-threads/2fba7abe-bee7-4e80-a8ef-aec7e11233da/subagents/workflows/wf_24ee41b2-d4e",
+      "source": "workflow",
+      "start": "2026-10-14T03:49:43.789Z",
+      "end": "2026-10-14T07:47:07.193Z",
+      "agents": 150,
+      "timed": 150,
+      "journal": true
+    }
+  ],
+  "window": {
+    "start": "2026-10-13T18:59:29.205Z",
+    "lastLanding": "2026-10-14T07:31:38.376Z",
+    "end": "2026-10-14T07:47:07.193Z",
+    "graphMs": 45129171,
+    "wallMs": 46057988
+  },
+  "shape": {
+    "beads": 19,
+    "edges": 72,
+    "depth": 7,
+    "width": 2.7,
+    "levels": [
+      3,
+      4,
+      2,
+      2,
+      4,
+      3,
+      1
+    ],
+    "criticalPath": [
+      "ht-yha.1",
+      "ht-yha.14",
+      "ht-yha.4",
+      "ht-yha.8",
+      "ht-yha.9",
+      "ht-yha.10",
+      "ht-yha.16"
+    ],
+    "fanOut": [
+      {
+        "id": "ht-yha.1",
+        "direct": 10,
+        "transitive": 16
+      },
+      {
+        "id": "ht-yha.2",
+        "direct": 6,
+        "transitive": 12
+      },
+      {
+        "id": "ht-yha.13",
+        "direct": 5,
+        "transitive": 12
+      },
+      {
+        "id": "ht-yha.14",
+        "direct": 5,
+        "transitive": 12
+      },
+      {
+        "id": "ht-yha.3",
+        "direct": 7,
+        "transitive": 11
+      }
+    ],
+    "cycles": []
+  },
+  "cuts": [],
+  "beads": [
+    {
+      "id": "ht-yha.1",
+      "n": 1,
+      "deps": [],
+      "dependents": [
+        "ht-yha.14",
+        "ht-yha.7",
+        "ht-yha.5.1",
+        "ht-yha.3",
+        "ht-yha.5.3",
+        "ht-yha.4",
+        "ht-yha.8",
+        "ht-yha.6",
+        "ht-yha.9",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "IMPLEMENTED",
+        "ALREADY_MERGED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-13T19:17:04.514Z",
+      "dispatchedAt": "2026-10-13T19:17:06.842Z",
+      "landedAt": "2026-10-13T23:31:45.126Z",
+      "waitMs": 2328,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 1063296,
+      "implByTool": {
+        "read": 4795,
+        "git": 2225,
+        "shell": 77248,
+        "build": 429806,
+        "poll": 326937,
+        "other": 7,
+        "test": 311
+      },
+      "implToolMs": 841329,
+      "reviewMs": 49236,
+      "fixMs": 0,
+      "stackWaitMs": 14130252,
+      "queueWaitMs": 0,
+      "laneMs": 14074891,
+      "seamMs": 0,
+      "blockerMs": 52617,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.13",
+      "n": 3,
+      "deps": [],
+      "dependents": [
+        "ht-yha.3",
+        "ht-yha.4",
+        "ht-yha.5.2",
+        "ht-yha.6",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-13T19:17:04.514Z",
+      "dispatchedAt": "2026-10-13T19:17:08.748Z",
+      "landedAt": "2026-10-13T23:32:27.351Z",
+      "waitMs": 4234,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 909866,
+      "implByTool": {
+        "read": 1901,
+        "git": 63,
+        "shell": 110161,
+        "test": 468725,
+        "poll": 251884
+      },
+      "implToolMs": 832734,
+      "reviewMs": 58032,
+      "fixMs": 0,
+      "stackWaitMs": 14299636,
+      "queueWaitMs": 0,
+      "laneMs": 14373099,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.2",
+      "n": 2,
+      "deps": [],
+      "dependents": [
+        "ht-yha.3",
+        "ht-yha.4",
+        "ht-yha.8",
+        "ht-yha.5.2",
+        "ht-yha.9",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-13T19:17:04.514Z",
+      "dispatchedAt": "2026-10-13T19:17:08.748Z",
+      "landedAt": "2026-10-13T23:33:11.980Z",
+      "waitMs": 4234,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 1017036,
+      "implByTool": {
+        "read": 7769,
+        "git": 49,
+        "shell": 22718,
+        "bd": 2653,
+        "test": 123771,
+        "poll": 645683
+      },
+      "implToolMs": 801765,
+      "reviewMs": 63871,
+      "fixMs": 0,
+      "stackWaitMs": 14201542,
+      "queueWaitMs": 0,
+      "laneMs": 14242155,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.14",
+      "n": 4,
+      "deps": [
+        "ht-yha.1"
+      ],
+      "dependents": [
+        "ht-yha.5.3",
+        "ht-yha.4",
+        "ht-yha.8",
+        "ht-yha.5.4",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "IMPLEMENTED",
+        "ALREADY_MERGED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-13T19:34:50.138Z",
+      "dispatchedAt": "2026-10-13T19:43:49.934Z",
+      "landedAt": "2026-10-13T20:01:08.865Z",
+      "waitMs": 539796,
+      "waitCause": "unexplained",
+      "carriedMs": 0,
+      "implMs": 832283,
+      "implByTool": {
+        "read": 2765,
+        "git": 1111,
+        "shell": 75136,
+        "build": 221678,
+        "test": 434903
+      },
+      "implToolMs": 735593,
+      "reviewMs": 34424,
+      "fixMs": 0,
+      "stackWaitMs": 12806401,
+      "queueWaitMs": 0,
+      "laneMs": 168051,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [
+        "ht-yha.1"
+      ],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.5.1",
+      "n": 6,
+      "deps": [
+        "ht-yha.1"
+      ],
+      "dependents": [
+        "ht-yha.5.3",
+        "ht-yha.5.2",
+        "ht-yha.5.4",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "IMPLEMENTED",
+        "ALREADY_MERGED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-13T19:44:48.433Z",
+      "dispatchedAt": "2026-10-13T19:44:51.351Z",
+      "landedAt": "2026-10-13T20:04:12.393Z",
+      "waitMs": 2918,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 851669,
+      "implByTool": {
+        "read": 4480,
+        "git": 162,
+        "shell": 52874,
+        "test": 662095
+      },
+      "implToolMs": 719611,
+      "reviewMs": 37478,
+      "fixMs": 0,
+      "stackWaitMs": 12722425,
+      "queueWaitMs": 0,
+      "laneMs": 173223,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [
+        "ht-yha.1"
+      ],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.3",
+      "n": 7,
+      "deps": [
+        "ht-yha.1",
+        "ht-yha.13",
+        "ht-yha.2"
+      ],
+      "dependents": [
+        "ht-yha.4",
+        "ht-yha.5.2",
+        "ht-yha.6",
+        "ht-yha.5.4",
+        "ht-yha.11",
+        "ht-yha.12",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "FAILED",
+        "FAILED",
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T03:51:51.267Z",
+      "dispatchedAt": "2026-10-14T03:51:53.933Z",
+      "landedAt": "2026-10-14T04:31:28.047Z",
+      "waitMs": 2666,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 2152283,
+      "implByTool": {
+        "read": 25528,
+        "git": 27932,
+        "shell": 26794,
+        "bd": 3962,
+        "test": 232309,
+        "poll": 1355090,
+        "build": 60710,
+        "edit": 1083
+      },
+      "implToolMs": 1732909,
+      "reviewMs": 69147,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2147,
+      "laneMs": 148092,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 8678990,
+      "criticalMs": 21508864,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.7",
+      "n": 5,
+      "deps": [
+        "ht-yha.1"
+      ],
+      "dependents": [
+        "ht-yha.11",
+        "ht-yha.12",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "FAILED",
+        "IMPLEMENTED",
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T03:51:51.267Z",
+      "dispatchedAt": "2026-10-14T03:51:56.190Z",
+      "landedAt": "2026-10-14T05:21:59.405Z",
+      "waitMs": 4923,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 4825220,
+      "implByTool": {
+        "read": 31750,
+        "git": 2552,
+        "shell": 79904,
+        "bd": 8312,
+        "build": 450016,
+        "poll": 2379587,
+        "test": 1057085,
+        "edit": 209
+      },
+      "implToolMs": 4004388,
+      "reviewMs": 67940,
+      "fixMs": 308633,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2324,
+      "laneMs": 191319,
+      "seamMs": 27252,
+      "blockerMs": 0,
+      "reworkMs": 3169554,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.5.3",
+      "n": 8,
+      "deps": [
+        "ht-yha.5.1",
+        "ht-yha.14",
+        "ht-yha.1"
+      ],
+      "dependents": [
+        "ht-yha.5.4",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "FAILED",
+        "IMPLEMENTED",
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T03:53:14.298Z",
+      "dispatchedAt": "2026-10-14T03:59:21.739Z",
+      "landedAt": "2026-10-14T04:01:59.063Z",
+      "waitMs": 367441,
+      "waitCause": "cancelled",
+      "carriedMs": 0,
+      "implMs": 13975,
+      "implByTool": {
+        "read": 14,
+        "git": 245,
+        "shell": 586
+      },
+      "implToolMs": 845,
+      "reviewMs": 31718,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2118,
+      "laneMs": 107166,
+      "seamMs": 0,
+      "blockerMs": 69145,
+      "reworkMs": 2114552,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.4",
+      "n": 9,
+      "deps": [
+        "ht-yha.1",
+        "ht-yha.14",
+        "ht-yha.3",
+        "ht-yha.2",
+        "ht-yha.13"
+      ],
+      "dependents": [
+        "ht-yha.8",
+        "ht-yha.5.2",
+        "ht-yha.6",
+        "ht-yha.9",
+        "ht-yha.11",
+        "ht-yha.12",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T04:27:46.216Z",
+      "dispatchedAt": "2026-10-14T04:27:50.590Z",
+      "landedAt": "2026-10-14T05:08:19.705Z",
+      "waitMs": 4374,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 2289696,
+      "implByTool": {
+        "read": 19845,
+        "git": 615,
+        "shell": 44054,
+        "build": 381287,
+        "test": 1347246
+      },
+      "implToolMs": 1793047,
+      "reviewMs": 66683,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2217,
+      "laneMs": 66106,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 2294070,
+      "stackParents": [
+        "ht-yha.3"
+      ],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.8",
+      "n": 10,
+      "deps": [
+        "ht-yha.2",
+        "ht-yha.14",
+        "ht-yha.4",
+        "ht-yha.1"
+      ],
+      "dependents": [
+        "ht-yha.9",
+        "ht-yha.11",
+        "ht-yha.15",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T05:06:00.286Z",
+      "dispatchedAt": "2026-10-14T05:06:06.944Z",
+      "landedAt": "2026-10-14T05:58:12.060Z",
+      "waitMs": 6658,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 2639449,
+      "implByTool": {
+        "read": 20559,
+        "git": 6804,
+        "shell": 8697,
+        "bd": 3363,
+        "build": 193685,
+        "test": 1921566
+      },
+      "implToolMs": 2154674,
+      "reviewMs": 43433,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 3098,
+      "laneMs": 436585,
+      "seamMs": 285597,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [
+        "ht-yha.4"
+      ],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.5.2",
+      "n": 11,
+      "deps": [
+        "ht-yha.5.1",
+        "ht-yha.4",
+        "ht-yha.3",
+        "ht-yha.2",
+        "ht-yha.13"
+      ],
+      "dependents": [
+        "ht-yha.6",
+        "ht-yha.5.4",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T05:06:00.286Z",
+      "dispatchedAt": "2026-10-14T05:06:06.945Z",
+      "landedAt": "2026-10-14T05:37:40.450Z",
+      "waitMs": 6659,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 1716473,
+      "implByTool": {
+        "read": 15934,
+        "git": 5437,
+        "shell": 65741,
+        "bd": 6246,
+        "test": 920414,
+        "poll": 156559,
+        "build": 91827
+      },
+      "implToolMs": 1262090,
+      "reviewMs": 35785,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2265,
+      "laneMs": 134578,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 1723132,
+      "stackParents": [
+        "ht-yha.4"
+      ],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.6",
+      "n": 12,
+      "deps": [
+        "ht-yha.5.2",
+        "ht-yha.13",
+        "ht-yha.1",
+        "ht-yha.4",
+        "ht-yha.3"
+      ],
+      "dependents": [
+        "ht-yha.12",
+        "ht-yha.10",
+        "ht-yha.15",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T05:34:43.418Z",
+      "dispatchedAt": "2026-10-14T05:34:49.512Z",
+      "landedAt": "2026-10-14T06:37:11.807Z",
+      "waitMs": 6094,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 3549334,
+      "implByTool": {
+        "read": 59586,
+        "git": 4312,
+        "shell": 102043,
+        "build": 288815,
+        "test": 1067669,
+        "poll": 854115,
+        "edit": 496
+      },
+      "implToolMs": 2377036,
+      "reviewMs": 44359,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2080,
+      "laneMs": 143072,
+      "seamMs": 35523,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [
+        "ht-yha.5.2"
+      ],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.5.4",
+      "n": 13,
+      "deps": [
+        "ht-yha.5.2",
+        "ht-yha.3",
+        "ht-yha.5.1",
+        "ht-yha.5.3",
+        "ht-yha.14"
+      ],
+      "dependents": [
+        "ht-yha.12",
+        "ht-yha.10",
+        "ht-yha.15",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T05:34:43.418Z",
+      "dispatchedAt": "2026-10-14T05:34:49.513Z",
+      "landedAt": "2026-10-14T07:02:10.654Z",
+      "waitMs": 6095,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 3874563,
+      "implByTool": {
+        "read": 67182,
+        "git": 20419,
+        "shell": 647216,
+        "bd": 3929,
+        "test": 773497,
+        "edit": 565,
+        "build": 162189,
+        "poll": 41654,
+        "other": 16
+      },
+      "implToolMs": 1712930,
+      "reviewMs": 35817,
+      "fixMs": 600200,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2210,
+      "laneMs": 722584,
+      "seamMs": 489761,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 5247236,
+      "stackParents": [
+        "ht-yha.5.2"
+      ],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-yha.9",
+      "n": 14,
+      "deps": [
+        "ht-yha.8",
+        "ht-yha.1",
+        "ht-yha.2",
+        "ht-yha.4"
+      ],
+      "dependents": [
+        "ht-yha.10",
+        "ht-yha.15",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "STACK_CONFLICT",
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T05:50:06.393Z",
+      "dispatchedAt": "2026-10-14T05:58:24.256Z",
+      "landedAt": "2026-10-14T06:16:16.741Z",
+      "waitMs": 497863,
+      "waitCause": "stack-conflict",
+      "carriedMs": 0,
+      "implMs": 945654,
+      "implByTool": {
+        "read": 5207,
+        "git": 5740,
+        "shell": 19609,
+        "bd": 1402,
+        "build": 279030,
+        "test": 323757,
+        "poll": 100066
+      },
+      "implToolMs": 734811,
+      "reviewMs": 40710,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2414,
+      "laneMs": 79999,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 23532,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": [
+        "ht-yha.8"
+      ]
+    },
+    {
+      "id": "ht-yha.11",
+      "n": 15,
+      "deps": [
+        "ht-yha.7",
+        "ht-yha.4",
+        "ht-yha.8",
+        "ht-yha.3"
+      ],
+      "dependents": [
+        "ht-yha.10",
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "STACK_CONFLICT",
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T05:50:06.393Z",
+      "dispatchedAt": "2026-10-14T05:58:24.256Z",
+      "landedAt": "2026-10-14T06:13:11.467Z",
+      "waitMs": 497863,
+      "waitCause": "stack-conflict",
+      "carriedMs": 0,
+      "implMs": 527731,
+      "implByTool": {
+        "read": 5716,
+        "git": 438,
+        "shell": 252049,
+        "test": 9778
+      },
+      "implToolMs": 267981,
+      "reviewMs": 76566,
+      "fixMs": 231017,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2263,
+      "laneMs": 42724,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 23533,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": [
+        "ht-yha.8"
+      ]
+    },
+    {
+      "id": "ht-yha.15",
+      "n": 18,
+      "deps": [
+        "ht-yha.5.4",
+        "ht-yha.8",
+        "ht-yha.9",
+        "ht-yha.6"
+      ],
+      "dependents": [
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "STACK_CONFLICT",
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T06:39:24.076Z",
+      "dispatchedAt": "2026-10-14T07:02:22.541Z",
+      "landedAt": "2026-10-14T07:25:19.004Z",
+      "waitMs": 1378465,
+      "waitCause": "stack-conflict",
+      "carriedMs": 0,
+      "implMs": 912255,
+      "implByTool": {
+        "read": 19646,
+        "git": 2853,
+        "shell": 13481,
+        "test": 294539,
+        "poll": 80848,
+        "bd": 1475,
+        "build": 103739
+      },
+      "implToolMs": 516581,
+      "reviewMs": 28335,
+      "fixMs": 363207,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2611,
+      "laneMs": 65172,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 18701,
+      "criticalMs": 924142,
+      "stackParents": [],
+      "lateEdges": [
+        "ht-yha.5.4"
+      ]
+    },
+    {
+      "id": "ht-yha.12",
+      "n": 16,
+      "deps": [
+        "ht-yha.3",
+        "ht-yha.6",
+        "ht-yha.7",
+        "ht-yha.4",
+        "ht-yha.5.4"
+      ],
+      "dependents": [
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "STACK_CONFLICT",
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T06:39:24.076Z",
+      "dispatchedAt": "2026-10-14T07:02:22.542Z",
+      "landedAt": "2026-10-14T07:12:23.255Z",
+      "waitMs": 1378466,
+      "waitCause": "stack-conflict",
+      "carriedMs": 0,
+      "implMs": 508505,
+      "implByTool": {
+        "read": 9263,
+        "git": 2857,
+        "shell": 2770,
+        "test": 214574,
+        "poll": 105584,
+        "edit": 111
+      },
+      "implToolMs": 335159,
+      "reviewMs": 23021,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2324,
+      "laneMs": 64404,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 19218,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": [
+        "ht-yha.5.4"
+      ]
+    },
+    {
+      "id": "ht-yha.10",
+      "n": 17,
+      "deps": [
+        "ht-yha.9",
+        "ht-yha.11",
+        "ht-yha.6",
+        "ht-yha.5.4"
+      ],
+      "dependents": [
+        "ht-yha.16"
+      ],
+      "attempts": [
+        "STACK_CONFLICT",
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T06:39:24.076Z",
+      "dispatchedAt": "2026-10-14T07:02:22.542Z",
+      "landedAt": "2026-10-14T07:09:38.565Z",
+      "waitMs": 1378466,
+      "waitCause": "stack-conflict",
+      "carriedMs": 0,
+      "implMs": 340740,
+      "implByTool": {
+        "read": 6770,
+        "git": 1198,
+        "shell": 11487,
+        "test": 8704,
+        "poll": 191464
+      },
+      "implToolMs": 219030,
+      "reviewMs": 36426,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2640,
+      "laneMs": 52811,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 26084,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": [
+        "ht-yha.5.4"
+      ]
+    },
+    {
+      "id": "ht-yha.16",
+      "n": 19,
+      "deps": [
+        "ht-yha.2",
+        "ht-yha.14",
+        "ht-yha.13",
+        "ht-yha.5.4",
+        "ht-yha.5.1",
+        "ht-yha.10",
+        "ht-yha.11",
+        "ht-yha.4",
+        "ht-yha.5.2",
+        "ht-yha.9",
+        "ht-yha.7",
+        "ht-yha.6",
+        "ht-yha.3",
+        "ht-yha.15",
+        "ht-yha.12",
+        "ht-yha.5.3",
+        "ht-yha.1",
+        "ht-yha.8"
+      ],
+      "dependents": [],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-14T07:17:34.796Z",
+      "dispatchedAt": "2026-10-14T07:17:37.460Z",
+      "landedAt": "2026-10-14T07:31:38.376Z",
+      "waitMs": 2664,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 751670,
+      "implByTool": {
+        "git": 4114,
+        "shell": 7899,
+        "read": 21478,
+        "edit": 2089,
+        "test": 191465,
+        "poll": 127488,
+        "build": 75584
+      },
+      "implToolMs": 429280,
+      "reviewMs": 29798,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2669,
+      "laneMs": 53915,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 843580,
+      "stackParents": [
+        "ht-yha.15"
+      ],
+      "lateEdges": []
+    }
+  ],
+  "criticalPath": {
+    "ms": 45129171,
+    "byCategory": {
+      "startup": 7888,
+      "ready": 7624221,
+      "dispatch": 61979,
+      "planning": 2790295,
+      "implement": 20375930,
+      "wait": 10672007,
+      "relaunch": 2158815,
+      "review": 65615,
+      "fix": 600200,
+      "merge": 282460,
+      "seam": 489761
+    },
+    "laneContentionMs": 0,
+    "redo": {
+      "stack-conflict": {
+        "ms": 1375138,
+        "beads": [
+          "ht-yha.15"
+        ]
+      },
+      "cancelled": {
+        "ms": 0,
+        "beads": []
+      },
+      "retry": {
+        "ms": 0,
+        "beads": []
+      }
+    },
+    "segments": [
+      {
+        "kind": "startup",
+        "bead": null,
+        "label": "run start",
+        "via": null,
+        "start": "2026-10-13T18:59:29.205Z",
+        "ms": 7888
+      },
+      {
+        "kind": "ready",
+        "bead": null,
+        "label": "bd-ready",
+        "via": null,
+        "start": "2026-10-13T18:59:37.093Z",
+        "ms": 12723
+      },
+      {
+        "kind": "dispatch",
+        "bead": null,
+        "label": "previous → plan",
+        "via": null,
+        "start": "2026-10-13T18:59:49.816Z",
+        "ms": 2091
+      },
+      {
+        "kind": "planning",
+        "bead": null,
+        "label": "plan",
+        "via": "previous",
+        "start": "2026-10-13T18:59:51.907Z",
+        "ms": 1032607
+      },
+      {
+        "kind": "dispatch",
+        "bead": null,
+        "label": "previous → plan-rest",
+        "via": null,
+        "start": "2026-10-13T19:17:04.514Z",
+        "ms": 2328
+      },
+      {
+        "kind": "planning",
+        "bead": null,
+        "label": "plan-rest",
+        "via": "previous",
+        "start": "2026-10-13T19:17:06.842Z",
+        "ms": 1661591
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.3",
+        "label": "planned → impl:ht-yha.3",
+        "via": null,
+        "start": "2026-10-13T19:44:48.433Z",
+        "ms": 2918
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-yha.3",
+        "label": "impl:ht-yha.3",
+        "via": "planned",
+        "start": "2026-10-13T19:44:51.351Z",
+        "ms": 2900257
+      },
+      {
+        "kind": "wait",
+        "bead": "ht-yha.3",
+        "label": "retry → impl:ht-yha.3",
+        "via": null,
+        "start": "2026-10-13T20:33:11.608Z",
+        "ms": 10672007
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-yha.3",
+        "label": "impl:ht-yha.3",
+        "via": "retry",
+        "start": "2026-10-13T23:31:03.615Z",
+        "ms": 5778733
+      },
+      {
+        "kind": "dispatch",
+        "bead": null,
+        "label": "previous → bd-ready",
+        "via": null,
+        "start": "2026-10-14T01:07:22.348Z",
+        "ms": 51
+      },
+      {
+        "kind": "ready",
+        "bead": null,
+        "label": "bd-ready",
+        "via": "previous",
+        "start": "2026-10-14T01:07:22.399Z",
+        "ms": 2219079
+      },
+      {
+        "kind": "dispatch",
+        "bead": null,
+        "label": "previous → bd-ready",
+        "via": null,
+        "start": "2026-10-14T01:44:21.478Z",
+        "ms": 22
+      },
+      {
+        "kind": "ready",
+        "bead": null,
+        "label": "bd-ready",
+        "via": "previous",
+        "start": "2026-10-14T01:44:21.500Z",
+        "ms": 2221561
+      },
+      {
+        "kind": "dispatch",
+        "bead": null,
+        "label": "previous → bd-ready",
+        "via": null,
+        "start": "2026-10-14T02:21:23.061Z",
+        "ms": 19
+      },
+      {
+        "kind": "ready",
+        "bead": null,
+        "label": "bd-ready",
+        "via": "previous",
+        "start": "2026-10-14T02:21:23.080Z",
+        "ms": 3158161
+      },
+      {
+        "kind": "relaunch",
+        "bead": null,
+        "label": "relaunch → bd-ready",
+        "via": null,
+        "start": "2026-10-14T03:14:01.241Z",
+        "ms": 2158815
+      },
+      {
+        "kind": "ready",
+        "bead": null,
+        "label": "bd-ready",
+        "via": "relaunch",
+        "start": "2026-10-14T03:50:00.056Z",
+        "ms": 12697
+      },
+      {
+        "kind": "dispatch",
+        "bead": null,
+        "label": "previous → plan",
+        "via": null,
+        "start": "2026-10-14T03:50:12.753Z",
+        "ms": 2417
+      },
+      {
+        "kind": "planning",
+        "bead": null,
+        "label": "plan",
+        "via": "previous",
+        "start": "2026-10-14T03:50:15.170Z",
+        "ms": 96097
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.3",
+        "label": "planned → impl:ht-yha.3",
+        "via": null,
+        "start": "2026-10-14T03:51:51.267Z",
+        "ms": 2666
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-yha.3",
+        "label": "impl:ht-yha.3",
+        "via": "planned",
+        "start": "2026-10-14T03:51:53.933Z",
+        "ms": 2152283
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.4",
+        "label": "dep → impl:ht-yha.4",
+        "via": null,
+        "start": "2026-10-14T04:27:46.216Z",
+        "ms": 4374
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-yha.4",
+        "label": "impl:ht-yha.4",
+        "via": "dep",
+        "start": "2026-10-14T04:27:50.590Z",
+        "ms": 2289696
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.5.2",
+        "label": "dep → impl:ht-yha.5.2",
+        "via": null,
+        "start": "2026-10-14T05:06:00.286Z",
+        "ms": 6659
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-yha.5.2",
+        "label": "impl:ht-yha.5.2",
+        "via": "dep",
+        "start": "2026-10-14T05:06:06.945Z",
+        "ms": 1716473
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.5.4",
+        "label": "dep → impl:ht-yha.5.4",
+        "via": null,
+        "start": "2026-10-14T05:34:43.418Z",
+        "ms": 6095
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-yha.5.4",
+        "label": "impl:ht-yha.5.4",
+        "via": "dep",
+        "start": "2026-10-14T05:34:49.513Z",
+        "ms": 3874563
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.5.4",
+        "label": "chain → review:ht-yha.5.4",
+        "via": null,
+        "start": "2026-10-14T06:39:24.076Z",
+        "ms": 3326
+      },
+      {
+        "kind": "review",
+        "bead": "ht-yha.5.4",
+        "label": "review:ht-yha.5.4",
+        "via": "chain",
+        "start": "2026-10-14T06:39:27.402Z",
+        "ms": 35817
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.5.4",
+        "label": "chain → fix:ht-yha.5.4",
+        "via": null,
+        "start": "2026-10-14T06:40:03.219Z",
+        "ms": 2441
+      },
+      {
+        "kind": "fix",
+        "bead": "ht-yha.5.4",
+        "label": "fix:ht-yha.5.4",
+        "via": "chain",
+        "start": "2026-10-14T06:40:05.660Z",
+        "ms": 600200
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.5.4",
+        "label": "chain → merge:ht-yha.5.4",
+        "via": null,
+        "start": "2026-10-14T06:50:05.860Z",
+        "ms": 2210
+      },
+      {
+        "kind": "merge",
+        "bead": "ht-yha.5.4",
+        "label": "merge:ht-yha.5.4",
+        "via": "chain",
+        "start": "2026-10-14T06:50:08.070Z",
+        "ms": 57202
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.5.4",
+        "label": "chain → seam-review:ht-yha.5.4",
+        "via": null,
+        "start": "2026-10-14T06:51:05.272Z",
+        "ms": 2062
+      },
+      {
+        "kind": "seam",
+        "bead": "ht-yha.5.4",
+        "label": "seam-review:ht-yha.5.4",
+        "via": "chain",
+        "start": "2026-10-14T06:51:07.334Z",
+        "ms": 489761
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.5.4",
+        "label": "chain → merge:ht-yha.5.4:seam-cleared",
+        "via": null,
+        "start": "2026-10-14T06:59:17.095Z",
+        "ms": 2216
+      },
+      {
+        "kind": "merge",
+        "bead": "ht-yha.5.4",
+        "label": "merge:ht-yha.5.4:seam-cleared",
+        "via": "chain",
+        "start": "2026-10-14T06:59:19.311Z",
+        "ms": 171343
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.15",
+        "label": "stack-conflict → impl:ht-yha.15",
+        "via": null,
+        "start": "2026-10-14T07:02:10.654Z",
+        "ms": 11887
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-yha.15",
+        "label": "impl:ht-yha.15",
+        "via": "stack-conflict",
+        "start": "2026-10-14T07:02:22.541Z",
+        "ms": 912255
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.16",
+        "label": "dep → impl:ht-yha.16",
+        "via": null,
+        "start": "2026-10-14T07:17:34.796Z",
+        "ms": 2664
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-yha.16",
+        "label": "impl:ht-yha.16",
+        "via": "dep",
+        "start": "2026-10-14T07:17:37.460Z",
+        "ms": 751670
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.16",
+        "label": "chain → review:ht-yha.16",
+        "via": null,
+        "start": "2026-10-14T07:30:09.130Z",
+        "ms": 2864
+      },
+      {
+        "kind": "review",
+        "bead": "ht-yha.16",
+        "label": "review:ht-yha.16",
+        "via": "chain",
+        "start": "2026-10-14T07:30:11.994Z",
+        "ms": 29798
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-yha.16",
+        "label": "chain → merge:ht-yha.16",
+        "via": null,
+        "start": "2026-10-14T07:30:41.792Z",
+        "ms": 2669
+      },
+      {
+        "kind": "merge",
+        "bead": "ht-yha.16",
+        "label": "merge:ht-yha.16",
+        "via": "chain",
+        "start": "2026-10-14T07:30:44.461Z",
+        "ms": 53915
+      }
+    ]
+  },
+  "bottleneck": {
+    "bead": "ht-yha.3",
+    "ms": 21508864,
+    "share": 0.4766066719904959,
+    "byCategory": {
+      "dispatch": 5584,
+      "implement": 10831273,
+      "wait": 10672007
+    },
+    "implByTool": {
+      "read": 25528,
+      "git": 27932,
+      "shell": 26794,
+      "bd": 3962,
+      "test": 232309,
+      "poll": 1355090,
+      "build": 60710,
+      "edit": 1083
+    },
+    "calls": [
+      {
+        "name": "Bash",
+        "cat": "poll",
+        "what": "for i in $(seq 1 58)",
+        "ms": 581804
+      },
+      {
+        "name": "Bash",
+        "cat": "poll",
+        "what": "for i in $(seq 1 55)",
+        "ms": 461176
+      },
+      {
+        "name": "Bash",
+        "cat": "poll",
+        "what": "for i in $(seq 1 58)",
+        "ms": 200907
+      },
+      {
+        "name": "Bash",
+        "cat": "poll",
+        "what": "for i in $(seq 1 58)",
+        "ms": 90731
+      },
+      {
+        "name": "Bash",
+        "cat": "test",
+        "what": "HT_LEAK_RUN_ID=$(uuidgen)",
+        "test": "cargo nextest run --locked --all-targets --all-features --no-fail-fast",
+        "ms": 73362
+      },
+      {
+        "name": "Bash",
+        "cat": "build",
+        "what": "cargo fmt",
+        "ms": 60710
+      },
+      {
+        "name": "Bash",
+        "cat": "test",
+        "what": "python3 - <<'E'",
+        "test": "cargo nextest run --locked --all-features --no-fail-fast -E 'test(/inbox_continuation_con…",
+        "ms": 50104
+      },
+      {
+        "name": "Bash",
+        "cat": "test",
+        "what": "cargo nextest run --locked --all-targets --all-features --n…",
+        "test": "cargo nextest run --locked --all-targets --all-features --no-fail-fast -E 'test(/graph_d2…",
+        "ms": 34708
+      },
+      {
+        "name": "Bash",
+        "cat": "test",
+        "what": "cargo nextest run --locked --all-features --no-fail-fast -E…",
+        "test": "cargo nextest run --locked --all-features --no-fail-fast -E 'test(/priority_send|inbox_co…",
+        "ms": 21078
+      },
+      {
+        "name": "Bash",
+        "cat": "poll",
+        "what": "for i in $(seq 1 55)",
+        "ms": 20467
+      }
+    ]
+  },
+  "lane": {
+    "busyMs": 3361578,
+    "seamMs": 838133,
+    "spanMs": 43124124,
+    "merges": 26,
+    "firstTryFailed": 4,
+    "firstTryKnown": 19,
+    "queueWaitMs": 33380,
+    "stackWaitMs": 68160256,
+    "peakQueue": 1
+  },
+  "runtime": {
+    "slots": 10,
+    "peak": 10,
+    "fullMs": 9053
+  },
+  "concurrency": null,
+  "tests": {
+    "busyMs": 45178298,
+    "testMs": 14897273,
+    "pollMs": 10215203,
+    "cappedCalls": 5
+  },
+  "slowTests": [
+    {
+      "cmd": "cargo test --locked --all-features $f",
+      "ms": 1328659,
+      "runs": 13,
+      "longestMs": 412885
+    },
+    {
+      "cmd": "cargo nextest run --locked --all-features --no-fail-fast -E 'binary(combined) or binary(s…",
+      "ms": 993161,
+      "runs": 1,
+      "longestMs": 993161
+    },
+    {
+      "cmd": "cargo test --locked --all-features --no-run",
+      "ms": 714439,
+      "runs": 8,
+      "longestMs": 184447
+    },
+    {
+      "cmd": "cargo test --locked --all-features --no-fail-fast --test combined --test hook_entrypoint …",
+      "ms": 567927,
+      "runs": 1,
+      "longestMs": 567927
+    },
+    {
+      "cmd": "cargo test --locked --all-features page_cursor",
+      "ms": 543312,
+      "runs": 1,
+      "longestMs": 543312
+    },
+    {
+      "cmd": "cargo nextest run --locked --all-features --lib --no-fail-fast",
+      "ms": 503874,
+      "runs": 2,
+      "longestMs": 356402
+    },
+    {
+      "cmd": "cargo test --locked --all-features deadline_window",
+      "ms": 451282,
+      "runs": 3,
+      "longestMs": 376176
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib delivery_row_seek",
+      "ms": 371015,
+      "runs": 5,
+      "longestMs": 191775
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test hook_entrypoint",
+      "ms": 305624,
+      "runs": 2,
+      "longestMs": 163829
+    },
+    {
+      "cmd": "cargo test --locked --all-features -- nudge_threshold wake attention mod_seat_view lazy d…",
+      "ms": 288456,
+      "runs": 1,
+      "longestMs": 288456
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib -- store::commit_kicks_tests::every_table_is_cla…",
+      "ms": 272485,
+      "runs": 2,
+      "longestMs": 269357
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined",
+      "ms": 271884,
+      "runs": 4,
+      "longestMs": 182135
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib",
+      "ms": 271853,
+      "runs": 6,
+      "longestMs": 124377
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib store::",
+      "ms": 269495,
+      "runs": 1,
+      "longestMs": 269495
+    },
+    {
+      "cmd": "cargo test --locked --all-features presentation_q3_publication",
+      "ms": 266249,
+      "runs": 2,
+      "longestMs": 192339
+    },
+    {
+      "cmd": "cargo nextest run --locked --all-features --lib --no-fail-fast store::receipts",
+      "ms": 262216,
+      "runs": 4,
+      "longestMs": 97307
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib -- cli::",
+      "ms": 258704,
+      "runs": 6,
+      "longestMs": 210297
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib -- store:: wake delivery attention inbox",
+      "ms": 256945,
+      "runs": 2,
+      "longestMs": 159333
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined -- lazy_attention lazy_config_smoke se…",
+      "ms": 225348,
+      "runs": 2,
+      "longestMs": 216958
+    },
+    {
+      "cmd": "cargo test --locked --all-features lazy",
+      "ms": 221706,
+      "runs": 3,
+      "longestMs": 155124
+    }
+  ],
+  "conflicts": [
+    {
+      "file": "src/store/read_cursors.rs",
+      "stackConflicts": 3,
+      "seamOverlaps": 1,
+      "declaredBy": 3
+    },
+    {
+      "file": "tests/service/delivery_pull.rs",
+      "stackConflicts": 2,
+      "seamOverlaps": 2,
+      "declaredBy": 2
+    },
+    {
+      "file": "src/store/lazy_delivery/inbox.rs",
+      "stackConflicts": 3,
+      "seamOverlaps": 0,
+      "declaredBy": 4
+    },
+    {
+      "file": "src/store/queries/inbox_v2/hydrate.rs",
+      "stackConflicts": 2,
+      "seamOverlaps": 1,
+      "declaredBy": 5
+    },
+    {
+      "file": "tests/hook_entrypoint.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 3,
+      "declaredBy": 1
+    },
+    {
+      "file": "tests/cli/cooperative.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 2,
+      "declaredBy": 2
+    },
+    {
+      "file": "tests/hook_entrypoint/agy.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 2,
+      "declaredBy": 2
+    },
+    {
+      "file": "tests/integration/lazy_attention.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 2,
+      "declaredBy": 2
+    },
+    {
+      "file": "tests/protocol/capabilities.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 2,
+      "declaredBy": 4
+    },
+    {
+      "file": "tests/store/query_work_q4.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 2,
+      "declaredBy": 1
+    },
+    {
+      "file": "TRUST-POLICY.md",
+      "stackConflicts": 0,
+      "seamOverlaps": 1,
+      "declaredBy": 4
+    },
+    {
+      "file": "src/cli/accept_delivery.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 1,
+      "declaredBy": 1
+    },
+    {
+      "file": "src/cli/hook_inbox.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 1,
+      "declaredBy": 1
+    },
+    {
+      "file": "src/protocol/capabilities.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 1,
+      "declaredBy": 4
+    },
+    {
+      "file": "src/protocol/commands.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 1,
+      "declaredBy": 4
+    },
+    {
+      "file": "src/service/delivery_pull.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 1,
+      "declaredBy": 2
+    },
+    {
+      "file": "src/store/invitation_content.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 1,
+      "declaredBy": 2
+    },
+    {
+      "file": "src/store/queries.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 1,
+      "declaredBy": 5
+    },
+    {
+      "file": "tests/cli/hook_inbox.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 1,
+      "declaredBy": 1
+    },
+    {
+      "file": "tests/cli/lazy_display.rs",
+      "stackConflicts": 0,
+      "seamOverlaps": 1,
+      "declaredBy": 2
+    }
+  ],
+  "simulation": {
+    "asRunMs": 48831764,
+    "actualMs": 45129171,
+    "fit": 1.08,
+    "unlimitedSlotsMs": 48831764,
+    "unlimitedLanesMs": 45081316,
+    "lowerBoundMs": 45081316,
+    "graphChain": [
+      "ht-yha.3",
+      "ht-yha.4",
+      "ht-yha.5.2",
+      "ht-yha.5.4",
+      "ht-yha.15",
+      "ht-yha.16"
+    ],
+    "whatIfs": [
+      {
+        "kind": "lanes",
+        "target": "unlimited merge lanes",
+        "ms": 45081316,
+        "savingMs": 3750448,
+        "note": "merges in parallel, each still after its stack parents"
+      },
+      {
+        "kind": "early",
+        "target": "every early unblock taken",
+        "ms": 47363153,
+        "savingMs": 1468611,
+        "note": "no stack conflicts: dependents stack on implemented blockers instead of waiting for their merge"
+      }
+    ],
+    "verdict": "graph-bound"
+  },
+  "unmeasured": [],
+  "summary": [
+    "Profile: ht-yha · 2 invocations · 2026-10-13T18:59Z → 2026-10-14T07:47Z · wall 12h48m (task graph 12h32m, after the last landing 15m) · agents 265 (timed 265) · beads dispatched 19, landed 19, planned 19",
+    "Profile: shape — 19 beads · 72 edges · depth 7 · width 2.7 · beads per level 3/4/2/2/4/3/1 · widest fan-out ht-yha.1 (10 direct, 16 transitive dependents)",
+    "Profile: bound — graph lower bound 12h31m along ht-yha.3 → ht-yha.4 → ht-yha.5.2 → ht-yha.5.4 → ht-yha.15 → ht-yha.16 (unlimited slots and merge lanes) · model of the run 13h34m (cap 8, one merge lane) vs actual 12h32m (108%) → graph-bound: the 6-bead dependency chain set the pace — reshaping it is the lever",
+    "Profile: critical path — 12h32m = implement 5h40m · review 1m · fix 10m · merge 5m · seam 8m · planning 47m · ready 2h07m · startup 8s · dispatch 1m · wait 2h58m · relaunch 36m",
+    "Profile: critical chain — bd-ready ready 13s → plan planning 17m → plan-rest planning 28m → ht-yha.3 implement 2h25m → bd-ready ready 2h07m → plan planning 2m → ht-yha.3 implement 36m → ht-yha.4 implement 38m → ht-yha.5.2 implement 29m → ht-yha.5.4 implement+review+fix+merge+seam 1h27m → ht-yha.15 implement 15m → ht-yha.16 implement+review+merge 14m",
+    "Profile: bottleneck — ht-yha.3 — 5h58m on the critical path (48%) · implement 3h01m · dispatch 6s · wait 2h58m · implement on the path 3h01m: test 49m · poll 1h03m · build 7m · git 32s · bd 6s · read 57s · edit 4s · shell 49s · model 59m (longest: \"cargo nextest run --locked --all-features --no-fail-fast -E…\" 17m, \"until grep -q \"^done \" /tmp/sp-3dc5f923/ht-yha.3/base-suite…\" 10m) · 3 attempts (FAILED, FAILED, IMPLEMENTED) · dependents 7 direct, 11 transitive",
+    "Profile: waits — ready→start, summed per bead (beads wait at the same time, so not wall time): 1h41m over 7 of 19 landed beads — stack-conflict 1h26m (5) · cancelled 6m (1) · unexplained 9m (1)",
+    "Profile: early unblock — 16 landed beads had in-run blockers · stacked on an implementation 8 · bounced on a stack conflict then waited for the merge 5 (1h26m) · waited for a merge without one 0",
+    "Profile: rework — 3h57m of dispatch time in attempts that did not land — ht-yha.3 2h25m (FAILED, FAILED; landed later) · ht-yha.7 53m (FAILED, IMPLEMENTED; landed later) · ht-yha.5.3 35m (FAILED, IMPLEMENTED; landed later) · 8 more",
+    "Profile: tests — implementers and fixers, summed: 4h08m running tests and 2h50m polling background runs, 56% of their 12h33m · 5 Bash call(s) ran into the 10-minute tool limit",
+    "Profile: slow tests — cargo test --locked --all-features $f 22m (13 runs, longest 7m) · cargo nextest run --locked --all-features --no-fail-fast -E 'binary(combined) or binary(s… 17m (1 run, longest 17m) · cargo test --locked --all-features --no-run 12m (8 runs, longest 3m) · cargo test --locked --all-features --no-fail-fast --test combined --test hook_entrypoint … 9m (1 run, longest 9m) · cargo test --locked --all-features page_cursor 9m (1 run, longest 9m)",
+    "Profile: redo — on the critical path, up to stack-conflict re-cuts 23m (ht-yha.15) — from a bead's first attempt to its final one; the what-ifs model the real saving",
+    "Profile: merge lane — busy 56m of 11h59m (8%) · seam reviews and fixes 14m (25% of busy) · 26 merge dispatches, first try not merged for 4 of 19 · queue wait 33s total, peak 1 waiting · stack-parent wait 18h56m",
+    "Profile: conflicts — src/store/read_cursors.rs (stack conflicts 3, seam overlaps 1, declared by 3) · tests/service/delivery_pull.rs (stack conflicts 2, seam overlaps 2, declared by 2) · src/store/lazy_delivery/inbox.rs (stack conflicts 3, seam overlaps 0, declared by 4) · src/store/queries/inbox_v2/hydrate.rs (stack conflicts 2, seam overlaps 1, declared by 5)",
+    "Profile: runtime — peak 10 agents at once of 10 runtime slots · full 0% of the run · slot cap 8",
+    "Profile: what-if — unlimited merge lanes → 12h31m (−1h03m, 8%) — merges in parallel, each still after its stack parents",
+    "Profile: what-if — every early unblock taken → 13h09m (−24m, 3%) — no stack conflicts: dependents stack on implemented blockers instead of waiting for their merge",
+    "Profile: unmeasured — none"
+  ]
+}

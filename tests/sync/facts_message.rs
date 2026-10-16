@@ -853,6 +853,7 @@ impl Sender {
     fn request(&self, operation: &str, mode: DeliveryMode, deadline: Option<u64>) -> SendMessage {
         SendMessage {
             delivery_mode: mode,
+            priority: None,
             thread: self.thread.clone(),
             body: "hello".into(),
             direct_recipient: None,

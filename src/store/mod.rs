@@ -1880,6 +1880,9 @@ impl StorePort for SqliteStore {
             PermitMutation::SetWakeOn(v) => {
                 seats::set_wake_on(&self.context, &mut writer, budget, &v, permit)
             }
+            PermitMutation::SetNudgeThreshold(v) => {
+                seats::set_nudge_threshold(&self.context, &mut writer, budget, &v, permit)
+            }
             PermitMutation::CheckIn(_) => Err(api_error(
                 ErrorCode::InvalidRequest,
                 "check-in requires verified registration and read context",
@@ -3234,6 +3237,17 @@ impl StorePort for SqliteStore {
             .map_err(|e| db.map_error(e))?;
         wake::wake_owed_to_binding(&db, reservation, binding)
     }
+    fn wake_owed_to_reached(
+        &self,
+        reservation: &WakeReservation,
+        reached: &[Option<&crate::protocol::ids::BindingId>],
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        wake::wake_owed_to_reached(&db, reservation, reached)
+    }
     fn complete_wake(
         &self,
         host: HostId,
@@ -3367,6 +3381,10 @@ mod tests;
 #[cfg(test)]
 #[path = "../../tests/store/wake_on_wake.rs"]
 mod wake_on_wake_tests;
+
+#[cfg(test)]
+#[path = "../../tests/store/nudge_threshold.rs"]
+mod nudge_threshold_tests;
 #[cfg(test)]
 #[path = "../../tests/store/wake.rs"]
 mod wake_tests;
@@ -3575,6 +3593,13 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::CheckIn(v.claim.seat.clone()),
             control::cooperative_payload_hash("set_wake_on", v)?,
+            None,
+        ),
+        PermitMutation::SetNudgeThreshold(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            control::cooperative_payload_hash("set_nudge_threshold", v)?,
             None,
         ),
         PermitMutation::Leave(v) => (

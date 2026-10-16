@@ -187,6 +187,10 @@ pub enum SemanticMutation {
     SendMessage {
         #[serde(default, skip_serializing_if = "DeliveryMode::is_ordinary")]
         delivery_mode: DeliveryMode,
+        /// Carried by every send a protocol-8 CLI records; absent in entries recorded before the
+        /// priority field, which replay their `delivery_mode` unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        priority: Option<crate::protocol::priority::DeliveryPriority>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user_intent: Option<crate::protocol::summary::UserIntent>,
         thread: ThreadId,
@@ -336,14 +340,27 @@ impl SemanticMutation {
             _ => false,
         }
     }
+    /// A send recorded in the legacy lazy shape (`delivery_mode: lazy`, no priority).
     pub fn is_lazy_send(&self) -> bool {
         match self {
             Self::Frozen { mutation, .. } => mutation.is_lazy_send(),
-            Self::DirectSend(p) => p.request.delivery_mode == DeliveryMode::Lazy,
+            Self::DirectSend(p) => {
+                p.request.priority.is_none() && p.request.delivery_mode == DeliveryMode::Lazy
+            }
             Self::SendMessage {
                 delivery_mode: DeliveryMode::Lazy,
+                priority: None,
                 ..
             } => true,
+            _ => false,
+        }
+    }
+    /// A send recorded in the `send.priority_v1` shape (the priority is carried).
+    pub fn is_priority_send(&self) -> bool {
+        match self {
+            Self::Frozen { mutation, .. } => mutation.is_priority_send(),
+            Self::DirectSend(p) => p.request.priority.is_some(),
+            Self::SendMessage { priority, .. } => priority.is_some(),
             _ => false,
         }
     }
@@ -502,6 +519,13 @@ impl SemanticMutation {
             } if !invited_recipients.is_empty() || deadline_millis.is_some() => Err(invalid(
                 "lazy send cannot have explicit recipients or a deadline",
             )),
+            Self::SendMessage {
+                priority: Some(priority),
+                invited_recipients,
+                ..
+            } if priority.get() > 0 && !invited_recipients.is_empty() => {
+                Err(invalid("explicit recipients require priority 0"))
+            }
             Self::SendMessage {
                 invited_recipients, ..
             } if invited_recipients.len() > MAX_BATCH_ITEMS => {
@@ -712,6 +736,7 @@ impl SemanticMutation {
             }),
             Self::SendMessage {
                 delivery_mode,
+                priority,
                 thread,
                 body,
                 direct_recipient,
@@ -720,6 +745,7 @@ impl SemanticMutation {
                 relays_user,
                 user_intent,
             } => Command::SendMessage(SendMessage {
+                priority: *priority,
                 delivery_mode: *delivery_mode,
                 thread: thread.clone(),
                 body: body.clone(),

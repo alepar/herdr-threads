@@ -7,8 +7,8 @@
 use super::dispatch::{DomainService, error};
 use crate::{
     delivery::{
-        self, Assembler, DeliveryItem, DeliveryKind, DrainEvent, FrameItem, MAX_DRAIN_PAGES,
-        PAGE_MAX_BYTES, PAGE_MAX_ITEMS, PageError, PageSource, Stop, drain_pages, frame,
+        self, Assembler, DeliveryItem, DrainEvent, FrameItem, MAX_DRAIN_PAGES, PAGE_MAX_BYTES,
+        PAGE_MAX_ITEMS, PageError, PageSource, Stop, drain_pages, frame,
         ledger::{
             MAX_INVITATION_DISPLAYS_PER_BINDING, MAX_OFFERS_PER_BINDING, Offer, OfferedLedger,
         },
@@ -114,8 +114,8 @@ type LedgerRace = Box<dyn FnOnce(&mut OfferedLedger) + Send>;
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct PullProbe {
-    /// Pending items the drains read, summed over pulls.
-    items_read: std::sync::atomic::AtomicUsize,
+    /// Inbox page items the drains read from the store, summed over pulls.
+    rows_read: std::sync::atomic::AtomicUsize,
     before_record: Mutex<Option<LedgerRace>>,
 }
 
@@ -158,11 +158,14 @@ struct StorePageSource<'a> {
     seat: &'a crate::protocol::ids::SeatId,
     /// The pulling binding's claim: every page is that binding's own stream.
     claim: &'a CallerClaim,
+    #[cfg(any(test, feature = "test-support"))]
+    rows_read: &'a std::sync::atomic::AtomicUsize,
 }
 
 impl PageSource for StorePageSource<'_> {
     fn page(&mut self, cursor: Option<String>) -> Result<Page<InboxBatchV2Item>, PageError> {
         let command = Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             claim: Some(self.claim.clone()),
             seat: Some(self.seat.clone()),
@@ -173,7 +176,12 @@ impl PageSource for StorePageSource<'_> {
             },
         });
         match self.store.query(&command, self.read, self.budget) {
-            Ok(CommandResult::InboxBatchV2(page)) => Ok(page),
+            Ok(CommandResult::InboxBatchV2(page)) => {
+                #[cfg(any(test, feature = "test-support"))]
+                self.rows_read
+                    .fetch_add(page.items.len(), std::sync::atomic::Ordering::SeqCst);
+                Ok(page)
+            }
             Ok(_) => Err(PageError::Protocol),
             Err(_) => Err(PageError::Api),
         }
@@ -183,11 +191,8 @@ impl PageSource for StorePageSource<'_> {
 fn frame_item(item: &DeliveryItem) -> FrameItem {
     let message = &item.message;
     FrameItem {
-        kind: match item.kind {
-            DeliveryKind::Message => "message",
-            DeliveryKind::Lazy => "lazy",
-        }
-        .to_owned(),
+        kind: "message".to_owned(),
+        priority: message.priority.map(|p| p.get()),
         id: item.id.as_str().to_owned(),
         thread: Some(message.thread.as_str().to_owned()),
         thread_name: message.thread_name.clone(),
@@ -432,6 +437,8 @@ impl DomainService {
             budget,
             seat,
             claim: &pull.claim,
+            #[cfg(any(test, feature = "test-support"))]
+            rows_read: &self.delivery_pull.probe.rows_read,
         };
         let mut assembler = Assembler::new(None).with_command_prefix(pull.marker_prefix.clone());
         let mut blocks: Vec<FrameItem> = Vec::new();
@@ -603,11 +610,6 @@ impl DomainService {
             }
             Err(delivery::DrainPagesError::Sink(never)) => match never {},
         }
-        #[cfg(any(test, feature = "test-support"))]
-        self.delivery_pull
-            .probe
-            .items_read
-            .fetch_add(pending.len(), std::sync::atomic::Ordering::SeqCst);
         let mut notices_settled = false;
         let mut notices_has_more = false;
         let notice_start = blocks.len();

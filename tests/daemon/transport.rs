@@ -4371,3 +4371,105 @@ async fn gauge_counts_ordinary_not_peer_and_guard_decrements() {
     drop(offered);
     daemon.stop().await;
 }
+
+struct FixedAutomaticService(CommandResult);
+impl LocalService for FixedAutomaticService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
+    fn handle(
+        &self,
+        _: Command,
+        _: PeerIdentity,
+        _: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Ok(self.0.clone())
+    }
+}
+async fn automatic_reply(
+    action: crate::protocol::handoff::AutomaticBootstrapAction,
+    reply: CommandResult,
+) -> Result<CommandResult, ApiError> {
+    use crate::protocol::handoff::AutomaticBootstrapMutation;
+    let (listener, path, root, paths) = guarded_listener();
+    let instance = instance_id(&paths);
+    let identity = maximum_automatic_recovery_result(&instance.to_string()).identity;
+    let command =
+        Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation { identity, action }));
+    let uid = UnixStream::pair().unwrap().0.peer_cred().unwrap().uid();
+    let shutdown = Cancellation::default();
+    let server = tokio::spawn(serve(
+        listener,
+        instance,
+        Arc::new(FixedAutomaticService(reply)),
+        Arc::new(TestClock),
+        uid,
+        shutdown.clone(),
+    ));
+    let client = crate::client::local::LocalSocketClient::new(
+        path.clone(),
+        Arc::new(TestClock),
+        instance,
+        None,
+    );
+    let reply = client
+        .call_async(
+            command,
+            // Each round trip gets its own budget from now: a test clock budget shared by every
+            // call in the test ran out on a loaded CI runner.
+            &CallBudget {
+                deadline: crate::protocol::time::MonoInstant(TestClock.monotonic_now().0 + 30_000),
+                cancellation: Default::default(),
+            },
+        )
+        .await;
+    shutdown.cancel();
+    let _ = server.await.unwrap().unwrap();
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    reply
+}
+/// The daemon confirms a reserved submission with `BootstrapSubmissionChecked`
+/// and resolves the created pane with `SeatResolved`; the client's family gate
+/// passes exactly those replies for those actions (a new-tab automatic
+/// handoff stops before the native create otherwise) and still refuses them
+/// for any other automatic action.
+#[tokio::test]
+async fn automatic_submission_check_and_resolve_pass_their_own_result_families() {
+    use crate::protocol::handoff::{
+        AutomaticBootstrapAction, BootstrapAttempt, BootstrapSubmissionChecked,
+    };
+    let checked = CommandResult::BootstrapSubmissionChecked(BootstrapSubmissionChecked {
+        compound: crate::protocol::ids::OperationId::new("large-parent"),
+        attempt: BootstrapAttempt::first(),
+        administrative_revision: 0,
+    });
+    let resolved = CommandResult::SeatResolved(crate::protocol::ids::SeatId::new("sResolved"));
+    let check = || AutomaticBootstrapAction::CheckSubmission {
+        attempt: BootstrapAttempt::first(),
+        administrative_revision: 0,
+    };
+    let resolve = || AutomaticBootstrapAction::Resolve {
+        attempt: BootstrapAttempt::first(),
+    };
+    assert_eq!(
+        automatic_reply(check(), checked.clone()).await.unwrap(),
+        checked
+    );
+    assert_eq!(
+        automatic_reply(resolve(), resolved.clone()).await.unwrap(),
+        resolved
+    );
+    for (action, reply) in [
+        (check(), resolved.clone()),
+        (resolve(), checked.clone()),
+        (AutomaticBootstrapAction::Status, checked.clone()),
+        (AutomaticBootstrapAction::Status, resolved.clone()),
+    ] {
+        let error = automatic_reply(action, reply).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnknownOutcome);
+    }
+}

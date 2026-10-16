@@ -79,7 +79,7 @@ pub fn ack_mod_delivered_payload(request: &AckModDelivered) -> Value {
 
 /// Reads the stored facts of one requested id (spec D6) and lets the pure
 /// [`settle::plan`] decide. Never errors per id.
-fn plan_delivery_ack(
+pub(super) fn plan_delivery_ack(
     tx: &Transaction<'_>,
     instance: &str,
     seat: &SeatId,
@@ -102,18 +102,9 @@ fn plan_delivery_ack(
             mode: ModeFact::Receipt(None),
         }));
     }
-    let mode = if super::lazy_delivery::recorded_mode(tx, instance, id)?
-        == Some(crate::protocol::commands::DeliveryMode::Lazy)
-    {
-        ModeFact::Lazy(
-            match super::lazy_delivery::lazy_completion_state(tx, instance, seat, binding, id)? {
-                super::lazy_delivery::LazyCompletion::NotAddressed => LazyFact::NotAddressed,
-                super::lazy_delivery::LazyCompletion::Completed => LazyFact::Completed,
-                super::lazy_delivery::LazyCompletion::Pending => LazyFact::Pending,
-            },
-        )
-    } else {
-        ModeFact::Receipt(
+    // A seat with a delivery row settles it as a row; any other seat by its receipt (D9).
+    let mode = match super::lazy_delivery::lazy_completion_state(tx, instance, seat, binding, id)? {
+        super::lazy_delivery::LazyCompletion::NotAddressed => ModeFact::Receipt(
             effective::effective_receipt(tx, id.as_str(), seat.as_str())?.map(|receipt| {
                 match receipt.state {
                     EffectiveReceiptState::Pending => ReceiptFact::Pending,
@@ -122,7 +113,9 @@ fn plan_delivery_ack(
                     EffectiveReceiptState::NotRequired => ReceiptFact::NotRequired,
                 }
             }),
-        )
+        ),
+        super::lazy_delivery::LazyCompletion::Completed => ModeFact::Lazy(LazyFact::Completed),
+        super::lazy_delivery::LazyCompletion::Pending => ModeFact::Lazy(LazyFact::Pending),
     };
     Ok(settle::plan(SettleFacts { message, mode }))
 }

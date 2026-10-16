@@ -511,6 +511,7 @@ fn public_delivery_current_recipient_hold_refuses_live_begin_and_send_preparatio
             .is_err()
     );
     request.action = DeliveryAction::Send(herdr_threads::protocol::commands::SendMessage {
+        priority: None,
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
         thread: request.plan.payload.channel.thread().unwrap().clone(),
         body: request.plan.payload.body.clone(),
@@ -581,6 +582,7 @@ fn live_cached_replay(phase: &str) {
             })
         } else {
             DeliveryAction::Send(herdr_threads::protocol::commands::SendMessage {
+                priority: None,
                 delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
                 thread: request.plan.payload.channel.thread().unwrap().clone(),
                 body: request.plan.payload.body.clone(),
@@ -695,6 +697,7 @@ fn actual_main_delivery_phase_preserves_ordinary_and_rejects_lazy_mode() {
     let f = Fixture::new();
     let mut request = delivery();
     let mut send = SendMessage {
+        priority: None,
         delivery_mode: DeliveryMode::Ordinary,
         thread: request.plan.payload.channel.thread().unwrap().clone(),
         body: request.plan.payload.body.clone(),
@@ -749,6 +752,7 @@ fn direct_marker_delivery_refuses_before_preparation_and_preserves_original_send
     f.call(Command::HandoffDelivery(Box::new(request.clone())))
         .unwrap();
     let send = SendMessage {
+        priority: None,
         delivery_mode: DeliveryMode::Ordinary,
         thread: request.plan.payload.channel.thread().unwrap().clone(),
         body: request.plan.payload.body.clone(),
@@ -837,6 +841,7 @@ fn ordinary_unlinked_direct_ensure_send_reaches_selected_bootstrap_runtime() {
         panic!("missing pair")
     };
     let send = Command::SendMessage(SendMessage {
+        priority: None,
         delivery_mode: DeliveryMode::Lazy,
         thread: t,
         body: "unlinked direct".into(),
@@ -2413,6 +2418,7 @@ fn automatic_canonical_selected_runtime_keeps_active_unlinked_direct_send() {
         panic!("thread")
     };
     let send = SendMessage {
+        priority: None,
         user_intent: None,
         thread,
         body: "unlinked".into(),

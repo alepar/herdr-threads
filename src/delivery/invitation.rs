@@ -105,8 +105,13 @@ impl InvitationContext {
             body: rendered.body,
             truncated: partial,
             wakes: self.wakes(),
+            deadline_at: self.deadline,
         }
     }
+    /// Every invitation created since priority delivery confirms and wakes; a pre-upgrade lazy
+    /// invitation (`confirmation = Lazy`) keeps its recorded no-wake shape: it is listed at p0 but
+    /// never wakes (no deadline, no obligation). The store's confirming set and its partial
+    /// indexes exclude it the same way.
     pub fn wakes(&self) -> bool {
         self.required.is_some() || self.confirmation != Some(InvitationConfirmation::Lazy)
     }
@@ -125,6 +130,10 @@ pub struct FrozenInvitation {
     pub thread_name: Option<String>,
     pub truncated: bool,
     pub wakes: bool,
+    /// The invitation's deadline, so a replayed page sorts as the live one. Absent in
+    /// descriptors frozen before it was carried (they replay with no deadline).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<UtcMillis>,
     pub start: usize,
     pub end: usize,
 }
@@ -147,6 +156,7 @@ impl FrozenInvitation {
             body,
             truncated: self.truncated,
             wakes: self.wakes,
+            deadline_at: self.deadline_at,
         })
     }
 }

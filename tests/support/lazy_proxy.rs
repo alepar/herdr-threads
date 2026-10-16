@@ -73,7 +73,13 @@ impl Proxy {
                         }
                         let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
                         let Some(b) = frame(&mut s) else { continue };
-                        let q: Value = serde_json::from_slice(&b).unwrap();
+                        let mut q: Value = serde_json::from_slice(&b).unwrap();
+                        let mut b = b;
+                        // Mode 5 also plays a pre-priority client whose invitations were `lazy`.
+                        if mode_c.load(Ordering::SeqCst) == 5 && q["command"]["kind"] == "invite" {
+                            q["command"]["args"]["confirmation"] = json!("lazy");
+                            b = serde_json::to_vec(&q).unwrap();
+                        }
                         seen_c.lock().unwrap().push(q.clone());
                         let mut d = UnixStream::connect(&real_c).unwrap();
                         d.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
@@ -90,6 +96,7 @@ impl Proxy {
                                     c.as_str(),
                                     Some(
                                         "send.lazy_v1"
+                                            | "send.priority_v1"
                                             | "inbox.batch_v2"
                                             | "messages.delivery_modes_v1"
                                     )

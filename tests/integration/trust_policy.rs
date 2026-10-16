@@ -873,7 +873,8 @@ fn f6_walking_skeleton() {
     );
     assert_eq!(
         world.pending(&c).len(),
-        2,
+        1,
+        // Only the explicit `--require-ack` recipient of "for c" owes a receipt (D9).
         "C was rebound, not replaced: it still owes what it owed"
     );
     assert!(world.pending(&a).is_empty());

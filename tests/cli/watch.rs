@@ -226,6 +226,7 @@ fn page<T>(items: Vec<T>, next: Option<&str>) -> Page<T> {
 
 fn message(id: &str, body: &str, start: u64, end: u64, len: u64, ack: bool) -> InboxBatchV2Item {
     InboxBatchV2Item::Message {
+        priority: None,
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),
         message: MessageId::new(id),
@@ -240,6 +241,7 @@ fn message(id: &str, body: &str, start: u64, end: u64, len: u64, ack: bool) -> I
         body_end: end,
         body_len: len,
         ack_candidate: ack.then(|| MessageId::new(id)),
+        deadline_at: None,
     }
 }
 
@@ -249,6 +251,7 @@ fn whole(id: &str, body: &str) -> InboxBatchV2Item {
 
 fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
     InboxBatchV2Item::LazyMessage {
+        priority: None,
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),
         message: MessageId::new(id),
@@ -754,18 +757,23 @@ fn lazy_rows_stream_as_lazy_without_ack_required() {
     ]]);
     let mut state = EmitState::default();
     let (_, got) = run_drain(&client, 1, &mut state);
-    assert_eq!(got.len(), 3);
-    assert!(matches!(got[0].item, WatchItem::Lazy(_)));
-    assert!(!message_of(&got[0]).ack_required);
-    assert_eq!(got[0].id, "l1");
-    assert!(matches!(got[1].item, WatchItem::Message(_)));
-    assert!(message_of(&got[1]).ack_required);
-    assert!(matches!(got[2].item, WatchItem::Message(_)));
-    assert!(!message_of(&got[2]).ack_required, "no ack_candidate");
-    assert_eq!(message_of(&got[1]).sender, Some(SeatId::new("sender")));
-    assert_eq!(message_of(&got[1]).thread_name.as_deref(), Some("topic"));
-    assert_eq!(message_of(&got[1]).sender_name.as_deref(), Some("sender"));
-    assert_eq!(message_of(&got[0]).sender_name.as_deref(), Some("service"));
+    // No item carries a priority (an older daemon's page), so the batch sorts by the legacy kind
+    // (spec D10: a `message` item is p0, a `lazy` row p1); arrival breaks the tie between m1 and m2.
+    let ids: Vec<&str> = got.iter().map(|line| line.id.as_str()).collect();
+    assert_eq!(ids, ["m1", "m2", "l1"]);
+    let line = |id: &str| got.iter().find(|line| line.id == id).unwrap();
+    let (l1, m1, m2) = (line("l1"), line("m1"), line("m2"));
+    // A delivery row still streams as the `lazy` variant, with no ACK to run (old readers keep it).
+    assert!(matches!(l1.item, WatchItem::Lazy(_)));
+    assert!(!message_of(l1).ack_required);
+    assert!(matches!(m1.item, WatchItem::Message(_)));
+    assert!(message_of(m1).ack_required);
+    assert!(matches!(m2.item, WatchItem::Message(_)));
+    assert!(!message_of(m2).ack_required, "no ack_candidate");
+    assert_eq!(message_of(m1).sender, Some(SeatId::new("sender")));
+    assert_eq!(message_of(m1).thread_name.as_deref(), Some("topic"));
+    assert_eq!(message_of(m1).sender_name.as_deref(), Some("sender"));
+    assert_eq!(message_of(l1).sender_name.as_deref(), Some("service"));
 }
 
 #[test]

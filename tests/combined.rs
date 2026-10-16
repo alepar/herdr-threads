@@ -178,3 +178,9 @@ mod direct_send;
 
 #[path = "cli/legacy_purge.rs"]
 mod legacy_purge;
+
+#[path = "integration/priority_config_smoke.rs"]
+mod priority_config_smoke;
+
+#[path = "integration/priority_sweep.rs"]
+mod priority_sweep;

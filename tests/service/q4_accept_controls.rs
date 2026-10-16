@@ -40,12 +40,18 @@ fn send_direct(
         .service
         .handle(
             Command::SendMessage(SendMessage {
+                priority: None,
                 claim: q.window.sender.clone(),
                 thread: thread.clone(),
                 body: body.into(),
                 delivery_mode: mode,
                 direct_recipient: Some(q.window.recipient.seat.clone()),
-                invited_recipients: vec![],
+                // Only an explicit ACK recipient owes a receipt (D9).
+                invited_recipients: if mode == DeliveryMode::Ordinary {
+                    vec![q.window.recipient.seat.clone()]
+                } else {
+                    vec![]
+                },
                 deadline_millis: None,
                 user_intent: None,
                 relays_user: false,
@@ -785,18 +791,18 @@ fn presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_wi
             unoffered.len(),
             &unoffered[..unoffered.len().min(2)],
             capture.as_ref().map(|c| (
-                c.source,
-                c.unread,
-                c.lazy_after_ordinal,
-                c.lazy_high_water_ordinal,
+                c.rows.after,
+                c.deadline.window_start.unread_after,
                 c.publication_decision_high_water,
-                c.attention.receipts.as_ref().map(|r| (
-                    r.physical_after,
-                    r.physical_high_water,
-                    r.manifest_after,
-                    r.manifest_high_water
-                )),
-                c.body.as_ref().map(|b| (&b.message, b.offset))
+                (
+                    c.deadline.window_start.physical_after,
+                    c.deadline.high.physical,
+                    c.deadline.window_start.manifest_after,
+                    c.deadline.high.manifest
+                ),
+                c.body
+                    .as_ref()
+                    .map(|(source, b)| (*source, &b.message, b.offset))
             )),
             partial.as_object().unwrap().len(),
         );
@@ -814,9 +820,14 @@ fn presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_wi
         2,
         "SETUP: two canonical sends remain beyond the full offer boundary"
     );
-    assert!(
-        initial_carry.is_empty(),
-        "SETUP: this experiment starts at an empty capture boundary"
+    // Merged order puts the pending receipts in one stream, so the page that crosses the full
+    // window already holds the two sends beyond it as its carry.
+    assert_eq!(
+        initial_carry
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        unoffered.iter().collect::<std::collections::BTreeSet<_>>(),
+        "SETUP: the sends beyond the full offer boundary are the capture's carry"
     );
     assert!(
         initial.contains_key(&rig.lazy),

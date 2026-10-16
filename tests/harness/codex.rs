@@ -1553,3 +1553,14 @@ fn codex_subagent_key_uses_session_and_thread_ids() {
     );
     assert_eq!(hook.agent_id.as_deref(), Some("thread-7"));
 }
+
+// Codex (0.162) clamps a SessionEnd hook's timeout to 3 s and warns about it at every start;
+// every other declared group keeps 10 s (Codex's own default is 600 s).
+#[test]
+fn codex_session_end_timeout_fits_the_codex_clamp() {
+    for (event, group) in codex::declared_hook_groups("'/tmp/hook'") {
+        let timeout = group["hooks"][0]["timeout"].as_u64().unwrap();
+        let expected = if event == "SessionEnd" { 3 } else { 10 };
+        assert_eq!(timeout, expected, "{event}: {group}");
+    }
+}

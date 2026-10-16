@@ -11,13 +11,14 @@ macro_rules! golden {
     };
 }
 
-const GOLDENS: [(&str, &str, &str); 7] = [
+const GOLDENS: [(&str, &str, &str); 8] = [
     golden!("empty"),
     golden!("multiline"),
     golden!("controls"),
     golden!("name-equals-id"),
     golden!("markers"),
     golden!("attention"),
+    golden!("priority"),
     golden!("tagged-ids"),
 ];
 
@@ -67,12 +68,31 @@ fn goldens_exercise_the_cases_they_name() {
         "[herdr-threads] message mQ7aAb12Cd34 in tQ7aZz99Yy88 \"plans\" from sQ7aK3Fq9a2B \"alice\":\n"
     ));
     assert!(by_name("tagged-ids").contains(
-        "[herdr-threads] lazy mQ7aEf56Gh78 in dK3Fq9a2B7x \"plans\" from sQ7aK3Fq9a2B \"bob\":\n"
+        "[herdr-threads] message mQ7aEf56Gh78 in dK3Fq9a2B7x \"plans\" from sQ7aK3Fq9a2B \"bob\" [p0]:\n"
     ));
     // The short attention header has no thread or sender.
     assert!(
         by_name("attention").contains("\n\n[herdr-threads] attention attention:4:\n  You have")
     );
+}
+
+#[test]
+fn priority_marker_leads_the_markers_and_p1_or_absent_is_silent() {
+    let text = GOLDENS
+        .iter()
+        .find(|(name, ..)| *name == "priority")
+        .unwrap()
+        .2;
+    assert!(text.contains("from S1 \"alice\" [p0]:\n  body of m1"));
+    assert!(text.contains("from S1 \"alice\":\n  body of m2"));
+    assert!(text.contains("from S1 \"alice\" [p5]:\n  body of m3"));
+    assert!(text.contains("[p0] [human] [relays user] [rule]:\n  body of m4"));
+    assert!(text.contains("from S1 \"alice\":\n  body of m5"));
+    assert!(!text.contains("lazy"));
+    // An out-of-range priority from a future daemon adds nothing.
+    let mut item = items(include_str!("../fixtures/delivery/frame-priority.json")).remove(0);
+    item.priority = Some(10);
+    assert!(!frame(&[item]).contains("[p"));
 }
 
 #[test]

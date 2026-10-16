@@ -3,5 +3,5 @@
 [herdr-threads] message mQ7aAb12Cd34 in tQ7aZz99Yy88 "plans" from sQ7aK3Fq9a2B "alice":
   body of mQ7aAb12Cd34
 
-[herdr-threads] lazy mQ7aEf56Gh78 in dK3Fq9a2B7x "plans" from sQ7aK3Fq9a2B "bob":
+[herdr-threads] message mQ7aEf56Gh78 in dK3Fq9a2B7x "plans" from sQ7aK3Fq9a2B "bob" [p0]:
   body of mQ7aEf56Gh78

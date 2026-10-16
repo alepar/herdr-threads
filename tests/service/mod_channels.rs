@@ -654,6 +654,30 @@ fn notify_pushes_attention_and_records_push_time() {
     assert_eq!(calls, vec![(UtcMillis(1_001_000), WATCH_BODY_LIMIT_BYTES)]);
 }
 
+/// ht-yha.58 (ht-3eic): the worker reads its clock before `pass` reads the store, so an item can commit in
+/// between. The push that announces that item must be recorded no earlier than the item, or the stall rule
+/// (items published at or before the last push) never counts it and a wedged mod is never handed over.
+#[test]
+fn a_push_for_an_item_committed_after_the_pass_clock_read_still_arms_the_stall() {
+    let f = fixture();
+    let (_, sink) = f.register("a", 1);
+    // The worker's `now`, read before the commit landed.
+    let stale_now = f.now();
+    f.advance(50);
+    let published = f.now();
+    f.store.receipts.lock().unwrap().push((published, 10));
+    f.set_view(&bid("a", 1), Some(view("a", 1, pending(3))));
+    f.registry.pass(stale_now).unwrap();
+    assert_eq!(sink.frames(), vec![WatchFrame::Attention { version: 3 }]);
+    f.advance(MOD_STALL_AFTER_MS as i64 + 10);
+    assert!(
+        f.registry.stalled(&seat("a"), f.now()),
+        "the recorded push must cover the item it announced"
+    );
+    let calls = f.store.stall_calls.lock().unwrap().clone();
+    assert_eq!(calls, vec![(published, WATCH_BODY_LIMIT_BYTES)]);
+}
+
 #[test]
 fn notify_without_fingerprint_change_pushes_nothing() {
     let f = fixture();

@@ -166,14 +166,69 @@ fn send_in(
     body: &str,
     delivery_mode: crate::protocol::commands::DeliveryMode,
 ) -> MessageId {
+    send_in_priority(fx, thread, body, delivery_mode, None)
+}
+/// An ordinary-mode send with an explicit delivery priority and no ACK recipients: a delivery row.
+fn send_priority(fx: &mut Fx, body: &str, priority: u8) -> MessageId {
+    let priority = crate::protocol::priority::DeliveryPriority::new(priority).unwrap();
+    send_in_priority(
+        fx,
+        "t",
+        body,
+        crate::protocol::commands::DeliveryMode::Ordinary,
+        Some(priority),
+    )
+}
+fn send_in_priority(
+    fx: &mut Fx,
+    thread: &str,
+    body: &str,
+    delivery_mode: crate::protocol::commands::DeliveryMode,
+    priority: Option<crate::protocol::priority::DeliveryPriority>,
+) -> MessageId {
+    send_full(fx, thread, body, delivery_mode, priority, None)
+}
+/// An explicit-ACK send to every other member of `t` whose receipts are due `deadline` ms after
+/// the send.
+fn send_ack(fx: &mut Fx, body: &str, deadline: u64) -> MessageId {
+    send_full(
+        fx,
+        "t",
+        body,
+        crate::protocol::commands::DeliveryMode::Ordinary,
+        None,
+        Some(deadline),
+    )
+}
+fn send_full(
+    fx: &mut Fx,
+    thread: &str,
+    body: &str,
+    delivery_mode: crate::protocol::commands::DeliveryMode,
+    priority: Option<crate::protocol::priority::DeliveryPriority>,
+    deadline_millis: Option<u64>,
+) -> MessageId {
     fx.sends += 1;
+    // Only explicit ACK recipients owe receipts (D9): an ordinary send names every other member.
+    let acks: Vec<SeatId> = if delivery_mode.is_ordinary() && priority.is_none() {
+        fx.conn
+            .prepare("SELECT seat_id FROM memberships WHERE thread_id=?1 AND state='joined' AND seat_id<>'a' ORDER BY seat_id")
+            .unwrap()
+            .query_map([thread], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|seat| SeatId::new(seat.unwrap()))
+            .collect()
+    } else {
+        vec![]
+    };
     let request = SendMessage {
+        priority,
         delivery_mode,
         user_intent: None,
         thread: ThreadId::new(thread),
         body: body.into(),
-        invited_recipients: vec![],
-        deadline_millis: None,
+        invited_recipients: acks,
+        deadline_millis,
         operation: OperationId::new(format!("send-{}", fx.sends)),
         claim: claim_a(),
         relays_user: false,
@@ -244,6 +299,7 @@ fn page_in(fx: &Fx, claim: Option<&CallerClaim>, thread: Option<&str>) -> Vec<Ro
         &fx.context,
         "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: thread.map(ThreadId::new),
             claim: claim.cloned(),
             seat: Some(SeatId::new("b")),
@@ -377,6 +433,8 @@ fn one_bindings_display_never_hides_mail_from_the_other() {
     let m3 = send(&mut fx, "three");
     // A sees only the new message; B sees everything it has not displayed itself.
     assert_eq!(page(&fx, Some(&claim_b1())), vec![msg(&m3, true)]);
+    // Merged order: each unread row keeps its receipt's deadline whether or not the receipt is
+    // settled (ht-yha.63), so with equal deadlines publication order decides.
     assert_eq!(
         page(&fx, Some(&claim_b2())),
         vec![msg(&m1, false), msg(&m2, false), msg(&m3, true)]
@@ -595,6 +653,62 @@ fn bound_lazy_stream_is_per_binding() {
     assert!(!shows(&fx, &sub), "the subagent's cursor passed it");
 }
 
+/// A p0 row displayed before an older p1 row of the same thread is not offered again to the binding
+/// that displayed it, through the cursor-only `AdvanceCursors` path (top-level and subagent
+/// streams, body reads), while the p1 row stays unread (ht-yha.5.2, `binding_row_displays`).
+#[test]
+fn out_of_order_display_through_advance_cursors_is_not_reoffered() {
+    let mut fx = fx("bi-out-of-order");
+    let parent = binding_of(&fx, &claim_b1());
+    insert_binding(
+        &fx.conn,
+        "b",
+        "nb1",
+        EXEC_B1,
+        Some((parent.as_str(), "agent-1")),
+    );
+    let sub = claim("b", "nb1", EXEC_B1, Some("agent-1"));
+    let low = send_priority(&mut fx, "p1 first", 1);
+    let urgent = send_priority(&mut fx, "p0 second", 0);
+    let shows = |fx: &Fx, c: &CallerClaim, m: &MessageId| {
+        page(fx, Some(c))
+            .iter()
+            .any(|row| matches!(row, Row::Lazy(id) if id == m.as_str()))
+    };
+    for c in [claim_b1(), sub.clone()] {
+        assert!(
+            shows(&fx, &c, &low) && shows(&fx, &c, &urgent),
+            "both unread"
+        );
+    }
+    advance(&fx, &claim_b1(), "ooo-top", &[&urgent]);
+    assert!(
+        !shows(&fx, &claim_b1(), &urgent),
+        "displayed p0 is not offered again"
+    );
+    assert!(shows(&fx, &claim_b1(), &low), "the p1 row is still owed");
+    assert!(
+        shows(&fx, &claim_b2(), &urgent),
+        "another binding's stream is untouched"
+    );
+    advance(&fx, &sub, "ooo-sub", &[&urgent]);
+    assert!(!shows(&fx, &sub, &urgent) && shows(&fx, &sub, &low));
+    advance(&fx, &claim_b1(), "ooo-low", &[&low]);
+    assert!(!shows(&fx, &claim_b1(), &low) && !shows(&fx, &claim_b1(), &urgent));
+    let marks: i64 = fx
+        .conn
+        .query_row(
+            "SELECT count(*) FROM binding_row_displays WHERE binding_id=?1",
+            [parent.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        marks, 0,
+        "the cursor passed the marked row and pruned its mark"
+    );
+}
+
 /// A binding enrolled after its seat left a thread owns no cursor row for it; a missing row must
 /// not read as "everything unread".
 #[test]
@@ -641,6 +755,7 @@ fn warning_refs(fx: &Fx, claim: &CallerClaim) -> Vec<String> {
         &fx.context,
         "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             claim: Some(claim.clone()),
             seat: Some(SeatId::new("b")),
@@ -765,6 +880,7 @@ fn thread_scoped_page_lists_only_that_threads_lazy_rows() {
         &fx.context,
         "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: Some(ThreadId::new("t2")),
             claim: Some(b1),
             seat: Some(SeatId::new("b")),
@@ -797,5 +913,555 @@ fn thread_scoped_page_stops_at_the_first_unread_ordinary_row() {
     let all = page(&fx, Some(&b1));
     for row in [lazy(&before), msg(&ordinary, true), lazy(&after)] {
         assert!(all.contains(&row), "{row:?} in {all:?}");
+    }
+}
+
+// ht-yha.5.4: the caller subsets of the merged page. The hook/CLI page lists every class; accept's
+// thread-scoped page lists that thread's delivery rows only; the private presentation page lists
+// delivery rows and the receipt-bearing walks, never invitations or warnings.
+#[test]
+fn caller_subsets_produce_the_right_classes() {
+    let mut fx = fx("bi-caller-subsets");
+    let lazy = send_lazy(&mut fx, "quiet");
+    let ack = send(&mut fx, "needs an ACK");
+    let decision: i64 = fx
+        .conn
+        .query_row("SELECT decision_seq+1 FROM local_node", [], |r| r.get(0))
+        .unwrap();
+    fx.conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,origin_node) VALUES('inv','t','b',2,'pending',0,?1,300,300,(SELECT id FROM local_node))", [decision]).unwrap();
+    let warned = decision + 1;
+    fx.conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES('34750f98bd59fcfc946da45aaabe933b','warning','t',100,'warn','{}',?1,0)", [warned]).unwrap();
+    fx.conn.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES('warning',?1,'t',100,'b','invitation','inv')", [warned]).unwrap();
+    fx.conn
+        .execute("UPDATE local_node SET decision_seq=?1", [warned])
+        .unwrap();
+    // Hook / CLI page: invitation and receipt (priority 0) before the priority-1 row, plus the
+    // warning.
+    assert_eq!(
+        page(&fx, Some(&claim_b1())),
+        vec![
+            msg(&ack, true),
+            Row::Invitation("t".into()),
+            Row::Lazy(lazy.as_str().into())
+        ]
+    );
+    assert_eq!(warning_refs(&fx, &claim_b1()), ["warning"]);
+    // Accept's thread-scoped page: this thread's delivery rows only, below the first unread
+    // receipt-bearing row (the ACK message sits after the lazy one).
+    assert_eq!(
+        page_in(&fx, Some(&claim_b1()), Some("t")),
+        vec![Row::Lazy(lazy.as_str().into())]
+    );
+    // The private presentation page: rows and receipt-bearing walks, no invitation or warning.
+    let presentation = crate::store::queries::ordinary_presentation_page(
+        &fx.conn,
+        &fx.context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &claim_b1(),
+        None,
+        &budget(),
+    )
+    .unwrap();
+    assert!(!presentation.page.has_more);
+    let kinds: Vec<_> = presentation
+        .page
+        .items
+        .iter()
+        .map(|item| match item {
+            InboxBatchV2Item::Message { message, .. } => format!("message {}", message.as_str()),
+            InboxBatchV2Item::LazyMessage { message, .. } => format!("lazy {}", message.as_str()),
+            other => panic!("the presentation lists no {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            format!("message {}", ack.as_str()),
+            format!("lazy {}", lazy.as_str())
+        ]
+    );
+}
+
+/// One shown piece of a traversal page: a message body chunk (`start..end` of `len`) or an
+/// invitation (`inv:<id>`, `0..0` of 0), and whether the reader may ACK it by displaying it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Shown {
+    item: String,
+    start: u64,
+    end: u64,
+    len: u64,
+    ack: bool,
+}
+
+/// Drive seat b's bound v2 traversal for `claim` to its end at `limit` / `max_bytes` per page,
+/// calling `between` with each page's pieces before the next page is read. Returns the pages.
+fn traverse(
+    fx: &Fx,
+    claim: &CallerClaim,
+    limit: u16,
+    max_bytes: u32,
+    mut between: impl FnMut(&[Shown]),
+) -> Vec<Vec<Shown>> {
+    let mut pages = Vec::new();
+    let mut cursor = None;
+    loop {
+        assert!(pages.len() < 400, "the traversal does not end");
+        let CommandResult::InboxBatchV2(page) = query_with_output(
+            &fx.context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &Command::InboxBatchV2(InboxQuery {
+                pushed: false,
+                thread: None,
+                claim: Some(claim.clone()),
+                seat: Some(SeatId::new("b")),
+                page: PageRequest {
+                    limit,
+                    max_bytes,
+                    cursor: cursor.take(),
+                },
+            }),
+            &OutputSpec::default(),
+            &budget(),
+        )
+        .unwrap() else {
+            panic!("v2 page")
+        };
+        let shown: Vec<Shown> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                InboxBatchV2Item::Message {
+                    message,
+                    body_start,
+                    body_end,
+                    body_len,
+                    ack_candidate,
+                    ..
+                } => Some(Shown {
+                    item: message.as_str().to_owned(),
+                    start: *body_start,
+                    end: *body_end,
+                    len: *body_len,
+                    ack: ack_candidate.is_some(),
+                }),
+                InboxBatchV2Item::LazyMessage {
+                    message,
+                    body_start,
+                    body_end,
+                    body_len,
+                    ..
+                } => Some(Shown {
+                    item: message.as_str().to_owned(),
+                    start: *body_start,
+                    end: *body_end,
+                    len: *body_len,
+                    ack: false,
+                }),
+                InboxBatchV2Item::Invitation { invitation, .. } => Some(Shown {
+                    item: format!("inv:{}", invitation.as_str()),
+                    start: 0,
+                    end: 0,
+                    len: 0,
+                    ack: false,
+                }),
+                _ => None,
+            })
+            .collect();
+        between(&shown);
+        pages.push(shown);
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => {
+                assert!(!page.has_more);
+                return pages;
+            }
+        }
+    }
+}
+
+/// The items a traversal showed from their first byte, in order (a resumed body's later chunks
+/// are not a new showing), after checking every item's chunks are contiguous and complete.
+fn shown_items(pages: &[Vec<Shown>]) -> Vec<String> {
+    let mut first = Vec::new();
+    let mut at: std::collections::HashMap<String, (u64, u64)> = Default::default();
+    for piece in pages.iter().flatten() {
+        if piece.start == 0 {
+            first.push(piece.item.clone());
+        } else {
+            let (end, len) = at
+                .get(&piece.item)
+                .copied()
+                .unwrap_or_else(|| panic!("{piece:?} resumes nothing"));
+            assert_eq!(
+                (piece.start, piece.len),
+                (end, len),
+                "{piece:?} is contiguous"
+            );
+        }
+        at.insert(piece.item.clone(), (piece.end, piece.len));
+    }
+    for (item, (end, len)) in &at {
+        assert_eq!(end, len, "{item} is shown whole");
+    }
+    first
+}
+
+fn sorted(mut items: Vec<String>) -> Vec<String> {
+    items.sort();
+    items
+}
+
+// ht-yha.63 I5 (main review): the head of a fresh deadline window W2 is cut by the page bound
+// after an earlier window W1 whose keys sort above W2's (W1's receipts are due later). The
+// resumed page re-collects W2 and must skip only what W2 itself emitted, not every key below
+// W1's last key. Kills: resuming with `retain(key > merge-global last)`, which drops W2's other
+// items and completes the traversal without them.
+#[test]
+fn a_later_windows_partial_head_resumes_without_dropping_its_other_items() {
+    let mut fx = fx("bi-i5-window-relative");
+    // W1: more unread rows than one window holds, settled elsewhere, due late.
+    let w1: Vec<MessageId> = (0..64)
+        .map(|n| send_ack(&mut fx, &format!("w1-{n}"), 900_000))
+        .collect();
+    ack_displayed(&fx, &claim_b2(), "ack-w1", &w1.iter().collect::<Vec<_>>());
+    // W2: pending receipts due early; the earliest one's body overflows a page.
+    let head = send_ack(&mut fx, &"x".repeat(6_000), 100_000);
+    let w2: Vec<MessageId> = (0..3)
+        .map(|n| send_ack(&mut fx, &format!("w2-{n}"), 100_000 + n))
+        .collect();
+    let pages = traverse(&fx, &claim_b1(), 100, 4_000, |_| {});
+    let shown = shown_items(&pages);
+    let mut want: Vec<String> = w1.iter().map(|m| m.as_str().to_owned()).collect();
+    want.push(head.as_str().to_owned());
+    want.extend(w2.iter().map(|m| m.as_str().to_owned()));
+    assert_eq!(sorted(shown), sorted(want), "every item exactly once");
+    assert!(
+        pages
+            .iter()
+            .flatten()
+            .any(|p| p.item == head.as_str() && p.start > 0),
+        "the head body was resumed on a later page"
+    );
+}
+
+// ht-yha.63 I6 (main review): an explicit-ACK message shown and display-ACKed on page 1 stays
+// unread (its thread cursor is held by an older undisplayed message), so page 2 re-collects it.
+// Its key must not change with the ACK. Kills: an unread row's deadline taken only from a pending
+// receipt, which makes the ACKed row sort after the window's last key and shows it again.
+#[test]
+fn an_item_display_acked_mid_window_is_not_shown_again() {
+    let mut fx = fx("bi-i6-frozen-key");
+    let low = send_ack(&mut fx, "older, due late", 900_000);
+    let m = send_ack(&mut fx, "newer, due early", 100_000);
+    let mut acks = 0;
+    let pages = traverse(&fx, &claim_b1(), 1, 60_000, |page| {
+        let ids: Vec<MessageId> = page
+            .iter()
+            .filter(|p| p.ack && p.end == p.len)
+            .map(|p| MessageId::new(&p.item))
+            .collect();
+        if !ids.is_empty() {
+            acks += 1;
+            ack_displayed(
+                &fx,
+                &claim_b1(),
+                &format!("ack-{acks}"),
+                &ids.iter().collect::<Vec<_>>(),
+            );
+        }
+    });
+    assert_eq!(
+        shown_items(&pages),
+        [m.as_str().to_owned(), low.as_str().to_owned()],
+        "m is shown once"
+    );
+}
+
+// ht-yha.71 (final review wf_b9b4d982-1c2 [rare-rekey-duplicate]): an unread row whose receipt has
+// no stored deadline, for a dormant recipient, settles between two pages of one window. Its
+// effective deadline then switches from the send-time projection to the availability rule
+// (`None`, which sorts last), so a key built from it moves past the window's last key and the row
+// is shown again. Kills: keying an unread row by the receipt's state-dependent effective deadline.
+#[test]
+fn a_receipt_without_a_stored_deadline_is_shown_once_across_a_settle() {
+    let mut fx = fx("bi-rekey-no-stored-deadline");
+    let low = send_ack(&mut fx, "older, due late", 900_000);
+    let m = send_ack(&mut fx, "newer, due early", 100_000);
+    // m's recipient row for b is dormant at the send, and m has no stored deadline.
+    fx.conn
+        .execute(
+            "UPDATE prepared_recipients SET eligible_at_snapshot=0 WHERE seat_id='b' AND preparation_id=(SELECT preparation_id FROM send_manifests WHERE message_id=?1)",
+            [m.as_str()],
+        )
+        .unwrap();
+    fx.conn
+        .execute(
+            "UPDATE receipt_state SET deadline_at=NULL, available_at=NULL WHERE message_id=?1 AND seat_id='b'",
+            [m.as_str()],
+        )
+        .unwrap();
+    // No availability after the send: a settled dormant receipt then has no deadline at all.
+    fx.conn
+        .execute(
+            "DELETE FROM seat_availability WHERE seat_id='b' AND decision_seq>=(SELECT decision_seq FROM send_manifests WHERE message_id=?1)",
+            [m.as_str()],
+        )
+        .unwrap();
+    let send_at: i64 = fx
+        .conn
+        .query_row(
+            "SELECT decision_at FROM send_manifests WHERE message_id=?1",
+            [m.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let before = crate::store::effective::effective_receipt(&fx.conn, m.as_str(), "b")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (before.state, before.deadline_at),
+        (EffectiveReceiptState::Pending, Some(send_at + 100_000)),
+        "a pending dormant receipt is due at its send-time projection"
+    );
+    let mut settled = false;
+    let pages = traverse(&fx, &claim_b1(), 1, 60_000, |page| {
+        if settled || !page.iter().any(|p| p.item == m.as_str() && p.end == p.len) {
+            return;
+        }
+        settled = true;
+        // A legacy settle that stores no deadline (a v38-copied or warning-inserted row ACKed
+        // while not pending keeps `deadline_at` NULL); written directly, as no current writer of
+        // a pending receipt leaves it NULL.
+        fx.conn
+            .execute(
+                "INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES(?1,'b','acked','b',1,'proof',2000) ON CONFLICT(message_id,seat_id) DO UPDATE SET state='acked',deadline_at=NULL,available_at=NULL,ack_actor_seat_id='b',ack_generation=1,ack_observation='proof',acked_at=2000",
+                [m.as_str()],
+            )
+            .unwrap();
+        let after = crate::store::effective::effective_receipt(&fx.conn, m.as_str(), "b")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (after.state, after.deadline_at),
+            (EffectiveReceiptState::Acknowledged, None),
+            "the settle moves the effective deadline (the re-key this test is about)"
+        );
+    });
+    assert!(settled, "m was shown");
+    assert_eq!(
+        shown_items(&pages),
+        [m.as_str().to_owned(), low.as_str().to_owned()],
+        "m is shown once"
+    );
+}
+
+// ht-yha.63 I6 (main review), the marks: a receipt-bearing message displayed above a blocked
+// cursor gets this binding's display mark and is not offered again on a fresh traversal; the
+// mark is pruned when the cursor passes it. Kills: marking only rows with a delivery row
+// (`lazy_recipients`), and an unread predicate that ignores the marks.
+#[test]
+fn a_receipt_row_displayed_above_a_blocked_cursor_is_not_reoffered() {
+    let mut fx = fx("bi-i6-receipt-mark");
+    let low = send_ack(&mut fx, "older, due late", 900_000);
+    let m = send_ack(&mut fx, "newer, due early", 100_000);
+    assert_eq!(
+        page(&fx, Some(&claim_b1())),
+        vec![msg(&m, true), msg(&low, true)]
+    );
+    ack_displayed(&fx, &claim_b1(), "ack-m", &[&m]);
+    advance(&fx, &claim_b1(), "adv-m", &[&m]);
+    assert!(
+        cursor(&fx, &claim_b1()).unwrap_or(0) < seq(&fx, &low),
+        "the older message holds the cursor"
+    );
+    let b1 = binding_of(&fx, &claim_b1());
+    let marked = |fx: &Fx| -> i64 {
+        fx.conn
+            .query_row(
+                "SELECT count(*) FROM binding_row_displays WHERE binding_id=?1 AND message_id=?2",
+                [b1.as_str(), m.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(marked(&fx), 1, "m carries b1's display mark");
+    assert_eq!(page(&fx, Some(&claim_b1())), vec![msg(&low, true)]);
+    assert_eq!(
+        page(&fx, Some(&claim_b2())),
+        vec![msg(&m, false), msg(&low, true)],
+        "another binding's stream is untouched (m keeps its receipt's deadline)"
+    );
+    ack_displayed(&fx, &claim_b1(), "ack-low", &[&low]);
+    advance(&fx, &claim_b1(), "adv-low", &[&low]);
+    assert_cursor(&fx, &claim_b1(), &m, None);
+    assert_eq!(marked(&fx), 0, "the cursor passed m and pruned its mark");
+    assert_eq!(page(&fx, Some(&claim_b1())), vec![]);
+}
+
+/// A deadline-class backlog for seat b's binding nb1: `receipts` pending receipts nb1's cursor
+/// already passed, `settled` unread rows whose receipts another binding settled, `pending`
+/// unread rows with pending receipts and `invitations` require-ACK invitations, with permuted
+/// deadlines and bodies of several sizes. Returns every item the traversal must show once.
+fn backlog(
+    name: &str,
+    receipts: u64,
+    settled: u64,
+    pending: u64,
+    invitations: u64,
+) -> (Fx, Vec<String>) {
+    let mut fx = fx(name);
+    let mut items = Vec::new();
+    let body = |n: u64| format!("{n:03}-{}", "y".repeat(100 + (n * 37 % 5) as usize * 150));
+    let due = |n: u64| 100_000 + (n * 37 % 61) * 1_000;
+    let mut n = 0;
+    let mut next = || {
+        n += 1;
+        n
+    };
+    let passed: Vec<MessageId> = (0..receipts)
+        .map(|_| {
+            let k = next();
+            send_ack(&mut fx, &body(k), due(k))
+        })
+        .collect();
+    advance(
+        &fx,
+        &claim_b1(),
+        "adv-receipts",
+        &passed.iter().collect::<Vec<_>>(),
+    );
+    items.extend(passed.iter().map(|m| m.as_str().to_owned()));
+    let settled_ids: Vec<MessageId> = (0..settled)
+        .map(|_| {
+            let k = next();
+            send_ack(&mut fx, &body(k), due(k))
+        })
+        .collect();
+    if !settled_ids.is_empty() {
+        ack_displayed(
+            &fx,
+            &claim_b2(),
+            "ack-settled",
+            &settled_ids.iter().collect::<Vec<_>>(),
+        );
+    }
+    items.extend(settled_ids.iter().map(|m| m.as_str().to_owned()));
+    for _ in 0..pending {
+        let k = next();
+        items.push(send_ack(&mut fx, &body(k), due(k)).as_str().to_owned());
+    }
+    for i in 0..invitations {
+        fx.conn
+            .execute_batch(&format!(
+                "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('u{i}','34750f98bd59fcfc946da45aaabe933b','other','goal',0,0,0);
+                 INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES ('u{i}','b',1,'invited','invited');
+                 INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node) VALUES ('inv{i}','u{i}','b',1,'pending',1,0,300,{},'require_ack','a',(SELECT id FROM local_node));",
+                101_000 + i * 7_000
+            ))
+            .unwrap();
+        items.push(format!("inv:inv{i}"));
+    }
+    (fx, items)
+}
+
+/// Display bookkeeping the CLI does after a page, through one `store` for the traversal:
+/// display-ACK the whole ACK candidates, then advance the cursors over the whole messages shown.
+fn display(store: &crate::store::SqliteStore, op: &str, page: &[Shown]) {
+    let whole: Vec<MessageId> = page
+        .iter()
+        .filter(|p| !p.item.starts_with("inv:") && p.end == p.len)
+        .map(|p| MessageId::new(&p.item))
+        .collect();
+    let acks: Vec<MessageId> = page
+        .iter()
+        .filter(|p| p.ack && p.end == p.len)
+        .map(|p| MessageId::new(&p.item))
+        .collect();
+    if !acks.is_empty() {
+        let mutation = PermitMutation::AckDisplayed(Ack {
+            messages: acks,
+            operation: OperationId::new(format!("ack-{op}")),
+            claim: claim_b1(),
+        });
+        let permit = store
+            .issue_cooperative_permit(
+                crate::store::cooperative_permit_request(&mutation).unwrap(),
+                &budget(),
+            )
+            .unwrap();
+        store.mutate(mutation, permit, &budget()).unwrap();
+    }
+    if !whole.is_empty() {
+        store
+            .advance_cursors(
+                &AdvanceCursors {
+                    in_turn: false,
+                    invitations: Vec::new(),
+                    claim: claim_b1(),
+                    operation: OperationId::new(format!("adv-{op}")),
+                    displayed: whole,
+                },
+                &budget(),
+            )
+            .unwrap();
+    }
+}
+
+/// A copy of `fx`'s store under a fresh isolation: one backlog serves several traversals that
+/// change it.
+fn clone_fx(fx: &Fx, name: &str) -> Fx {
+    let iso = TestIsolation::new(name);
+    let path = iso.path("store.db");
+    fx.conn
+        .execute("VACUUM INTO ?1", [path.to_str().unwrap()])
+        .unwrap();
+    let context = StoreContext::new(path, Arc::new(FixedClock)).with_test_host();
+    let conn = context.open_writer().unwrap();
+    Fx {
+        iso,
+        context,
+        conn,
+        sends: fx.sends,
+    }
+}
+
+// ht-yha.63: exhaustive small cases over windows x partial bodies x ACK display. The backlog mixes
+// every deadline-class walk (invitations, settled and pending unread rows, receipts the cursor
+// passed) with permuted deadlines and holds more items than one window; each page bound cuts
+// bodies at different items; with ACK display on, every page is display-ACKed and its cursors
+// advanced before the next one (a copy of the backlog per bound). Every traversal shows every
+// pending item exactly once, each body contiguous and whole; after a displayed traversal a fresh
+// one shows nothing but the (unACKable) invitations.
+#[test]
+fn deadline_traversals_show_every_item_exactly_once() {
+    let (fx, want) = backlog("bi-exhaustive", 2, 26, 27, 2);
+    assert!(want.len() > 50, "more items than one window visits");
+    let bounds: [(u16, u32); 4] = [(100, 1_500), (100, 2_300), (4, 60_000), (7, 3_100)];
+    for (limit, max_bytes) in bounds {
+        let pages = traverse(&fx, &claim_b1(), limit, max_bytes, |_| {});
+        assert_eq!(
+            sorted(shown_items(&pages)),
+            sorted(want.clone()),
+            "limit={limit} max_bytes={max_bytes} read-only"
+        );
+    }
+    for (limit, max_bytes) in bounds {
+        let fx = clone_fx(&fx, &format!("bi-exhaustive-{limit}-{max_bytes}"));
+        let store = store(&fx);
+        let mut n = 0;
+        let pages = traverse(&fx, &claim_b1(), limit, max_bytes, |page| {
+            n += 1;
+            display(&store, &n.to_string(), page);
+        });
+        assert_eq!(
+            sorted(shown_items(&pages)),
+            sorted(want.clone()),
+            "limit={limit} max_bytes={max_bytes} displayed"
+        );
+        let again = shown_items(&traverse(&fx, &claim_b1(), 100, 60_000, |_| {}));
+        assert!(
+            again.iter().all(|item| item.starts_with("inv:")),
+            "limit={limit} max_bytes={max_bytes}: shown again {again:?}"
+        );
     }
 }

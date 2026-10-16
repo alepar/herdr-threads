@@ -12,7 +12,7 @@
   ninth
   tenth
 
-[herdr-threads] lazy m2 in T1 "plans" from S1 "alice":
+[herdr-threads] message m2 in T1 "plans" from S1 "alice":
 
 
 [herdr-threads] message m3 in T1 "plans" from S1 "alice":

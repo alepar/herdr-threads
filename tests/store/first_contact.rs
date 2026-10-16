@@ -521,6 +521,7 @@ fn page_of(store: &crate::store::SqliteStore, claim: &CallerClaim) -> Vec<(Strin
         &store.context,
         "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             claim: Some(claim.clone()),
             seat: Some(claim.seat.clone()),
@@ -741,6 +742,7 @@ fn v2_items(
         &store.context,
         "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             claim: Some(claim.clone()),
             seat: Some(claim.seat.clone()),

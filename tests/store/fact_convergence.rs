@@ -395,6 +395,7 @@ impl Node {
     ) -> Result<SendMessage, ApiError> {
         let request = SendMessage {
             delivery_mode: mode,
+            priority: None,
             user_intent: None,
             thread: thread.clone(),
             body: format!("body of {operation}"),
@@ -976,6 +977,7 @@ fn remote_seat_not_occupiable_on_a() {
     // send
     let request = SendMessage {
         delivery_mode: DeliveryMode::Lazy,
+        priority: None,
         user_intent: None,
         thread: w.thread.clone(),
         body: "x".into(),

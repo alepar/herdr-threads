@@ -5411,7 +5411,9 @@ fn composer_wake_seen(
     (outcome, prompted)
 }
 
-/// Every binding is owed the wake except `served` (shown the items inside its own turn).
+/// Every binding is owed the wake except `served` (shown the items inside its own turn), with the
+/// store's per-reason rule over the reached set: a `lazy` (delivery-row) wake is owed while some
+/// reached binding is unserved; any other wake only while no reached binding is served.
 struct ServedReservationCheck {
     served: &'static [&'static str],
 }
@@ -5421,11 +5423,18 @@ impl ReservationCheck for ServedReservationCheck {
     }
     fn owes_wake(
         &self,
-        _: &WakeReservation,
-        binding: Option<&crate::protocol::ids::BindingId>,
+        reservation: &WakeReservation,
+        reached: &[Option<&crate::protocol::ids::BindingId>],
         _: &CallBudget,
     ) -> Result<bool, ApiError> {
-        Ok(binding.is_none_or(|binding| !self.served.contains(&binding.as_str())))
+        let unserved = |binding: &Option<&crate::protocol::ids::BindingId>| {
+            binding.is_none_or(|binding| !self.served.contains(&binding.as_str()))
+        };
+        Ok(if reservation.reasons.iter().any(|r| r == "lazy") {
+            reached.iter().any(unserved)
+        } else {
+            reached.iter().all(unserved)
+        })
     }
 }
 
@@ -5506,14 +5515,46 @@ fn one_process_composer_wake_does_not_need_a_composer_classified_idle() {
     }
 }
 
-/// Kills: widening the one-process rule past what it is sound for. Mail a binding has not read
-/// is that binding's own (a stale `/side` fork never reads again), so a wake for unread mail
-/// alone still needs a unique binding; two harnesses on one pid are not one composer; a process
-/// that is not in the foreground is no match.
+/// Kills: a bare `--nudge` (p0, no ACK, so no receipt under D9) losing its wake in a one-process
+/// multi-binding seat, which main wakes through its receipt. The threshold-admitted delivery row
+/// (reason `lazy`) is seat-level attention like `pending_receipt`: the wake is typed once, not
+/// refused `unsafe`.
 #[test]
-fn one_process_composer_wake_stays_refused_outside_seat_attention() {
+fn one_process_composer_wake_serves_a_threshold_admitted_delivery_row() {
     let owed = ServedReservationCheck { served: &[] };
     let (outcome, prompted) = composer_wake_for(one_process_bindings(), &[10], &["lazy"], &owed);
+    assert_eq!(outcome, WakeOutcome::Submitted);
+    assert_eq!(prompted.len(), 1, "one composer, one wake");
+    assert_eq!(prompted[0].bound_harness.as_deref(), Some("codex"));
+}
+
+/// Kills: widening the one-process rule past what it is sound for, and (ht-yha.62) narrowing it
+/// below. A lazy wake one binding of the process already displayed is still typed once while a
+/// sibling has the row unread, and refused only once every binding displayed it; a wake naming no
+/// seat-level reason still needs a unique binding; two harnesses on one pid are not one composer;
+/// a process that is not in the foreground is no match.
+#[test]
+fn one_process_composer_wake_stays_refused_outside_seat_attention() {
+    let served = ServedReservationCheck { served: &["main"] };
+    let (outcome, prompted) = composer_wake_for(one_process_bindings(), &[10], &["lazy"], &served);
+    assert_eq!(
+        outcome,
+        WakeOutcome::Submitted,
+        "side1 and side2 still have the row unread"
+    );
+    assert_eq!(prompted.len(), 1, "one composer, one wake");
+    let all = ServedReservationCheck {
+        served: &["main", "side1", "side2"],
+    };
+    let (outcome, prompted) = composer_wake_for(one_process_bindings(), &[10], &["lazy"], &all);
+    assert_eq!(
+        outcome,
+        WakeOutcome::Refused(RefusalCause::Unavailable),
+        "every binding already displayed the row"
+    );
+    assert!(prompted.is_empty(), "nothing typed");
+    let owed = ServedReservationCheck { served: &[] };
+    let (outcome, prompted) = composer_wake_for(one_process_bindings(), &[10], &[], &owed);
     assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unsafe));
     assert!(prompted.is_empty());
     let mixed = vec![

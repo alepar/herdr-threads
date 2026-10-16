@@ -7861,7 +7861,7 @@ mod live {
                 db.query_row("SELECT count(*) FROM invitations", [], |r| r
                     .get::<_, i64>(0))
                     .unwrap(),
-                invitations_before + 1
+                invitations_before,
             );
         }
 
@@ -8997,7 +8997,7 @@ mod live {
             assert_eq!(launcher.starts, 1);
             assert_eq!(
                 ordinary_and_invitation_counts(&peer),
-                (before.0 + 1, before.1 + 1)
+                (before.0 + 1, before.1)
             );
             let selected = peer.status().thread.expect("exact selected pair thread");
             assert_eq!(
@@ -9136,7 +9136,7 @@ mod live {
                     .query_row("SELECT count(*) FROM invitations", [], |r| r
                         .get::<_, i64>(0))
                     .unwrap(),
-                before.1 + 1
+                before.1
             );
             let selected = peer.status_for(&active).thread.expect("paired thread");
             assert_eq!(
@@ -9332,8 +9332,8 @@ mod live {
                         .query_row("SELECT count(*) FROM invitations", [], |r| r
                             .get::<_, i64>(0))
                         .unwrap(),
-                    1,
-                    "{lost}"
+                    0,
+                    "{lost}: a pair auto-joins and records no invitation"
                 );
                 assert_eq!(
                     state

@@ -80,23 +80,8 @@ fn inbox_batch_v2_keeps_v1_shapes() {
 }
 
 #[test]
-fn inbox_batch_v2_continuation_type_round_trip_and_body_bounds() {
-    use herdr_threads::protocol::{
-        ids::MessageId,
-        pagination::{InboxBatchV2BodyPosition, InboxBatchV2CursorState},
-    };
-    // Compact future state only: no production cursor codec is asserted here.
-    let value = serde_json::json!({"s":"a","g":1,"e":"execution","p":"l", "a":{"ia":0,"io":0,"id":false,"ip":false,"if":null,"r":null,"d":false,"p":false,"rf":null,"pa":0,"ph":0,"ma":0,"mh":0,"n":false,"w":null,"wo":null}, "la":2,"lh":100,"dh":20,"b":{"m":"m","o":2,"l":5}});
-    let state: InboxBatchV2CursorState = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(state.seat.as_str(), "a");
-    assert_eq!(serde_json::to_value(state).unwrap(), value);
-    let mut unbound = value;
-    unbound.as_object_mut().unwrap().remove("g");
-    unbound.as_object_mut().unwrap().remove("e");
-    let state: InboxBatchV2CursorState = serde_json::from_value(unbound.clone()).unwrap();
-    assert!(state.binding_generation.is_none());
-    assert!(state.execution.is_none());
-    assert_eq!(serde_json::to_value(state).unwrap(), unbound);
+fn inbox_batch_v2_continuation_body_bounds() {
+    use herdr_threads::protocol::{ids::MessageId, pagination::InboxBatchV2BodyPosition};
     for (offset, body_len, valid) in [
         (0, 0, true),
         (0, 5, true),

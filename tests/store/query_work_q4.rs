@@ -86,7 +86,7 @@ fn seeded_body(
         rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node) VALUES (?1,?2,'s',10000,'pending',0,1000000,300,300,'lazy',?3,(SELECT id FROM local_node))", params![format!("q4-inv{n}"),thread,sender]).unwrap();
         let prep = format!("prep-q4-{n}");
         let message = format!("msg-q4-{n}");
-        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')", params![prep,thread]).unwrap();
+        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy',1)", params![prep,thread]).unwrap();
         rows.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,'s')", params![prep,message,thread]).unwrap();
         let decision = if (25..50).contains(&n) {
             100000 + n
@@ -98,14 +98,20 @@ fn seeded_body(
         } else {
             "q4-body".into()
         };
-        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,100000,'ordinary',?3,?5,?4,0,'lazy')", params![message,thread,sender,decision,body]).unwrap();
+        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,priority) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,100000,'ordinary',?3,?5,?4,0,'lazy',1)", params![message,thread,sender,decision,body]).unwrap();
         rows.execute(
             "UPDATE send_preparations SET status='sealed' WHERE id=?1",
             [&prep],
         )
         .unwrap();
         rows.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,?3,?4,0,100000,0,1,0)", params![prep,message,thread,decision]).unwrap();
+        rows.execute("UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1 AND decision_seq IS NULL", params![prep,decision]).unwrap();
     }
+    // Publication writes a view row only inside the reader scope (ht-yha.67), so only the
+    // eligible group reached the binding's view. The raw-scan measurements charge the post-seek
+    // eligibility check for out-of-scope view rows too: write the other candidates' view rows
+    // raw, as a view row whose scope changed after publication stays.
+    rows.execute("INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq) SELECT ?1,ordinal,thread_id,priority,decision_seq FROM lazy_recipients WHERE seat_id='s' AND message_id LIKE 'msg-q4-%'", [binding.as_str()]).unwrap();
     for n in 0..retained {
         let sender = format!("a-noise-{n}");
         let thread = format!("noise-t{n}");
@@ -137,18 +143,19 @@ fn seeded_body(
         // selected-seat high-water and exhaustion branch identical.
         let prep = format!("prep-noise-{n}");
         let message = format!("msg-noise-{n}");
-        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy')",params![prep,thread]).unwrap();
+        rows.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy',1)",params![prep,thread]).unwrap();
         rows.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,?4)",params![prep,message,thread,sender]).unwrap();
         if same_seat_recipients {
             rows.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,'s')",params![prep,message,thread]).unwrap();
         }
-        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,1,'ordinary',?3,'noise',?4,0,'lazy')",params![message,thread,sender,600000+n]).unwrap();
+        rows.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,priority) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,1,'ordinary',?3,'noise',?4,0,'lazy',1)",params![message,thread,sender,600000+n]).unwrap();
         rows.execute(
             "UPDATE send_preparations SET status='sealed' WHERE id=?1",
             [&prep],
         )
         .unwrap();
         rows.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,?3,?4,0,1,0,?5,0)",params![prep,message,thread,600000+n,if same_seat_recipients {2} else {1}]).unwrap();
+        rows.execute("UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1 AND decision_seq IS NULL", params![prep,600000+n]).unwrap();
         // Exact current episode is fixed at10000 in both populations. Older
         // retained episodes and event history grow without moving that boundary.
         rows.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,retired_at,origin_node) VALUES (?1,'q4-t0','s',?2,'recipient_retired',0,?2,300,300,1,(SELECT id FROM local_node))", params![format!("old-inv{n}"),n+1]).unwrap();
@@ -275,6 +282,9 @@ fn unique_point(line: &str, alias: &str, event: bool) -> bool {
         ],
         "b" => &[&["binding_id=?"]],
         "lc" => &[&["binding_id=?", "thread_id=?"]],
+        // The displayed-mark exclusion: the message by (thread, sequence), then its mark.
+        "rdm" => &[&["thread_id=?", "sequence=?"]],
+        "rd" => &[&["binding_id=?", "message_id=?"]],
         "lm" => &[&["thread_id=?", "seat_id=?"]],
         "ld" => &[&["thread_id=?"]],
         "ls" => &[&["id=?"]],
@@ -390,18 +400,24 @@ fn q4_episode_private_and_reconciliation_points_have_constant_sqlite_work() {
                     text("34750f98bd59fcfc946da45aaabe933b"),
                     Value::Integer(2100000),
                 ],
-                &["r", "sm", "m", "b", "lc", "lc", "lm", "ld", "ls", "li"],
+                &[
+                    "r", "sm", "m", "b", "lc", "lc", "rdm", "rd", "lm", "ld", "ls", "li",
+                ],
             );
             assert_eq!(private.0, want, "private candidate={n}");
             let canonical = indexed(
                 &tx,
                 invitation_content::OFFER_RECONCILIATION_MESSAGE_SQL,
-                vec![text(&id), text("34750f98bd59fcfc946da45aaabe933b")],
-                &["messages"],
+                vec![
+                    text(&id),
+                    text("34750f98bd59fcfc946da45aaabe933b"),
+                    text("s"),
+                ],
+                &["m", "r"],
             );
             assert_eq!(canonical.0.len(), 1);
             let row = &canonical.0[0];
-            assert_eq!(row[0], text("lazy"));
+            assert_eq!(row[0], Value::Integer(1));
             let recon = indexed(
                 &tx,
                 invitation_content::OFFER_RECONCILIATION_LAZY_SQL,
@@ -414,7 +430,9 @@ fn q4_episode_private_and_reconciliation_points_have_constant_sqlite_work() {
                     row[2].clone(),
                     row[3].clone(),
                 ],
-                &["r", "sm", "b", "lc", "lc", "lm", "ld", "ls", "li"],
+                &[
+                    "r", "sm", "b", "lc", "lc", "rdm", "rd", "lm", "ld", "ls", "li",
+                ],
             );
             assert_eq!(recon.0, want, "recon candidate={n}");
             let continuation = indexed(
@@ -435,7 +453,7 @@ fn q4_episode_private_and_reconciliation_points_have_constant_sqlite_work() {
             "Q4 actual pointSQL SQLite={} noise={retained} same100 VM={work:?} lazy_source_SHA256={:x} query_source_SHA256={:x} recon_source_SHA256={:x}",
             tx.query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
                 .unwrap(),
-            Sha256::digest(include_str!("../../src/store/lazy_delivery.rs").as_bytes()),
+            Sha256::digest(include_str!("../../src/store/lazy_delivery/mod.rs").as_bytes()),
             Sha256::digest(include_str!("../../src/store/queries.rs").as_bytes()),
             Sha256::digest(include_str!("../../src/store/invitation_content.rs").as_bytes())
         );
@@ -454,14 +472,14 @@ fn q4_episode_private_and_reconciliation_points_have_constant_sqlite_work() {
 fn q4_scalar_agreement_and_strict_retirement_use_exact_scope() {
     let (_store, mut db, binding) = seeded(128);
     let tx = db.transaction().unwrap();
-    let canonical: (String, String, i64, i64) = tx
+    let canonical: (bool, String, i64, i64) = tx
         .query_row(
             invitation_content::OFFER_RECONCILIATION_MESSAGE_SQL,
-            params!["msg-q4-0", "34750f98bd59fcfc946da45aaabe933b"],
+            params!["msg-q4-0", "34750f98bd59fcfc946da45aaabe933b", "s"],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .unwrap();
-    assert_eq!(canonical, ("lazy".into(), "q4-t0".into(), 100000, 2000000));
+    assert_eq!(canonical, (true, "q4-t0".into(), 100000, 2000000));
     let values = vec![
         text("s"),
         text("msg-q4-0"),
@@ -471,7 +489,9 @@ fn q4_scalar_agreement_and_strict_retirement_use_exact_scope() {
         Value::Integer(canonical.2),
         Value::Integer(canonical.3),
     ];
-    let aliases = ["r", "sm", "b", "lc", "lc", "lm", "ld", "ls", "li"];
+    let aliases = [
+        "r", "sm", "b", "lc", "lc", "rdm", "rd", "lm", "ld", "ls", "li",
+    ];
     assert_eq!(
         indexed(
             &tx,
@@ -640,11 +660,10 @@ fn q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers() {
                 if let Some(raw) = &cursor {
                     let captured =
                         crate::protocol::pagination::InboxBatchV2CursorState::decode(raw).unwrap();
-                    assert_eq!(
-                        captured.lazy_after_ordinal, visited as u64,
-                        "actual cursor tracks all inspected ordinals from0"
+                    assert!(
+                        captured.rows.after.is_some() && !captured.rows.done,
+                        "actual cursor carries the last inspected delivery-row position"
                     );
-                    assert_eq!(captured.lazy_high_water_ordinal, 100);
                     assert!(captured.body.is_none(), "raw scan has no body tail");
                     assert!(
                         pages < 2,
@@ -806,6 +825,7 @@ fn public_warning_page(
         store,
         "34750f98bd59fcfc946da45aaabe933b",
         &crate::protocol::commands::InboxQuery {
+            pushed: false,
             thread: None,
             seat: Some(SeatId::new("s")),
             claim: Some(claim()),
@@ -887,15 +907,22 @@ fn q4_private_resumed_excludes_warning_history() {
     for retained in [128, 8192] {
         let (store, mut db) = seeded_warning_history(retained);
         let tx = db.transaction().unwrap();
+        // The merged order puts the seat's pending priority-0 invitation first; the one-item
+        // public page leaves every lazy row and the warning phase unfinished.
         let first = public_warning_page(&tx, &store, None, 1);
         assert!(
-            matches!(first.items.as_slice(), [crate::protocol::results::InboxBatchV2Item::LazyMessage {message,..}] if message.as_str()=="msg-q4-0")
+            matches!(
+                first.items.as_slice(),
+                [crate::protocol::results::InboxBatchV2Item::Invitation { .. }]
+            ),
+            "{:?}",
+            first.items
         );
         let cursor = first.next_cursor.expect("actual public continuation");
         let captured =
             crate::protocol::pagination::InboxBatchV2CursorState::decode(&cursor).unwrap();
         assert!(
-            !captured.attention.next_manifest_warning,
+            !captured.warnings.done,
             "public cursor retains warning discovery"
         );
         let trace = ScopeTrace::install(&tx);
@@ -916,16 +943,17 @@ fn q4_private_resumed_excludes_warning_history() {
             0,
             "private resumed read skips warning audience SQL"
         );
-        assert_eq!(trace.counts(), [1, 0]);
+        assert_eq!(trace.counts(), [2, 0]);
         drop(trace);
-        assert_eq!((page.visited, page.lazy_scope_probes), (1, 3));
+        assert_eq!((page.visited, page.lazy_scope_probes), (2, 6));
         assert!(
             page.page.next_cursor.is_none(),
             "resumed private capture exhausts ordinary sources"
         );
-        assert!(
-            matches!(page.page.items.as_slice(), [crate::protocol::results::InboxBatchV2Item::LazyMessage {message,..}] if message.as_str()=="msg-q4-1")
-        );
+        assert!(matches!(page.page.items.as_slice(), [
+            crate::protocol::results::InboxBatchV2Item::LazyMessage {message: first,..},
+            crate::protocol::results::InboxBatchV2Item::LazyMessage {message: second,..}
+        ] if first.as_str()=="msg-q4-0" && second.as_str()=="msg-q4-1"));
         measured.push(counter.units());
         eprintln!(
             "Q4 warning_history={retained} private_resumed_VM_units={}",
@@ -1010,7 +1038,7 @@ fn q4_actual_continued_tail_checks_scope_once_and_charges_retirement() {
             .next_cursor
             .expect("a real long body pins a tail");
         let captured = InboxBatchV2CursorState::decode(&cursor).unwrap();
-        let body = captured.body.expect("captured body");
+        let (_, body) = captured.body.expect("captured body");
         assert_eq!(body.message.as_str(), "msg-q4-0");
         assert!(body.offset > 0 && body.offset < body.body_len);
         if lose_scope {

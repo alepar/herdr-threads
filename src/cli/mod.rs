@@ -25,12 +25,14 @@ pub mod launch;
 pub mod lazy_display;
 pub(crate) mod legacy;
 pub mod me;
+pub(crate) mod nudge_threshold;
 pub mod output;
 pub mod panes;
 pub mod peer;
 pub(crate) mod peer_locations;
 mod picker;
 pub mod retry;
+pub(crate) mod send_priority;
 pub mod setup;
 pub mod skill;
 pub mod summary;
@@ -1052,6 +1054,9 @@ fn run_parsed_in_pane<W: Write>(
         CliAction::Follow(_) => unreachable!("follow is handled after context resolution"),
         CliAction::Summary(_) => unreachable!("summary always derives a caller selection"),
         CliAction::WakeOn(_) => unreachable!("wake-on always derives a caller selection"),
+        CliAction::NudgeThreshold(_) => {
+            unreachable!("nudge-threshold always derives a caller selection")
+        }
         CliAction::View { once, page } => {
             if !once {
                 return Err(unsupported(
@@ -1646,7 +1651,13 @@ fn read_continuation_byte_slot(
             .ok_or_else(invalid_read_continuation)?;
         if flag == "--max-bytes" {
             let value: u32 = value.parse().map_err(|_| invalid_read_continuation())?;
-            if slot.is_some() || value != effective || !(256..=MAX_PAGE_BYTES).contains(&value) {
+            // A refit round's daemon-generated argv carries the inner bound, which
+            // may sit below the documented floor down to the wire refit floor.
+            if slot.is_some()
+                || value != effective
+                || !(crate::protocol::pagination::MIN_REFIT_READ_BYTES..=MAX_PAGE_BYTES)
+                    .contains(&value)
+            {
                 return Err(invalid_read_continuation());
             }
             slot = Some(if inline.is_some() {
@@ -1790,9 +1801,15 @@ pub(crate) fn normalize_read_continuation_budget(
     Ok(())
 }
 
-/// Reserve annotation bytes by reselecting the same read at a smaller bound.
-/// The daemon, rather than the CLI, supplies any body/page continuation: never
-/// trim printed body bytes or synthesize a cursor after selection.
+/// Most reselections of one annotated read.
+const ANNOTATED_REFIT_ROUNDS: usize = 12;
+
+/// Reserve the annotation rows by reselecting the same read at a smaller bound:
+/// exactly the `[pN]`/`[lazy]` row bytes are reserved under the invocation bound,
+/// and the daemon is asked for a bound down to `MIN_REFIT_READ_BYTES`. The daemon,
+/// rather than the CLI, supplies any body/page continuation: never trim printed
+/// body bytes or synthesize a cursor after selection. Gives up only at that floor
+/// or after `ANNOTATED_REFIT_ROUNDS`.
 fn fit_annotated_read<C: LocalClient + ?Sized>(
     mut command: Command,
     mut result: CommandResult,
@@ -1801,6 +1818,9 @@ fn fit_annotated_read<C: LocalClient + ?Sized>(
     budget: &dyn Fn() -> CallBudget,
 ) -> Result<(CommandResult, output::ReadModes), RunError> {
     let max_bytes = read_byte_bound(&command);
+    let mut rounds = 0;
+    let mut step = 0u32;
+    let mut prev_len = None;
     loop {
         let refitted = read_byte_bound(&command) != max_bytes;
         if refitted {
@@ -1819,13 +1839,29 @@ fn fit_annotated_read<C: LocalClient + ?Sized>(
         }
         let current = read_byte_bound(&command);
         let overflow = u32::try_from(len - max_bytes as usize).unwrap_or(u32::MAX);
-        let next = current.saturating_sub(overflow.max(current / 4));
-        if next < 256 {
+        let reserve = u32::try_from(modes.annotation_len()).unwrap_or(u32::MAX);
+        // Reserve exactly the annotation rows under the invocation bound, and always
+        // shrink by at least the overflow (normalization can add a continuation digit).
+        // A reselection that returned a page of the same size (the daemon's bound
+        // sits above that page's measured bytes) doubles the step, so the rounds
+        // reach the next smaller page instead of crawling by the overflow.
+        step = if prev_len == Some(len) {
+            overflow.max(step.saturating_mul(2))
+        } else {
+            overflow
+        };
+        prev_len = Some(len);
+        let next = current
+            .saturating_sub(step)
+            .min(max_bytes.saturating_sub(reserve))
+            .max(crate::protocol::pagination::MIN_REFIT_READ_BYTES);
+        if next >= current || rounds >= ANNOTATED_REFIT_ROUNDS {
             return Err(RunError::Api(
                 ApiError::invalid_budget("annotated read exceeds byte budget")
                     .with_required_minimum_bytes(len.try_into().unwrap_or(u32::MAX)),
             ));
         }
+        rounds += 1;
         match &mut command {
             Command::History(q) => q.page.max_bytes = next,
             Command::Search(q) => q.page.max_bytes = next,
@@ -2316,6 +2352,12 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     if matches!(&parsed.action, CliAction::WakeOn(_)) {
         return wake_on::run(
             parsed, selection, paths, instance, host, client, clock, writer,
+        );
+    }
+    if let CliAction::NudgeThreshold(value) = &parsed.action {
+        let value = *value;
+        return nudge_threshold::run(
+            &parsed, value, selection, paths, instance, host, client, clock, writer,
         );
     }
     if historical.is_some()
@@ -2835,6 +2877,7 @@ fn caller_need(parsed: &commands::ParsedCli, paths: &NodePaths) -> Result<Caller
         CliAction::CachedCheckIn(_)
         | CliAction::Summary(_)
         | CliAction::WakeOn(_)
+        | CliAction::NudgeThreshold(_)
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
         | CliAction::Watch(_)
@@ -2934,10 +2977,7 @@ where
     let (instance, client) = connection.get()?;
     if matches!(
         &parsed.action,
-        CliAction::Mutation(MutationSpec::Send {
-            delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
-            ..
-        })
+        CliAction::Mutation(MutationSpec::Send { priority, .. }) if priority.get() == 0
     ) {
         require_send_time_receipts_capability(client, clock.as_ref())?;
     }
@@ -3731,16 +3771,9 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 }
                 _ => None,
             };
+            // The wire shape of a send is decided once, here, and recorded: a retry replays it.
             let semantic = SemanticMutation::freeze(cooperative_semantic(mutation)?, claim)?;
             require_invitation_confirmation_capability(client, clock, &semantic)?;
-            if semantic.is_lazy_send() {
-                require_lazy_send_capability(client, clock)?;
-            }
-            if semantic.kind() == crate::protocol::results::IntentKind::SendMessage
-                && !semantic.is_lazy_send()
-            {
-                require_send_time_receipts_capability(client, clock)?;
-            }
             let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
                 journal,
                 scope,
@@ -3875,6 +3908,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 }
                 if pending.semantic.kind() == crate::protocol::results::IntentKind::SendMessage
                     && !pending.semantic.is_lazy_send()
+                    && !pending.semantic.is_priority_send()
                 {
                     require_send_time_receipts_capability(client, clock)?;
                 }
@@ -3960,23 +3994,27 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> 
         },
         MutationSpec::Leave(thread) => SemanticMutation::Leave { thread },
         MutationSpec::Send {
-            delivery_mode,
+            priority,
             thread,
             body,
             require_ack,
             deadline_millis,
             relays_user,
             user_intent,
-        } => SemanticMutation::SendMessage {
-            delivery_mode,
-            thread,
-            body,
-            direct_recipient: None,
-            invited_recipients: require_ack,
-            deadline_millis,
-            relays_user,
-            user_intent,
-        },
+        } => {
+            SemanticMutation::SendMessage {
+                // The `send.priority_v1` shape: the priority is carried, `delivery_mode` omitted.
+                delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+                priority: Some(priority),
+                thread,
+                body,
+                direct_recipient: None,
+                invited_recipients: require_ack,
+                deadline_millis,
+                relays_user,
+                user_intent,
+            }
+        }
         MutationSpec::Ack(messages) => SemanticMutation::Ack { messages },
         MutationSpec::Archive(thread) => SemanticMutation::Archive { thread },
         MutationSpec::Reopen(thread) => SemanticMutation::Reopen { thread },

@@ -135,6 +135,7 @@ impl Q4Readers {
     }
     fn send(&self, thread: &ThreadId, body: &str, key: &str) -> MessageId {
         let CommandResult::MessageSent(id) = self.call(Command::SendMessage(SendMessage {
+            priority: None,
             delivery_mode: DeliveryMode::Lazy,
             thread: thread.clone(),
             body: body.into(),
@@ -184,6 +185,7 @@ impl Q4Readers {
         max_bytes: u32,
     ) -> crate::protocol::pagination::Page<InboxBatchV2Item> {
         let CommandResult::InboxBatchV2(page) = self.call(Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             seat: Some(caller.seat.clone()),
             claim: Some(caller.clone()),
@@ -359,7 +361,9 @@ fn q4_direct_lazy_completion_is_independent_for_two_initial_bindings() {
             |row| Ok((row.get(0)?, row.get(1)?))
         )
         .unwrap(),
-        ("displayed".into(), 0)
+        // Binding b has not displayed the row: the seat-wide state stays pending (the ordered
+        // seek only holds pending rows), and a's own cursor already excludes it from a's reads.
+        ("pending".into(), 0)
     );
 }
 
@@ -395,7 +399,14 @@ fn q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap() {
             (first.clone(), "earlier undisplayed body".into()),
             (later.clone(), "later inspected body".into()),
         ];
-        assert_eq!(f.lazy(&f.a), want);
+        // A's out-of-order display of `later` is remembered (`binding_row_displays`): it is not
+        // offered to A again, while the earlier body A never saw, and both for B, still are.
+        let want_a = if display_later {
+            want[..1].to_vec()
+        } else {
+            want.clone()
+        };
+        assert_eq!(f.lazy(&f.a), want_a);
         assert_eq!(f.lazy(&b), want);
         assert_eq!(
             f.db.query_row::<i64, _, _>(

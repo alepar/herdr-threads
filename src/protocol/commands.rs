@@ -1,7 +1,9 @@
 use crate::protocol::{
     authority::CallerClaim,
     ids::*,
-    pagination::{Cursor, CursorScope, MAX_PAGE_BYTES, PageRequest},
+    pagination::{
+        Cursor, CursorScope, MAX_PAGE_BYTES, MIN_PAGE_BYTES, MIN_REFIT_READ_BYTES, PageRequest,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +44,8 @@ pub enum Command {
     MessageDeliveryModes(MessageDeliveryModesQuery),
     /// Read a seat's `wake_on` preference; gated by `seat.wake_on_v1`.
     WakeOn(WakeOnQuery),
+    /// Read a seat's nudge threshold; advertised as `seat.nudge_threshold_v1`.
+    NudgeThreshold(NudgeThresholdQuery),
     Warnings(WarningsQuery),
     /// Bounded read-only active warning conditions for one thread.
     ActiveWarnings(ActiveWarningsQuery),
@@ -119,6 +123,9 @@ pub enum Command {
     /// Set the caller seat's `wake_on` preference (TRUST-POLICY A5); gated by
     /// `seat.wake_on_v1`.
     SetWakeOn(SetWakeOn),
+    /// Set the caller seat's nudge threshold (TRUST-POLICY A5 cooperative mutation); advertised as
+    /// `seat.nudge_threshold_v1`.
+    SetNudgeThreshold(SetNudgeThreshold),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -427,6 +434,11 @@ pub struct InboxQuery {
     /// joined thread's opening lazy mail in its own output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<ThreadId>,
+    /// A pushed offer (`inbox.pushed_hold_v1`; `InboxBatchV2` first page only): a hook's inbox
+    /// check-in page. The catch-up hold applies to it as to the attention digest: ordinary
+    /// messages above an active row's frontier are not offered. An explicit read leaves it unset.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pushed: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -545,7 +557,7 @@ pub struct BodyReadRequest {
 }
 impl BodyReadRequest {
     pub fn validate(&self, message: &MessageId) -> Result<(), &'static str> {
-        if self.max_bytes < 256 || self.max_bytes > MAX_PAGE_BYTES {
+        if self.max_bytes < MIN_REFIT_READ_BYTES || self.max_bytes > MAX_PAGE_BYTES {
             return Err("invalid body output byte bound");
         }
         if self.cursor.is_some() && self.offset.is_some() {
@@ -900,10 +912,28 @@ pub struct WakeOnQuery {
     pub seat: SeatId,
 }
 
+/// Set the caller seat's nudge threshold (TRUST-POLICY A5 cooperative mutation).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetNudgeThreshold {
+    pub value: crate::protocol::priority::NudgeThreshold,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NudgeThresholdQuery {
+    pub seat: SeatId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageDeliveryModesQuery {
     pub messages: Vec<MessageId>,
+    /// Set by every current client; the reply carries `priority` only when set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub with_priority: bool,
 }
 
 /// Which presentation the completing caller claims. Absent: its default text
@@ -973,6 +1003,10 @@ pub struct BindingEvent {
 pub struct SendMessage {
     #[serde(default, skip_serializing_if = "DeliveryMode::is_ordinary")]
     pub delivery_mode: DeliveryMode,
+    /// Delivery priority (0..=9) chosen by the sender; absent from older clients, whose priority the daemon
+    /// derives from `delivery_mode`. Not the person-authored summary/catch-up priority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<crate::protocol::priority::DeliveryPriority>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_intent: Option<crate::protocol::summary::UserIntent>,
     pub thread: ThreadId,
@@ -988,6 +1022,29 @@ pub struct SendMessage {
     /// (`send --relays-user`). A cooperative claim (TRUST-POLICY A1, A3); service sends record 0.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub relays_user: bool,
+}
+
+impl SendMessage {
+    /// The delivery-option rules every client and the daemon enforce before staging (priority
+    /// design D3/D9). Details are model-visible: 44, 32, 44 and 50 bytes.
+    pub fn validate_delivery_options(&self) -> Result<(), &'static str> {
+        let explicit = !self.invited_recipients.is_empty();
+        if self.delivery_mode == DeliveryMode::Lazy
+            && self.priority == Some(crate::protocol::priority::DeliveryPriority::p0())
+        {
+            return Err("lazy delivery mode conflicts with priority 0");
+        }
+        if explicit && self.priority.is_some_and(|p| p.get() > 0) {
+            return Err("--require-ack implies priority 0");
+        }
+        if self.deadline_millis.is_some() && !explicit {
+            return Err("a deadline requires --require-ack recipients");
+        }
+        if self.delivery_mode == DeliveryMode::Lazy && explicit {
+            return Err("lazy messages cannot request receipts or deadlines");
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1137,6 +1194,7 @@ impl Command {
             Self::AckModDelivered(v) => Some(&v.claim),
             Self::CompleteInboxDelivery(v) => Some(&v.claim),
             Self::SetWakeOn(v) => Some(&v.claim),
+            Self::SetNudgeThreshold(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
             Self::SetThreadName(v) => Some(&v.claim),
@@ -1283,11 +1341,26 @@ impl Command {
         {
             return Err("a thread-scoped inbox page has no continuation");
         }
+        if let Self::Inbox(v) | Self::InboxBatch(v) = self
+            && v.pushed
+        {
+            return Err("a pushed inbox page is a v2 batch read only");
+        }
+        if let Self::InboxBatchV2(v) = self
+            && v.pushed
+            && (v.page.cursor.is_some() || v.thread.is_some())
+        {
+            return Err("a pushed inbox page is a first, unscoped page");
+        }
         if let Some(page) = self.page() {
-            page.validate()?;
+            page.validate_with_floor(if matches!(self, Self::History(_) | Self::Search(_)) {
+                MIN_REFIT_READ_BYTES
+            } else {
+                MIN_PAGE_BYTES
+            })?;
             if let Some(raw) = &page.cursor {
                 if matches!(self, Self::InboxBatchV2(_)) {
-                    crate::protocol::pagination::InboxBatchV2CursorState::decode(raw)?;
+                    crate::protocol::pagination::InboxBatchV2CursorState::validate_decodable(raw)?;
                 } else {
                     Cursor::decode(raw)?;
                 }
@@ -1357,12 +1430,6 @@ impl Command {
                     && invite.deadline_millis.is_some() =>
             {
                 Err("lazy invitation conflicts with deadline")
-            }
-            Self::Invite(invite)
-                if invite.confirmation == Some(InvitationConfirmation::RequireAck)
-                    && invite.claim.harness == crate::protocol::authority::Harness::Human =>
-            {
-                Err("human invitation cannot require agent confirmation")
             }
             Self::Invite(invite) if invite.deadline_millis == Some(0) => {
                 Err("deadline must be positive")
@@ -1463,11 +1530,8 @@ impl Command {
             {
                 Err("invalid inbox delivery completion batch size")
             }
-            Self::SendMessage(send)
-                if send.delivery_mode == DeliveryMode::Lazy
-                    && (!send.invited_recipients.is_empty() || send.deadline_millis.is_some()) =>
-            {
-                Err("lazy messages cannot request receipts or deadlines")
+            Self::SendMessage(send) if send.validate_delivery_options().is_err() => {
+                Err(send.validate_delivery_options().unwrap_err())
             }
             Self::SendMessage(send) if send.invited_recipients.len() > MAX_BATCH_ITEMS => {
                 Err("too many explicit recipients")
@@ -1572,6 +1636,8 @@ pub enum PermitMutation {
     CompleteInboxDelivery(CompleteInboxDelivery),
     /// Wake preference of the caller's own seat; wake eligibility only.
     SetWakeOn(SetWakeOn),
+    /// Nudge threshold of the caller's own seat; wake eligibility only.
+    SetNudgeThreshold(SetNudgeThreshold),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -1609,6 +1675,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::DeliveryConfirm(v) => Ok(Self::DeliveryConfirm(v)),
             Command::CompleteInboxDelivery(v) => Ok(Self::CompleteInboxDelivery(v)),
             Command::SetWakeOn(v) => Ok(Self::SetWakeOn(v)),
+            Command::SetNudgeThreshold(v) => Ok(Self::SetNudgeThreshold(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),
             Command::SetThreadName(v) => Ok(Self::SetThreadName(v)),

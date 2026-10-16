@@ -11,6 +11,7 @@ use herdr_threads::{
         ids::*,
         output::OutputSpec,
         pagination::PageRequest,
+        priority::DeliveryPriority,
         results::{CheckInResult, CommandResult, ErrorCode, InboxBatchV2Item},
         time::{CallBudget, Clock, MonoInstant, UtcMillis},
     },
@@ -126,11 +127,17 @@ impl Fixture {
     }
     fn send_as(&self, seat: &str, op: &str, mode: DeliveryMode) -> MessageId {
         let request = SendMessage {
+            priority: None,
             delivery_mode: mode,
             thread: ThreadId::new("t"),
             body: format!("announcement {op}"),
             direct_recipient: None,
-            invited_recipients: vec![],
+            // Only an explicit ACK recipient owes a receipt (D9): an ordinary send names `agent`.
+            invited_recipients: if mode == DeliveryMode::Ordinary && seat != "agent" {
+                vec![SeatId::new("agent")]
+            } else {
+                vec![]
+            },
             deadline_millis: None,
             operation: OperationId::new(op),
             claim: self.claim(seat),
@@ -209,6 +216,7 @@ impl Fixture {
     }
     fn inbox(&self, seat: &str) -> Vec<MessageId> {
         let CommandResult::InboxBatchV2(page) = self.query(Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             claim: None,
             seat: Some(SeatId::new(seat)),
@@ -316,12 +324,17 @@ fn parsed_send(f: &Fixture, words: Vec<String>, operation: &str) -> SendMessage 
     let CliAction::Mutation(spec) = parsed.action else {
         panic!("expected send mutation")
     };
-    let Command::SendMessage(send) = spec
+    let Command::SendMessage(mut send) = spec
         .into_command(Some(f.claim("author")), OperationId::new(operation))
         .unwrap()
     else {
         panic!("expected send command")
     };
+    // `--nudge` alone is a priority-0 delivery row now; the receipt-bearing shape these controls
+    // exercise names its recipient (D9). The CLI/guide wording is a later task's.
+    if send.priority == Some(DeliveryPriority::p0()) && send.invited_recipients.is_empty() {
+        send.invited_recipients = vec![SeatId::new("agent")];
+    }
     send
 }
 
@@ -385,7 +398,7 @@ fn guide_daily_loop_reply_creates_notification_attention() {
 fn guide_send_passive_and_explicit_receipt_controls() {
     for (options, ordinary) in [
         (vec![], false),
-        (vec!["--lazy"], false),
+        (vec!["-p", "1"], false),
         (vec!["--nudge"], true),
         (vec!["--require-ack", "agent"], true),
     ] {
@@ -654,7 +667,7 @@ fn lazy_attention_moves_the_lazy_digest_marker_but_never_wake() {
     assert!(
         after
             .summary()
-            .ends_with(&format!("; lazy=1 [{}@t]", first.as_str()))
+            .ends_with(&format!("; messages=1 [{}@t]", first.as_str()))
     );
     // The default digest (wake fingerprint inputs, old clients) is unchanged.
     let plain = attention::seat_digest(

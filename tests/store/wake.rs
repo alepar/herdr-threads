@@ -3057,10 +3057,10 @@ impl crate::notification::dispatch::ReservationCheck for StoreFence<'_> {
     fn owes_wake(
         &self,
         reservation: &crate::ports::WakeReservation,
-        binding: Option<&crate::protocol::ids::BindingId>,
+        reached: &[Option<&crate::protocol::ids::BindingId>],
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
-        StorePort::wake_owed_to_binding(self.0, reservation, binding, budget)
+        StorePort::wake_owed_to_reached(self.0, reservation, reached, budget)
     }
 }
 
@@ -3191,6 +3191,410 @@ fn in_turn_service_is_decided_for_the_binding_the_composer_reaches() {
         drop(store);
         let _ = std::fs::remove_file(path);
     }
+}
+
+/// A one-process (`ComposerChoice::Process`) group whose only wake reason is a threshold-admitted
+/// delivery row (`lazy`): a binding that displayed the frontier row (its cursor passed it, or its
+/// displayed mark holds it) is owed no wake itself, but the process's composer wake stays owed
+/// while a sibling still has the row unread (ht-yha.62), and is refused once every binding
+/// displayed it. Kills: treating `lazy` as always owed, which types a nudge after the row was
+/// served in every binding's turn (Delivery contract rule 4), and requiring every binding to owe
+/// it, which never wakes an unserved one.
+#[test]
+fn a_one_process_lazy_wake_is_refused_once_every_binding_displayed_the_frontier_row() {
+    use crate::ports::RefusalCause;
+    let (store, path) = multi_store(&[row("main", "codex", 10), row("side1", "codex", 10)]);
+    serve_in_turn(&store, "main", "inv");
+    serve_in_turn(&store, "side1", "inv");
+    {
+        let db = store.context.open_writer().unwrap();
+        db.execute(
+            "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','34750f98bd59fcfc946da45aaabe933b','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES('prep-1','msg-1','t','s',0)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('msg-1','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',2,'passive',0,'lazy')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-1','msg-1','34750f98bd59fcfc946da45aaabe933b','t',2,0,2,0,1,0)",
+            [],
+        )
+        .unwrap();
+        // The readers' cursors exist when the row publishes, so publication writes their views
+        // (the seat is only invited to the ordinary thread `t`: without a cursor it reads nothing).
+        db.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('main','t',0),('side1','t',0)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE lazy_recipients SET decision_seq=2 WHERE preparation_id='prep-1'",
+            [],
+        )
+        .unwrap();
+        db.execute("UPDATE local_node SET decision_seq=2", [])
+            .unwrap();
+    }
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &owed_candidate(&store).unwrap(),
+        &budget(),
+    )
+    .unwrap()
+    .expect("an unserved admitted delivery row reserves a wake");
+    assert_eq!(reservation.reasons, ["lazy"]);
+    assert_eq!(target_ids(&reservation), ["main", "side1"]);
+    assert_eq!(
+        dispatch_to(&store, &reservation, FOREGROUND_A).1.len(),
+        1,
+        "control: nobody displayed the row, the process is typed to once"
+    );
+
+    let owed = |binding: &str| {
+        StorePort::wake_owed_to_binding(
+            &store,
+            &reservation,
+            Some(&crate::protocol::ids::BindingId::new(binding)),
+            &budget(),
+        )
+        .unwrap()
+    };
+    let writer = || store.context.open_writer().unwrap();
+    writer()
+        .execute(
+            "UPDATE binding_cursors SET seq=1 WHERE binding_id='main'",
+            [],
+        )
+        .unwrap();
+    let (outcome, typed) = dispatch_to(&store, &reservation, FOREGROUND_A);
+    assert_eq!(
+        (outcome, typed.len()),
+        (WakeOutcome::Submitted, 1),
+        "main's cursor passed the row, side1 still has it unread"
+    );
+    assert!(!owed("main"));
+    assert!(owed("side1"), "an unserved sibling's wake stays owed");
+    writer()
+        .execute(
+            "UPDATE binding_cursors SET seq=1 WHERE binding_id='side1'",
+            [],
+        )
+        .unwrap();
+    let (outcome, typed) = dispatch_to(&store, &reservation, FOREGROUND_A);
+    assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unavailable));
+    assert!(typed.is_empty(), "both cursors passed the row: {typed:?}");
+
+    writer()
+        .execute(
+            "UPDATE binding_cursors SET seq=0 WHERE binding_id='main'",
+            [],
+        )
+        .unwrap();
+    assert!(owed("main"), "cursor reset: owed again");
+    writer()
+        .execute(
+            "INSERT INTO binding_row_displays(binding_id,message_id) VALUES ('main','msg-1')",
+            [],
+        )
+        .unwrap();
+    let (outcome, typed) = dispatch_to(&store, &reservation, FOREGROUND_A);
+    assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unavailable));
+    assert!(
+        typed.is_empty(),
+        "main's displayed mark and side1's cursor hold the row"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// ht-yha.62 (main review I4): a /side sibling that displayed the p0 frontier row never blocks the idle main
+/// binding's wake. One process (main, side1), one p0 delivery row; side1's cursor passed it, main's did not.
+/// The process is typed to once, and after the Submitted completion no new reservation is owed (no retry
+/// loop). Kills: requiring every reached binding to owe a lazy wake.
+#[test]
+fn a_sibling_display_never_blocks_a_one_process_lazy_wake() {
+    use crate::protocol::ids::BindingId;
+    let (store, path) = multi_store(&[row("main", "codex", 10), row("side1", "codex", 10)]);
+    serve_in_turn(&store, "main", "inv");
+    serve_in_turn(&store, "side1", "inv");
+    {
+        let db = store.context.open_writer().unwrap();
+        // The readers' cursors exist when the row publishes (the seat is only invited to `t`).
+        db.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('main','t',0),('side1','t',0)",
+            [],
+        )
+        .unwrap();
+        insert_p0_delivery_row(&db);
+        db.execute(
+            "UPDATE binding_cursors SET seq=1 WHERE binding_id='side1'",
+            [],
+        )
+        .unwrap();
+    }
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &owed_candidate(&store).unwrap(),
+        &budget(),
+    )
+    .unwrap()
+    .expect("main has not displayed the row, so a wake is reserved");
+    assert_eq!(reservation.reasons, ["lazy"]);
+    assert_eq!(target_ids(&reservation), ["main", "side1"]);
+    let (outcome, typed) = dispatch_to(&store, &reservation, FOREGROUND_A);
+    assert_eq!(
+        (outcome, typed.len()),
+        (WakeOutcome::Submitted, 1),
+        "side1's display does not block main's wake: {typed:?}"
+    );
+    StorePort::complete_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        reservation.attempt.clone(),
+        WakeOutcome::Submitted,
+        None,
+        &budget(),
+    )
+    .unwrap();
+    assert!(
+        owed_candidate(&store).is_none_or(|c| !c.has_unreserved_lazy()),
+        "the submitted wake keeps the frontier reserved: no retry loop"
+    );
+
+    // Every reached binding displayed the row: nothing is owed.
+    store
+        .context
+        .open_writer()
+        .unwrap()
+        .execute(
+            "UPDATE binding_cursors SET seq=1 WHERE binding_id='main'",
+            [],
+        )
+        .unwrap();
+    let (main, side1) = (BindingId::new("main"), BindingId::new("side1"));
+    assert!(
+        !StorePort::wake_owed_to_reached(
+            &store,
+            &reservation,
+            &[Some(&main), Some(&side1)],
+            &budget()
+        )
+        .unwrap(),
+        "every reached binding displayed the row"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// ht-yha.62, per-reason rule over the reached set: a wake reserved for a pending receipt and a delivery
+/// row stays owed while any reached binding still has the row unread, even when another binding was
+/// served the receipt and displayed the row; once every reached binding was served both, it is not.
+/// Kills: one served binding taking off the process's wake for the row, and a sibling's unserved
+/// receipt keeping it owed after everyone was served.
+#[test]
+fn a_mixed_receipt_and_lazy_wake_is_owed_while_any_binding_has_the_row_unread() {
+    use crate::protocol::ids::BindingId;
+    let (store, path) = multi_store(&[row("main", "codex", 10), row("side1", "codex", 10)]);
+    serve_in_turn(&store, "main", "inv");
+    serve_in_turn(&store, "side1", "inv");
+    {
+        let db = store.context.open_writer().unwrap();
+        // The readers' cursors exist when the row publishes (the seat is only invited to `t`).
+        db.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('main','t',0),('side1','t',0)",
+            [],
+        )
+        .unwrap();
+        insert_p0_delivery_row(&db);
+        db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('m','34750f98bd59fcfc946da45aaabe933b','t',2,'ordinary','body',1,0);
+            INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','s','pending',100000);").unwrap();
+    }
+    let mut reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &owed_candidate(&store).unwrap(),
+        &budget(),
+    )
+    .unwrap()
+    .expect("an unserved receipt and row reserve a wake");
+    reservation.reasons.sort();
+    assert_eq!(reservation.reasons, ["lazy", "pending_receipt"]);
+    let (main, side1) = (BindingId::new("main"), BindingId::new("side1"));
+    let reached = [Some(&main), Some(&side1)];
+    let owed =
+        || StorePort::wake_owed_to_reached(&store, &reservation, &reached, &budget()).unwrap();
+    assert!(owed(), "control: nobody served");
+    serve_in_turn(&store, "main", "m");
+    store
+        .context
+        .open_writer()
+        .unwrap()
+        .execute(
+            "UPDATE binding_cursors SET seq=1 WHERE binding_id='main'",
+            [],
+        )
+        .unwrap();
+    assert!(owed(), "side1 still has the row unread");
+    serve_in_turn(&store, "side1", "m");
+    store
+        .context
+        .open_writer()
+        .unwrap()
+        .execute(
+            "UPDATE binding_cursors SET seq=1 WHERE binding_id='side1'",
+            [],
+        )
+        .unwrap();
+    assert!(!owed(), "every reached binding was served both");
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Inserts the p0 delivery row of the neighbouring test (message `msg-1`, frontier `decision_seq` 2).
+fn insert_p0_delivery_row(db: &Connection) {
+    db.execute(
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','34750f98bd59fcfc946da45aaabe933b','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES('prep-1','msg-1','t','s',0)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('msg-1','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',2,'passive',0,'lazy')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-1','msg-1','34750f98bd59fcfc946da45aaabe933b','t',2,0,2,0,1,0)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE lazy_recipients SET decision_seq=2 WHERE preparation_id='prep-1'",
+        [],
+    )
+    .unwrap();
+    db.execute("UPDATE local_node SET decision_seq=2", [])
+        .unwrap();
+}
+
+/// ht-yha.54 (S1): the served-in-turn recheck decides from the binding's own records, never the
+/// seat-wide `state`. Binding `b` was away (end event) while `a` displayed the p0 row; once `b`
+/// resumes, its re-seeded view owes it the row, so it is still woken. Kills: reading
+/// `lazy_recipients.state='pending'` in `LAZY_FRONTIER_UNREAD_SQL`, which refuses `b`.
+#[test]
+fn a_resumed_binding_is_still_owed_the_wake_a_sibling_displayed() {
+    use crate::protocol::{authority::LivenessFingerprint, ids::BindingId, time::UtcMillis};
+    use crate::store::bindings::{ConnectTrigger, DisconnectReason};
+    let (store, path) = multi_store(&[row("a", "codex", 10), row("b", "codex", 20)]);
+    serve_in_turn(&store, "a", "inv");
+    serve_in_turn(&store, "b", "inv");
+    {
+        let db = store.context.open_writer().unwrap();
+        db.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('a','t',0),('b','t',0)",
+            [],
+        )
+        .unwrap();
+        insert_p0_delivery_row(&db);
+    }
+    {
+        let db = store.context.open_writer().unwrap();
+        assert!(
+            crate::store::bindings::disconnect_with_hooks(
+                &db,
+                &BindingId::new("b"),
+                DisconnectReason::EndEvent,
+                UtcMillis(5),
+                &[]
+            )
+            .unwrap()
+        );
+        db.execute("UPDATE binding_cursors SET seq=1 WHERE binding_id='a'", [])
+            .unwrap();
+        db.execute(
+            "UPDATE lazy_recipients SET state='displayed' WHERE message_id='msg-1'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            crate::store::bindings::connect(
+                &db,
+                &BindingId::new("b"),
+                Some(LivenessFingerprint { pid: 20, start: 1 }),
+                ConnectTrigger::Lifecycle,
+                UtcMillis(6)
+            )
+            .unwrap()
+        );
+    }
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &owed_candidate(&store).unwrap(),
+        &budget(),
+    )
+    .unwrap()
+    .expect("the resumed binding still owes a wake");
+    assert_eq!(reservation.reasons, ["lazy"]);
+    let owed = |binding: &str| {
+        StorePort::wake_owed_to_binding(
+            &store,
+            &reservation,
+            Some(&BindingId::new(binding)),
+            &budget(),
+        )
+        .unwrap()
+    };
+    assert!(owed("b"));
+    assert!(!owed("a"), "a displayed the row itself");
+    assert_eq!(
+        dispatch_to(&store, &reservation, FOREGROUND_B).1.len(),
+        1,
+        "the resumed binding is typed to"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// The served-in-turn check reaches its row through `messages` by decision sequence and
+/// `lazy_recipients` by its unique key, never a scan of the seat's delivery rows.
+#[test]
+fn lazy_frontier_unread_check_is_index_driven() {
+    let (store, path) = multi_store(&[row("a", "codex", 10)]);
+    let db = store.context.open_writer().unwrap();
+    let plan: Vec<String> = db
+        .prepare(&format!(
+            "EXPLAIN QUERY PLAN {}",
+            crate::store::wake::LAZY_FRONTIER_UNREAD_SQL
+        ))
+        .unwrap()
+        .query_map(rusqlite::params!["a", "s", 2], |r| r.get::<_, String>(3))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        !plan
+            .iter()
+            .any(|step| step.contains("SCAN r") || step.contains("SCAN lazy_recipients")),
+        "{plan:?}"
+    );
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
 }
 
 /// ht-705: an in-turn offer recorded after the wake was reserved (the binding's turn served the

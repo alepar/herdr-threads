@@ -10,8 +10,8 @@ Informational notices (invitation rejections, overdue or cleared transitions) ar
 the next turn-start pull, once, with no ACK and no wake. `launch` and `handoff` are supported.
 
 agy has no tool-event hooks, so nothing is delivered mid-tool. A busy session receives its
-messages at the next turn start; an idle one is woken only by nudge-class messages, or by a
-lazy message when the seat ran `herdr-threads wake-on all` (see the
+messages at the next turn start; an idle one is woken only by an item whose priority is at or below the seat's
+`herdr-threads nudge-threshold` (default 0; ACK requests and invitations are p0; see the
 [delivery contract](../../AGENTS.md#delivery-contract)).
 
 ## Setup

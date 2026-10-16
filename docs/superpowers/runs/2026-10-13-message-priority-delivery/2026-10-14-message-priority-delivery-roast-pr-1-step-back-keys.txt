@@ -1,0 +1,21 @@
+r1 [Should-fix] src/delivery/page.rs:103; src/delivery/page.rs:101; src/delivery/page.rs:98
+r1 [Should-fix] src/store/lazy_delivery/completion.rs:68
+r1 [Should-fix] src/protocol/pagination.rs:538
+r1 [Should-fix] docs/superpowers/runs/2026-10-13-message-priority-delivery/run.md:34
+r1 [Should-fix] src/store/lazy_delivery/wake.rs:80; src/store/lazy_delivery/wake.rs:50
+r1 [Should-fix] tests/store/priority_send.rs:480
+r1 [Nit] src/store/handoff/automatic.rs:320
+r1 [Nit] src/store/read_cursors.rs:497; src/store/read_cursors.rs:496
+r1 [Nit] src/cli/send_priority.rs:66
+r1 [Nit] src/delivery/assemble.rs:412; src/delivery/assemble.rs:391
+r1 [Nit] integrations/claude/mod/tests/delivery.test.ts:2493
+r1 [Nit] src/store/control.rs:2242
+r1 [FYI] integrations/claude/mod/hooks/register.js:357
+r1 [FYI] docs/superpowers/runs/2026-10-13-message-priority-delivery/run.md:21
+r1 [FYI] src/store/schema.rs:835; src/store/schema.rs:836
+r1 [Must-fix] src/delivery/page.rs drain_pages unbounded hook-pull reads (final review A)
+r1 [Must-fix] untested: 7 schema/effective upgrade tests failing at HEAD (store::connection, store::effective)
+r1 [Must-fix] untested: tests/hook_entrypoint.rs pair_accept_delivers_mixed_opening_mail_once failing at HEAD
+r1 [Must-fix] src/cli/handoff.rs:2448 AUTOMATIC_PENDING_GUIDANCE stale (invitation no longer created)
+r1 [Must-fix] src/store/service_send.rs ServiceSend receipts for whole audience vs D9
+r1 [Must-fix] doc-drift sweep: AGENTS.md:112, scripts/linux-e2e/README.md:190,192, integrations/claude/mod/README.md:123, wake_on: all comments in src

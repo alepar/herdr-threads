@@ -3,6 +3,7 @@
 //! fixtures in `tests/fixtures/delivery/frame-*` are generated from the JS
 //! (`scripts/gen-frame-goldens.mjs`) and asserted byte for byte on both sides.
 
+use crate::protocol::priority::DeliveryPriority;
 use serde::Deserialize;
 
 /// The fixed line every frame starts with, the exact JS `HEADER` string.
@@ -14,7 +15,7 @@ pub const HEADER: &str = "[herdr-threads] new messages:";
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct FrameItem {
     /// `attention` selects the short header form; anything else names the block
-    /// (`message`, `lazy`).
+    /// (`message`; a legacy `lazy` is passed through).
     pub kind: String,
     pub id: String,
     #[serde(default)]
@@ -31,6 +32,9 @@ pub struct FrameItem {
     pub relays_user: bool,
     #[serde(default)]
     pub user_intent: Option<String>,
+    /// The message's delivery priority; `[p<N>]` leads the markers when N != 1.
+    #[serde(default)]
+    pub priority: Option<u8>,
     pub body: String,
 }
 
@@ -81,6 +85,14 @@ fn indent(body: &str) -> String {
 /// author, relayed user text, recorded intent.
 fn markers(item: &FrameItem) -> String {
     let mut out = String::new();
+    if let Some(marker) = item
+        .priority
+        .and_then(|p| DeliveryPriority::new(p).ok())
+        .and_then(DeliveryPriority::marker)
+    {
+        out.push(' ');
+        out.push_str(marker);
+    }
     if item.author_role.as_deref() == Some("human") {
         out.push_str(" [human]");
     }

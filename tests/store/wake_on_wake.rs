@@ -1,5 +1,6 @@
-//! DP8 core wake decision: a `wake_on: all` seat is woken by a pending lazy
-//! row, once per lazy frontier; a `nudge` seat never is, and no poke exists.
+//! Core wake decision: a seat whose nudge threshold admits a pending delivery row (T = -1 admits
+//! every priority) is woken by it, once per frontier; a seat whose threshold does not admit it
+//! never is, and no poke exists. The rows here are priority 1, so T = 0 does not admit them.
 use super::*;
 use crate::protocol::time::{Cancellation, MonoInstant};
 use std::sync::Arc;
@@ -23,7 +24,7 @@ fn budget() -> CallBudget {
 
 /// An idle, registered seat `s` with a lazy-capable thread `t`, and no
 /// ordinary attention at all, so a lazy row is the only possible wake reason.
-fn lazy_store(wake_on: &str, batch_delay_ms: u64) -> (SqliteStore, std::path::PathBuf) {
+fn lazy_store(threshold: i64, batch_delay_ms: u64) -> (SqliteStore, std::path::PathBuf) {
     let path = crate::test_support::scratch::temp_path(format!(
         "herdr-wake-on-{}.db",
         uuid::Uuid::new_v4()
@@ -41,8 +42,11 @@ fn lazy_store(wake_on: &str, batch_delay_ms: u64) -> (SqliteStore, std::path::Pa
          INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1);",
     )
     .unwrap();
-    db.execute("UPDATE seats SET wake_on=?1 WHERE id='s'", [wake_on])
-        .unwrap();
+    db.execute(
+        "UPDATE seats SET nudge_threshold=?1 WHERE id='s'",
+        [threshold],
+    )
+    .unwrap();
     drop(db);
     let store = SqliteStore::new(
         context,
@@ -69,7 +73,7 @@ fn publish_lazy(store: &SqliteStore, n: i64, decision_at: i64) {
 fn stage_lazy(store: &SqliteStore, n: i64) {
     let db = store.context.open_writer().unwrap();
     db.execute(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1)",
         [format!("prep-{n}")],
     )
     .unwrap();
@@ -85,13 +89,19 @@ fn stage_lazy(store: &SqliteStore, n: i64) {
 fn publish_staged(store: &SqliteStore, n: i64, decision_seq: i64, decision_at: i64) {
     let db = store.context.open_writer().unwrap();
     db.execute(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,'passive',?4,'lazy')",
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,'passive',?4,'lazy',1)",
         params![format!("msg-{n}"), n, decision_seq, decision_at],
     )
     .unwrap();
     db.execute(
         "INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'34750f98bd59fcfc946da45aaabe933b','t',?4,?3,?4,0,1,0)",
         params![format!("prep-{n}"), format!("msg-{n}"), decision_at, decision_seq],
+    )
+    .unwrap();
+    // What `lazy_delivery::note_published` does in the real publication.
+    db.execute(
+        "UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1",
+        params![format!("prep-{n}"), decision_seq],
     )
     .unwrap();
 }
@@ -160,7 +170,7 @@ fn settle(store: &SqliteStore, reservation: &WakeReservation) {
 
 #[test]
 fn idle_all_seat_with_only_a_lazy_row_is_reserved_with_the_lazy_reason() {
-    let (store, path) = lazy_store("all", 0);
+    let (store, path) = lazy_store(-1, 0);
     publish_lazy(&store, 1, 50);
     let found = candidates(&store);
     assert_eq!(found.len(), 1, "a lazy-only all seat is discovered");
@@ -176,7 +186,7 @@ fn idle_all_seat_with_only_a_lazy_row_is_reserved_with_the_lazy_reason() {
 
 #[test]
 fn same_lazy_frontier_is_not_reserved_again_but_a_new_row_is() {
-    let (store, path) = lazy_store("all", 0);
+    let (store, path) = lazy_store(-1, 0);
     publish_lazy(&store, 1, 50);
     let first = candidates(&store).remove(0);
     let reservation = reserve(&store, &first).expect("first reservation");
@@ -207,7 +217,7 @@ fn same_lazy_frontier_is_not_reserved_again_but_a_new_row_is() {
 
 #[test]
 fn a_row_staged_earlier_but_published_later_wakes_the_seat_again() {
-    let (store, path) = lazy_store("all", 0);
+    let (store, path) = lazy_store(-1, 0);
     // A stages row 5 (ordinal 1), B stages row 6 (ordinal 2) and publishes first.
     stage_lazy(&store, 5);
     stage_lazy(&store, 6);
@@ -230,8 +240,8 @@ fn a_row_staged_earlier_but_published_later_wakes_the_seat_again() {
 }
 
 #[test]
-fn nudge_seat_is_never_woken_by_a_lazy_row_and_no_poke_exists() {
-    let (store, path) = lazy_store("nudge", 0);
+fn seat_not_admitting_a_row_is_never_woken_by_it_and_no_poke_exists() {
+    let (store, path) = lazy_store(0, 0);
     publish_lazy(&store, 1, 50);
     assert!(candidates(&store).is_empty());
     let direct = direct_candidate(&store);
@@ -243,7 +253,7 @@ fn nudge_seat_is_never_woken_by_a_lazy_row_and_no_poke_exists() {
     let _ = std::fs::remove_file(path);
 
     // The all seat's wake creates no receipt and no poke either.
-    let (store, path) = lazy_store("all", 0);
+    let (store, path) = lazy_store(-1, 0);
     publish_lazy(&store, 1, 50);
     reserve(&store, &candidates(&store).remove(0)).expect("reserved");
     let db = store.context.open_writer().unwrap();
@@ -266,7 +276,7 @@ fn nudge_seat_is_never_woken_by_a_lazy_row_and_no_poke_exists() {
 
 #[test]
 fn refused_wake_restores_the_lazy_frontier_so_the_row_wakes_again() {
-    let (store, path) = lazy_store("all", 0);
+    let (store, path) = lazy_store(-1, 0);
     publish_lazy(&store, 1, 50);
     let candidate = candidates(&store).remove(0);
     let prior = crate::ports::PriorLadder::from_candidate(&candidate);
@@ -289,7 +299,7 @@ fn refused_wake_restores_the_lazy_frontier_so_the_row_wakes_again() {
 
 #[test]
 fn witness_recheck_rejects_a_reservation_whose_lazy_frontier_moved() {
-    let (store, path) = lazy_store("all", 0);
+    let (store, path) = lazy_store(-1, 0);
     publish_lazy(&store, 1, 50);
     let stale = candidates(&store).remove(0);
     // A second row publishes without any decision-sequence bump, so only the
@@ -297,20 +307,20 @@ fn witness_recheck_rejects_a_reservation_whose_lazy_frontier_moved() {
     publish_lazy(&store, 2, 60);
     assert!(reserve(&store, &stale).is_none());
     assert_eq!(last_lazy_ordinal(&store), None);
-    // Likewise a `wake_on` change after discovery.
+    // Likewise a threshold change after discovery.
     let fresh = candidates(&store).remove(0);
     store
         .context
         .open_writer()
         .unwrap()
-        .execute("UPDATE seats SET wake_on='nudge' WHERE id='s'", [])
+        .execute("UPDATE seats SET nudge_threshold=0 WHERE id='s'", [])
         .unwrap();
     assert!(reserve(&store, &fresh).is_none());
     store
         .context
         .open_writer()
         .unwrap()
-        .execute("UPDATE seats SET wake_on='all' WHERE id='s'", [])
+        .execute("UPDATE seats SET nudge_threshold=-1 WHERE id='s'", [])
         .unwrap();
     let current = candidates(&store).remove(0);
     assert!(reserve(&store, &current).is_some());
@@ -320,7 +330,7 @@ fn witness_recheck_rejects_a_reservation_whose_lazy_frontier_moved() {
 
 #[test]
 fn batch_window_anchors_on_the_oldest_pending_lazy_row() {
-    let (store, path) = lazy_store("all", 30_000);
+    let (store, path) = lazy_store(-1, 30_000);
     publish_lazy(&store, 1, 50);
     publish_lazy(&store, 2, 90);
     let candidate = candidates(&store).remove(0);
@@ -352,12 +362,12 @@ fn batch_window_anchors_on_the_oldest_pending_lazy_row() {
 }
 
 #[test]
-fn lazy_publication_sets_the_reason_bit_only_for_all_recipients() {
-    let (store, path) = lazy_store("all", 0);
+fn publication_sets_the_reason_bit_only_for_recipients_whose_threshold_admits_the_row() {
+    let (store, path) = lazy_store(-1, 0);
     let mut db = store.context.open_writer().unwrap();
     db.execute_batch(
         "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES('n','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
-         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','34750f98bd59fcfc946da45aaabe933b','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');\
+         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES('prep-1','34750f98bd59fcfc946da45aaabe933b','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1);\
          INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','msg-1','t','s');\
          INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','msg-1','t','n');",
     )
@@ -374,8 +384,12 @@ fn lazy_publication_sets_the_reason_bit_only_for_all_recipients() {
         .optional()
         .unwrap()
     };
-    assert_eq!(bits("s"), Some((1, 1)), "the all recipient is re-judged");
-    assert_eq!(bits("n"), None, "a nudge recipient is untouched");
+    assert_eq!(bits("s"), Some((1, 1)), "the T=-1 recipient is re-judged");
+    assert_eq!(
+        bits("n"),
+        None,
+        "a T=0 recipient is untouched by a priority-1 row"
+    );
     drop(db);
     drop(store);
     let _ = std::fs::remove_file(path);

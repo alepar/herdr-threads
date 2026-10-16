@@ -143,6 +143,19 @@ Enforcement:
   `a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service`, and `tests/store/wake.rs`
   `in_turn_service_is_decided_for_the_binding_the_composer_reaches` and
   `an_in_turn_offer_after_reservation_cancels_that_bindings_wake`.
+- One-process lazy wakes (ht-yha, 2026-10-15, main review M9): since priority delivery, a threshold-admitted
+  delivery row (reason `lazy`, what a bare `--nudge` leaves, as it makes no receipt) is a seat-attention reason
+  (`WakeReservation::for_seat_attention`, `src/ports.rs:2184-2195`), so a lazy-only wake to several bindings of one
+  process (ht-327 `/side` bindings) skips the dispatcher's pane-idle gate (`src/notification/dispatch.rs:265-270`
+  `gated`, `:287` `ComposerChoice::Process`), as receipt and invitation wakes already did. Only the adapter's final
+  composer read before submission (TRUST-POLICY A4) refuses typed input or a busy agent there, so rule 4 holds
+  through that read alone (DC-5). The pre-send recheck (`ReservationCheck::owes_wake`, `dispatch.rs:411`) owes such
+  a wake while any reached binding still has the frontier row unread (`wake::wake_owed_to_reached`,
+  `src/store/wake.rs:643`; ht-yha.62). Pinned by `tests/scheduler/dispatch.rs`
+  `one_process_composer_wake_does_not_need_a_composer_classified_idle`,
+  `one_process_composer_wake_serves_a_threshold_admitted_delivery_row` and
+  `one_process_composer_wake_stays_refused_outside_seat_attention`, and `tests/store/wake.rs`
+  `a_sibling_display_never_blocks_a_one_process_lazy_wake`.
 
 Pinning tests: `tests/scheduler/dispatch.rs` `active_attention_is_always_deferred_then_idle_delivers`,
 `blocked_or_human_input_target_is_never_prompted`, `nonempty_composer_skips_before_stash_or_restore`,
@@ -193,6 +206,7 @@ Verdict: holds. The channel flag is a mod-channel registry query keyed by the ad
 | DC-2 | 3 | `src/harness/bridge.rs:1218-1291`, `src/cli/hook.rs:2588-2630` | divergence - recorded (narrowed) | Lazy bodies now reach Claude-without-mod, Codex and Hermes through the standard hook's inbox page and a hook-pull seat through `DeliveryPull` (see rule 3). Only ordinary (non-lazy) bodies on the hook harnesses remain digest plus ready commands, "as far as the harness allows"; ordinary body delivery for Codex/Hermes is a root-spec non-goal. | follow-up (per-harness delivery policy work) |
 | DC-3 | 4 | `src/notification/policy.rs` `poke_eligibility` `ActiveTurn` branch (removed) | fixed | ht-poh.42: the `ActiveTurn` submit branch and the `poke_during_turn` capability (and Claude's exact-version declaration) were removed (human decision 2026-10-10). Turn-time pokes are parked as an idea; a revival needs a delivery-policy method with a neutral default and must keep rule 4. | none |
 | DC-4 | 4 | Claude mod idleness decision (mod side) | divergence - recorded | Not verifiable from core; the mod is frozen at v0.5.0 (R9, DP10). | none (R9) |
+| DC-5 | 4 | `src/notification/dispatch.rs:265-270,287` (pane-idle gate), `src/ports.rs:2184-2195` (`for_seat_attention`) | divergence - recorded | One-process seat-attention wakes (now including `lazy` rows) skip the pane-idle gate; the adapter's final composer read is the only busy check. Accepted with ht-327: one process is one composer. | none |
 
 No divergence met the fix criteria (small, inside `src/scheduler/**` or `src/service/**`, no change to the v0.5.0 mod
 wire or behaviour, no TRUST-POLICY change), so no Rust was changed for DC-1 to DC-4 (DC-3 was later fixed by ht-poh.42 on a human decision).
@@ -214,5 +228,6 @@ the clause was removed. No other rule text was inaccurate.
   as "as far as the harness allows"; revisit only with per-harness delivery policies.
 - DC-3 (rule 4): resolved by ht-poh.42; `poke_eligibility` always defers an active turn and the `poke_during_turn` capability is gone.
 - DC-4 (rule 4): the Claude mod's own idle-vs-in-turn decision cannot be audited from core; frozen by R9.
+- DC-5 (rule 4): one-process lazy wakes rely on the adapter's final composer read for idleness (ht-yha, main review M9); recorded.
 - Resolved by ht-poh.3.6 (was a note for 3.5/3.6): rule 2's `wake_on: all` exception now has code and tests (see rule 2).
 - Resolved by ht-poh.17: a hook-pull seat's lazy rows are delivered once, through `DeliveryPull` only (rule 3).

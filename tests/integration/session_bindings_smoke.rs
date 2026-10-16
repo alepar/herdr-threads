@@ -1473,13 +1473,7 @@ fn config5_resume_within_a_page_and_past_it() {
         smoke
             .cli(
                 &peer,
-                &[
-                    "send",
-                    &thread,
-                    "--lazy",
-                    "--body",
-                    &format!("big-{n} {big}"),
-                ],
+                &["send", &thread, "--body", &format!("big-{n} {big}")],
             )
             .data();
     }

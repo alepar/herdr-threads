@@ -1,24 +1,26 @@
-//! The joined thread's opening lazy mail in a text `accept`'s own output (ht-br0).
+//! The joined thread's pending delivery rows in a text `accept`'s own output (ht-br0, ht-yha.6).
 //!
 //! An accept moves the seat into Joined. Exact active direct-invitation acceptance keeps each own
 //! cursor and inserts missing open-binding cursors at the invitation's event floor, so the pair's
 //! opener is unread in the accepting binding's own stream; a generic accept runs the join
-//! frontier, which marks undisplayed lazy rows past the seat's furthest cursor seat-pending
-//! (TRUST-POLICY). A harness with no post-tool delivery (Codex, say) would otherwise see them only
+//! frontier, which marks undisplayed delivery rows past the seat's furthest cursor seat-pending
+//! (TRUST-POLICY). A 1:1 pair auto-joins both seats at creation, so its openers arrive by normal
+//! delivery and this display matters for ordinary-thread invitations and pre-upgrade pair
+//! invitations. A harness with no post-tool delivery (Codex, say) would otherwise see them only
 //! at its next hook or wake, so an accept that is the last tool call of a turn would leave the
 //! opener unseen that turn. The caller's own text accept therefore appends one thread-scoped page
-//! of its own text inbox: the same rows `inbox` prints under the same lazy eligibility, only lazy
-//! rows of the accepted thread that lie below the binding's first unread ordinary row there (the
+//! of its own text inbox: the same rows `inbox` prints under the same delivery-row eligibility, only
+//! delivery rows (every priority) of the accepted thread that lie below the binding's first unread receipt-bearing row there (the
 //! display walk's stop, so every row shown whole is passed and not shown again; a page cut by
-//! its bounds while lazy ordinal and message sequence disagree may repeat a row, at least once,
+//! its bounds while delivery-row ordinal and message sequence disagree may repeat a row, at least once,
 //! as plain `inbox` does), within the
 //! default inbox bounds, with one `next:` line naming `inbox` when more remains. It is the
 //! caller's default text-inbox display (A8), under the same claim: the page is written and
-//! flushed first, then the binding's cursors advance over what it showed whole and the lazy rows
+//! flushed first, then the binding's cursors advance over what it showed whole and the delivery rows
 //! complete exactly as `inbox` completes them (no new provenance). Ordinary, receipt, invitation
 //! and warning rows are not part of the page, so nothing is ACKed here.
 //!
-//! A live mod channel appends the binding's lazy rows to the transcript itself, possibly while
+//! A live mod channel appends the binding's delivery rows to the transcript itself, possibly while
 //! this accept is still running. The accept then gives the channel a bounded grace
 //! ([`CHANNEL_GRACE`]): it peeks at the scoped page (read-only: nothing shown, nothing recorded)
 //! until every row of the first peek has been completed by the channel, and prints nothing. When
@@ -96,7 +98,7 @@ pub struct AcceptPage<'a> {
     pub grace: ChannelGrace,
 }
 
-/// Show the accepted thread's pending lazy rows after the accept result was written and flushed.
+/// Show the accepted thread's pending delivery rows (any priority) after the accept result was written and flushed.
 /// A failure is one line on `diagnostics`; it never changes the accept's result.
 pub fn show<C: LocalClient + ?Sized, W: Write>(
     request: &AcceptPage<'_>,
@@ -122,6 +124,7 @@ fn scoped_page<C: LocalClient + ?Sized>(
 ) -> Option<Page<InboxBatchV2Item>> {
     match client.call_with_output(
         Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             seat: Some(request.claim.seat.clone()),
             page: PageRequest::default(),
             claim: Some(request.claim.clone()),

@@ -12,6 +12,7 @@ use crate::protocol::{
 
 fn lazy(id: &str, body: &str, wakes: bool) -> InboxBatchV2Item {
     InboxBatchV2Item::LazyMessage {
+        priority: None,
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),
         message: MessageId::new(id),
@@ -135,6 +136,7 @@ fn watch_line_marks_a_promoted_row_waking_and_omits_it_otherwise() {
     let quiet = line(drain(vec![lazy("quiet", "hello", false)]));
     assert!(quiet.get("wakes").is_none(), "{quiet}");
     let settled = line(drain(vec![InboxBatchV2Item::Message {
+        priority: None,
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),
         message: MessageId::new("settled"),
@@ -149,6 +151,7 @@ fn watch_line_marks_a_promoted_row_waking_and_omits_it_otherwise() {
         body_end: 2,
         body_len: 2,
         ack_candidate: None,
+        deadline_at: None,
     }]));
     assert_eq!(settled["kind"], "message", "{settled}");
     assert_eq!(settled["ack_required"], false, "{settled}");

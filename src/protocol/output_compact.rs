@@ -65,7 +65,13 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                 out.push_str("empty\n");
             }
             for item in &page.items {
-                let lazy = matches!(item, InboxBatchV2Item::LazyMessage { .. });
+                let marker = match item {
+                    InboxBatchV2Item::Message { priority, .. }
+                    | InboxBatchV2Item::LazyMessage { priority, .. } => {
+                        priority.and_then(|p| p.marker())
+                    }
+                    _ => None,
+                };
                 let ordinary = match item {
                     InboxBatchV2Item::FirstContact(first_contact) => {
                         // Fixed plugin-composed lines (thread names escaped to one line); the
@@ -170,10 +176,20 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                 };
                 let rendered = render(&CommandResult::InboxBatch(one), spec)
                     .expect("v1 compact inbox renderer");
-                if lazy {
-                    out.push_str(&rendered.replacen(" from ", " [lazy] from ", 1));
-                } else {
-                    out.push_str(&rendered);
+                match marker.and_then(|m| {
+                    // The sender token follows the first " from "; the marker leads the
+                    // author markers, as in the delivery frame.
+                    let start = rendered.find(" from ")? + " from ".len();
+                    let end = start + rendered[start..].find(' ')?;
+                    Some((end, m))
+                }) {
+                    Some((end, m)) => {
+                        out.push_str(&rendered[..end]);
+                        out.push(' ');
+                        out.push_str(m);
+                        out.push_str(&rendered[end..]);
+                    }
+                    None => out.push_str(&rendered),
                 }
             }
             next("next", page, &mut out);

@@ -1,7 +1,5 @@
-//! `wake-on [nudge|all]` (spec DP8): read or set the invoking seat's wake
-//! preference. A bare `wake-on` reads; a value sets it as the seat's current
-//! top-level binding (TRUST-POLICY A5). The daemon decides everything; this
-//! only builds the claim and formats the answer.
+//! `wake-on [nudge|all]`: the deprecated alias of `nudge-threshold` (`all` = -1, `nudge` = 0), plus
+//! one stderr deprecation line.
 
 use super::{
     RunError,
@@ -9,41 +7,13 @@ use super::{
 };
 use crate::daemon::paths::NodePaths;
 use crate::ports::LocalClient;
-use crate::{
-    harness::context::Role,
-    protocol::{
-        capabilities::SEAT_WAKE_ON_V1,
-        commands::{Command, SetWakeOn, WakeOn, WakeOnQuery},
-        ids::OperationId,
-        output::OutputFormat,
-        results::{CommandResult, WakeOnState},
-        time::Clock,
-    },
+use crate::protocol::{
+    commands::Command, priority::NudgeThreshold, results::CommandResult, time::Clock,
 };
 use std::io::Write;
 
-/// The text line: `wake_on: all (was nudge)`. The previous value is derived:
-/// a change flipped the other of the two values; no change kept it.
-pub fn render(state: &WakeOnState, set: bool) -> String {
-    if !set {
-        return format!("wake_on: {}\n", state.wake_on.as_str());
-    }
-    let was = if state.changed {
-        match state.wake_on {
-            WakeOn::Nudge => WakeOn::All,
-            WakeOn::All => WakeOn::Nudge,
-        }
-    } else {
-        state.wake_on
-    };
-    format!(
-        "wake_on: {} (was {})\n",
-        state.wake_on.as_str(),
-        was.as_str()
-    )
-}
-
-/// Run `wake-on` as the selected seat.
+/// Run `wake-on` as the selected seat: `wake-on V` is `nudge-threshold` of the mapped value, plus
+/// one stderr deprecation line (about 55 bytes).
 // Allowed: the parsed action and selected seat, node paths and instance, claim host, client, clock and writer.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
@@ -59,50 +29,24 @@ pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
     let CliAction::WakeOn(value) = &parsed.action else {
         unreachable!("wake_on::run is only called for wake-on actions");
     };
-    let budget = super::cooperative_budget(clock);
-    if !client.supports_capability(SEAT_WAKE_ON_V1, &budget) {
-        return Err(super::unsupported(
-            "this daemon does not support wake-on; restart it on the current herdr-threads",
-        ));
-    }
-    let command = match value {
-        None => Command::WakeOn(WakeOnQuery {
-            seat: selection.seat.clone(),
-        }),
-        Some(value) => {
-            if selection.role != Role::TopLevel {
-                return Err(super::unsupported(
-                    "subagents cannot set wake-on; only the top-level agent does",
-                ));
-            }
-            let claim = current_claim(selection, paths, instance, host, client, &parsed, clock)?;
-            Command::SetWakeOn(SetWakeOn {
-                value: *value,
-                operation: OperationId::new(uuid::Uuid::new_v4().to_string()),
-                claim,
-            })
-        }
-    };
-    command.validate().map_err(super::invalid_request)?;
-    let result = client.call_with_output(command, &parsed.output, &budget)?;
-    let CommandResult::WakeOn(state) = &result else {
-        return Err(super::mapping_error(
-            "service returned an unexpected result",
-        ));
-    };
-    let bytes = if parsed.output.format == OutputFormat::Json {
-        crate::protocol::output::encode_selected(&result, &parsed.output)?
-    } else {
-        render(state, value.is_some()).into_bytes()
-    };
-    writer.write_all(&bytes)?;
-    writer.flush()?;
+    super::nudge_threshold::run(
+        &parsed,
+        value.map(NudgeThreshold::from_wake_on),
+        selection,
+        paths,
+        instance,
+        host,
+        client,
+        clock,
+        writer,
+    )?;
+    eprintln!("herdr-threads: wake-on is deprecated; use nudge-threshold N");
     Ok(())
 }
 
 /// The seat's saved context as a claim, after proving it is the service's
 /// current binding generation (the same check `summary` makes).
-fn current_claim<C: LocalClient + ?Sized>(
+pub(super) fn current_claim<C: LocalClient + ?Sized>(
     selection: &CooperativeSelection,
     paths: &NodePaths,
     instance: crate::node::NodeUuid,

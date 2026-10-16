@@ -1816,6 +1816,7 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
         panic!()
     };
     let send = SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: thread.clone(),
         body: "hello".into(),
@@ -1980,6 +1981,7 @@ fn default_directory_and_inbox_resolve_only_the_trusted_selected_seat() {
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].thread, ThreadId::new("t1"));
     let inbox = Command::Inbox(InboxQuery {
+        pushed: false,
         thread: None,
         claim: None,
         seat: None,
@@ -2576,13 +2578,20 @@ fn public_join_send(
     store: &SqliteStore,
     accept: &Accept,
     operation: &str,
+    // Only an explicit ACK recipient gets a receipt (D9).
+    ack_s2: bool,
 ) -> crate::protocol::ids::MessageId {
     let send = SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: accept.thread.clone(),
         body: operation.into(),
         direct_recipient: None,
-        invited_recipients: vec![],
+        invited_recipients: if ack_s2 {
+            vec![SeatId::new("s2")]
+        } else {
+            vec![]
+        },
         deadline_millis: None,
         operation: OperationId::new(operation),
         claim: fixture_claim("s1", "s1"),
@@ -2616,13 +2625,13 @@ fn public_join_send(
 #[test]
 fn public_join_receipts_are_frozen_across_join_leave_and_rejoin() {
     let (store, path, accept, _) = join_hint_fixture_inner(0, false);
-    let before = public_join_send(&store, &accept, "before");
+    let before = public_join_send(&store, &accept, "before", false);
     permitted(
         &store,
         PermitMutation::Join(public_join_command(&accept, "join")),
     )
     .unwrap();
-    let during = public_join_send(&store, &accept, "during");
+    let during = public_join_send(&store, &accept, "during", true);
     permitted(
         &store,
         PermitMutation::Leave(crate::protocol::commands::Leave {
@@ -2632,13 +2641,13 @@ fn public_join_receipts_are_frozen_across_join_leave_and_rejoin() {
         }),
     )
     .unwrap();
-    let left = public_join_send(&store, &accept, "left");
+    let left = public_join_send(&store, &accept, "left", false);
     permitted(
         &store,
         PermitMutation::Join(public_join_command(&accept, "rejoin")),
     )
     .unwrap();
-    let after = public_join_send(&store, &accept, "after");
+    let after = public_join_send(&store, &accept, "after", true);
     let read = ReadContext {
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         output: OutputSpec::default(),
@@ -2887,6 +2896,7 @@ fn public_join_human_claim_records_operator_human_without_changing_binding() {
 fn public_join_invalidates_prepared_send_and_new_send_includes_new_member() {
     let (store, path, accept, _) = join_hint_fixture_inner(0, false);
     let send = SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: accept.thread.clone(),
         body: "prepared".into(),
@@ -2923,7 +2933,7 @@ fn public_join_invalidates_prepared_send_and_new_send_includes_new_member() {
             .code,
         ErrorCode::Conflict
     );
-    let message = public_join_send(&store, &accept, "fresh-after-join");
+    let message = public_join_send(&store, &accept, "fresh-after-join", true);
     let read = ReadContext {
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         output: OutputSpec::default(),

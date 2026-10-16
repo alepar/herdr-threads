@@ -11,10 +11,23 @@ Amended 2026-10-12 for the text accept's thread-scoped opening-mail display (ht-
 ordinary stop and, with a live mod channel, by a bounded channel grace.
 Amended 2026-10-12 for the consented Codex pane environment block (foreground configuration only; no seat,
 binding, receipt or attribution rule changes).
+Amended 2026-10-13 for message priority delivery (ht-yha.3): delivery rows are the bookkeeping of every message and
+audience member, and receipts exist only for explicit ACK recipients (A8, A5a, A6).
 Amended 2026-10-13 for the one-process composer wake (ht-327): several bindings of one process share its
 composer for seat-level attention; no binding is chosen, merged, moved or ended.
+Amended 2026-10-14 for service sends under D9 (ht-yha.47): a service send's receipts are only its explicit
+non-human `recipients`; its joined snapshot gets priority-0 delivery rows (A8).
+Amended 2026-10-14 for per-session pending views held only by bindings that can still be offered rows
+(ht-yha.54): a binding disconnected other than by process exit drops its view and is re-seeded on reconnect;
+no delivery or wake decision reads the seat-wide delivery-row state (A8).
+Amended 2026-10-14 for connected-only pending views (ht-yha.57): every disconnect, process exit included, drops
+the binding's view and its next connected transition re-seeds it from its cursors and display marks; a
+disconnected binding costs publication nothing (A8).
 Amended 2026-10-14 for cross-node sync (ht-5fr): node identity and key custody, replicated facts, origin
 authority, peer identity binding, fork and clone repair, remote seats.
+Amended 2026-10-15 for pre-upgrade preparations resumed after the priority upgrade (ht-yha.66): a v0.11
+preparation that already staged a receipt for a non-ACK audience member finishes in that whole-audience receipt
+shape, never a mixed one; the recorded `delivery_mode` also decides whether a read shows a `[pN]` row (A8).
 Amended 2026-10-15 for the main v1 reconcile of cross-node sync
 (`docs/superpowers/runs/2026-10-14-cross-node-sync/2026-10-15-cross-node-sync--main-v1-reconcile-design.md`):
 `invitation.created` authority by issuer kind (a service or operator invitation names no inviter seat and is
@@ -437,12 +450,15 @@ model open work, and summary closure never changes receipt state or installs glo
   that process's composer: the item reaches whichever of its bindings takes the turn, so no binding is
   chosen. Like a single target it is not held to the several-targets idle condition (an ordinary wake
   reads no composer before that point); the adapter's final composer read immediately before submission
-  still refuses typed input and a busy agent. It is owed only while every binding of the process is owed (one served in its turn served the
-  process), and a binding whose mod channel woke it takes its process's other bindings off the composer
-  targets. A wake whose reasons name no unoffered seat-level item still needs a unique match: unread mail
-  is each binding's own, so (an accepted limit) a `wake_on: all` seat whose only new attention is lazy mail
-  beside an already-offered receipt stays unwoken by the composer until a seat-level item or a unique
-  binding remains; the item still arrives on its next turn. Only a reservation that names no targets
+  still refuses typed input and a busy agent. For a receipt or invitation it is owed only while every binding of the process is
+  unserved (one served in its turn served the process), and a binding whose mod channel woke it takes its process's other bindings off the composer
+  targets. Seat-level attention includes a delivery row the seat's nudge threshold admitted (reason `lazy`,
+  the lazy frontier admitted by `NudgeThreshold`): under message priority delivery (D9) a bare `--nudge`
+  (p0, no `--require-ack`) makes no receipt, so this row is what wakes the seat, and it takes the one-process
+  composer wake as `pending_receipt` does (orchestrator decision at the ht-327 merge; the item is shown
+  to whichever binding of the process takes the turn, as before). Unlike a receipt, a delivery row is each
+  binding's own stream, so its owedness is decided per binding (below). A wake whose reasons name no such item still
+  needs a unique match, and a threshold-silent row (priority above T) never reserves a wake at all. Only a reservation that names no targets
   (a legacy source) keeps the single-harness rule. A soft poke follows the same targets and rule.
   *Served in-turn* (ht-705, A8): a target that was shown every pending receipt (or invitation) the wake is
   reserved for inside its own turn is owed no wake for it; the seat-level candidate drops those items only
@@ -450,7 +466,16 @@ model open work, and summary closure never changes receipt state or installs glo
   the prompt, after the reservation fence, the daemon rechecks the binding the composer chose (or, with no
   composer choice, the seat-level binding a registered or recovery-hint wake reaches) against its own records; a served
   binding gets a pre-send refusal (nothing typed, the ladder does not climb) and an unserved sibling's wake
-  stays owed for a later attempt.
+  stays owed for a later attempt. A target that already displayed the threshold-admitted frontier delivery row the
+  wake is reserved for (reason `lazy`: its cursor passed the row or its displayed mark holds it, decided from that binding's own records, never the
+  seat-wide delivery-row state) is owed no wake for
+  it, but a one-process composer wake for that row stays owed while any binding of the process still finds it
+  unread, and is refused (pre-send, nothing typed) only once every reached binding displayed it (main review I4,
+  ht-yha.62; this reverses the ht-yha.45 wording, under which a `/side` sibling's display refused the idle main
+  binding's wake on every retry). The accepted cost is at most one composer wake after a sibling's display: a
+  submitted wake keeps the frontier reserved, so it is not retried until a newer row is admitted. A wake
+  reserved for several reasons is owed while any of them is (receipts and invitations by the every-binding
+  rule, the row by the any-binding rule).
   Verified 2026-10-11 (`evidence/ht-54r.89/summary.md`, derived fingerprints, no harness logged in): the
   fingerprint pid is a foreground process for Claude 2.1.296 (live: `CLAUDE_PID` among seven foreground
   processes), Codex 0.162.1 native and via npm (node launcher plus native child), Hermes v0.21.5 and
@@ -543,7 +568,7 @@ Delivery and authority gates read the binding's role, liveness and harness, neve
 | open a mod delivery channel (`watch`) | the pane's top-level session of a push-channel harness through its mod, for its own connected top-level binding (the claim's native session); several bindings of one seat each hold their own; recorded as `cooperative_mod_channel`; it grants no other row |
 | mod delivery ACK (`watch ack`) | the connected top-level binding of a push-channel harness that holds a live channel (grace included), the one the claim's key names; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |
 | hook-pull delivery (`DeliveryPull`, `DeliveryConfirm`) | the connected top-level binding of a hook-pull harness that the claim's key (seat, harness, native session) names, from any of its top-level hooks (including `Stop`); settlement only for ids the daemon offered to that binding; the daemon decides each id against A2 again; recorded as `cooperative_hook_delivery` |
-| set `wake_on` (`wake-on [nudge\|all]`) | a connected top-level binding of the seat (cooperative; changes wake eligibility only, never receipts or authority) |
+| set the nudge threshold (`SetNudgeThreshold`; legacy `wake-on [nudge\|all]` = threshold 0 \| -1) | a connected top-level binding of the seat (cooperative; changes wake eligibility only, never receipts or authority) |
 | check in | the pane's top-level agent (hook) or a human via `ht human me init` |
 | record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup with one observable started process; it grants no row above |
 | rebind, fresh seat, retire, replace, orphan-thread invite | operator |
@@ -594,7 +619,15 @@ Declared subagents cannot reject. Required invitations remain service-owner cont
 ask that owner to release the requirement and reread its current state before attempting rejection.
 Reinvitation creates a fresh episode; replay of an old rejection cannot reject that new invitation.
 
-Ordinary agent invitation confirmation is an immutable episode policy. Modern Lazy invitations remain
+Every newly recorded invitation (agent, human or operator; ht-yha.6, D6) is confirming: it stores
+confirmation `require_ack` with the explicit or instance-default deadline, is a wake source and has an
+inviter-overdue warning (an operator invitation has no inviter seat, so it stores the absent policy, which
+is the effective RequireAck; unchanged). A request's `confirmation` (Lazy, RequireAck or absent, from any client version) is
+accepted and ignored for the recorded policy; the earlier refusal of an explicit human RequireAck is gone.
+The Lazy and absent-policy rules in the rest of this section describe stored pre-upgrade rows only, which are
+never rewritten.
+
+Ordinary agent invitation confirmation is an immutable episode policy. Stored pre-upgrade Lazy invitations remain
 pending and discoverable at ordinary inbox/hook opportunities, with no acceptance timer or native/mod
 wake. Their inherited physical duration/deadline columns retain legacy storage timing only; no canonical
 deadline, event, diagnostic or wake projection interprets that timing as a confirmation obligation.
@@ -610,8 +643,16 @@ Explicit human/operator invitation semantics remain separate and unchanged.
 
 **Automatic pair reservation.** `EnsureDirectThread` resolves one immutable canonical channel for
 exactly the caller and recipient seats, under the caller's ordinary `cooperative_top_level` or
-`operator_human` claim and the A2 deciding transaction. Initial creation joins only the caller and
-creates an ordinary invitation for the recipient; reservation is never acceptance, check-in or ACK.
+`operator_human` claim and the A2 deciding transaction. Initial creation joins both reserved seats in that
+one transaction and records no invitation (the user's explicit decision D7, advertised as
+`direct.auto_join_v1`): a pair is a reserved two-seat channel, so the consent an invitation would collect is
+given by pair creation itself. The peer's membership interval starts at its own join event, and a creation
+policy is validated for shape and otherwise ignored. A pair seat with no cursor for the pair starts at the
+thread head as of that join (the auto-joined pair floor), not at its first session's head, so its first
+session is offered the opener and every later send; any seat that already holds a cursor keeps it. Joining
+is never ACK or check-in. A pair created before the upgrade with a pending invitation keeps it: it reports
+`ExistingPending` and still needs `accept`. Across nodes, each pair seat's join is authored by that seat's own home
+node (N4, the 1:1 pair auto-join rule).
 All ordinary, operator and service enrollment paths preserve the two-seat participant universe;
 services cannot adopt or own these channels. Invited seats remain reserved even before acceptance.
 Explicit leave, rejection and archival require ordinary join/accept/reinvite/reopen repair, never
@@ -626,15 +667,13 @@ invitation's ID, episode, confirmation, effective deadline and inviter. This is 
 canonical selection at the original keyed decision; replay never refreshes the
 policy or deadline, and local copies remain hints. Historical NULL confirmation is
 presented as effective RequireAck while preserving its original deadline and NULL
-inviter. A new explicit RequireAck from a Human issuer is refused, matching ordinary
-Invite; existing episodes and historical absent-policy creation remain unchanged.
+inviter. Existing episodes and historical absent-policy creation remain unchanged.
 The additive `direct_threads.ensure_creation_policy_v1`
 capability admits an explicit frozen initial Lazy or RequireAck policy and optional
 positive duration. Only creation of a new pair applies it; existing pending or joined
 participation keeps its original policy, inviter and deadline, and left/rejected
 participation still requires explicit repair. Modern direct sends and automatic
-handoffs freeze Lazy by default and require this capability before publication or
-canonical/native effects. A requested body ACK has its own send-time deadline and
+handoffs send the policy with the pair ensure (an auto-joining daemon ignores it). A requested body ACK has its own send-time deadline and
 cannot accept an invitation or settle participation. Pair identity remains with its channel history;
 there is no seat merge, remapping or generation rollover and no new provenance value.
 
@@ -653,9 +692,9 @@ change; it never recreates membership. Archived threads require a member or serv
 owner to reopen them before a new join. Discovery and names confer no additional authority.
 
 **A5a. Human seats do not owe ACKs.** The daemon classifies a recipient from its canonical open
-binding when staging a send. A human binding gets the message through thread membership but no
-receipt expectation, even when the sender requested an ACK; an unbound or agent bound recipient
-keeps the existing expectation. A human lifecycle check-in waives every pending obligation already
+binding when staging a send. A human binding gets the message through a priority-0 delivery row (A8) but no
+receipt expectation, even when the sender requested an ACK; an unbound or agent bound explicit ACK
+recipient keeps the existing expectation. A human lifecycle check-in waives every pending obligation already
 owed by that seat, including obligations inherited from an earlier agent binding. It records a
 durable decision cutoff and a bounded reconciliation job in the same decision. The job records
 each receipt table's high water independently and sets the separate `ack_required=0` obligation
@@ -694,14 +733,14 @@ boundary or claim that an unprocessed clear event was delivered.
 and original deadline at canonical committed send time plus that duration. This applies to
 unbound, unregistered, unavailable and invited recipients; later registration, acceptance,
 restart or rebind cannot restart the clock. Availability remains observed availability and
-confers no new wake or receipt authority. Lazy delivery and canonical human waivers remain
-free of ACK obligations. The durable per-instance send-time cutover preserves every previously
+confers no new wake or receipt authority. Delivery rows (every priority, A8) and canonical human waivers remain
+free of ACK obligations; only explicit ACK recipients owe one. The durable per-instance send-time cutover preserves every previously
 running sparse deadline using the earliest canonical availability recorded before the cutover
 and before retirement; stored running deadlines and terminal receipt provenance are preserved.
 Previously dormant obligations derive their deadline from immutable send time and duration.
 
 Modern clients require `messages.send_time_receipts_v1` before a new ACK-required send;
-absent or refused discovery fails explicitly without a legacy fallback. Lazy sends are exempt.
+absent or refused discovery fails explicitly without a legacy fallback. Sends without explicit ACK recipients are exempt.
 Accepted mixed-version limit: ordinary CLI and service clients cannot prove that the canonical
 recipient audience is entirely human-waived, so an ordinary send that can create an agent
 obligation conservatively requires the capability, even when its eventual audience is all human.
@@ -788,16 +827,62 @@ The same rule decides a live Claude mod channel's attention: the daemon counts o
 the channel's attention fingerprint (with the same saturated fallback) and marks each other pending
 warning `informational` in the inbox batch, so `watch` raises no `attention` line for it.
 
-**A8. Passive lazy delivery bookkeeping.** Recorded `ordinary`/`lazy` delivery mode is immutable and
-independent of sender role, relay and human intent. A lazy audience is frozen by canonical preparation
-and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
+**A8. Passive delivery-row bookkeeping.** Every message carries an immutable delivery priority 0..=9
+(default 1), frozen at send and independent of sender role, relay and human intent. Delivery rows
+(`lazy_recipients`, the former "lazy" bookkeeping, now for every priority) are the bookkeeping of the whole
+audience: each joined non-author audience member that is not an explicit ACK recipient gets one row carrying the
+message priority, human seats included. Only an explicit non-human ACK recipient (`--require-ack SEAT`, or a service send's explicit `recipients`) gets a
+receipt instead (D9); a human explicit recipient gets a priority-0 row, never a receipt, and a priority above 0
+cannot be combined with explicit ACK recipients (the daemon refuses it, as it refuses a deadline without explicit
+ACK recipients). Receipts, deadlines, overdue warnings and ACK obligations therefore exist only for explicit ACK
+recipients; the old rule that every joined agent owes an ACK for an ordinary message ended. A priority-0 row-only
+send keeps the send-time unavailable-recipient warning (sender feedback, not an obligation); a priority above 0
+produces none. The one exception is a preparation staged before the upgrade (v0.11, every joined agent owed an
+ACK) and resumed after it: when it already holds a receipt for a seat outside its explicit ACK set, its remaining
+non-human audience members are staged as receipts too, so it publishes in that recorded shape and never as a mixed
+audience of receipts and rows; a preparation staged after the upgrade never holds such a receipt. A pre-upgrade
+preparation without explicit ACK recipients cannot resume at all (its frozen receipt duration no longer matches),
+so it is discarded and restaged under D9. The recorded `delivery_mode` column is audit only, written `ordinary`
+iff the send has explicit ACK recipients and `lazy` otherwise, and is never read for delivery decisions (the text
+read annotation reads it only to omit the `[pN]` row of an `ordinary` message, whose ACK line or pre-upgrade mode
+already marks it); an old client's modes map `ordinary` to
+priority 0 and `lazy` to priority 1 (a request's own priority wins; its payload digest covers the priority only
+when carried, so journaled old-shape intents retry unchanged). A delivery audience is frozen by canonical
+preparation and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
+Each open binding (session) keeps its own pending view of delivery rows (user decision 2026-10-14): a row is
+pending for a binding until that binding displays it, by any display path (a completion, or a cursor-only
+display: a full `body` read, an `accept` display, a hook page whose completion then failed), its cursor
+passes it, or the binding ends. A binding's own reads (inbox, hook, accept, presentation) seek only its own
+view, so a sibling's display never changes what a binding is offered and a sibling's undisplayed backlog
+never costs it anything. A view is held only by a connected binding (any role; a subagent reads its own stream). Every disconnect (a
+process exit, superseded, an end event such as a session end or a subagent stop, seat retirement or unresolve,
+replaced, migration) drops the view in the disconnecting transaction, and publication writes it no rows while it
+stays disconnected, so a disconnected binding costs only its cursors and display marks; when it reconnects (a
+plain call after a process exit, or a lifecycle check-in such as a resume, a re-adoption or a reopening) its
+view is re-seeded, at a cost proportional to its own backlog, from its own cursors and display marks, so it is offered
+exactly the rows it has not displayed, whatever a sibling displayed meanwhile. The seed is complete because an
+open binding has a cursor in every thread its seat has joined (the V32 backfill, `read_cursors::init_for_new_binding`
+at enrolment, `read_cursors::init_for_join` and `init_for_direct_accept` at every join; pinned by
+`a_held_binding_has_a_cursor_in_every_joined_thread`): it walks only the messages past each of the binding's
+cursors, the one cursorless readable scope (a pending direct-pair invitation) and the seat's legacy rows
+(`SEED_BINDING_VIEW_SQL`, `src/store/lazy_delivery/mod.rs`, ht-yha.67), never the seat's delivery history. A change
+that lets a binding join a thread without a cursor must extend the seed in the same commit. No seat-level view reads a
+disconnected binding's view: the wake frontier and discovery, the seat inbox filter, the digest's pending
+count and the mod fingerprint, kick count and stall rule consider connected top-level bindings only (plus
+legacy seat-pending rows). The seat-wide `displayed` mark (set once no top-level binding that still owes the
+row, connected or disconnected by process exit, finds it unread) is kept only as the join frontier's "no
+completion has displayed" fact below and the binding-less completion state; no delivery or wake decision reads
+it (the served-in-turn recheck asks the woken binding's own cursor and marks). Accepted limit: a disconnected binding
+whose process still calls without reconnecting (a superseded session's stale process, say; plain calls never
+reconnect it) sees no delivery rows in its own reads until a lifecycle check-in reconnects it.
 Already addressed rows survive leaving, retirement and archival, with no transfer to another seat.
 Undisplayed rows (`state` still `pending`) past the seat's furthest cursor when it joins become seat-pending
 (join frontier, below).
 Unpublished rows are invisible and may be discarded in bounded cleanup; published progress is retained.
-Lazy delivery creates no receipt, deadline, ACK evidence, wake attention, wake, poke or automatic adoption,
-except that a seat with `wake_on: all` is woken (wake eligibility only; still no receipt, digest
-attention or poke).
+Delivery rows create no receipt, deadline, ACK evidence, wake attention, wake, poke or automatic adoption,
+except that a row whose priority the seat's current nudge threshold admits (priority <= T; every priority when
+T < 0; the legacy `wake_on: all` is T = -1, `nudge` is T = 0) wakes an idle seat (wake eligibility only; still no
+receipt, digest attention or poke). The threshold is read at every wake decision, never frozen at send.
 
 Only the caller's default text inbox, a standard native hook, a push-channel mod or a hook-pull harness's hook, as below, may claim completion after complete contiguous body output has
 been written and flushed. The completion handler validates the current top-level or human canonical
@@ -805,10 +890,18 @@ caller (A2) and exact published addressed message IDs in its deciding transactio
 cannot complete delivery. JSON, machine, explicit-seat reads, history, bodies and summaries remain
 read-only for Lazy completion. A complete successful own text body display may separately advance only
 the calling binding's read cursor, as specified below; it is not Lazy completion or a receipt ACK.
+A binding's display of a message that stays above its cursor (delivery order is (priority, deadline, decision), the
+cursor walks message sequence, so a message can be shown before a lower-sequence one) is remembered per
+binding (`binding_row_displays`, written by the one cursor-advance function for every display path, top-level
+completion and `AdvanceCursors` alike), for delivery rows and receipt-bearing rows the seat receives alike (ht-yha.63):
+every binding-level unread and pending predicate (`UNREAD_EXTRA` included) excludes a marked row, the
+display walk passes it, the mark is dropped once the cursor passes it, and a successor binding inherits the marks
+of the cursor it inherits. Marks are the binding's own display bookkeeping, never evidence about another binding,
+and confer no receipt, ACK or wake authority; a bookkeeping failure still leaves the row offered again (at least once).
 A top-level agent's text `accept` (and `accept-required`) output is that same default text inbox
 display, thread-scoped (ht-br0): after the accept result was written and flushed (with a live mod channel,
 only after the channel grace below has run out), it reads one `InboxBatchV2` page of the caller's own stream restricted to the
-accepted thread's unread lazy rows (`InboxQuery.thread`, `inbox.thread_scope_v1`; no ordinary, receipt,
+accepted thread's unread delivery rows of every priority (`InboxQuery.thread`, `inbox.thread_scope_v1`; no ordinary, receipt,
 invitation or warning row). The thread scope only narrows the unchanged lazy eligibility (the binding's own
 cursor/scope branch and the top-level legacy-pending branch); it never admits a row the unscoped text inbox
 would not show that binding. It narrows it further to rows below the binding's first ordinary walk stop in
@@ -845,8 +938,8 @@ A push-channel mod (today the bundled Claude mod) is a second completion source:
 (A5) under the `cooperative_mod_delivery` claim "appended to the transcript" (no per-row source is stored). Like inbox
 completion it is presentation bookkeeping (no ACK actor, adoption or proof of consumption).
 
-A seat that set `wake_on: all` (A5) opts its own lazy rows into push-channel promotion: the daemon marks such a
-row `wakes` in the inbox batch, and the mod delivers it as a `message` line with no ACK to run, marked `wakes`
+A seat whose nudge threshold (A5) admits a row's priority has that row promoted for push-channel delivery: the daemon marks such a
+row `wakes`, computed against the seat's current threshold, in the inbox batch, and the mod delivers it as a `message` line with no ACK to run, marked `wakes`
 on the watch line so the mod still wakes an idle session for it (a `message` line with no ACK and no `wakes` is
 mail another binding already settled: appended, never an idle wake). The daemon still
 creates no receipt, deadline or wake for it. The mod may complete a promoted row delivered via `context` or
@@ -859,8 +952,8 @@ adoption or proof of consumption.
 A standard native hook (top-level SessionStart, Bash PreToolUse, Codex UserPromptSubmit or qualified turn;
 never a subagent event) is a third completion source. Only a digest the hook explicitly requests (`AttentionDigestQuery.lazy`)
 reports pending lazy rows and a lazy token key, so a lazy arrival moves the hook's change marker; the wake
-frontier, wake candidates, prompts, pokes, deadlines and warnings never read lazy rows, except that a seat
-with `wake_on: all` is woken for its own lazy rows (wake eligibility only, above). When the hook
+frontier, wake candidates, prompts, pokes, deadlines and warnings never read delivery rows, except that a seat
+is woken for its own rows its nudge threshold admits (wake eligibility only, above). When the hook
 presents (marker advanced, or a lifecycle check-in) and no mod channel is live, it reads one bounded
 read-only v2 inbox page and places only complete items in the bytes its ordinary context leaves under the
 context bound. After its stdout was written and flushed, and the adapter reported that the output carries
@@ -972,7 +1065,7 @@ parked progress. No consumer-history scan or sibling substitution is allowed. Ch
 failure rolls back invitation, membership/interval, cursor and all tentative private writes together.
 Historical accept replay neither reseeds nor invalidates again. General Join and nonpair acceptance
 retain their head policy; no new binding fanout occurs at publication or reading.
-The accepting top-level binding's own text `accept` then shows its own unread Lazy rows of the pair
+The accepting top-level binding's own text `accept` then shows its own unread delivery rows (any priority) of the pair
 above that floor in its output (A8, ht-br0) and completes them as its text inbox would: only that
 binding's cursors advance, and each sibling binding keeps its independent own stream (no seat-wide
 settlement, no legacy-pending marking). Lazy and ordinary rows share that one cursor and the page carries
@@ -1035,8 +1128,8 @@ deciding-transaction step, `read_cursors::init_for_join`, in this order:
    cursor it already has is kept.
 
 A seat-pending row is unread for every top-level binding of the seat whatever its cursor (the lazy predicate's
-legacy branch, not membership-gated), and it counts as seat-level unread lazy mail (digest; wake only for
-`wake_on: all`, A8). The first completion that displays it clears the flag for the seat. A completion from a
+legacy branch, not membership-gated), and it counts as seat-level unread lazy mail (digest; wake only for a row
+its nudge threshold admits, A8). The first completion that displays it clears the flag for the seat. A completion from a
 matched top-level binding advances only that binding's cursors: a sibling top-level binding then gets no copy
 of it, even though its own cursor never moved. A completion matching no open binding (the pre-binding legacy
 form, which completes for the whole seat) advances the cursors of every open top-level binding of the seat. A
@@ -1045,12 +1138,14 @@ cannot complete one; it sees only mail past its head cursor. A binding enrolled 
 if it is top-level. On a generic `accept` or `accept-required` (not the active direct-invitation
 exception), the accepting top-level binding's own text `accept` displays the joined thread's seat-pending lazy
 rows in its output (A8, ht-br0), so that completion clears them for the seat as above and the accept itself is
-the first opportunity, with no later hook needed. Ordinary messages are not part of this: one addressed to the seat before it joined (an
-ACK request to an invitee, a direct `--nudge` target) is a pending receipt from publication, listed with the
-seat's ACK obligations until settled and never re-offered through the cursor stream after the join, because
-every cursor starts at the head. That pending-receipt path is an agent seat's; a human seat's receipt is waived,
-and the join frontier gives a human seat's pre-join ordinary messages no separate path (unchanged from before
-ht-8y9).
+the first opportunity, with no later hook needed. Messages with explicit ACK recipients are not part of this: one
+addressed to the seat before it joined (an ACK request to an invitee) is a pending receipt from publication, listed
+with the seat's ACK obligations until settled and never re-offered through the cursor stream after the join,
+because every cursor starts at the head. A bare `--nudge` (p0, no `--require-ack`) makes no receipt (D9): to a
+pre-upgrade pair's pending invitee it is a priority-0 delivery row, readable through the pending-pair read scope
+before the accept and then pending like any delivery row (A8). That pending-receipt path is an agent seat's; a
+human seat's receipt is waived, and the join frontier gives a human seat's pre-join ordinary messages no separate
+path (unchanged from before ht-8y9).
 
 A rejoin follows the same rule: an older sibling's cursor rises to the head, past joined-era mail another
 binding of the seat read or passed (lazy rows at or below the seat's furthest cursor are not marked; ordinary
@@ -1680,10 +1775,19 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **Peer data is cooperative input, never authority.** Peer data (message bodies, topics, names) is cooperative
   input from same-user agents and is presented without adversarial framing; it never overrides the user's
   instructions or permissions, and escaping exists to keep framing intact, not as a trust boundary.
-- **Any same-user process can flip `wake_on`.** The preference is cooperative like every other seat claim (A1): a
-  same-user process that supplies the seat's claim can set it to `all` or back to `nudge`. The effect is bounded to
-  wake eligibility (whether pending lazy messages may wake an idle seat); it creates no receipt, ACK evidence,
+- **Any same-user process can change the nudge threshold.** The preference (and its legacy `wake_on` alias) is
+  cooperative like every other seat claim (A1): a same-user process that supplies the seat's claim can set it to
+  any value -1..=9. The effect is bounded to wake eligibility (which pending messages may wake an idle seat); it creates no receipt, ACK evidence,
   attention or authority, and the daemon records only the seat's own current top-level binding as the actor.
+- **A disconnected binding's own reads show no delivery rows.** A binding holds a pending view only while it is
+  connected (A8, ht-yha.54, ht-yha.57). A process that still calls on a disconnected binding (a superseded
+  session's stale process, say; plain calls never reconnect it) sees no delivery rows in its own reads until a
+  lifecycle check-in reconnects it. Nothing is lost: the reconnect re-seeds the view from the binding's own
+  cursors and display marks, so it is offered exactly the rows it has not displayed.
+- **A 1:1 pair joins both seats without an invitation.** Pair creation is the consent an invitation would
+  collect (D7, `direct.auto_join_v1`; A5 "Automatic pair reservation"): the peer seat is joined in the creating
+  transaction, and its first session is offered the opener and every later send. Explicit leave still applies.
+  A pair created before the upgrade with a pending invitation keeps it.
 
 ### Cross-node sync (ht-5fr)
 
@@ -1842,6 +1946,22 @@ for side agents.
 | ht-5n6 Codex launched without a prompt never checks in, so no lost-prompt wake | `managed_launch` binding after a correlated launch | A3, A4, A5, Accepted limits |
 | W6-R2 "mark it self" wording | "when run in this pane" | A1 |
 | Waves 29/19 identifier sizes | accepted; fix the 104-bit comment (it is 112) | Accepted limits |
+
+### Message delivery priority (2026-10-13, ht-yha)
+
+User decisions D1-D11 of
+`docs/superpowers/runs/2026-10-13-message-priority-delivery/2026-10-13-message-priority-delivery-design.md`.
+Two of them bear on this policy:
+
+- **D7 pair auto-join.** A 1:1 pair is a reserved two-seat channel, so its creation joins both seats with no
+  invitation; the consent an invitation would collect is given by pair creation itself (A5 "Automatic pair
+  reservation", `direct.auto_join_v1`). It also fixes the mismatch between the docs, which described pairs as
+  automatic, and the behaviour, where the peer had to `accept`.
+- **Per-session views exist only while connected** (ht-yha.44, ht-yha.54, ht-yha.57; user decision at
+  ht-yha.57). Every disconnect, process exit included, drops the binding's view and its next connected
+  transition re-seeds it, so a disconnected session costs only its cursors and display marks. The accepted cost
+  is that a stale process calling on a disconnected binding sees no delivery rows until a lifecycle check-in
+  reconnects it (Accepted limits).
 
 ## Bootstrap creation attempts and administrative recovery (2026-10-08)
 

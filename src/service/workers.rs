@@ -1438,11 +1438,11 @@ impl crate::notification::dispatch::ReservationCheck for ScheduledStore {
     fn owes_wake(
         &self,
         reservation: &WakeReservation,
-        binding: Option<&crate::protocol::ids::BindingId>,
+        reached: &[Option<&crate::protocol::ids::BindingId>],
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
         self.store
-            .wake_owed_to_binding(reservation, binding, budget)
+            .wake_owed_to_reached(reservation, reached, budget)
     }
 }
 

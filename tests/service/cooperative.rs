@@ -256,6 +256,7 @@ fn explicit_send_accept_and_ack_are_separate_sqlite_decisions() {
     let sent = service
         .handle(
             Command::SendMessage(SendMessage {
+                priority: None,
                 delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                 thread: created.clone(),
                 body: "pending mail".into(),
@@ -581,11 +582,14 @@ fn partial_send_preparation_survives_budget_expiry_and_resumes_exact_intent() {
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,1)",rusqlite::params![thread.as_str(),seat]).unwrap();
     }
     let send = Command::SendMessage(SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread,
         body: "bounded preparation".into(),
         direct_recipient: None,
-        invited_recipients: vec![],
+        invited_recipients: (0..40)
+            .map(|index| SeatId::new(format!("recipient-{index}")))
+            .collect(),
         deadline_millis: None,
         operation: OperationId::new("send"),
         claim: sender,
@@ -655,6 +659,7 @@ fn stale_sender_cannot_publish_a_prepared_message() {
         panic!("wrong result")
     };
     let send = SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread,
         body: "stale sender".into(),
@@ -1161,6 +1166,7 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
 
     let send = |claim: &CallerClaim, required: Vec<SeatId>, operation: &str| match service.handle(
         Command::SendMessage(SendMessage {
+            priority: None,
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: format!("mail {operation}"),
@@ -1183,7 +1189,7 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
         vec![SeatId::new("recipient")],
         "a-to-b-require-ack",
     );
-    let plain = send(&sender, vec![], "a-plain");
+    let plain = send(&sender, vec![SeatId::new("recipient")], "a-plain");
     let reverse = send(&recipient, vec![SeatId::new("s")], "b-to-a-require-ack");
 
     // Every receipt to a reconfirmed, available seat starts its timer and no
@@ -1331,6 +1337,7 @@ fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
 
     let sent = match service.handle(
         Command::SendMessage(SendMessage {
+            priority: None,
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: "before the first pass".into(),
@@ -1645,11 +1652,12 @@ impl SendScenario {
 
     fn request(&self, operation: &str) -> crate::protocol::commands::SendMessage {
         crate::protocol::commands::SendMessage {
+            priority: None,
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: self.thread.clone(),
             body: "staged before, decided after".into(),
             direct_recipient: None,
-            invited_recipients: vec![],
+            invited_recipients: vec![SeatId::new("recipient")],
             deadline_millis: None,
             operation: OperationId::new(operation),
             claim: self.sender.clone(),
@@ -2615,6 +2623,7 @@ fn lazy_inbox_fix_real_service_completion() {
         let CommandResult::MessageSent(id) = service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Lazy,
                     thread: thread.clone(),
                     body: "quiet".into(),
@@ -2739,6 +2748,7 @@ fn two_sessions_on_one_seat_both_send() {
         let sent = service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                     thread: thread.clone(),
                     body: format!("from {who}"),
@@ -2829,6 +2839,7 @@ fn subagent_ack_send_accept_leave_invite_and_check_in_are_refused() {
                 claim: sub.clone(),
             }),
             Command::SendMessage(SendMessage {
+                priority: None,
                 delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                 thread: thread.clone(),
                 body: "from a subagent".into(),
@@ -3709,6 +3720,7 @@ fn direct_thread_guarded_runtime_refuses_missing_target_without_effects() {
         claim: caller.clone(),
     });
     let send = Command::SendMessage(SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Lazy,
         thread: ThreadId::new("t"),
         body: "body".into(),
@@ -3760,6 +3772,7 @@ fn direct_thread_real_service_ensure_and_lazy_send() {
         panic!("no direct thread")
     };
     let send = Command::SendMessage(SendMessage {
+        priority: None,
         delivery_mode: DeliveryMode::Lazy,
         thread,
         body: "quiet peer".into(),

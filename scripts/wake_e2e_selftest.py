@@ -492,7 +492,7 @@ class CoordinatorCalls(TempDir):
         r.coords = {"main": {"pane": "w1:p1", "seat": "sAAAAAAAA"}}
         r.run = lambda argv, env=None, timeout=60, tag=None, cleanup=False: (
             captured.append((argv, env)) or (0, '{"result":{"data":"mAAAAAAAA"}}', ""))
-        recipient = W.Recipient(r, "co-nudge", "codex", "nudge", "w1:p2", "sBBBBBBBB")
+        recipient = W.Recipient(r, "co-nudge", "codex", 0, "w1:p2", "sBBBBBBBB")
         markers = {var: "agent-value" for var in W.CALLER_SESSION_ENV}
         saved = {k: os.environ.get(k) for k in markers}
         os.environ.update(markers)
@@ -557,10 +557,240 @@ class CoordinatorCalls(TempDir):
         self.assertEqual({k: v["seat"] for k, v in r.coords.items()}, {"main": "sCCCCCCCC", "fresh": "sDDDDDDDD"})
 
 
+class ExpectationTable(unittest.TestCase):
+    """The pure wake expectation: an idle recipient wakes iff the item's priority <= its nudge threshold T
+    (T < 0: every item); invitations and ACK requests are p0, so they wake at every T."""
+
+    def test_item_priorities(self):
+        self.assertEqual(W.ITEM_PRIORITY, {"send-p1": 1, "send-p0": 0, "send-p3": 3, "send-ack": 0, "invite": 0,
+                                           "pair-open": 1})
+
+    def test_every_action_at_every_threshold(self):
+        want = {  # action -> thresholds (of 0 / -1 / 3) at which an idle recipient wakes
+            "send-p1": {3, -1}, "pair-open": {3, -1}, "send-p3": {3, -1},
+            "send-p0": {0, -1, 3}, "send-ack": {0, -1, 3}, "invite": {0, -1, 3},
+        }
+        for action, wakes in want.items():
+            for channel in ("group", "1:1"):
+                for t in (0, -1, 3):
+                    with self.subTest(action=action, channel=channel, threshold=t):
+                        self.assertIs(W.expect_wake(action, channel, t), t in wakes)
+
+    def test_boundaries_around_the_threshold(self):
+        self.assertIs(W.expect_wake("send-p3", "group", 2), False)   # p3 > T=2
+        self.assertIs(W.expect_wake("send-p3", "group", 3), True)    # p3 <= T=3
+        self.assertIs(W.expect_wake("send-p1", "group", 0), False)   # the default send is silent at T=0
+        self.assertIs(W.expect_wake("send-p1", "group", -5), True)   # any negative T admits everything
+
+    def test_unknown_action_is_refused(self):
+        with self.assertRaises(KeyError):
+            W.expect_wake("send-lazy", "group", 0)
+
+    def test_the_case_list_is_the_priority_matrix(self):
+        self.assertEqual(W.CASES[:2], ("invite/group", "pair-open/1:1"))
+        for action in ("send-p1", "send-p0", "send-p3", "send-ack"):
+            for channel in ("group", "1:1"):
+                self.assertIn(f"{action}/{channel}", W.CASES)
+        self.assertIn("mixed-order/group", W.CASES)
+        self.assertFalse([c for c in W.CASES if "lazy" in c or "nudge" in c])
+        for busy in ("busy-send-p1", "busy-send-p0", "busy-send-ack", "busy-invite"):
+            self.assertTrue([c for c in W.CASES if c.startswith(busy + "/")], busy)
+        self.assertEqual(W.THRESHOLDS, (0, -1, 3))
+
+    def test_send_argv_per_action(self):
+        self.assertEqual(W.send_flags("p1", "sREC"), [])
+        self.assertEqual(W.send_flags("p0", "sREC"), ["--nudge"])
+        self.assertEqual(W.send_flags("p3", "sREC"), ["-p", "3"])
+        self.assertEqual(W.send_flags("ack", "sREC"), ["--require-ack", "sREC"])
+        self.assertEqual(W.send_flags("ack", "sREC", deadline_s=90), ["--require-ack", "sREC", "--deadline", "90"])
+        self.assertEqual(W.send_flags("p5", "sREC"), ["-p", "5"])
+
+    def test_the_standing_prompt_sets_the_threshold(self):
+        text = W.STANDING.format(coord="sAA and sBB", threshold=-1)
+        self.assertIn("`herdr-threads nudge-threshold -1`", text)
+        self.assertIn("SETUP-DONE nudge_threshold=", text)
+        self.assertNotIn("wake-on", text)
+
+
+class MixedOrder(unittest.TestCase):
+    """Presentation order: priority asc, deadline asc (none last), then arrival."""
+
+    ITEMS = [  # arrival order of the mixed-order case
+        {"id": "m5", "priority": 5, "deadline_s": None},
+        {"id": "m1", "priority": 1, "deadline_s": None},
+        {"id": "m0", "priority": 0, "deadline_s": None},
+        {"id": "mA", "priority": 0, "deadline_s": 90},
+    ]
+
+    def test_ack_with_deadline_then_p0_then_p1_then_p5(self):
+        self.assertEqual(W.expected_order(self.ITEMS), ["mA", "m0", "m1", "m5"])
+
+    def test_ties_keep_arrival_order(self):
+        items = [{"id": "x2", "priority": 2, "deadline_s": None}, {"id": "x1", "priority": 2, "deadline_s": None},
+                 {"id": "d2", "priority": 2, "deadline_s": 50}, {"id": "d1", "priority": 2, "deadline_s": 50}]
+        self.assertEqual(W.expected_order(items), ["d2", "d1", "x2", "x1"])
+
+    def test_earlier_deadline_first_and_priority_beats_deadline(self):
+        items = [{"id": "late", "priority": 0, "deadline_s": 300}, {"id": "soon", "priority": 0, "deadline_s": 30},
+                 {"id": "p1d", "priority": 1, "deadline_s": 5}]
+        self.assertEqual(W.expected_order(items), ["soon", "late", "p1d"])
+
+    def test_screen_order_is_first_appearance(self):
+        screen = "x mB y\nRECEIVED mA: a\nlater mB mA mC"
+        self.assertEqual(W.screen_order(screen, ["mA", "mB", "mC"]), ["mB", "mA", "mC"])
+        self.assertEqual(W.screen_order(screen, ["mA", "mZ"]), ["mA"])  # an id never shown is absent
+
+    def test_header_priorities(self):
+        screen = ("[herdr-threads] message mA1 in tT from sX [p0]:\n  body\n"
+                  "[herdr-threads] message mB1 in tT from sX:\n  body\n"
+                  "[herdr-threads] message mC1 in tT from sX [human] [p5]:\n  body\n")
+        self.assertEqual(W.header_priorities(screen), {"mA1": 0, "mB1": 1, "mC1": 5})
+        echoed = ("⏺ RECEIVED [herdr-threads] message mD1 in wake test (tT) from Driver Seat (sX) [p3]: body x\n"
+                  "  RECEIVED [herdr-threads] ack mE1 in tT from sX [p0] [deadline 90s]: body y\n"
+                  "• RECEIVED [herdr-threads] message mF1 in tT from sX: body [p9] z\n")
+        self.assertEqual(W.header_priorities(echoed), {"mD1": 3, "mE1": 0, "mF1": 1})  # a body's [p9] is not a marker
+
+    def test_markers_check(self):
+        self.assertTrue(W.markers_ok({"mA1": 0, "mB1": 1}, {"mA1": 0, "mB1": 1, "mC1": 5}))
+        self.assertFalse(W.markers_ok({}, {"mA1": 0}))  # no header on screen: no marker was seen
+        self.assertFalse(W.markers_ok({"zZ9": 0}, {"mA1": 0}))  # headers of other messages only
+        self.assertFalse(W.markers_ok({"mA1": 1}, {"mA1": 0}))  # a p0 shown as the silent default
+
+    def test_markers_reason_names_the_case(self):
+        none = W.markers_reason("mixed-order/group", {}, {"mA1": 0})
+        self.assertIn("mixed-order/group", none)
+        self.assertIn("no expected [herdr-threads] header", none)
+        bad = W.markers_reason("mixed-order/group", {"mA1": 1}, {"mA1": 0})
+        for part in ("mixed-order/group", "mA1", "p1", "p0"):
+            self.assertIn(part, bad)
+        self.assertIsNone(W.markers_reason("mixed-order/group", {"mA1": 0}, {"mA1": 0}))
+
+
+class MixedOrderCase(unittest.TestCase):
+    """The real mixed-order/group path with fake sends and a fake screen."""
+
+    def setUp(self):
+        saved = W.SPACING_S
+        self.addCleanup(setattr, W, "SPACING_S", saved)
+        W.SPACING_S = 0.0
+
+    def run_case(self, screen_order_ids, threshold=0, headers=None, framed=True, harness="codex"):
+        rows, sends = [], []
+        ids = {"p5": "m5555", "p1": "m1111", "p0": "m0000", "ack": "mACK0"}
+        r = object.__new__(W.Recipient)
+        run = SimpleNamespace(run_id="000000-test", record=rows.append, stopping=threading.Event())
+        r.run, r.name, r.harness, r.threshold, r.pane, r.seat = run, f"{harness[:2]}-t{threshold}", harness, threshold, \
+            "w9:p1", "sREC"
+        r.last_wake, r.group, r.pair = 0.0, "tGROUP", None
+
+        def send(kind, body, direct, role="main", deadline_s=None):
+            sends.append((kind, direct, deadline_s))
+            return ids[kind]
+        r.send = send
+        r.wait_idle = lambda: None
+        r.watch_for_wake = lambda window: 0.4
+        r.watch_quiet = lambda seconds: None
+        r.on_screen = lambda mid, tries=15: True
+        r.receipt = lambda mid: "acknowledged"
+        marks = {"p0": " [p0]", "ack": " [p0]", "p1": "", "p5": " [p5]"}
+
+        def frame(k):
+            return f"[herdr-threads] message {ids[k]} in tGROUP from sX{marks[k]}:\n  x\n" if framed else ""
+        text = (headers or "") + "".join(W.WAKE_MARKERS[0] + "\n" if k == "|" else frame(k) + f"RECEIVED {ids[k]}: x\n"
+                                         for k in screen_order_ids)
+        r.screen = lambda lines=400: text
+        r.case("mixed-order/group")
+        self.assertEqual(len(rows), 1)
+        return rows[0], sends
+
+    def test_presentation_order_passes(self):
+        row_, sends = self.run_case(["ack", "p0", "p1", "p5"])
+        self.assertEqual(row_["result"], "PASS", row_)
+        self.assertEqual(row_["checks"]["order_expected"], ["mACK0", "m0000", "m1111", "m5555"])
+        self.assertEqual(sorted(sends, key=str),
+                         sorted([("p5", False, None), ("p1", False, None), ("p0", False, None),
+                                 ("ack", False, W.MIXED_DEADLINE_S)], key=str))
+        self.assertEqual([k for k, _, _ in sends[:2]], ["p5", "p1"])  # arrival order of the first two
+
+    def test_arrival_order_on_screen_fails(self):
+        row_, _ = self.run_case(["p5", "p1", "p0", "ack"])
+        self.assertEqual(row_["result"], "FAIL")
+        self.assertIs(row_["checks"]["order"], False)
+
+    def test_ack_on_a_second_page_passes(self):
+        # the p0's wake pulled its page before the ACK request was published; the ACK request wakes a second page
+        row_, _ = self.run_case(["p0", "p1", "p5", "|", "ack"])
+        self.assertEqual(row_["result"], "PASS", row_)
+        self.assertEqual(row_["checks"]["order_pages"], [["m0000", "m1111", "m5555"], ["mACK0"]])
+
+    def test_a_misordered_page_fails_even_when_split(self):
+        row_, _ = self.run_case(["p1", "p0", "p5", "|", "ack"])
+        self.assertIs(row_["checks"]["order"], False)
+
+    def test_channel_harness_order_is_unjudged(self):
+        # Claude's channel puts p5 and p1 into context on arrival, before the p0 wakes it: no page to order
+        row_, _ = self.run_case(["p5", "p1", "p0", "ack"], harness="claude")
+        self.assertEqual(row_["checks"]["order"], "unjudged")
+        self.assertEqual(row_["result"], "PASS", row_)
+
+    def test_p0_before_the_deadline_ack_fails(self):
+        row_, _ = self.run_case(["p0", "ack", "p1", "p5"])
+        self.assertEqual(row_["result"], "FAIL")
+
+    def test_wrong_marker_on_a_shown_header_fails(self):
+        bad = "[herdr-threads] message m0000 in tGROUP from sX:\n  x\n"  # a p0 framed as the silent default
+        row_, _ = self.run_case(["ack", "p0", "p1", "p5"], headers=bad, framed=False)
+        self.assertIs(row_["checks"]["markers"], False)
+        self.assertEqual(row_["result"], "FAIL")
+
+    def test_no_header_on_screen_fails(self):
+        row_, _ = self.run_case(["ack", "p0", "p1", "p5"], framed=False)
+        self.assertIs(row_["checks"]["markers"], False)
+        self.assertEqual(row_["result"], "FAIL")
+        self.assertIn("mixed-order/group", row_["checks"]["markers_reason"])
+
+    def test_correct_pn_headers_pass(self):
+        row_, _ = self.run_case(["ack", "p0", "p1", "p5"])
+        self.assertIs(row_["checks"]["markers"], True)
+        self.assertEqual(row_["result"], "PASS", row_)
+        self.assertNotIn("markers_reason", row_["checks"])
+
+    def test_runs_the_same_at_every_threshold(self):
+        for threshold in W.THRESHOLDS:
+            row_, _ = self.run_case(["ack", "p0", "p1", "p5"], threshold=threshold)
+            self.assertEqual((row_["result"], row_["threshold"]), ("PASS", threshold))
+
+    def test_busy_case_kinds_map_to_send_flags(self):
+        for case, kind in (("busy-send-p1/group", "p1"), ("busy-send-p0/1:1", "p0"), ("busy-send-ack/group", "ack")):
+            sent = []
+            r = object.__new__(W.Recipient)
+            run = SimpleNamespace(run_id="000000-test", record=lambda row_: None, stopping=threading.Event(),
+                                  herdr=lambda *a, **k: {})
+            r.run, r.name, r.harness, r.threshold, r.pane, r.seat = run, "cl-t0", "claude", 0, "w9:p1", "sREC"
+            r.last_wake, r.group, r.pair = 0.0, "tGROUP", None
+
+            class Stop(Exception):
+                pass
+
+            def send(k, body, direct, role="main", deadline_s=None):
+                sent.append((k, direct))
+                raise Stop()
+            r.send, r.wait_idle, r.status = send, (lambda: None), (lambda: "working")
+            with self.subTest(case=case):
+                saved = W.SPACING_S
+                W.SPACING_S = 0.0
+                try:
+                    with self.assertRaises(Stop):
+                        r.busy_case(case)
+                finally:
+                    W.SPACING_S = saved
+                self.assertEqual(sent, [(kind, case.endswith("1:1"))])
+
+
 class IdleWakeOracle(TempDir):
     """Run the real case/producer path with private fake CLI and recipient observations."""
 
-    def run_case(self, case, wake_on, woke, delivered=True):
+    def run_case(self, case, threshold, woke, delivered=True, joined=True):
         calls, rows, prompts, windows = [], [], [], []
         r = object.__new__(W.Run)
         r.state, r.endpoint, r.bin = self.tmp / "state", "/fake/sock", "/fake/herdr-threads"
@@ -573,11 +803,11 @@ class IdleWakeOracle(TempDir):
             data = "mAAAAAAAA" if "send" in argv else "tAAAAAAAA"
             return 0, json.dumps({"result": {"data": data}}), ""
         r.run = run
-        recipient = W.Recipient(r, "co-" + wake_on, "codex", wake_on, "w1:p2", "sBBBBBBBB")
+        recipient = W.Recipient(r, f"co-t{threshold}", "codex", threshold, "w1:p2", "sBBBBBBBB")
         recipient.group = "tAAAAAAAA"
         recipient.wait_idle = lambda: None
         recipient.prompt = prompts.append
-        recipient.joined = lambda thread: (True, "joined")
+        recipient.joined = lambda thread: (joined, "joined" if joined else "invited")
         recipient.pair_thread = lambda: "tBBBBBBBB"
         recipient.on_screen = lambda mid: delivered
         recipient.receipt = lambda mid: "acknowledged"
@@ -594,50 +824,76 @@ class IdleWakeOracle(TempDir):
         self.assertIsNone(rows[0]["checks"]["trailing_wake_s"])
         return rows[0], calls, prompts, windows
 
-    def test_lazy_direct_invitation_is_passive_under_nudge(self):
-        row_, calls, prompts, windows = self.run_case("invite/1:1", "nudge", woke=False)
+    def test_pair_open_is_silent_at_t0_and_needs_no_accept(self):
+        row_, calls, prompts, windows = self.run_case("pair-open/1:1", 0, woke=False)
         argv, env = calls[0]
         self.assertEqual(argv[1], "human")
+        # the default p1: no priority flag at all, and never --lazy
         self.assertEqual(argv[argv.index("send"):],
-                         ["send", "--seat", "sBBBBBBBB", "--body", "pair-open private-oracle", "--lazy"])
+                         ["send", "--seat", "sBBBBBBBB", "--body", "pair-open private-oracle"])
         self.assertEqual(env["HERDR_PANE_ID"], "w1:p1")
         self.assertFalse(any(a.startswith("--cooperative") or a == "--operator" for a in argv))
         self.assertEqual(row_["expect_wake"], False)
         self.assertEqual(row_["result"], "PASS")
         self.assertEqual(prompts, ["hello"])
         self.assertEqual(windows, [W.WAKE_WINDOW_S])
+        self.assertEqual(row_["checks"]["joined"], True)
         self.assertEqual(row_["checks"]["opening_message_delivered"], True)
+        self.assertFalse([c for c in calls if "accept" in c[0]], "a pair has no invitation to accept")
 
-    def test_idle_matrix_preserves_group_invite_and_send_modes(self):
-        for wake_on in ("nudge", "all"):
-            for action in ("invite", "send-lazy", "send-nudge", "send-ack"):
+    def test_idle_matrix_follows_the_expectation_table(self):
+        flags = {"send-p1": [], "send-p0": ["--nudge"], "send-p3": ["-p", "3"], "send-ack": ["--require-ack", "sBBBBBBBB"]}
+        for threshold in W.THRESHOLDS:
+            for action in ("invite", "send-p1", "send-p0", "send-p3", "send-ack"):
                 for channel in ("group", "1:1"):
                     case = action + "/" + channel
-                    passive = wake_on == "nudge" and (action == "send-lazy" or case == "invite/1:1")
-                    with self.subTest(case=case, wake_on=wake_on):
-                        row_, calls, prompts, windows = self.run_case(case, wake_on, woke=not passive)
-                        self.assertEqual(row_["expect_wake"], not passive)
+                    if case == "invite/1:1":
+                        continue  # a pair has no invitation: pair-open/1:1 is its first-contact case
+                    expect = W.expect_wake(action, channel, threshold)
+                    with self.subTest(case=case, threshold=threshold):
+                        row_, calls, prompts, windows = self.run_case(case, threshold, woke=expect)
+                        self.assertEqual(row_["expect_wake"], expect)
+                        self.assertEqual(row_["threshold"], threshold)
                         self.assertEqual(row_["result"], "PASS")
-                        self.assertEqual(prompts, ["hello"] if passive else [])
+                        self.assertEqual(prompts, [] if expect else ["hello"])
                         self.assertEqual(windows, [W.WAKE_WINDOW_S])
                         self.assertTrue(all(argv[1] == "human" for argv, _ in calls))
                         if case == "invite/group":
                             argv = calls[-1][0]
                             self.assertEqual(argv[argv.index("invite"):],
                                              ["invite", "tAAAAAAAA", "--seat", "sBBBBBBBB"])
+                        elif action.startswith("send-"):
+                            argv = calls[-1][0]
+                            tail = argv[argv.index("send"):]
+                            body_at = tail.index("--body") + 2  # the flags follow the body, nothing else does
+                            self.assertEqual(tail[body_at:], flags[action])
+                            self.assertNotIn("--lazy", tail)
 
-    def test_unexpected_direct_wake_fails(self):
-        row_, _, _, _ = self.run_case("invite/1:1", "nudge", woke=True)
+    def test_unexpected_wake_fails(self):
+        row_, _, _, _ = self.run_case("send-p1/group", 0, woke=True)  # a p1 send must not wake a T=0 seat
         self.assertEqual(row_["result"], "FAIL")
 
-    def test_missing_all_direct_wake_fails(self):
-        row_, _, _, _ = self.run_case("invite/1:1", "all", woke=False)
+    def test_missing_wake_fails(self):
+        row_, _, _, _ = self.run_case("send-p3/group", 3, woke=False)  # p3 <= T=3 must wake
+        self.assertEqual(row_["result"], "FAIL")
+        row_, _, _, _ = self.run_case("send-p0/1:1", 0, woke=False)  # a p0 wakes at every T
         self.assertEqual(row_["result"], "FAIL")
 
-    def test_passive_direct_opening_still_requires_delivery(self):
-        row_, _, _, _ = self.run_case("invite/1:1", "nudge", woke=False, delivered=False)
+    def test_pair_open_wakes_a_t3_seat_and_a_negative_one(self):
+        for threshold in (3, -1):
+            row_, _, prompts, _ = self.run_case("pair-open/1:1", threshold, woke=True)
+            self.assertEqual((row_["expect_wake"], row_["result"], prompts), (True, "PASS", []), threshold)
+
+    def test_silent_pair_opener_still_requires_delivery(self):
+        row_, _, _, _ = self.run_case("pair-open/1:1", 0, woke=False, delivered=False)
         self.assertEqual(row_["checks"]["opening_message_delivered"], False)
         self.assertEqual(row_["result"], "FAIL")
+
+    def test_a_pair_that_did_not_auto_join_fails(self):
+        row_, _, _, _ = self.run_case("pair-open/1:1", 0, woke=False, joined=False)
+        self.assertEqual(row_["checks"]["joined"], False)
+        self.assertEqual(row_["result"], "FAIL")
+
 # Pane text captured by the v0.9.1 Codex run 121116-d949 (busy-invite/1:1, co-all; anchors trimmed): the opener
 # was not shown in the busy turn and a wake followed it once the turn had ended.
 CODEX_BUSY_INVITE_PAIR = """\
@@ -737,11 +993,11 @@ class BusyQuietWindow(unittest.TestCase):
                 t0.append(time.time())
             return {}
         run = SimpleNamespace(run_id="000000-test", record=self.rows.append, stopping=threading.Event(), herdr=herdr)
-        r.run, r.name, r.harness, r.wake_on, r.pane, r.seat = run, "co-all", "codex", "all", "w9:p1", "sREC"
+        r.run, r.name, r.harness, r.threshold, r.pane, r.seat = run, "co-t-1", "codex", -1, "w9:p1", "sREC"
         r.last_wake, r.group, r.pair = 0.0, "tGROUP", None
         r.status = lambda: "working" if any(a <= since() < b for a, b in turns) else "idle"
         r.screen = lambda lines=400: "".join(text for at, text in script if since() >= at)
-        r.send = lambda mode, body, direct, role="main": mid
+        r.send = lambda kind, body, direct, role="main": mid
         r.pair_thread = lambda role="main": "tPAIR"
         r.joined = lambda thread, role="main": (True, "joined")
         r.busy_case("busy-invite/1:1")
@@ -858,7 +1114,7 @@ class CaseSpacing(unittest.TestCase):
     def recipient(self, agent):
         r = object.__new__(W.Recipient)
         run = SimpleNamespace(run_id="000000-test", record=self.rows.append, stopping=threading.Event())
-        r.run, r.name, r.harness, r.wake_on, r.pane, r.seat = run, "co-all", "codex", "all", "w9:p1", "sREC"
+        r.run, r.name, r.harness, r.threshold, r.pane, r.seat = run, "co-t-1", "codex", -1, "w9:p1", "sREC"
         r.last_wake, r.group, r.pair = 0.0, "tGROUP", None
         r.status = agent.status
         r.on_screen = lambda mid, tries=15: agent.visible(mid)
@@ -866,9 +1122,9 @@ class CaseSpacing(unittest.TestCase):
         r.pair_thread = lambda role="main": "tPAIR"
         r.prompt = lambda text, expect=None: self.fail(f"unexpected prompt {text!r}")
 
-        def send(mode, body, direct, role="main"):
-            mid = f"m{len(self.rows)}{mode}"
-            if body.startswith("pair-open"):  # invitation wakes; the lazy opener rides the accept turn or a later wake
+        def send(kind, body, direct, role="main"):
+            mid = f"m{len(self.rows)}{kind}"
+            if body.startswith("pair-open"):  # the opener wakes; its body rides that turn or a later wake
                 agent.wake(show=mid if agent.in_accept else None)
                 if not agent.in_accept:
                     agent.wake(show=mid)
@@ -881,21 +1137,21 @@ class CaseSpacing(unittest.TestCase):
     def run_pair_then_lazy(self, opener_in_accept_turn):
         agent = FakeAgent(guard=5.0, opener_in_accept_turn=opener_in_accept_turn)
         r = self.recipient(agent)
-        r.case("invite/1:1")
-        r.case("send-lazy/group")
+        r.case("pair-open/1:1")
+        r.case("send-p1/group")
         return {row["case"]: row for row in self.rows}
 
     def test_the_owed_follow_up_wake_fails_its_own_case_and_not_the_next(self):
         rows = self.run_pair_then_lazy(opener_in_accept_turn=False)
-        self.assertEqual(rows["send-lazy/group"]["result"], "PASS", rows["send-lazy/group"])
-        self.assertEqual(rows["invite/1:1"]["result"], "FAIL")
-        self.assertIsNotNone(rows["invite/1:1"]["checks"].get("trailing_wake_s"))
-        self.assertFalse(rows["invite/1:1"]["checks"]["opening_message_delivered"])
+        self.assertEqual(rows["send-p1/group"]["result"], "PASS", rows["send-p1/group"])
+        self.assertEqual(rows["pair-open/1:1"]["result"], "FAIL")
+        self.assertIsNotNone(rows["pair-open/1:1"]["checks"].get("trailing_wake_s"))
+        self.assertFalse(rows["pair-open/1:1"]["checks"]["opening_message_delivered"])
 
     def test_opener_in_the_accept_turn_passes_both(self):
         rows = self.run_pair_then_lazy(opener_in_accept_turn=True)
-        self.assertEqual([rows[c]["result"] for c in ("invite/1:1", "send-lazy/group")], ["PASS", "PASS"], rows)
-        self.assertIsNone(rows["invite/1:1"]["checks"].get("trailing_wake_s"))
+        self.assertEqual([rows[c]["result"] for c in ("pair-open/1:1", "send-p1/group")], ["PASS", "PASS"], rows)
+        self.assertIsNone(rows["pair-open/1:1"]["checks"].get("trailing_wake_s"))
 
 
 class RunRoot(TempDir):
@@ -931,7 +1187,7 @@ FIXTURES = Path(__file__).resolve().parent / "wake_e2e_fixtures"
 FAKE_API_KEY = "sk-ant-api03-FAKEFAKEFAKEFAKE-selftest-only-0123456789"
 # launch_line() of the macOS mode as the driver produced it before the linux mode existed (dc575a28), same inputs;
 # the Codex line adds shell_snapshot=false (ht-l16).
-MACOS_CLAUDE_LINE = ('unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; PATH=/private/tmp/ht-wake-e2e.X/bin:"$PATH" '
+MACOS_CLAUDE_LINE = ('unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_PID; PATH=/private/tmp/ht-wake-e2e.X/bin:"$PATH" '
                      'CLAUDE_CONFIG_DIR=/Users/me/.claude-real CLAUDE_CODE_PLUGIN_DIRS=/private/tmp/ht-wake-e2e.X/state/'
                      'claude-mod/herdr-threads HERDR_AGENT=claude command claude --setting-sources project,local '
                      '--settings /private/tmp/ht-wake-e2e.X/claude-config/settings.json --permission-mode auto')
@@ -1264,6 +1520,14 @@ class StartupScreens(unittest.TestCase):
     def screen(self, name):
         return (FIXTURES / name).read_text()
 
+    def test_claude_between_turn_notice_is_dismissed_not_refused(self):
+        # Claude Code 2.1.301 raises it over the composer after a turn (captured in the v1.0.1 run): the driver
+        # cancels it while waiting for a settled recipient; it is not a startup dialog and no composer matches it
+        notice = self.screen("claude-auto-mode-notice.txt")
+        self.assertTrue(W.HARNESS_NOTICE.search(notice))
+        for name in ("claude-composer-api-key.txt", "claude-composer-oauth-token.txt", "codex-composer-bypass.txt"):
+            self.assertFalse(W.HARNESS_NOTICE.search(self.screen(name)), name)
+
     def test_claude_first_run_screens_are_refused(self):
         # the theme picker and the login screen report `idle`: only the screen text can stop the driver
         for name, status, why in (("claude-theme-picker.txt", "idle", "startup dialog"),
@@ -1313,7 +1577,7 @@ class StartupScreens(unittest.TestCase):
         run = SimpleNamespace(herdr=herdr, launch_line=lambda h: "launch", args=SimpleNamespace(harness_mode="macos"),
                               coord_seats=lambda: "s")
         with self.assertRaises(Prompted):
-            W.Recipient(run, "cl-nudge", "claude", "nudge", "w1:p2", "sAAAAAAAA").start()
+            W.Recipient(run, "cl-nudge", "claude", 0, "w1:p2", "sAAAAAAAA").start()
         self.assertEqual(W.DIALOG.pattern, r"Trust this folder\?|trust (the files in )?this folder|Do you trust|"
                          r"Allow .* to run|Do you want to proceed\?|Would you like to run")  # dc575a28's pattern
 
@@ -1341,7 +1605,7 @@ class StartupScreens(unittest.TestCase):
             return {}
         run = SimpleNamespace(herdr=herdr, launch_line=lambda h: "launch", args=SimpleNamespace(harness_mode="macos"),
                               coord_seats=lambda: "s", secrets=W.secret_values({"CLAUDE_CODE_OAUTH_TOKEN": secret}))
-        r = W.Recipient(run, "cl-nudge", "claude", "nudge", "w1:p2", "sAAAAAAAA")
+        r = W.Recipient(run, "cl-nudge", "claude", 0, "w1:p2", "sAAAAAAAA")
         with self.assertRaises(Prompted):
             r.start()
         self.assertNotIn("Not logged in", r.observed_tail())
@@ -1365,7 +1629,7 @@ class StartupScreens(unittest.TestCase):
             return {}
         run = SimpleNamespace(herdr=herdr, launch_line=lambda h: "launch", args=SimpleNamespace(harness_mode="linux"),
                               coord_seats=lambda: "s")
-        rec = W.Recipient(run, "cl-nudge", "claude", "nudge", "w1:p2", "sAAAAAAAA")
+        rec = W.Recipient(run, "cl-nudge", "claude", 0, "w1:p2", "sAAAAAAAA")
         with self.assertRaisesRegex(RuntimeError, "startup dialog"):
             rec.start()
         self.assertEqual([a[:2] for a in typed], [("pane", "run")])
@@ -1404,7 +1668,7 @@ class Redaction(TempDir):
         import contextlib
         import io
         with contextlib.redirect_stdout(io.StringIO()):
-            r.record({"case": "invite/group", "recipient": "cl-nudge", "wake_on": "nudge", "result": "FAIL",
+            r.record({"case": "invite/group", "recipient": "cl-nudge", "threshold": 0, "result": "FAIL",
                       "checks": {"error": "startup: ... ANTHROPIC_API_KEY: sk-ant-...0123456789abcdefghij"}})
         self.assertNotIn("0123456789abcdefghij", json.dumps(r.results))
 
@@ -1450,7 +1714,7 @@ class RedactBeforeCrop(TempDir):
         self.assertEqual(leaked_windows(json.dumps([x["stdout"] + x["stderr"] for x in rows])), [])
 
     def failing_recipient(self, r, where):
-        rec = W.Recipient(r, "cl-nudge", "claude", "nudge", "w1:p2", "sAAAAAAAA")
+        rec = W.Recipient(r, "cl-nudge", "claude", 0, "w1:p2", "sAAAAAAAA")
         r.herdr = lambda *a, **k: {"raw": ""}
 
         def boom(*a, **k):
@@ -1478,7 +1742,7 @@ class RedactBeforeCrop(TempDir):
         r = self.run_obj()
         screen = BOUNDARY_KEY[-20:] + "\n" + "y" * 385
         r.herdr = lambda *a, **k: {"raw": screen}
-        tail = W.Recipient(r, "cl-nudge", "claude", "nudge", "w1:p2", "sAAAAAAAA").tail()
+        tail = W.Recipient(r, "cl-nudge", "claude", 0, "w1:p2", "sAAAAAAAA").tail()
         self.assertTrue(len(tail) <= 400 and tail.endswith("y" * 300))
         self.assertEqual(leaked_windows(tail), [])
 
@@ -1572,8 +1836,8 @@ class CodexStartOrder(unittest.TestCase):
             return {}
         run = SimpleNamespace(herdr=herdr, launch_line=lambda h: "launch", args=SimpleNamespace(harness_mode=mode),
                               coord_seats=lambda: "s", codex_start=threading.Lock())
-        recipients = [W.Recipient(run, n, "codex", n[3:], pane, "sAAAAAAAA")
-                      for n, pane in (("co-nudge", "w1:p2"), ("co-all", "w1:p3"))]
+        recipients = [W.Recipient(run, n, "codex", int(n[4:]), pane, "sAAAAAAAA")
+                      for n, pane in (("co-t0", "w1:p2"), ("co-t-1", "w1:p3"))]
         errors = []
 
         def start(r):
@@ -1651,7 +1915,7 @@ class PythonFloorAndCaptureEdge(TempDir):
 
 
 def row(recipient, case, result="PASS"):
-    return {"recipient": recipient, "case": case, "result": result, "wake_on": "nudge", "harness": "claude"}
+    return {"recipient": recipient, "case": case, "result": result, "threshold": 0, "harness": "claude"}
 
 
 class Completeness(TempDir):
@@ -1659,13 +1923,13 @@ class Completeness(TempDir):
         return SimpleNamespace(results=rows, recipients=[SimpleNamespace(name=n) for n in recipients])
 
     def test_complete_all_pass(self):
-        run = self.run_with([row("cl-nudge", "invite/group"), row("cl-nudge", "send-lazy/group")])
-        self.assertTrue(W.summary(run, ["invite/group", "send-lazy/group"]))
+        run = self.run_with([row("cl-nudge", "invite/group"), row("cl-nudge", "send-p1/group")])
+        self.assertTrue(W.summary(run, ["invite/group", "send-p1/group"]))
 
     def test_missing_row_fails(self):
         run = self.run_with([row("cl-nudge", "invite/group")])
-        self.assertFalse(W.summary(run, ["invite/group", "send-lazy/group"]))
-        self.assertEqual(run.completeness["missing"], [("cl-nudge", "send-lazy/group")])
+        self.assertFalse(W.summary(run, ["invite/group", "send-p1/group"]))
+        self.assertEqual(run.completeness["missing"], [("cl-nudge", "send-p1/group")])
 
     def test_missing_recipient_fails(self):
         run = self.run_with([row("cl-nudge", "invite/group")], recipients=("cl-nudge", "co-nudge"))
@@ -1676,8 +1940,8 @@ class Completeness(TempDir):
         self.assertFalse(W.summary(run, ["invite/group"]))
 
     def test_blocked_fails(self):
-        run = self.run_with([row("cl-nudge", "busy-nudge/group", "BLOCKED")])
-        self.assertFalse(W.summary(run, ["busy-nudge/group"]))
+        run = self.run_with([row("cl-nudge", "busy-send-p0/group", "BLOCKED")])
+        self.assertFalse(W.summary(run, ["busy-send-p0/group"]))
 
     def test_no_rows_fails(self):
         self.assertFalse(W.summary(self.run_with([], recipients=()), ["invite/group"]))
@@ -1772,6 +2036,17 @@ class MainExitCode(TempDir):
         self.assertIn("herdr gone", doc["cleanup"]["problems"][0])
 
 
+class MixedOrderJudged(unittest.TestCase):
+    def test_order_is_judged_only_where_p5_and_p1_stay_silent(self):
+        self.assertTrue(W.mixed_order_judged(0, "codex"))
+        self.assertFalse(W.mixed_order_judged(-1, "codex"))  # p5 wakes the recipient before p0 and the ACK exist
+        self.assertFalse(W.mixed_order_judged(3, "codex"))  # p1 wakes it too
+
+    def test_a_channel_harness_is_never_judged(self):
+        for threshold in W.THRESHOLDS:
+            self.assertFalse(W.mixed_order_judged(threshold, "claude"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1786,6 +2061,50 @@ class SideCases(unittest.TestCase):
         self.assertEqual(W.expected_rows(run, ["send-nudge/group", "side-nudge/group"]),
                          {("cl-nudge", "send-nudge/group"), ("co-nudge", "send-nudge/group"),
                           ("co-nudge", "side-nudge/group"), ("co-plain", "side-nudge/group")})
+
+    def test_side_nudge_wakes_main_after_a_sibling_displayed_the_p0(self):
+        """ht-yha.62: once the side binding displayed the sibling p0, main must still be woken and shown it."""
+        first = {"delivered": True}
+        self.assertTrue(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=True, sibling_wake_s=31.2, sibling_delivered=True)))
+        self.assertFalse(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=True, sibling_wake_s=None, sibling_delivered=True)))
+        self.assertFalse(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=True, sibling_wake_s=31.2, sibling_delivered=False)))
+
+    def test_side_nudge_counts_a_wake_that_landed_before_the_watch(self):
+        first = {"delivered": True}
+        self.assertTrue(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=True, sibling_wake_s=None, sibling_woke_before_watch=True,
+            sibling_delivered=True)))
+        self.assertFalse(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=True, sibling_wake_s=None, sibling_woke_before_watch=False,
+            sibling_delivered=True)))
+
+    def test_received_in_wake_turn(self):
+        # captured from co-plain (2026-10-15): the main session's wake turn printed the sibling p0
+        woke = ("› herdr-threads: attention pending; run herdr-threads inbox\n\n• I'll read the inbox.\n"
+                "• Ran /b/herdr-threads inbox\n  └ message mS1 tT#5 from sX [p0]: x\n\n"
+                "• RECEIVED [herdr-threads] message mS1 in tT from sX [p0] [human]: x sibling\n")
+        self.assertTrue(W.received_in_wake_turn(woke, "mS1"))
+        side = ("› Side task: run /b/herdr-threads inbox and print SIBLING-SIDE-DONE\n"
+                "• RECEIVED [herdr-threads] message mS1 in tT from sX [p0]: x sibling\n")
+        self.assertFalse(W.received_in_wake_turn(side, "mS1"))  # the side turn's display is not a wake
+        hello = woke.replace("herdr-threads: attention pending; run herdr-threads inbox", "Run /b/herdr-threads inbox once")
+        self.assertFalse(W.received_in_wake_turn(hello, "mS1"))  # delivered only after the driver's follow-up
+        self.assertFalse(W.received_in_wake_turn(woke, "mOTHER"))
+        self.assertTrue(W.received_in_wake_turn("❯ herdr-threads: wake up\n⏺ RECEIVED [herdr-threads] message mS1 x\n", "mS1"))
+
+    def test_side_nudge_sibling_phase_is_inconclusive_when_the_side_never_displayed_it(self):
+        first = {"delivered": True}
+        self.assertTrue(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=False, sibling_wake_s=None, sibling_delivered=False)))
+        self.assertTrue(W.side_nudge_passed(True, True, dict(
+            first, sibling_displayed=False, sibling_wake_s=2.0, sibling_delivered=True)))
+        self.assertFalse(W.side_nudge_passed(True, False, dict(
+            first, sibling_displayed=False, sibling_wake_s=2.0, sibling_delivered=True)),
+            "the first phase still decides")
+        self.assertFalse(W.side_nudge_passed(False, True, dict(first, sibling_displayed=False)))
 
     def test_plain_codex_launch_turns_its_hooks_off_and_only_then(self):
         run = W.Run.__new__(W.Run)

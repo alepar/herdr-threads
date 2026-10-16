@@ -55,6 +55,7 @@ fn setup(iso: &TestIsolation) -> (StoreContext, Connection) {
 
 fn send_request() -> SendMessage {
     SendMessage {
+        priority: None,
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Lazy,
         thread: ThreadId::new("t"),
         body: "hello".into(),
@@ -194,20 +195,8 @@ fn lazy_publication_creates_no_receipt_warning_or_attention() {
             .unwrap(),
         0
     );
-    use herdr_threads::store::lazy_delivery;
     let seat = SeatId::new("b");
-    let pending = lazy_delivery::pending_page(
-        &conn,
-        "34750f98bd59fcfc946da45aaabe933b",
-        &seat,
-        None,
-        0,
-        lazy_delivery::capture_high_water(&conn, "34750f98bd59fcfc946da45aaabe933b", &seat, None)
-            .unwrap(),
-        16,
-    )
-    .unwrap();
-    assert!(pending.recipients.is_empty());
+    assert!(seat_pending(&conn, &seat).is_empty());
     let first = messages::publish_send(
         &context,
         &mut conn,
@@ -227,18 +216,7 @@ fn lazy_publication_creates_no_receipt_warning_or_attention() {
     )
     .unwrap();
     assert_eq!(first, replay);
-    let pending = lazy_delivery::pending_page(
-        &conn,
-        "34750f98bd59fcfc946da45aaabe933b",
-        &seat,
-        None,
-        0,
-        lazy_delivery::capture_high_water(&conn, "34750f98bd59fcfc946da45aaabe933b", &seat, None)
-            .unwrap(),
-        16,
-    )
-    .unwrap();
-    assert_eq!(pending.recipients.len(), 1);
+    assert_eq!(seat_pending(&conn, &seat).len(), 1);
     let attention = herdr_threads::store::attention::wake_seat_attention(&conn, "b")
         .unwrap()
         .attention;
@@ -300,7 +278,7 @@ fn lazy_publication_notes_attention_only_for_wake_on_all_recipients() {
     for seat in ["b", "c"] {
         member(&conn, seat, "unresolved", "joined");
     }
-    conn.execute("UPDATE seats SET wake_on='all' WHERE id='b'", [])
+    conn.execute("UPDATE seats SET nudge_threshold=-1 WHERE id='b'", [])
         .unwrap();
     let request = send_request();
     ready(&context, &mut conn, &request);
@@ -492,6 +470,8 @@ fn ordinary_publication_positive_control() {
     member(&conn, "b", "unresolved", "joined");
     let mut request = send_request();
     request.delivery_mode = herdr_threads::protocol::commands::DeliveryMode::Ordinary;
+    // Only an explicit ACK recipient owes a receipt (D9).
+    request.invited_recipients = vec![SeatId::new("b")];
     assert!(
         messages::send_payload(&request)
             .get("delivery_mode")
@@ -588,4 +568,34 @@ fn lazy_cleanup_cannot_delete_published_children() {
             .contains("unpublished discarded")
     );
     assert_eq!(recipients(&conn), ["b"]);
+}
+
+/// Every message the seat-level delivery-row seek returns within the current publication bound.
+fn seat_pending(conn: &Connection, seat: &SeatId) -> Vec<MessageId> {
+    use herdr_threads::store::lazy_delivery::{RowFilter, seek_pending};
+    let dh: i64 = conn
+        .query_row(
+            "SELECT decision_seq FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let (mut after, mut out) = (None, Vec::new());
+    loop {
+        let seek = seek_pending(
+            conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            seat,
+            RowFilter::Seat,
+            after,
+            dh as u64,
+            100,
+        )
+        .unwrap();
+        out.extend(seek.row.map(|(_, recipient)| recipient.message));
+        after = seek.position;
+        if seek.exhausted {
+            return out;
+        }
+    }
 }

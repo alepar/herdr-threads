@@ -46,13 +46,15 @@ pub trait ReservationCheck: Send + Sync {
         reservation: &WakeReservation,
         budget: &CallBudget,
     ) -> Result<bool, ApiError>;
-    /// Whether the wake still owes the binding the prompt reaches (`None`: the seat-level
-    /// binding): a binding served the reserved items in its turn is never woken for them
-    /// (ht-705). Checked after `is_current`, so an offer recorded after reservation counts.
+    /// Whether the wake is still owed to the process the prompt reaches (`reached`: the
+    /// composer's bindings, or `[None]` for the seat-level binding): receipts and invitations a
+    /// reached binding was served in its turn are owed no wake (ht-705), and the delivery-row
+    /// frontier is owed while any reached binding still has it unread (ht-yha.62). Checked after
+    /// `is_current`, so an offer or display recorded after reservation counts.
     fn owes_wake(
         &self,
         _reservation: &WakeReservation,
-        _binding: Option<&crate::protocol::ids::BindingId>,
+        _reached: &[Option<&crate::protocol::ids::BindingId>],
         _budget: &CallBudget,
     ) -> Result<bool, ApiError> {
         Ok(true)
@@ -393,9 +395,10 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             Err(err) => return refuse_error(err),
         }
         // A wake (not a scheduled poke) reaches one binding, or one process; one served in its
-        // turn owes no idle wake (delivery contract rule 4), and any binding of the process
-        // served means the process was shown the items. Nothing is sent; an unserved sibling
-        // keeps the seat's wake reserved for the next attempt.
+        // turn owes no idle wake (delivery contract rule 4). Any binding of the process served a
+        // receipt or invitation means the process was shown it; a delivery row stays owed while
+        // any reached binding still has it unread. Nothing is sent on a refusal; an unserved
+        // sibling keeps the seat's wake reserved for the next attempt.
         if !poke_only {
             let reached: Vec<Option<&crate::protocol::ids::BindingId>> =
                 if composer_bindings.is_empty() {
@@ -403,14 +406,15 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 } else {
                     composer_bindings.iter().map(Some).collect()
                 };
-            for binding in reached {
-                match self.check.owes_wake(&reservation, binding, &context.budget) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable);
-                    }
-                    Err(err) => return refuse_error(err),
+            match self
+                .check
+                .owes_wake(&reservation, &reached, &context.budget)
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    return refuse(RefusalCause::Unavailable, WakeOutcome::Unavailable);
                 }
+                Err(err) => return refuse_error(err),
             }
         }
         if context.budget.is_exhausted(self.clock) {

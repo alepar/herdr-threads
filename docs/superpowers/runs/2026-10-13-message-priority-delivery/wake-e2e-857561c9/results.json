@@ -1,0 +1,2109 @@
+{
+  "facts": {
+    "run_id": "192236-252d",
+    "sha": "857561c9825ca751f5e69652ce980cf916c5f323",
+    "dirty": false,
+    "versions": {
+      "herdr": "herdr 0.9.1",
+      "herdr-threads": "herdr-threads 1.0.0",
+      "claude": "2.1.300 (Claude Code)",
+      "codex": "codex-cli 0.162.1"
+    },
+    "harness_mode": "macos",
+    "codex_args": "--approve-for-me",
+    "bin": "/Users/alepar/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery/bin/herdr-threads",
+    "bin_sha256": "332d9749c189b22a4a800fb688a59f8556b62e0b38833d49d46a9fdbc7065d6c",
+    "root": "/private/tmp/ht-wake-e2e.bdlxz4eq",
+    "started_utc": "2026-10-15T02:22:36Z",
+    "finished_utc": "2026-10-15T02:45:09Z",
+    "exit_code": 1,
+    "codex_auth_refreshed_in_run": true
+  },
+  "completeness": {
+    "expected": 114,
+    "collected": 114,
+    "missing": [],
+    "extra": []
+  },
+  "cleanup": {
+    "steps": [
+      {
+        "workspace_close_rc": 0
+      },
+      {
+        "daemon_stop_rc": 0
+      },
+      {
+        "codex_auth_copy": "kept (refreshed): /private/tmp/ht-wake-e2e.bdlxz4eq/codex-home/auth.json"
+      }
+    ],
+    "problems": []
+  },
+  "results": [
+    {
+      "case": "invite/group",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.29,
+      "hello_sent": false,
+      "checks": {
+        "joined": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "thread": "tiVdhWhPH"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:24:06Z"
+    },
+    {
+      "case": "invite/group",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.34,
+      "hello_sent": false,
+      "checks": {
+        "joined": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "thread": "twVNpb2OA"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:24:06Z"
+    },
+    {
+      "case": "invite/group",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.28,
+      "hello_sent": false,
+      "checks": {
+        "joined": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "thread": "ta4OeqZAM"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:24:08Z"
+    },
+    {
+      "case": "invite/group",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.58,
+      "hello_sent": false,
+      "checks": {
+        "joined": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "thread": "tpsuAQi40"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:24:37Z"
+    },
+    {
+      "case": "pair-open/1:1",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.29,
+      "hello_sent": false,
+      "checks": {
+        "joined": true,
+        "opening_message_delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mFXe1JaAF"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:24:45Z"
+    },
+    {
+      "case": "pair-open/1:1",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.28,
+      "hello_sent": false,
+      "checks": {
+        "joined": true,
+        "opening_message_delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mZsownnKh"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:24:48Z"
+    },
+    {
+      "case": "pair-open/1:1",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": true,
+      "checks": {
+        "joined": true,
+        "late_wake_s": null,
+        "opening_message_delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mD3Yymgsm"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:24:52Z"
+    },
+    {
+      "case": "pair-open/1:1",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.84,
+      "hello_sent": false,
+      "checks": {
+        "joined": true,
+        "opening_message_delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mZVjhGSfk"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:25:17Z"
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "m0hCVBzB5"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:25:25Z"
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mzm9SeEVn"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:25:29Z"
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": true,
+      "checks": {
+        "late_wake_s": null,
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mC6EYrfGb"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:25:38Z"
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.53,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mRtEwr4Zj"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:25:58Z"
+    },
+    {
+      "case": "send-p0/group",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.54,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "ml1j2TbGn"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:26:04Z"
+    },
+    {
+      "case": "send-p0/group",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mVvURaI4F"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:26:09Z"
+    },
+    {
+      "case": "send-p0/group",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.53,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mScOCuGTp"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:26:18Z"
+    },
+    {
+      "case": "send-p0/group",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.53,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "ml4oRMDaf"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:26:39Z"
+    },
+    {
+      "case": "send-p3/group",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mFE5ckUGv"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:26:43Z"
+    },
+    {
+      "case": "send-p3/group",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "m5Y9Q1Byo"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:26:49Z"
+    },
+    {
+      "case": "send-p3/group",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": true,
+      "checks": {
+        "late_wake_s": null,
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mkmgFdm3k"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:27:04Z"
+    },
+    {
+      "case": "invite/group",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "pair-open/1:1",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "send-p0/group",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "send-p3/group",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "send-ack/group",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "send-p1/1:1",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "send-p0/1:1",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "send-p3/1:1",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "send-ack/1:1",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "mixed-order/group",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "busy-invite/group",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "busy-invite/1:1",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "busy-send-p1/group",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "busy-send-p0/group",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "busy-send-ack/group",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "busy-send-p1/1:1",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "busy-send-p0/1:1",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "busy-send-ack/1:1",
+      "harness": "codex",
+      "threshold": -1,
+      "recipient": "co-t-1",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t-1: agent did not report nudge-threshold -1: ed: installed herdr-threads does not recognize nudge-threshold. | Worked for 6s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads wake test | ? for shortcuts                                                                                           "
+      }
+    },
+    {
+      "case": "send-p3/group",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.56,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mQLCvJSlR"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:27:21Z"
+    },
+    {
+      "case": "send-ack/group",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.26,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "ack": "acknowledged",
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mH9TkWkUZ"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:27:23Z"
+    },
+    {
+      "case": "send-ack/group",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "ack": "acknowledged",
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mcBqDh4Yx"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:27:30Z"
+    },
+    {
+      "case": "invite/group",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "pair-open/1:1",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "send-p0/group",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "send-p3/group",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "send-ack/group",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "send-p1/1:1",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "send-p0/1:1",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "send-p3/1:1",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "send-ack/1:1",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "mixed-order/group",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "busy-invite/group",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "busy-invite/1:1",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "busy-send-p1/group",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "busy-send-p0/group",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "busy-send-ack/group",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "busy-send-p1/1:1",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "busy-send-p0/1:1",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "busy-send-ack/1:1",
+      "harness": "codex",
+      "threshold": 0,
+      "recipient": "co-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "startup: co-t0: agent did not report nudge-threshold 0: dge-threshold is an unrecognized subcommand; no value was reported. | Worked for 5s \u2022 19:25 | \u203a Ask Codex to do anything | GPT-6.1-Sol default \u00b7 ~/AleCode/herdr-threads/.worktrees/super-auto/message-priority-delivery \u00b7 Run herdr-threads setup | ? for shortcuts                                                                                             "
+      }
+    },
+    {
+      "case": "send-ack/group",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.28,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "ack": "acknowledged",
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mp6Ozja3V"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:27:44Z"
+    },
+    {
+      "case": "send-p1/1:1",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.29,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mOFlPSNPL"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:28:02Z"
+    },
+    {
+      "case": "send-ack/group",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.54,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "ack": "acknowledged",
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mY9NZ8iqy"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:28:05Z"
+    },
+    {
+      "case": "send-p1/1:1",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mahdf9dOS"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:28:10Z"
+    },
+    {
+      "case": "send-p1/1:1",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": true,
+      "checks": {
+        "late_wake_s": null,
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mctt54xr5"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:28:30Z"
+    },
+    {
+      "case": "send-p0/1:1",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mbM9DDxng"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:28:42Z"
+    },
+    {
+      "case": "send-p1/1:1",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.53,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mTtAlN8b3"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:28:46Z"
+    },
+    {
+      "case": "send-p0/1:1",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mzJPf8s3W"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:28:51Z"
+    },
+    {
+      "case": "send-p0/1:1",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.29,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mc7udf2ss"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:29:09Z"
+    },
+    {
+      "case": "send-p3/1:1",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.26,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mKS47mf0V"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:29:21Z"
+    },
+    {
+      "case": "send-p0/1:1",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.53,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mHStrcaUy"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:29:26Z"
+    },
+    {
+      "case": "send-p3/1:1",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mR3vPzL5t"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:29:32Z"
+    },
+    {
+      "case": "send-p3/1:1",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": true,
+      "checks": {
+        "late_wake_s": null,
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mdNcX4RhE"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:29:56Z"
+    },
+    {
+      "case": "send-ack/1:1",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.31,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "ack": "acknowledged",
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mcJo12g5L"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:30:01Z"
+    },
+    {
+      "case": "send-p3/1:1",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.65,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mZDD83Rz6"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:30:07Z"
+    },
+    {
+      "case": "send-ack/1:1",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "ack": "acknowledged",
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mdyptQG4z"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:30:12Z"
+    },
+    {
+      "case": "send-ack/1:1",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "ack": "acknowledged",
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mzylPw0ot"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:30:35Z"
+    },
+    {
+      "case": "mixed-order/group",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "order": "unjudged",
+        "order_judged": false,
+        "order_shown": [
+          "mJzW6lc3i",
+          "m4w2OR6hN",
+          "mfkOMsXvF",
+          "mcGwLg3ej"
+        ],
+        "order_expected": [
+          "mfkOMsXvF",
+          "mcGwLg3ej",
+          "m4w2OR6hN",
+          "mJzW6lc3i"
+        ],
+        "markers": false,
+        "markers_reason": "mixed-order/group: no expected [herdr-threads] header on screen",
+        "ack": "acknowledged",
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "p5": "mJzW6lc3i",
+        "p1": "m4w2OR6hN",
+        "p0": "mcGwLg3ej",
+        "ack": "mfkOMsXvF"
+      },
+      "result": "FAIL",
+      "utc": "2026-10-15T02:30:42Z"
+    },
+    {
+      "case": "send-ack/1:1",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.53,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "ack": "acknowledged",
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mDQzCoraZ"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:30:52Z"
+    },
+    {
+      "case": "mixed-order/group",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.01,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "order": "unjudged",
+        "order_judged": false,
+        "order_shown": [
+          "mgKnOeGRY",
+          "m7dl2tWWt",
+          "mued1k0q3",
+          "m77jxw8Wq"
+        ],
+        "order_expected": [
+          "m7dl2tWWt",
+          "mued1k0q3",
+          "m77jxw8Wq",
+          "mgKnOeGRY"
+        ],
+        "markers": false,
+        "markers_reason": "mixed-order/group: no expected [herdr-threads] header on screen",
+        "ack": "acknowledged",
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "p5": "mgKnOeGRY",
+        "p1": "m77jxw8Wq",
+        "p0": "mued1k0q3",
+        "ack": "m7dl2tWWt"
+      },
+      "result": "FAIL",
+      "utc": "2026-10-15T02:30:55Z"
+    },
+    {
+      "case": "mixed-order/group",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.27,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "order": false,
+        "order_judged": true,
+        "order_shown": [
+          "mppk0Gx0y",
+          "mSpwy82zg",
+          "mZbNX72YG",
+          "msrRZLNm3"
+        ],
+        "order_expected": [
+          "msrRZLNm3",
+          "mZbNX72YG",
+          "mSpwy82zg",
+          "mppk0Gx0y"
+        ],
+        "markers": false,
+        "markers_reason": "mixed-order/group: no expected [herdr-threads] header on screen",
+        "ack": "acknowledged",
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "p5": "mppk0Gx0y",
+        "p1": "mSpwy82zg",
+        "p0": "mZbNX72YG",
+        "ack": "msrRZLNm3"
+      },
+      "result": "FAIL",
+      "utc": "2026-10-15T02:31:17Z"
+    },
+    {
+      "case": "mixed-order/group",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.54,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "order": "unjudged",
+        "order_judged": false,
+        "order_shown": [
+          "mWi40DF7r",
+          "mU6padIVq",
+          "myay5s3DJ",
+          "mhGGWzSDX"
+        ],
+        "order_expected": [
+          "mWi40DF7r",
+          "mU6padIVq",
+          "myay5s3DJ",
+          "mhGGWzSDX"
+        ],
+        "markers": false,
+        "markers_reason": "mixed-order/group: no expected [herdr-threads] header on screen",
+        "ack": "acknowledged",
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "p5": "mhGGWzSDX",
+        "p1": "myay5s3DJ",
+        "p0": "mU6padIVq",
+        "ack": "mWi40DF7r"
+      },
+      "result": "FAIL",
+      "utc": "2026-10-15T02:31:37Z"
+    },
+    {
+      "case": "busy-invite/group",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true
+      },
+      "ref": {
+        "thread": "tFz8oy6EN"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:31:46Z"
+    },
+    {
+      "case": "busy-invite/group",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true
+      },
+      "ref": {
+        "thread": "tem5mJQHg"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:32:01Z"
+    },
+    {
+      "case": "busy-invite/group",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true
+      },
+      "ref": {
+        "thread": "txTnQy5r3"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:32:20Z"
+    },
+    {
+      "case": "busy-invite/group",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true
+      },
+      "ref": {
+        "thread": "trXyGFbog"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:32:47Z"
+    },
+    {
+      "case": "busy-invite/1:1",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true,
+        "opening_message_delivered_in_turn": true
+      },
+      "ref": {
+        "message": "m1uZoWI5X",
+        "thread": "tarr6QS6J"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:33:24Z"
+    },
+    {
+      "case": "busy-invite/1:1",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true,
+        "opening_message_delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mU2yRfIFH",
+        "thread": "tNCrAElnS"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:33:41Z"
+    },
+    {
+      "case": "busy-invite/1:1",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true,
+        "opening_message_delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mUH1llW6o",
+        "thread": "tGITtR3jM"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:33:58Z"
+    },
+    {
+      "case": "busy-invite/1:1",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "joined": true,
+        "opening_message_delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mrERWc3G6",
+        "thread": "tmCR3QbrO"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:34:34Z"
+    },
+    {
+      "case": "busy-send-p1/group",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mhCJXX9pF"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:35:01Z"
+    },
+    {
+      "case": "busy-send-p1/group",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mdVvfctRr"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:35:20Z"
+    },
+    {
+      "case": "busy-send-p1/group",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mRAEtzXEU"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:35:35Z"
+    },
+    {
+      "case": "busy-send-p1/group",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "moIz9BTEb"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:36:18Z"
+    },
+    {
+      "case": "busy-send-p0/group",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mBQGnd3BO"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:36:39Z"
+    },
+    {
+      "case": "busy-send-p0/group",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mi11TfmyF"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:37:02Z"
+    },
+    {
+      "case": "busy-send-p0/group",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mFOUdFTFz"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:37:12Z"
+    },
+    {
+      "case": "busy-send-p0/group",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mUdrawckJ"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:38:02Z"
+    },
+    {
+      "case": "busy-send-ack/group",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "ack": "acknowledged"
+      },
+      "ref": {
+        "message": "md2o7yRQV"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:38:16Z"
+    },
+    {
+      "case": "busy-send-ack/group",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "ack": "acknowledged"
+      },
+      "ref": {
+        "message": "m7587fTtU"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:38:42Z"
+    },
+    {
+      "case": "busy-send-ack/group",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "ack": "acknowledged"
+      },
+      "ref": {
+        "message": "mnoJ3Yocf"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:38:49Z"
+    },
+    {
+      "case": "busy-send-ack/group",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "ack": "acknowledged"
+      },
+      "ref": {
+        "message": "m2tR463mG"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:39:48Z"
+    },
+    {
+      "case": "busy-send-p1/1:1",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "m4t3P48lp"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:39:53Z"
+    },
+    {
+      "case": "busy-send-p1/1:1",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mLK2OhANY"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:40:22Z"
+    },
+    {
+      "case": "busy-send-p1/1:1",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mNriWXS8X"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:40:27Z"
+    },
+    {
+      "case": "busy-send-p0/1:1",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "m7MmtTMkZ"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:41:29Z"
+    },
+    {
+      "case": "busy-send-p1/1:1",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "m9BegPoPC"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:41:30Z"
+    },
+    {
+      "case": "busy-send-p0/1:1",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mnJ10BL9A"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:42:03Z"
+    },
+    {
+      "case": "busy-send-p0/1:1",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "m77f4quHp"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:42:03Z"
+    },
+    {
+      "case": "busy-send-ack/1:1",
+      "harness": "claude",
+      "threshold": 3,
+      "recipient": "cl-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "ack": "acknowledged"
+      },
+      "ref": {
+        "message": "mCLNjzHhs"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:43:07Z"
+    },
+    {
+      "case": "busy-send-p0/1:1",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true
+      },
+      "ref": {
+        "message": "mDkHDgaMf"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:43:16Z"
+    },
+    {
+      "case": "busy-send-ack/1:1",
+      "harness": "claude",
+      "threshold": 0,
+      "recipient": "cl-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "ack": "acknowledged"
+      },
+      "ref": {
+        "message": "md1wmperm"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:43:42Z"
+    },
+    {
+      "case": "busy-send-ack/1:1",
+      "harness": "claude",
+      "threshold": -1,
+      "recipient": "cl-t-1",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "ack": "acknowledged"
+      },
+      "ref": {
+        "message": "m3bztcGYg"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:43:44Z"
+    },
+    {
+      "case": "busy-send-ack/1:1",
+      "harness": "codex",
+      "threshold": 3,
+      "recipient": "co-t3",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": false,
+      "checks": {
+        "busy_at_send": "working",
+        "self_started_turn_after_s": null,
+        "busy_turn_end_seen": true,
+        "wake_prompts_in_busy_turn": 0,
+        "wake_prompts_after_busy_turn": 0,
+        "delivered_in_turn": true,
+        "ack": "acknowledged"
+      },
+      "ref": {
+        "message": "mlVosulzu"
+      },
+      "result": "PASS",
+      "utc": "2026-10-15T02:45:03Z"
+    }
+  ]
+}

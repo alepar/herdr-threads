@@ -5208,6 +5208,44 @@ fn handoff_policy_parses_independent_deadlines_before_body_effects() {
 }
 
 #[test]
+fn handoff_invitations_always_require_ack_and_the_old_flag_is_gone() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht", "handoff", "--pane", "w1:p2", "--kind", "codex", "--thread", "t1", "--", "go",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    assert_eq!(
+        serde_json::to_value(request).unwrap()["policy"]["invitation_confirmation"],
+        "require_ack"
+    );
+    // ht-yha.61: the removed flag names its replacement instead of a bare clap usage error.
+    let removed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--thread",
+        "t1",
+        "--require-invite-ack",
+        "--",
+        "go",
+    ])
+    .expect_err("--require-invite-ack is refused");
+    assert_eq!(
+        removed.code,
+        crate::protocol::results::ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        removed.detail,
+        "--require-invite-ack was removed: handoff invitations always require acceptance; omit it"
+    );
+}
+
+#[test]
 fn handoff_policy_refuses_unsupported_daemon_before_journal_or_launch() {
     struct Old(Client, Vec<String>);
     impl LocalClient for Old {
@@ -5311,4 +5349,22 @@ fn automatic_presentation_admission_counts_exact_local_root() {
         .is_err()
     );
     assert!(journal.resolve_recovery_ref("local:1").is_err());
+}
+
+// ht-yha.65 (main review M5): a person's handoff keeps the RequireAck policy the parser builds; no dead Lazy
+// request is sent (the daemon ignores it; invitations always confirm).
+#[test]
+fn a_human_handoff_requests_the_confirming_invitation_policy() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht", "human", "handoff", "--pane", "w1:p2", "--kind", "codex", "--thread", "t1", "--",
+        "go",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    assert_eq!(
+        serde_json::to_value(request).unwrap()["policy"]["invitation_confirmation"],
+        "require_ack"
+    );
 }

@@ -36,7 +36,7 @@ const cases = {
   empty: [],
   multiline: [
     msg('m1', { body: 'first\r\nsecond third\n\nfifth after an empty line\rsixth\u000bseventh\u000ceighth\u0085ninth tenth' }),
-    msg('m2', { kind: 'lazy', body: '' }),
+    msg('m2', { body: '' }),
     msg('m3', { body: 'trailing break\n' }),
   ],
   controls: [
@@ -65,10 +65,17 @@ const cases = {
     msg('m7', { author_role: 'human', relays_user: true, user_intent: 'rule', ack_required: true, body: 'all markers, ack required' }),
     msg('m8', { author_role: 'agent', relays_user: false, ack_required: true, body: 'no marker' }),
   ],
+  priority: [
+    msg('m1', { priority: 0 }),
+    msg('m2', { priority: 1 }),
+    msg('m3', { priority: 5 }),
+    msg('m4', { priority: 0, author_role: 'human', relays_user: true, user_intent: 'rule' }),
+    msg('m5'),
+  ],
   // Tagged public ids (<prefix><tag><8>, 12 chars) and a direct-thread id (d<10>, 11 chars) are opaque to the frame.
   'tagged-ids': [
     msg('mQ7aAb12Cd34', { thread: 'tQ7aZz99Yy88', sender: 'sQ7aK3Fq9a2B' }),
-    msg('mQ7aEf56Gh78', { kind: 'lazy', thread: 'dK3Fq9a2B7x', sender: 'sQ7aK3Fq9a2B', senderName: 'bob' }),
+    msg('mQ7aEf56Gh78', { priority: 0, thread: 'dK3Fq9a2B7x', sender: 'sQ7aK3Fq9a2B', senderName: 'bob' }),
   ],
   attention: [
     { kind: 'attention', id: 'attention:4', body: 'You have pending herdr-threads items.' },

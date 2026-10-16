@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
-"""Pre-release wake e2e: does `invite` / `send` wake a real idle Claude Code and Codex agent exactly when it should?
+"""Pre-release wake e2e: does `invite` / `send -p N` wake a real idle Claude Code and Codex agent exactly when it should?
 
   scripts/wake-e2e.py [--bin PATH] [--harness claude,codex] [--cases CASE,...] [--evidence-dir DIR] [--keep]
                       [--harness-mode macos|linux]
 
 The matrix is every combination of
-  action      invite | send lazy | send --nudge | send --require-ack
+  action      invite | send (p1, the default) | send --nudge (p0) | send -p 3 | send --require-ack (p0 + ACK)
+              | the first direct send of a 1:1 pair (pair-open: p1, the pair auto-joins, no invitation)
   channel     ordinary thread | automatic 1:1 pair
-  wake-on     nudge (default) | all
+  threshold   the recipient's nudge threshold T: 0 (default) | -1 (every item) | 3
   harness     claude | codex
-Expected: every case wakes the idle recipient except a lazy send or the Lazy invitation created by a first direct
-send to a `wake-on nudge` seat. These stay idle and arrive on the next turn (a neutral `hello` prompt).
-ACK requests must come back acknowledged,
-invitations must be accepted, and the first message of a 1:1 pair must be delivered once the pair is accepted.
-The busy-* cases repeat invite/lazy/nudge/ack while the recipient is mid-turn: a recipient is nudged only when idle,
+Expected (expect_wake): an idle recipient wakes iff the item's priority <= T (T < 0: always); invitations and ACK
+requests are p0, so they wake at every T. A silent item (for example a p1 send at T=0) leaves the recipient idle and
+arrives on its next turn (a neutral `hello` prompt). ACK requests must come back acknowledged, invitations must be
+accepted, and the first message of a 1:1 pair must be delivered with no `accept` (the pair auto-joins).
+mixed-order/group sends p5, p1, p0 and an ACK request with a deadline to an idle recipient and checks they appear in
+presentation order: the ACK request (deadline) first, then p0, p1, p5. The order is judged only at T=0, where the
+p5 and p1 sent first cannot wake the recipient; at T=-1 and T=3 the row checks delivery, markers and the ACK and
+records the order as unjudged.
+The busy-* cases repeat invite/p1/p0/ack while the recipient is mid-turn: a recipient is nudged only when idle,
 so no wake prompt may be typed during or after that turn, and the item must arrive inside the turn instead.
 
 Isolation: an isolated daemon and state dir (driven by --bin, default the repo's bin/herdr-threads), owned hooks
@@ -78,14 +83,22 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 EXIT_OK, EXIT_FAIL, EXIT_REFUSED = 0, 1, 2
 
-CASES = ("invite/group", "invite/1:1",
-         "send-lazy/group", "send-nudge/group", "send-ack/group",
-         "send-lazy/1:1", "send-nudge/1:1", "send-ack/1:1",
-         "busy-invite/group", "busy-invite/1:1", "busy-lazy/group", "busy-nudge/group", "busy-ack/group",
-         "busy-lazy/1:1", "busy-nudge/1:1", "busy-ack/1:1")
+CASES = ("invite/group", "pair-open/1:1", "send-p1/group", "send-p0/group", "send-p3/group", "send-ack/group",
+         "send-p1/1:1", "send-p0/1:1", "send-p3/1:1", "send-ack/1:1", "mixed-order/group",
+         "busy-invite/group", "busy-invite/1:1", "busy-send-p1/group", "busy-send-p0/group", "busy-send-ack/group",
+         "busy-send-p1/1:1", "busy-send-p0/1:1", "busy-send-ack/1:1")
+# Recipient nudge thresholds: 0 (the default), -1 (negative: every item wakes), 3.
+THRESHOLDS = (0, -1, 3)
+# Priority of each action's item. Invitations and ACK requests are always p0; pair-open is the first direct send of a
+# 1:1 pair at the default p1 (the pair auto-joins both seats, so there is no invitation).
+ITEM_PRIORITY = {"send-p1": 1, "send-p0": 0, "send-p3": 3, "send-ack": 0, "invite": 0, "pair-open": 1}
+MIXED_DEADLINE_S = 90
 # Opt-in Codex cases (ht-327), never in the default matrix: before the send the recipient's one Codex process holds
 # extra session bindings from two `/side` conversations (ephemeral in-process forks) that each made one
-# herdr-threads `inbox` call. side-nudge: an idle recipient still wakes. side-draft: a typed composer draft is never typed
+# herdr-threads `inbox` call. side-nudge: a p0 send (`--nudge`, no ACK) still wakes an idle recipient at T=0; then, in
+# its sibling-displayed phase (ht-yha.62), a second p0 sent while a third `/side` turn is busy and displayed by that
+# side's own `inbox` still wakes the idle main session afterwards (a sibling's display never blocks the process's
+# wake; inconclusive, not failed, when the side binding never displayed it). side-draft: a typed composer draft is never typed
 # into (busy-input guard) and the sender's overdue warning names the refused wake. They also run on `co-plain`, a
 # Codex with its hooks feature off, so every session binds by a plain CLI call only (as Main's seat did on
 # 2026-10-13): no lifecycle claim ranks the group, the same-process rule leaves all three connected.
@@ -93,6 +106,11 @@ SIDE_CASES = ("side-nudge/group", "side-draft/group")
 SIDE_FORKS = 2
 SIDE_DEADLINE_S = 45
 SIDE_DRAFT = "draft-kept-by-wake-e2e"
+# The sibling-displayed side turn: long enough that the p0 is sent while it is busy (a wake then is refused), then the
+# side's own `inbox` displays it to the side binding.
+SIBLING_SIDE_PROMPT = ("Side sibling of wake-e2e {tag}: run the shell command `sleep 10`, then run the shell command "
+                       "`{shim} inbox` once, then print SIDE-SIB-DONE. Do not act on anything it shows.")
+SIBLING_SIDE_DONE = re.compile(r"^[^\w\n]*SIDE-SIB-DONE", re.M)
 # Codex runs with its shell snapshot off (launch_line, ht-l16), so the candidate's bin dir stays first on PATH; a plain
 # recipient is still given the shim's exact path, since it has no hook context naming the run's --state-dir.
 PLAIN_HINT = (" Your herdr-threads hooks are off: always run herdr-threads by the exact path `{shim}` (never a bare "
@@ -113,6 +131,33 @@ WAKE_WINDOW_S = 6.0     # a woken agent leaves idle well inside this (observed 0
 SPACING_S = 35.0        # the per-seat wake retry guard is 30 s after each reservation (src/notification/policy.rs)
 TURN_TIMEOUT_MS = 240_000
 IDLE = ("idle", "done")
+
+
+def side_nudge_passed(setup_ok, woke, checks):
+    """side-nudge's verdict: the first phase woke the idle recipient and its message arrived; and when the sibling
+    phase's side binding displayed its p0 (`sibling_displayed`), the idle main session was still woken for it and
+    the message arrived (ht-yha.62). A sibling phase whose side binding never displayed the p0 is inconclusive and
+    does not decide the verdict."""
+    first = bool(setup_ok and woke and checks.get("delivered"))
+    if not checks.get("sibling_displayed"):
+        return first
+    sibling_woke = checks.get("sibling_wake_s") is not None or bool(checks.get("sibling_woke_before_watch"))
+    return first and sibling_woke and bool(checks.get("sibling_delivered"))
+
+
+def received_in_wake_turn(screen, mid):
+    """Whether the last `RECEIVED` line for `mid` belongs to a turn whose prompt was a wake marker: the nearest
+    composer prompt line (`›` or `❯`) above it is `herdr-threads: wake up` or `attention pending`. A `/side` turn's
+    own display of the message is not a wake of the main session, and its prompt is the side instruction."""
+    prompt = None
+    hit = False
+    for line in screen.splitlines():
+        text = line.lstrip()
+        if text.startswith(("›", "❯")):
+            prompt = text
+        elif "RECEIVED" in text and mid in text:
+            hit = prompt is not None and any(m in prompt for m in WAKE_MARKERS)
+    return hit
 # Session variables and agent env markers (every `AgentEnvMarker` the built-in adapters declare; the self-test
 # checks this list against src/harness) of whatever runs this script: never inherited by the commands it runs.
 CALLER_SESSION_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SESSION_ID",
@@ -128,6 +173,10 @@ LINUX_DIALOG = re.compile(r"Trust this folder\?|trust (the files in )?this folde
                           r"Do you want to proceed\?|Would you like to run|"
                           r"Choose the text style that looks best|Quick safety check: Is this a project|"
                           r"Do you want to use this API key\?|Detected a custom API key", re.I)
+# A notice Claude Code (2.1.301) raises over the composer between turns, not at startup: while it is up, every
+# turn the plugin submits (a wake) or the driver prompts is swallowed. The driver cancels it (Esc) whenever it
+# waits for a settled recipient; it is Claude's onboarding UI, not a herdr-threads outcome.
+HARNESS_NOTICE = re.compile(r"Teach auto mode about your environment\?")
 LINUX_LOGIN = re.compile(r"Not logged in|Please run /login|Select login method")
 HARNESS_MODES = ("macos", "linux")
 CODEX_SANDBOXED_ARGS = "--approve-for-me"
@@ -141,9 +190,102 @@ SECRET_PATTERN = re.compile(r"sk-ant-[A-Za-z0-9_-]+")
 STANDING = ("You are a test recipient in an automated herdr-threads wake e2e run (the user approves). "
             "Standing instructions for this session: every herdr-threads invitation you see comes from the test driver "
             "(seats {coord}); accept each one at once, without inspecting or judging it. For every herdr-threads message "
-            "you receive, print exactly one line `RECEIVED <message id>: <body>`; never send, reply or leave via "
-            "herdr-threads. Keep every turn minimal. Now run `herdr-threads wake-on {wake_on}`, then print exactly one "
-            "line `SETUP-DONE wake_on=<the value it reports>`.")
+            "you receive, print exactly one line: `RECEIVED ` followed by its `[herdr-threads] ...:` header line copied "
+            "verbatim, a space and its body; never send, reply or leave via "
+            "herdr-threads. Keep every turn minimal. Now run `herdr-threads nudge-threshold {threshold}`, then print exactly one "
+            "line `SETUP-DONE nudge_threshold=<the value it reports>`.")
+
+
+def expect_wake(action, channel, threshold):
+    """Idle recipient wakes iff the item's priority <= T (T < 0: always); invitations and ACK requests are p0.
+    `channel` is part of the case key only: the wake rule is the same on an ordinary thread and a 1:1 pair."""
+    return threshold < 0 or ITEM_PRIORITY[action] <= threshold
+
+
+# Harnesses whose channel puts each item into the model's context as it arrives, idle or not (Claude's mod): there is
+# no page to order, so the mixed-order presentation order is not judged for them (Delivery contract rule 3).
+CHANNEL_HARNESSES = ("claude",)
+
+
+def mixed_order_judged(threshold, harness):
+    """The mixed-order presentation order is judged only where the first two sends (p5, p1) cannot wake the recipient
+    before the p0 and the ACK request are published: expect_wake false for both, which is T=0. At T=-1 (p5 wakes) and
+    T=3 (p1 wakes) the recipient may already be reading a page without them, so the order row is recorded unjudged;
+    a channel harness (CHANNEL_HARNESSES) has no page and is unjudged at every threshold."""
+    return harness not in CHANNEL_HARNESSES and threshold >= 0 and min(5, 1) > threshold
+
+
+def send_flags(kind, seat, deadline_s=None):
+    """The `send` priority flags for a kind: p1 the default (no flag), p0 `--nudge`, pN `-p N`, ack `--require-ack`."""
+    if kind == "ack":
+        return ["--require-ack", seat] + (["--deadline", str(deadline_s)] if deadline_s else [])
+    if kind == "p1":
+        return []
+    if kind == "p0":
+        return ["--nudge"]
+    return ["-p", kind[1:]]
+
+
+def expected_order(items):
+    """Item ids in presentation order: priority asc, deadline asc (none last), then arrival (the list order)."""
+    keyed = sorted(enumerate(items), key=lambda t: (t[1]["priority"], t[1]["deadline_s"] is None,
+                                                     t[1]["deadline_s"] or 0, t[0]))
+    return [item["id"] for _, item in keyed]
+
+
+def screen_order(screen, ids):
+    """The ids that appear on the screen, in order of first appearance."""
+    seen = sorted((screen.find(i), i) for i in ids if i in screen)
+    return [i for _, i in seen]
+
+
+# A frame header anywhere on a line (recipients echo it after `RECEIVED `): kind, id, then `in <thread label> from
+# <sender label>[ markers]:`; labels may hold spaces, so the markers are read after ` from ` up to the first `: `.
+HEADER = re.compile(r"\[herdr-threads\] \S+ (\S+) in .*? from ([^\n]*)")
+
+
+def header_priorities(screen):
+    """{message id: priority} from the frame headers on the screen: a `[pN]` marker, else the silent default p1."""
+    out = {}
+    for m in HEADER.finditer(screen):
+        sender_and_markers = m.group(2).split(": ", 1)[0].rstrip(":")
+        marker = re.search(r"\[p(\d)\]", sender_and_markers)
+        out.setdefault(m.group(1), int(marker.group(1)) if marker else 1)
+    return out
+
+
+def paged_order(screen, ids):
+    """The ids in order of first appearance, one list per wake (split at each WAKE_MARKERS line): each wake pulls
+    its own page, so presentation order is judged within a page, never across two wakes."""
+    pages, seen = [], set()
+    for chunk in re.split("|".join(map(re.escape, WAKE_MARKERS)), screen):
+        page = [i for i in screen_order(chunk, ids) if i not in seen]
+        seen.update(page)
+        if page:
+            pages.append(page)
+    return pages
+
+
+def paged_order_ok(pages, want):
+    """Every page lists its items in the expected relative order."""
+    return all(page == [i for i in want if i in page] for page in pages)
+
+
+def markers_ok(shown, expected):
+    """At least one of the case's messages shows its frame header on screen, and every shown header carries its
+    message's priority marker (an expected id with no header is not judged; no header at all fails, so a PASS
+    means a marker was actually seen)."""
+    judged = [mid for mid in shown if mid in expected]
+    return bool(judged) and all(shown[mid] == expected[mid] for mid in judged)
+
+
+def markers_reason(case, shown, expected):
+    """Why markers_ok failed for `case`, or None when it passed."""
+    judged = [mid for mid in shown if mid in expected]
+    if not judged:
+        return f"{case}: no expected [herdr-threads] header on screen"
+    bad = [f"{mid} shown p{shown[mid]} expected p{expected[mid]}" for mid in judged if shown[mid] != expected[mid]]
+    return f"{case}: " + "; ".join(bad) if bad else None
 
 
 def utc():
@@ -484,13 +626,13 @@ class Run:
             self.coords[role] = {"pane": pane, "seat": seat}
         self.recipients = []
         for h in self.args.harness:
-            for wake_on in ("nudge", "all"):
-                name = f"{h[:2]}-{wake_on}"
+            for threshold in THRESHOLDS:
+                name = f"{h[:2]}-t{threshold}"
                 pane = self.tab(name)
-                self.recipients.append(Recipient(self, name, h, wake_on, pane, self.seat(pane)))
+                self.recipients.append(Recipient(self, name, h, threshold, pane, self.seat(pane)))
         if "codex" in self.args.harness and getattr(self, "side_cases", False):
             pane = self.tab("co-plain")
-            self.recipients.append(Recipient(self, "co-plain", "codex", "nudge", pane, self.seat(pane), plain=True))
+            self.recipients.append(Recipient(self, "co-plain", "codex", 0, pane, self.seat(pane), plain=True))
         print(f"  workspace {self.workspace}: coordinators {self.coord_seats()}; " +
               ", ".join(f"{r.name}={r.seat}" for r in self.recipients), flush=True)
 
@@ -507,7 +649,7 @@ class Run:
             else:
                 cfg = f"CLAUDE_CONFIG_DIR={q(self.args.claude_config_dir)} " if self.args.claude_config_dir else ""
             cfg += f"CLAUDE_CODE_PLUGIN_DIRS={q(str(self.state / 'claude-mod' / 'herdr-threads'))} "
-            return f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
+            return f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_PID; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
         # shell_snapshot off: the snapshot replays the interactive ~/.zshrc PATH, which can put an installed
         # herdr-threads ahead of the candidate's bin dir (ht-l16); a non-interactive login shell keeps it first.
         argv = ["command", "codex", "--no-daemon", "-C", self.cwd, "--dangerously-bypass-hook-trust",
@@ -763,8 +905,8 @@ def wake_count(text):
 
 
 class Recipient:
-    def __init__(self, run, name, harness, wake_on, pane, seat, plain=False):
-        self.run, self.name, self.harness, self.wake_on, self.pane, self.seat = run, name, harness, wake_on, pane, seat
+    def __init__(self, run, name, harness, threshold, pane, seat, plain=False):
+        self.run, self.name, self.harness, self.threshold, self.pane, self.seat = run, name, harness, threshold, pane, seat
         self.plain = plain  # Codex hooks feature off: every binding is a plain CLI call
         self.last_wake = 0.0
         self.group = None
@@ -781,6 +923,17 @@ class Recipient:
             return data["raw"]
         return self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
 
+    def dismiss_notice(self):
+        """Cancel Claude's between-turn notice (HARNESS_NOTICE) when it covers the composer; True when one was."""
+        if self.harness != "claude":
+            return False
+        visible = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
+        if not HARNESS_NOTICE.search(visible):
+            return False
+        self.run.herdr("agent", "send-keys", self.pane, "esc", check=False)
+        time.sleep(1.0)
+        return True
+
     def wait_idle(self, timeout=240):
         end = time.time() + timeout
         while time.time() < end:
@@ -788,6 +941,8 @@ class Recipient:
             if s == "blocked":
                 raise RuntimeError(f"{self.name} is blocked at a dialog: {self.tail()}")
             if s in IDLE:
+                if self.dismiss_notice():
+                    continue
                 time.sleep(1.0)
                 if self.status() in IDLE:
                     return
@@ -874,14 +1029,14 @@ class Recipient:
             if self.status() == "blocked" or DIALOG.search(self.observed_tail()):
                 raise RuntimeError(f"{self.name}: startup dialog (nothing typed): {self.tail()}")
         for _attempt in range(2):  # one retry: a transient model/capacity error ends the first turn early
-            reported = re.compile(r"SETUP-DONE wake_on=%s\b" % self.wake_on)
-            self.prompt(STANDING.format(coord=self.run.coord_seats(), wake_on=self.wake_on)
+            reported = re.compile(r"SETUP-DONE nudge_threshold=%s\b" % re.escape(str(self.threshold)))
+            self.prompt(STANDING.format(coord=self.run.coord_seats(), threshold=self.threshold)
                         + (PLAIN_HINT.format(shim=self.run.bindir / "herdr-threads") if self.plain else ""),
                         expect=reported)
             if self.shows(reported):
                 break
         else:
-            raise RuntimeError(f"{self.name}: agent did not report wake-on {self.wake_on}: {self.tail()}")
+            raise RuntimeError(f"{self.name}: agent did not report nudge-threshold {self.threshold}: {self.tail()}")
 
     def prompt(self, text, expect=None):
         """Submit a turn and return once it is over: `expect` (text the turn prints) seen, then settled idle.
@@ -904,9 +1059,10 @@ class Recipient:
     def coord(self, *argv, role="main"):
         return json.loads(self.run.ht(*argv, pane=self.run.coords[role]["pane"], human=True))
 
-    def send(self, mode, body, direct, role="main"):
+    def send(self, kind, body, direct, role="main", deadline_s=None):
+        """Send one message of `kind` (p1 | p0 | p3 | p5 | ack, see send_flags); returns its message id."""
         argv = ["send"] + (["--seat", self.seat] if direct else [self.group]) + ["--body", body]
-        argv += {"lazy": ["--lazy"], "nudge": ["--nudge"], "ack": ["--require-ack", self.seat]}[mode]
+        argv += send_flags(kind, self.seat, deadline_s)
         data = self.coord(*argv, role=role)
         mid = (data.get("result") or {}).get("data")
         if not isinstance(mid, str) or not mid:
@@ -946,7 +1102,7 @@ class Recipient:
     # ---------- busy cases ----------
     def busy_case(self, case):
         action, channel = case.split("/")
-        kind = action.split("-")[1]
+        kind = "invite" if action == "busy-invite" else action.split("-", 2)[2]  # invite | p1 | p0 | ack
         gap = SPACING_S - (time.time() - self.last_wake)
         if gap > 0:
             self.run.stopping.wait(gap)  # spacing ends early when cleanup begins
@@ -963,7 +1119,7 @@ class Recipient:
                 break
             time.sleep(2)
         else:
-            self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on, "recipient": self.name,
+            self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
                              "result": "BLOCKED", "checks": {"reason": "busy prompt not taken twice"}})
             return
         time.sleep(3)  # well inside `sleep 12`: the agent is running a tool
@@ -971,9 +1127,10 @@ class Recipient:
         checks = {"busy_at_send": busy_at_send}
         role = "main"
         if kind == "invite" and channel == "1:1":
-            # First contact from the fresh coordinator, mid-turn: pair + invitation + lazy opening message.
+            # First contact from the fresh coordinator, mid-turn: the pair auto-joins (no invitation) and the opener
+            # is a p1 message that must arrive inside the turn.
             role = "fresh"
-            ref = {"message": self.send("lazy", f"pair-open-busy {self.run.run_id}", direct=True, role=role)}
+            ref = {"message": self.send("p1", f"pair-open-busy {self.run.run_id}", direct=True, role=role)}
             thread = self.pair_thread(role=role)
             ref["thread"] = thread
         elif kind == "invite":
@@ -1026,7 +1183,7 @@ class Recipient:
                   and checks["wake_prompts_in_busy_turn"] == 0 and checks["wake_prompts_after_busy_turn"] == 0
                   and all(v is True or v == "acknowledged" for k, v in checks.items()
                           if k in ("joined", "opening_message_delivered_in_turn", "delivered_in_turn", "ack")))
-        self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on, "recipient": self.name,
+        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
                          "expect_wake": False,
                          "woke": checks["self_started_turn_after_s"] is not None
                          or checks["wake_prompts_in_busy_turn"] != 0 or checks["wake_prompts_after_busy_turn"] != 0,
@@ -1052,6 +1209,62 @@ class Recipient:
             "SELECT native_session,observation_provenance,liveness,liveness_pid,disconnect_reason "
             "FROM occupant_bindings WHERE seat_id=? AND role='top_level' AND ended_at IS NULL ORDER BY ordinal",
             (self.seat,))]
+
+    def binding_ids(self):
+        return {row[0] for row in self.store_rows(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id=? AND role='top_level'", (self.seat,))}
+
+    def displayed_by(self, bindings, mid):
+        """Which of `bindings` displayed message `mid`: its cursor on the thread passed the message's sequence, or
+        a displayed mark holds it (the store's own per-binding view, `binding_lazy_unread_sql!`)."""
+        found = set()
+        for binding in bindings:
+            found |= {row[0] for row in self.store_rows(
+                "SELECT b.binding_id FROM occupant_bindings b JOIN messages m ON m.id=? WHERE b.binding_id=? AND "
+                "(EXISTS(SELECT 1 FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=m.thread_id "
+                "AND c.seq>=m.sequence) OR EXISTS(SELECT 1 FROM binding_row_displays d WHERE "
+                "d.binding_id=b.binding_id AND d.message_id=m.id))", (mid, binding))}
+        return sorted(found)
+
+    def sibling_phase(self, checks, ref, tag):
+        """side-nudge, sibling-displayed (ht-yha.62): a third `/side` turn is busy when a second p0 is sent, then
+        its own `inbox` displays it; back on the idle main thread the process must still be woken for it."""
+        before = self.binding_ids()
+        self.wait_idle()
+        self.run.herdr("agent", "prompt", self.pane, "/side", check=False)
+        time.sleep(2)
+        shim = self.run.bindir / "herdr-threads"
+        self.run.herdr("agent", "prompt", self.pane, SIBLING_SIDE_PROMPT.format(tag=tag, shim=shim), check=False)
+        end = time.time() + 15
+        while self.status() in IDLE and time.time() < end:
+            time.sleep(0.25)
+        checks["sibling_side_busy"] = self.status() not in IDLE
+        sent_ms = int(time.time() * 1000)
+        ref["sibling_message"] = mid = self.send("p0", tag + " sibling", direct=False)
+        end = time.time() + 120
+        while not self.shows(SIBLING_SIDE_DONE) and time.time() < end:
+            time.sleep(1)
+        self.wait_idle()
+        side = sorted(self.binding_ids() - before)
+        checks["sibling_side_bindings"] = side
+        checks["sibling_displayed_by"] = self.displayed_by(side, mid)
+        checks["sibling_displayed"] = bool(checks["sibling_displayed_by"])
+        self.run.herdr("agent", "send-keys", self.pane, "ctrl+c", check=False)
+        time.sleep(2)
+        self.wait_idle()
+        # A wake attempted while the side turn was busy is refused and retried after the per-seat guard.
+        checks["sibling_wake_s"] = self.watch_for_wake(SPACING_S + WAKE_WINDOW_S)
+        checks["sibling_wake_state"] = state = self.wake_state()
+        # The retried wake can land while the side turn is being interrupted, before the watch starts: count it when
+        # the daemon submitted a wake after the send and the main session printed the message in that wake's turn.
+        checks["sibling_woke_before_watch"] = (
+            checks["sibling_wake_s"] is None and bool(state) and state.get("last_outcome") == "submitted"
+            and (state.get("completed_at_utc") or 0) >= sent_ms and received_in_wake_turn(self.screen(1000), mid))
+        if checks["sibling_wake_s"] is None and not checks["sibling_woke_before_watch"]:
+            checks["sibling_hello_sent"] = True
+            self.prompt(self.follow_up())
+        self.wait_idle()
+        checks["sibling_delivered"] = self.on_screen(mid)
 
     def wake_state(self):
         rows = self.store_rows("SELECT last_outcome,completed_at_utc,retry_step FROM wake_work WHERE seat_id=?",
@@ -1103,7 +1316,7 @@ class Recipient:
         ref = {}
         if action == "side-nudge":
             expect_wake = True
-            ref["message"] = self.send("nudge", tag, direct=False)
+            ref["message"] = self.send("p0", tag, direct=False)
             t_wake = self.watch_for_wake(WAKE_WINDOW_S)
             checks["late_wake_s"] = None if t_wake is not None else self.watch_for_wake(20)
             woke = t_wake is not None
@@ -1114,7 +1327,12 @@ class Recipient:
                 self.prompt(self.follow_up())
             self.wait_idle()
             checks["delivered"] = self.on_screen(ref["message"])
-            passed = setup_ok and woke and checks["delivered"]
+            self.settled()
+            gap = SPACING_S - (time.time() - self.last_wake)
+            if gap > 0:
+                self.run.stopping.wait(gap)
+            self.sibling_phase(checks, ref, tag)
+            passed = side_nudge_passed(setup_ok, woke, checks)
         else:
             # Busy-input guard: a typed draft is never typed into or submitted; the sender sees the refused wake.
             expect_wake = False
@@ -1130,14 +1348,16 @@ class Recipient:
             passed = (setup_ok and not woke and checks["draft_intact"] and checks["delivered"]
                       and checks["warning_wake"] not in (None, "submitted"))
         self.settled()
-        self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on, "recipient": self.name,
+        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
                          "expect_wake": expect_wake, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
                          "checks": checks, "ref": ref, "result": "PASS" if passed else "FAIL", "utc": utc()})
 
     def draft_phase(self, checks, ref, tag):
         """side-draft after the draft is typed: send, watch past the deadline, read composer and warning."""
         time.sleep(1)
-        argv = ["send", self.group, "--body", tag, "--nudge", "--deadline", str(SIDE_DEADLINE_S)]
+        # An ACK request (p0, so it wakes): since D9 only an explicit --require-ack recipient gets a deadline and
+        # an overdue warning, and `--nudge --deadline` is refused.
+        argv = ["send", self.group, "--body", tag, "--require-ack", self.seat, "--deadline", str(SIDE_DEADLINE_S)]
         sent_seq = max([row.get("sequence") or 0 for row in walk(self.coord("read", self.group, "--recent", "1"))]
                        or [0])
         mid = (self.coord(*argv).get("result") or {}).get("data")
@@ -1185,8 +1405,9 @@ class Recipient:
         if case.startswith("busy-"):
             return self.busy_case(case)
         action, channel = case.split("/")
-        passive = action == "send-lazy" or (action == "invite" and channel == "1:1")
-        expect_wake = not (passive and self.wake_on == "nudge")
+        if action == "mixed-order":
+            return self.mixed_order_case(case)
+        expect = expect_wake(action, channel, self.threshold)
         gap = SPACING_S - (time.time() - self.last_wake)
         if gap > 0:
             self.run.stopping.wait(gap)  # spacing ends early when cleanup begins
@@ -1200,19 +1421,30 @@ class Recipient:
             self.group = data["result"]["data"]
             self.coord("invite", self.group, "--seat", self.seat)
             ref = {"thread": self.group}
-        elif action == "invite":
-            # First contact creates a Lazy invitation and opening body: only wake-on all wakes for these.
-            ref = {"message": self.send("lazy", f"pair-open {self.run.run_id}", direct=True)}
+        elif action == "pair-open":
+            # First contact at the default p1: the pair auto-joins both seats, there is no invitation to accept.
+            ref = {"message": self.send("p1", f"pair-open {self.run.run_id}", direct=True)}
             self.pair = "pending"
         else:
             ref = {"message": self.send(action.split("-")[1], body, direct=channel == "1:1")}
         t_wake = self.watch_for_wake(WAKE_WINDOW_S)
         woke = t_wake is not None
         hello = False
+        if action == "pair-open":
+            # Joined with no accept and before any hello prompt: a silent opener leaves the recipient idle until then.
+            thread = self.pair = self.pair_thread()
+            ok = False
+            for _ in range(10):
+                ok = bool(thread) and self.joined(thread)[0]
+                if ok:
+                    break
+                time.sleep(1)
+                thread = self.pair = self.pair_thread() or thread
+            checks["joined"] = ok
         if woke:
             self.last_wake = time.time()
         else:
-            checks["late_wake_s"] = self.watch_for_wake(20) if expect_wake else None
+            checks["late_wake_s"] = self.watch_for_wake(20) if expect else None
             if checks["late_wake_s"] is None:
                 hello = True
                 self.prompt("hello")
@@ -1220,18 +1452,15 @@ class Recipient:
         self.wait_idle()
         self.settled()
         if action == "invite":
-            thread = self.group if channel == "group" else None
-            if thread is None:
-                thread = self.pair = self.pair_thread()
             ok = False
             for _ in range(20):
-                ok, state = self.joined(thread)
+                ok, state = self.joined(self.group)
                 if ok:
                     break
                 time.sleep(1)
             checks["joined"] = ok
-            if channel == "1:1":
-                checks["opening_message_delivered"] = self.on_screen(ref["message"])
+        elif action == "pair-open":
+            checks["opening_message_delivered"] = self.on_screen(ref["message"])
         else:
             checks["delivered"] = self.on_screen(ref["message"])
             if action == "send-ack":
@@ -1251,11 +1480,93 @@ class Recipient:
             self.settled()
         verified = all(v is True or v == "acknowledged" for k, v in checks.items()
                        if k not in ("late_wake_s", "trailing_wake_s"))
-        passed = woke == expect_wake and verified and checks["trailing_wake_s"] is None
-        row = {"case": case, "harness": self.harness, "wake_on": self.wake_on, "recipient": self.name,
-               "expect_wake": expect_wake, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
+        passed = woke == expect and verified and checks["trailing_wake_s"] is None
+        row = {"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
+               "expect_wake": expect, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
                "checks": checks, "ref": ref, "result": "PASS" if passed else "FAIL", "utc": utc()}
         self.run.record(row)
+
+    def mixed_order_case(self, case):
+        """p5, p1, p0 and an ACK request with a deadline go to an idle recipient; each page it is woken for must list
+        its items in presentation order (expected_order: the ACK request first, then p0, p1, p5). The last two are
+        sent at once, but the p0's wake can still pull its page before the ACK request is published, which then
+        wakes a second page (paged_order); a channel harness gets no page (mixed_order_judged)."""
+        gap = SPACING_S - (time.time() - self.last_wake)
+        if gap > 0:
+            self.run.stopping.wait(gap)
+        self.wait_idle()
+        rid = self.run.run_id
+        ids = {}
+        ids["p5"] = self.send("p5", f"mixed-p5 {rid}", direct=False)
+        ids["p1"] = self.send("p1", f"mixed-p1 {rid}", direct=False)
+        errors = []
+
+        def last(kind, body, **kw):
+            try:
+                ids[kind] = self.send(kind, body, direct=False, **kw)
+            except Exception as e:  # reported below: a thread's error must fail the case, not vanish
+                errors.append(clip(e, 200, getattr(self.run, "secrets", None)))
+        threads = [threading.Thread(target=last, args=("p0", f"mixed-p0 {rid}")),
+                   threading.Thread(target=last, args=("ack", f"mixed-ack {rid}"),
+                                    kwargs={"deadline_s": MIXED_DEADLINE_S})]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        if errors:
+            raise RuntimeError("mixed-order send failed: " + "; ".join(errors))
+        items = [{"id": ids["p5"], "priority": 5, "deadline_s": None}, {"id": ids["p1"], "priority": 1, "deadline_s": None},
+                 {"id": ids["p0"], "priority": 0, "deadline_s": None},
+                 {"id": ids["ack"], "priority": 0, "deadline_s": MIXED_DEADLINE_S}]
+        # The p0 and the ACK request wake the recipient at every threshold (expect_wake).
+        t_wake = self.watch_for_wake(WAKE_WINDOW_S)
+        woke = t_wake is not None
+        hello = False
+        checks = {}
+        if woke:
+            self.last_wake = time.time()
+        else:
+            checks["late_wake_s"] = self.watch_for_wake(20)
+            if checks["late_wake_s"] is None:
+                hello = True
+                self.prompt("hello")
+                self.last_wake = time.time()
+        self.wait_idle()
+        self.settled()
+        every = [i["id"] for i in items]
+        checks["delivered"] = all(self.on_screen(mid) for mid in every)
+        screen = self.screen(1000)
+        want = expected_order(items)
+        shown = screen_order(screen, every)
+        pages = paged_order(screen, every)
+        judged = mixed_order_judged(self.threshold, self.harness)
+        checks["order"] = paged_order_ok(pages, want) if judged else "unjudged"
+        checks["order_judged"] = judged
+        checks["order_shown"] = shown
+        checks["order_pages"] = pages
+        checks["order_expected"] = want
+        shown_headers, want_markers = header_priorities(screen), {i["id"]: i["priority"] for i in items}
+        checks["markers"] = markers_ok(shown_headers, want_markers)
+        if not checks["markers"]:
+            checks["markers_reason"] = markers_reason(case, shown_headers, want_markers)
+        status = None
+        for _ in range(20):
+            status = self.receipt(ids["ack"])
+            if status == "acknowledged":
+                break
+            time.sleep(1)
+        checks["ack"] = status
+        checks["trailing_wake_s"] = self.watch_quiet(max(0.0, SPACING_S - (time.time() - self.last_wake)))
+        if checks["trailing_wake_s"] is not None:
+            self.wait_idle()
+            self.settled()
+        expect = True
+        verified = all(v is True or v == "acknowledged" or (k == "order" and v == "unjudged")
+                       for k, v in checks.items() if k in ("delivered", "order", "markers", "ack"))
+        passed = woke == expect and verified and checks["trailing_wake_s"] is None
+        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
+                         "expect_wake": expect, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
+                         "checks": checks, "ref": ids, "result": "PASS" if passed else "FAIL", "utc": utc()})
 
     def ensure_channel(self, channel):
         """Unmeasured setup when the matching invite case did not run first: the recipient joins the ordinary
@@ -1267,7 +1578,7 @@ class Recipient:
             self.coord("invite", self.group, "--seat", self.seat)
             thread = self.group
         elif channel == "1:1" and not self.pair:
-            self.send("nudge", f"pair-setup {self.run.run_id}", direct=True)
+            self.send("p0", f"pair-setup {self.run.run_id}", direct=True)
             thread = self.pair = self.pair_thread()
         else:
             return
@@ -1289,19 +1600,19 @@ class Recipient:
                 if self.run.stopping.is_set():
                     break
                 try:
-                    if not case.startswith("invite/") and "invite" not in case.split("/")[0]:
+                    if case.split("/")[0] not in ("invite", "pair-open"):
                         self.ensure_channel(case.split("/")[1])
                     self.case(case)
                 except Stopped:
                     break
                 except Exception as e:  # a driver or agent error fails the case, never passes it
-                    self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on,
+                    self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold,
                                      "recipient": self.name, "result": "FAIL", "checks": {"error": clip(e, 400, getattr(self.run, "secrets", None))}})
         except Stopped:
             pass
         except Exception as e:
             for case in cases:
-                self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on,
+                self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold,
                                  "recipient": self.name, "result": "FAIL", "checks": {"error": "startup: " + clip(e, 400, getattr(self.run, "secrets", None))}})
         finally:
             try:
@@ -1315,7 +1626,7 @@ def record(self, row):
     row = json.loads(redact(json.dumps(row), getattr(self, "secrets", ())))  # error tails may quote a screen
     with self.lock:
         self.results.append(row)
-        print(f"[{row['result']:7}] {row['recipient']:9} {row['case']:17} wake_on={row['wake_on']:5} "
+        print(f"[{row['result']:7}] {row['recipient']:9} {row['case']:17} T={row['threshold']!s:2} "
               f"expect={row.get('expect_wake')!s:5} woke={row.get('woke')!s:5} t={row.get('t_wake_s')} "
               f"{json.dumps(row.get('checks'))}", flush=True)
 
@@ -1338,11 +1649,12 @@ def summary(run, cases):
     """The table of every collected row. Passes only when each expected recipient x case has exactly one row and it
     is PASS: a missing, duplicated or unexpected row fails the run."""
     order = {c: i for i, c in enumerate(CASES)}
-    rows = sorted(run.results, key=lambda r: (order.get(r["case"], 99), r["wake_on"] != "nudge", r["harness"]))
-    lines = ["| case | wake-on | harness | expect wake | woke (s) | checks | result |", "|---|---|---|---|---|---|---|"]
+    rows = sorted(run.results, key=lambda r: (order.get(r["case"], 99), THRESHOLDS.index(r["threshold"]) if r["threshold"] in THRESHOLDS else 99,
+                                              r["harness"]))
+    lines = ["| case | T | harness | expect wake | woke (s) | checks | result |", "|---|---|---|---|---|---|---|"]
     for r in rows:
         woke = f"{r.get('woke')} ({r.get('t_wake_s')})" if r.get("woke") else str(r.get("woke"))
-        lines.append(f"| {r['case']} | {r['wake_on']} | {r['harness']} | {r.get('expect_wake')} | {woke} | "
+        lines.append(f"| {r['case']} | {r['threshold']} | {r['harness']} | {r.get('expect_wake')} | {woke} | "
                      f"{json.dumps(r.get('checks'))} | {r['result']} |")
     expected = expected_rows(run, cases)
     seen = [(r["recipient"], r["case"]) for r in rows]

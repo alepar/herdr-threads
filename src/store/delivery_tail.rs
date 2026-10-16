@@ -2,8 +2,8 @@
 //! message or invitation leaves for local seats.
 //!
 //! Responsibility
-//! - Owns: the `send_attention` work job of an ordinary message
-//!   (`work:send:<message>`), the lazy publication write
+//! - Owns: the `send_attention` work job of a message with explicit ACK
+//!   receipts or warnings (`work:send:<message>`), the delivery-row publication write
 //!   (`lazy_delivery::note_published`), the invitation attention write, and
 //!   [`DeliveryTail::attention`], the single `wake_work` attention upsert and
 //!   the one locality guard (a no-op for a seat with `is_local = 0`).
@@ -33,12 +33,17 @@ const REASON_NEW_ATTENTION: i64 = 1;
 pub(crate) struct DeliveryTail;
 
 impl DeliveryTail {
-    /// Writes what publishing `message` (sealed preparation `prep`, delivery
-    /// `mode`) leaves for its local recipients: for an ordinary message the
-    /// `send_attention` job whose high water is `ack_recipients + warnings + 1`
-    /// (the job projects receipts and attention, skipping the seats listed in
-    /// `send_manifests.suppressed_seats`), for a lazy one the `wake_on: all`
-    /// attention writes.
+    /// Writes what publishing `message` (sealed preparation `prep`) leaves for
+    /// its local recipients (main's D9 model): when the send has explicit ACK
+    /// receipts or unavailable-recipient warnings, the `send_attention` job
+    /// whose high water is `ack_recipients + warnings + 1` (the job projects
+    /// receipts and attention, skipping the seats listed in
+    /// `send_manifests.suppressed_seats`); when it staged delivery rows, the
+    /// publication of those rows (`lazy_delivery::note_published`: the
+    /// publication `decision_seq` and one `wake_work` row per local recipient
+    /// whose nudge threshold admits the row's priority). Every row of one
+    /// preparation carries the message priority, so the priority is read from
+    /// the rows, not passed.
     ///
     /// `_m` is the apply input of the publication; it is reserved
     /// (suppression rides the manifest column), and every caller passes
@@ -48,11 +53,10 @@ impl DeliveryTail {
         _m: Option<&MaterializeInput<'_>>,
         message: &MessageId,
         prep: &str,
-        mode: &str,
         ack_recipients: i64,
         warnings: i64,
     ) -> Result<(), ApiError> {
-        if mode == "ordinary" {
+        if ack_recipients > 0 || warnings > 0 {
             let high_water = ack_recipients
                 .checked_add(warnings)
                 .and_then(|v| v.checked_add(1))
@@ -65,7 +69,14 @@ impl DeliveryTail {
             )
             .map_err(store_error)?;
         }
-        if mode == "lazy" {
+        let has_rows: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM lazy_recipients WHERE preparation_id=?1)",
+                [prep],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if has_rows {
             lazy_delivery::note_published(tx, prep)?;
         }
         Ok(())

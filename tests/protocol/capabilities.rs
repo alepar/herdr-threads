@@ -246,6 +246,7 @@ fn probe_inbox_batch() {
     use crate::protocol::commands::InboxQuery;
     let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let command = Command::InboxBatch(InboxQuery {
+        pushed: false,
         thread: None,
         claim: None,
         seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
@@ -277,6 +278,7 @@ fn capability_constants_are_stable() {
     assert_eq!(BINDING_DIGEST, "attention.binding_digest_v1");
     assert_eq!(IN_TURN_OFFER, "inbox.in_turn_offer_v1");
     assert_eq!(INBOX_THREAD_SCOPE, "inbox.thread_scope_v1");
+    assert_eq!(INBOX_PUSHED_HOLD, "inbox.pushed_hold_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -309,7 +311,11 @@ fn capability_constants_are_stable() {
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
             "inbox.in_turn_offer_v1",
-            "inbox.thread_scope_v1"
+            "inbox.thread_scope_v1",
+            "send.priority_v1",
+            "seat.nudge_threshold_v1",
+            "direct.auto_join_v1",
+            "inbox.pushed_hold_v1"
         ]
     );
 }
@@ -333,6 +339,7 @@ fn every_advertised_capability_has_a_handler() {
             INBOX_BATCH => probe_inbox_batch(),
             INBOX_BATCH_V2 => {
                 let command = Command::InboxBatchV2(crate::protocol::commands::InboxQuery {
+                    pushed: false,
                     thread: None,
                     claim: None,
                     seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
@@ -372,9 +379,27 @@ fn every_advertised_capability_has_a_handler() {
                     ErrorCode::NotFound
                 );
             }
+            SEND_PRIORITY_V1 => {
+                // The explicit priority is on the wire, validates and routes to the domain; the
+                // store freezes it (`store::messages::priority_send_tests`).
+                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"priority":3,"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                assert!(command.validate().is_ok());
+                let wire = serde_json::to_value(&command).unwrap();
+                assert_eq!(wire["args"]["priority"], 3);
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
             INVITATION_REJECT => probe_invitation_reject(),
             THREAD_JOIN => probe_thread_join(),
-            DIRECT_THREADS_V1 | ENSURE_CREATION_POLICY_V1 => {
+            // `DIRECT_AUTO_JOIN_V1` shares the Ensure wire probe; the handler's auto-join itself is
+            // driven through the store in `tests/store/pair_auto_join.rs`.
+            DIRECT_THREADS_V1 | ENSURE_CREATION_POLICY_V1 | DIRECT_AUTO_JOIN_V1 => {
                 let command =
                     Command::EnsureDirectThread(crate::protocol::commands::EnsureDirectThread {
                         creation_policy: (*name == ENSURE_CREATION_POLICY_V1).then_some(
@@ -470,6 +495,35 @@ fn every_advertised_capability_has_a_handler() {
                     ErrorCode::NotFound
                 );
             }
+            SEAT_NUDGE_THRESHOLD_V1 => {
+                // The daemon serves the read and routes the set: both are on the wire and
+                // round-trip; an unknown seat is NotFound (a daemon without the handlers would
+                // refuse the command itself). The store tests cover set-then-read.
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
+                let command =
+                    Command::NudgeThreshold(crate::protocol::commands::NudgeThresholdQuery {
+                        seat: crate::protocol::ids::SeatId::new("nobody"),
+                    });
+                assert!(command.validate().is_ok());
+                let json = serde_json::to_value(&command).unwrap();
+                assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+                let set: Command = serde_json::from_value(serde_json::json!({"kind":"set_nudge_threshold","args":{"value":3,"operation":"op","claim":{"instance":"i","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                assert!(set.validate().is_ok());
+                assert_eq!(
+                    handler
+                        .handle(set, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
             LAZY_HOOK_DELIVERY => {
                 // The lazy digest request is routed to the store's
                 // seat-scoped read: an unknown seat is NotFound.
@@ -494,6 +548,7 @@ fn every_advertised_capability_has_a_handler() {
             }
             BINDING_CURSORS => probe_binding_cursors(),
             INBOX_THREAD_SCOPE => probe_inbox_thread_scope(),
+            INBOX_PUSHED_HOLD => probe_inbox_pushed_hold(),
             IN_TURN_OFFER => {
                 // The in-turn flag and its invitations are on the wire only when set and
                 // round-trip; the store records them
@@ -747,6 +802,10 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "attention.binding_digest_v1",
             "inbox.in_turn_offer_v1",
             "inbox.thread_scope_v1",
+            "send.priority_v1",
+            "seat.nudge_threshold_v1",
+            "direct.auto_join_v1",
+            "inbox.pushed_hold_v1",
             "invitation.confirmation_v1"
         ]
     );
@@ -1852,7 +1911,7 @@ fn probe_message_delivery_modes() {
     };
     let iso = TestIsolation::new("cap-message-delivery-modes");
     let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
-    context.open_writer().unwrap().execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',1,'ordinary body',0,'lazy');").unwrap();
+    context.open_writer().unwrap().execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',1,'ordinary body',0,'lazy'); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES('m3','34750f98bd59fcfc946da45aaabe933b','t',2,'ordinary',2,'urgent body',0,'ordinary',3);").unwrap();
     let store = SqliteStore::new(
         context,
         "34750f98bd59fcfc946da45aaabe933b",
@@ -1860,6 +1919,7 @@ fn probe_message_delivery_modes() {
     )
     .unwrap();
     let command = Command::MessageDeliveryModes(MessageDeliveryModesQuery {
+        with_priority: false,
         messages: vec![MessageId::new("m")],
     });
     assert_eq!(
@@ -1883,8 +1943,36 @@ fn probe_message_delivery_modes() {
     assert_eq!(
         modes,
         vec![crate::protocol::results::MessageDeliveryMode {
+            priority: None,
             message: MessageId::new("m"),
             delivery_mode: DeliveryMode::Lazy
+        }]
+    );
+    // `with_priority` adds the stored priority and leaves the legacy mode column alone.
+    let asked = Command::MessageDeliveryModes(MessageDeliveryModesQuery {
+        with_priority: true,
+        messages: vec![MessageId::new("m3")],
+    });
+    let CommandResult::MessageDeliveryModes(modes) = store
+        .query(
+            &asked,
+            &ReadContext {
+                instance: "i".into(),
+                output: OutputSpec::default(),
+                operation_scope: None,
+            },
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong metadata route")
+    };
+    assert_eq!(
+        modes,
+        vec![crate::protocol::results::MessageDeliveryMode {
+            priority: Some(crate::protocol::priority::DeliveryPriority::new(3).unwrap()),
+            message: MessageId::new("m3"),
+            delivery_mode: DeliveryMode::Ordinary
         }]
     );
 }
@@ -1954,7 +2042,8 @@ fn invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_reques
             assert!(timed.validate().is_ok());
             modern["args"]["claim"]["harness"] = serde_json::json!("human");
             let human: Command = serde_json::from_value(modern).unwrap();
-            assert!(human.validate().is_err());
+            // A person's RequireAck invitation is valid since ht-yha.6: every invitation is confirming.
+            assert!(human.validate().is_ok());
         } else {
             modern["args"]["deadline_millis"] = serde_json::json!(10);
             let conflict: Command = serde_json::from_value(modern).unwrap();
@@ -2199,6 +2288,37 @@ fn presentation_capability_routes_use_configured_domain() {
     );
 }
 
+/// `inbox.pushed_hold_v1`: `InboxQuery.pushed` is on the wire only when set and round-trips; only
+/// a v2 first, unscoped page may carry it. The store applies the catch-up hold to it
+/// (`summary_flow::hold_and_bypass`).
+fn probe_inbox_pushed_hold() {
+    use crate::protocol::{commands::InboxQuery, ids::SeatId, pagination::PageRequest};
+    let query = |pushed: bool, cursor: Option<&str>| InboxQuery {
+        seat: Some(SeatId::new("s")),
+        page: PageRequest {
+            cursor: cursor.map(str::to_owned),
+            ..PageRequest::default()
+        },
+        claim: None,
+        thread: None,
+        pushed,
+    };
+    let pushed = Command::InboxBatchV2(query(true, None));
+    assert!(pushed.validate().is_ok());
+    let json = serde_json::to_value(&pushed).unwrap();
+    assert_eq!(json.to_string().matches("\"pushed\":true").count(), 1);
+    assert_eq!(serde_json::from_value::<Command>(json).unwrap(), pushed);
+    let plain = serde_json::to_value(Command::InboxBatchV2(query(false, None))).unwrap();
+    assert!(!plain.to_string().contains("\"pushed\""), "{plain}");
+    assert!(Command::Inbox(query(true, None)).validate().is_err());
+    assert!(Command::InboxBatch(query(true, None)).validate().is_err());
+    assert!(
+        Command::InboxBatchV2(query(true, Some("v2:x")))
+            .validate()
+            .is_err()
+    );
+}
+
 /// `inbox.thread_scope_v1` (ht-br0): `InboxQuery.thread` is on the wire only when set and
 /// round-trips; only a v2 first page may carry it. The store serves it
 /// (`binding_inbox::thread_scoped_page_lists_only_that_threads_lazy_rows`).
@@ -2209,6 +2329,7 @@ fn probe_inbox_thread_scope() {
         pagination::PageRequest,
     };
     let query = |thread: Option<&str>, cursor: Option<&str>| InboxQuery {
+        pushed: false,
         seat: Some(SeatId::new("s")),
         page: PageRequest {
             cursor: cursor.map(str::to_owned),

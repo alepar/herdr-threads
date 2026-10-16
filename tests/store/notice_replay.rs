@@ -300,6 +300,7 @@ fn published_notice() -> (Fixture, CallerClaim, InvitationId, MessageId, String)
         .service
         .handle(
             Command::SendMessage(SendMessage {
+                priority: None,
                 delivery_mode: DeliveryMode::Ordinary,
                 user_intent: None,
                 thread: ThreadId::new("t"),

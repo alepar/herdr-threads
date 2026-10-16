@@ -1,0 +1,54 @@
+[
+  {
+    "kind": "message",
+    "id": "m1",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "body of m1",
+    "priority": 0
+  },
+  {
+    "kind": "message",
+    "id": "m2",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "body of m2",
+    "priority": 1
+  },
+  {
+    "kind": "message",
+    "id": "m3",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "body of m3",
+    "priority": 5
+  },
+  {
+    "kind": "message",
+    "id": "m4",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "body of m4",
+    "priority": 0,
+    "author_role": "human",
+    "relays_user": true,
+    "user_intent": "rule"
+  },
+  {
+    "kind": "message",
+    "id": "m5",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "body of m5"
+  }
+]

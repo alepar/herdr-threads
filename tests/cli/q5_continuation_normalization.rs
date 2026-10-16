@@ -247,7 +247,7 @@ impl Fixture {
             };
             let markers: usize = selected_ids(&raw)
                 .iter()
-                .map(|id| format!("[lazy] {id}\n").len())
+                .map(|id| format!("[p0] {id}\n").len())
                 .sum();
             let len = encode_selected(&raw, &spec).unwrap().len();
             if markers > 0 && len <= max as usize && len + markers > max as usize {

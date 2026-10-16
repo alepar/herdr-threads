@@ -156,7 +156,8 @@ pub enum ServiceOperation {
     Receipts(ServiceReceiptsQuery),
 }
 
-/// Post an ordinary receipt-bearing message into a service-managed thread.
+/// Post an ordinary message into a service-managed thread. Under D9 only the explicit `recipients` owe
+/// an ACK; every other joined member gets a priority-0 delivery row that wakes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceSend {
@@ -164,9 +165,11 @@ pub struct ServiceSend {
     pub thread: ThreadId,
     /// Non-empty, at most `SERVICE_SEND_MAX_BODY_BYTES` bytes.
     pub body: String,
-    /// Explicit additions to the joined snapshot: at most 100, no duplicates.
+    /// The ACK recipients, each invited or joined: at most 100, no duplicates. A human seat among
+    /// them gets a priority-0 delivery row instead of a receipt.
     pub recipients: Vec<SeatId>,
-    /// `None` is the instance default receipt duration; `Some` must be positive.
+    /// The receipt duration of the explicit recipients: `None` is the instance default, `Some` must
+    /// be positive; unused when there are none.
     pub deadline_millis: Option<u64>,
     pub operation: OperationId,
 }
@@ -302,8 +305,8 @@ pub struct ServiceNotification {
 pub struct ServiceMessageSent {
     pub summary: MessageSummary,
     pub author: ServiceAuthorId,
-    /// Receipt obligations created, at least 1. Their live state comes from
-    /// `Receipts`, not from this result.
+    /// Receipt obligations created: the explicit non-human `recipients`, 0 when there are none (D9).
+    /// Their live state comes from `Receipts`, not from this result.
     pub recipient_count: u64,
     pub receipt_duration_millis: u64,
 }

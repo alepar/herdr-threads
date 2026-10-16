@@ -34,6 +34,7 @@ const indent = (body) => String(body).split(LINE_BREAK).map((l) => (l === '' ? '
 /** The fixed markers every other read path shows (src/protocol/results.rs author_markers). */
 export function markers(it) {
   let out = ''
+  if (Number.isInteger(it.priority) && it.priority !== 1 && it.priority >= 0 && it.priority <= 9) out += ` [p${it.priority}]`
   if (it.author_role === 'human') out += ' [human]'
   if (it.relays_user === true) out += ' [relays user]'
   if (INTENTS.has(it.user_intent)) out += ` [${it.user_intent}]`
@@ -58,10 +59,22 @@ export function frame(items) {
   const blocks = items.map((it) =>
     it.kind === 'attention'
       ? `[herdr-threads] attention ${oneLine(it.id)}:\n${indent(it.body)}`
-      : `[herdr-threads] ${oneLine(it.kind)} ${oneLine(it.id)} in ${label(it.thread, it.threadName)} from ${label(it.sender, it.senderName)}${markers(it)}:\n${indent(it.body)}`,
+      : `[herdr-threads] ${it.kind === 'lazy' ? 'message' : oneLine(it.kind)} ${oneLine(it.id)} in ${label(it.thread, it.threadName)} from ${label(it.sender, it.senderName)}${markers(it)}:\n${indent(it.body)}`,
   )
   return `${HEADER}\n\n${blocks.join('\n\n')}`
 }
+
+/**
+ * The batch order key, mirroring Rust `src/delivery/assemble.rs` `batch_key`: priority asc (absent: 1 for a
+ * `lazy` row, else 0, so a priority-less message, an ACK, an invitation or a notice is p0), then deadline asc
+ * with none last. Arrival breaks every remaining tie because `Array.prototype.sort` is stable.
+ */
+const orderKey = (it) => [it.priority ?? (it.kind === 'lazy' ? 1 : 0), it.deadline ?? Infinity]
+export const batchOrder = (items) => [...items].sort((a, b) => {
+  const [pa, da] = orderKey(a)
+  const [pb, db] = orderKey(b)
+  return pa !== pb ? pa - pb : da === db ? 0 : da < db ? -1 : 1
+})
 
 /** Keep whole items queued when the next framed append would exceed its envelope. */
 function appendBatch(items) {
@@ -330,9 +343,10 @@ export function createCore(io) {
         body: String(o.body ?? ''),
         truncated,
         wakes: o.kind !== 'notice' && o.wakes === true,
+        ackRequired: o.ack_required === true,
+        priority: Number.isInteger(o.priority) ? o.priority : undefined,
+        deadline: Number.isFinite(o.deadline_at) ? o.deadline_at : undefined,
         contextVersion,
-        // Already-settled binding mail is passive; promoted Lazy messages still wake.
-        passive: o.kind === 'message' && o.ack_required === false && o.wakes !== true,
         run: S.run,
         ackable: !truncated && (o.kind === 'lazy' || o.kind === 'message'),
       })
@@ -493,7 +507,7 @@ export function createCore(io) {
         if (io.now() - S.draftSince < DRAFT_WAIT_MS) return held('draft', ids)
       }
       S.draftSince = null
-      const batch = appendBatch(S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id)))
+      const batch = appendBatch(batchOrder(S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id))))
       if (!batch.length && !S.turns.wake) return
       const gen = S.gen
       for (const it of batch) it.inflight = true
@@ -576,13 +590,15 @@ export function createCore(io) {
     void pump()
   }
 
-  const passive = (item) => item.kind === 'lazy' || item.kind === 'notice' || (item.kind === 'invitation' && !item.wakes) || (item.kind === 'message' && item.passive)
+  // Passive or waking follows the daemon's `wakes` (priority <= the seat's threshold) and ACK need only.
+  const passive = (item) => item.kind === 'notice' || (item.kind === 'invitation' && !item.wakes)
+    || ((item.kind === 'message' || item.kind === 'lazy') && !item.wakes && item.ackRequired !== true)
 
   /** Passive items are appended at once, busy or idle, without a wake. */
   async function pumpLazy() {
     if (S.inert || S.disposed || S.appendInflight || !S.live) return
     if (io.now() < S.appendBackoffUntil) return
-    const batch = appendBatch(S.queue.filter((q) => passive(q) && !q.inflight && q.run === S.run))
+    const batch = appendBatch(batchOrder(S.queue.filter((q) => passive(q) && !q.inflight && q.run === S.run)))
     if (!batch.length) return
     const gen = S.gen
     for (const it of batch) it.inflight = true
@@ -776,7 +792,7 @@ export function createCore(io) {
     const answered =
       result && result.result !== undefined && result.deny === undefined && result.isError !== true
     if (!answered || !S.live) return result
-    const batch = S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id))
+    const batch = batchOrder(S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id)))
     if (!batch.length) return result
     void complete(batch, 'context')
     return { ...result, context: [...(result.context ?? []), frame(batch)] }

@@ -11,7 +11,23 @@ fn budget() -> CallBudget {
         cancellation: Default::default(),
     }
 }
+/// A store whose pairs are created the pre-upgrade way (the peer invited): the fixture of the
+/// pending-pair-invitation behaviour that the upgrade keeps. Auto-joined pairs use
+/// `auto_join_fixture`.
 fn store_fixture() -> (SqliteStore, Connection, PathBuf) {
+    let (context, conn, path, _) = bound_fixture(100);
+    (
+        SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+        conn,
+        path,
+    )
+}
+fn auto_join_fixture() -> (SqliteStore, Connection, PathBuf) {
     let (context, conn, path, _) = bound_fixture(100);
     (
         SqliteStore::new(
@@ -161,6 +177,7 @@ fn direct_lazy_invited_target_is_frozen_without_receipt() {
     let (store, db, path) = store_fixture();
     raw_pair(&db);
     let v = SendMessage {
+        priority: None,
         delivery_mode: DeliveryMode::Lazy,
         thread: ThreadId::new("pair"),
         body: "quiet".into(),
@@ -211,6 +228,7 @@ fn direct_lazy_invited_target_is_frozen_without_receipt() {
 
 fn send_direct(store: &SqliteStore, thread: &ThreadId, mode: DeliveryMode, key: &str) {
     let v = SendMessage {
+        priority: None,
         delivery_mode: mode,
         thread: thread.clone(),
         body: key.into(),
@@ -402,6 +420,7 @@ fn pair_corrupt_membership_refuses_raw_send_preparation() {
     raw_pair(&db);
     db.execute("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state) VALUES('pair','s3','joined','joined')",[]).unwrap();
     let v = SendMessage {
+        priority: None,
         delivery_mode: DeliveryMode::Lazy,
         thread: ThreadId::new("pair"),
         body: "quiet".into(),
@@ -436,6 +455,7 @@ fn send_request_to(
     mode: DeliveryMode,
 ) -> SendMessage {
     SendMessage {
+        priority: None,
         delivery_mode: mode,
         thread: t.clone(),
         body: "body".into(),
@@ -647,7 +667,9 @@ fn resolved_unbound_and_human_ordinary_direct_smoke() {
         )
         .unwrap();
         let t = thread(ensure(&store, "s1", "s2", "smoke").unwrap());
-        let v = send_request_to(&t, "s1", "s2", "ordinary", DeliveryMode::Ordinary);
+        let mut v = send_request_to(&t, "s1", "s2", "ordinary", DeliveryMode::Ordinary);
+        // Only an explicit ACK recipient gets a receipt (D9); a human gets a priority-0 row.
+        v.invited_recipients = vec![SeatId::new("s2")];
         prepare(&store, &v).unwrap();
         assert_eq!(count(&db, "prepared_recipients"), i64::from(!human));
         if !human {
@@ -739,7 +761,8 @@ fn reversed_concurrent_ensures_converge_then_explicit_accept_reuses() {
     accept_pair(&store, &db, &t, invitee, "accept-race");
     assert_eq!(thread(ensure(&store, "s1", "s2", "fresh-a").unwrap()), t);
     assert_eq!(thread(ensure(&second, "s2", "s1", "fresh-b").unwrap()), t);
-    let v = send_request_to(&t, "s1", "s2", "dedup", DeliveryMode::Ordinary);
+    let mut v = send_request_to(&t, "s1", "s2", "dedup", DeliveryMode::Ordinary);
+    v.invited_recipients = vec![SeatId::new("s2")];
     prepare(&store, &v).unwrap();
     assert_eq!(count(&db, "prepared_recipients"), 1);
     let query:String=db.query_row("EXPLAIN QUERY PLAN SELECT thread_id FROM direct_threads WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND seat_a='s1' AND seat_b='s2'",[],|r|r.get(3)).unwrap();
@@ -1255,3 +1278,6 @@ fn rejoin_never_reshows_a_lazy_row_displayed_out_of_order() {
     drop(db);
     let _ = std::fs::remove_file(path);
 }
+
+#[path = "pair_auto_join.rs"]
+mod pair_auto_join;

@@ -311,7 +311,10 @@ pub fn write_selected<W: Write>(
 /// the v1 result, saved summary content, or delivery progress.
 #[derive(Default)]
 pub(crate) struct ReadModes {
-    lazy: Vec<crate::protocol::ids::MessageId>,
+    /// `(id, marker)` rows to print: `[pN]` for a delivery-row send (recorded `lazy`) of every
+    /// priority except the default 1 (`DeliveryPriority::read_marker`). A recorded-`ordinary`
+    /// message (pre-upgrade, or with explicit ACK recipients whose ACK line marks it) gets no row.
+    marked: Vec<(crate::protocol::ids::MessageId, &'static str)>,
     // An actual refit must retain its invocation bound through final decorations,
     // including when the newly selected page has no Lazy rows.
     enforce_final_bound: bool,
@@ -326,7 +329,7 @@ impl ReadModes {
     ) -> Result<Self, ApiError> {
         use crate::protocol::{
             capabilities::MESSAGE_DELIVERY_MODES,
-            commands::{Command, DeliveryMode, MessageDeliveryModesQuery},
+            commands::{Command, MessageDeliveryModesQuery},
             output::selected_result,
             results::{MessageContent, MessageKind, SearchHit},
         };
@@ -364,7 +367,7 @@ impl ReadModes {
         if ids.is_empty() || !client.supports_capability(MESSAGE_DELIVERY_MODES, budget) {
             return Ok(Self::default());
         }
-        let mut lazy = Vec::new();
+        let mut marked = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let ids: Vec<_> = ids
             .into_iter()
@@ -373,6 +376,7 @@ impl ReadModes {
         for batch in ids.chunks(100) {
             let result = match client.call(
                 Command::MessageDeliveryModes(MessageDeliveryModesQuery {
+                    with_priority: true,
                     messages: batch.to_vec(),
                 }),
                 budget,
@@ -398,21 +402,28 @@ impl ReadModes {
                     "daemon returned mismatched message modes",
                 ));
             }
-            lazy.extend(
-                modes
-                    .into_iter()
-                    .filter(|mode| mode.delivery_mode == DeliveryMode::Lazy)
-                    .map(|mode| mode.message),
-            );
+            marked.extend(Self::rows(modes));
         }
         Ok(Self {
-            lazy,
+            marked,
             ..Self::default()
         })
     }
 
+    /// The marker rows of one modes reply, in reply order.
+    fn rows(
+        modes: Vec<crate::protocol::results::MessageDeliveryMode>,
+    ) -> impl Iterator<Item = (crate::protocol::ids::MessageId, &'static str)> {
+        modes.into_iter().filter_map(|mode| {
+            let marker = mode
+                .priority
+                .and_then(|priority| priority.read_marker(mode.delivery_mode));
+            marker.map(|marker| (mode.message, marker))
+        })
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
-        self.lazy.is_empty()
+        self.marked.is_empty()
     }
 
     pub(crate) fn require_final_bound(&mut self) {
@@ -422,13 +433,21 @@ impl ReadModes {
     /// A service-generated row preceding the unchanged selected encoding.
     /// Peer text cannot fabricate this column-zero row (body lines are indented,
     /// and history/search peer fields are escaped by the established encoder).
+    /// The bytes `annotate` prepends: one `<marker> <id>\n` row per marked message.
+    pub(crate) fn annotation_len(&self) -> usize {
+        self.marked
+            .iter()
+            .map(|(id, marker)| marker.len() + 1 + id.as_str().len() + 1)
+            .sum()
+    }
+
     pub(crate) fn annotate(&self, bytes: Vec<u8>) -> Vec<u8> {
         if self.is_empty() {
             return bytes;
         }
         let mut out = Vec::new();
-        for id in &self.lazy {
-            out.extend_from_slice(format!("[lazy] {}\n", id.as_str()).as_bytes());
+        for (id, marker) in &self.marked {
+            out.extend_from_slice(format!("{marker} {}\n", id.as_str()).as_bytes());
         }
         out.extend_from_slice(&bytes);
         out

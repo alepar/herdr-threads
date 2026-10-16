@@ -2222,14 +2222,23 @@ impl ReservedWakeAuthority {
     }
 }
 impl WakeReservation {
-    /// Whether the wake is for seat-level attention (an invitation, receipt or warning, or a
-    /// receipt's soft-deadline poke), which is shown to whichever binding of the seat takes its
-    /// next turn, unlike unread mail, which is each binding's own.
+    /// Whether the wake is for seat-level attention (an invitation, receipt or warning, a
+    /// receipt's soft-deadline poke, or a delivery row the seat's nudge threshold admitted: the
+    /// `lazy` reason, which since priority delivery is what a bare `--nudge` leaves, as it makes
+    /// no receipt), which is shown to whichever binding of the seat takes its next turn. A
+    /// binding that already displayed the frontier row is owed no `lazy` wake, but a one-process
+    /// wake stays owed while any of its bindings still has the row unread
+    /// (`wake_owed_to_reached`); one served binding of a process takes off the composer wake for
+    /// a receipt or invitation.
     pub fn for_seat_attention(&self) -> bool {
         self.reasons.iter().any(|reason| {
             matches!(
                 reason.as_str(),
-                "pending_invitation" | "pending_receipt" | "actionable_warning" | "soft_deadline"
+                "pending_invitation"
+                    | "pending_receipt"
+                    | "actionable_warning"
+                    | "soft_deadline"
+                    | "lazy"
             )
         })
     }
@@ -2366,8 +2375,8 @@ pub struct LogicalAttentionFrontier {
     pub addressed_receipt: Option<LogicalPublicationKey>,
     pub actionable_warning: Option<LogicalPublicationKey>,
     /// Greatest publication decision sequence (`send_manifests.decision_seq`)
-    /// of the seat's pending lazy rows, set only for a `wake_on: all` seat
-    /// (delivery-policy DP8). Publication order only grows, so a larger value
+    /// of the seat's pending delivery rows whose priority its nudge threshold admits
+    /// (p <= T; every priority when T < 0), None otherwise (delivery-policy DP8). Publication order only grows, so a larger value
     /// is a lazy row published after the last reservation, even one staged
     /// earlier.
     pub lazy: Option<i64>,
@@ -2537,8 +2546,8 @@ impl WakeCandidate {
                 || (self.actionable_warning_seq.is_some()
                     && !self.warning_offered_for_current_occupant()))
     }
-    /// The lazy frontier a `wake_on: all` seat has pending (None for a `nudge`
-    /// seat, whose lazy rows never wake it).
+    /// The delivery-row frontier the seat's nudge threshold admits (p <= T; every priority
+    /// when T < 0) has pending (None when no pending row can wake it).
     pub fn pending_lazy(&self) -> Option<i64> {
         self.attention_witness
             .as_ref()
@@ -2729,9 +2738,10 @@ pub trait ModStoreReads: Send + Sync {
     ) -> Result<Option<ModSeatView>, ApiError> {
         self.mod_binding_view(seat, binding, budget)
     }
-    /// The oldest publication time among the seat's ordinary pending receipts
-    /// published at or before `at_or_before` whose body is at most
-    /// `body_limit` bytes (truncated items never count toward a stall).
+    /// The oldest publication time among the seat's wake-class pending items (ordinary
+    /// receipts and delivery rows its nudge threshold admits) published at or before
+    /// `at_or_before` whose body is at most `body_limit` bytes (truncated items never
+    /// count toward a stall).
     fn mod_stall_oldest(
         &self,
         seat: &SeatId,
@@ -3636,6 +3646,18 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     ) -> Result<bool, ApiError> {
         Ok(true)
     }
+    /// Whether the reserved wake is still owed to the process its prompt reaches (`reached`: the
+    /// composer's bindings, or `[None]` for the seat-level binding), checked like
+    /// `wake_owed_to_binding`: receipts and invitations while every reached binding is unserved,
+    /// the delivery-row frontier while any reached binding still has it unread (ht-yha.62).
+    fn wake_owed_to_reached(
+        &self,
+        _reservation: &WakeReservation,
+        _reached: &[Option<&crate::protocol::ids::BindingId>],
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(true)
+    }
     /// Returns whether the fenced `refused_restore` matched. It is `false`
     /// for every non-Refused outcome and when a path cleared the reservation
     /// between reserve and completion (pacer D5 fence miss: accepted, the
@@ -4093,8 +4115,9 @@ pub trait ModChannels: Send + Sync {
     /// Counts only for that binding's entry, in Live or ReconnectGrace.
     fn record_ack(&self, _seat: &SeatId, _binding: &BindingId, _now: UtcMillis) {}
     /// Spec D7 predicate for one binding: its channel is live; its last mod ack or
-    /// registration is older than `MOD_STALL_AFTER_MS`; and some ordinary,
-    /// non-truncated pending receipt for the seat, published at or before the
+    /// registration is older than `MOD_STALL_AFTER_MS`; and some non-truncated wake-class
+    /// pending item for the seat (an ordinary receipt or a delivery row its nudge threshold
+    /// admits), published at or before the
     /// binding's last pushed Attention, is itself older than `MOD_STALL_AFTER_MS`. A mod
     /// hold counts; there is no heartbeat. The default answers from the seat.
     fn binding_stalled(&self, seat: &SeatId, binding: &BindingId, now: UtcMillis) -> bool {

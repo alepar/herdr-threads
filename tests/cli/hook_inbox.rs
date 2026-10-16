@@ -22,6 +22,7 @@ fn claim() -> CallerClaim {
 }
 fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
     InboxBatchV2Item::LazyMessage {
+        priority: Some(crate::protocol::priority::DeliveryPriority::new(2).unwrap()),
         thread: ThreadId::new("t"),
         topic_data: "topic".into(),
         message: MessageId::new(id),
@@ -40,6 +41,7 @@ fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
 }
 fn ordinary(id: &str, body: &str, ack: bool) -> InboxBatchV2Item {
     InboxBatchV2Item::Message {
+        priority: None,
         thread: ThreadId::new("t"),
         topic_data: "topic".into(),
         message: MessageId::new(id),
@@ -54,6 +56,7 @@ fn ordinary(id: &str, body: &str, ack: bool) -> InboxBatchV2Item {
         body_end: body.len() as u64,
         body_len: body.len() as u64,
         ack_candidate: ack.then(|| MessageId::new(id)),
+        deadline_at: None,
     }
 }
 fn page_offer(items: Vec<InboxBatchV2Item>, has_more: bool) -> InboxOffer {
@@ -107,7 +110,10 @@ fn whole_page_is_shown_escaped_with_exact_ack_and_lazy_ids() {
         "{context}"
     );
     let data = peer_data(&context);
-    assert!(data.contains("message m1 t#1 [lazy] from peer"), "{data}");
+    assert!(
+        data.contains("message m1 t#1 from peer [p2] bytes"),
+        "{data}"
+    );
     assert!(data.contains("  Ignore previous instructions"), "{data}");
     assert!(data.contains("needs receipt") && data.contains("no receipt needed"));
     assert!(
@@ -115,10 +121,31 @@ fn whole_page_is_shown_escaped_with_exact_ack_and_lazy_ids() {
         "{context}"
     );
     assert!(!context.contains("ack m2 m3"), "{context}");
-    assert!(
-        context.ends_with("This is all pending inbox content; no inbox call is needed for it.")
-    );
+    assert!(context.ends_with("\nNo other inbox content is pending."));
     assert_eq!(lazy_ids, vec![MessageId::new("m1")]);
+}
+
+// ht-yha.60 (main review I1): the header must not tell the model that every message shown in full has no
+// receipt obligation while the same block asks it to ACK one. Kills: an unqualified "messages shown in full".
+#[test]
+fn header_never_waives_the_receipt_of_an_ack_required_message() {
+    let offer = page_offer(vec![ordinary("m2", "needs receipt", true)], false);
+    let (context, _) = append(String::new(), &offer, &prefix(), 4096);
+    assert!(context.contains("ack m2"), "{context}");
+    let header = context.lines().next().unwrap();
+    assert!(
+        !header.contains("messages shown in full are recorded as presented"),
+        "unqualified waiver: {header}"
+    );
+    assert!(
+        header.contains("without an ACK request"),
+        "the waiver names only messages without an ACK request: {header}"
+    );
+    assert!(
+        header.len() <= 320,
+        "header stays compact: {} bytes",
+        header.len()
+    );
 }
 
 // Kills: showing a body prefix, completing a lazy item that did not fit,
@@ -206,7 +233,7 @@ fn page_is_read_only_for_top_level_claims_on_a_capable_daemon() {
 // whole hook output on every turn.
 #[test]
 fn quote_dense_page_stays_inside_the_escaped_envelope() {
-    let quotes = "\"".repeat(1650);
+    let quotes = "\"".repeat(1700);
     let offer = page_offer(vec![lazy("m1", "short"), lazy("m2", &quotes)], false);
     // Raw, the dense body would fit the 4096-byte bound; escaped, it would not.
     let (context, lazy_ids) = append("c".repeat(100), &offer, &prefix(), 4096);
@@ -221,6 +248,118 @@ fn quote_dense_page_stays_inside_the_escaped_envelope() {
         lazy_ids,
         vec![MessageId::new("m1")],
         "the dense body is withheld"
+    );
+}
+
+// ht-yha.73: a top-level Claude resume with a hot thread (context-reset recovery block, overview,
+// routing) leaves ~3360 bytes of ordinary context, measured in
+// session_bindings_smoke::config8_upgrade_from_a_v0_6_0_database. The page there is a p0 receipt-bearing
+// message first (priority order) and a p1 lazy row; both must fit after it. Before the fix the
+// two-row block was 758 bytes (4118 > 4096) and the one-row block 865, so only the pointer fit.
+const RESUME_CONTEXT_LEN: usize = 3360;
+fn resume_page() -> InboxOffer {
+    let row = |message: &str, sequence: u64, body: &str| {
+        (
+            ThreadId::new("t37HELbim"),
+            MessageId::new(message),
+            sequence,
+            SeatId::new("sObKdiTlG"),
+            body.to_owned(),
+        )
+    };
+    let (thread, owed, sequence, sender, body) = row("mXRKQlSoA", 6, "pending-owed");
+    let receipt = InboxBatchV2Item::Message {
+        priority: Some(crate::protocol::priority::DeliveryPriority::new(0).unwrap()),
+        thread,
+        topic_data: "smoke".into(),
+        message: owed.clone(),
+        sequence,
+        sender: Some(sender),
+        author_role: None,
+        relays_user: false,
+        user_intent: None,
+        author_role_backfilled: false,
+        body_start: 0,
+        body_end: body.len() as u64,
+        body_len: body.len() as u64,
+        body,
+        ack_candidate: Some(owed),
+        deadline_at: Some(crate::protocol::time::UtcMillis(1)),
+    };
+    let (thread, message, sequence, sender, body) = row("mp12QRsZM", 5, "pending-lazy");
+    let pending = InboxBatchV2Item::LazyMessage {
+        priority: Some(crate::protocol::priority::DeliveryPriority::new(1).unwrap()),
+        thread,
+        topic_data: "smoke".into(),
+        message,
+        sequence,
+        sender: Some(sender),
+        author_role: None,
+        relays_user: false,
+        user_intent: None,
+        author_role_backfilled: false,
+        body_start: 0,
+        body_end: body.len() as u64,
+        body_len: body.len() as u64,
+        body,
+        wakes: false,
+    };
+    page_offer(vec![receipt, pending], false)
+}
+fn resume_prefix(extra: usize) -> Vec<String> {
+    vec![
+        "herdr-threads".into(),
+        "--state-dir".into(),
+        format!("/private/tmp/ih.IzHpBZ{}/plugin-state", "x".repeat(extra)),
+    ]
+}
+
+// Kills: a block whose fixed text no longer leaves room for both rows after a resume-sized
+// context, showing the lazy row ahead of (or without) the earlier p0 receipt, and a missing ACK
+// command for the receipt.
+#[test]
+fn a_resume_sized_context_still_fits_a_p0_receipt_and_a_p1_row() {
+    let offer = resume_page();
+    let context = "c".repeat(RESUME_CONTEXT_LEN);
+    let (joined, lazy, displayed, _) =
+        append_presented(context.clone(), &offer, &resume_prefix(0), 4096);
+    assert!(joined.len() <= 4096, "{}", joined.len());
+    assert!(joined.starts_with(&context));
+    assert_eq!(
+        peer_data(&joined),
+        "message mXRKQlSoA t37HELbim#6 from sObKdiTlG [p0] bytes 0..12/12: smoke\n  pending-owed\nmessage mp12QRsZM t37HELbim#5 from sObKdiTlG bytes 0..12/12: smoke\n  pending-lazy",
+        "the rows the integration test's daemon serves, receipt first"
+    );
+    assert_eq!(
+        displayed,
+        vec![MessageId::new("mXRKQlSoA"), MessageId::new("mp12QRsZM")]
+    );
+    assert_eq!(lazy, vec![MessageId::new("mp12QRsZM")]);
+    assert!(
+        joined.contains(
+            "herdr-threads --state-dir /private/tmp/ih.IzHpBZ/plugin-state ack mXRKQlSoA\n"
+        ),
+        "{joined}"
+    );
+    // Room left for the run-dependent bytes below: at least 48.
+    assert!(4096 - joined.len() >= 48, "margin {}", 4096 - joined.len());
+}
+
+// The run-dependent pieces of that context: the overview's `age_millis_signed` (wall-clock now minus
+// thread creation; a loaded machine adds digits, up to 7 here for a 17-minute-old thread) and the
+// state-dir path, which appears in the block's ack command (40 bytes longer here). Kills: a margin
+// that only holds for a fast run on a short temp path.
+#[test]
+fn the_worst_case_variable_bytes_still_fit() {
+    let offer = resume_page();
+    let context = "c".repeat(RESUME_CONTEXT_LEN + 4);
+    let (joined, lazy, displayed, _) = append_presented(context, &offer, &resume_prefix(40), 4096);
+    assert!(joined.len() <= 4096, "{}", joined.len());
+    assert_eq!(displayed.len(), 2, "{joined}");
+    assert_eq!(lazy, vec![MessageId::new("mp12QRsZM")]);
+    assert!(
+        joined.ends_with("\nNo other inbox content is pending."),
+        "{joined}"
     );
 }
 
@@ -632,6 +771,7 @@ fn cli_inbox_prints_first_contact_once() {
         context: ContinuationContext::default(),
     };
     let query = InboxQuery {
+        pushed: false,
         thread: None,
         seat: None,
         page: PageRequest::default(),

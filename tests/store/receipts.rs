@@ -115,8 +115,13 @@ fn seed_discovery_database(conn: &Connection) {
         }
     }
 }
-fn send_request(explicit: Vec<&str>) -> SendMessage {
+fn send_request(mut explicit: Vec<&str>) -> SendMessage {
+    // Only explicit ACK recipients owe receipts (D9): the joined member `b` always does here.
+    if !explicit.contains(&"b") {
+        explicit.push("b");
+    }
     SendMessage {
+        priority: None,
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("t"),
         body: "hello".into(),
@@ -761,6 +766,8 @@ fn retired_recipient_is_fenced_from_new_send_and_due_scan() {
     );
     let mut other_send = send_request(vec![]);
     other_send.operation = OperationId::new("op2");
+    // The retired seat is no longer a valid explicit recipient; the send owes no receipt.
+    other_send.invited_recipients.clear();
     let new_id = match send_prepared(
         &context,
         &mut conn,
@@ -1317,7 +1324,11 @@ fn wide_send_publishes_one_manifest_with_all_logical_recipients() {
         .unwrap();
         conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)", [seat.as_str()]).unwrap();
     }
-    let request = send_request(vec![]);
+    let mut request = send_request(vec![]);
+    // At most 100 explicit ACK recipients (b plus 99 wide seats); the other joined seats get rows.
+    request
+        .invited_recipients
+        .extend((0..99).map(|n| SeatId::new(format!("wide-{n:03}"))));
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
@@ -1358,7 +1369,7 @@ fn wide_send_publishes_one_manifest_with_all_logical_recipients() {
         other => panic!("{other:?}"),
     };
     let logical: i64 = conn.query_row("SELECT count(*) FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1", [id.as_str()], |r| r.get(0)).unwrap();
-    assert_eq!(logical, 206);
+    assert_eq!(logical, 100);
     let physical: i64 = conn
         .query_row(
             "SELECT count(*) FROM receipts WHERE message_id=?1",
@@ -1368,7 +1379,7 @@ fn wide_send_publishes_one_manifest_with_all_logical_recipients() {
         .unwrap();
     assert_eq!(physical, 0);
     assert!(
-        crate::store::effective::effective_receipt(&conn, id.as_str(), "wide-204")
+        crate::store::effective::effective_receipt(&conn, id.as_str(), "wide-098")
             .unwrap()
             .is_some()
     );
@@ -2318,12 +2329,12 @@ fn send_rejects_receipt_deadline_overflow_at_publication() {
 #[test]
 fn changed_duration_between_steps_discards_preparation() {
     let (context, mut conn, _) = setup();
-    let request = send_request(vec![]);
+    let request = send_request(vec!["c"]);
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
     };
-    let admission = crate::ports::DurableWorkAdmission { max_units: 2 };
+    let admission = crate::ports::DurableWorkAdmission { max_units: 3 };
     messages::prepare_send_step(
         &context,
         &mut conn,
@@ -2661,7 +2672,10 @@ fn foreground_write_between_preparation_quanta_and_failed_publication_stays_hidd
         .unwrap();
         conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)",[seat.as_str()]).unwrap();
     }
-    let request = send_request(vec![]);
+    let mut request = send_request(vec![]);
+    request
+        .invited_recipients
+        .extend((0..34).map(|n| SeatId::new(format!("interleave-{n:02}"))));
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),

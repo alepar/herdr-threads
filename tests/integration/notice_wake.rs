@@ -120,15 +120,16 @@ impl Fixture {
             .unwrap();
         self.store.mutate(mutation, permit, &budget()).unwrap()
     }
-    /// The author's critical message, addressed to every member with an ACK
-    /// deadline (the observed `t2ceBcgea` shape).
+    /// The author's critical message, addressed to every member (named explicitly,
+    /// as only explicit recipients owe receipts) with an ACK deadline (the observed `t2ceBcgea` shape).
     fn send_with_deadline(&self) -> MessageId {
         let request = SendMessage {
+            priority: None,
             delivery_mode: DeliveryMode::Ordinary,
             thread: ThreadId::new("t"),
             body: "critical".into(),
             direct_recipient: None,
-            invited_recipients: vec![],
+            invited_recipients: vec![SeatId::new("agent"), SeatId::new("bystander")],
             deadline_millis: Some(60_000),
             operation: OperationId::new("send"),
             claim: self.claim("author"),
@@ -241,6 +242,7 @@ impl Fixture {
             .store
             .query(
                 &Command::InboxBatchV2(InboxQuery {
+                    pushed: false,
                     thread: None,
                     claim: None,
                     seat: Some(SeatId::new(seat)),

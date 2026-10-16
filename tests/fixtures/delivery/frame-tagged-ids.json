@@ -9,12 +9,13 @@
     "body": "body of mQ7aAb12Cd34"
   },
   {
-    "kind": "lazy",
+    "kind": "message",
     "id": "mQ7aEf56Gh78",
     "thread": "dK3Fq9a2B7x",
     "threadName": "plans",
     "sender": "sQ7aK3Fq9a2B",
     "senderName": "bob",
-    "body": "body of mQ7aEf56Gh78"
+    "body": "body of mQ7aEf56Gh78",
+    "priority": 0
   }
 ]

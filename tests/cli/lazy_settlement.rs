@@ -122,6 +122,7 @@ fn page() -> CommandResult {
     CommandResult::InboxBatchV2(Page {
         items: vec![
             InboxBatchV2Item::LazyMessage {
+                priority: None,
                 thread: ThreadId::new("thread"),
                 message: MessageId::new("lazy"),
                 sequence: 1,
@@ -138,6 +139,7 @@ fn page() -> CommandResult {
                 wakes: false,
             },
             InboxBatchV2Item::Message {
+                priority: None,
                 thread: ThreadId::new("thread"),
                 message: MessageId::new("ordinary"),
                 sequence: 2,
@@ -152,6 +154,7 @@ fn page() -> CommandResult {
                 body_end: 4,
                 body_len: 4,
                 ack_candidate: Some(MessageId::new("ordinary")),
+                deadline_at: None,
             },
         ],
         next_cursor: None,

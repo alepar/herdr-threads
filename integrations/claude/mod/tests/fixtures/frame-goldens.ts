@@ -16,7 +16,7 @@ export default {
         "body": "first\r\nsecond third\n\nfifth after an empty line\rsixth\u000bseventh\feighthninth tenth"
       },
       {
-        "kind": "lazy",
+        "kind": "message",
         "id": "m2",
         "thread": "T1",
         "threadName": "plans",
@@ -34,7 +34,7 @@ export default {
         "body": "trailing break\n"
       }
     ],
-    "text": "[herdr-threads] new messages:\n\n[herdr-threads] message m1 in T1 \"plans\" from S1 \"alice\":\n  first\n  second\n  third\n\n  fifth after an empty line\n  sixth\n  seventh\n  eighth\n  ninth\n  tenth\n\n[herdr-threads] lazy m2 in T1 \"plans\" from S1 \"alice\":\n\n\n[herdr-threads] message m3 in T1 \"plans\" from S1 \"alice\":\n  trailing break\n"
+    "text": "[herdr-threads] new messages:\n\n[herdr-threads] message m1 in T1 \"plans\" from S1 \"alice\":\n  first\n  second\n  third\n\n  fifth after an empty line\n  sixth\n  seventh\n  eighth\n  ninth\n  tenth\n\n[herdr-threads] message m2 in T1 \"plans\" from S1 \"alice\":\n\n\n[herdr-threads] message m3 in T1 \"plans\" from S1 \"alice\":\n  trailing break\n"
   },
   "controls": {
     "items": [
@@ -190,6 +190,63 @@ export default {
     ],
     "text": "[herdr-threads] new messages:\n\n[herdr-threads] message m1 in T1 \"plans\" from S1 \"alice\" [human]:\n  human author\n\n[herdr-threads] message m2 in T1 \"plans\" from S1 \"alice\" [relays user]:\n  relays the user\n\n[herdr-threads] message m3 in T1 \"plans\" from S1 \"alice\" [query]:\n  query\n\n[herdr-threads] message m4 in T1 \"plans\" from S1 \"alice\" [request]:\n  request\n\n[herdr-threads] message m5 in T1 \"plans\" from S1 \"alice\" [rule]:\n  rule\n\n[herdr-threads] message m6 in T1 \"plans\" from S1 \"alice\":\n  unknown intent adds no marker\n\n[herdr-threads] message m7 in T1 \"plans\" from S1 \"alice\" [human] [relays user] [rule]:\n  all markers, ack required\n\n[herdr-threads] message m8 in T1 \"plans\" from S1 \"alice\":\n  no marker"
   },
+  "priority": {
+    "items": [
+      {
+        "kind": "message",
+        "id": "m1",
+        "thread": "T1",
+        "threadName": "plans",
+        "sender": "S1",
+        "senderName": "alice",
+        "body": "body of m1",
+        "priority": 0
+      },
+      {
+        "kind": "message",
+        "id": "m2",
+        "thread": "T1",
+        "threadName": "plans",
+        "sender": "S1",
+        "senderName": "alice",
+        "body": "body of m2",
+        "priority": 1
+      },
+      {
+        "kind": "message",
+        "id": "m3",
+        "thread": "T1",
+        "threadName": "plans",
+        "sender": "S1",
+        "senderName": "alice",
+        "body": "body of m3",
+        "priority": 5
+      },
+      {
+        "kind": "message",
+        "id": "m4",
+        "thread": "T1",
+        "threadName": "plans",
+        "sender": "S1",
+        "senderName": "alice",
+        "body": "body of m4",
+        "priority": 0,
+        "author_role": "human",
+        "relays_user": true,
+        "user_intent": "rule"
+      },
+      {
+        "kind": "message",
+        "id": "m5",
+        "thread": "T1",
+        "threadName": "plans",
+        "sender": "S1",
+        "senderName": "alice",
+        "body": "body of m5"
+      }
+    ],
+    "text": "[herdr-threads] new messages:\n\n[herdr-threads] message m1 in T1 \"plans\" from S1 \"alice\" [p0]:\n  body of m1\n\n[herdr-threads] message m2 in T1 \"plans\" from S1 \"alice\":\n  body of m2\n\n[herdr-threads] message m3 in T1 \"plans\" from S1 \"alice\" [p5]:\n  body of m3\n\n[herdr-threads] message m4 in T1 \"plans\" from S1 \"alice\" [p0] [human] [relays user] [rule]:\n  body of m4\n\n[herdr-threads] message m5 in T1 \"plans\" from S1 \"alice\":\n  body of m5"
+  },
   "tagged-ids": {
     "items": [
       {
@@ -202,16 +259,17 @@ export default {
         "body": "body of mQ7aAb12Cd34"
       },
       {
-        "kind": "lazy",
+        "kind": "message",
         "id": "mQ7aEf56Gh78",
         "thread": "dK3Fq9a2B7x",
         "threadName": "plans",
         "sender": "sQ7aK3Fq9a2B",
         "senderName": "bob",
-        "body": "body of mQ7aEf56Gh78"
+        "body": "body of mQ7aEf56Gh78",
+        "priority": 0
       }
     ],
-    "text": "[herdr-threads] new messages:\n\n[herdr-threads] message mQ7aAb12Cd34 in tQ7aZz99Yy88 \"plans\" from sQ7aK3Fq9a2B \"alice\":\n  body of mQ7aAb12Cd34\n\n[herdr-threads] lazy mQ7aEf56Gh78 in dK3Fq9a2B7x \"plans\" from sQ7aK3Fq9a2B \"bob\":\n  body of mQ7aEf56Gh78"
+    "text": "[herdr-threads] new messages:\n\n[herdr-threads] message mQ7aAb12Cd34 in tQ7aZz99Yy88 \"plans\" from sQ7aK3Fq9a2B \"alice\":\n  body of mQ7aAb12Cd34\n\n[herdr-threads] message mQ7aEf56Gh78 in dK3Fq9a2B7x \"plans\" from sQ7aK3Fq9a2B \"bob\" [p0]:\n  body of mQ7aEf56Gh78"
   },
   "attention": {
     "items": [

@@ -139,6 +139,7 @@ impl Q4WriterReaders {
     }
     fn send(&self, thread: &ThreadId, body: &str, key: &str) -> MessageId {
         let CommandResult::MessageSent(id) = self.call(Command::SendMessage(SendMessage {
+            priority: None,
             delivery_mode: DeliveryMode::Lazy,
             thread: thread.clone(),
             body: body.into(),
@@ -185,6 +186,7 @@ impl Q4WriterReaders {
         max_bytes: u32,
     ) -> crate::protocol::pagination::Page<InboxBatchV2Item> {
         let CommandResult::InboxBatchV2(page) = self.call(Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             seat: Some(caller.seat.clone()),
             claim: Some(caller.clone()),

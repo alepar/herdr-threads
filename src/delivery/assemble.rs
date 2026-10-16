@@ -205,6 +205,7 @@ impl Assembler {
                         body,
                         truncated,
                         wakes,
+                        deadline_at: if wakes { deadline_at } else { None },
                     },
                 }))
             }
@@ -231,8 +232,12 @@ impl Assembler {
                 body_end,
                 body_len,
                 ack_candidate,
+                priority,
+                deadline_at,
                 ..
             } => self.emit_chunk(Chunk {
+                priority,
+                deadline_at,
                 lazy: false,
                 promoted: false,
                 ack_required: ack_candidate.is_some(),
@@ -261,8 +266,11 @@ impl Assembler {
                 body_end,
                 body_len,
                 wakes,
+                priority,
                 ..
             } => self.emit_chunk(Chunk {
+                priority,
+                deadline_at: None,
                 lazy: true,
                 promoted: wakes,
                 ack_required: false,
@@ -324,6 +332,8 @@ impl Assembler {
                 .map_or_else(|| "service".to_owned(), |seat| seat.as_str().to_owned()),
         );
         let message = WatchMessage {
+            deadline_at: chunk.deadline_at,
+            priority: chunk.priority,
             thread: chunk.thread,
             thread_name: label(&chunk.topic),
             sender: chunk.sender,
@@ -351,9 +361,12 @@ impl Assembler {
 }
 
 struct Chunk {
+    priority: Option<crate::protocol::priority::DeliveryPriority>,
+    deadline_at: Option<crate::protocol::time::UtcMillis>,
     lazy: bool,
-    /// A lazy row of a `wake_on: all` seat, delivered as a `message` line with
-    /// no ACK to run (delivery-policy DP8); the daemon still completes it lazily.
+    /// A delivery row whose priority the seat's nudge threshold admits (p <= T; every
+    /// priority when T < 0), delivered as a `message` line with no ACK to run
+    /// (delivery-policy DP8); the daemon still completes it lazily.
     promoted: bool,
     ack_required: bool,
     thread: crate::protocol::ids::ThreadId,
@@ -367,6 +380,68 @@ struct Chunk {
     body_start: u64,
     body_end: u64,
     body_len: u64,
+}
+
+/// What a batch entry is, for the priority an older daemon leaves out (spec D10, rule 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchKind {
+    /// A `message` line: an ordinary or ACK message (p0 when no priority is carried).
+    Message,
+    /// A `lazy` line: a delivery row (p1 when no priority is carried).
+    Lazy,
+    /// An invitation: always p0.
+    Invitation,
+}
+
+/// The one batch order key: priority (the carried one, else the legacy fallback of `kind`), then
+/// deadline with none last. Rank and ordinal are constant, so [`batch_order`]'s stable sort lets
+/// arrival (the merge order) break every remaining tie.
+pub fn batch_key(
+    kind: BatchKind,
+    priority: Option<crate::protocol::priority::DeliveryPriority>,
+    deadline: Option<crate::protocol::time::UtcMillis>,
+) -> crate::protocol::priority::DeliveryOrderKey {
+    use crate::protocol::priority::{DeliveryOrderKey, DeliveryPriority, SourceRank};
+    let priority = match kind {
+        BatchKind::Invitation => DeliveryPriority::p0(),
+        BatchKind::Lazy => priority.unwrap_or(DeliveryPriority::DEFAULT),
+        BatchKind::Message => priority.unwrap_or_else(DeliveryPriority::p0),
+    };
+    DeliveryOrderKey {
+        priority,
+        deadline,
+        decision_seq: 0,
+        rank: SourceRank::DeliveryRow,
+        ordinal: 0,
+    }
+}
+
+/// Sorts one batch by [`batch_key`]: priority asc, then deadline asc with none last; a stable sort,
+/// so arrival breaks every tie.
+pub fn batch_order<T>(
+    items: &mut [T],
+    key: impl Fn(&T) -> crate::protocol::priority::DeliveryOrderKey,
+) {
+    items.sort_by_key(key);
+}
+
+/// The batch key of one assembled message item (see [`batch_key`]).
+pub fn item_order_key(item: &DeliveryItem) -> crate::protocol::priority::DeliveryOrderKey {
+    batch_key(
+        match item.kind {
+            DeliveryKind::Lazy => BatchKind::Lazy,
+            DeliveryKind::Message => BatchKind::Message,
+        },
+        item.message.priority,
+        item.message.deadline_at,
+    )
+}
+
+/// The batch key of one assembled invitation (see [`batch_key`]).
+pub fn invitation_order_key(
+    invitation: &DeliveryInvitation,
+) -> crate::protocol::priority::DeliveryOrderKey {
+    batch_key(BatchKind::Invitation, None, invitation.content.deadline_at)
 }
 
 /// A user-controlled name for one header line (spec D4): every control
@@ -424,3 +499,7 @@ pub fn read_truncated_hint(path: Option<&Path>) -> HashSet<String> {
         .map(|text| text.lines().map(str::to_owned).collect())
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+#[path = "../../tests/delivery/batch_order.rs"]
+mod batch_order_tests;

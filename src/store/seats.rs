@@ -5779,11 +5779,20 @@ fn mod_seat_view_mode(
     }))
 }
 
-/// The oldest publication time among the seat's ordinary pending receipts
+/// Head of the stall query over the seat's published pending delivery rows (aliases `r`, `m`, `s`), driven
+/// from the connected top-level bindings' pending views and the seat's legacy rows; never the seat-wide
+/// `state`. The threshold predicate (`THRESHOLD_ADMITS_SQL`, a non-const-concat `&str`) and `STALL_ROWS_TAIL`
+/// follow.
+const STALL_ROWS_HEAD: &str = "SELECT min(m.decision_at) FROM lazy_recipients r JOIN seats s ON s.id=r.seat_id JOIN messages m ON m.id=r.message_id WHERE r.ordinal IN (SELECT p.ordinal FROM occupant_bindings vb JOIN binding_pending p ON p.binding_id=vb.binding_id WHERE vb.seat_id=?1 AND vb.ended_at IS NULL AND vb.role='top_level' AND vb.liveness='connected' UNION SELECT lr.ordinal FROM lazy_recipients lr INDEXED BY lazy_recipients_legacy WHERE lr.seat_id=?1 AND lr.legacy_pending=1) AND r.seat_id=?1 AND r.decision_seq IS NOT NULL AND m.kind='ordinary' AND length(CAST(m.body AS BLOB))<=?2 AND m.decision_at<=?3 AND ";
+/// Tail: the row is unread for some connected top-level binding (`seat_unread_sql!`).
+const STALL_ROWS_TAIL: &str = concat!(" AND ", crate::store::lazy_delivery::seat_unread_sql!());
+
+/// The oldest publication time among the seat's wake-class pending items:
+/// ordinary receipts (the digest's bounded receipt walk, catch-up held items
+/// excluded) and delivery rows its current nudge threshold admits. Only items
 /// published at or before `at_or_before` whose stored body is at most
-/// `body_limit` bytes (spec D7: a truncated item never counts toward a
-/// stall). The pending set is the digest's canonical receipt walk (catch-up
-/// held items excluded), so it is bounded like the digest.
+/// `body_limit` bytes count (spec D7: a truncated item never counts toward a
+/// stall).
 pub fn mod_stall_oldest(
     db: &Connection,
     seat: &SeatId,
@@ -5795,7 +5804,7 @@ pub fn mod_stall_oldest(
     for item in &pending.items {
         let published: Option<i64> = db
             .query_row(
-                "SELECT decision_at FROM messages WHERE id=?1 AND kind='ordinary' AND delivery_mode='ordinary' AND length(CAST(body AS BLOB))<=?2 AND decision_at<=?3",
+                "SELECT decision_at FROM messages WHERE id=?1 AND kind='ordinary' AND length(CAST(body AS BLOB))<=?2 AND decision_at<=?3",
                 params![
                     item.id,
                     i64::try_from(body_limit).unwrap_or(i64::MAX),
@@ -5809,6 +5818,21 @@ pub fn mod_stall_oldest(
             oldest = Some(oldest.map_or(at, |current| current.min(at)));
         }
     }
+    let rows: Option<i64> = db
+        .query_row(
+            &format!("{STALL_ROWS_HEAD}{THRESHOLD_ADMITS_SQL}{STALL_ROWS_TAIL}"),
+            params![
+                seat.as_str(),
+                i64::try_from(body_limit).unwrap_or(i64::MAX),
+                at_or_before.0
+            ],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let oldest = match (oldest, rows) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
     Ok(oldest.map(UtcMillis))
 }
 
@@ -5833,46 +5857,115 @@ pub(crate) fn present_check_in_result(
     Ok(result)
 }
 
-/// The seat's `wake_on` preference (spec DP8); a fresh seat reads `nudge`.
-pub fn wake_on(
+/// The seat's current nudge threshold (D1, D2): read at every wake decision, never cached. A fresh
+/// seat reads 0.
+pub fn nudge_threshold(
     db: &Connection,
     seat: &SeatId,
-) -> Result<crate::protocol::commands::WakeOn, ApiError> {
-    let stored: Option<String> = db
+) -> Result<crate::protocol::priority::NudgeThreshold, ApiError> {
+    let stored: Option<i64> = db
         .query_row(
-            "SELECT wake_on FROM seats WHERE id=?1",
+            "SELECT nudge_threshold FROM seats WHERE id=?1",
             [seat.as_str()],
             |r| r.get(0),
         )
         .optional()
         .map_err(store_error)?;
     let stored = stored.ok_or_else(|| api_error(ErrorCode::NotFound, "seat not found"))?;
-    crate::protocol::commands::WakeOn::parse(&stored)
-        .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "invalid stored wake_on"))
+    crate::protocol::priority::NudgeThreshold::from_stored(stored)
 }
 
-/// Set the caller seat's `wake_on` (TRUST-POLICY A5): an accountable
-/// cooperative transaction scoped `seat:<id>`, decided against the seat's
-/// current binding. Only a top-level claim may set it. A change re-judges the
-/// seat's wake reasons through `wake::note_new_attention`; setting the stored
-/// value again records nothing. The preference is wake eligibility only: it
-/// creates no receipt, ACK evidence or authority.
+/// Row priority `r.priority` admitted by the seat's threshold, for set-based SQL. Aliases: `r` =
+/// `lazy_recipients`, `s` = `seats`. The SQL twin of `NudgeThreshold::admits`; no statement writes
+/// `p <= T` by hand.
+pub(crate) const THRESHOLD_ADMITS_SQL: &str =
+    "(s.nudge_threshold<0 OR r.priority<=s.nudge_threshold)";
+
+/// The seat's `wake_on` preference through the legacy alias: `all` iff the threshold is negative.
+pub fn wake_on(
+    db: &Connection,
+    seat: &SeatId,
+) -> Result<crate::protocol::commands::WakeOn, ApiError> {
+    Ok(nudge_threshold(db, seat)?.legacy_wake_on())
+}
+
+/// Set the caller seat's `wake_on` (TRUST-POLICY A5) through the nudge threshold
+/// (`all` -> -1, `nudge` -> 0). `changed` means the threshold changed.
 pub fn set_wake_on(
     context: &StoreContext,
     conn: &mut Connection,
     budget: &CallBudget,
     command: &crate::protocol::commands::SetWakeOn,
+    permit: MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    let value = crate::protocol::priority::NudgeThreshold::from_wake_on(command.value);
+    let result = write_threshold(
+        context,
+        conn,
+        budget,
+        permit,
+        &command.claim,
+        &command.operation,
+        control::cooperative_payload_hash("set_wake_on", command)?,
+        "declared subagents cannot set wake_on",
+        value,
+    )?;
+    // A replay of a pre-threshold operation returns its stored `WakeOn` result as is.
+    Ok(match result {
+        CommandResult::NudgeThreshold(state) => {
+            CommandResult::WakeOn(crate::protocol::results::WakeOnState {
+                seat: state.seat,
+                wake_on: command.value,
+                changed: state.changed,
+            })
+        }
+        other => other,
+    })
+}
+
+/// Set the caller seat's nudge threshold (TRUST-POLICY A5): `set_wake_on`'s twin.
+pub fn set_nudge_threshold(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &CallBudget,
+    command: &crate::protocol::commands::SetNudgeThreshold,
+    permit: MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    write_threshold(
+        context,
+        conn,
+        budget,
+        permit,
+        &command.claim,
+        &command.operation,
+        control::cooperative_payload_hash("set_nudge_threshold", command)?,
+        "declared subagents cannot set the nudge threshold",
+        command.value,
+    )
+}
+
+/// The accountable cooperative transaction behind both setters: scoped `seat:<id>`, decided against
+/// the seat's current binding. Only a top-level claim may set it. A change writes the threshold
+/// and the audit column `wake_on`, then re-judges the seat's wake reasons through
+/// `wake::note_new_attention`; setting the stored value again records nothing. The preference is
+/// wake eligibility only: it creates no receipt, ACK evidence or authority.
+#[allow(clippy::too_many_arguments)]
+fn write_threshold(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &CallBudget,
     mut permit: MutationPermit,
+    claim: &crate::protocol::authority::CallerClaim,
+    operation: &crate::protocol::ids::OperationId,
+    digest: [u8; 32],
+    subagent_refusal: &str,
+    value: crate::protocol::priority::NudgeThreshold,
 ) -> Result<CommandResult, ApiError> {
     use crate::protocol::authority::CallerRole;
-    if command.claim.role == CallerRole::Subagent {
-        return Err(api_error(
-            ErrorCode::InvalidRequest,
-            "declared subagents cannot set wake_on",
-        ));
+    if claim.role == CallerRole::Subagent {
+        return Err(api_error(ErrorCode::InvalidRequest, subagent_refusal));
     }
-    let seat = command.claim.seat.clone();
-    let digest = control::cooperative_payload_hash("set_wake_on", command)?;
+    let seat = claim.seat.clone();
     let obligation = ObligationRef::CheckIn(seat.clone());
     schema::execute_accountable_transaction(
         context,
@@ -5880,7 +5973,7 @@ pub fn set_wake_on(
         budget,
         permit.cooperative_metadata(),
         &format!("seat:{}", seat.as_str()),
-        command.operation.as_str(),
+        operation.as_str(),
         digest,
         |_| Ok(()),
         |tx, at| {
@@ -5889,26 +5982,30 @@ pub fn set_wake_on(
                 tx,
                 at,
                 &mut permit,
-                &command.claim,
+                claim,
                 &seat,
-                &command.operation,
+                operation,
                 &obligation,
                 &digest,
             )?;
-            let previous = wake_on(tx, &seat)?;
-            let changed = previous != command.value;
+            let previous = nudge_threshold(tx, &seat)?;
+            let changed = previous != value;
             if changed {
                 tx.execute(
-                    "UPDATE seats SET wake_on=?1 WHERE id=?2",
-                    params![command.value.as_str(), seat.as_str()],
+                    "UPDATE seats SET nudge_threshold=?1,wake_on=?2 WHERE id=?3",
+                    params![
+                        i64::from(value),
+                        value.legacy_wake_on().as_str(),
+                        seat.as_str()
+                    ],
                 )
                 .map_err(store_error)?;
                 super::wake::note_new_attention(tx, &seat)?;
             }
-            Ok(CommandResult::WakeOn(
-                crate::protocol::results::WakeOnState {
+            Ok(CommandResult::NudgeThreshold(
+                crate::protocol::results::NudgeThresholdState {
                     seat: seat.clone(),
-                    wake_on: command.value,
+                    threshold: value,
                     changed,
                 },
             ))

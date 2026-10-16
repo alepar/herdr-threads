@@ -32,7 +32,7 @@ fn to_i64(seq: u64) -> Result<i64, ApiError> {
     i64::try_from(seq).map_err(|_| api_error(ErrorCode::InvalidRequest, "cursor out of range"))
 }
 
-/// Start the cursors of `binding` according to `mode`. `first_contact` is true only for a
+/// Start the cursors of `binding` according to `mode`, then seed its pending delivery view. `first_contact` is true only for a
 /// fresh binding with no predecessor to inherit from.
 pub fn seed(tx: &Connection, binding: &BindingId, mode: SeedMode) -> Result<SeedOutcome, ApiError> {
     let first_contact = matches!(mode, SeedMode::Fresh);
@@ -41,6 +41,8 @@ pub fn seed(tx: &Connection, binding: &BindingId, mode: SeedMode) -> Result<Seed
         threads += copy_lineage(tx, from, binding)?;
     }
     threads += init_for_new_binding(tx, binding)?;
+    // Last: the cursors and inherited marks are final, so the view starts as the binding's unread rows.
+    super::lazy_delivery::seed_binding_pending(tx, binding)?;
     Ok(SeedOutcome {
         first_contact,
         threads,
@@ -84,18 +86,71 @@ pub fn advance(
     Ok(changed > 0)
 }
 
+/// The cursor a seat with no cursor of its own starts a thread at, as one SQL expression over
+/// the thread id `$thread` and seat id `$seat` (column or parameter expressions): the thread
+/// head, except in a direct-pair thread where the seat has a membership interval. There it is the
+/// head at the seat's join (the auto-joined pair floor, ht-yha.6): a peer joined by pair creation
+/// whose first session starts later is offered the opener and every later send, not only what
+/// follows its first session.
+macro_rules! first_cursor_sql {
+    ($thread:literal, $seat:literal) => {
+        concat!(
+            "CASE WHEN EXISTS(SELECT 1 FROM direct_threads dt WHERE dt.thread_id=",
+            $thread,
+            ") AND EXISTS(SELECT 1 FROM membership_intervals mi WHERE mi.thread_id=",
+            $thread,
+            " AND mi.seat_id=",
+            $seat,
+            " AND mi.left_seq IS NULL) \
+             THEN COALESCE((SELECT MAX(x.sequence) FROM messages x WHERE x.thread_id=",
+            $thread,
+            " AND x.decision_seq<(SELECT mi.joined_seq FROM membership_intervals mi WHERE mi.thread_id=",
+            $thread,
+            " AND mi.seat_id=",
+            $seat,
+            " AND mi.left_seq IS NULL ORDER BY mi.episode DESC LIMIT 1)),0) \
+             ELSE (SELECT MAX(x.sequence) FROM messages x WHERE x.thread_id=",
+            $thread,
+            ") END"
+        )
+    };
+}
+
 /// Give `binding` a cursor for every thread its seat has joined and it lacks: the seat's
-/// highest existing cursor for the thread, else the thread head, else 0. Existing cursors of the
+/// highest existing cursor for the thread, else the thread head (the join-time head in a direct
+/// pair, see `first_cursor_sql!`), else 0. Existing cursors of the
 /// binding are kept. Returns the number of cursors written.
 pub fn init_for_new_binding(tx: &Connection, binding: &BindingId) -> Result<usize, ApiError> {
+    // Before the cursors are written, while "no cursor yet" still identifies the threads this call
+    // inherits: take the out-of-order display marks, still above the inherited cursor, of the one
+    // binding whose cursor is inherited (the seat maximum; ties go to the lowest binding id).
     tx.execute(
-        "INSERT OR IGNORE INTO binding_cursors(binding_id,thread_id,seq) \
-         SELECT ?1, m.thread_id, COALESCE(\
-             (SELECT MAX(c.seq) FROM binding_cursors c JOIN occupant_bindings o ON o.binding_id=c.binding_id \
-               WHERE o.seat_id=b.seat_id AND c.thread_id=m.thread_id AND c.binding_id<>?1),\
-             (SELECT MAX(x.sequence) FROM messages x WHERE x.thread_id=m.thread_id),0) \
-         FROM occupant_bindings b JOIN memberships m ON m.seat_id=b.seat_id AND m.state='joined' \
-         WHERE b.binding_id=?1",
+        "INSERT OR IGNORE INTO binding_row_displays(binding_id,message_id) \
+         SELECT ?1, d.message_id FROM occupant_bindings b \
+         JOIN occupant_bindings o ON o.seat_id=b.seat_id AND o.binding_id<>?1 \
+         JOIN binding_row_displays d ON d.binding_id=o.binding_id \
+         JOIN messages dm ON dm.id=d.message_id \
+         JOIN memberships mb ON mb.seat_id=b.seat_id AND mb.thread_id=dm.thread_id AND mb.state='joined' \
+         WHERE b.binding_id=?1 \
+           AND NOT EXISTS(SELECT 1 FROM binding_cursors own WHERE own.binding_id=?1 AND own.thread_id=dm.thread_id) \
+           AND o.binding_id=(SELECT c2.binding_id FROM binding_cursors c2 JOIN occupant_bindings o2 ON o2.binding_id=c2.binding_id \
+                WHERE o2.seat_id=b.seat_id AND c2.thread_id=dm.thread_id AND c2.binding_id<>?1 \
+                ORDER BY c2.seq DESC, c2.binding_id LIMIT 1) \
+           AND dm.sequence>(SELECT c3.seq FROM binding_cursors c3 WHERE c3.binding_id=o.binding_id AND c3.thread_id=dm.thread_id)",
+        params![binding.as_str()],
+    )
+    .map_err(store_error)?;
+    tx.execute(
+        concat!(
+            "INSERT OR IGNORE INTO binding_cursors(binding_id,thread_id,seq) \
+             SELECT ?1, m.thread_id, COALESCE(\
+                 (SELECT MAX(c.seq) FROM binding_cursors c JOIN occupant_bindings o ON o.binding_id=c.binding_id \
+                   WHERE o.seat_id=b.seat_id AND c.thread_id=m.thread_id AND c.binding_id<>?1),",
+            first_cursor_sql!("m.thread_id", "b.seat_id"),
+            ",0) \
+             FROM occupant_bindings b JOIN memberships m ON m.seat_id=b.seat_id AND m.state='joined' \
+             WHERE b.binding_id=?1"
+        ),
         params![binding.as_str()],
     )
     .map_err(store_error)
@@ -115,7 +170,7 @@ pub fn thread_head(db: &Connection, thread: &ThreadId) -> Result<u64, ApiError> 
 }
 
 /// Where a binding enrolled now would start in `thread`: the highest cursor any open or closed
-/// binding of `seat` holds there, else the thread head (the rule of [`init_for_new_binding`], for
+/// binding of `seat` holds there, else the first-cursor rule (the rule of [`init_for_new_binding`], for
 /// a read that must not enroll).
 pub fn seed_preview(db: &Connection, seat: &SeatId, thread: &ThreadId) -> Result<u64, ApiError> {
     let max: Option<i64> = db
@@ -129,7 +184,17 @@ pub fn seed_preview(db: &Connection, seat: &SeatId, thread: &ThreadId) -> Result
     match max {
         Some(seq) => u64::try_from(seq)
             .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative read cursor")),
-        None => thread_head(db, thread),
+        None => {
+            let first: Option<i64> = db
+                .query_row(
+                    concat!("SELECT ", first_cursor_sql!("?2", "?1")),
+                    params![seat.as_str(), thread.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            u64::try_from(first.unwrap_or(0))
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative message sequence"))
+        }
     }
 }
 
@@ -196,28 +261,38 @@ pub(super) fn init_for_direct_accept(
 /// Copy the predecessor's cursors to the successor, keeping any higher cursor the successor
 /// already has. Returns the number of cursors written.
 pub fn copy_lineage(tx: &Connection, from: &BindingId, to: &BindingId) -> Result<usize, ApiError> {
-    tx.execute(
-        "INSERT INTO binding_cursors(binding_id,thread_id,seq) \
+    let copied = tx
+        .execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) \
          SELECT ?2, thread_id, seq FROM binding_cursors WHERE binding_id=?1 AND true \
          ON CONFLICT(binding_id,thread_id) DO UPDATE SET seq=MAX(binding_cursors.seq, excluded.seq)",
+            params![from.as_str(), to.as_str()],
+        )
+        .map_err(store_error)?;
+    // The successor inherits the predecessor's out-of-order display marks with its cursors.
+    tx.execute(
+        "INSERT OR IGNORE INTO binding_row_displays(binding_id,message_id) \
+         SELECT ?2, message_id FROM binding_row_displays WHERE binding_id=?1",
         params![from.as_str(), to.as_str()],
     )
-    .map_err(store_error)
+    .map_err(store_error)?;
+    Ok(copied)
 }
 
 /// The rows a seat's ordinary inbox delivers, as one query fragment (the single copy; the unread
-/// walk, `has_unread` and `advance_through_displayed` all use it). Ordinary-mode messages reach a
+/// walk, `has_unread` and `advance_through_displayed` all use it). Messages with a receipt reach a
 /// seat through `prepared_recipients` (a message the seat sent itself, or any other kind, never
 /// does). Bind `?1` = the seat. Aliases: `pr` recipient row, `sm` manifest (published), `m` message.
 pub const RECEIVABLE_FROM: &str = "prepared_recipients pr \
     JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id \
     JOIN messages m ON m.id=sm.message_id";
-pub const RECEIVABLE_WHERE: &str =
-    "pr.seat_id=?1 AND m.kind='ordinary' AND m.delivery_mode='ordinary'";
+pub const RECEIVABLE_WHERE: &str = "pr.seat_id=?1 AND m.kind='ordinary'";
 /// Appended to `RECEIVABLE_WHERE`: unread by a binding, i.e. in a thread the seat has joined, past the binding's cursor
-/// (a missing cursor row counts as 0). Bind `?2` = the binding.
+/// (a missing cursor row counts as 0) and not marked displayed by it (`binding_row_displays`, a row it displayed above
+/// its cursor; ht-yha.63). Bind `?2` = the binding.
 pub const UNREAD_EXTRA: &str = "AND EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=m.thread_id AND mb.seat_id=pr.seat_id AND mb.state='joined') \
-    AND m.sequence > COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=?2 AND c.thread_id=m.thread_id),0)";
+    AND m.sequence > COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=?2 AND c.thread_id=m.thread_id),0) \
+    AND NOT EXISTS(SELECT 1 FROM binding_row_displays d WHERE d.binding_id=?2 AND d.message_id=m.id)";
 
 pub(crate) fn seat_of(db: &Connection, binding: &BindingId) -> Result<Option<SeatId>, ApiError> {
     db.query_row(
@@ -281,10 +356,10 @@ const WALK_DISPLAY_ACKED: &str = "(EXISTS(SELECT 1 FROM receipt_state rs WHERE r
     AND rc.ack_binding_id=?4 AND json_extract(rc.ack_observation,'$.action_provenance') IS NOT NULL))";
 
 /// The first ordinary message of `thread` past `binding`'s cursor at which the
-/// display walk ([`advance_through_displayed`]) stops when a display shows only lazy rows: a
-/// receivable ordinary message the binding has not display-ACKed. `None` when there is none.
-/// A display of lazy rows below it can be passed whole by the walk; a lazy row above it cannot
-/// (ht-br0: the text accept's thread-scoped page shows only rows below this stop, so its
+/// display walk ([`advance_through_displayed`]) stops when a display shows only delivery rows (any
+/// priority): a receipt-bearing message the binding has not display-ACKed. `None` when there is none.
+/// A display of delivery rows below it can be passed whole by the walk; a row above it cannot
+/// (ht-br0, ht-yha.6: the text accept's thread-scoped page shows only rows below this stop, so its
 /// completion never leaves a shown row unread in the binding's own stream). Without a cursor it
 /// starts at 0, not at the walk's displayed-episode floor: never higher than the walk's real stop,
 /// so the page can only show fewer rows (an accept normally creates the cursor first).
@@ -314,7 +389,7 @@ pub fn first_ordinary_walk_stop(
 }
 
 /// Advance `binding`'s cursor in `thread` over the longest prefix of messages past the cursor
-/// whose sequences are all in `displayed`. Messages the seat cannot receive in that thread (its
+/// whose sequences are all in `displayed` (or marked displayed by this binding, `binding_row_displays`). Messages the seat cannot receive in that thread (its
 /// own sends, kinds the inbox never shows) count as displayed, and so does a message whose seat
 /// receipt this same binding display-ACKed: `ack_binding_id` is the binding and the ACK
 /// observation carries `action_provenance`, which only display settlements write (text-inbox
@@ -355,7 +430,8 @@ pub(super) fn advance_through_displayed_with_change(
         .prepare(&format!(
             "SELECT x.sequence, EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} AND m.id=x.id) \
              OR EXISTS(SELECT 1 FROM lazy_recipients lr WHERE lr.message_id=x.id AND lr.seat_id=?1), \
-             {WALK_DISPLAY_ACKED} \
+             {WALK_DISPLAY_ACKED}, \
+             EXISTS(SELECT 1 FROM binding_row_displays d WHERE d.binding_id=?4 AND d.message_id=x.id) \
              FROM messages x WHERE x.thread_id=?2 AND x.sequence>?3 ORDER BY x.sequence"
         ))
         .map_err(store_error)?;
@@ -372,23 +448,66 @@ pub(super) fn advance_through_displayed_with_change(
                     r.get::<_, i64>(0)?,
                     r.get::<_, bool>(1)?,
                     r.get::<_, bool>(2)?,
+                    r.get::<_, bool>(3)?,
                 ))
             },
         )
         .map_err(store_error)?;
     let mut reached = current;
     for row in rows {
-        let (sequence, receivable, display_acked) = row.map_err(store_error)?;
+        let (sequence, receivable, display_acked, marked) = row.map_err(store_error)?;
         let sequence = u64::try_from(sequence)
             .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative message sequence"))?;
-        if receivable && !display_acked && !displayed.contains(&sequence) {
+        // A row this binding already displayed out of order (its mark) is passed like one shown now.
+        if receivable && !display_acked && !marked && !displayed.contains(&sequence) {
             break;
         }
         reached = sequence;
     }
     drop(stmt);
     let changed = reached > current && advance(tx, binding, thread, reached)?;
+    mark_displayed_above(tx, binding, &seat, thread, displayed, reached)?;
     Ok((reached, changed))
+}
+
+/// Per-binding displayed marks (`binding_row_displays`; the unread predicates exclude them): a
+/// message this binding displayed that stays above its cursor, because a lower-sequence message is
+/// still undisplayed, is marked so it is not offered again while the cursor catches up: a delivery
+/// row, or a receipt-bearing row the seat receives (the walk's receivable set; ht-yha.63). The marks
+/// the cursor now passes are pruned. One function for both the top-level completion and the
+/// cursor-only `AdvanceCursors` path (subagent streams, body reads).
+fn mark_displayed_above(
+    tx: &Connection,
+    binding: &BindingId,
+    seat: &SeatId,
+    thread: &ThreadId,
+    displayed: &[u64],
+    reached: u64,
+) -> Result<(), ApiError> {
+    for &sequence in displayed.iter().filter(|s| **s > reached) {
+        tx.execute(
+            &format!(
+                "INSERT OR IGNORE INTO binding_row_displays(binding_id,message_id) \
+                 SELECT ?4, x.id FROM messages x WHERE x.thread_id=?2 AND x.sequence=?3 \
+                 AND (EXISTS(SELECT 1 FROM lazy_recipients lr WHERE lr.message_id=x.id AND lr.seat_id=?1) \
+                 OR EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} AND m.id=x.id))"
+            ),
+            params![
+                seat.as_str(),
+                thread.as_str(),
+                to_i64(sequence)?,
+                binding.as_str()
+            ],
+        )
+        .map_err(store_error)?;
+    }
+    tx.execute(
+        "DELETE FROM binding_row_displays WHERE binding_id=?1 AND message_id IN \
+         (SELECT x.id FROM messages x WHERE x.thread_id=?2 AND x.sequence<=?3)",
+        params![binding.as_str(), thread.as_str(), to_i64(reached)?],
+    )
+    .map_err(store_error)?;
+    Ok(())
 }
 
 #[cfg(test)]

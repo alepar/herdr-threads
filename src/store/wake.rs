@@ -13,7 +13,6 @@ use crate::{
         WakeTarget, WarningOfferFrontier,
     },
     protocol::{
-        commands::WakeOn,
         ids::{
             BindingId, ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, WakeAttemptId,
         },
@@ -640,6 +639,17 @@ fn all_offered(
     Ok(true)
 }
 
+/// `?1` binding, `?2` seat, `?3` the reservation's lazy frontier (`lazy_recipients.decision_seq`): the binding
+/// still finds a frontier row unread (its cursor has not passed it and no `binding_row_displays` mark holds
+/// it; `binding_lazy_unread_sql!`). Decided from the binding's own records, never the seat-wide `state`: a
+/// sibling's display never decides whether this binding is woken. Reached through `messages` by decision
+/// sequence, then `lazy_recipients` by its unique key.
+pub(crate) const LAZY_FRONTIER_UNREAD_SQL: &str = concat!(
+    "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats ss ON ss.id=b.seat_id JOIN messages m ON m.instance_id=ss.instance_id AND m.decision_seq=?3 AND m.kind='ordinary' JOIN lazy_recipients r ON r.message_id=m.id AND r.seat_id=b.seat_id WHERE b.binding_id=?1 AND b.seat_id=?2 AND r.decision_seq=?3 AND ",
+    crate::store::lazy_delivery::binding_lazy_unread_sql!(),
+    ")"
+);
+
 /// `all_offered` for each of `bindings`; no binding, nothing was served.
 fn served_by_all(
     db: &Connection,
@@ -659,42 +669,61 @@ fn served_by_all(
 
 /// Whether the reserved wake still owes the binding its prompt reaches (ht-705), decided
 /// immediately before submission: `binding` is the composer's choice; `None` is the binding a
-/// registered, recovery-hint or single-harness wake reaches (the seat-level binding). A wake reserved for any
-/// reason other than pending receipts or invitations is always owed; one reserved only for them
-/// is owed unless that binding was served every pending item of each reason in its turn. A
-/// recovery hint reaches the seat-level binding too, so it is checked the same way.
+/// registered, recovery-hint or single-harness wake reaches (the seat-level binding). The
+/// single-binding case of `wake_owed_to_reached`.
 pub fn wake_owed_to_binding(
     db: &Connection,
     reservation: &WakeReservation,
     binding: Option<&crate::protocol::ids::BindingId>,
 ) -> Result<bool, ApiError> {
+    wake_owed_to_reached(db, reservation, &[binding])
+}
+
+/// Whether the reserved wake is still owed to the process its prompt reaches (`reached`: the
+/// composer's bindings, or `[None]` for the seat-level binding a registered, recovery-hint or
+/// single-harness wake reaches), decided immediately before submission. A wake reserved for any
+/// reason other than pending receipts, invitations or the admitted delivery-row frontier (`lazy`)
+/// is always owed. Receipts and invitations are seat-wide items: one reached binding served them in
+/// its turn served the process, so they are owed only while every reached binding is unserved.
+/// Delivery rows (`lazy`) are each binding's own stream: the frontier row is owed while any reached
+/// binding still finds it unread (`LAZY_FRONTIER_UNREAD_SQL`; ht-yha.62). An empty `reached`, or a
+/// `None` with no seat-level binding, is owed.
+pub fn wake_owed_to_reached(
+    db: &Connection,
+    reservation: &WakeReservation,
+    reached: &[Option<&crate::protocol::ids::BindingId>],
+) -> Result<bool, ApiError> {
     const RECEIPT: &str = "pending_receipt";
     const INVITATION: &str = "pending_invitation";
+    const LAZY: &str = "lazy";
     if reservation.reasons.is_empty()
         || reservation
             .reasons
             .iter()
-            .any(|reason| reason != RECEIPT && reason != INVITATION)
+            .any(|reason| reason != RECEIPT && reason != INVITATION && reason != LAZY)
     {
         return Ok(true);
     }
     let seat = reservation.seat.as_str();
-    let binding = match (binding, &reservation.authority) {
-        (Some(binding), _) => binding.as_str().to_owned(),
-        (None, _) => match super::attention::seat_notice_binding(db, seat)? {
-            Some(binding) => binding,
-            None => return Ok(true),
-        },
-    };
-    let has = |reason: &str| reservation.reasons.iter().any(|r| r == reason);
-    if has(RECEIPT)
-        && !all_offered(
-            db,
-            &binding,
-            &super::attention::pending_receipts(db, seat, None)?,
-        )?
-    {
+    let mut bindings = Vec::with_capacity(reached.len());
+    for binding in reached {
+        match binding {
+            Some(binding) => bindings.push(binding.as_str().to_owned()),
+            None => match super::attention::seat_notice_binding(db, seat)? {
+                Some(binding) => bindings.push(binding),
+                None => return Ok(true),
+            },
+        }
+    }
+    if bindings.is_empty() {
         return Ok(true);
+    }
+    let has = |reason: &str| reservation.reasons.iter().any(|r| r == reason);
+    if has(RECEIPT) {
+        let pending = super::attention::pending_receipts(db, seat, None)?;
+        if none_offered(db, &bindings, &pending)? {
+            return Ok(true);
+        }
     }
     if has(INVITATION) {
         let decision_seq: i64 = db
@@ -704,15 +733,45 @@ pub fn wake_owed_to_binding(
                 |r| r.get(0),
             )
             .map_err(store_error)?;
-        if !all_offered(
-            db,
-            &binding,
-            &super::attention::pending_confirming_invitations(db, seat, None, decision_seq)?,
-        )? {
+        let pending =
+            super::attention::pending_confirming_invitations(db, seat, None, decision_seq)?;
+        if none_offered(db, &bindings, &pending)? {
             return Ok(true);
         }
     }
+    if has(LAZY) {
+        // A threshold-admitted delivery row (D9: a bare `--nudge` makes no receipt) is owed while some
+        // reached binding has not displayed the frontier row the wake was reserved for.
+        let Some(frontier) = reservation.attention_witness.frontier.lazy else {
+            return Ok(true);
+        };
+        let mut statement = db
+            .prepare_cached(LAZY_FRONTIER_UNREAD_SQL)
+            .map_err(store_error)?;
+        for binding in &bindings {
+            let unread: bool = statement
+                .query_row(params![binding, seat, frontier], |r| r.get(0))
+                .map_err(store_error)?;
+            if unread {
+                return Ok(true);
+            }
+        }
+    }
     Ok(false)
+}
+
+/// No binding of `bindings` was shown every item of `pending` in its turn (`all_offered`).
+fn none_offered(
+    db: &Connection,
+    bindings: &[String],
+    pending: &super::attention::PendingSet,
+) -> Result<bool, ApiError> {
+    for binding in bindings {
+        if all_offered(db, binding, pending)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn reason_labels(candidate: &WakeCandidate) -> Vec<String> {
@@ -769,10 +828,9 @@ pub fn reserve(
         require_host(scope,host)?;
         if !witness.valid_for(candidate,instance,nonnegative(decision_seq)?,nonnegative(episode)?,open!=0) {return Ok(None)}
         // The lazy frontier is not covered by the decision sequence: re-read it
-        // (and `wake_on`) so a reservation never rests on a moved frontier.
-        let current_lazy=match super::seats::wake_on(tx,&candidate.seat)? {
-            WakeOn::All=>super::lazy_delivery::wake_frontier(tx,candidate.seat.as_str())?,
-            WakeOn::Nudge=>None};
+        // (and the nudge threshold) so a reservation never rests on a moved frontier.
+        let current_lazy=super::lazy_delivery::wake_frontier(tx,candidate.seat.as_str(),
+            super::seats::nudge_threshold(tx,&candidate.seat)?)?;
         if current_lazy!=witness.frontier().lazy {return Ok(None)}
         let attention=EffectiveSeatAttention {has_pending_invitation:witness.pending_invitation,
             has_pending_receipt:witness.pending_receipt,latest_warning_seq:witness.latest_warning_seq.map(|seq|i64::try_from(seq).map_err(|_|api_error(ErrorCode::StoreCorrupt,"warning sequence overflow"))).transpose()?,frontier:witness.frontier()};
@@ -1282,11 +1340,14 @@ pub fn batch_window(
                         .is_some_and(|at| at <= now);
                 }
             }
-            // A `wake_on: all` seat's oldest pending lazy row batches like an
-            // ordinary receipt (DP8).
+            // The oldest pending delivery row the seat's threshold admits batches like an
+            // ordinary receipt.
             if scan.attention.frontier.lazy.is_some()
-                && let Some(at) =
-                    super::lazy_delivery::oldest_pending_at(tx, candidate.seat.as_str())?
+                && let Some(at) = super::lazy_delivery::oldest_pending_at(
+                    tx,
+                    candidate.seat.as_str(),
+                    super::seats::nudge_threshold(tx, &candidate.seat)?,
+                )?
             {
                 first = Some(first.map_or(at, |prior| prior.min(at)));
             }

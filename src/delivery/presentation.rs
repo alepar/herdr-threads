@@ -69,6 +69,36 @@ impl PresentationRenderProfile {
     }
 }
 
+/// Put a page's messages and invitations in one [`batch_key`](crate::delivery::assemble::batch_key) order (stable, so arrival breaks
+/// ties). They fill only the slots messages and invitations already hold; notices and controls keep
+/// their positions.
+pub fn order_deliveries(items: &mut [Item]) {
+    use crate::delivery::assemble::{BatchKind, batch_key};
+    let key = |item: &Item| match item {
+        Item::Message { lazy, content, .. } => Some(batch_key(
+            if *lazy {
+                BatchKind::Lazy
+            } else {
+                BatchKind::Message
+            },
+            content.priority,
+            content.deadline_at,
+        )),
+        Item::Invitation { content, .. } => {
+            Some(batch_key(BatchKind::Invitation, None, content.deadline_at))
+        }
+        _ => None,
+    };
+    let slots: Vec<usize> = (0..items.len())
+        .filter(|&n| key(&items[n]).is_some())
+        .collect();
+    let mut moved: Vec<Item> = slots.iter().map(|&n| items[n].clone()).collect();
+    moved.sort_by_key(|item| key(item));
+    for (slot, item) in slots.into_iter().zip(moved) {
+        items[slot] = item;
+    }
+}
+
 pub fn emitted_controls(items: &[Item]) -> Vec<Stamp> {
     items
         .iter()
@@ -152,12 +182,9 @@ pub fn presentation_hook_text(items: &[Item]) -> String {
     let frames = items
         .iter()
         .map(|item| match item {
-            Item::Message {
-                id,
-                lazy,
-                content: m,
-            } => FrameItem {
-                kind: if *lazy { "lazy" } else { "message" }.into(),
+            Item::Message { id, content: m, .. } => FrameItem {
+                kind: "message".into(),
+                priority: m.priority.map(|p| p.get()),
                 id: id.as_str().into(),
                 thread: Some(m.thread.as_str().into()),
                 thread_name: m.thread_name.clone(),

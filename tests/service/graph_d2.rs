@@ -336,7 +336,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let mut builtin_claim = native.clone();
         builtin_claim.seat = SeatId::new("built_in");
         for (key, claim) in [("claim-service-author", service_claim), ("claim-built-in-author", builtin_claim)] {
-            let denied = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::SendMessage(SendMessage {
+            let denied = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::SendMessage(SendMessage { priority: None,
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
                 direct_recipient: None,
                 thread: thread.clone(), body: "forged authority".into(), invited_recipients: vec![],
@@ -380,7 +380,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         }
         let (_, upgraded) = client.submit(ServiceOperation::Invite(ServiceInvite { thread: thread.clone(), seat: SeatId::new("member-0"), constraint: InvitationConstraint::Required, deadline_millis: Some(300_000), operation: OperationId::new("upgrade-joined") }), &budget()).await.unwrap();
         let ServiceResult::Invitation(upgraded) = upgraded else { panic!("missing joined upgrade"); };
-        let response = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::Inbox(InboxQuery { thread: None, claim: None, seat: Some(SeatId::new("member-0")), page: PageRequest::default() }), &budget())).join().unwrap()).unwrap();
+        let response = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::Inbox(InboxQuery { pushed: false, thread: None, claim: None, seat: Some(SeatId::new("member-0")), page: PageRequest::default() }), &budget())).join().unwrap()).unwrap();
         let CommandResult::Inbox(inbox) = response else { panic!("missing native inbox"); };
         let row = inbox.items.iter().find(|item| item.thread == thread).expect("joined member pending requirement absent from inbox");
         let pending = row.pending_requirement.as_ref().expect("joined member pending requirement lacks revision");
@@ -412,10 +412,10 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
             claim: recipient_claim, operation: OperationId::new("recipient-check-in"),
         }), &budget())).join().unwrap()).unwrap();
         let CommandResult::CheckedIn(checked_recipient) = checked_recipient else { panic!("missing recipient check-in") };
-        let sent = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::SendMessage(SendMessage {
+        let sent = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::SendMessage(SendMessage { priority: None,
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
             direct_recipient: None,
-            thread: thread.clone(), body: "native system mail".into(), invited_recipients: vec![],
+            thread: thread.clone(), body: "native system mail".into(), invited_recipients: (0..20).map(|index| SeatId::new(format!("member-{index}"))).collect(),
             deadline_millis: None, operation: OperationId::new("native-system-send"), claim: native.clone(), relays_user: false, user_intent: None,
         }), &budget())).join().unwrap()).unwrap();
         let CommandResult::MessageSent(sent) = sent else { panic!("missing system message") };

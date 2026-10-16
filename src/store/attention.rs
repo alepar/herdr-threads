@@ -57,7 +57,6 @@ use crate::{
             AttentionClass, AttentionDigest, AttentionRef, AttentionRequirement, AttentionToken,
             DIGEST_VERSION, MAX_DIGEST_IDS, binding_token_hash,
         },
-        commands::WakeOn,
         ids::{BindingId, MessageId, SeatId, ThreadId},
         results::{ApiError, ErrorCode, MAX_PENDING_WARNING_COUNT, WarningRef},
     },
@@ -620,13 +619,13 @@ pub fn add_binding_lazy(
     Ok(())
 }
 
-/// The seat's pending published lazy rows (the seat form of the per-binding predicate): one
+/// The seat's pending published delivery rows (the seat form of the per-binding predicate): one
 /// `WINDOW` walk of `lazy_recipients_seat_ordinal`, newest ordinal first, taken before any publication
 /// filter so an unpublished backlog cannot stretch it. Each windowed row
 /// counts only when its manifest is published in this instance up to the
 /// host decision sequence `through`; its key is (publication decision
-/// sequence, recipient ordinal). Lazy rows never enter the wake frontier
-/// (`wake_seat_attention` does not read them).
+/// sequence, recipient ordinal). This is the delivery-row class (any priority); only the rows
+/// the seat's nudge threshold admits enter the wake frontier (`wake_seat_attention`).
 pub fn pending_lazy(
     db: &Connection,
     instance: &str,
@@ -636,7 +635,7 @@ pub fn pending_lazy(
     let window = rows(
         db,
         concat!(
-            "SELECT w.ordinal,w.message_id,w.thread_id,(SELECT sm.decision_seq FROM send_manifests sm JOIN messages m ON m.id=sm.message_id WHERE sm.preparation_id=w.preparation_id AND sm.message_id=w.message_id AND sm.instance_id=?3 AND sm.decision_seq<=?4 AND m.delivery_mode='lazy') FROM (SELECT r.ordinal,r.preparation_id,r.message_id,r.thread_id FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND (m.id IS NULL OR ",
+            "SELECT w.ordinal,w.message_id,w.thread_id,(SELECT sm.decision_seq FROM send_manifests sm JOIN messages m ON m.id=sm.message_id WHERE sm.preparation_id=w.preparation_id AND sm.message_id=w.message_id AND sm.instance_id=?3 AND sm.decision_seq<=?4) FROM (SELECT r.ordinal,r.preparation_id,r.message_id,r.thread_id FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND (m.id IS NULL OR ",
             super::lazy_delivery::seat_unread_sql!(),
             ") ORDER BY r.ordinal DESC LIMIT ?2) w"
         ),
@@ -1554,7 +1553,8 @@ pub const WAKE_PROBES: [WakeProbe; 8] = [
 ];
 
 /// Does any pending access path hold a row for the seat? At most eight O(1)
-/// probes, stopping at the first hit. A hit is only a reason to examine the
+/// probes, then the delivery-row wake seeks of `has_wake_rows` (whose rows pass the seat-level
+/// unread post-filter, connected top-level bindings), stopping at the first hit. A hit is only a reason to examine the
 /// seat: the canonical judges still decide whether the work is actionable.
 pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, ApiError> {
     for probe in &WAKE_PROBES {
@@ -1573,7 +1573,7 @@ pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, Api
             return Ok(true);
         }
     }
-    // A `wake_on: all` seat is also examined for a pending lazy row (DP8).
+    // A seat is also examined for a pending delivery row its threshold admits.
     super::lazy_delivery::has_wake_rows(db, seat_id)
 }
 
@@ -1750,12 +1750,13 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt
     let receipts = pending_receipts(db, seat_id, None)?;
     let warnings = wake_warnings(db, seat_id, seat_pending_warnings(db, seat_id, &|| Ok(()))?)?;
     let latest_warning_seq = warnings.items.first().map(|item| item.key.0);
-    // A `wake_on: all` seat is also woken by a pending lazy row (DP8); a
-    // `nudge` seat never is, so its lazy frontier stays absent.
-    let lazy = match super::seats::wake_on(db, &SeatId::new(seat_id))? {
-        WakeOn::All => super::lazy_delivery::wake_frontier(db, seat_id)?,
-        WakeOn::Nudge => None,
-    };
+    // A pending delivery row wakes the seat iff its priority is admitted by the seat's current
+    // nudge threshold; rows it does not admit leave the lazy frontier absent.
+    let lazy = super::lazy_delivery::wake_frontier(
+        db,
+        seat_id,
+        super::seats::nudge_threshold(db, &SeatId::new(seat_id))?,
+    )?;
     Ok(WakeSeatAttention {
         attention: effective::EffectiveSeatAttention {
             has_pending_invitation: !invitations.items.is_empty(),

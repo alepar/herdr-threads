@@ -71,6 +71,7 @@ fn send_request() -> SendMessage {
 fn request_for(seat: &str, op: &str, session: &str, target: &str, exec: &str) -> SendMessage {
     SendMessage {
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Lazy,
+        priority: None,
         thread: ThreadId::new("t"),
         body: "hello".into(),
         direct_recipient: None,

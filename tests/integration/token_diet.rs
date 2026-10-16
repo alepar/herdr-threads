@@ -94,6 +94,35 @@ fn labeled(id: &str, terminal: &str, label: &str) -> Value {
     value
 }
 
+/// D8: a priority-0 delivery-row send (no ACK recipient) carries one `[p0] <id>`
+/// annotation row (4 bytes, a space, the 9-byte id, a newline: 15 bytes) in body,
+/// read and search output. The conversation in this fixture names an ACK recipient
+/// in every send, so its ACK lines mark it and it gets no row (ht-yha.66); the
+/// probes sent at the end are the p0 delivery-row sends.
+fn p0_row(id: &str) -> String {
+    format!("[p0] {id}\n")
+}
+
+/// Splits the leading `[p0] <message id>` annotation rows off a history read
+/// and returns the annotated ids with the text from the `history` kind line on.
+fn split_p0_rows(text: &str) -> (Vec<&str>, &str) {
+    let mut ids = Vec::new();
+    let mut rest = text;
+    while let Some(row) = rest.strip_prefix("[p0] ") {
+        let (id, tail) = row.split_once('\n').expect("annotation row ends");
+        assert!(
+            herdr_threads::protocol::ids::is_public_id(
+                herdr_threads::protocol::ids::prefix::MESSAGE,
+                id,
+            ),
+            "{text}"
+        );
+        ids.push(id);
+        rest = tail;
+    }
+    (ids, rest)
+}
+
 fn keep(name: &str, text: &str) {
     if let Some(dir) = std::env::var_os("HT_TOKEN_DIET_OUT") {
         let dir = PathBuf::from(dir);
@@ -180,11 +209,17 @@ fn agent_facing_machine_text_is_compact() {
             _ => (hatter, format!("Twinkle, twinkle, little bat! (#{index})")),
         };
         let mut args = vec!["send", thread.as_str(), "--body", body.as_str()];
-        if from.0 == alice_seat && index % 8 == 0 {
-            args.extend(["--require-ack", hatter_seat.as_str()]);
+        let tracked = from.0 == alice_seat && index % 8 == 0;
+        // Only an explicit ACK recipient owes a receipt (D9): the other participant is named.
+        let other = if from.0 == alice_seat {
+            hatter_seat.as_str()
         } else {
+            alice_seat.as_str()
+        };
+        if !tracked {
             args.push("--nudge");
         }
+        args.extend(["--require-ack", other]);
         let message = plugin.ok(Some(from), &args)["data"]
             .as_str()
             .unwrap()
@@ -192,7 +227,7 @@ fn agent_facing_machine_text_is_compact() {
         if index == 2 {
             long_message = message.clone();
         }
-        if args.contains(&"--require-ack") && index < 10 {
+        if tracked && index < 10 {
             acked.push(message);
         }
     }
@@ -237,10 +272,17 @@ fn agent_facing_machine_text_is_compact() {
     keep("read-recent-3.txt", &paged);
     let body = plugin.text(Some(hatter), &["body", &long_message]);
     keep("body.txt", &body);
-    let body_paged = plugin.text(Some(hatter), &["body", &long_message, "--max-bytes", "256"]);
+    // An ACK send carries no `[p0]` row (ht-yha.66); the 256 floor still fits the clipped body.
+    let body_budget = "256";
+    let body_paged = plugin.text(
+        Some(hatter),
+        &["body", &long_message, "--max-bytes", body_budget],
+    );
     keep("body-paged.txt", &body_paged);
 
-    // body: one header row, the full body verbatim and indented, no JSON.
+    // body: one header row, the full body verbatim and indented, no JSON, and no
+    // `[p0]` row for an ACK send (its ACK line marks it).
+    assert!(!body.starts_with("[p"), "{body}");
     let body_lines: Vec<&str> = body.lines().collect();
     assert_eq!(body_lines.len(), 2, "{body}");
     assert!(
@@ -251,6 +293,7 @@ fn agent_facing_machine_text_is_compact() {
     assert_eq!(body_lines[1], format!("  {long}"));
     // A clipped body names its byte range and ends with one `more:` line
     // that runs as printed.
+    assert!(!body_paged.starts_with("[p"), "{body_paged}");
     let paged_lines: Vec<&str> = body_paged.lines().collect();
     assert!(paged_lines[0].contains(" bytes=0-"), "{body_paged}");
     let more = paged_lines
@@ -264,8 +307,12 @@ fn agent_facing_machine_text_is_compact() {
     let json = plugin.ok(Some(hatter), &["body", &long_message]);
     assert_eq!(json["data"]["content"]["body_data"], json!(long));
 
-    // read --recent 20: kind line, one row per entry, one `next:` line.
-    let lines: Vec<&str> = read.lines().collect();
+    // read --recent 20: no `[p0] <id>` row (every fixture message names an ACK
+    // recipient, so its ACK line marks it: ht-yha.66), then the kind line, one row
+    // per entry, one `next:` line.
+    let (annotated, history) = split_p0_rows(&read);
+    assert!(annotated.is_empty(), "{read}");
+    let lines: Vec<&str> = history.lines().collect();
     assert_eq!(lines[0], "history", "{read}");
     assert_eq!(lines.len(), 22, "{read}");
     assert_eq!(
@@ -330,7 +377,9 @@ fn agent_facing_machine_text_is_compact() {
     // The continuation runs exactly as printed and reaches the oldest rows.
     let args: Vec<&str> = next.split_whitespace().skip(1).collect();
     let rest = plugin.text(Some(hatter), &args);
-    assert!(rest.starts_with("history\n#4 "), "{rest}");
+    let (rest_annotated, rest_history) = split_p0_rows(&rest);
+    assert!(rest_history.starts_with("history\n#4 "), "{rest}");
+    assert!(rest_annotated.is_empty(), "{rest}");
     assert!(!rest.contains("next: "), "{rest}");
     // The same cursor on another thread is refused as an invalid cursor.
     let wrong = plugin
@@ -420,4 +469,80 @@ fn agent_facing_machine_text_is_compact() {
     assert!(bounded.len() <= 256, "{} bytes", bounded.len());
     assert!(show.len() < 1_000, "{} bytes", show.len());
     assert!(paged.ends_with(" --limit 3\n"), "{paged}");
+
+    // A small --max-bytes bound still returns a p0 message (ht-yha.50): the refit
+    // reserves only the `[p0] <id>` row, so body/read/search work from the floor up.
+    // The probes are p0 delivery-row sends (no ACK recipient), the marked kind.
+    let long_probe = plugin.ok(
+        Some(alice),
+        &["send", &thread, "--body", long.as_str(), "--nudge"],
+    )["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let probe = plugin.ok(
+        Some(alice),
+        &["send", &thread, "--body", "tiny-p0-probe", "--nudge"],
+    )["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for bound in [256, 257, 270, 271, 272, 300, 341, 342] {
+        let bound_arg = bound.to_string();
+        let body = plugin.text(
+            Some(hatter),
+            &["body", &long_probe, "--max-bytes", &bound_arg],
+        );
+        assert!(body.len() <= bound, "body {bound}: {body}");
+        assert!(
+            body.starts_with(&p0_row(&long_probe)),
+            "body {bound}: {body}"
+        );
+        let header = body
+            .lines()
+            .find(|l| l.starts_with('#') && l.contains(&format!(" {long_probe} ")))
+            .unwrap_or_else(|| panic!("body {bound} header: {body}"));
+        let range = header.split("bytes=").nth(1);
+        match range {
+            Some(range) => {
+                let end: usize = range
+                    .split('/')
+                    .next()
+                    .unwrap()
+                    .strip_prefix("0-")
+                    .unwrap_or_else(|| panic!("body {bound} range: {body}"))
+                    .parse()
+                    .unwrap();
+                assert!(end > 0, "body {bound}: {body}");
+            }
+            None => assert!(body.lines().count() >= 3, "body {bound} full: {body}"),
+        }
+        let read = plugin.text(
+            Some(hatter),
+            &["read", &thread, "--recent", "1", "--max-bytes", &bound_arg],
+        );
+        assert!(read.len() <= bound, "read {bound}: {read}");
+        assert!(read.starts_with("[p0] "), "read {bound}: {read}");
+        assert!(read.contains(&probe), "read {bound}: {read}");
+    }
+    // A one-hit search page needs 574 bytes from the daemon even unannotated
+    // (`search match cannot fit`, required minimum 574), so search is measured from
+    // there: the `[p0]` row never pushes a fitting page into a refusal.
+    for bound in [574, 575, 589, 600] {
+        let bound_arg = bound.to_string();
+        let search = plugin.text(
+            Some(hatter),
+            &[
+                "search",
+                "tiny-p0-probe",
+                "--thread",
+                &thread,
+                "--max-bytes",
+                &bound_arg,
+            ],
+        );
+        assert!(search.len() <= bound, "search {bound}: {search}");
+        assert!(search.starts_with("[p0] "), "search {bound}: {search}");
+        assert!(search.contains(&probe), "search {bound}: {search}");
+    }
 }

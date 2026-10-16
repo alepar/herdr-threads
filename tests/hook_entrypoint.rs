@@ -861,6 +861,8 @@ struct Fixture {
     host: PathBuf,
     db: PathBuf,
     node_dir: PathBuf,
+    /// The elected daemon's endpoint, for raw protocol calls ([`Fixture::call`]).
+    descriptor: herdr_threads::daemon::ownership::EndpointDescriptor,
     stop: Cancellation,
     worker: Option<std::thread::JoinHandle<()>>,
     check_ins: Arc<AtomicU64>,
@@ -1070,6 +1072,7 @@ impl Fixture {
             host,
             db,
             node_dir: paths.node_dir.clone(),
+            descriptor,
             stop,
             worker: Some(worker),
             check_ins,
@@ -1084,6 +1087,29 @@ impl Fixture {
             codex,
             _gate: gate,
         }
+    }
+    /// One raw protocol command to the elected daemon (for shapes the CLI can no longer produce).
+    fn call(
+        &self,
+        command: Command,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        use herdr_threads::ports::LocalClient;
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let client = herdr_threads::client::local::LocalSocketClient::new(
+            self.descriptor.endpoint.clone(),
+            Arc::clone(&clock),
+            self.descriptor.node_uuid,
+            Some(self.descriptor.boot_id),
+        );
+        client.call(
+            command,
+            &CallBudget {
+                deadline: herdr_threads::protocol::time::MonoInstant(
+                    clock.monotonic_now().0 + 5_000,
+                ),
+                cancellation: Cancellation::default(),
+            },
+        )
     }
     fn hook(&self, pane: &str, stdin: &[u8]) -> Hook {
         run_hook_traced(
@@ -1819,6 +1845,18 @@ fn pair_accept_delivers_mixed_opening_mail_once() {
         lazy_open,
         "unjoined ordinary display does not pass its cursor gap"
     );
+    // The display above the cursor gap is remembered per binding (binding_row_displays).
+    let marked = |body: &str| {
+        fx.count(&format!(
+            "SELECT count(*) FROM binding_row_displays d JOIN messages m ON m.id=d.message_id JOIN occupant_bindings b ON b.binding_id=d.binding_id WHERE m.body='{body}' AND b.seat_id='seat' AND b.native_session='sess-1'"
+        ))
+    };
+    assert_eq!(
+        marked("lazy-middle"),
+        1,
+        "the first display marked lazy-middle"
+    );
+    assert_eq!(marked("lazy-last"), 1, "the first display marked lazy-last");
     fx.cooperative("seat", "w9:p1", &["ack", &acked]);
     fx.cooperative("seat", "w9:p1", &["accept", &thread]);
     assert_eq!(
@@ -1827,12 +1865,14 @@ fn pair_accept_delivers_mixed_opening_mail_once() {
         "acceptance preserves the existing reader cursor"
     );
     let after = hook("after accept");
+    // Shown once in total: the before-accept display marked lazy-middle and lazy-last
+    // (binding_row_displays), so accept does not offer them again.
     for (body, n) in [
         ("ordinary-acked", 1),
         ("ordinary-pending", 1),
         ("lazy-open", 0),
-        ("lazy-middle", 1),
-        ("lazy-last", 1),
+        ("lazy-middle", 0),
+        ("lazy-last", 0),
     ] {
         assert_eq!(times(&after, body), n, "after accept, {body}: {after}");
     }
@@ -2463,25 +2503,20 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     let displayed = || {
         fx.count("SELECT count(*) FROM lazy_recipients WHERE seat_id='seat' AND state='displayed'")
     };
-    let lazy = |body: &str| {
-        data(fx.cooperative(
-            "peer",
-            "w9:p2",
-            &["send", &thread, "--lazy", "--body", body],
-        ))
-    };
+    let lazy =
+        |body: &str| data(fx.cooperative("peer", "w9:p2", &["send", &thread, "--body", body]));
 
     // 1. Lazy-only arrival: the digest moves, the next tool call injects the
     // row whole, and only then completes it; the repeat is quiet.
     let first = lazy("lazy hello from the peer");
     let context = context_of(&tool_hook("lazy only"));
     assert!(
-        context.contains(&format!("lazy=1 [{first}@{thread}]")),
+        context.contains(&format!("messages=1 [{first}@{thread}]")),
         "{context}"
     );
     assert!(context.contains(INBOX_HEADER), "{context}");
     assert!(context.contains("lazy hello from the peer"), "{context}");
-    assert!(context.contains("[lazy]"), "{context}");
+    assert!(!context.contains("[lazy]"), "{context}");
     assert_eq!(displayed(), 1);
     quiet("after lazy completion");
 
@@ -2498,7 +2533,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert_eq!(child.code, Some(0), "{}", child.stderr);
     let notice = context_of(&child);
     assert!(
-        notice.contains(&format!("lazy=1 [{second}@{thread}]")),
+        notice.contains(&format!("messages=1 [{second}@{thread}]")),
         "{notice}"
     );
     assert!(
@@ -2545,7 +2580,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     let third = lazy(&big);
     let context = context_of(&tool_hook("oversized"));
     assert!(
-        context.contains(&format!("lazy=1 [{third}@{thread}]")),
+        context.contains(&format!("messages=1 [{third}@{thread}]")),
         "{context}"
     );
     assert!(!context.contains(&big[..100]), "{context}");
@@ -2634,7 +2669,7 @@ fn lazy_mail_reaches_the_next_codex_tool_hook() {
     let id = data(fx.cooperative(
         "peer",
         "w9:p2",
-        &["send", &thread, "--lazy", "--body", "codex lazy body"],
+        &["send", &thread, "--body", "codex lazy body"],
     ));
     let context = context_of(&codex_tool(2));
     assert!(context.contains(INBOX_HEADER), "{context}");
@@ -2858,7 +2893,7 @@ fn lazy_mail_reaches_the_next_codex_user_prompt_hook() {
     let id = data(fx.cooperative(
         "peer",
         "w9:p2",
-        &["send", &thread, "--lazy", "--body", "codex turn body"],
+        &["send", &thread, "--body", "codex turn body"],
     ));
     let delivered = codex_turn(2);
     assert_eq!(

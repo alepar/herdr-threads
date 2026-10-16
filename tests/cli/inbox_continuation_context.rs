@@ -506,14 +506,9 @@ fn traverse(w: &World, who: usize, human: bool, args: &[&str], readonly: bool, s
     }
     assert!(pages > 1, "multi-page UTF-8 chain required");
     assert_eq!(recovered, body);
-    assert_eq!(
-        ordinary_recovered,
-        if selected == receipt_seat {
-            ordinary_body
-        } else {
-            String::new()
-        }
-    );
+    // Every audience member sees the message: the explicit ACK recipient through its receipt, the
+    // others through a delivery row (D9).
+    assert_eq!(ordinary_recovered, ordinary_body);
     assert_eq!(
         w.state(&lazy, selected),
         if readonly { "pending" } else { "displayed" }
@@ -569,11 +564,20 @@ fn traverse(w: &World, who: usize, human: bool, args: &[&str], readonly: bool, s
             .iter()
             .filter(|v| v["command"]["kind"] == "complete_inbox_delivery")
             .collect();
-        assert_eq!(complete.len(), 1);
-        assert_eq!(
-            complete[0]["command"]["args"]["messages"],
-            serde_json::json!([lazy])
-        );
+        // A human never owes a receipt (A5a): its explicit-ACK message is a delivery row too, so
+        // the display completes both rows. Otherwise only the lazy row completes.
+        let mut completed: Vec<_> = complete
+            .iter()
+            .flat_map(|v| v["command"]["args"]["messages"].as_array().unwrap().clone())
+            .map(|m| m.as_str().unwrap().to_owned())
+            .collect();
+        completed.sort();
+        let mut expected = vec![lazy.clone()];
+        if human {
+            expected.push(ordinary.clone());
+        }
+        expected.sort();
+        assert_eq!(completed, expected);
         for mutation in &mutations {
             let claim = &mutation["command"]["args"]["claim"];
             assert_eq!(claim["seat"], w.seats[selected]);

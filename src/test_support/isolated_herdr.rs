@@ -55,7 +55,17 @@ pub struct IsolatedHerdr {
 }
 
 fn helper(args: &[&OsStr]) -> Output {
+    helper_with_path(args, None)
+}
+
+fn helper_with_path(args: &[&OsStr], path: Option<&OsStr>) -> Output {
     let mut cmd = Command::new("sh");
+    if let Some(path) = path {
+        cmd.env("PATH", path);
+        // The server's environment is every pane's: no caller harness markers (a CLAUDE_PID
+        // from the session running the tests would name one process for every Claude in it).
+        crate::test_support::isolation::scrub_env(&mut cmd);
+    }
     cmd.arg("-c")
         .arg(r#". "$1"; shift; "$@""#)
         .arg("sh")
@@ -117,6 +127,29 @@ impl IsolatedHerdr {
 
     pub fn start(&self) {
         self.run_ok("ih_start", true);
+    }
+    /// Start the server with `dir` first on its PATH, so every pane and tab it
+    /// creates (including ones another process asks it for) finds the
+    /// programs there. `herdr` itself still resolves from the inherited PATH
+    /// unless `dir` holds one.
+    pub fn start_with_path_prefix(&self, dir: &Path) {
+        let mut path = OsString::from(dir.as_os_str());
+        if let Some(inherited) = std::env::var_os("PATH") {
+            path.push(":");
+            path.push(inherited);
+        }
+        let args = [
+            OsStr::new("ih_start"),
+            self.root.as_os_str(),
+            OsStr::new(&self.case),
+        ];
+        let out = helper_with_path(&args, Some(&path));
+        assert!(
+            out.status.success(),
+            "ih_start failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     pub fn stop(&self) {
         self.run_ok("ih_stop", false);

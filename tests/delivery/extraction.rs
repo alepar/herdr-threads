@@ -56,6 +56,7 @@ impl PageSource for Scripted {
 
 fn message(id: &str, body: &str, start: u64, end: u64, len: u64, ack: bool) -> InboxBatchV2Item {
     InboxBatchV2Item::Message {
+        priority: None,
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),
         message: MessageId::new(id),
@@ -70,6 +71,7 @@ fn message(id: &str, body: &str, start: u64, end: u64, len: u64, ack: bool) -> I
         body_end: end,
         body_len: len,
         ack_candidate: ack.then(|| MessageId::new(id)),
+        deadline_at: None,
     }
 }
 
@@ -79,6 +81,7 @@ fn whole(id: &str, body: &str) -> InboxBatchV2Item {
 
 fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
     InboxBatchV2Item::LazyMessage {
+        priority: None,
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),
         message: MessageId::new(id),
@@ -478,6 +481,55 @@ fn the_sink_can_halt_or_fail_the_drain() {
 }
 
 #[test]
+fn a_sink_halt_never_fetches_the_next_page() {
+    let mut source = Scripted::of(vec![
+        vec![whole("m1", "a"), whole("m2", "b")],
+        vec![whole("m3", "c")],
+    ]);
+    let mut seen = Vec::new();
+    let result = drain_pages::<()>(&mut source, &mut Assembler::default(), 1, 10, |event| {
+        seen.push(event);
+        Ok(Stop::Halt)
+    });
+    assert!(result.is_ok());
+    assert_eq!(ids(&seen), ["m1"]);
+    assert_eq!(source.cursors, vec![None], "page 2 was never requested");
+}
+
+#[test]
+fn pages_are_emitted_as_they_arrive() {
+    use std::{cell::Cell, rc::Rc};
+    struct Counting {
+        inner: Scripted,
+        served: Rc<Cell<usize>>,
+    }
+    impl PageSource for Counting {
+        fn page(&mut self, cursor: Option<String>) -> Result<Page<InboxBatchV2Item>, PageError> {
+            self.served.set(self.served.get() + 1);
+            self.inner.page(cursor)
+        }
+    }
+    let served = Rc::new(Cell::new(0));
+    let mut source = Counting {
+        inner: Scripted::of(vec![vec![whole("m1", "a")], vec![whole("m2", "b")]]),
+        served: Rc::clone(&served),
+    };
+    let mut at = Vec::new();
+    drain_pages::<()>(&mut source, &mut Assembler::default(), 1, 10, |event| {
+        if let DrainEvent::Item(item) = &event {
+            at.push((item.id.as_str().to_owned(), served.get()));
+        }
+        Ok(Stop::Continue)
+    })
+    .unwrap();
+    assert_eq!(
+        at,
+        [("m1".to_owned(), 1), ("m2".to_owned(), 2)],
+        "each item is emitted before the next page is served"
+    );
+}
+
+#[test]
 fn label_flattens_controls_trims_and_cuts_at_120_chars() {
     assert_eq!(
         label("release plan\nsecond\u{2028}line").as_deref(),
@@ -502,12 +554,13 @@ fn lazy_and_service_items_carry_their_own_names() {
         &mut Assembler::default(),
         1,
     );
-    let lazy_item = item_of(&events[0]);
+    // The priority-less plain message is p0 and the lazy row p1, so the batch puts the plain one first.
+    let lazy_item = item_of(&events[1]);
     assert_eq!(lazy_item.kind, DeliveryKind::Lazy);
     assert!(!lazy_item.message.ack_required);
     assert_eq!(lazy_item.message.sender_name.as_deref(), Some("service"));
     assert_eq!(lazy_item.message.thread_name.as_deref(), Some("topic"));
-    let plain = item_of(&events[1]);
+    let plain = item_of(&events[0]);
     assert!(!plain.message.ack_required, "no ack_candidate");
     assert_eq!(plain.message.sender_name.as_deref(), Some("sender"));
 }

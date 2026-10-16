@@ -7,6 +7,7 @@ pub mod handoff;
 pub mod ids;
 pub mod output;
 pub mod pagination;
+pub mod priority;
 pub mod results;
 pub mod service;
 pub mod summary;

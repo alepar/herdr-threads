@@ -59,6 +59,7 @@ fn setup(iso: &TestIsolation) -> (StoreContext, Connection) {
 
 fn send_request() -> SendMessage {
     SendMessage {
+        priority: None,
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Lazy,
         thread: ThreadId::new("t"),
         body: "hello".into(),
@@ -164,6 +165,10 @@ fn send(
     request.operation = OperationId::new(op);
     request.body = body.into();
     request.delivery_mode = mode;
+    // An ordinary send is the explicit-ACK shape: only the named recipient owes a receipt (D9).
+    if mode == DeliveryMode::Ordinary {
+        request.invited_recipients = vec![SeatId::new("b")];
+    }
     ready(context, conn, &request);
     let CommandResult::MessageSent(result) = messages::publish_send(
         context,
@@ -187,6 +192,7 @@ fn query(
         context,
         "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             claim: None,
             seat: Some(SeatId::new("b")),
@@ -227,16 +233,10 @@ fn complete(
     store.mutate(mutation, permit, &budget())
 }
 #[test]
-fn lazy_inbox_v2_bounded_round_robin_opportunity() {
+fn lazy_inbox_v2_bounded_priority_opportunity() {
+    // Rotation is gone: the explicit-ACK receipt (p0, with a deadline) precedes the p1 delivery
+    // row whichever was sent first, and a one-row page resumes exactly after it.
     let (iso, context, mut conn) = fixture("lazy-v2-fair");
-    send(
-        &iso,
-        &context,
-        &mut conn,
-        "ordinary",
-        &"retained".repeat(1000),
-        DeliveryMode::Ordinary,
-    );
     let lazy = send(
         &iso,
         &context,
@@ -245,32 +245,40 @@ fn lazy_inbox_v2_bounded_round_robin_opportunity() {
         "quiet",
         DeliveryMode::Lazy,
     );
+    send(
+        &iso,
+        &context,
+        &mut conn,
+        "ordinary",
+        &"retained".repeat(1000),
+        DeliveryMode::Ordinary,
+    );
     let page = query(
         &context,
         PageRequest {
             limit: 1,
-            max_bytes: 4096,
+            max_bytes: 16384,
             ..Default::default()
         },
         &OutputSpec::default(),
     );
-    assert!(
-        matches!(&page.items[0], InboxBatchV2Item::LazyMessage { message, .. } if message == &lazy)
-    );
+    assert!(matches!(&page.items[0], InboxBatchV2Item::Message { .. }));
     assert!(page.has_more);
     let later = query(
         &context,
         PageRequest {
             cursor: page.next_cursor,
             limit: 1,
-            max_bytes: 4096,
+            max_bytes: 16384,
         },
         &OutputSpec::default(),
     );
-    assert!(matches!(&later.items[0], InboxBatchV2Item::Message { .. }));
+    assert!(
+        matches!(&later.items[0], InboxBatchV2Item::LazyMessage { message, .. } if message == &lazy)
+    );
 }
 #[test]
-fn lazy_inbox_v2_unpublished_empty_continuation() {
+fn lazy_inbox_v2_unpublished_rows_are_never_visited() {
     let (_iso, context, mut conn) = fixture("lazy-v2-unpublished");
     ready(&context, &mut conn, &send_request());
     for n in 0..150 {
@@ -278,18 +286,15 @@ fn lazy_inbox_v2_unpublished_empty_continuation() {
         request.operation = OperationId::new(format!("unpublished-{n}"));
         ready(&context, &mut conn, &request);
     }
+    // Staged rows carry no publication decision: the ordered seek never visits one, so the
+    // traversal is exact and complete at once (no false continuation to walk 150 rows).
     let page = query(&context, PageRequest::default(), &OutputSpec::default());
     assert!(page.items.is_empty());
-    assert!(page.has_more);
-    let captured = herdr_threads::protocol::pagination::InboxBatchV2CursorState::decode(
-        page.next_cursor.as_ref().unwrap(),
-    )
-    .unwrap();
-    assert!((1..=100).contains(&captured.lazy_after_ordinal));
-    assert_eq!(captured.lazy_high_water_ordinal, 151);
+    assert!(!page.has_more);
+    assert!(page.next_cursor.is_none());
     let text = String::from_utf8(
         encode_selected(
-            &CommandResult::InboxBatchV2(page.clone()),
+            &CommandResult::InboxBatchV2(page),
             &OutputSpec {
                 format: OutputFormat::Text,
                 ..Default::default()
@@ -298,18 +303,7 @@ fn lazy_inbox_v2_unpublished_empty_continuation() {
         .unwrap(),
     )
     .unwrap();
-    assert!(text.contains("next:"));
-    assert!(!text.contains("empty"));
-    let last = query(
-        &context,
-        PageRequest {
-            cursor: page.next_cursor,
-            ..Default::default()
-        },
-        &OutputSpec::default(),
-    );
-    assert!(last.items.is_empty());
-    assert!(!last.has_more);
+    assert!(!text.contains("next:"));
 }
 #[test]
 fn lazy_inbox_v2_utf8_body_output_budget() {
@@ -560,6 +554,7 @@ fn lazy_inbox_addressed_leave_retire_archive() {
         &context,
         "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             claim: None,
             seat: Some(SeatId::new("b")),
@@ -600,6 +595,7 @@ fn lazy_inbox_v2_rejects_changed_binding_foreign_and_bad_body_cursor() {
             &context,
             "34750f98bd59fcfc946da45aaabe933b",
             &Command::InboxBatchV2(InboxQuery {
+                pushed: false,
                 thread: None,
                 claim: None,
                 seat: Some(SeatId::new("b")),
@@ -615,9 +611,9 @@ fn lazy_inbox_v2_rejects_changed_binding_foreign_and_bad_body_cursor() {
     for bad in 0..4 {
         let mut state = captured.clone();
         match bad {
-            0 => state.body.as_mut().unwrap().offset = 1,
-            1 => state.body.as_mut().unwrap().body_len += 1,
-            2 => state.body.as_mut().unwrap().message = MessageId::new("absent"),
+            0 => state.body.as_mut().unwrap().1.offset = 1,
+            1 => state.body.as_mut().unwrap().1.body_len += 1,
+            2 => state.body.as_mut().unwrap().1.message = MessageId::new("absent"),
             _ => state.binding_generation = Some(2),
         }
         assert_eq!(
@@ -753,7 +749,15 @@ fn lazy_inbox_v2_small_budget_and_read_only_queries() {
         let page = query(&context, PageRequest::default(), &spec);
         let encoded = encode_selected(&CommandResult::InboxBatchV2(page), &spec).unwrap();
         if format == OutputFormat::Text {
-            assert!(String::from_utf8(encoded).unwrap().contains("[lazy]"));
+            let text = String::from_utf8(encoded).unwrap();
+            // A default-priority (p1) delivery row is silent; the old `[lazy]` marker is gone.
+            assert!(
+                text.contains("message ") && !text.contains("[lazy]"),
+                "{text}"
+            );
+        } else {
+            let json = String::from_utf8(encoded).unwrap();
+            assert!(json.contains("\"priority\":1"), "{json}");
         }
         assert_eq!(
             conn.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))
@@ -764,6 +768,7 @@ fn lazy_inbox_v2_small_budget_and_read_only_queries() {
             &context,
             "34750f98bd59fcfc946da45aaabe933b",
             &Command::InboxBatchV2(InboxQuery {
+                pushed: false,
                 thread: None,
                 claim: None,
                 seat: Some(SeatId::new("b")),
@@ -822,9 +827,16 @@ fn lazy_inbox_v2_preserves_invitations_warnings_and_ordinary_candidates() {
     )
     .unwrap();
     let page = query(&context, PageRequest::default(), &OutputSpec::default());
+    // Merged order: the priority-0 receipt (deadline), the deadline-less invitation and warning
+    // by publication, then the priority-1 row.
     assert!(matches!(
-        &page.items[0],
-        InboxBatchV2Item::LazyMessage { .. }
+        page.items.as_slice(),
+        [
+            InboxBatchV2Item::Message { .. },
+            InboxBatchV2Item::Invitation { .. },
+            InboxBatchV2Item::Warning { .. },
+            InboxBatchV2Item::LazyMessage { .. }
+        ]
     ));
     assert!(page.items.iter().any(
         |i| matches!(i,InboxBatchV2Item::Invitation{invitation,..}if invitation.as_str()=="inv")
@@ -1227,12 +1239,14 @@ fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() 
     }
     for command in [
         Command::InboxBatch(InboxQuery {
+            pushed: false,
             thread: None,
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
             claim: Some(claim()),
         }),
         Command::InboxBatchV2(InboxQuery {
+            pushed: false,
             thread: None,
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
@@ -1260,6 +1274,56 @@ fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() 
             "legacy item bytes stay unchanged"
         );
     }
+}
+
+/// ht-yha.65 (main review M1): a stored pre-upgrade lazy invitation keeps its no-wake shape. It is
+/// listed at p0 (ahead of an older p1 row) but is never in the confirming set the wake readers use.
+#[test]
+fn a_pre_upgrade_lazy_invitation_is_listed_at_p0_and_never_wakes() {
+    let (iso, context, mut conn) = fixture("pre-upgrade-lazy-invitation");
+    let p1 = send_priority(&iso, &context, &mut conn, "p1", Some(1), None);
+    let after: i64 = conn
+        .query_row("SELECT decision_seq+1 FROM local_node", [], |r| r.get(0))
+        .unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node) VALUES('inv-lazy','t','b',2,'pending',0,?1,300,300,'lazy','a',(SELECT id FROM local_node))", [after]).unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node) VALUES('inv-ack','t','b',3,'pending',0,?1,300,300,'require_ack','a',(SELECT id FROM local_node))", [after]).unwrap();
+    conn.execute("UPDATE local_node SET decision_seq=?1", [after])
+        .unwrap();
+    let page = query(
+        &context,
+        PageRequest {
+            limit: 50,
+            max_bytes: 65536,
+            ..Default::default()
+        },
+        &OutputSpec::default(),
+    );
+    let ids: Vec<_> = page.items.iter().map(item_id).collect();
+    let position = |id: &str| ids.iter().position(|x| x == id).unwrap();
+    assert!(
+        position("inv-lazy") < position(p1.as_str()),
+        "the lazy invitation sorts as p0, ahead of the older p1 row: {ids:?}"
+    );
+    let lazy = page
+        .items
+        .iter()
+        .find(|item| item_id(item) == "inv-lazy")
+        .unwrap();
+    let InboxBatchV2Item::Invitation { confirmation, .. } = lazy else {
+        panic!("expected an invitation, got {lazy:?}")
+    };
+    assert_eq!(
+        *confirmation,
+        Some(herdr_threads::protocol::commands::InvitationConfirmation::Lazy)
+    );
+    let confirming: Vec<String> =
+        herdr_threads::store::attention::pending_confirming_invitations(&conn, "b", None, after)
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+    assert_eq!(confirming, ["inv-ack"], "the lazy invitation never wakes");
 }
 
 /// Delivery-policy DP8: the InboxBatchV2 query marks a lazy row `wakes` only
@@ -1299,20 +1363,20 @@ fn lazy_inbox_wakes_follows_wake_on_and_mod_ack_completes_it() {
         !wakes_of(&first_page(&context)),
         "default seat does not wake"
     );
-    conn.execute("UPDATE seats SET wake_on='all' WHERE id='b'", [])
+    conn.execute("UPDATE seats SET nudge_threshold=-1 WHERE id='b'", [])
         .unwrap();
     let page = first_page(&context);
     assert!(wakes_of(&page), "wake_on=all seat wakes");
     // Wire: the waking row carries the key, nothing else changed.
     let wire = serde_json::to_value(&page.items[0]).unwrap();
     assert_eq!(wire["wakes"], serde_json::json!(true));
-    conn.execute("UPDATE seats SET wake_on='nudge' WHERE id='b'", [])
+    conn.execute("UPDATE seats SET nudge_threshold=0 WHERE id='b'", [])
         .unwrap();
     let wire = serde_json::to_value(&first_page(&context).items[0]).unwrap();
     assert!(wire.as_object().unwrap().get("wakes").is_none());
 
     // A push-channel ACK (`watch ack --via submit`) completes it as a lazy row.
-    conn.execute("UPDATE seats SET wake_on='all' WHERE id='b'", [])
+    conn.execute("UPDATE seats SET nudge_threshold=-1 WHERE id='b'", [])
         .unwrap();
     conn.execute(
         "UPDATE occupant_bindings SET harness='claude' WHERE seat_id='b'",
@@ -1354,4 +1418,462 @@ fn lazy_inbox_wakes_follows_wake_on_and_mod_ack_completes_it() {
         first_page(&context).items.is_empty(),
         "the completed lazy row leaves the inbox"
     );
+}
+
+// ---- inbox v2 min-head merge (ht-yha.5.4) ----
+
+/// `send` with an explicit priority (an ordinary-mode send naming no ACK recipient: delivery rows
+/// for every member) and an optional deadline (which names the explicit ACK recipient `b`).
+fn send_priority(
+    iso: &TestIsolation,
+    context: &StoreContext,
+    conn: &mut Connection,
+    op: &str,
+    priority: Option<u8>,
+    deadline_millis: Option<u64>,
+) -> MessageId {
+    use herdr_threads::protocol::priority::DeliveryPriority;
+    let mut request = send_request();
+    request.operation = OperationId::new(op);
+    request.body = op.into();
+    request.delivery_mode = DeliveryMode::Ordinary;
+    request.priority = priority.map(|p| DeliveryPriority::new(p).unwrap());
+    if deadline_millis.is_some() {
+        request.invited_recipients = vec![SeatId::new("b")];
+        request.deadline_millis = deadline_millis;
+    }
+    ready(context, conn, &request);
+    let CommandResult::MessageSent(result) = messages::publish_send(
+        context,
+        conn,
+        &request,
+        &mut permit(iso, &request),
+        &budget(),
+        || 65536,
+    )
+    .unwrap() else {
+        panic!("send");
+    };
+    result
+}
+
+/// A published delivery row for seat `b` (message `raw-<n>` at sequence `n`, priority `p`,
+/// publication decision `d`), written with the send path's statements so large backlogs and exact
+/// decisions need no per-row send.
+fn raw_row(conn: &Connection, n: i64, p: u8, d: i64, body: &str) -> MessageId {
+    use rusqlite::params;
+    let id = format!("msg-raw-{n}");
+    let prep = format!("prep-raw-{n}");
+    conn.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',?2)", params![prep, p]).unwrap();
+    conn.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES(?1,?2,'t','b',?3)", params![prep, id, p]).unwrap();
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,actor_seat_id,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,?4,0,'lazy','a',?5)", params![id, n, d, body, p]).unwrap();
+    conn.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'34750f98bd59fcfc946da45aaabe933b','t',?3,0,?4,0,1,0)", params![prep, id, d, n]).unwrap();
+    conn.execute("UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1 AND decision_seq IS NULL", params![prep, d]).unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=max(decision_seq,?1)",
+        [d],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE threads SET next_sequence=max(next_sequence,?1) WHERE id='t'",
+        [n + 1],
+    )
+    .unwrap();
+    MessageId::new(id)
+}
+
+fn item_id(item: &InboxBatchV2Item) -> String {
+    match item {
+        InboxBatchV2Item::Message { message, .. }
+        | InboxBatchV2Item::LazyMessage { message, .. } => message.as_str().to_owned(),
+        InboxBatchV2Item::Invitation { invitation, .. } => invitation.as_str().to_owned(),
+        InboxBatchV2Item::Warning { warning, .. } => warning.as_str().to_owned(),
+        other => panic!("unexpected item {other:?}"),
+    }
+}
+
+/// The ids of every page of a traversal, in order, and the page count.
+fn traverse(
+    context: &StoreContext,
+    limit: u16,
+    max_bytes: u32,
+    spec: &OutputSpec,
+) -> (Vec<String>, usize) {
+    let (mut cursor, mut ids, mut pages) = (None, Vec::new(), 0);
+    loop {
+        let page = query(
+            context,
+            PageRequest {
+                cursor: cursor.clone(),
+                limit,
+                max_bytes,
+            },
+            spec,
+        );
+        pages += 1;
+        ids.extend(page.items.iter().map(item_id));
+        if !page.has_more {
+            return (ids, pages);
+        }
+        assert_ne!(page.next_cursor, cursor, "every page advances");
+        cursor = page.next_cursor;
+        assert!(pages < 500, "traversal must terminate");
+    }
+}
+
+#[test]
+fn p0_row_behind_500_p1_rows_is_first_in_one_page() {
+    let (_iso, context, conn) = fixture("merge-p0-first");
+    for n in 0..500 {
+        raw_row(&conn, 1000 + n, 1, 100 + n, "p1");
+    }
+    let p0 = raw_row(&conn, 2000, 0, 700, "p0");
+    let page = query(
+        &context,
+        PageRequest {
+            limit: 5,
+            ..Default::default()
+        },
+        &OutputSpec::default(),
+    );
+    let ids: Vec<_> = page.items.iter().map(item_id).collect();
+    assert_eq!(
+        ids,
+        [
+            p0.as_str(),
+            "msg-raw-1000",
+            "msg-raw-1001",
+            "msg-raw-1002",
+            "msg-raw-1003"
+        ],
+        "the late p0 row precedes the 500 older p1 rows, which follow in publication order"
+    );
+    assert!(page.has_more);
+}
+
+#[test]
+fn partial_body_resumes_first_and_becomes_last_key() {
+    use herdr_threads::protocol::{
+        pagination::{InboxBatchV2CursorState as State, InboxBatchV2Source},
+        priority::{DeliveryOrderKey, DeliveryPriority, SourceRank},
+    };
+    let (_iso, context, conn) = fixture("merge-partial-body");
+    let big = raw_row(&conn, 1000, 0, 10, &"x".repeat(3000));
+    let small = raw_row(&conn, 1001, 0, 11, "after");
+    let page = |cursor: Option<String>, limit, max_bytes| {
+        query(
+            &context,
+            PageRequest {
+                cursor,
+                limit,
+                max_bytes,
+            },
+            &OutputSpec::default(),
+        )
+    };
+    let first = page(None, 10, 2048);
+    let [
+        InboxBatchV2Item::LazyMessage {
+            message,
+            body_end,
+            body_len,
+            ..
+        },
+    ] = first.items.as_slice()
+    else {
+        panic!("one chunk of the big row: {:?}", first.items);
+    };
+    assert_eq!((message, *body_len), (&big, 3000));
+    assert!(*body_end > 0 && *body_end < 3000);
+    let cursor = State::decode(first.next_cursor.as_ref().unwrap()).unwrap();
+    assert_eq!(cursor.body.as_ref().unwrap().0, InboxBatchV2Source::Lazy);
+    assert_eq!(cursor.last, None, "a partly shown body is not yet emitted");
+    // The next page resumes that body before anything else, even with room for one row only.
+    let second = page(first.next_cursor, 1, 16384);
+    let [
+        InboxBatchV2Item::LazyMessage {
+            message,
+            body_start,
+            body_end: end,
+            ..
+        },
+    ] = second.items.as_slice()
+    else {
+        panic!("the resumed remainder: {:?}", second.items);
+    };
+    assert_eq!((message, *body_start, *end), (&big, *body_end, 3000));
+    let ordinal: i64 = conn
+        .query_row(
+            "SELECT ordinal FROM lazy_recipients WHERE message_id=?1",
+            [big.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let key = DeliveryOrderKey {
+        priority: DeliveryPriority::new(0).unwrap(),
+        deadline: None,
+        decision_seq: 10,
+        rank: SourceRank::DeliveryRow,
+        ordinal: ordinal as u64,
+    };
+    let cursor = State::decode(second.next_cursor.as_ref().unwrap()).unwrap();
+    assert_eq!(cursor.last, Some(key), "its key is the last emitted key");
+    assert!(cursor.body.is_none());
+    let third = page(second.next_cursor, 10, 16384);
+    assert_eq!(
+        third.items.iter().map(item_id).collect::<Vec<_>>(),
+        [small.as_str()]
+    );
+    assert!(!third.has_more);
+}
+
+#[test]
+fn seventy_receipts_paged_end_to_end_lose_and_repeat_nothing() {
+    let (iso, context, mut conn) = fixture("merge-70-receipts");
+    let sent: Vec<String> = (0..70)
+        .map(|n| {
+            send(
+                &iso,
+                &context,
+                &mut conn,
+                &format!("r{n}"),
+                "receipt",
+                DeliveryMode::Ordinary,
+            )
+            .as_str()
+            .to_owned()
+        })
+        .collect();
+    let (seen, pages) = traverse(&context, 5, 65536, &OutputSpec::default());
+    assert_eq!(pages, 14);
+    // Equal deadlines order by publication: the first window of 64 and the next are exact.
+    assert_eq!(seen, sent);
+}
+
+#[test]
+fn merged_order_across_classes() {
+    use rusqlite::params;
+    let (iso, context, mut conn) = fixture("merge-order");
+    let r1 = send_priority(&iso, &context, &mut conn, "r1", None, Some(1_000));
+    let r3 = send_priority(&iso, &context, &mut conn, "r3", None, Some(1_000));
+    let r2 = send_priority(&iso, &context, &mut conn, "r2", None, Some(5_000));
+    let w0 = send_priority(&iso, &context, &mut conn, "w0", Some(0), None);
+    let p1 = send_priority(&iso, &context, &mut conn, "p1", Some(1), None);
+    let p5 = send_priority(&iso, &context, &mut conn, "p5", Some(5), None);
+    let w0_decision: i64 = conn
+        .query_row(
+            "SELECT decision_seq FROM messages WHERE id=?1",
+            [w0.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    // A confirming invitation due after every receipt, and a legacy (deadline-less) invitation
+    // published in the same decision as the p0 row: the invitation ranks before the row.
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node) VALUES('inv-ack','t','b',3,'pending',0,2,100,9000,'require_ack','a',(SELECT id FROM local_node))", []).unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,origin_node) VALUES('inv-legacy','t','b',2,'pending',0,?1,300,300,(SELECT id FROM local_node))", [w0_decision]).unwrap();
+    // An actionable warning about the legacy invitation, published after everything else.
+    let warned: i64 = conn
+        .query_row("SELECT decision_seq+1 FROM local_node", [], |r| r.get(0))
+        .unwrap();
+    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES('34750f98bd59fcfc946da45aaabe933b','warning','t',100,'warn','{}',?1,0)", [warned]).unwrap();
+    conn.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES('warning',?1,'t',100,'b','invitation','inv-legacy')", params![warned]).unwrap();
+    conn.execute("UPDATE local_node SET decision_seq=?1", [warned])
+        .unwrap();
+    let page = query(
+        &context,
+        PageRequest {
+            limit: 50,
+            max_bytes: 65536,
+            ..Default::default()
+        },
+        &OutputSpec::default(),
+    );
+    assert!(!page.has_more);
+    let ids: Vec<_> = page.items.iter().map(item_id).collect();
+    assert_eq!(
+        ids,
+        [
+            // p0 with deadlines: ascending deadline, equal deadlines by publication.
+            r1.as_str(),
+            r3.as_str(),
+            r2.as_str(),
+            "inv-ack",
+            // p0 without a deadline: by publication, equal publication by source rank
+            // (invitation before delivery row), then the warning published last.
+            "inv-legacy",
+            w0.as_str(),
+            "warning",
+            // Lower priorities follow, ascending.
+            p1.as_str(),
+            p5.as_str(),
+        ]
+    );
+}
+
+#[test]
+fn read_only_json_paging_split_inside_equal_priority_run_is_stable_and_complete() {
+    let (_iso, context, conn) = fixture("merge-json-paging");
+    let rows: Vec<String> = (0..10)
+        .map(|n| {
+            raw_row(&conn, 1000 + n, 1, 100 + n, "run")
+                .as_str()
+                .to_owned()
+        })
+        .collect();
+    let json = OutputSpec {
+        format: OutputFormat::Json,
+        ..Default::default()
+    };
+    let (seen, pages) = traverse(&context, 3, 65536, &json);
+    assert_eq!(pages, 4);
+    assert_eq!(
+        seen, rows,
+        "no completion between pages: nothing lost, repeated or reordered"
+    );
+    // The same traversal is repeatable: the order does not depend on who reads when.
+    assert_eq!(traverse(&context, 3, 65536, &json).0, rows);
+}
+
+#[test]
+fn work_limited_pages_resume_without_skips() {
+    let (_iso, context, conn) = fixture("merge-work-limited");
+    // 150 published rows the reader's binding has already passed: each is examined and rejected.
+    for n in 1..=150 {
+        raw_row(&conn, n, 1, 10 + n, "passed");
+    }
+    let visible: Vec<String> = (151..=153)
+        .map(|n| raw_row(&conn, n, 1, 200 + n, "unread").as_str().to_owned())
+        .collect();
+    conn.execute(
+        "UPDATE binding_cursors SET seq=150 WHERE thread_id='t' AND binding_id IN (SELECT binding_id FROM occupant_bindings WHERE seat_id='b')",
+        [],
+    )
+    .unwrap();
+    // The cursor advance clears the binding's pending view of the passed rows; restore them as stale
+    // view entries so the post-seek filter still examines and rejects each (the work bound's input).
+    conn.execute(
+        "INSERT OR IGNORE INTO binding_pending(binding_id,ordinal,thread_id,priority,decision_seq) SELECT ob.binding_id,r.ordinal,r.thread_id,r.priority,r.decision_seq FROM lazy_recipients r JOIN messages m ON m.id=r.message_id JOIN occupant_bindings ob ON ob.seat_id=r.seat_id WHERE m.sequence<=150",
+        [],
+    )
+    .unwrap();
+    let bound = |cursor: Option<String>| {
+        let result = herdr_threads::store::queries::query_with_output(
+            &context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &Command::InboxBatchV2(InboxQuery {
+                pushed: false,
+                thread: None,
+                claim: Some(claim()),
+                seat: Some(SeatId::new("b")),
+                page: PageRequest {
+                    cursor,
+                    limit: 50,
+                    max_bytes: 65536,
+                },
+            }),
+            &OutputSpec::default(),
+            &budget(),
+        )
+        .unwrap();
+        let CommandResult::InboxBatchV2(page) = result else {
+            panic!("v2");
+        };
+        page
+    };
+    let first = bound(None);
+    assert!(first.items.is_empty());
+    assert!(
+        first.has_more,
+        "a work-limited page is a continuation, never an empty end"
+    );
+    assert_eq!(
+        first.stop_reason,
+        herdr_threads::protocol::pagination::StopReason::Work
+    );
+    let text = String::from_utf8(
+        encode_selected(
+            &CommandResult::InboxBatchV2(first.clone()),
+            &OutputSpec {
+                format: OutputFormat::Text,
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(text.contains("next:") && !text.contains("empty"));
+    let (mut seen, mut cursor) = (Vec::new(), first.next_cursor);
+    for _ in 0..10 {
+        let page = bound(cursor.take());
+        seen.extend(page.items.iter().map(item_id));
+        if !page.has_more {
+            break;
+        }
+        cursor = page.next_cursor;
+    }
+    assert_eq!(seen, visible, "every pending row exactly once, in order");
+}
+
+#[test]
+fn arrivals_after_capture_are_deferred() {
+    let (_iso, context, conn) = fixture("merge-arrivals");
+    let first = raw_row(&conn, 1000, 1, 10, "one");
+    let second = raw_row(&conn, 1001, 1, 11, "two");
+    let page = query(
+        &context,
+        PageRequest {
+            limit: 1,
+            ..Default::default()
+        },
+        &OutputSpec::default(),
+    );
+    assert_eq!(
+        page.items.iter().map(item_id).collect::<Vec<_>>(),
+        [first.as_str()]
+    );
+    // A row published after the traversal's capture, even one that sorts earlier (p0).
+    let late = raw_row(&conn, 1002, 0, 12, "late");
+    let rest = query(
+        &context,
+        PageRequest {
+            cursor: page.next_cursor,
+            ..Default::default()
+        },
+        &OutputSpec::default(),
+    );
+    assert_eq!(
+        rest.items.iter().map(item_id).collect::<Vec<_>>(),
+        [second.as_str()]
+    );
+    assert!(!rest.has_more);
+    let fresh = query(&context, PageRequest::default(), &OutputSpec::default());
+    assert_eq!(
+        fresh.items.iter().map(item_id).collect::<Vec<_>>(),
+        [late.as_str(), first.as_str(), second.as_str()]
+    );
+}
+
+#[test]
+fn v1_cursor_is_invalid_cursor_with_the_older_daemon_detail() {
+    // A format-1 payload starts with version byte 1; the codec rejects it before reading further.
+    let v1 = "ib2:AQAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned();
+    let (_iso, context, _conn) = fixture("merge-v1-cursor");
+    let error = herdr_threads::store::queries::query(
+        &context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &Command::InboxBatchV2(InboxQuery {
+            pushed: false,
+            thread: None,
+            claim: None,
+            seat: Some(SeatId::new("b")),
+            page: PageRequest {
+                cursor: Some(v1),
+                ..Default::default()
+            },
+        }),
+        &budget(),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidCursor);
+    assert_eq!(error.detail, "cursor from an older daemon; run inbox again");
 }

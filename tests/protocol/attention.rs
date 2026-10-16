@@ -214,7 +214,7 @@ fn digest_lazy_class_is_bounded_and_counted() {
         mail: None,
     };
     assert!(digest.validate().is_ok() && digest.is_empty());
-    assert!(!digest.summary().contains("lazy"));
+    assert!(!digest.summary().contains("messages"));
     digest.token.lazy = Some((5, 1));
     assert!(digest.validate().is_err(), "key without rows");
     digest.lazy = Some(AttentionClass {
@@ -229,7 +229,7 @@ fn digest_lazy_class_is_bounded_and_counted() {
     });
     assert!(digest.validate().is_ok());
     assert!(!digest.is_empty());
-    assert!(digest.summary().ends_with("; lazy=1 [m1@t]"));
+    assert!(digest.summary().ends_with("; messages=1 [m1@t]"));
     digest.lazy.as_mut().unwrap().count = 0;
     assert!(digest.validate().is_err(), "listed beyond its count");
     let json = serde_json::to_value(AttentionDigest {

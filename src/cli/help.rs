@@ -130,8 +130,9 @@ An unbound resolved seat may receive staged work; this does not establish a
 working or available session. Delivery reports staged work, not a launch result.
 
 Automatic routing ensures the immutable pair, then sends; launch modes then launch.
-Creation joins the caller and invites the peer, reserving two seats, not accepting
-for the peer. No third seat can enroll. New-tab resolves its seat before Ensure.
+Creation joins both seats (no invitation, no accept), reserving two seats; a
+pre-upgrade pair's pending invitation still needs accept. No third seat can enroll.
+New-tab resolves its seat before Ensure.
 Archive requires reopen THREAD; a caller who left uses join THREAD, an invited
 caller uses accept THREAD; a target who left/rejected needs invite THREAD --seat SEAT.
 No automatic reopen, join or reinvite occurs. Repair reuses the same pair.
@@ -141,14 +142,14 @@ are 1:1 SEAT_A SEAT_B with sorted IDs. Explicit new topic defaults to Handoff to
 legacy launch uses the pane display, new-tab uses its label, delivery uses the
 canonical seat ID. Goal defaults to topic. --name names the native agent, not the channel.
 One positional body after --, --file PATH or --stdin supplies durable work (1..65536 UTF-8 bytes), acquired once and frozen exactly, never native argv.
-The body always requires an addressed ACK. --deadline SECONDS sets its independent duration; omitted defaults resolve once at canonical send. Invitations default lazy; --require-invite-ack or --invite-deadline SECONDS requests timed acceptance with an independent deadline. Registration/launch is never acceptance or ACK. The message timer starts at send even without registration or join. Missed requested deadlines notify the original sender.
+The body always requires an addressed ACK. --deadline SECONDS sets its independent duration; omitted defaults resolve once at canonical send. Invitations require acceptance; --invite-deadline SECONDS sets its independent deadline. Registration/launch is never acceptance or ACK. The message timer starts at send even without registration or join. Missed requested deadlines notify the original sender.
 Native launch options use repeatable --agent-arg=OPTION; launch -- native arguments
 is unchanged. @OPTS@ prepend optional
 arguments using shell-style quotes and escapes without variable or command
 expansion. Unset or empty adds nothing. Launch handoff freezes the combined options
 before preflight; retry uses saved arguments even if the environment changes.
 Explicit ordinary channels stage an invitation when needed; automatic channels
-use Ensure for initial invitation only. Handoff stages a message addressed to the exact
+auto-join both seats of a new pair (no invitation). Handoff stages a message addressed to the exact
 recipient; launch modes then perform guarded launch. Startup gets fixed inbox
 instructions, not a second copy of the body. Handoff never accepts or ACKs for
 the recipient, nor declares task adoption or task completion.

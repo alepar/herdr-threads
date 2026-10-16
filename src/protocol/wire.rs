@@ -34,8 +34,14 @@ use std::io::{self, Write};
 ///    Canonical pair resolution and direct_recipient use thread.direct_v1;
 ///    automatic handoff uses handoff.automatic_v1 within version 6.
 /// 7: session-keyed binding claims: CallerClaim gains optional agent_id and liveness fingerprint (ht-54r).
-/// 8: Herdr server locator on the wire: CallerClaim.host and `host` on the target-bearing commands (ht-5fr).
-pub const PROTOCOL_VERSION: u16 = 8;
+/// 8: message delivery priority (main v1.0.0): a deliberate break, so a v0.x CLI or daemon is refused at
+///    the version check instead of half-working (e.g. on a format-2 inbox cursor). Legacy lazy/ordinary
+///    mappings stay.
+/// 8 (branch, never released): Herdr server locator on the wire: CallerClaim.host and `host` on the
+///    target-bearing commands (ht-5fr).
+/// 9: cross-node sync (ht-5fr) on top of main's protocol 8: host locators plus the priority model, so a
+///    v1.0.x CLI or daemon (protocol 8, no host locators) is refused at the version check.
+pub const PROTOCOL_VERSION: u16 = 9;
 pub const MAX_WIRE_FRAME_BYTES: usize = 1_048_576;
 /// Only replies to modern explicitly frozen-policy automatic topology requests use this envelope.
 pub const MAX_AUTOMATIC_RESPONSE_FRAME_BYTES: usize = 2 * MAX_WIRE_FRAME_BYTES;
@@ -48,6 +54,29 @@ pub fn automatic_response_result(result: &Result<CommandResult, ApiError>) -> bo
         result,
         Ok(CommandResult::AutomaticBootstrap(_) | CommandResult::AutomaticBootstrapReserved(_))
     )
+}
+/// The success family the daemon answers an automatic bootstrap request
+/// with: the submission check confirms the reservation with
+/// `BootstrapSubmissionChecked`, resolution names the created pane's seat with
+/// `SeatResolved`, and every other action returns the automatic status
+/// families.
+pub fn automatic_response_family(
+    command: &Command,
+    result: &Result<CommandResult, ApiError>,
+) -> bool {
+    use crate::protocol::handoff::AutomaticBootstrapAction;
+    let Command::AutomaticBootstrap(request) = command else {
+        return automatic_response_result(result);
+    };
+    match request.action {
+        AutomaticBootstrapAction::CheckSubmission { .. } => {
+            matches!(result, Ok(CommandResult::BootstrapSubmissionChecked(_)))
+        }
+        AutomaticBootstrapAction::Resolve { .. } => {
+            matches!(result, Ok(CommandResult::SeatResolved(_)))
+        }
+        _ => automatic_response_result(result),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

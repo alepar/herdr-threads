@@ -1,0 +1,7 @@
+[Should-fix] src/store/lazy_delivery/wake.rs:80; src/store/lazy_delivery/wake.rs:50
+[Nit] src/store/handoff/automatic.rs:320
+[Nit] src/store/read_cursors.rs:497; src/store/read_cursors.rs:496
+[Nit] src/store/control.rs:2242
+[FYI] integrations/claude/mod/hooks/register.js:357
+[FYI] docs/superpowers/runs/2026-10-13-message-priority-delivery/run.md:21
+[FYI] src/store/schema.rs:835; src/store/schema.rs:836

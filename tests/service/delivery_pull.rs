@@ -34,6 +34,9 @@ use std::sync::{
 #[path = "q4_accept_controls.rs"]
 mod q4_accept_controls;
 
+#[path = "priority_order_pull.rs"]
+mod priority_order_pull;
+
 #[path = "normal_unrenderable_controls.rs"]
 mod normal_unrenderable_controls;
 
@@ -609,7 +612,7 @@ fn presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibli
             &q.window.recipient.seat,
         )
         .unwrap();
-        let position = cursor.body.expect("SETUP: actual captured continuation");
+        let (_, position) = cursor.body.expect("SETUP: actual captured continuation");
         assert_eq!(position.message, captured);
         assert!(
             position.offset >= WATCH_BODY_LIMIT_BYTES as u64 && position.offset < body.len() as u64
@@ -817,12 +820,13 @@ fn q3_reader_fixture(consumers: usize) -> (Fixture, CallerClaim, CallerClaim, Me
         .service
         .handle(
             Command::SendMessage(crate::protocol::commands::SendMessage {
+                priority: None,
                 delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                 user_intent: None,
                 thread: ThreadId::new("t"),
                 body: "reader invalidation canonical body".into(),
                 direct_recipient: None,
-                invited_recipients: vec![],
+                invited_recipients: ack_all_but(&sender),
                 deadline_millis: None,
                 operation: OperationId::new("q3-reader-send"),
                 claim: sender,
@@ -1006,12 +1010,19 @@ fn q3_many_thread_messages(
                 .service
                 .handle(
                     Command::SendMessage(SendMessage {
+                        priority: None,
                         delivery_mode: mode,
                         user_intent: None,
                         thread: thread.clone(),
                         body: body.clone(),
                         direct_recipient: None,
-                        invited_recipients: vec![],
+                        invited_recipients: if mode
+                            == crate::protocol::commands::DeliveryMode::Ordinary
+                        {
+                            vec![a.seat.clone()]
+                        } else {
+                            vec![]
+                        },
                         deadline_millis: None,
                         operation: OperationId::new(format!("q3-many-send-{n}-{ordinal}")),
                         claim: sender.clone(),
@@ -1149,7 +1160,8 @@ fn presentation_q3_complete_inbox_delivery_coalesces_many_real_thread_gaps() {
                 |row| row.get(0)
             )
             .unwrap(),
-            "displayed"
+            // Sibling binding b has not displayed the rows: the seat-wide state stays pending.
+            "pending"
         );
     }
     for thread in threads {
@@ -1328,12 +1340,13 @@ fn presentation_q3_reader_change_preserves_nonempty_progress_outbox_and_offers()
             .service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Ordinary,
                     user_intent: None,
                     thread: ThreadId::new("t"),
                     body,
                     direct_recipient: None,
-                    invited_recipients: vec![],
+                    invited_recipients: ack_all_but(&sender.clone()),
                     deadline_millis: None,
                     operation: OperationId::new(format!("q3-retained-send-{n}")),
                     claim: sender.clone(),
@@ -1760,16 +1773,25 @@ fn ordinary_message(f: &Fixture, id: &str, body: &str) {
 }
 /// A published lazy message addressed to `s` (state `pending`).
 fn lazy_message(f: &Fixture, id: &str, body: &str) {
+    lazy_message_at(f, id, body, 1);
+}
+
+fn lazy_message_at(f: &Fixture, id: &str, body: &str, priority: u8) {
     let sequence = next_sequence(&f.db);
     let prep = format!("prep-{}", id.trim_start_matches("msg-"));
     f.db.execute(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy')",
-        [&prep],
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy',?2)",
+        params![prep, priority],
     )
     .unwrap();
-    f.db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,'t','s')", params![prep, id]).unwrap();
-    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,0,?4,'lazy')", params![id, sequence, body, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES (?1,?2,'t','s',?3)", params![prep, id, priority]).unwrap();
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode,priority) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,0,?4,'lazy',?5)", params![id, sequence, body, sequence + 2, priority]).unwrap();
     f.db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,'t',?3,0,?4,0,1,0)", params![prep, id, sequence + 2, sequence]).unwrap();
+    f.db.execute(
+        "UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1",
+        params![prep, sequence + 2],
+    )
+    .unwrap();
     bump(&f.db, sequence);
 }
 
@@ -1800,6 +1822,15 @@ fn claim(
 }
 /// Initial positive fixture claim uses the seat's actual mapping generation.
 /// Raw `claim` and `check_in` keep caller-supplied generations for negative controls.
+/// Only explicit ACK recipients owe receipts (D9): every fixture member but the sender.
+fn ack_all_but(sender: &CallerClaim) -> Vec<SeatId> {
+    ["s", "x", "c"]
+        .into_iter()
+        .filter(|seat| *seat != sender.seat.as_str())
+        .map(SeatId::new)
+        .collect()
+}
+
 fn fixture_claim(
     f: &Fixture,
     seat: &str,
@@ -1962,6 +1993,37 @@ fn pull_returns_a_framed_page_whose_ordinary_ids_settle_on_confirm() {
     assert_eq!(observation["provenance"], "cooperative_top_level");
 }
 
+// Kills: a frame that names the row's kind from the variant (`lazy`), a missing `[pN]`, and a
+// marker on the silent default priority.
+#[test]
+fn delivery_rows_frame_as_message_with_the_priority_marker() {
+    let f = fixture(0);
+    let context = pull_seat(&f);
+    lazy_message_at(&f, "msg-p0", "urgent text", 0);
+    lazy_message_at(&f, "msg-p1", "plain text", 1);
+    lazy_message_at(&f, "msg-p5", "later text", 5);
+    let page = page(pull(&f, &context, None));
+    for (id, marker) in [("msg-p0", " [p0]:"), ("msg-p1", ":"), ("msg-p5", " [p5]:")] {
+        let header = page
+            .text
+            .lines()
+            .find(|line| line.starts_with(&format!("[herdr-threads] message {id} in ")))
+            .unwrap_or_else(|| panic!("no message header for {id}: {}", page.text));
+        assert!(
+            header.ends_with(&format!("from s{marker}")) || header.ends_with(marker),
+            "{header}"
+        );
+        if id == "msg-p1" {
+            assert!(!header.contains("[p"), "{header}");
+        }
+    }
+    assert!(
+        !page.text.contains("[herdr-threads] lazy "),
+        "{}",
+        page.text
+    );
+}
+
 #[test]
 fn a_lazy_row_is_offered_framed_and_completes_on_confirm() {
     let f = fixture(0);
@@ -1971,7 +2033,7 @@ fn a_lazy_row_is_offered_framed_and_completes_on_confirm() {
     lazy_message(&f, "msg-lz1", "passive text");
     let page = page(pull(&f, &context, None));
     assert!(
-        page.text.contains("[herdr-threads] lazy msg-lz1 in "),
+        page.text.contains("[herdr-threads] message msg-lz1 in ") && !page.text.contains(" lazy "),
         "{}",
         page.text
     );
@@ -2816,7 +2878,7 @@ fn presentation_two_live_bindings_keep_offer_stamps_replay_and_carry_independent
     assert_eq!(a.seat, b.seat);
     assert_eq!(a.binding_generation, b.binding_generation);
     assert_ne!(binding_a, binding_b);
-    f.db.execute("UPDATE seats SET wake_on='all' WHERE id='s'", [])
+    f.db.execute("UPDATE seats SET nudge_threshold=-1 WHERE id='s'", [])
         .unwrap();
     let inviter = check_in(
         &f,
@@ -3363,9 +3425,9 @@ fn hook_pull_once(
     }
 }
 
-/// Pending items the seat's pulls have read so far (the drain's store walk).
-fn items_read(f: &Fixture) -> usize {
-    f.state.probe.items_read.load(Ordering::SeqCst)
+/// Inbox page items the seat's pulls have read from the store so far.
+fn rows_read(f: &Fixture) -> usize {
+    f.state.probe.rows_read.load(Ordering::SeqCst)
 }
 
 // Kills: a full offer table evicting still-pending ids (re-offered afresh: shown again < 60 s later, more than
@@ -3466,13 +3528,13 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
             .0
             .store(first_shown + round * REOFFER_AFTER_MS, Ordering::SeqCst);
         for index in 0..12 {
-            let before = items_read(&f);
+            let before = rows_read(&f);
             hook_pull_once(&f, &context, &mut seen, &mut shown);
             if round == 1 && index == 0 {
-                let read = items_read(&f) - before;
+                let read = rows_read(&f) - before;
                 assert!(
-                    read <= PAGE_MAX_BLOCKS,
-                    "the first re-offer pull stops after its due ids; it read {read} of {backlog}"
+                    read <= 2 * crate::delivery::PAGE_MAX_ITEMS,
+                    "the first re-offer pull stops after its due ids; it read {read} store rows of {backlog}"
                 );
             }
             advance(&f, 100);
@@ -3492,10 +3554,10 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
     // A new notice on the parked full table rides a page without reading the pending set: nothing in it could be
     // shown or freed.
     service_notice(&f, "w-2");
-    let before = items_read(&f);
+    let before = rows_read(&f);
     let text = hook_pull_once(&f, &context, &mut seen, &mut shown).expect("the notice is shown");
     assert!(text.contains("notice w-2"), "{text}");
-    assert_eq!(items_read(&f), before, "the drain was skipped");
+    assert_eq!(rows_read(&f), before, "the drain was skipped");
     assert!(
         shown
             .values()
@@ -6266,6 +6328,7 @@ fn presentation_raw_carry_serializer_accounting_witness() {
             let sender = Some(SeatId::parse("\"".repeat(128)).unwrap());
             let item = if lazy {
                 InboxBatchV2Item::LazyMessage {
+                    priority: None,
                     thread: ThreadId::parse("t").unwrap(),
                     topic_data: topic.clone(),
                     message: message.clone(),
@@ -6283,6 +6346,7 @@ fn presentation_raw_carry_serializer_accounting_witness() {
                 }
             } else {
                 InboxBatchV2Item::Message {
+                    priority: None,
                     thread: ThreadId::parse("t").unwrap(),
                     topic_data: topic.clone(),
                     message: message.clone(),
@@ -6297,6 +6361,7 @@ fn presentation_raw_carry_serializer_accounting_witness() {
                     body_end: 8192,
                     body_len: 8193,
                     ack_candidate: None,
+                    deadline_at: None,
                 }
             };
             let source_len = serde_json::to_vec(&item).unwrap().len();
@@ -6386,7 +6451,7 @@ fn presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix() {
     };
     let mut f = fixture(0);
     let recipient = pull_seat(&f);
-    f.db.execute("UPDATE seats SET wake_on='all' WHERE id='s'", [])
+    f.db.execute("UPDATE seats SET nudge_threshold=-1 WHERE id='s'", [])
         .unwrap();
     let inviter = check_in(
         &f,
@@ -7170,6 +7235,7 @@ fn presentation_quiet_channel_observes_new_lazy_ordinary_without_wake() {
     f.service
         .handle(
             Command::SendMessage(SendMessage {
+                priority: None,
                 delivery_mode: DeliveryMode::Lazy,
                 user_intent: None,
                 thread: ThreadId::new("t"),
@@ -7587,12 +7653,13 @@ fn presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_
             .service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Ordinary,
                     user_intent: None,
                     thread: ThreadId::new("t"),
                     body: key.into(),
                     direct_recipient: None,
-                    invited_recipients: vec![],
+                    invited_recipients: ack_all_but(&sender.clone()),
                     deadline_millis: None,
                     operation: OperationId::new(key),
                     claim: sender.clone(),
@@ -7811,6 +7878,7 @@ fn presentation_publication_walk_counts_foreign_prefix_before_filter_and_progres
         f.service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Lazy,
                     user_intent: None,
                     thread,
@@ -7984,6 +8052,7 @@ fn presentation_publication_refresh_and_pull_rebind_preserve_each_others_progres
             f.service
                 .handle(
                     Command::SendMessage(SendMessage {
+                        priority: None,
                         delivery_mode: DeliveryMode::Lazy,
                         user_intent: None,
                         thread: ThreadId::new("t"),
@@ -8209,6 +8278,7 @@ fn presentation_publication_signal_preserves_active_capture_and_replays_across_r
         f.service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Lazy,
                     user_intent: None,
                     thread: ThreadId::new("t"),
@@ -8998,6 +9068,7 @@ impl OfferWindowFixture {
             .service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: mode,
                     user_intent: None,
                     thread: ThreadId::new("t"),
@@ -9005,7 +9076,12 @@ impl OfferWindowFixture {
                     // This fixture's existing thread has joined memberships;
                     // it is not an automatic direct-pair channel.
                     direct_recipient: None,
-                    invited_recipients: vec![],
+                    invited_recipients: if mode == crate::protocol::commands::DeliveryMode::Ordinary
+                    {
+                        ack_all_but(&self.sender.clone())
+                    } else {
+                        vec![]
+                    },
                     deadline_millis: None,
                     operation: OperationId::new(format!("offer-window-send-{n}")),
                     claim: self.sender.clone(),
@@ -10439,12 +10515,13 @@ fn presentation_handler_initial_ordinary_receipt_delivers_body_without_invented_
     f.service
         .handle(
             Command::SendMessage(SendMessage {
+                priority: None,
                 delivery_mode: DeliveryMode::Ordinary,
                 user_intent: None,
                 thread: ThreadId::new("t"),
                 body: "ordinary bounded response needed".into(),
                 direct_recipient: None,
-                invited_recipients: vec![],
+                invited_recipients: ack_all_but(&sender),
                 deadline_millis: None,
                 operation: OperationId::new("initial-ordinary-send"),
                 claim: sender,
@@ -10540,6 +10617,7 @@ fn presentation_publication_watch_reconnect_keeps_positive_frontier_without_nati
         f.service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Lazy,
                     user_intent: None,
                     thread: ThreadId::new("t"),
@@ -10621,6 +10699,7 @@ fn presentation_publication_generation_overflow_rolls_back_frontier_and_version(
         f.service
             .handle(
                 Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Lazy,
                     user_intent: None,
                     thread: ThreadId::new("t"),
@@ -10737,12 +10816,13 @@ fn presentation_quiet_channel_observes_new_ordinary_ack_message() {
         .service
         .handle(
             Command::SendMessage(SendMessage {
+                priority: None,
                 delivery_mode: DeliveryMode::Ordinary,
                 user_intent: None,
                 thread: ThreadId::new("t"),
                 body: "new ordinary ACK content after quiet registration".into(),
                 direct_recipient: None,
-                invited_recipients: vec![],
+                invited_recipients: ack_all_but(&sender),
                 deadline_millis: None,
                 operation: OperationId::new("quiet-ordinary-send"),
                 claim: sender,
@@ -11769,6 +11849,7 @@ fn presentation_capacity_snapshot_validation_scope_and_failed_calls() {
     f.service
         .handle(
             Command::SendMessage(crate::protocol::commands::SendMessage {
+                priority: None,
                 delivery_mode: crate::protocol::commands::DeliveryMode::Lazy,
                 user_intent: None,
                 thread: ThreadId::new("t"),
@@ -11824,7 +11905,7 @@ fn presentation_capacity_due_promoted_lazy_defers_oversize_render_then_retries()
     window
         .f
         .db
-        .execute("UPDATE seats SET wake_on='all' WHERE id='c'", [])
+        .execute("UPDATE seats SET nudge_threshold=-1 WHERE id='c'", [])
         .unwrap();
     let body = format!("{}é", "\0".repeat(65534));
     let id = window.send(0, DeliveryMode::Lazy, &body);
@@ -12497,7 +12578,7 @@ fn presentation_owner_replay_nonfull_once_per_lease_preserves_physical_metadata(
             window
                 .f
                 .db
-                .execute("UPDATE seats SET wake_on='all' WHERE id='c'", [])
+                .execute("UPDATE seats SET nudge_threshold=-1 WHERE id='c'", [])
                 .unwrap();
         }
         let body = if large {
@@ -13987,7 +14068,7 @@ fn presentation_owner_replay_standalone_unrenderable_attempt_is_finite_and_local
     window
         .f
         .db
-        .execute("UPDATE seats SET wake_on='all' WHERE id='c'", [])
+        .execute("UPDATE seats SET nudge_threshold=-1 WHERE id='c'", [])
         .unwrap();
     let id = window.send(0, DeliveryMode::Lazy, &"\0".repeat(65536));
     window.drain(1);
@@ -14445,7 +14526,7 @@ fn presentation_owner_replay_mid_work_budget_keeps_first_capture_uninstalled() {
             && unsafe { std::ffi::CStr::from_ptr(sql) }
                 .to_bytes()
                 .starts_with(
-                b"SELECT delivery_mode,thread_id,COALESCE(decision_seq,0) FROM messages WHERE id=",
+                b"SELECT EXISTS(SELECT 1 FROM lazy_recipients r WHERE r.seat_id=?3 AND r.message_id=m.id),thread_id,COALESCE(decision_seq,0) FROM messages m WHERE id=",
             )
         {
             state.completed.fetch_add(1, Ordering::SeqCst);

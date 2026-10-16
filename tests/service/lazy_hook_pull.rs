@@ -125,13 +125,18 @@ fn lazy_message(f: &Fixture, seat: &str, id: &str, body: &str) {
         .unwrap();
     let prep = format!("prep-{}", id.trim_start_matches("msg-"));
     f.db.execute(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy')",
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'building','lazy',1)",
         [&prep],
     )
     .unwrap();
     f.db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,'t',?3)", params![prep, id, seat]).unwrap();
-    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,0,?4,'lazy')", params![id, sequence, body, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode,priority) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,0,?4,'lazy',1)", params![id, sequence, body, sequence + 2]).unwrap();
     f.db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,'t',?3,0,?4,0,1,0)", params![prep, id, sequence + 2, sequence]).unwrap();
+    f.db.execute(
+        "UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1 AND decision_seq IS NULL",
+        params![prep, sequence + 2],
+    )
+    .unwrap();
     f.db.execute(
         "UPDATE threads SET next_sequence=?1 WHERE id='t'",
         [sequence + 1],

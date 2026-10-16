@@ -27,7 +27,8 @@
 //! After an `attention` line, a drain that finds no invitation or warning
 //! prints `attention_cleared`.
 //!
-//! A `message` line with `wakes: true` is a promoted `wake_on: all` lazy row; a `message` line
+//! A `message` line with `wakes: true` is a promoted delivery row (its priority is admitted by the
+//! seat's nudge threshold: p <= T, every priority when T < 0); a `message` line
 //! with `ack_required: false` and no `wakes` is mail another binding already settled.
 //!
 //! Every line carries `schema` (1, [`WATCH_LINE_SCHEMA`]), `id`, `kind`, and
@@ -502,6 +503,10 @@ pub struct WatchInvitation {
     pub body: String,
     pub truncated: bool,
     pub wakes: bool,
+    /// A confirming invitation's own deadline (its order key is p0 plus this deadline); absent for a
+    /// lazy invitation and from an older daemon. Never model-visible by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<crate::protocol::time::UtcMillis>,
 }
 
 /// A message or lazy row. `body` is the full body, or its first
@@ -525,13 +530,19 @@ pub struct WatchMessage {
     pub body_len: u64,
     pub truncated: bool,
     pub ack_required: bool,
-    /// A lazy row of a `wake_on: all` seat promoted to a `message` line (delivery-policy DP8):
-    /// it wakes an idle session although it has no ACK to run. Absent (false) on every other
-    /// line, so an ordinary message another binding already settled (also `ack_required:
-    /// false`) is told apart. Wire-compatible: added after schema 1 without a bump; an older
+    /// A delivery row whose priority the seat's nudge threshold admits (p <= T; every priority
+    /// when T < 0) promoted to a `message` line (delivery-policy DP8): it wakes an idle session
+    /// although it has no ACK to run. Absent (false) on every other line, so an ordinary message
+    /// another binding already settled (also `ack_required: false`) is told apart. Wire-compatible: added after schema 1 without a bump; an older
     /// watch child omits it and older mods ignore unknown keys. Never model-visible.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wakes: bool,
+    /// The item's delivery priority; absent from an older daemon. Never model-visible by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<crate::protocol::priority::DeliveryPriority>,
+    /// The item's own deadline (explicit-ACK receipt); absent otherwise and from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<crate::protocol::time::UtcMillis>,
 }
 
 /// `text` is the existing fixed attention marker.

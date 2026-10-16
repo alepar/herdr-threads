@@ -393,7 +393,7 @@ fn injected_text(record: &serde_json::Value) -> Option<&str> {
     record.get("content")?.as_str()
 }
 
-/// A frame header line: `[herdr-threads] message <id> in …` or `[herdr-threads] lazy <id> in …`,
+/// A frame header line: `[herdr-threads] message <id> in … [pN]:`, or the legacy `lazy <id>` kind of old transcripts,
 /// at column 0 of a line of the decoded `text` (split on real newlines only). A body line is
 /// indented by two spaces, so a header quoted inside a body never starts a line.
 fn header_ids(text: &str, wanted: &BTreeSet<&str>, found: &mut BTreeSet<String>) {

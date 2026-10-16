@@ -36,8 +36,8 @@ impl CapturedScopeLoss {
         let capture =
             InboxBatchV2CursorState::decode_for(&cursor, &f.instance.to_string(), &f.b.seat)
                 .unwrap();
-        assert_eq!(capture.source, InboxBatchV2Source::Lazy);
-        let body = capture.body.expect("SETUP: real captured Lazy tail");
+        let (source, body) = capture.body.expect("SETUP: real captured Lazy tail");
+        assert_eq!(source, InboxBatchV2Source::Lazy);
         assert_eq!(body.message, old);
         assert!(body.offset > 0 && long_utf8_body().is_char_boundary(body.offset as usize));
         // Physically render/confirm the actual prefix, without any display completion.
@@ -269,7 +269,7 @@ fn modern_lazy_scope_loss_cannot_hide_corrupt_accumulator_or_utf8_offset() {
                     &f.b.seat,
                 )
                 .unwrap();
-                let body = state.body.as_mut().unwrap();
+                let body = &mut state.body.as_mut().unwrap().1;
                 body.offset += 1;
                 while long_utf8_body().is_char_boundary(body.offset as usize) {
                     body.offset += 1;
@@ -378,6 +378,11 @@ fn modern_lazy_retirement_requires_intact_captured_publication_and_recipient_aut
             }
             "missing_recipient" => {
                 fault_with_restored_guard(f, "lazy_recipient_published_retained", || {
+                    // binding_pending rows reference the recipient row.
+                    f.db.execute(
+                        "DELETE FROM binding_pending WHERE ordinal IN (SELECT ordinal FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2)",
+                        params![c.old.as_str(), f.b.seat.as_str()],
+                    )?;
                     f.db.execute(
                         "DELETE FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2",
                         params![c.old.as_str(), f.b.seat.as_str()],
@@ -430,6 +435,7 @@ fn public_lazy_continuation_refuses_real_old_episode_audience_loss() {
         .store
         .query(
             &Command::InboxBatchV2(InboxQuery {
+                pushed: false,
                 thread: None,
                 seat: Some(f.b.seat.clone()),
                 claim: Some(f.b.clone()),

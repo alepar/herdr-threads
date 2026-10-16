@@ -14,6 +14,7 @@ use herdr_threads::{
     protocol::{
         commands::{Command, DeliveryMode},
         ids::{MessageId, OperationId},
+        priority::DeliveryPriority,
         results::{ApiError, CapabilityList, CommandResult, ErrorCode},
         time::CallBudget,
     },
@@ -121,7 +122,7 @@ impl LocalClient for Client {
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
         self.calls.lock().unwrap().push(command.clone());
         match command {
-            Command::Capabilities => match self.capability {
+            Command::Capabilities => match self.capability.clone() {
                 Ok(supported) => Ok(CommandResult::Capabilities(CapabilityList {
                     capabilities: if supported {
                         let mut names = vec!["send.lazy_v1".into()];
@@ -135,7 +136,7 @@ impl LocalClient for Client {
                 })),
                 Err(ErrorCode::Unsupported) => Err(ApiError::unsupported("old daemon")),
                 Err(ErrorCode::InvalidRequest) => Err(ApiError::invalid_request("old daemon")),
-                _ => panic!("unexpected fixture capability"),
+                Err(code) => Err(ApiError::new(code, "probe failed")),
             },
             Command::SendMessage(_) => Ok(CommandResult::MessageSent(MessageId::new("published"))),
             _ => panic!("unexpected command: {command:?}"),
@@ -153,7 +154,7 @@ impl Write for LostOutput {
 }
 
 #[test]
-fn lazy_send_flag_freezes_lazy_mode() {
+fn default_send_freezes_priority_one_with_the_relayed_intent() {
     let f = Fixture::new();
     let client = Client::new(Ok(true));
     assert!(
@@ -164,7 +165,6 @@ fn lazy_send_flag_freezes_lazy_mode() {
                 "t1",
                 "--body",
                 "announcement",
-                "--lazy",
                 "--relays-user",
                 "--user-intent",
                 "rule"
@@ -185,7 +185,8 @@ fn lazy_send_flag_freezes_lazy_mode() {
     let Command::SendMessage(send) = command else {
         panic!("not send")
     };
-    assert_eq!(send.delivery_mode, DeliveryMode::Lazy);
+    assert_eq!(send.delivery_mode, DeliveryMode::Ordinary);
+    assert_eq!(send.priority, Some(DeliveryPriority::DEFAULT));
     assert!(send.relays_user);
     assert_eq!(
         send.user_intent,
@@ -195,19 +196,18 @@ fn lazy_send_flag_freezes_lazy_mode() {
         send.claim,
         caller_claim(&f.context, herdr_threads::test_support::test_host_locator()).unwrap()
     );
-    assert_eq!(
-        serde_json::to_value(saved.semantic).unwrap()["mutation"]["delivery_mode"],
-        "lazy"
-    );
+    let json = serde_json::to_value(saved.semantic).unwrap();
+    assert_eq!(json["mutation"]["priority"], 1);
+    assert!(json["mutation"].get("delivery_mode").is_none());
 }
 #[test]
-fn lazy_send_rejects_ack_seats_panes_and_deadline() {
+fn removed_lazy_flag_points_to_the_default_priority_before_the_body_is_read() {
     for options in [
+        vec![],
         vec!["--require-ack", "s1"],
         vec!["--require-ack-pane", "p1"],
-        vec!["--deadline", "0"],
         vec!["--deadline", "10"],
-        vec!["--require-ack-pane", "p1", "--space", "workspace"],
+        vec!["--nudge"],
     ] {
         let mut argv = vec![
             "ht",
@@ -220,46 +220,8 @@ fn lazy_send_rejects_ack_seats_panes_and_deadline() {
         argv.extend(options);
         let error = parse_argv(argv).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidRequest);
-        assert!(
-            error.detail.contains("--lazy cannot be combined"),
-            "{error:?}"
-        );
-    }
-}
-#[test]
-fn lazy_send_unsupported_daemon_records_no_intent() {
-    for capability in [
-        Ok(false),
-        Err(ErrorCode::Unsupported),
-        Err(ErrorCode::InvalidRequest),
-    ] {
-        for lazy_option in [vec![], vec!["--lazy"]] {
-            let f = Fixture::new();
-            let client = Client::new(capability.clone());
-            let mut argv = vec!["ht", "send", "t1", "--body", "announcement"];
-            argv.extend(lazy_option);
-            let error = f.run(&argv, &client, &mut Vec::new()).unwrap_err();
-            let RunError::Api(error) = error else {
-                panic!("not API refusal")
-            };
-            assert_eq!(error.code, ErrorCode::Unsupported);
-            assert!(error.detail.contains("send.lazy_v1") && error.detail.contains("upgrade"));
-            assert_eq!(*client.calls.lock().unwrap(), vec![Command::Capabilities]);
-            assert!(
-                f.journal
-                    .page(&Default::default())
-                    .unwrap()
-                    .items
-                    .is_empty()
-            );
-            assert!(
-                !std::fs::read_dir(f.root.join("intents")).unwrap().any(|e| e
-                    .unwrap()
-                    .path()
-                    .extension()
-                    .is_some_and(|ext| ext == "intent"))
-            );
-        }
+        assert!(error.detail.contains("--lazy was removed"), "{error:?}");
+        assert!(error.detail.contains("priority 1"), "{error:?}");
     }
 }
 #[test]
@@ -315,16 +277,16 @@ fn ordinary_send_omits_mode_and_preserves_digest() {
     .unwrap();
     assert!(matches!(
         client.calls.lock().unwrap().as_slice(),
-        [Command::Capabilities, Command::SendMessage(_)]
+        [Command::SendMessage(_)]
     ));
 }
 #[test]
-fn lazy_send_retry_preserves_frozen_claim_and_mode() {
+fn priority_send_retry_preserves_frozen_claim_and_shape() {
     let f = Fixture::new();
     let client = Client::new(Ok(true));
     assert!(
         f.run(
-            &["ht", "send", "t1", "--body", "announcement", "--lazy"],
+            &["ht", "send", "t1", "--body", "announcement"],
             &client,
             &mut LostOutput
         )
@@ -340,13 +302,6 @@ fn lazy_send_retry_preserves_frozen_claim_and_mode() {
     successor.execution = uuid::Uuid::from_u128(3);
     successor.session = SessionReference::Native("successor-session".into());
     f.contexts.install_reattached(successor).unwrap();
-    let old = Client::new(Ok(false));
-    assert!(
-        f.run(&["ht", "retry", recovery], &old, &mut Vec::new())
-            .is_err()
-    );
-    assert_eq!(*old.calls.lock().unwrap(), vec![Command::Capabilities]);
-    assert_eq!(f.journal.load(&reference).unwrap().semantic, saved.semantic);
     f.run(&["ht", "retry", recovery], &client, &mut Vec::new())
         .unwrap();
     let calls = client.calls.lock().unwrap();
@@ -362,7 +317,8 @@ fn lazy_send_retry_preserves_frozen_claim_and_mode() {
         .collect();
     assert_eq!(sends.len(), 2);
     assert_eq!(sends[0], sends[1]);
-    assert_eq!(sends[1].delivery_mode, DeliveryMode::Lazy);
+    assert_eq!(sends[1].delivery_mode, DeliveryMode::Ordinary);
+    assert_eq!(sends[1].priority, Some(DeliveryPriority::DEFAULT));
     assert_eq!(
         sends[1].claim,
         caller_claim(&f.context, herdr_threads::test_support::test_host_locator()).unwrap()
@@ -415,73 +371,97 @@ fn lazy_send_journal_rejects_obligations_before_recording() {
     );
 }
 
-#[test]
-fn lazy_send_default_and_nudge_ack_selection() {
+fn parsed_priority(options: &[&str]) -> u8 {
     use herdr_threads::cli::commands::MutationSpec;
-    for (options, expected) in [
-        (vec![], DeliveryMode::Lazy),
-        (vec!["--lazy"], DeliveryMode::Lazy),
-        (vec!["--nudge"], DeliveryMode::Ordinary),
-        (vec!["--require-ack", "s1"], DeliveryMode::Ordinary),
-        (vec!["--require-ack-pane", "p1"], DeliveryMode::Ordinary),
-        (
-            vec!["--require-ack", "s1", "--deadline", "5"],
-            DeliveryMode::Ordinary,
-        ),
-        (vec!["--nudge", "--deadline", "5"], DeliveryMode::Ordinary),
-    ] {
-        let mut argv = vec!["ht", "send", "t1", "--body", "announcement"];
-        argv.extend(options);
-        let parsed = parse_argv(argv).unwrap();
-        let CliAction::Mutation(MutationSpec::Send { delivery_mode, .. }) = parsed.action else {
-            panic!("not send")
-        };
-        assert_eq!(delivery_mode, expected);
-    }
+    let mut argv = vec!["ht", "send", "t1", "--body", "announcement"];
+    argv.extend(options);
+    let parsed = parse_argv(argv).unwrap();
+    let CliAction::Mutation(MutationSpec::Send { priority, .. }) = parsed.action else {
+        panic!("not send")
+    };
+    priority.get()
 }
+fn parse_error(options: &[&str]) -> ApiError {
+    let mut argv = vec!["ht", "send", "t1", "--file", "/nonexistent/body"];
+    argv.extend(options);
+    parse_argv(argv).unwrap_err()
+}
+
 #[test]
-fn lazy_send_default_refuses_deadline_and_explicit_mode_conflicts() {
-    for options in [
-        vec!["--deadline", "5"],
-        vec!["--lazy", "--deadline", "5"],
-        vec!["--lazy", "--require-ack", "s1"],
-        vec!["--lazy", "--require-ack-pane", "p1"],
-        vec!["--lazy", "--nudge"],
+fn send_priority_flag_matrix() {
+    for (options, expected) in [
+        (vec![], 1),
+        (vec!["-p", "0"], 0),
+        (vec!["--priority", "9"], 9),
+        (vec!["-p", "5"], 5),
+        (vec!["--nudge"], 0),
+        (vec!["--require-ack", "s1"], 0),
+        (vec!["--require-ack-pane", "p1"], 0),
+        (vec!["--require-ack", "s1", "-p", "0"], 0),
+        (vec!["--require-ack", "s1", "--nudge"], 0),
+        (vec!["--require-ack", "s1", "--deadline", "5"], 0),
     ] {
-        let mut argv = vec!["ht", "send", "t1", "--body", "announcement"];
-        argv.extend(options);
-        assert!(parse_argv(argv).is_err());
+        assert_eq!(parsed_priority(&options), expected, "{options:?}");
     }
 }
 
 #[test]
-fn ordinary_send_refuses_unsupported_daemon_before_intent() {
-    for capability in [
-        Ok(false),
-        Err(ErrorCode::Unsupported),
-        Err(ErrorCode::InvalidRequest),
+fn send_priority_bounds_and_conflicts_are_usage_errors() {
+    for options in [
+        vec!["-p", "10"],
+        vec!["-p", "-1"],
+        vec!["-p", "x"],
+        vec!["--nudge", "-p", "2"],
+        vec!["-p", "2", "--nudge"],
     ] {
-        let f = Fixture::new();
-        let client = Client::new(capability);
-        let result = f.run(
-            &["ht", "send", "t1", "--body", "urgent", "--nudge"],
-            &client,
-            &mut Vec::new(),
-        );
-        let Err(RunError::Api(error)) = result else {
-            panic!("unsupported send was not refused")
-        };
-        assert_eq!(error.code, ErrorCode::Unsupported);
-        assert!(error.detail.contains("messages.send_time_receipts_v1"));
-        assert_eq!(*client.calls.lock().unwrap(), vec![Command::Capabilities]);
-        assert!(
-            f.journal
-                .page(&Default::default())
-                .unwrap()
-                .items
-                .is_empty()
+        let mut argv = vec!["ht", "send", "t1", "--body", "announcement"];
+        argv.extend(options.clone());
+        assert!(parse_argv(argv).is_err(), "{options:?}");
+    }
+}
+
+#[test]
+fn ack_with_a_lower_urgency_and_deadline_without_ack_are_refused_before_the_body_is_read() {
+    // `--file` names a missing path: reaching the body read would be a different error.
+    let ack = parse_error(&["--require-ack", "s1", "-p", "2"]);
+    assert_eq!(ack.code, ErrorCode::InvalidRequest);
+    assert_eq!(
+        ack.detail,
+        "--require-ack implies priority 0; drop --priority"
+    );
+    for options in [
+        vec!["--deadline", "5"],
+        vec!["--nudge", "--deadline", "5"],
+        vec!["-p", "0", "--deadline", "5"],
+    ] {
+        let error = parse_error(&options);
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "{options:?}");
+        assert_eq!(
+            error.detail, "--deadline requires --require-ack recipients",
+            "{options:?}"
         );
     }
+}
+
+#[test]
+fn direct_ack_target_rule_is_kept() {
+    let error = parse_argv([
+        "ht",
+        "send",
+        "--seat",
+        "s-target",
+        "--body",
+        "x",
+        "--require-ack",
+        "s-other",
+    ])
+    .unwrap_err();
+    assert!(
+        error
+            .detail
+            .contains("direct ACK requests may name only the target seat"),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -534,18 +514,121 @@ fn ordinary_historical_retry_refuses_unsupported_without_rewriting_intent() {
     }
 }
 
+fn sent(client: &Client) -> Vec<herdr_threads::protocol::commands::SendMessage> {
+    client
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|c| match c {
+            Command::SendMessage(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
-fn lazy_send_does_not_require_send_time_receipts_capability() {
+fn send_carries_the_priority_and_no_delivery_mode_key() {
+    for n in [0u8, 1, 2, 9] {
+        let f = Fixture::new();
+        let client = Client::new(Ok(false));
+        f.run(
+            &["ht", "send", "t1", "--body", "p", "-p", &n.to_string()],
+            &client,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        // No capability round trip: a send that carries its priority needs neither lazy nor receipts probes.
+        let calls = client.calls.lock().unwrap().clone();
+        assert!(
+            matches!(calls.as_slice(), [Command::SendMessage(_)]),
+            "{calls:?}"
+        );
+        let sends = sent(&client);
+        assert_eq!(sends[0].priority.map(|p| p.get()), Some(n));
+        let json = serde_json::to_value(&sends[0]).unwrap();
+        assert!(json.get("delivery_mode").is_none(), "{json}");
+        assert_eq!(json["priority"], n);
+    }
+}
+
+#[test]
+fn default_send_records_priority_one() {
     let f = Fixture::new();
-    let mut client = Client::new(Ok(true));
-    client.send_time_capability = false;
+    let client = Client::new(Ok(false));
+    assert!(
+        f.run(
+            &["ht", "send", "t1", "--body", "default"],
+            &client,
+            &mut LostOutput
+        )
+        .is_err()
+    );
+    let pending = f.journal.page(&Default::default()).unwrap();
+    let reference = f
+        .journal
+        .resolve_recovery_ref(pending.items[0].recovery_ref.as_str())
+        .unwrap();
+    let saved = f.journal.load(&reference).unwrap();
+    let json = serde_json::to_value(&saved.semantic).unwrap();
+    assert_eq!(json["mutation"]["priority"], 1);
+    assert!(json["mutation"].get("delivery_mode").is_none());
+}
+
+#[test]
+fn priority_retry_keeps_the_frozen_priority_whatever_the_daemon_now_advertises() {
+    let f = Fixture::new();
+    let client = Client::new(Ok(false));
+    assert!(
+        f.run(
+            &["ht", "send", "t1", "--body", "frozen", "-p", "3"],
+            &client,
+            &mut LostOutput
+        )
+        .is_err()
+    );
+    let pending = f.journal.page(&Default::default()).unwrap();
+    let recovery = pending.items[0].recovery_ref.as_str().to_owned();
+    // Retry against a daemon that no longer advertises the capability: same request, byte for byte.
+    let downgraded = Client::new(Ok(false));
+    f.run(&["ht", "retry", &recovery], &downgraded, &mut Vec::new())
+        .unwrap();
+    let first = sent(&client);
+    let again = sent(&downgraded);
+    assert_eq!(first.len(), 1);
+    assert_eq!(again, first);
+    assert_eq!(again[0].priority.map(|p| p.get()), Some(3));
+}
+
+#[test]
+fn pre_upgrade_lazy_intent_retries_in_its_recorded_shape_on_a_priority_daemon() {
+    let f = Fixture::new();
+    let legacy: SemanticMutation = serde_json::from_str(r#"{"kind":"send_message","delivery_mode":"lazy","thread":"t1","body":"old","invited_recipients":[],"deadline_millis":null}"#).unwrap();
+    let reference = f
+        .journal
+        .record(
+            IntentScope::Cooperative {
+                host: herdr_threads::test_support::test_host_locator(),
+                instance: f.context.instance.to_string(),
+                seat: herdr_threads::protocol::ids::SeatId::new(f.context.seat.clone()),
+            },
+            SemanticMutation::freeze(
+                legacy,
+                caller_claim(&f.context, herdr_threads::test_support::test_host_locator()).unwrap(),
+            )
+            .unwrap(),
+            0,
+        )
+        .unwrap();
+    let client = Client::new(Ok(true));
     f.run(
-        &["ht", "send", "t1", "--body", "passive"],
+        &["ht", "retry", &reference.recovery_ref()],
         &client,
         &mut Vec::new(),
     )
     .unwrap();
-    assert!(
-        matches!(client.calls.lock().unwrap().as_slice(),[Command::Capabilities,Command::SendMessage(send)] if send.delivery_mode==DeliveryMode::Lazy)
-    );
+    let sends = sent(&client);
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0].delivery_mode, DeliveryMode::Lazy);
+    assert_eq!(sends[0].priority, None);
 }

@@ -655,6 +655,7 @@ impl Rig {
     fn send(&self, from: &Agent, thread: &ThreadId, body: &str) {
         self.call(Command::SendMessage(SendMessage {
             delivery_mode: Default::default(),
+            priority: None,
             user_intent: None,
             thread: thread.clone(),
             body: body.into(),

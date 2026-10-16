@@ -652,7 +652,7 @@ struct PublicationProgress {
     more: bool,
 }
 pub(super) const PUBLICATION_RANGE_SQL: &str = "SELECT preparation_id,message_id,thread_id,decision_seq FROM send_manifests INDEXED BY send_manifests_instance_decision WHERE instance_id=?1 AND decision_seq>?2 AND decision_seq<=?3 ORDER BY decision_seq LIMIT 100";
-pub(super) const PUBLICATION_MESSAGE_SQL: &str = "SELECT delivery_mode FROM messages WHERE id=?1 AND instance_id=?2 AND thread_id=?3 AND decision_seq=?4 AND kind='ordinary'";
+pub(super) const PUBLICATION_MESSAGE_SQL: &str = "SELECT EXISTS(SELECT 1 FROM lazy_recipients r WHERE r.message_id=m.id AND r.seat_id=?5) FROM messages m WHERE m.id=?1 AND m.instance_id=?2 AND m.thread_id=?3 AND m.decision_seq=?4 AND m.kind='ordinary'";
 pub(super) const PUBLICATION_ORDINARY_RECIPIENT_SQL: &str =
     "SELECT thread_id FROM prepared_recipients WHERE preparation_id=?1 AND seat_id=?2";
 pub(super) const PUBLICATION_LAZY_RECIPIENT_SQL: &str =
@@ -701,16 +701,18 @@ fn advance_ordinary_publications(
         work.visits += 1;
         state.ordinary_publication_after = seq;
         work.probes += 1;
-        let mode: Option<String> = db
+        // Which table holds this seat's row decides the probe, not the message's recorded
+        // mode: a mixed-ACK message has receipt rows and delivery rows.
+        let has_delivery_row: Option<bool> = db
             .query_row(
                 PUBLICATION_MESSAGE_SQL,
-                params![message, claim.instance, thread, seq],
+                params![message, claim.instance, thread, seq, claim.seat.as_str()],
                 |r| r.get(0),
             )
             .optional()
             .map_err(store_error)?;
-        let addressed = match mode.as_deref() {
-            Some("ordinary") => {
+        let addressed = match has_delivery_row {
+            Some(false) => {
                 work.probes += 1;
                 // The captured manifest supplies the message association;
                 // prepared_recipients has only preparation/seat/thread identity.
@@ -724,7 +726,7 @@ fn advance_ordinary_publications(
                     .map_err(store_error)?;
                 recipient.as_ref() == Some(&thread)
             }
-            Some("lazy") => {
+            Some(true) => {
                 work.probes += 1;
                 let recipient: Option<(String, String)> = db
                     .query_row(
@@ -739,7 +741,6 @@ fn advance_ordinary_publications(
                 })
             }
             None => false,
-            Some(_) => return Err(corrupt("invalid ordinary publication delivery mode")),
         };
         changed |= addressed;
     }
@@ -1770,7 +1771,7 @@ fn replay(
 }
 /// Reconcile only the bounded offer snapshot, never the full pending queue.
 /// Canonical terminal facts release capacity; missing/ambiguous facts retain it.
-pub(crate) const OFFER_RECONCILIATION_MESSAGE_SQL: &str = "SELECT delivery_mode,thread_id,sequence,decision_seq FROM messages WHERE id=?1 AND instance_id=?2 AND kind='ordinary'";
+pub(crate) const OFFER_RECONCILIATION_MESSAGE_SQL: &str = "SELECT EXISTS(SELECT 1 FROM lazy_recipients r WHERE r.message_id=m.id AND r.seat_id=?3),m.thread_id,m.sequence,m.decision_seq FROM messages m WHERE m.id=?1 AND m.instance_id=?2 AND m.kind='ordinary'";
 
 /// The canonical message scalars come from the preceding exact point in the
 /// same transaction. No second messages lookup is needed for Lazy eligibility.
@@ -1806,16 +1807,16 @@ fn reclaim_terminal_offers(
     for id in &known {
         work.offer_reconciliation_visits += 1;
         work.offer_reconciliation_probes += 1;
-        let canonical: Option<(String, String, i64, Option<i64>)> = db
+        let canonical: Option<(bool, String, i64, Option<i64>)> = db
             .query_row(
                 OFFER_RECONCILIATION_MESSAGE_SQL,
-                params![id.as_str(), claim.instance],
+                params![id.as_str(), claim.instance, claim.seat.as_str()],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()
             .map_err(store_error)?;
-        let terminal = match canonical.as_ref().map(|row| row.0.as_str()) {
-            Some("lazy") => {
+        let terminal = match canonical.as_ref().map(|row| row.0) {
+            Some(true) => {
                 let (_, thread, sequence, published) = canonical.as_ref().expect("matched row");
                 // Missing publication or invalid sequence cannot prove terminal authority.
                 let Some(published) = published.filter(|decision| *decision > 0) else {
@@ -1846,7 +1847,7 @@ fn reclaim_terminal_offers(
                     .map_err(store_error)?;
                 unread == Some(false)
             }
-            Some("ordinary") => {
+            Some(false) => {
                 // Logical addressed authority wins even when its sparse state
                 // is absent. Charge all three unique lookups including misses.
                 work.offer_reconciliation_probes += 3;
@@ -1880,7 +1881,7 @@ fn reclaim_terminal_offers(
                     false
                 }
             }
-            _ => false,
+            None => false,
         };
         if terminal {
             reclaimed.push(id.clone());
@@ -2416,7 +2417,9 @@ pub(super) fn pull(
             })
             .transpose()
             .map_err(corrupt)?;
-        let old_body = current.as_ref().and_then(|cursor| cursor.body.as_ref());
+        let old_body = current
+            .as_ref()
+            .and_then(|cursor| cursor.body.as_ref().map(|(_, body)| body));
         match (&state.ordinary_skip_body, old_body) {
             (Some(id), Some(body)) => {
                 MessageId::parse(id)
@@ -2478,7 +2481,7 @@ pub(super) fn pull(
             .transpose()
             .map_err(corrupt)?;
         state.ordinary_skip_body = continued
-            .and_then(|v| v.body)
+            .and_then(|v| v.body.map(|(_, body)| body))
             .map(|v| v.message.as_str().to_owned())
             .filter(|id| assembler.emitted.contains(id));
         state.ordinary_cursor = ordinary.next_cursor;
@@ -2698,6 +2701,7 @@ pub(super) fn pull(
         }
     }
     let fresh_output = !outputs.is_empty();
+    presentation::order_deliveries(&mut outputs);
     if let Some(stamp) = pending_control {
         use crate::protocol::delivery::PresentationControlStampV2 as Stamp;
         let output = match &stamp {

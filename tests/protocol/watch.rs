@@ -13,6 +13,8 @@ use std::sync::Arc;
 
 fn message() -> WatchMessage {
     WatchMessage {
+        deadline_at: None,
+        priority: None,
         thread: ThreadId::new("t1"),
         thread_name: Some("ops".into()),
         sender: Some(SeatId::new("s2")),

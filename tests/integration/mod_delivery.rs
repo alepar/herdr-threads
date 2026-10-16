@@ -483,7 +483,7 @@ impl Rig {
         let mark = rig.host.mark();
         rig.cli(
             Some((&rig.a, PANE_A)),
-            &["invite", &rig.thread, "--seat", &rig.b, "--require-ack"],
+            &["invite", &rig.thread, "--seat", &rig.b],
         )
         .data("invite");
         // Setup deliberately requires a native wake: ordinary invitations
@@ -956,6 +956,15 @@ impl Rig {
             &["send", &self.thread, "--body", body],
         )
         .text("send lazy")
+    }
+
+    /// A priority-0 send from A to B with no ACK request: a delivery row, no receipt (D9).
+    fn send_p0(&self, body: &str) -> String {
+        self.cli(
+            Some((&self.a, PANE_A)),
+            &["send", &self.thread, "--body", body, "-p", "0"],
+        )
+        .text("send p0")
     }
 
     /// `pending` until the logical receipt has a settled `receipt_state` row.
@@ -2586,7 +2595,8 @@ fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
                     format!("invitation:{}", item["id"].as_str().unwrap())
                 );
                 assert_eq!(line["body"], item["content"]["body"]);
-                assert_eq!(line["wakes"], false);
+                // Every agent invitation now requires acceptance, so it wakes.
+                assert_eq!(line["wakes"], true);
             }
             "notice" => {
                 assert_eq!(line["kind"], "notice");
@@ -3159,13 +3169,7 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
         .text("replacement attention thread");
     rig.cli(
         Some((&rig.a, PANE_A)),
-        &[
-            "invite",
-            &attention_thread,
-            "--seat",
-            &rig.b,
-            "--require-ack",
-        ],
+        &["invite", &attention_thread, "--seat", &rig.b],
     )
     .data("replacement timed invitation");
     let confirming = || {
@@ -3285,7 +3289,7 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
             .iter()
             .any(|line| line["kind"] == "invitation"
                 && line["thread"] == invitation
-                && line["wakes"] == false)
+                && line["wakes"] == true)
     );
     assert_eq!(
         rig.receipt_state(&ordinary),
@@ -3359,7 +3363,7 @@ fn activation_v2_watch_lost_confirm_response_replays_exact_subset() {
     );
     assert!(watch.seen.iter().any(|line| line["kind"] == "invitation"
         && line["thread"] == invitation
-        && line["wakes"] == false));
+        && line["wakes"] == true));
     assert_eq!(
         rig.receipt_state(&ordinary),
         "pending",
@@ -3565,6 +3569,11 @@ const ACCEPT_GRACE_ENV: &str = "HT_TEST_ACCEPT_CHANNEL_GRACE_MS";
 
 /// A pair opener from A to B, streamed to B's live watch before B accepts: (pair, id).
 fn pair_opener_streamed(rig: &Rig, watch: &mut Watch, body: &str) -> (String, String) {
+    // These tests cover `accept` of a pre-upgrade pending pair invitation (a new pair auto-joins
+    // and has nothing to accept): create the pair the pre-upgrade way.
+    let writer = rusqlite::Connection::open(&rig.paths.database_path).unwrap();
+    writer.busy_timeout(Duration::from_secs(5)).unwrap();
+    drop(writer);
     rig.cli(
         Some((&rig.a, PANE_A)),
         &["send", "--seat", &rig.b, "--body", body],
@@ -4024,6 +4033,46 @@ fn stall_after_ten_minutes_hands_over_to_native_ladder_and_cooldown_refuses() {
     rig.wait_channel(Some("live"));
 }
 
+/// D9 + D7: a registered but wedged mod holding only a p0 non-ACK delivery row (no
+/// receipt) is stall-closed and the seat gets its native wake.
+#[test]
+fn stall_with_only_a_p0_delivery_row_hands_over_to_the_native_wake() {
+    let rig = Rig::new();
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    let id = rig.send_p0("never acked by the mod");
+    watch.wait_item(&id);
+    let mark = rig.host.mark();
+    rig.advance(11 * MINUTE_MS);
+    let closing = watch.wait_line("the stalled close", STEP, |line| {
+        line["kind"] == "status" && line["state"] == "closing"
+    });
+    assert_eq!(closing["reason"], "stalled", "{closing}");
+    assert_eq!(watch.exit_code(STEP), 0);
+    rig.wait_channel(None);
+    rig.wait_prompt(mark, PANE_B);
+}
+
+/// A p1 row at the default threshold is not wake-class, so a quiet mod never stalls on it.
+#[test]
+fn a_p1_row_at_the_default_threshold_never_stalls_the_channel() {
+    let rig = Rig::new();
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    let id = rig.send_lazy("p1 at T=0");
+    watch.wait_item(&id);
+    let mark = rig.host.mark();
+    rig.advance(11 * MINUTE_MS);
+    let kick = rig.send_lazy("kicks the worker");
+    let line = watch.wait_line("the kicking row or a close", STEP, |line| {
+        line["id"] == kick.as_str() || line["state"] == "closing"
+    });
+    assert_ne!(line["state"], "closing", "the stall closed the channel");
+    watch.assert_no_line("closing", QUIET, |line| line["state"] == "closing");
+    assert_eq!(rig.channel_state().as_deref(), Some("live"));
+    assert_eq!(rig.host.prompts_since(mark, PANE_B), 0);
+}
+
 /// Spec D7: a truncated pending item is never counted toward the stall
 /// predicate (the mod cannot ack it), so an old truncated receipt alone never
 /// hands the seat back to the native ladder.
@@ -4040,8 +4089,8 @@ fn truncated_item_never_counts_toward_stall() {
     // once: the pass that streams it, and the sweep right after that pass,
     // run on the advanced clock. A stall would close the channel in that
     // sweep (or the next tick's), so no `closing` line before the row nor
-    // within the window after it; a lazy row has no receipt, so it cannot
-    // feed the stall predicate itself.
+    // within the window after it; a p1 row at the default T = 0 is not
+    // threshold-admitted, so it cannot feed the stall predicate itself.
     let kick = rig.send_lazy("kicks the worker");
     let line = watch.wait_line("the kicking row or a close", STEP, |line| {
         line["id"] == kick.as_str() || line["state"] == "closing"
@@ -4341,9 +4390,8 @@ fn watch_ack_already_settled_after_inbox_ack() {
 
 /// Spec D4: invitations (anything without a body) reach the mod as one
 /// `attention` line carrying the fixed marker, never as an acked item. The
-/// invitation requests confirmation (`--require-ack`): an ordinary invitation
-/// is Lazy by default (handoff-delivery-redesign) and is presented as a
-/// passive `invitation` line that requests no attention.
+/// invitation requests confirmation (every agent invitation does since the
+/// message-priority change; there is no lazy CLI invitation any more).
 #[test]
 fn attention_marker_line_for_invitation() {
     let rig = Rig::new();
@@ -4357,7 +4405,7 @@ fn attention_marker_line_for_invitation() {
         .text("thread create");
     rig.cli(
         Some((&rig.a, PANE_A)),
-        &["invite", &other, "--seat", &rig.b, "--require-ack"],
+        &["invite", &other, "--seat", &rig.b],
     )
     .data("invite");
     let line = watch.wait_attention_marker();
@@ -4413,7 +4461,7 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
         .text("thread create");
     rig.cli(
         Some((&rig.a, PANE_A)),
-        &["invite", &other, "--seat", &rig.b, "--require-ack"],
+        &["invite", &other, "--seat", &rig.b],
     )
     .data("invite");
     let attention = watch.wait_attention_marker();
@@ -5380,3 +5428,8 @@ fn stand_in_host_drop_joins_a_blocked_serving_thread() {
 /// rig's private items).
 #[path = "agy_sweep.rs"]
 mod agy_sweep;
+
+/// ht-yha.15: one delivery order across the CLI inbox, the watch stream and accept (a child
+/// module, so it reuses the rig's private items).
+#[path = "priority_order_surfaces.rs"]
+mod priority_order_surfaces;

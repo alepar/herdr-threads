@@ -68,6 +68,11 @@ pub const IN_TURN_OFFER: &str = "inbox.in_turn_offer_v1";
 /// opening lazy mail in its own output).
 pub const INBOX_THREAD_SCOPE: &str = "inbox.thread_scope_v1";
 
+/// Pushed inbox page: `InboxQuery.pushed` on an `InboxBatchV2` first page applies the catch-up
+/// hold (spec section 7) to the page, as the attention digest does (a hook's inbox check-in
+/// offer). An explicit `inbox` read never sets it.
+pub const INBOX_PUSHED_HOLD: &str = "inbox.pushed_hold_v1";
+
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
 pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 
@@ -83,6 +88,18 @@ pub const MOD_WATCH_PRESENTATION_V2: &str = "mod.watch_presentation_v2";
 /// Hook-pull delivery (`protocol::delivery`, delivery-policy DP4). Defined by the
 /// ht-poh.3.1 seam; its handlers (`service::delivery_pull`) landed with L4.
 pub const DELIVERY_PULL: &str = "delivery.pull_v1";
+
+/// `SendMessage.priority` and the priority-aware inbox/watch fields. Defined by the ht-yha.1 seam;
+/// advertised with the send handler (ht-yha.3). Advertised for diagnostics; protocol-8 clients do not
+/// probe it.
+pub const SEND_PRIORITY_V1: &str = "send.priority_v1";
+/// `Command::NudgeThreshold` / `Command::SetNudgeThreshold`. Defined by the ht-yha.1 seam;
+/// advertised with its handlers (ht-yha.4). Advertised for diagnostics; protocol-8 clients do not
+/// probe it.
+pub const SEAT_NUDGE_THRESHOLD_V1: &str = "seat.nudge_threshold_v1";
+/// 1:1 pairs auto-join both seats. Defined by the ht-yha.1 seam; advertised with the pair handler (ht-yha.6).
+/// Advertised for diagnostics; protocol-8 clients do not probe it.
+pub const DIRECT_AUTO_JOIN_V1: &str = "direct.auto_join_v1";
 
 /// Everything this daemon build serves. A capability is listed only once its
 /// handler has landed (ht-p03.105): `HISTORY_FULL_BODIES` landed with
@@ -123,6 +140,10 @@ pub const ADVERTISED: &[&str] = &[
     BINDING_DIGEST,
     IN_TURN_OFFER,
     INBOX_THREAD_SCOPE,
+    SEND_PRIORITY_V1,
+    SEAT_NUDGE_THRESHOLD_V1,
+    DIRECT_AUTO_JOIN_V1,
+    INBOX_PUSHED_HOLD,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

@@ -48,6 +48,8 @@ pub enum CommandResult {
     },
     /// A seat's `wake_on` preference (read, or the outcome of a set).
     WakeOn(WakeOnState),
+    /// A seat's nudge threshold (read, or the outcome of a set).
+    NudgeThreshold(NudgeThresholdState),
     Warnings(Page<WarningRef>),
     ActiveWarnings(Page<WarningRef>),
     Thread(ThreadDetails),
@@ -1323,6 +1325,13 @@ pub enum InboxBatchV2Item {
         body_end: u64,
         body_len: u64,
         ack_candidate: Option<MessageId>,
+        /// The message's delivery priority; absent from an older daemon.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        priority: Option<crate::protocol::priority::DeliveryPriority>,
+        /// The seat's pending explicit-ACK receipt deadline; absent without one and from an
+        /// older daemon.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline_at: Option<crate::protocol::time::UtcMillis>,
     },
     LazyMessage {
         thread: ThreadId,
@@ -1342,11 +1351,14 @@ pub enum InboxBatchV2Item {
         body_start: u64,
         body_end: u64,
         body_len: u64,
-        /// The reading seat's `wake_on` is `all` (delivery-policy DP8): a
+        /// The reading seat's current nudge threshold admits this row's priority: a
         /// push-channel consumer promotes this row to a `message` line.
-        /// Absent (false) for a default seat and from an older daemon.
+        /// Absent (false) when it does not, and from an older daemon.
         #[serde(default, skip_serializing_if = "is_false")]
         wakes: bool,
+        /// The message's delivery priority; absent from an older daemon.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        priority: Option<crate::protocol::priority::DeliveryPriority>,
     },
     Warning {
         thread: ThreadId,
@@ -1368,6 +1380,9 @@ pub enum InboxBatchV2Item {
 pub struct MessageDeliveryMode {
     pub message: MessageId,
     pub delivery_mode: crate::protocol::commands::DeliveryMode,
+    /// Filled only when the query set `with_priority`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<crate::protocol::priority::DeliveryPriority>,
 }
 
 /// A seat's `wake_on` preference. `changed` is true only when a set altered the
@@ -1377,6 +1392,16 @@ pub struct MessageDeliveryMode {
 pub struct WakeOnState {
     pub seat: SeatId,
     pub wake_on: crate::protocol::commands::WakeOn,
+    pub changed: bool,
+}
+
+/// A seat's nudge threshold. `changed` is true only when a set altered the stored value; a read, or
+/// a set to the value already stored, reports false.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NudgeThresholdState {
+    pub seat: SeatId,
+    pub threshold: crate::protocol::priority::NudgeThreshold,
     pub changed: bool,
 }
 

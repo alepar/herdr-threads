@@ -546,7 +546,7 @@ fn agy_lazy_row_settles_only_through_the_transcript_confirm_never_hook_context()
         "claude",
         "peer",
         "w9:p2",
-        &["send", &thread, "--lazy", "--body", "passive hello"],
+        &["send", &thread, "--body", "passive hello"],
     ));
     assert_eq!(lazy_row_state(&fx, &lazy), "pending");
 
@@ -605,13 +605,32 @@ fn agy_lazy_row_settles_only_through_the_transcript_confirm_never_hook_context()
     let stop = run_payload(&fx, &home, "Stop", &for_clear("stop-no-tool-call"));
     assert_eq!(stop.code, Some(0), "{}", stop.stderr);
     assert!(stop.stdout.is_empty(), "{:?}", stop.stdout);
-    assert_eq!(lazy_row_state(&fx, &lazy), "displayed");
+    // The confirm moved the clearing conversation's cursor past the row. The seat-wide state stays
+    // `pending` while the pre-`/clear` binding (still connected) has not displayed it.
+    let db = rusqlite::Connection::open(&fx.db).unwrap();
+    let passed: i64 = db
+        .query_row(
+            "SELECT count(*) FROM binding_cursors c JOIN messages m ON m.thread_id=c.thread_id WHERE m.id=?1 AND c.seq>=m.sequence",
+            [&lazy],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(passed, 1, "exactly the confirming binding passed the row");
+    assert_eq!(lazy_row_state(&fx, &lazy), "pending");
 }
 
 // Kills: classifying Lazy invitation as passive but losing its complete
 // pending item between canonical inbox paging and the registered turn hook.
+// The CLI can no longer create a lazy invitation (an agent `invite` always requires acceptance,
+// message-priority D6); a lazy one only survives from before the upgrade. The fixture builds that
+// legacy shape by sending the lazy `Invite` straight to the daemon with the peer's canonical claim.
 #[test]
 fn agy_turn_hook_carries_lazy_invitation_without_accepting_or_confirming_it() {
+    use herdr_threads::protocol::{
+        authority::{CallerClaim, CallerRole, LivenessFingerprint},
+        commands::{Command, InvitationConfirmation, Invite},
+        ids::{ExecutionId, HostTargetId, NativeSessionId, OperationId, SeatId},
+    };
     let fx = Fixture::start();
     let home = home_with(&fx, "top-level");
     system_message(&run(&fx, &home, "SessionStart", "session-start-top"));
@@ -635,13 +654,48 @@ fn agy_turn_hook_carries_lazy_invitation_without_accepting_or_confirming_it() {
             "review recipient remit before acceptance",
         ],
     ));
-    cooperative_as(
-        &fx,
-        "claude",
-        "peer",
-        "w9:p2",
-        &["invite", &thread, "--seat", "seat"],
-    );
+    // Legacy shape: a lazy invitation sent by the peer's canonical claim straight to the daemon.
+    let claim: CallerClaim = rusqlite::Connection::open(&fx.db)
+        .unwrap()
+        .query_row(
+            "SELECT seat_id,generation,execution_id,liveness_pid,liveness_start FROM occupant_bindings WHERE target_id='w9:p2' AND harness='claude' AND native_session='peer-sess' AND role='top_level' AND agent_id='' AND ended_at IS NULL",
+            [],
+            |row| {
+                let liveness = match (row.get::<_, Option<i64>>(3)?, row.get::<_, Option<i64>>(4)?) {
+                    (Some(pid), Some(start)) => Some(LivenessFingerprint {
+                        pid: u32::try_from(pid).unwrap(),
+                        start: u64::try_from(start).unwrap(),
+                    }),
+                    _ => None,
+                };
+                Ok(CallerClaim {
+                    host: herdr_threads::protocol::ids::HostLocator::parse(
+                        fx.host.to_str().unwrap(),
+                    )
+                    .unwrap(),
+                    instance: fx.descriptor.node_uuid.to_string(),
+                    seat: SeatId::new(row.get::<_, String>(0)?),
+                    binding_generation: u64::try_from(row.get::<_, i64>(1)?).unwrap(),
+                    role: CallerRole::TopLevel,
+                    harness: herdr_threads::protocol::authority::Harness::Claude,
+                    native_session: NativeSessionId::new("peer-sess"),
+                    execution: ExecutionId::new(row.get::<_, String>(2)?),
+                    target: HostTargetId::new("w9:p2"),
+                    agent_id: None,
+                    liveness,
+                })
+            },
+        )
+        .unwrap();
+    fx.call(Command::Invite(Invite {
+        confirmation: Some(InvitationConfirmation::Lazy),
+        thread: herdr_threads::protocol::ids::ThreadId::new(thread.clone()),
+        seat: SeatId::new("seat"),
+        deadline_millis: None,
+        operation: OperationId::new("lazy-invite"),
+        claim,
+    }))
+    .unwrap();
     let text = system_message(&run(&fx, &home, "PreInvocation", "pre-invocation-inv1"));
     assert!(text.contains("passive invitation for review"), "{text}");
     assert!(
@@ -1212,12 +1266,13 @@ mod activation {
                 .unwrap();
             self.fx
                 .call(Command::SendMessage(SendMessage {
+                    priority: None,
                     delivery_mode: DeliveryMode::Ordinary,
                     user_intent: None,
                     thread,
                     body: "ordinary body needs later receipt ACK".into(),
                     direct_recipient: None,
-                    invited_recipients: vec![],
+                    invited_recipients: vec![self.recipient.seat.clone()],
                     deadline_millis: Some(300_000),
                     operation: OperationId::new("activation-ordinary-send"),
                     claim: origin,
@@ -1727,7 +1782,10 @@ mod activation {
         assert_eq!(send.claim, origin);
         assert_eq!(send.thread, actual.thread);
         assert_eq!(send.body, body);
-        assert_eq!(send.delivery_mode, DeliveryMode::Lazy);
+        // The daemon advertises send.priority_v1: the default send carries priority 1 (the
+        // passive class) and no legacy delivery mode.
+        assert_eq!(send.priority.map(|p| p.get()), Some(1));
+        assert_eq!(send.delivery_mode, DeliveryMode::Ordinary);
         assert_eq!(send.deadline_millis, None);
         assert_eq!(
             send.direct_recipient.as_ref(),
@@ -2056,7 +2114,7 @@ mod activation {
         assert_eq!(content.body_len, body.len() as u64);
         assert!(!content.truncated && !content.ack_required);
         assert!(page.text.contains(&format!(
-            "[herdr-threads] lazy {} in {}",
+            "[herdr-threads] message {} in {}",
             message.as_str(),
             actual.thread.as_str()
         )));
