@@ -313,6 +313,47 @@ fn startup_rejects_missing_or_altered_digest_index() {
     }
 }
 
+// Main schema 48, folded into the node baseline: health reads open holds of a
+// host's current recovery epoch through a partial index. Kills: a store whose
+// index is missing or lost its `released_at IS NULL` predicate (health would
+// walk released and previous-epoch hold history again).
+#[test]
+fn startup_rejects_missing_or_weakened_open_hold_index() {
+    let db = fresh_db();
+    let sql: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='recovery_holds_current_open'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        sql.contains("(host_id,baseline_boot,baseline_epoch,target_id)"),
+        "{sql}"
+    );
+    assert!(sql.ends_with("WHERE released_at IS NULL"), "{sql}");
+    let snapshot = image_of(&db);
+    for tamper in [
+        "DROP INDEX recovery_holds_current_open",
+        "DROP INDEX recovery_holds_current_open; CREATE INDEX recovery_holds_current_open ON recovery_holds(host_id,baseline_boot,baseline_epoch,target_id)",
+    ] {
+        let db = from_image(&snapshot);
+        db.execute_batch(tamper).unwrap();
+        let error = schema::initialize(
+            &db,
+            || crate::protocol::time::UtcMillis(0),
+            &crate::test_support::test_node_seed(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::IncompatibleSchema, "{tamper}");
+        assert!(
+            error.detail.contains("recovery_holds_current_open"),
+            "{}",
+            error.detail
+        );
+    }
+}
+
 // Digest fix2: startup verifies every v8 projection table, index and
 // maintaining trigger against the migration text. Kills: accepting a database
 // whose settlement trigger is missing (the projection would keep settled rows

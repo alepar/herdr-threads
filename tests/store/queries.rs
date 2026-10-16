@@ -1,5 +1,5 @@
 use super::*;
-use crate::cli::commands::{CliAction, parse_argv};
+use crate::cli::commands::{CliAction, parse_argv, parse_argv_exact_seats};
 use crate::protocol::{
     commands::{
         BodyReadRequest, Command, DeliveryInspectQuery, DiagnosticsQuery, DirectoryMembership,
@@ -1708,7 +1708,7 @@ fn inbox_continuation_stales_when_published_receipt_enters_examined_thread() {
     )
     .unwrap_err();
     assert_eq!(error.code, ErrorCode::CursorStale);
-    let parsed = parse_argv(error.restart_argv.unwrap()).unwrap();
+    let parsed = parse_argv_exact_seats(error.restart_argv.unwrap()).unwrap();
     assert!(
         matches!(parsed.action, CliAction::Wire(Command::Inbox(ref query))
         if query.seat.as_ref().is_some_and(|seat|seat.as_str()=="s") && query.page.cursor.is_none())
@@ -2195,7 +2195,7 @@ fn filtered_diagnostics_emits_parseable_contextual_continuation() {
         panic!()
     };
     assert!(page.has_more);
-    let parsed = parse_argv(page.next_argv.unwrap()).unwrap();
+    let parsed = parse_argv_exact_seats(page.next_argv.unwrap()).unwrap();
     assert_eq!(parsed.output, output);
     assert!(
         matches!(parsed.action, CliAction::Wire(Command::Diagnostics(ref q))
@@ -3301,7 +3301,7 @@ fn directory_default_pages_quiet_joined_invited_and_archived_memberships() {
         };
         if page.has_more {
             let argv = page.next_argv.as_ref().expect("server continuation");
-            let parsed = parse_argv(argv.clone()).unwrap();
+            let parsed = parse_argv_exact_seats(argv.clone()).unwrap();
             assert!(
                 matches!(parsed.action, CliAction::Wire(Command::Directory(ref q))
                 if q.membership.as_ref().is_some_and(|seat| seat.as_str()=="s")
@@ -3373,7 +3373,7 @@ fn directory_cursor_stales_only_on_relevant_member_revision() {
         panic!()
     };
     assert!(first.has_more);
-    let parsed = parse_argv(first.next_argv.clone().unwrap()).unwrap();
+    let parsed = parse_argv_exact_seats(first.next_argv.clone().unwrap()).unwrap();
     assert!(
         matches!(parsed.action,CliAction::Wire(Command::Directory(ref q)) if q.membership.as_ref().is_some_and(|s|s.as_str()=="s") && q.membership_filter==DirectoryMembership::Joined)
     );
@@ -3847,6 +3847,74 @@ fn retirement_jobs_page_205_scalar_rows() {
         }
     }
     assert_eq!(count, 205);
+}
+
+#[test]
+fn pending_retirement_cursor_is_separate_from_terminal_inclusive_history() {
+    let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
+    for (n, complete) in [(0, true), (1, false), (2, false)] {
+        let seat = format!("seat-{n}");
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,1,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&seat]).unwrap();
+        db.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,status,phase) VALUES (?1,?2,1,'boot',1,'target',1,?3,?4)", params![format!("job-{n}"), seat, if complete { "complete" } else { "pending" }, if complete { "complete" } else { "select_thread" }]).unwrap();
+    }
+    db.execute_batch("COMMIT").unwrap();
+    let request = PageRequest {
+        limit: 1,
+        ..Default::default()
+    };
+    let pending = pending_retirement_jobs(
+        &store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        request.clone(),
+        &budget(),
+    )
+    .unwrap();
+    assert_eq!(pending.items[0].job.as_str(), "job-1");
+    let public = Command::RetirementJobs(RetirementJobsQuery {
+        page: request.clone(),
+    });
+    let CommandResult::RetirementJobs(history) = query(
+        &store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &public,
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert_eq!(history.items[0].job.as_str(), "job-0");
+    let from_pending = Command::RetirementJobs(RetirementJobsQuery {
+        page: PageRequest {
+            cursor: pending.next_cursor,
+            ..request.clone()
+        },
+    });
+    assert_eq!(
+        query(
+            &store,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &from_pending,
+            &budget()
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::InvalidCursor
+    );
+    assert_eq!(
+        pending_retirement_jobs(
+            &store,
+            "34750f98bd59fcfc946da45aaabe933b",
+            PageRequest {
+                cursor: history.next_cursor,
+                ..request
+            },
+            &budget()
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::InvalidCursor
+    );
 }
 
 #[test]
@@ -7172,3 +7240,88 @@ fn presentation_q3_publication_recipient_keys_have_constant_sqlite_work() {
 
 #[path = "query_work_q4.rs"]
 mod query_work_q4;
+
+// Diagnostics must surface restore holds even without overdue mail, once per walk.
+#[test]
+fn restore_hold_diagnostics_is_paged_and_thread_filters_do_not_leak_instance_state() {
+    let (store, db) = fixture();
+    db.execute(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
+    db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane-held','b',1,'restore')", []).unwrap();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq,origin_node) VALUES ('inv','t','s',1,'pending',0,10,10,1,(SELECT id FROM local_node))", []).unwrap();
+    for scoped_thread in [false, true] {
+        let mut cursor = None;
+        let mut subjects = Vec::new();
+        for _ in 0..4 {
+            let mut p = page(cursor.take());
+            p.limit = 1;
+            let q = Command::Diagnostics(DiagnosticsQuery {
+                seat: None,
+                thread: scoped_thread.then(|| ThreadId::new("t")),
+                page: p,
+            });
+            let CommandResult::Diagnostics(result) =
+                query(&store, "34750f98bd59fcfc946da45aaabe933b", &q, &budget()).unwrap()
+            else {
+                panic!()
+            };
+            for row in &result.items {
+                if row.subject == "restore_holds" {
+                    assert!(row.detail_data.contains("pane-held"));
+                }
+                subjects.push(row.subject.clone());
+            }
+            cursor = result.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(cursor.is_none(), "continuation made no progress");
+        if scoped_thread {
+            assert_eq!(subjects, ["overdue_invitation:inv"]);
+        } else {
+            assert_eq!(subjects, ["restore_holds", "overdue_invitation:inv"]);
+        }
+    }
+}
+
+#[test]
+fn restore_hold_health_query_work_ignores_released_and_stale_history() {
+    let (_store, db) = fixture();
+    db.execute(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
+    db.execute_batch("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<2000)
+        INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason,released_at)
+        SELECT (SELECT min(host_id) FROM herdr_hosts),'released-'||x,'b',1,'old',1 FROM n;
+        WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<2000)
+        INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason)
+        SELECT (SELECT min(host_id) FROM herdr_hosts),'stale-'||x,'old',1,'stale' FROM n;
+        INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'held','b',1,'current');").unwrap();
+    // The node baseline carries main's schema-48 open-hold index.
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM recovery_holds", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        4001
+    );
+    let mut statement = db
+        .prepare(super::super::effective::RECOVERY_HOLD_TARGETS_SQL)
+        .unwrap();
+    let targets: Vec<String> = statement
+        .query_map(["34750f98bd59fcfc946da45aaabe933b"], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(targets, ["held"]);
+    let steps = statement.get_status(rusqlite::StatementStatus::VmStep);
+    assert!(
+        steps < 2000,
+        "health query walked retained hold history: {steps} VM steps"
+    );
+}

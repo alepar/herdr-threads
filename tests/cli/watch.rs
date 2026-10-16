@@ -448,6 +448,50 @@ fn missing_pane_through_run_in_pane_prints_one_status_and_exits_3() {
 }
 
 #[test]
+fn watch_global_host_failure_is_retryable_without_losing_diagnostics() {
+    let root = temp_dir("startup-host");
+    let state = root.join("state");
+    let host = root.join("missing.sock");
+    let mut out = Vec::new();
+    let error = crate::cli::run_in_pane(
+        [
+            "herdr-threads",
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--host-endpoint",
+            host.to_str().unwrap(),
+            "--cooperative-seat",
+            "s123",
+            "--cooperative-target",
+            "Alice Smith",
+            "--cooperative-harness",
+            "claude",
+            "--cooperative-role",
+            "top-level",
+            "watch",
+            "--harness",
+            "claude",
+            "--session",
+            "s1",
+        ],
+        Some("w1:p1"),
+        &mut out,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.exit_code(),
+        crate::protocol::watch::WATCH_EXIT_RETRY,
+        "{error}"
+    );
+    assert!(error.to_string().contains("host_unavailable"));
+    assert!(
+        out.is_empty(),
+        "startup failed before watch could print a status"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn unlocated_caller_exits_2_no_binding() {
     let root = temp_dir("loc");
     let runtime = crate::daemon::paths::RuntimeContext::explicit(

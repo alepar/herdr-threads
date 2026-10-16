@@ -190,6 +190,43 @@ pub fn effective_recovery_disposition(
     }
 }
 
+// CROSS JOIN keeps each local host the outer loop, so the open-hold index is
+// searched by (host_id, current boot, current epoch) and never walks another
+// epoch's retained holds.
+pub(crate) const RECOVERY_HOLD_TARGETS_SQL: &str = "WITH held(host_id,target_id) AS (
+            SELECT h.host_id,h.target_id FROM herdr_hosts i CROSS JOIN recovery_holds h INDEXED BY recovery_holds_current_open
+              ON h.host_id=i.host_id AND h.baseline_boot=i.host_boot AND h.baseline_epoch=i.host_epoch AND h.released_at IS NULL
+            WHERE i.node_id=?1
+            UNION
+            SELECT i.host_id,t.target_id FROM herdr_hosts i JOIN snapshot_targets t ON t.generation_id=i.recovery_baseline_generation_id
+            WHERE i.node_id=?1 AND i.baseline_hold_unclaimed<>0
+            AND NOT EXISTS(SELECT 1 FROM recovery_baseline_releases r WHERE r.host_id=i.host_id AND r.baseline_generation_id=i.recovery_baseline_generation_id AND r.target_id=t.target_id)
+        ) SELECT target_id FROM held h WHERE NOT EXISTS(
+            SELECT 1 FROM seats s WHERE s.instance_id=?1 AND s.host_id=h.host_id AND s.target_id=h.target_id AND s.state='resolved'
+        ) ORDER BY target_id, host_id";
+
+/// Count durable held targets once per attached Herdr host of the node,
+/// excluding current owners, released baseline
+/// targets and holds from another recovery epoch. Work is proportional to the
+/// retained baseline and current explicit holds, not seat or binding history.
+pub(crate) fn recovery_hold_summary(
+    db: &Connection,
+    instance: &str,
+) -> Result<crate::ports::RecoveryHoldSummary, ApiError> {
+    let mut statement = db.prepare(RECOVERY_HOLD_TARGETS_SQL).map_err(store_error)?;
+    let mut rows = statement.query([instance]).map_err(store_error)?;
+    let mut summary = crate::ports::RecoveryHoldSummary::default();
+    while let Some(row) = rows.next().map_err(store_error)? {
+        summary.count += 1;
+        if summary.sample.len() < crate::ports::UNRESOLVED_SEAT_SAMPLE {
+            summary.sample.push(crate::protocol::ids::HostTargetId::new(
+                row.get::<_, String>(0).map_err(store_error)?,
+            ));
+        }
+    }
+    Ok(summary)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectiveReceiptState {
     Pending,

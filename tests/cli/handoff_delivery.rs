@@ -220,7 +220,7 @@ impl LocalClient for Client {
     }
 }
 fn request() -> Request {
-    let parsed = super::super::commands::parse_argv([
+    let parsed = super::super::commands::parse_argv_exact_seats([
         "ht",
         "handoff",
         "--existing",
@@ -740,7 +740,7 @@ fn pane_labels_select_canonical_seat_and_ambiguity_never_allocates() {
             agent_names: vec![],
         }],
     };
-    let parsed = super::super::commands::parse_argv([
+    let parsed = super::super::commands::parse_argv_exact_seats([
         "ht",
         "handoff",
         "--existing",
@@ -2648,7 +2648,7 @@ fn assert_delivery_inspect_is_public_pending_ops(plan: &DeliveryPlan, json: bool
             .unwrap_or_else(|| panic!("no inspect_argv line: {text}"));
         shlex::split(line).unwrap_or_else(|| panic!("unquotable: {line}"))
     };
-    let parsed = crate::cli::commands::parse_argv(&argv)
+    let parsed = crate::cli::commands::parse_argv_exact_seats(&argv)
         .unwrap_or_else(|e| panic!("public parser refused inspect_argv {argv:?}: {e:?}"));
     assert!(
         matches!(
@@ -2754,7 +2754,7 @@ fn maximum_instruction_file_freezes_through_existing_delivery_and_retry() {
         let temp = TempRoot::new();
         let path = temp.0.join("instructions");
         std::fs::write(&path, &body).unwrap();
-        let parsed = crate::cli::commands::parse_argv([
+        let parsed = crate::cli::commands::parse_argv_exact_seats([
             "ht",
             "handoff",
             "--existing",
@@ -3636,7 +3636,7 @@ fn automatic_delivery_preparation_stays_unsupported_before_any_read() {
 
 #[test]
 fn automatic_existing_seat_full_request_ensures_and_sends() {
-    let parsed = super::super::commands::parse_argv([
+    let parsed = super::super::commands::parse_argv_exact_seats([
         "ht",
         "handoff",
         "--existing",
@@ -3688,7 +3688,7 @@ fn automatic_existing_seat_full_request_ensures_and_sends() {
 
 #[test]
 fn automatic_existing_pane_full_request_resolves_one_seat() {
-    let parsed = super::super::commands::parse_argv([
+    let parsed = super::super::commands::parse_argv_exact_seats([
         "ht",
         "handoff",
         "--existing",
@@ -3769,7 +3769,7 @@ fn automatic_existing_pane_full_request_resolves_one_seat() {
 
 #[test]
 fn automatic_existing_unsupported_refuses_before_publication_and_effects() {
-    let parsed = super::super::commands::parse_argv([
+    let parsed = super::super::commands::parse_argv_exact_seats([
         "ht",
         "handoff",
         "--existing",
@@ -3815,7 +3815,7 @@ fn automatic_existing_unsupported_refuses_before_publication_and_effects() {
 
 #[test]
 fn automatic_existing_pane_unsupported_refuses_before_resolution_and_publication() {
-    let parsed = super::super::commands::parse_argv([
+    let parsed = super::super::commands::parse_argv_exact_seats([
         "ht",
         "handoff",
         "--existing",
@@ -3861,7 +3861,7 @@ fn automatic_existing_pane_unsupported_refuses_before_resolution_and_publication
 
 #[test]
 fn automatic_existing_lost_ensure_then_reject_keeps_original_and_refuses_send() {
-    let parsed = super::super::commands::parse_argv([
+    let parsed = super::super::commands::parse_argv_exact_seats([
         "ht",
         "handoff",
         "--existing",
@@ -3957,7 +3957,7 @@ fn automatic_existing_lost_ensure_then_reject_keeps_original_and_refuses_send() 
 
 #[test]
 fn automatic_existing_lost_send_replays_published_message_after_reject() {
-    let parsed = super::super::commands::parse_argv([
+    let parsed = super::super::commands::parse_argv_exact_seats([
         "ht",
         "handoff",
         "--existing",
@@ -4019,7 +4019,7 @@ fn automatic_existing_lost_send_replays_published_message_after_reject() {
 
 #[test]
 fn automatic_existing_completed_retry_uses_terminal_without_ensure_or_send() {
-    let parsed = super::super::commands::parse_argv([
+    let parsed = super::super::commands::parse_argv_exact_seats([
         "ht",
         "handoff",
         "--existing",
@@ -4084,7 +4084,7 @@ fn automatic_existing_completed_retry_uses_terminal_without_ensure_or_send() {
 
 #[test]
 fn automatic_existing_retry_requires_exact_namespace_path_bytes_before_client() {
-    let parsed = super::super::commands::parse_argv([
+    let parsed = super::super::commands::parse_argv_exact_seats([
         "ht",
         "handoff",
         "--existing",
@@ -4300,7 +4300,7 @@ impl LocalClient for AutomaticPeerClient {
 #[test]
 fn automatic_existing_max_escaped_body_and_independent_frozen_deadlines() {
     let body = "\0".repeat(65536);
-    let parsed = super::super::commands::parse_argv([
+    let parsed = super::super::commands::parse_argv_exact_seats([
         "ht",
         "handoff",
         "--existing",
@@ -4434,7 +4434,8 @@ fn historical_none_automatic_existing_retry_requires_receipts_before_effects_and
         calls: Mutex::new(vec![]),
     };
     let mut parsed =
-        super::super::commands::parse_argv(["ht", "retry", &reference.recovery_ref()]).unwrap();
+        super::super::commands::parse_argv_exact_seats(["ht", "retry", &reference.recovery_ref()])
+            .unwrap();
     parsed.output = OutputSpec::default();
     let mut output = Vec::new();
     assert!(
@@ -4537,7 +4538,8 @@ fn historical_none_automatic_existing_retry_requires_receipts_before_effects_and
     );
     // Actual parsed public completed classifier stays exempt on an old peer.
     let mut parsed =
-        super::super::commands::parse_argv(["ht", "retry", &reference.recovery_ref()]).unwrap();
+        super::super::commands::parse_argv_exact_seats(["ht", "retry", &reference.recovery_ref()])
+            .unwrap();
     parsed.output = OutputSpec::default();
     peer.calls.lock().unwrap().clear();
     let mut replay = Vec::new();

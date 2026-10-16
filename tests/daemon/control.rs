@@ -1540,6 +1540,7 @@ fn unresolved_seats_are_counted_named_and_degrade_otherwise_healthy_health() {
 
     let mut some = healthy();
     some.unresolved = Some(UnresolvedSeatSummary {
+        holds: Default::default(),
         count: 4,
         sample: vec![
             UnresolvedSeatSample {
@@ -1590,6 +1591,7 @@ fn unresolved_seats_are_counted_named_and_degrade_otherwise_healthy_health() {
         still_lacking: u64::MAX,
     });
     long.unresolved = Some(UnresolvedSeatSummary {
+        holds: Default::default(),
         count: u64::MAX,
         sample: (0..8)
             .map(|n| UnresolvedSeatSample {

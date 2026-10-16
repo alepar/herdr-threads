@@ -58,6 +58,80 @@ fn unique<'a, T>(
     }
 }
 
+/// Resolved `--space`/`--tab` parents. `tab` is Some only when `--tab` was given: this helper
+/// never defaults a tab (caller's tab / sole tab defaulting belongs to `resolve_selector`'s
+/// `--pane` path only). Shared by `--pane` resolution and seat-name narrowing so the two flag
+/// families cannot drift.
+pub(crate) struct Parents<'a> {
+    pub space: &'a crate::host::observation::TopologySpace,
+    pub tab: Option<&'a crate::host::observation::TopologyTab>,
+}
+
+pub(crate) fn resolve_parents<'a>(
+    space: Option<&str>,
+    tab: Option<&str>,
+    topology: &'a crate::host::observation::HostTopology,
+    pane_space: Option<&str>,
+    caller_space: Option<&str>,
+) -> Result<Parents<'a>, ApiError> {
+    let explicit_tab_id = tab.and_then(|id| topology.tabs.iter().find(|tab| tab.id == id));
+    if tab.is_some_and(looks_like_tab_id) && explicit_tab_id.is_none() {
+        return Err(ApiError::not_found(
+            "the explicit tab ID is absent from the live topology",
+        ));
+    }
+    let space = if let Some(value) = space {
+        topology
+            .spaces
+            .iter()
+            .find(|space| space.id == value)
+            .map(Ok)
+            .unwrap_or_else(|| {
+                unique(
+                    topology
+                        .spaces
+                        .iter()
+                        .filter(|space| space.label.as_deref() == Some(value))
+                        .collect(),
+                    "space",
+                    |space| format!("{:?} {:?}", space.id, space.label),
+                )
+            })?
+    } else {
+        let id = pane_space.or_else(|| explicit_tab_id.map(|tab| tab.space.as_str()))
+            .or(caller_space).ok_or_else(|| invalid(
+                "outside Herdr, pass --space/--tab or a pane ID; caller pane is absent or stale".into()))?;
+        topology
+            .spaces
+            .iter()
+            .find(|space| space.id == id)
+            .ok_or_else(|| ApiError::not_found("caller space disappeared"))?
+    };
+    let tab = if let Some(value) = tab {
+        Some(if let Some(tab) = explicit_tab_id {
+            if tab.space != space.id {
+                return Err(invalid(
+                    "explicit tab does not belong to selected space".into(),
+                ));
+            }
+            tab
+        } else {
+            unique(
+                topology
+                    .tabs
+                    .iter()
+                    .filter(|tab| tab.space == space.id && tab.label.as_deref() == Some(value))
+                    .collect(),
+                "tab",
+                |tab| format!("{:?} {:?}", tab.id, tab.label),
+            )?
+        })
+    } else {
+        None
+    };
+    Ok(Parents { space, tab })
+}
+
 /// Resolve exact IDs before names against one snapshot and a live caller ID.
 /// This pure locator never reads or allocates a durable seat.
 pub fn resolve_selector(
@@ -87,66 +161,16 @@ pub fn resolve_selector(
             "the qualified pane ID is absent from the live topology",
         ));
     }
-    let explicit_tab_id = selector
-        .tab
-        .as_ref()
-        .and_then(|id| topology.tabs.iter().find(|tab| &tab.id == id));
-    if selector
-        .tab
-        .as_ref()
-        .is_some_and(|value| looks_like_tab_id(value))
-        && explicit_tab_id.is_none()
-    {
-        return Err(ApiError::not_found(
-            "the explicit tab ID is absent from the live topology",
-        ));
-    }
-    let space = if let Some(value) = &selector.space {
-        topology
-            .spaces
-            .iter()
-            .find(|space| &space.id == value)
-            .map(Ok)
-            .unwrap_or_else(|| {
-                unique(
-                    topology
-                        .spaces
-                        .iter()
-                        .filter(|space| space.label.as_ref() == Some(value))
-                        .collect(),
-                    "space",
-                    |space| format!("{:?} {:?}", space.id, space.label),
-                )
-            })?
-    } else {
-        let id = exact.map(|pane| &pane.space).or_else(|| explicit_tab_id.map(|tab| &tab.space))
-            .or_else(|| caller.map(|pane| &pane.space)).ok_or_else(|| invalid(
-                "outside Herdr, pass --space/--tab or a pane ID; caller pane is absent or stale".into()))?;
-        topology
-            .spaces
-            .iter()
-            .find(|space| &space.id == id)
-            .ok_or_else(|| ApiError::not_found("caller space disappeared"))?
-    };
-    let tab = if let Some(value) = &selector.tab {
-        if let Some(tab) = explicit_tab_id {
-            if tab.space != space.id {
-                return Err(invalid(
-                    "explicit tab does not belong to selected space".into(),
-                ));
-            }
-            tab
-        } else {
-            unique(
-                topology
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.space == space.id && tab.label.as_ref() == Some(value))
-                    .collect(),
-                "tab",
-                |tab| format!("{:?} {:?}", tab.id, tab.label),
-            )?
-        }
+    let parents = resolve_parents(
+        selector.space.as_deref(),
+        selector.tab.as_deref(),
+        topology,
+        exact.map(|pane| pane.space.as_str()),
+        caller.map(|pane| pane.space.as_str()),
+    )?;
+    let space = parents.space;
+    let tab = if let Some(tab) = parents.tab {
+        tab
     } else if let Some(pane) = exact {
         topology
             .tabs
@@ -244,7 +268,7 @@ pub const FIND_PANE_ID_HINT: &str =
 pub const NAME_PRECEDENCE: &str = "an exact pane ID wins; pane label and live agent name match together within the selected tab; a tab label is an alias only when that tab holds exactly one pane";
 
 /// Tab IDs have an unambiguous separator/prefix, unlike workspace labels such as `work`.
-fn looks_like_tab_id(value: &str) -> bool {
+pub(crate) fn looks_like_tab_id(value: &str) -> bool {
     value.split_once(':').is_some_and(|(space, tab)| {
         space.len() > 1
             && space.starts_with('w')

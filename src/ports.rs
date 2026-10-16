@@ -24,7 +24,7 @@ use crate::protocol::{
     ids::*,
     output::OutputSpec,
     pagination::{Page, PageRequest},
-    results::{ApiError, BoundedError, CommandResult, RetirementStatus},
+    results::{ApiError, BoundedError, CommandResult, ErrorCode, RetirementStatus},
     service::{ServiceOperation, ServiceResult},
     time::{CallBudget, Clock, MonoInstant, UtcMillis},
 };
@@ -616,8 +616,15 @@ pub struct BindingEvidenceStartup {
 /// [`UNRESOLVED_SEAT_SAMPLE`] of them, oldest first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UnresolvedSeatSummary {
+    pub holds: RecoveryHoldSummary,
     pub count: u64,
     pub sample: Vec<UnresolvedSeatSample>,
+}
+/// Durable unowned restore holds, with at most three target samples.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecoveryHoldSummary {
+    pub count: u64,
+    pub sample: Vec<HostTargetId>,
 }
 pub const UNRESOLVED_SEAT_SAMPLE: usize = 3;
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3482,6 +3489,19 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<RetirementStatus>, ApiError>;
+    /// Read-only terminal-inclusive history for bounded worker-health recovery.
+    /// Implementations must explicitly supply full-history coverage; an empty
+    /// pending-only discovery cannot safely serve as a recovery default.
+    fn retirement_recovery_jobs(
+        &self,
+        _page: PageRequest,
+        _budget: &CallBudget,
+    ) -> Result<Page<RetirementStatus>, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::StoreCorrupt,
+            "retirement recovery reader missing",
+        ))
+    }
     /// The startup binding-evidence verification result of this store's
     /// writer. None when the implementation has no durable writer.
     fn binding_evidence_startup(&self) -> Option<BindingEvidenceStartup>;

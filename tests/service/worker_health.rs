@@ -241,6 +241,15 @@ impl DeadlinePort for ScriptedDeadlines {
             vec![]
         }))
     }
+    fn retirement_recovery_jobs(
+        &self,
+        _: PageRequest,
+        _: &CallBudget,
+    ) -> Result<Page<RetirementStatus>, ApiError> {
+        // The scripted queue belongs to normal discovery. It has no separate
+        // terminal snapshot and must not consume the next scripted driver turn.
+        Ok(page(vec![]))
+    }
     fn advance_retirement(
         &self,
         _: crate::protocol::ids::RetirementJobId,

@@ -4081,6 +4081,11 @@ BEGIN
     DELETE FROM binding_pending WHERE binding_id=NEW.binding_id;
 END;
 
+-- Health reads only open holds in each host's current recovery epoch,
+-- independently of released targets and open holds retained from previous
+-- incarnations (main schema 48, folded in place).
+CREATE INDEX recovery_holds_current_open ON recovery_holds(host_id,baseline_boot,baseline_epoch,target_id) WHERE released_at IS NULL;
+
 INSERT INTO "schema_identity"("marker") VALUES('herdr-threads-node-v1');
 INSERT INTO "receipt_deadline_backfill"("singleton","physical_after","physical_high_water","prepared_after","prepared_high_water","completed") VALUES(1,0,0,0,0,1);
 INSERT INTO "receipt_discovery_backfill"("singleton","physical_after","physical_high_water","sparse_after","sparse_high_water","completed") VALUES(1,0,0,0,0,1);

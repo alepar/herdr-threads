@@ -2910,6 +2910,9 @@ mod continuity_gate {
         }
     }
     impl LocalClient for Daemon {
+        fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+            name == crate::protocol::capabilities::SAME_SESSION_CONTINUITY_V1
+        }
         fn call_with_output(
             &self,
             command: Command,
@@ -3343,10 +3346,108 @@ mod continuity_gate {
         event(harness, EventKind::Resume, Role::TopLevel, Some("S-1"))
     }
 
-    // Kills: a gate that lets startup/clear/compact/tool events, children or a
-    // human occupant reach the daemon's reattachment decision.
     #[test]
-    fn only_a_top_level_resume_with_a_session_asks_for_reattachment() {
+    fn same_session_continuity_recovers_lifecycle_and_turn_without_a_resume() {
+        for kind in [
+            EventKind::Startup,
+            EventKind::Clear,
+            EventKind::Restart,
+            EventKind::Tool,
+            EventKind::Compact,
+        ] {
+            let pane = Pane::new();
+            let daemon = Daemon::new(vec![reattached("saved", 3)]);
+            let ev = event(Harness::Claude, kind, Role::TopLevel, Some("S-1"));
+            assert!(
+                pane.call(&daemon)
+                    .reattach_by_continuity(&ev, false)
+                    .done()
+                    .is_some(),
+                "{kind:?}"
+            );
+            let requests = daemon.continuity_requests();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].source, "same_session");
+            assert_eq!(requests[0].native_session.as_str(), "S-1");
+            assert!(pane.pending().is_none());
+        }
+    }
+
+    #[test]
+    fn same_session_continuity_turn_retries_a_frozen_resume_intent() {
+        let pane = Pane::new();
+        let (reference, execution) = pane.record("S-1");
+        let daemon = Daemon::new(vec![reattached("saved", 2)]).with_lookups(vec![vec!["saved"]]);
+        let ev = event(
+            Harness::Claude,
+            EventKind::Tool,
+            Role::TopLevel,
+            Some("S-1"),
+        );
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&ev, false)
+                .done()
+                .is_some()
+        );
+        let requests = daemon.continuity_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].operation, reference.operation);
+        assert_eq!(requests[0].execution.as_str(), execution.to_string());
+        assert_eq!(
+            requests[0].source, "resume",
+            "the original claim is never relabeled"
+        );
+        assert!(pane.pending().is_none());
+    }
+
+    #[test]
+    fn same_session_continuity_quiet_turn_does_not_repeat_standing_instructions() {
+        let pane = Pane::new();
+        let daemon = Daemon::new(vec![reattached("saved", 3)]);
+        let ev = event(
+            Harness::Claude,
+            EventKind::Tool,
+            Role::TopLevel,
+            Some("S-1"),
+        );
+        let done = pane
+            .call(&daemon)
+            .reattach_by_continuity(&ev, false)
+            .done()
+            .unwrap();
+        assert!(
+            done.text.is_empty(),
+            "a quiet same-session turn repeated lifecycle guidance: {}",
+            String::from_utf8_lossy(&done.text)
+        );
+    }
+
+    #[test]
+    fn same_session_continuity_never_claims_for_children_or_plugin_contexts() {
+        let pane = Pane::new();
+        let daemon = Daemon::new(vec![]);
+        for (role, session, agent) in [
+            (Role::Subagent, Some("S-1"), None),
+            (Role::TopLevel, Some("S-1"), Some("child")),
+            (Role::TopLevel, Some("plugin_context:fake"), None),
+            (Role::TopLevel, None, None),
+        ] {
+            let mut ev = event(Harness::Claude, EventKind::Tool, role, session);
+            ev.agent_id = agent.map(str::to_owned);
+            assert!(matches!(
+                pane.call(&daemon).reattach_by_continuity(&ev, false),
+                Reattach::Declined
+            ));
+        }
+        assert!(daemon.seen.lock().unwrap().is_empty());
+        assert!(pane.pending().is_none());
+    }
+
+    // Steady resolved events keep the no-continuity fast path; children and
+    // human events never claim continuity.
+    #[test]
+    fn resolved_nonresume_and_ineligible_events_never_probe_continuity() {
         let pane = Pane::new();
         let daemon = Daemon::new(vec![]);
         let call = pane.call(&daemon);
@@ -3421,7 +3522,7 @@ mod continuity_gate {
         ] {
             assert!(
                 matches!(
-                    call.reattach_by_continuity(&candidate, false),
+                    call.reattach_by_continuity(&candidate, true),
                     Reattach::Declined
                 ),
                 "{name}"
@@ -3716,7 +3817,7 @@ mod continuity_gate {
             assert!(matches!(
                 pane.call(&daemon)
                     .reattach_by_continuity(&resume(Harness::Claude), false),
-                Reattach::Refused(ref refused) if *refused == code
+                Reattach::Refused(ref refused) if refused.code == code
             ));
             assert_eq!(daemon.continuity_requests().len(), 1, "{code:?}");
             assert!(pane.pending().is_none(), "{code:?}");
@@ -7537,8 +7638,29 @@ mod registered_resume {
                     c.validate()
                         .map_err(|e| ApiError::new(ErrorCode::InvalidRequest, e))?;
                     assert_eq!(c.target.as_str(), "w9:p1");
+                    if c.source == "same_session" && self.control("legacy-continuity.json") {
+                        return Err(ApiError::new(
+                            ErrorCode::InvalidRequest,
+                            "only a resume check-in can reattach a seat",
+                        ));
+                    }
+                    if c.source == "same_session"
+                        && !self.control("same-session-match.json")
+                        && !self.control("same-session-conflict.json")
+                    {
+                        return Err(ApiError::new(
+                            ErrorCode::NotFound,
+                            "fixture has no same-session candidate",
+                        ));
+                    }
                     assert_eq!(c.harness.as_str(), "synthetic_fourth");
                     assert_eq!(c.native_session.as_str(), "fourth-resume-session");
+                    if self.control("same-session-conflict.json") {
+                        return Err(ApiError::new(
+                            ErrorCode::Conflict,
+                            "several unresolved candidates; inspect `herdr-threads seat inspect ambiguous-seat` before operator rebind",
+                        ));
+                    }
                     if self.control("enrollment-no-match.json") {
                         return Err(ApiError::new(
                             ErrorCode::NotFound,
@@ -7617,14 +7739,22 @@ mod registered_resume {
                 Command::BindingEvent(_) => Ok(CommandResult::BindingEventRecorded { changed: 1 }),
                 // Scripted only for the hook inbox page tests: the v2 inbox and
                 // hook lazy delivery are advertised and one page is served.
-                Command::Capabilities if self.control("inbox-v2.json") => Ok(
-                    CommandResult::Capabilities(crate::protocol::results::CapabilityList {
-                        capabilities: vec![
+                Command::Capabilities => {
+                    let mut capabilities = Vec::new();
+                    if !self.control("legacy-continuity.json") {
+                        capabilities
+                            .push(crate::protocol::capabilities::SAME_SESSION_CONTINUITY_V1.into());
+                    }
+                    if self.control("inbox-v2.json") {
+                        capabilities.extend([
                             crate::protocol::capabilities::INBOX_BATCH_V2.into(),
                             crate::protocol::capabilities::LAZY_HOOK_DELIVERY.into(),
-                        ],
-                    }),
-                ),
+                        ]);
+                    }
+                    Ok(CommandResult::Capabilities(
+                        crate::protocol::results::CapabilityList { capabilities },
+                    ))
+                }
                 Command::InboxBatchV2(query) if self.control("inbox-v2.json") => {
                     assert_eq!(
                         query.seat.as_ref().map(SeatId::as_str),
@@ -8190,6 +8320,110 @@ mod registered_resume {
             page.items
         );
     }
+    #[test]
+    fn same_session_continuity_legacy_daemon_keeps_startup_and_resume_working() {
+        for resume in [false, true] {
+            let f = Fixture::new(false);
+            write_fixture_json(&f.root.join("legacy-continuity.json"), &true).unwrap();
+            if !resume {
+                write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
+            }
+            let outcome = f.run(
+                registration(),
+                &input(
+                    if resume {
+                        "SyntheticResume"
+                    } else {
+                        "SyntheticStart"
+                    },
+                    "top_level",
+                    Some("fourth-resume-session"),
+                ),
+            );
+            assert_eq!(outcome.diagnostic, None);
+            if resume {
+                assert_eq!(f.service.requests().len(), 1);
+                assert_eq!(f.service.requests()[0].source, "resume");
+            } else {
+                assert!(f.service.requests().is_empty());
+                assert_eq!(enrollment_counts(&f), (1, 1));
+            }
+        }
+    }
+
+    #[test]
+    fn same_session_continuity_legacy_daemon_does_not_bypass_a_held_target() {
+        let f = Fixture::new(false);
+        write_fixture_json(&f.root.join("legacy-continuity.json"), &true).unwrap();
+        let outcome = f.run(
+            registration(),
+            &input("SyntheticStart", "top_level", Some("fourth-resume-session")),
+        );
+        assert!(outcome.diagnostic.is_some());
+        assert!(f.service.requests().is_empty());
+        assert_eq!(enrollment_counts(&f), (0, 0));
+    }
+
+    #[test]
+    fn same_session_continuity_registered_running_turn_recovers_after_daemon_upgrade() {
+        let f = Fixture::new(false);
+        write_fixture_json(&f.root.join("same-session-match.json"), &true).unwrap();
+        // The hook's native session never restarts: the recovered daemon sees
+        // its persisted seat as unresolved; no SyntheticResume is delivered.
+        let outcome = f.run(
+            registration(),
+            &input("SyntheticTool", "top_level", Some("fourth-resume-session")),
+        );
+        assert_eq!(outcome.diagnostic, None);
+        let requests = f.service.requests();
+        assert_eq!(requests.len(), 1, "{:?}", f.service.seen.lock().unwrap());
+        assert_eq!(requests[0].source, "same_session");
+        assert_eq!(requests[0].native_session.as_str(), "fourth-resume-session");
+        assert!(
+            !f.service
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::ResolveSeat(_)))
+        );
+        assert!(f.service.seen.lock().unwrap().iter().any(|c| matches!(c,Command::CheckIn(c) if c.claim.binding_generation==7 && matches!(c.mode,crate::protocol::commands::CheckInMode::Current))));
+        let steady = f.run(
+            registration(),
+            &input("SyntheticTool", "top_level", Some("fourth-resume-session")),
+        );
+        assert_eq!(steady.diagnostic, None);
+        assert_eq!(
+            f.service.requests().len(),
+            1,
+            "a resolved steady turn must not probe continuity"
+        );
+    }
+
+    #[test]
+    fn same_session_continuity_lifecycle_keeps_canonical_refusal_guidance() {
+        let f = Fixture::new(false);
+        write_fixture_json(&f.root.join("same-session-conflict.json"), &true).unwrap();
+        let outcome = f.run(
+            registration(),
+            &input("SyntheticStart", "top_level", Some("fourth-resume-session")),
+        );
+        let text = String::from_utf8(outcome.stdout).unwrap();
+        assert!(
+            text.contains("herdr-threads seat inspect ambiguous-seat"),
+            "{text}; {:?}",
+            outcome.diagnostic
+        );
+        assert!(
+            !f.service
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::ResolveSeat(_) | Command::CheckIn(_)))
+        );
+    }
+
     /// Actual admitted fourth producer -> canonical socket commands -> context
     /// journal. Native names differ truthfully from SessionStart. Disabling
     /// enrollment must fail actual ResolveSeat and installed-context assertions.
@@ -8253,11 +8487,15 @@ mod registered_resume {
                         < resolve
                 );
             } else {
-                assert!(
-                    !seen
-                        .iter()
-                        .any(|c| matches!(c, Command::ContinuityCheckIn(_)))
+                assert_eq!(
+                    seen.iter()
+                        .filter(|c| matches!(c, Command::ContinuityCheckIn(_)))
+                        .count(),
+                    1
                 );
+                assert!(seen.iter().any(
+                    |c| matches!(c,Command::ContinuityCheckIn(c) if c.source=="same_session")
+                ));
             }
             drop(seen);
             assert_no_enrollment_intents(&f);
@@ -8601,7 +8839,7 @@ mod registered_resume {
         };
         assert_eq!(
             c.validate(),
-            Err("only a resume check-in can reattach a seat")
+            Err("only resume or same_session check-ins can reattach a seat")
         );
     }
     #[test]
@@ -8736,7 +8974,7 @@ mod registered_resume {
         assert_eq!(Sha256::digest(std::fs::read(file).unwrap()), before);
     }
     #[test]
-    fn registered_fourth_nonresume_never_replays_continuity() {
+    fn registered_fourth_resolved_nonresume_never_replays_continuity() {
         use crate::cli::journal::{IntentScope, Journal, SemanticMutation};
         for (event, kind) in [
             ("SyntheticStart", EventKind::Startup),
@@ -8744,7 +8982,7 @@ mod registered_resume {
             ("SyntheticClear", EventKind::Clear),
             ("SyntheticCompact", EventKind::Compact),
         ] {
-            let f = Fixture::new(false);
+            let f = Fixture::new(true);
             let r = registration();
             let i = input(event, "top_level", Some("fourth-resume-session"));
             let (_, d) = decode(r, &i);
@@ -8776,7 +9014,7 @@ mod registered_resume {
             let outcome = f.run(r, &i);
             assert!(f.service.requests().is_empty(), "{event}");
             assert!(f.saved().is_none());
-            assert!(outcome.attention.is_none());
+            assert_eq!(outcome.diagnostic, None);
             assert_eq!(
                 journal
                     .pending_continuity(&f.instance.to_string(), &target)
@@ -10487,5 +10725,24 @@ fn claude_rewrite_survives_an_unavailable_daemon() {
     assert_eq!(
         value["hookSpecificOutput"]["updatedInput"]["command"],
         "ht --agent-id=a-1 inbox"
+    );
+}
+
+// A lifecycle refusal must carry repair guidance into model context, not only stderr.
+#[test]
+fn restore_hold_hook_context_keeps_the_daemons_operator_guidance() {
+    let failure = api_failure(
+        "seat enrollment",
+        &ApiError::new(
+            ErrorCode::TargetUnresolved,
+            "restore baseline hold on w9:p1; repair: `herdr-threads human seat resolve --pane w9:p1 --new-seat --operator`",
+        ),
+    );
+    let Failure::UnavailableDetail(reason, _) = failure else {
+        panic!("expected detailed failure")
+    };
+    assert!(
+        reason.contains("--pane w9:p1 --new-seat --operator"),
+        "{reason}"
     );
 }

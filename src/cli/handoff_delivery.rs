@@ -237,6 +237,8 @@ pub(crate) fn prepare_automatic<C: LocalClient + ?Sized>(
         || request.name.is_some()
         || !request.argv.is_empty()
         || request.seat.is_some() == request.selector.pane.is_some()
+        // The parser routes --space/--tab given with --seat into `SeatNarrowing` (root D8a), so
+        // this clause only guards non-CLI callers (tests, journaled replays).
         || (request.seat.is_some()
             && (request.selector.space.is_some() || request.selector.tab.is_some()))
         || request.thread.is_some()
@@ -347,6 +349,8 @@ pub fn prepare<C: LocalClient + ?Sized>(
         || request.name.is_some()
         || !request.argv.is_empty()
         || request.seat.is_some() == request.selector.pane.is_some()
+        // The parser routes --space/--tab given with --seat into `SeatNarrowing` (root D8a), so
+        // this clause only guards non-CLI callers (tests, journaled replays).
         || (request.seat.is_some()
             && (request.selector.space.is_some() || request.selector.tab.is_some()))
         || (request.thread.is_some()

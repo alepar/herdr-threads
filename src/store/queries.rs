@@ -152,10 +152,12 @@ pub fn unresolved_seat_summary(
             });
         }
     }
+    let holds = super::effective::recovery_hold_summary(&db, instance)?;
     db.execute_batch("COMMIT")
         .map_err(|error| db.map_error(error))?;
     db.check_budget()?;
     Ok(UnresolvedSeatSummary {
+        holds,
         count: u64::try_from(count).unwrap_or(0),
         sample,
     })
@@ -373,7 +375,7 @@ fn query_inner(
             delivery_inspect(&db, instance, q, store.clock().utc_now(), output)
         }
         Command::Thread(q) => thread_details(&db, instance, q, store.clock().utc_now(), output),
-        Command::RetirementJobs(q) => retirement_jobs(&db, instance, q, output),
+        Command::RetirementJobs(q) => retirement_jobs(&db, instance, q, output, false),
         Command::Warnings(q) => warnings(&db, instance, q, output),
         Command::ActiveWarnings(q) => {
             active_warnings(&db, store, instance, q, output, &active_budget)
@@ -666,13 +668,50 @@ pub fn query_operation_status(
     }))
 }
 
+/// Scheduler discovery skips terminal history using the existing status index.
+/// Its cursor cannot be reused by the public terminal-inclusive history query.
+pub fn pending_retirement_jobs(
+    store: &StoreContext,
+    instance: &str,
+    page: PageRequest,
+    budget: &CallBudget,
+) -> Result<Page<RetirementStatus>, ApiError> {
+    page.validate()
+        .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+    let db = store.open_query(budget.clone())?;
+    db.execute_batch("BEGIN DEFERRED")
+        .map_err(|error| db.map_error(error))?;
+    let result = retirement_jobs(
+        &db,
+        instance,
+        &RetirementJobsQuery { page },
+        &OutputSpec::default(),
+        true,
+    )?;
+    db.execute_batch("COMMIT")
+        .map_err(|error| db.map_error(error))?;
+    db.check_budget()?;
+    match result {
+        CommandResult::RetirementJobs(page) => Ok(page),
+        _ => Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "retirement query returned wrong result",
+        )),
+    }
+}
+
 fn retirement_jobs(
     db: &QueryConnection,
     instance: &str,
     q: &RetirementJobsQuery,
     output: &OutputSpec,
+    pending_only: bool,
 ) -> Result<CommandResult, ApiError> {
-    let filter = digest(&"retirement-jobs")?;
+    let filter = digest(&if pending_only {
+        "pending-retirement-jobs"
+    } else {
+        "retirement-jobs"
+    })?;
     let cursor = decode_cursor(
         &q.page,
         instance,
@@ -713,7 +752,27 @@ fn retirement_jobs(
             Option<String>,
             String,
         );
-        let row:Option<Row>=db.query_row("SELECT r.ordinal,r.id,r.seat_id,r.cutover_at,r.phase,r.processed_units,r.status,r.last_error,s.instance_id FROM retirements r JOIN seats s ON s.id=r.seat_id WHERE r.ordinal>?1 AND r.ordinal<=?2 ORDER BY r.ordinal LIMIT 1",params![last as i64,high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).optional().map_err(|e|db.map_error(e))?;
+        let sql = if pending_only {
+            "SELECT r.ordinal,r.id,r.seat_id,r.cutover_at,r.phase,r.processed_units,r.status,r.last_error,s.instance_id FROM retirements r INDEXED BY retirements_status_ordinal JOIN seats s ON s.id=r.seat_id WHERE r.status='pending' AND r.ordinal>?1 AND r.ordinal<=?2 ORDER BY r.ordinal LIMIT 1"
+        } else {
+            "SELECT r.ordinal,r.id,r.seat_id,r.cutover_at,r.phase,r.processed_units,r.status,r.last_error,s.instance_id FROM retirements r JOIN seats s ON s.id=r.seat_id WHERE r.ordinal>?1 AND r.ordinal<=?2 ORDER BY r.ordinal LIMIT 1"
+        };
+        let row: Option<Row> = db
+            .query_row(sql, params![last as i64, high as i64], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
+            })
+            .optional()
+            .map_err(|e| db.map_error(e))?;
         let Some((ordinal, id, seat, at, phase, processed, status, error, owner)) = row else {
             break;
         };
@@ -4127,6 +4186,7 @@ fn diagnostics_cursor(
     instance: &str,
     filter: &str,
     phase: SearchPhase,
+    recovery_done: bool,
     invitation_after: u64,
     invitation_high: u64,
     receipts: &ReceiptScanPosition,
@@ -4152,7 +4212,7 @@ fn diagnostics_cursor(
         phase,
         topic_high_water: invitation_high,
         body_high_water: high,
-        topic_revision: 0,
+        topic_revision: u64::from(recovery_done),
         last_decision_seq: None,
         last_event_offset: None,
     });
@@ -4165,6 +4225,7 @@ fn diagnostics_cursor(
 #[derive(Clone)]
 struct DiagnosticsWalk {
     phase: SearchPhase,
+    recovery_done: bool,
     invitation_after: u64,
     receipts: ReceiptScanPosition,
     high: u64,
@@ -4189,7 +4250,7 @@ fn diagnostics(
         &filter,
         CursorDirection::Ascending,
     )?;
-    let (mut phase, mut invitation_after, invitation_high, mut receipts) =
+    let (mut phase, mut recovery_done, mut invitation_after, invitation_high, mut receipts) =
         if let Some(c) = cursor.as_ref() {
             let phase = c
                 .search
@@ -4198,6 +4259,9 @@ fn diagnostics(
                 .phase;
             (
                 phase,
+                c.search
+                    .as_ref()
+                    .is_some_and(|state| state.topic_revision != 0),
                 c.filter_revision.ok_or_else(|| {
                     api_error(ErrorCode::InvalidCursor, "invitation position missing")
                 })?,
@@ -4228,6 +4292,7 @@ fn diagnostics(
                 .map_err(|e| db.map_error(e))?;
             (
                 SearchPhase::Topic,
+                false,
                 0,
                 invitation_high as u64,
                 ReceiptScanPosition {
@@ -4248,6 +4313,37 @@ fn diagnostics(
     let mut items = Vec::new();
     let mut examined = 0usize;
     let mut stop = StopReason::Complete;
+    if !recovery_done {
+        // Instance-wide diagnostics only; a scoped receipt/invitation query keeps
+        // its existing scope. One compact recovery row per walk, including when
+        // the first page is exactly full or bytes cut the following mail row.
+        if q.seat.is_none() && q.thread.is_none() {
+            let holds = super::effective::recovery_hold_summary(db, instance)?;
+            if holds.count > 0 {
+                let targets = holds
+                    .sample
+                    .iter()
+                    .map(|target| target.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let raw = diagnostics_cursor(
+                    instance,
+                    &filter,
+                    phase,
+                    true,
+                    invitation_after,
+                    invitation_high,
+                    &receipts,
+                )?;
+                items.push(Cand {
+                    item: Diagnostic { subject: "restore_holds".into(), detail_data: format!("held_targets={} sample={targets}; baseline holds lift when no unresolved seats remain; inspect `herdr-threads daemon health`; fresh-seat repair: `herdr-threads human seat resolve --pane PANE --new-seat --operator`", holds.count) },
+                    argv: diagnostics_argv(q, &raw), raw,
+                    before: DiagnosticsWalk { phase, recovery_done: false, invitation_after, receipts: receipts.clone(), high: invitation_high.max(receipts.physical_high_water.max(receipts.manifest_high_water) as u64) },
+                });
+            }
+        }
+        recovery_done = true;
+    }
     while examined < CANDIDATE_LIMIT {
         if items.len() == q.page.limit as usize {
             stop = StopReason::Rows;
@@ -4294,6 +4390,7 @@ fn diagnostics(
                             instance,
                             &filter,
                             phase,
+                            recovery_done,
                             ordinal as u64,
                             invitation_high,
                             &receipts,
@@ -4304,6 +4401,7 @@ fn diagnostics(
                             raw,
                             before: DiagnosticsWalk {
                                 phase,
+                                recovery_done,
                                 invitation_after,
                                 receipts: receipts.clone(),
                                 high: invitation_high.max(
@@ -4360,6 +4458,7 @@ fn diagnostics(
                         instance,
                         &filter,
                         phase,
+                        recovery_done,
                         invitation_after,
                         invitation_high,
                         &slice.position,
@@ -4370,6 +4469,7 @@ fn diagnostics(
                         raw,
                         before: DiagnosticsWalk {
                             phase,
+                            recovery_done,
                             invitation_after,
                             receipts: before.clone(),
                             high: invitation_high.max(
@@ -4402,6 +4502,7 @@ fn diagnostics(
     )?;
     if let Some(before) = cut {
         phase = before.phase;
+        recovery_done = before.recovery_done;
         invitation_after = before.invitation_after;
         receipts = before.receipts;
         stop = StopReason::Bytes;
@@ -4421,6 +4522,7 @@ fn diagnostics(
             instance,
             &filter,
             phase,
+            recovery_done,
             invitation_after,
             invitation_high,
             &receipts,

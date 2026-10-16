@@ -217,6 +217,13 @@ impl DeadlinePort for ScheduledStore {
     ) -> Result<Page<RetirementStatus>, ApiError> {
         self.store.pending_retirement_jobs(page, budget)
     }
+    fn retirement_recovery_jobs(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<RetirementStatus>, ApiError> {
+        self.store.retirement_recovery_jobs(page, budget)
+    }
     fn advance_retirement(
         &self,
         job: RetirementJobId,
@@ -446,6 +453,14 @@ struct RecoverySweep {
     active: bool,
     valid: bool,
 }
+/// Independent of pending discovery: a frozen terminal-inclusive walk is only
+/// read while named failures or lost-key coverage require it.
+#[derive(Default)]
+struct RetirementRecovery {
+    cursor: Option<String>,
+    retry_at: u64,
+    next_read_at: u64,
+}
 struct WakeFailure {
     phase: WakePhase,
     /// Private correlation only: the seat or attempt the failure belongs to.
@@ -563,6 +578,7 @@ impl Drop for LaneLiveness {
 #[derive(Default)]
 pub struct WorkerStatus {
     state: Mutex<FailureState>,
+    retirement_recovery: Mutex<RetirementRecovery>,
     /// Completion time of this lane's last error-free pass.
     last_tick: Mutex<Option<crate::protocol::time::UtcMillis>>,
     /// Set when the lane's thread ended while its owner had not asked it to
@@ -804,6 +820,9 @@ impl WorkerStatus {
         if !partial_recorded {
             self.observe_drive(&result);
         }
+        if result.as_ref().is_ok_and(|outcome| outcome.ticked) {
+            self.recover_retirements(driver, budget);
+        }
         // Health's `last_scheduler_tick_at`: every tick (not a skipped call)
         // that finished without error, whether or not any deadline was due.
         // A pass that retained a job `work_error` is not an error-free pass.
@@ -814,6 +833,90 @@ impl WorkerStatus {
             self.record_tick(driver.clock().utc_now());
         }
         result
+    }
+    /// Recovery never advances a job or kicks normal deadline/due writer work.
+    /// Limit reads independently of fast normal-job continuations to one page
+    /// per safety tick, preserving bounded high-water coverage and retry delay.
+    pub(crate) fn recover_retirements<P: DeadlinePort + ?Sized>(
+        &self,
+        driver: &DeadlineDriver<'_, P>,
+        budget: &CallBudget,
+    ) {
+        let Ok(mut recovery) = self.retirement_recovery.lock() else {
+            return;
+        };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if !state.gaps[0]
+            && !state
+                .current
+                .iter()
+                .any(|(key, _)| matches!(key, FailureKey::Retirement(_)))
+        {
+            *recovery = RetirementRecovery::default();
+            state.sweeps[0] = RecoverySweep::default();
+            return;
+        }
+        let now = driver.clock().monotonic_now().0;
+        if now < recovery.retry_at || now < recovery.next_read_at {
+            return;
+        }
+        let fresh_start = recovery.cursor.is_none();
+        let gap_before = state.gaps[0];
+        drop(state);
+        recovery.next_read_at = now.saturating_add(TICK_MILLIS);
+        let result = driver.retirement_recovery_jobs(
+            PageRequest {
+                cursor: recovery.cursor.clone(),
+                limit: 32,
+                max_bytes: 16_384,
+            },
+            budget,
+        );
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        let page = match result {
+            Ok(page) => page,
+            Err(error) => {
+                if error.code == ErrorCode::CursorStale {
+                    recovery.cursor = None;
+                }
+                recovery.retry_at = now.saturating_add(TICK_MILLIS);
+                state.sweeps[0].valid = false;
+                state.remember(error_diagnostic("retirement recovery", &error));
+                return;
+            }
+        };
+        let mut all_complete = true;
+        for job in &page.items {
+            match crate::scheduler::deadlines::retirement_completed(job) {
+                Ok(true) => state.update(FailureKey::Retirement(job.job.as_str().to_owned()), None),
+                Ok(false) => all_complete = false,
+                Err(error) => {
+                    all_complete = false;
+                    state.remember(error_diagnostic("retirement recovery", &error));
+                }
+            }
+        }
+        let discovery = crate::scheduler::deadlines::DiscoveryProgress {
+            fresh_start,
+            reached_end: !page.has_more,
+            returned_job: !page.items.is_empty(),
+        };
+        let new_gap = !gap_before && state.gaps[0];
+        state.sweep(0, Some(&discovery), all_complete, false, new_gap);
+        recovery.cursor = page.next_cursor;
+        if !state.gaps[0]
+            && !state
+                .current
+                .iter()
+                .any(|(key, _)| matches!(key, FailureKey::Retirement(_)))
+        {
+            *recovery = RetirementRecovery::default();
+            state.sweeps[0] = RecoverySweep::default();
+        }
     }
     pub fn observe_drive(&self, result: &Result<DriveOutcome, ApiError>) {
         match result {
@@ -896,7 +999,13 @@ impl WorkerStatus {
                 state.update(discovery_key, Some(job_failure(class, false, error)));
             }
             let new_gap = !old_gaps[class] && state.gaps[class];
-            state.sweep(class, discovery, complete, error.is_some(), new_gap);
+            if class == 1 {
+                state.sweep(class, discovery, complete, error.is_some(), new_gap);
+            } else if error.is_some() {
+                // Normal pending-only discovery cannot certify full-history
+                // coverage; its failures still invalidate an in-flight walk.
+                state.sweeps[0].valid = false;
+            }
         }
         if let Some(progress) = &outcome.due_progress
             && matches!(progress.invitations, DuePhaseProgress::Complete)
@@ -1071,8 +1180,8 @@ pub fn start_deadline_worker_ticking(
                                 status.record_success(port.store.clock().utc_now());
                             }
                             if outcome.progressed_with_more() {
-                                // Retirement and work progress do not reopen the
-                                // tick gate themselves.
+                                // Discovery continuation and job progress do not
+                                // reopen the tick gate themselves.
                                 driver.after_committed_change();
                             }
                             if cancellation.is_cancelled()

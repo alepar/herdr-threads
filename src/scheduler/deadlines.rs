@@ -10,7 +10,7 @@ use crate::ports::{
 use crate::protocol::{
     ids::RetirementJobId,
     pagination::{Page, PageRequest},
-    results::{ApiError, ErrorCode, RetirementStatus},
+    results::{ApiError, CleanupState, ErrorCode, RetirementStatus},
     time::{CallBudget, Clock, MonoInstant},
 };
 use crate::sync::signals::RoundState;
@@ -53,14 +53,24 @@ pub trait DeadlinePort {
         request: DueScanRequest,
         budget: &CallBudget,
     ) -> Result<DueScanProgress, ApiError>;
-    /// Enumerate every retirement under a frozen high water, including terminal
-    /// records. A complete fresh sweep may establish recovery coverage only
-    /// when every returned job is affirmatively completed without error.
+    /// Enumerate pending retirements under a frozen high water. This excludes
+    /// terminal history and cannot establish full-history recovery coverage.
     fn pending_retirement_jobs(
         &self,
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<RetirementStatus>, ApiError>;
+    /// Read-only terminal-inclusive history, solely for health recovery.
+    fn retirement_recovery_jobs(
+        &self,
+        _page: PageRequest,
+        _budget: &CallBudget,
+    ) -> Result<Page<RetirementStatus>, ApiError> {
+        Err(ApiError::new(
+            ErrorCode::StoreCorrupt,
+            "retirement recovery reader missing",
+        ))
+    }
     fn advance_retirement(
         &self,
         job: RetirementJobId,
@@ -242,10 +252,16 @@ pub struct DriveOutcome {
 }
 
 impl DriveOutcome {
-    /// A retirement or work job committed progress and reported more pending,
-    /// so the lane re-runs at once instead of waiting for its safety tick.
+    /// Continue a successful retirement discovery sweep as well as unfinished
+    /// job progress. Pending jobs beyond a discovery page should not each wait
+    /// for a safety tick; health recovery never requests these writer passes.
     pub fn progressed_with_more(&self) -> bool {
-        (self.retirement_progressed && !self.retirement_complete)
+        (self.retirement_error.is_none()
+            && self
+                .retirement_discovery
+                .as_ref()
+                .is_some_and(|progress| !progress.reached_end))
+            || (self.retirement_progressed && !self.retirement_complete)
             || (self.work_progressed && !self.work_complete)
     }
 }
@@ -414,6 +430,16 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
         self.port.clock()
     }
 
+    /// Bounded recovery is a read and never changes the driver's normal cursor,
+    /// tick gate or writer scheduling state.
+    pub(crate) fn retirement_recovery_jobs(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<RetirementStatus>, ApiError> {
+        self.port.retirement_recovery_jobs(page, budget)
+    }
+
     /// Invoke only after the store reports a successful commit.
     pub fn after_committed_change(&mut self) {
         self.next_tick = MonoInstant(0);
@@ -457,6 +483,19 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
             return;
         };
         outcome.retirement_job = Some(job.job.clone());
+        match retirement_completed(&job) {
+            Ok(true) => {
+                // A qualified double may include terminal history. Its read is
+                // exact-job completion evidence, never an advancement request.
+                outcome.retirement_complete = true;
+                return;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.record_retirement_error(error, outcome);
+                return;
+            }
+        }
         match self
             .port
             .advance_retirement(job.job.clone(), WorkAdmission::Background, budget)
@@ -572,6 +611,20 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
         error.restart_argv = None;
         outcome.work_error = Some(error);
     }
+}
+
+/// Only consistent terminal reads constitute affirmative completion evidence.
+pub(crate) fn retirement_completed(job: &RetirementStatus) -> Result<bool, ApiError> {
+    let complete = job.cleanup_state == CleanupState::Complete;
+    if (complete && (!job.warning_history_complete || job.last_error.is_some()))
+        || (!complete && job.warning_history_complete)
+    {
+        return Err(ApiError::new(
+            ErrorCode::StoreCorrupt,
+            "inconsistent retirement terminal state",
+        ));
+    }
+    Ok(complete)
 }
 
 #[cfg(test)]

@@ -757,6 +757,7 @@ impl HealthInputs {
                 ),
             );
         }
+        health.held_targets = self.unresolved.as_ref().map(|summary| summary.holds.count);
         health.unresolved_seats = self.unresolved.as_ref().map(|summary| summary.count);
         let unresolved = self
             .unresolved
@@ -777,6 +778,22 @@ impl HealthInputs {
             );
             sample_len = health.limitations.len() - sample_at;
         }
+        if let Some(summary) = self
+            .unresolved
+            .as_ref()
+            .filter(|summary| summary.holds.count > 0)
+        {
+            health.limitations.push(bounded(&format!(
+                "restore holds: {} unowned targets; baseline holds lift when no unresolved seats remain; inspect with `herdr-threads daemon health`; per-pane repair: `herdr-threads human seat resolve --pane PANE --new-seat --operator`",
+                summary.holds.count
+            ), 256));
+            for target in &summary.holds.sample {
+                health.limitations.push(bounded(
+                    &format!("held target {} (restore hold)", target.as_str()),
+                    256,
+                ));
+            }
+        }
         if self.retirement.degraded {
             health.limitations.push(
                 "retirement cleanup degraded; inspect the exact seat for the retained error".into(),
@@ -791,6 +808,10 @@ impl HealthInputs {
             && !self.retirement.degraded
             && !lacking_evidence
             && !unresolved
+            && self
+                .unresolved
+                .as_ref()
+                .is_none_or(|summary| summary.holds.count == 0)
             && self.harness_version_lines.is_empty();
         // Healthy is the designed operating mode, not native verification:
         // cooperative wake (or native current execution), cooperative or

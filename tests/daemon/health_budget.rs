@@ -74,6 +74,7 @@ pub(super) fn worst_case_inputs() -> HealthInputs {
         still_lacking: u64::MAX,
     });
     inputs.unresolved = Some(UnresolvedSeatSummary {
+        holds: Default::default(),
         count: u64::MAX,
         sample: (0..UNRESOLVED_SEAT_SAMPLE)
             .map(|n| UnresolvedSeatSample {

@@ -109,11 +109,35 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 | Path | Trigger | Recorded as |
 |---|---|---|
 | Structural reconfirm | Same terminal, same Herdr boot and incarnation | automatic, no new provenance |
-| Cooperative continuity | A resumed top-level session (SessionStart source `resume`) whose harness session id uniquely matches a top-level binding (any of its bindings, not only the latest) of an unresolved seat; when several unresolved seats match, only those on which that session's binding was still open when the seat became unresolved (disconnect reason `seat_unresolved`) count, if there are any | `cooperative_continuity` |
+| Cooperative continuity | A top-level lifecycle or turn event carrying the same native harness session id, uniquely matching a top-level binding (any of its bindings, not only the latest) of an unresolved seat; when several unresolved seats match, only those on which that session's binding was still open when the seat became unresolved (disconnect reason `seat_unresolved`) count, if there are any. The target must have no resolved owner. A resumed start claims wire source `resume`; an existing session's non-resume event on a pane without a resolved seat claims `same_session` | `cooperative_continuity` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`) | `operator:local-user:<uid>` |
+
+A herdr-threads daemon upgrade can leave a still-running native session needing recovery;
+C1 does not require that session to restart or emit a resumed SessionStart. Non-resume
+hooks attempt C1 only without a resolved pane mapping, so steady turns do not probe or
+replay continuity. Resume keeps its existing fresh-target probe even when the mapping
+appears resolved. Both claims use the same canonical unique-candidate and ownership
+guards; neither permits a new native session to take an old seat. Subagents, child
+agent ids, `plugin_context:` sessions, human and `managed_launch` candidate bindings
+remain excluded. Claims and replay are cooperative, not process attestation. Existing
+resume operation digests stay compatible; `same_session` has a separate digest domain.
+Hooks send the new claim only when the daemon advertises
+`seat.continuity_same_session_v1`; an older daemon keeps its existing guarded startup
+and resume paths, with no fallback that treats an unsupported claim as continuity.
 
 Seats are never merged. Pane labels, saved addresses, terminal-id hints and Herdr's agent field may *suggest*
 candidates in diagnostics; they never move a seat, allocate one, or end a binding.
+A seat-argument name is a locator that the CLI resolves once to a canonical seat before submission, and never moves a
+seat or ends a binding. Lookup slots (reads, operator repair, `handoff --existing`) never allocate. Invite and
+ACK-recipient names allocate where their pane forms (`--pane`, `--require-ack-pane`) already do; direct send by name
+or pane ID (`send --seat`) is a new guarded allocation surface (spec D4), with no prior pane form. Every such
+allocation is an ordinary guarded `ResolveSeat` that runs only after every seat argument has resolved and after the
+caller derivation and the stage's capability gates; refusals that run later (the selection and mapping checks, the direct-send claim and caller-binding checks) can leave an idempotent guarded seat for a real pane. Operator repair by name (`seat retire`, `rebind`,
+`--replace`) acts only on the one seat the name resolves to through the current canonical mapping (lookup,
+never allocation) when the name matches exactly one pane anywhere in the topology: it never uses proximity tiering,
+and a name matching more than one pane is refused with the candidate list, requiring the seat ID. The chosen seat is
+shown on the `resolved:` line, with the operator still deciding via `--operator`; the name is
+not heuristic continuity evidence and moves no seat by itself.
 
 **C2. Restore holds.** After a new or unknown Herdr incarnation while nonretired seats exist, every saved
 seat whose continuity is not structurally proven becomes unresolved, and the daemon takes a coherent baseline
@@ -144,8 +168,10 @@ nothing); they never retire a remote seat on their own evidence.
 It freshly reads the actual target and decides against A2: reuse its resolved seat, or allocate only
 when ordinary resolution permits a genuinely new pane. An unresolved mapping, restore hold or collision
 is never bypassed by creating, moving, rebinding or retiring a seat. A resumed session attempts C1
-cooperative continuity first, even when the client's seat listing appears resolved; pending recovery,
-ambiguous matches and unusable recovery evidence stop enrollment. A confirmed no-match may proceed
+cooperative continuity first, even when the client's seat listing appears resolved. A registered
+top-level lifecycle/turn event with a usable native session attempts C1 when that listing has no
+resolved mapping; this is same-session recovery, not permission for a tool event to allocate.
+Pending recovery, ambiguous matches and unusable recovery evidence stop enrollment. A confirmed no-match may proceed
 only through ordinary guards; a resume without a usable native session cannot allocate a seat.
 Resolution and check-in retain their separate durable operation journals: concurrent/replayed startup
 and response loss cannot split a pane's role; an uncertain resolution remains explicitly retryable.
@@ -234,7 +260,7 @@ records there are replay machinery, never its identity.
 | `cooperative_hook_delivery` | receipt action observation; lazy completion claim | The top-level hook of a harness whose adapter declares hook-pull delivery reported that it found the id's frame header at the start of a line of a hook-injected step it decoded from the session's transcript, after a `DeliveryPull` showed the id (spec delivery-policy DP5/DP6). The daemon decides it against A2 and additionally requires that it recorded the id as offered to that binding (the connected top-level binding the claim's key names, at its binding generation) by a `DeliveryPull` (process-local offered ledger). A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's observation provenance separately. A truncated item never carries it. |
 | `cooperative_hook_context` | lazy completion claim | A top-level standard native hook **of a harness whose adapter declares no hook-pull delivery** wrote and flushed output whose context carried the lazy message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`, which is part of the accountable operation's payload digest (as `AckModDelivered` carries the mod claim); no per-row source is stored. Not proof that the harness ingested it or the model read it. A prefix never carries it. The daemon refuses this claim from a hook-pull binding. |
 | `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
-| `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
+| `cooperative_continuity` | seat rebinds only | The seat was reattached because the same native harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. Also covers `sync clone-cleared` and the other mutating sync, peer and legacy commands (`sync resync`, `peer add`, `peer forget`, `legacy purge`). |
 | `replicated_from:<node_uuid>` | receipts, invitation answers (the accept and reject rows) and events applied from another node's fact (bindings never) | Applied as given from a fact authored and signed by node `<node_uuid>`; the authoring node's own provenance travels inside the fact. Never written for a locally authored fact. |
 | `local_journal` | receipts, invitation answers and events materialized from an own old incarnation's entry with no staged local attribution | A wipe or restore pull-back re-applied this node's own earlier fact; the original binding is not known here. Never on bindings. |
@@ -1527,8 +1553,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   empty or missing platform never enrolls. The start callback enrolls without a check-in (Hermes ignores
   its return value); the first qualified turn checks in. An older installed bridge (no
   `enrollment_witness`) keeps launch-only behavior until `setup hermes --profile NAME` is re-run. There
-  is no C1 resume continuity: a resumed session checks in as `Startup` in a seated pane, enrolls through
-  the Unowned-turn fallback in an unseated one, and meets the restore hold after a Herdr restart. Wake: a
+  is no native resume lifecycle shape: a resumed session checks in as `Startup` in a seated pane.
+  A qualified top-level turn with the same native session can recover an unresolved seat through C1;
+  a confirmed no-match on an unowned pane may use the guarded Unowned-turn enrollment fallback. Wake: a
   bare macOS Hermes is not process-detected by Herdr, so its seat is not woken while idle; `launch --kind
   hermes` stays the way to get a wakeable Hermes. CLI side agents (`/background`: platform `cli`, own
   session, no parent, no native side-agent flag) are indistinguishable from the foreground session: they

@@ -23,6 +23,8 @@ pub const HARNESS_EVIDENCE_V2: &str = "hook.harness_evidence_v2";
 pub const HARNESS_EVIDENCE: &str = "hook.harness_evidence";
 pub const HARNESS_HEALTH_V2: &str = "harness.health_v2";
 pub const HARNESS_STATES: &str = "harness.states";
+/// Same-native-session lifecycle/turn recovery through the existing C1 command.
+pub const SAME_SESSION_CONTINUITY_V1: &str = "seat.continuity_same_session_v1";
 pub const SEAT_MANAGED_LAUNCH: &str = "seat.managed_launch";
 pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
 
@@ -119,6 +121,7 @@ pub const ADVERTISED: &[&str] = &[
     HARNESS_STATES,
     HARNESS_HEALTH_V2,
     SEAT_MANAGED_LAUNCH,
+    SAME_SESSION_CONTINUITY_V1,
     INBOX_BATCH,
     INVITATION_REJECT,
     THREAD_JOIN,

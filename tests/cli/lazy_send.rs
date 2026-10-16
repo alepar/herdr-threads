@@ -2,7 +2,7 @@ use herdr_threads::{
     app::SystemClock,
     cli::{
         RunError,
-        commands::{CliAction, parse_argv},
+        commands::{CliAction, parse_argv, parse_argv_exact_seats},
         journal::{IntentScope, Journal, SemanticMutation},
         run_cooperative,
     },
@@ -80,7 +80,7 @@ impl Fixture {
         writer: &mut W,
     ) -> Result<(), RunError> {
         run_cooperative(
-            parse_argv(argv.iter().copied()).unwrap(),
+            parse_argv_exact_seats(argv.iter().copied()).unwrap(),
             &self.journal,
             &self.contexts,
             None,
@@ -445,7 +445,7 @@ fn ack_with_a_lower_urgency_and_deadline_without_ack_are_refused_before_the_body
 
 #[test]
 fn direct_ack_target_rule_is_kept() {
-    let error = parse_argv([
+    let error = parse_argv_exact_seats([
         "ht",
         "send",
         "--seat",

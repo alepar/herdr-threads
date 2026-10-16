@@ -88,7 +88,7 @@ pub const MOD_LEDGER_ENV: &str = "HERDR_THREADS_MOD_LEDGER";
 pub const WATCH_EXIT_STREAM_ENDED: i32 = 0;
 /// Exit code: other error (restart with backoff).
 pub const WATCH_EXIT_ERROR: i32 = 1;
-/// Exit code: refused, retryable after backoff.
+/// Exit code: retryable refusal or CLI startup availability error (backoff).
 pub const WATCH_EXIT_RETRY: i32 = 2;
 /// Exit code: permanent, stop until reload.
 pub const WATCH_EXIT_STOP: i32 = 3;

@@ -1340,7 +1340,7 @@ fn deadline_health_recovered_call_is_not_blocked_by_unrelated_incomplete_job() {
 
 struct PartialHealthPort {
     base: HealthDeadlinePort,
-    retirement_present: bool,
+    retirement_present: std::sync::atomic::AtomicBool,
     retirement_fail: std::sync::atomic::AtomicBool,
     retirement_complete: std::sync::atomic::AtomicBool,
     due_fail: std::sync::atomic::AtomicBool,
@@ -1360,7 +1360,7 @@ impl PartialHealthPort {
                 mode: AtomicU8::new(2),
                 invitation_failed: AtomicBool::new(false),
             },
-            retirement_present,
+            retirement_present: AtomicBool::new(retirement_present),
             retirement_fail: AtomicBool::new(false),
             retirement_complete: AtomicBool::new(false),
             due_fail: AtomicBool::new(false),
@@ -1411,7 +1411,10 @@ impl herdr_threads::scheduler::deadlines::DeadlinePort for PartialHealthPort {
             results::{CleanupState, RetirementStatus},
         };
         Ok(health_page(
-            if self.retirement_present {
+            if self
+                .retirement_present
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
                 vec![RetirementStatus {
                     job: RetirementJobId::new("retirement"),
                     seat: SeatId::new("seat"),
@@ -1437,7 +1440,10 @@ impl herdr_threads::scheduler::deadlines::DeadlinePort for PartialHealthPort {
                 vec![]
             },
             None,
-            u64::from(self.retirement_present),
+            u64::from(
+                self.retirement_present
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            ),
         ))
     }
     fn advance_retirement(
@@ -1592,7 +1598,7 @@ fn deadline_health_preserves_work_first_prefix_and_top_level_errors_before_due_e
     use herdr_threads::scheduler::deadlines::DeadlineDriver;
     use std::sync::atomic::Ordering;
     for (top_error, peer_retirement) in [(false, false), (true, false), (false, true)] {
-        let port = PartialHealthPort::new(peer_retirement);
+        let port = PartialHealthPort::new(false);
         let status = WorkerStatus::default();
         let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);
         let budget = CallBudget {
@@ -1602,6 +1608,10 @@ fn deadline_health_preserves_work_first_prefix_and_top_level_errors_before_due_e
         observe_partial_driver(&mut driver, &status, &budget).unwrap();
         port.base.mono.store(1000, Ordering::SeqCst);
         observe_partial_driver(&mut driver, &status, &budget).unwrap();
+        // Introduce the pending peer after the rotation warmup: terminal jobs
+        // discovered in later turns correctly provide read evidence only.
+        port.retirement_present
+            .store(peer_retirement, Ordering::SeqCst);
         *port.base.jobs.lock().unwrap() = vec![false];
         port.base
             .mode

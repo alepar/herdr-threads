@@ -78,7 +78,7 @@ pub enum Command {
     OperationStatus(OperationStatusQuery),
     RetirementJobs(RetirementJobsQuery),
     ResolveSeat(ResolveSeat),
-    /// TRUST-POLICY C1: seatless resume-only reattachment decision.
+    /// TRUST-POLICY C1: seatless same-native-session reattachment decision.
     ContinuityCheckIn(ContinuityCheckIn),
     /// TRUST-POLICY A3 `managed_launch`: `launch` reports a correlated,
     /// observed startup so the daemon can open an unregistered placeholder
@@ -634,21 +634,26 @@ pub struct ContinuityCheckIn {
     pub host: HostLocator,
     pub harness: crate::protocol::authority::Harness,
     pub native_session: NativeSessionId,
-    /// The hook's SessionStart source. Only `resume` can reattach.
+    /// Cooperative top-level recovery claim: `resume` for a resumed start,
+    /// `same_session` for an existing native session's lifecycle/turn hook.
     pub source: String,
     pub operation: OperationId,
     /// The execution id the successor binding carries; chosen by the client
     /// once per intent so every retry under the operation key repeats it.
     pub execution: ExecutionId,
-    /// The resumed session's liveness fingerprint (decision 9); the successor binding records it.
+    /// The native session's liveness fingerprint (decision 9); the successor binding records it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub liveness: Option<crate::protocol::authority::LivenessFingerprint>,
 }
 impl ContinuityCheckIn {
     pub const RESUME_SOURCE: &'static str = "resume";
+    pub const SAME_SESSION_SOURCE: &'static str = "same_session";
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.source != Self::RESUME_SOURCE {
-            return Err("only a resume check-in can reattach a seat");
+        if !matches!(
+            self.source.as_str(),
+            Self::RESUME_SOURCE | Self::SAME_SESSION_SOURCE
+        ) {
+            return Err("only resume or same_session check-ins can reattach a seat");
         }
         if self.harness == crate::protocol::authority::Harness::Human {
             return Err("a human occupant cannot resume a harness session");
@@ -656,7 +661,7 @@ impl ContinuityCheckIn {
         if self.native_session.as_str().is_empty()
             || self.native_session.as_str().starts_with("plugin_context:")
         {
-            return Err("a resumed session needs a native session id");
+            return Err("continuity needs a native session id");
         }
         Ok(())
     }

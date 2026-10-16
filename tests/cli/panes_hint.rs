@@ -550,7 +550,6 @@ fn parent_only_read_scope_cannot_become_all_node_directory() {
 #[test]
 fn parser_rejects_mixed_durable_seat_and_pane_scope_and_requires_target_intent() {
     for argv in [
-        vec!["ht", "invite", "t123", "--seat", "s123", "--tab", "tryout"],
         vec!["ht", "inbox", "--seat", "s123", "--pane", "alice"],
         vec![
             "ht",

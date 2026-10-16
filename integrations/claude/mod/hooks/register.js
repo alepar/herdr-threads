@@ -121,6 +121,7 @@ export function createCore(io) {
     runAttention: new Set(),
     connectedAt: null,
     stopped: false,
+    stopReason: null,
     restartAt: null,
     backoffIdx: 0,
     pendingRefresh: null,
@@ -213,6 +214,7 @@ export function createCore(io) {
     S.connectedAt = null
     S.live = false
     S.restartAt = null
+    S.stopReason = null
     try {
       S.child = io.spawn(cmd('watch', '--harness', 'claude', '--session', S.sid), {
         line: (o) => onLine(o, run),
@@ -234,7 +236,9 @@ export function createCore(io) {
     ledger('restart', { reason: `exit:${code}` })
     const wasConnected = S.connectedAt
     S.connectedAt = null
-    if (code === 3) {
+    // Older binaries also used 3 for generic CLI availability errors before
+    // watch started. Only this run's explicit terminal status can stop us.
+    if (code === 3 && S.stopReason) {
       S.stopped = true
       return
     }
@@ -251,6 +255,7 @@ export function createCore(io) {
     if (S.inert || !o || typeof o !== 'object' || typeof o.id !== 'string') return
     if (o.kind === 'status') {
       if (o.state === 'connected') {
+        S.stopReason = null
         S.sidSuspect = false
         S.connectedAt = io.now()
         S.lastAckRetry = io.now()
@@ -259,6 +264,9 @@ export function createCore(io) {
         void pumpLazy()
         void pump()
       } else if (o.state === 'closing' || o.state === 'refused') {
+        S.stopReason = o.exit === 3 &&
+          ['not_claude', 'disabled', 'replaced', 'no_pane', 'env_disabled', 'unsupported'].includes(o.reason)
+          ? o.reason : null
         if (
           (o.state === 'refused' && o.reason === 'session_mismatch') ||
           (o.state === 'closing' && o.reason === 'binding_changed')
