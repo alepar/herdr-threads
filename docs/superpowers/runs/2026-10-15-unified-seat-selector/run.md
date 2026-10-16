@@ -12,7 +12,7 @@ spec: 2026-10-15-unified-seat-selector-design.md
 epic: ht-u3ym
 roastDesignRound: 2
 roastCodeRound: 2
-roast-code: 2026-10-16-unified-seat-selector-roast-pr-1.md, 2026-10-16-unified-seat-selector-roast-pr-2.md
+roast-code: 2026-10-16-unified-seat-selector-roast-pr-1.md, 2026-10-16-unified-seat-selector-roast-pr-2.md, 2026-10-16-unified-seat-selector-roast-pr-post-cap-audit.md
 roast-design: 2026-10-15-unified-seat-selector-roast-design-1.md, 2026-10-15-unified-seat-selector-roast-design-2.md
 approvals:
 - top-split · auto · ht-u3ym.1 LEAF, ht-u3ym.2 LEAF, ht-u3ym.3 PROMOTE, ht-u3ym.4 LEAF, ht-u3ym.5 LEAF
@@ -45,3 +45,4 @@ codeBuckets:
 - final-review-reentry-1 routing: M1 [Must-fix] session refusal runs after seat stage pass 1 (Important correctness, goal-named path) → the one autonomous post-loop fix round; post-cap audit reviews it
 - final-review fix round: ht-u3ym.12 filed (M1 + TRUST-POLICY.md:99 Nit), once per run
 baseAbsorbed: 3ff902c77 → b761a8194, 0 conflicted files
+friction: 4 events
