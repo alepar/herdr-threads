@@ -250,6 +250,26 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "test-support only: the multi-node cluster's bounded condition polls (wait_until, waiting for endpoint.json); never in a release daemon",
     ),
     (
+        "src/test_support/fake_herdr.rs",
+        "std::thread::sleep(Duration::from_millis(5))",
+        "test-support only: the fake Herdr server's accept loop backs off 5 ms between nonblocking polls; never in a release daemon",
+    ),
+    (
+        "src/test_support/multinode.rs",
+        "time.sleep(0.02)",
+        "test-support only: the embedded Python dial shim polls for its hold file every 20 ms; never in a release daemon",
+    ),
+    (
+        "src/test_support/sync_node.rs",
+        "tokio::time::sleep(PUMP_EVERY).await",
+        "test-support only: the in-process sync node's pump loop idles between rounds when no more work is pending; never in a release daemon",
+    ),
+    (
+        "src/test_support/sync_node.rs",
+        "tokio::time::sleep(Duration::from_millis(25)).await",
+        "test-support only: wait_for polls a test condition every 25 ms to a test deadline; never in a release daemon",
+    ),
+    (
         "src/sync/coordinator.rs",
         "tokio::time::sleep(Duration::from_millis(10))",
         "coordinator unit test advancing paused tokio time or polling a condition; not daemon code",
