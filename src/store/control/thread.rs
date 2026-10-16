@@ -23,8 +23,9 @@ use crate::protocol::ids::{SeatId, ServiceAuthorId, ThreadId, prefix};
 use crate::protocol::results::{ApiError, CommandResult, ErrorCode};
 use crate::protocol::time::CallBudget;
 use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
-use crate::store::materialize::{FactRoute, MaterializeInput, local_only};
+use crate::store::materialize::{self, FactRoute, MaterializeInput, local_only};
 use crate::store::schema::{self, EventInput};
+use crate::store::seats;
 use crate::store::thread_registers::{self, RegisterOutcome};
 use crate::sync::facts::membership::MembershipPayload;
 use crate::sync::facts::payload::RegisterField;
@@ -147,6 +148,38 @@ fn create_event(
     Ok(())
 }
 
+/// The seat the derived event names as `actor_seat` (TRUST-POLICY: a
+/// register's actor is attributed only on the origin's own authority).
+/// - A write this node is making now (the authored head, or a local-only
+///   input) may name only a local seat; any other actor is refused.
+/// - This node's own earlier history (an old incarnation, a re-issue) keeps
+///   its actor: it was checked when it was authored, and its seat may not be
+///   restored yet.
+/// - A replicated write keeps its actor only when the actor's home node is
+///   the origin (`AuthorRule::SeatHome`'s test); otherwise, including an
+///   actor this node does not hold, the change is materialized with no
+///   actor. The fact itself is never refused for its actor.
+fn register_actor<'p>(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    payload: &'p ThreadRegisterPayload,
+) -> Result<Option<&'p SeatId>, ApiError> {
+    let Some(actor) = payload.actor.as_ref() else {
+        return Ok(None);
+    };
+    if m.local_origin {
+        let authoring = !m.own_history || m.ingest_seq.is_none();
+        if authoring && !seats::is_local_seat(tx, actor)? {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                format!("register actor {} is not a local seat", actor.as_str()),
+            ));
+        }
+        return Ok(Some(actor));
+    }
+    Ok(materialize::is_home(tx, actor, m.origin_node)?.then_some(actor))
+}
+
 fn store_field(field: RegisterField) -> thread_registers::RegisterField {
     match field {
         RegisterField::Topic => thread_registers::RegisterField::Topic,
@@ -161,7 +194,9 @@ fn store_field(field: RegisterField) -> thread_registers::RegisterField {
 /// bumps the local command made before, and a derived event keyed by the
 /// entry (`register:<thread>:<field>:<uuid8>:<counter>`) is appended.
 ///
-/// The derived event carries `actor_seat` when the payload names an actor.
+/// The derived event carries `actor_seat` when the payload names an actor the
+/// rule in [`register_actor`] keeps; a fresh local write naming a non-local
+/// actor is refused (`InvalidRequest`).
 ///
 /// A local-only input (a node-local thread) has no journal row and no
 /// register: the value is applied directly.
@@ -177,6 +212,7 @@ pub fn materialize_register(
         (RegisterField::Archived, _) => return Err(invalid("archived register is 0 or 1")),
         _ => {}
     }
+    let actor = register_actor(tx, m, payload)?;
     let instance: String = tx
         .query_row(
             "SELECT instance_id FROM threads WHERE id=?1",
@@ -270,7 +306,7 @@ pub fn materialize_register(
         }
     };
     let mut event_payload = event_payload;
-    if let Some(actor) = &payload.actor {
+    if let Some(actor) = actor {
         event_payload["actor_seat"] = serde_json::json!(actor.as_str());
     }
     let origin = m.origin_node.to_string();

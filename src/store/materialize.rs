@@ -290,7 +290,13 @@ fn subject(rule: &AuthorRule) -> String {
     }
 }
 
-fn is_home(tx: &Transaction<'_>, seat: &SeatId, origin: NodeUuid) -> Result<bool, ApiError> {
+/// Whether `seat`'s replicated home node is `origin`; an unknown seat has
+/// none. The `AuthorRule::SeatHome` test, also used for a register's actor.
+pub(crate) fn is_home(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    origin: NodeUuid,
+) -> Result<bool, ApiError> {
     let home: Option<String> = tx
         .query_row(
             "SELECT home_node FROM seats WHERE id=?1",

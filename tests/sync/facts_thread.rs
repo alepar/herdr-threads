@@ -20,10 +20,15 @@ use herdr_threads::sync::facts::thread::{
     ThreadCreated, ThreadCreatedPayload, ThreadDirect, ThreadDirectPayload, ThreadRegister,
     ThreadRegisterPayload,
 };
-use herdr_threads::sync::facts::{FactKind, FactRegistry};
+use herdr_threads::sync::facts::{
+    ApplyContext, FactError, FactKind, FactRegistry, NodeGenesis, NodeRetag, invitation,
+    membership, message, receipt, seat, thread,
+};
 use herdr_threads::sync::hlc::HlcStamp;
 use herdr_threads::test_support::fact_exchange;
 use herdr_threads::test_support::write_guard;
+use rusqlite::Transaction;
+use std::sync::OnceLock;
 
 use crate::facts_seat::{Node, registry};
 
@@ -637,6 +642,207 @@ fn thread_direct_by_non_home_failed() {
         assert!(node.thread_row(&pair).is_none(), "no thread row");
         assert!(node.direct_creator(&pair).is_none(), "no direct row");
     }
+}
+
+// ---- the register's actor --------------------------------------------------
+
+/// `thread.register` v1 with no checks and no materialization: a node built
+/// with [`forging_registry`] authors registers the real handler refuses
+/// locally (a buggy or version-skewed peer). Other nodes apply them with the
+/// real handler.
+struct LaxRegister;
+
+impl FactKind for LaxRegister {
+    const NAME: &'static str = "thread.register";
+    const MAJOR: u32 = 1;
+    type Payload = ThreadRegisterPayload;
+    fn creates(_: &ThreadRegisterPayload) -> Option<EntityKey> {
+        None
+    }
+    fn needs(p: &ThreadRegisterPayload) -> Vec<EntityKey> {
+        ThreadRegister::needs(p)
+    }
+    fn apply(
+        _: &Transaction<'_>,
+        _: &mut ApplyContext<'_>,
+        _: ThreadRegisterPayload,
+    ) -> Result<(), FactError> {
+        Ok(())
+    }
+}
+
+/// The builtins with `thread.register` replaced by [`LaxRegister`].
+fn forging_registry() -> &'static FactRegistry {
+    static REGISTRY: OnceLock<FactRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        FactRegistry::builder()
+            .with::<NodeGenesis>()
+            .with::<NodeRetag>()
+            .with::<seat::SeatCreated>()
+            .with::<seat::SeatRetired>()
+            .with::<thread::ThreadCreated>()
+            .with::<LaxRegister>()
+            .with::<thread::ThreadDirect>()
+            .with::<invitation::InvitationCreated>()
+            .with::<invitation::InvitationAnswered>()
+            .with::<membership::MembershipJoined>()
+            .with::<membership::MembershipLeft>()
+            .with::<message::MessageSent>()
+            .with::<receipt::ReceiptSettled>()
+            .build()
+    })
+}
+
+impl Node {
+    /// `write_register_as` through [`LaxRegister`] (a node built with
+    /// [`forging_registry`]): no local check, no local materialization.
+    fn forge_register(
+        &self,
+        actor: Option<&SeatId>,
+        thread: &ThreadId,
+        field: RegisterField,
+        value: Option<&str>,
+    ) {
+        let payload = ThreadRegisterPayload {
+            thread: thread.clone(),
+            field,
+            value: value.map(str::to_owned),
+            actor: actor.cloned(),
+        };
+        self.run(|tx, d| {
+            let floor = thread_registers::current(tx, thread, store_field(field))
+                .expect("read the register")
+                .map(|(hlc, _)| hlc);
+            FactRoute::Journal
+                .emit::<LaxRegister>(tx, self.ctx(), d, &payload, floor, |_, _, _| Ok(()))
+                .map(|_| ())
+        })
+        .expect("forge the register");
+    }
+}
+
+fn last_actor(node: &Node, thread: &ThreadId, field: &str) -> Option<String> {
+    node.register_event_json(thread, field)
+        .last()
+        .unwrap_or_else(|| panic!("a {field} register event"))
+        .get("actor_seat")
+        .map(|v| v.as_str().expect("a string").to_owned())
+}
+
+#[test]
+fn replicated_register_keeps_an_actor_homed_on_its_origin() {
+    let (a, b) = (Node::with(80, registry()), Node::with(81, registry()));
+    let a_seat = a.local_seat();
+    let thread = a.create_thread(&a_seat, "t", None).unwrap();
+    sync_all(&[&a, &b]);
+    a.write_register_as(Some(&a_seat), &thread, RegisterField::Topic, Some("by a"))
+        .unwrap();
+    sync_all(&[&a, &b]);
+    for node in [&a, &b] {
+        assert_eq!(
+            node.thread_row(&thread).map(|r| r.0).as_deref(),
+            Some("by a")
+        );
+        assert_eq!(
+            last_actor(node, &thread, "topic").as_deref(),
+            Some(a_seat.as_str())
+        );
+    }
+}
+
+#[test]
+fn replicated_register_drops_an_actor_homed_elsewhere() {
+    let (a, b) = (Node::with(82, registry()), Node::with(83, registry()));
+    let c = Node::with(84, forging_registry());
+    let a_seat = a.local_seat();
+    let thread = a.create_thread(&a_seat, "t", None).unwrap();
+    let b_seat = b.local_seat();
+    b.create_thread(&b_seat, "b's", None).unwrap();
+    sync_all(&[&a, &b, &c]);
+    assert!(a.seat(&b_seat).is_some(), "A holds B's seat");
+    let unknown = SeatId::new(generate_public_id(prefix::SEAT, &tag_for(c.id, 0)));
+    c.forge_register(Some(&b_seat), &thread, RegisterField::Name, Some("forged"));
+    c.forge_register(
+        Some(&unknown),
+        &thread,
+        RegisterField::Topic,
+        Some("forged topic"),
+    );
+    sync_all(&[&a, &b, &c]);
+    for node in [&a, &b] {
+        let row = node.thread_row(&thread).expect("a thread row");
+        assert_eq!(row.0, "forged topic", "the fact applied");
+        assert_eq!(row.1.as_deref(), Some("forged"), "the fact applied");
+        assert_eq!(last_actor(node, &thread, "name"), None);
+        assert_eq!(last_actor(node, &thread, "topic"), None);
+        assert!(
+            node.journal().iter().all(|(_, state, _)| state != "failed"),
+            "{:?}",
+            node.journal()
+        );
+    }
+    assert_eq!(a.thread_projection(), b.thread_projection());
+}
+
+#[test]
+fn local_register_naming_a_remote_actor_is_refused() {
+    let (a, b) = (Node::with(86, registry()), Node::with(87, registry()));
+    let a_seat = a.local_seat();
+    let thread = a.create_thread(&a_seat, "t", None).unwrap();
+    sync_all(&[&a, &b]);
+    assert!(b.seat(&a_seat).is_some(), "B holds A's seat");
+    let before = b.count_kind("thread.register");
+    let error = b
+        .write_register_as(Some(&a_seat), &thread, RegisterField::Topic, Some("x"))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert!(error.detail.contains("is not a local seat"), "{error:?}");
+    assert_eq!(b.count_kind("thread.register"), before, "nothing authored");
+    assert_eq!(b.thread_row(&thread).map(|r| r.0).as_deref(), Some("t"));
+    let b_seat = b.local_seat();
+    b.create_thread(&b_seat, "b's", None).unwrap();
+    b.write_register_as(Some(&b_seat), &thread, RegisterField::Topic, Some("y"))
+        .unwrap();
+    assert_eq!(
+        last_actor(&b, &thread, "topic").as_deref(),
+        Some(b_seat.as_str())
+    );
+}
+
+#[test]
+fn own_history_register_keeps_its_actor() {
+    let node = Node::with(88, registry());
+    let creator = node.local_seat();
+    let thread = node.create_thread(&creator, "first", None).unwrap();
+    node.write_register(&thread, RegisterField::Topic, Some("second"))
+        .unwrap();
+    let (_, hlc, _) = node.register(&thread, "topic").unwrap();
+    node.run(|tx, d| journal::begin_incarnation(tx, node.ctx(), d, 77, None, "host").map(|_| ()))
+        .unwrap();
+    let carrier: i64 = node.query("SELECT max(ingest_seq) FROM journal", |r| r.get(0))[0];
+    let unknown = SeatId::new(generate_public_id(prefix::SEAT, &tag_for(node.id, 0)));
+    node.run(|tx, d| {
+        // A journal-carried own-history input with a current decision position.
+        let mut input = local_only(tx, d)?;
+        input.origin_hlc = HlcStamp::from_u64(hlc as u64 + 1_000);
+        input.origin_counter = 99;
+        input.ingest_seq = Some(carrier);
+        control::materialize_register(
+            tx,
+            &input,
+            &ThreadRegisterPayload {
+                thread: thread.clone(),
+                field: RegisterField::Topic,
+                value: Some("kept".into()),
+                actor: Some(unknown.clone()),
+            },
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        last_actor(&node, &thread, "topic").as_deref(),
+        Some(unknown.as_str())
+    );
 }
 
 // ---- the node-local route --------------------------------------------------
