@@ -33,6 +33,8 @@ Amended 2026-10-15 for the main v1 reconcile of cross-node sync
 `invitation.created` authority by issuer kind (a service or operator invitation names no inviter seat and is
 authorized by its signing origin node), the 1:1 pair auto-join authored by each seat's own home node, the
 `direct_auto_join` provenance value, and the node-local nudge threshold (N4, N5, A3).
+Amended 2026-10-15 for `message.sent` apply (ht-5fr.43): author and recipient membership are not re-checked at
+apply, an accepted limit in N4.
 
 ## Abstract
 
