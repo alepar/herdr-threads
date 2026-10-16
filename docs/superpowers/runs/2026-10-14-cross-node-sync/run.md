@@ -48,3 +48,6 @@ parked:
 - pipeline-defect · super-code · "evidence-only fix pass with no commit classed BLOCKED (3x: 1.2, 1.6, 2.4), cancelling 5 stacked tasks; local coordinator patch refused by permission layer (self-modification), reverted"
 - decision · run-2 review finding 3 · "store-only daemon cannot restore own seats after wipe — chose: retry own seat.created (and entries parked behind it) on first host attach and at startup, instead of an operator replay step"
 - decision · run-2 review finding 4 · "register events (topic/name/archive) lost actor — chose: optional actor field on thread.register payload, restoring main's behaviour"
+- decision · main v1 reconcile (2026-10-15-cross-node-sync--main-v1-reconcile-design.md, 23894daad) · "payloads adopt priority 0..9 + require_ack in place at v1; invitation.created drops lazy; cross-node pair auto-join authored by each seat's home node (direct_auto_join provenance); protocol 9"
+- approval · user · 2026-10-15 · clean start for v1.0.x users CONFIRMED (CHANGELOG marker removed)
+feedback: evidence-only-fix pipeline defect sent via herdr agent prompt to superpowers main tab wB:p8 (.superpowers/sdd/ht-5fr-plan/upstream-feedback-evidence-only-fix.md)
