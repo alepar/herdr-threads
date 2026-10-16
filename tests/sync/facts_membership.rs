@@ -630,3 +630,113 @@ fn join_event_drops_an_actor_outside_the_pair() {
     assert_eq!(event["seat"], s2.as_str());
     assert!(event.get("actor_seat").is_none(), "{event}");
 }
+
+// ---- the auto-joined pair's read floor ---------------------------------------
+
+/// A late auto-join: the opener was delivered before `b`'s join was authored.
+/// Two local seats, `b` with an open binding, `a` joined and having sent.
+fn late_pair(seed: u8) -> (Node, SeatId, SeatId, ThreadId) {
+    let node = Node::with(seed, registry());
+    let (a, b) = (node.local_seat(), node.local_seat());
+    node.enroll(&b, "claude", "sess-b").unwrap();
+    let pair = node.author_direct(&a, &b).unwrap();
+    node.joined(&pair, &a, 1).unwrap();
+    (node, a, b, pair)
+}
+
+fn binding_cursor(node: &Node, thread: &ThreadId, seat: &SeatId) -> Option<i64> {
+    node.query(
+        &format!(
+            "SELECT c.seq FROM binding_cursors c JOIN occupant_bindings o ON o.binding_id=c.binding_id \
+             WHERE c.thread_id='{}' AND o.seat_id='{}'",
+            thread.as_str(),
+            seat.as_str()
+        ),
+        |r| r.get(0),
+    )
+    .into_iter()
+    .next()
+}
+
+fn event_sequence(node: &Node, key: &str) -> i64 {
+    node.query(
+        &format!("SELECT sequence FROM messages WHERE event_key='{key}'"),
+        |r| r.get(0),
+    )[0]
+}
+
+#[test]
+fn late_pair_auto_join_floors_at_the_pairs_first_position() {
+    let (node, a, b, pair) = late_pair(84);
+    let message = node.stage_prep(&pair, "lazy", &[], &[&b]);
+    node.author_sent(&crate::facts_message::sent(
+        &message,
+        &pair,
+        &a,
+        herdr_threads::protocol::commands::DeliveryMode::Lazy,
+        0,
+        vec![crate::facts_message::spec(
+            &b,
+            herdr_threads::sync::facts::payload::ReceiptObligation::None,
+            None,
+        )],
+    ))
+    .unwrap();
+    let payload = MembershipPayload {
+        thread: pair.clone(),
+        seat: b.clone(),
+        n: 1,
+        at: at_of(1),
+        actor: Some(a.clone()),
+    };
+    node.run(|tx, d| journal::author::<MembershipJoined>(tx, node.ctx(), d, &payload).map(|_| ()))
+        .unwrap();
+    let create = event_sequence(&node, &format!("create:{}", pair.as_str()));
+    let opener: i64 = node.count(&format!(
+        "SELECT sequence FROM messages WHERE id='{}'",
+        message.as_str()
+    ));
+    assert!(opener > create, "the opener sits above the create event");
+    assert_eq!(
+        binding_cursor(&node, &pair, &b),
+        Some(create),
+        "the late auto-join floors at the pair's first position, below the opener"
+    );
+    assert_eq!(
+        node.count(&format!(
+            "SELECT legacy_pending FROM lazy_recipients WHERE message_id='{}' AND seat_id='{}'",
+            message.as_str(),
+            b.as_str()
+        )),
+        0,
+        "the opener is delivered, not held as legacy pending"
+    );
+}
+
+#[test]
+fn ordinary_join_floor_is_the_head() {
+    let node = Node::with(85, registry());
+    let (thread, creator) = thread_of(&node, "t");
+    let other = node.local_seat();
+    node.enroll(&other, "claude", "sess-o").unwrap();
+    let message = node.stage_prep(&thread, "lazy", &[], &[]);
+    node.author_sent(&crate::facts_message::sent(
+        &message,
+        &thread,
+        &creator,
+        herdr_threads::protocol::commands::DeliveryMode::Lazy,
+        0,
+        vec![],
+    ))
+    .unwrap();
+    node.joined(&thread, &other, 1).unwrap();
+    let create = event_sequence(&node, &format!("create:{}", thread.as_str()));
+    // The head before the join's own event: the opener's position.
+    let head: i64 = node.count(&format!(
+        "SELECT sequence FROM messages WHERE id='{}'",
+        message.as_str()
+    ));
+    let cursor = binding_cursor(&node, &thread, &other).expect("a cursor");
+    assert!(head > create);
+    assert_eq!(cursor, head, "an ordinary join starts at the head");
+}

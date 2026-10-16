@@ -121,7 +121,13 @@ fn require_pair_lifecycle(
         ));
     }
     let peer = crate::store::service_substrate::effective_membership(db, thread, recipient)?;
-    if !matches!(peer.native_state, Some("joined" | "invited")) {
+    let peer_ok = match peer.native_state {
+        Some("joined" | "invited") => true,
+        // A peer with no row yet whose home node owes the auto-join.
+        None => pending_auto_join(db, thread, recipient)?,
+        Some(_) => false,
+    };
+    if !peer_ok {
         return Err(api_error(
             ErrorCode::Conflict,
             format!(

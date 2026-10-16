@@ -232,6 +232,29 @@ pub fn init_for_join(tx: &Connection, seat: &SeatId, thread: &ThreadId) -> Resul
     .map_err(store_error)
 }
 
+/// The read floor of a pair seat's auto-join (reconcile §2.3): the thread
+/// position of the pair's `create:<thread>` event, i.e. where the pair began
+/// on this node. Messages after it stay unread for the joining seat even when
+/// its join is authored after they were delivered. `None` when `thread` is not
+/// a pair or has no `create:` event (a store bug the caller reports).
+pub fn pair_auto_join_floor(tx: &Connection, thread: &ThreadId) -> Result<Option<u64>, ApiError> {
+    let sequence: Option<i64> = tx
+        .query_row(
+            "SELECT m.sequence FROM messages m JOIN direct_threads d ON d.thread_id=m.thread_id \
+             WHERE m.thread_id=?1 AND m.event_key=?2",
+            params![thread.as_str(), format!("create:{}", thread.as_str())],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    sequence
+        .map(|s| {
+            u64::try_from(s)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative create sequence"))
+        })
+        .transpose()
+}
+
 /// Direct invitation acceptance retains every established cursor and seeds only
 /// missing open-binding cursors from the captured invitation event sequence.
 /// The eligibility transition invalidates each affected binding once even when

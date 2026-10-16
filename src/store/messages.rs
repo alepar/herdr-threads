@@ -625,6 +625,7 @@ pub(super) fn walk_audience(
                 if schema::effective_membership_state(tx, walk.thread, recipient)?
                     .as_ref()
                     .is_none_or(|v| !matches!(v.state.as_str(), "invited" | "joined"))
+                    && !crate::store::control::pending_auto_join(tx, walk.thread, recipient)?
                 {
                     Some(RecipientRejection::NotMemberOrInvitee)
                 } else {
@@ -1118,6 +1119,17 @@ pub(super) fn build_message_sent(
         .chain(request.direct_recipient.iter())
     {
         audience.insert(seat.as_str().to_owned(), none(seat.as_str()));
+    }
+    // A pair's other seat that is hosted elsewhere and has no row yet (its
+    // joined fact has not arrived) is in the audience too (reconcile §2.4).
+    // The check runs at publish: a peer that joins after the preparation
+    // snapshot is left out, as main does for any late joiner.
+    if let Some((a, b)) = crate::store::control::direct_pair(tx, &request.thread)? {
+        let other = if &a == author { &b } else { &a };
+        if other != author && crate::store::control::pending_auto_join(tx, &request.thread, other)?
+        {
+            audience.insert(other.as_str().to_owned(), none(other.as_str()));
+        }
     }
     let mut stmt = tx
         .prepare("SELECT seat_id,frozen_duration_ms,eligible_at_snapshot,receipt_ordinal FROM prepared_recipients WHERE preparation_id=?1")
