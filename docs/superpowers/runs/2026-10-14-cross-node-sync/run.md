@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-14-cross-node-sync
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: roast-code
+phase: fix-loop
 roastCodeRound: 1
 codeMechanism: Workflow
 
@@ -70,3 +70,5 @@ parked:
 feedback: evidence-only-fix pipeline defect sent via herdr agent prompt to superpowers main tab wB:p8 (.superpowers/sdd/ht-5fr-plan/upstream-feedback-evidence-only-fix.md)
 - decision · run-4 final review item 2 · "overdue hold: root spec §7 ('every linked peer and every enabled dial target') wins over the peer-link sub-spec's active-links narrowing — code fixed in ht-5fr.54, sub-spec gets a dated note"
 - coordination · ht-794l (peer seat snbemykTY, branch super-auto/inbox-injection-auto-ack) · "user ruling relayed: display auto-ACKs across nodes; agreed wire how=policy, no SettleHow variant, capability hook.context_receipts_v1; adapter OnHold::Fail; their combined proof aad7798bc green 51/51; this branch's two-node coverage ht-5fr.49"
+- stepBackCode-round-1: patch — Round 1: the findings are mostly independent defects; three of them are clusters where one rule was applied unevenly (node-scoped context resolution, sweeping consumers of the old instances/ layout, JoinError handling in the coordinator loop). Sweep each cluster with its rule. No redesign is needed.
+- scopeFilter-round-1: 4 in-scope ([Blocking] src/main.rs:117, [Should-fix] src/cli/mod.rs:616, [Should-fix] src/sync/coordinator/ingest.rs:203, [Should-fix] scripts/install.sh:383) · 11 punch-listed (see 2026-10-16-cross-node-sync-roast-pr-1-punch-list.txt; validate-native-demo.py and paths.rs by clusterOverride) · cluster dropped: join-error · fix beads ht-5fr.60 (node-context cluster), ht-5fr.61 (credit drop)
