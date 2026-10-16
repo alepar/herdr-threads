@@ -925,6 +925,14 @@ struct LazyDisplayedProgress {
     body_len: u64,
     flushed_through: u64,
 }
+/// The displayed-prefix rule shared by both display chains: `covered` is the flushed contiguous
+/// prefix `[0, covered)` (`None`: nothing recorded). A span extends it only when it starts at or
+/// before its end (a restart from 0, an overlapping continuation, or a replay); a span past it
+/// would leave a gap and is refused (`None`).
+fn advance_displayed_prefix(covered: Option<u64>, start: u64, end: u64) -> Option<u64> {
+    let covered = covered.unwrap_or(0);
+    (start <= covered).then(|| covered.max(end))
+}
 impl Journal {
     fn lazy_display_path(&self, claim: &CallerClaim, message: &MessageId) -> io::Result<PathBuf> {
         let mut digest = Sha256::new();
@@ -934,6 +942,8 @@ impl Journal {
             .join(format!("display-lazy-{:x}.progress", digest.finalize())))
     }
     /// Cooperative display hint only; no receipt or canonical delivery mutation.
+    /// Progress is the flushed contiguous prefix; a span extends it when it starts at or before
+    /// the prefix end.
     /// Full caller identity isolates progress across every occupant transition.
     pub fn record_lazy_displayed_chunk(
         &self,
@@ -980,11 +990,10 @@ impl Journal {
         }) {
             return Err(invalid("lazy display progress identity changed"));
         }
-        let flushed = match &prior {
-            _ if start == 0 => prior.as_ref().map_or(end, |p| p.flushed_through.max(end)),
-            Some(p) if p.flushed_through == start => end,
-            Some(p) if p.flushed_through >= end => p.flushed_through,
-            _ => return Ok(false),
+        let Some(flushed) =
+            advance_displayed_prefix(prior.as_ref().map(|p| p.flushed_through), start, end)
+        else {
+            return Ok(false);
         };
         let progress = LazyDisplayedProgress {
             claim: claim.clone(),
@@ -1216,7 +1225,8 @@ impl Journal {
 
     /// Record a body span only after the selected inbox page was fully written
     /// and flushed. Client-local progress can only narrow automatic ACKs; the
-    /// daemon still decides receipt eligibility from canonical state.
+    /// daemon still decides receipt eligibility from canonical state. Progress is the flushed
+    /// contiguous prefix; a span extends it when it starts at or before the prefix end.
     pub fn record_displayed_chunk(
         &self,
         claim: &CallerClaim,
@@ -1244,13 +1254,12 @@ impl Journal {
         }) {
             return Err(invalid("inbox display progress identity changed"));
         }
-        let flushed = match prior.as_ref() {
-            _ if start == 0 => prior
-                .as_ref()
-                .map_or(end, |prior| prior.flushed_through.max(end)),
-            Some(prior) if prior.flushed_through == start => end,
-            Some(prior) if prior.flushed_through >= end => prior.flushed_through,
-            _ => return Ok(false),
+        let Some(flushed) = advance_displayed_prefix(
+            prior.as_ref().map(|prior| prior.flushed_through),
+            start,
+            end,
+        ) else {
+            return Ok(false);
         };
         let progress = DisplayedProgress {
             instance: claim.instance.clone(),

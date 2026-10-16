@@ -1932,7 +1932,11 @@ fn text_accept_of_an_ordinary_invitation_shows_a_large_body_first_chunk_and_inbo
         text.contains("-TAIL"),
         "continuation reaches the tail: {text}"
     );
-    // That the row then completes is ht-5fr.58 (display progress gap); not asserted here.
+    assert_eq!(
+        state(),
+        "displayed",
+        "the followed continuation completes the restarted body (ht-5fr.58)"
+    );
 }
 
 // Required test 3: offer -> identical second tool call is quiet -> new message
