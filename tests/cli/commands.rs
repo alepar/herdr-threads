@@ -4002,3 +4002,288 @@ fn user_max_bytes_floor_stays_256_for_annotated_reads() {
         }
     }
 }
+
+fn selectors(argv: &[&str]) -> Vec<(SeatSlot, String)> {
+    let mut full = vec!["herdr-threads"];
+    full.extend(argv);
+    parse_argv(full)
+        .unwrap_or_else(|e| panic!("{argv:?}: {e:?}"))
+        .seat_selectors
+        .into_iter()
+        .map(|a| (a.slot, a.raw))
+        .collect()
+}
+
+#[test]
+fn seat_arguments_record_slot_and_raw_string_and_still_fill_the_action() {
+    type Case = (Vec<&'static str>, Vec<(SeatSlot, &'static str)>);
+    let cases: Vec<Case> = vec![
+        (vec!["inbox", "--seat", "s1"], vec![(SeatSlot::ReadSeat, "s1")]),
+        (
+            vec!["pending-receipts", "--seat", "s1"],
+            vec![(SeatSlot::ReadSeat, "s1")],
+        ),
+        (
+            vec!["diagnostics", "--seat", "s1"],
+            vec![(SeatSlot::ReadSeat, "s1")],
+        ),
+        (vec!["warnings", "--seat", "s1"], vec![(SeatSlot::ReadSeat, "s1")]),
+        (
+            vec!["thread", "list", "--seat", "s1"],
+            vec![(SeatSlot::ThreadListMembership, "s1")],
+        ),
+        (
+            vec!["invite", "t1", "--seat", "s1"],
+            vec![(SeatSlot::InviteRecipient, "s1")],
+        ),
+        (
+            vec!["human", "invite", "t1", "--seat", "s1", "--operator"],
+            vec![(SeatSlot::InviteRecipient, "s1")],
+        ),
+        (
+            vec!["send", "--seat", "s1", "--body", "hi"],
+            vec![(SeatSlot::DirectSendTarget, "s1")],
+        ),
+        (
+            vec![
+                "send", "t1", "--body", "hi", "--require-ack", "s1", "--require-ack", "s2",
+            ],
+            vec![(SeatSlot::RequireAck(0), "s1"), (SeatSlot::RequireAck(1), "s2")],
+        ),
+        (
+            vec!["send", "--seat", "s1", "--require-ack", "s1", "--body", "hi"],
+            vec![
+                (SeatSlot::DirectSendTarget, "s1"),
+                (SeatSlot::RequireAck(0), "s1"),
+            ],
+        ),
+        (vec!["seat", "inspect", "s1"], vec![(SeatSlot::InspectSeat, "s1")]),
+        (
+            vec!["human", "seat", "retire", "s1", "--operator"],
+            vec![(SeatSlot::RetireSeat, "s1")],
+        ),
+        (
+            vec!["human", "seat", "rebind", "s1", "--pane", "w1:p1", "--operator"],
+            vec![(SeatSlot::RebindSeat, "s1")],
+        ),
+        (
+            vec![
+                "human", "seat", "rebind", "s1", "--pane", "w1:p1", "--replace", "s2", "--operator",
+            ],
+            vec![(SeatSlot::RebindSeat, "s1"), (SeatSlot::RebindReplace, "s2")],
+        ),
+        (
+            vec!["handoff", "--existing", "--seat", "s1", "--", "work"],
+            vec![(SeatSlot::HandoffExistingSeat, "s1")],
+        ),
+    ];
+    for (argv, want) in cases {
+        let got = selectors(&argv);
+        let want: Vec<_> = want.into_iter().map(|(s, r)| (s, r.to_owned())).collect();
+        assert_eq!(got, want, "{argv:?}");
+        // The exact ID still fills the action: re-writing the same ID through the setter is a
+        // no-op, and the setter reports no foreign-action error for a recorded slot.
+        let mut full = vec!["herdr-threads"];
+        full.extend(&argv);
+        let mut parsed = parse_argv(full).unwrap();
+        for (slot, raw) in &want {
+            let before = parsed.action.clone();
+            slot.set(&mut parsed.action, SeatId::parse(raw.clone()).unwrap())
+                .unwrap_or_else(|e| panic!("{argv:?} {slot:?}: {e:?}"));
+            assert_eq!(parsed.action, before, "{argv:?} {slot:?} not filled by parse");
+        }
+    }
+}
+
+#[test]
+fn omitted_seat_records_no_slot() {
+    for argv in [
+        vec!["inbox"],
+        vec!["inbox", "--pane", "w1:p1"],
+        vec!["warnings", "--active", "t1"],
+    ] {
+        assert!(selectors(&argv).is_empty(), "{argv:?}");
+    }
+}
+
+#[test]
+fn invalid_seat_strings_are_still_rejected_at_parse() {
+    assert!(parse_argv(["herdr-threads", "inbox", "--seat", "a b"]).is_err());
+}
+
+#[test]
+fn seat_slot_setter_writes_each_field_and_refuses_foreign_actions() {
+    let frozen = SeatId::new("frozen");
+    let parse = |argv: &[&str]| {
+        let mut full = vec!["herdr-threads"];
+        full.extend(argv);
+        parse_argv(full).unwrap().action
+    };
+    let mut inbox = parse(&["inbox", "--seat", "s1"]);
+    SeatSlot::ReadSeat.set(&mut inbox, frozen.clone()).unwrap();
+    assert!(matches!(&inbox, CliAction::Wire(WireCommand::Inbox(q)) if q.seat == Some(frozen.clone())));
+    let mut pending = parse(&["pending-receipts", "--seat", "s1"]);
+    SeatSlot::ReadSeat.set(&mut pending, frozen.clone()).unwrap();
+    assert!(matches!(&pending, CliAction::Wire(WireCommand::PendingReceipts(q)) if q.seat == Some(frozen.clone())));
+    let mut diag = parse(&["diagnostics", "--seat", "s1"]);
+    SeatSlot::ReadSeat.set(&mut diag, frozen.clone()).unwrap();
+    assert!(matches!(&diag, CliAction::Wire(WireCommand::Diagnostics(q)) if q.seat == Some(frozen.clone())));
+    let mut warn = parse(&["warnings", "--seat", "s1"]);
+    SeatSlot::ReadSeat.set(&mut warn, frozen.clone()).unwrap();
+    assert!(matches!(&warn, CliAction::Wire(WireCommand::Warnings(q)) if q.seat == frozen));
+    let mut list = parse(&["thread", "list", "--seat", "s1"]);
+    SeatSlot::ThreadListMembership.set(&mut list, frozen.clone()).unwrap();
+    assert!(matches!(&list, CliAction::Wire(WireCommand::Directory(q)) if q.membership == Some(frozen.clone())));
+    let mut invite = parse(&["invite", "t1", "--seat", "s1"]);
+    SeatSlot::InviteRecipient.set(&mut invite, frozen.clone()).unwrap();
+    assert!(matches!(&invite, CliAction::Mutation(MutationSpec::Invite { seat, .. }) if *seat == frozen));
+    let mut direct = parse(&["send", "--seat", "s1", "--require-ack", "s1", "--body", "hi"]);
+    SeatSlot::DirectSendTarget.set(&mut direct, frozen.clone()).unwrap();
+    SeatSlot::RequireAck(0).set(&mut direct, frozen.clone()).unwrap();
+    assert!(matches!(&direct, CliAction::Mutation(MutationSpec::DirectSend(r))
+        if r.target == frozen && r.require_ack == vec![frozen.clone()]));
+    let mut send = parse(&["send", "t1", "--body", "hi", "--require-ack", "s1", "--require-ack", "s2"]);
+    SeatSlot::RequireAck(1).set(&mut send, frozen.clone()).unwrap();
+    assert!(matches!(&send, CliAction::Mutation(MutationSpec::Send { require_ack, .. })
+        if *require_ack == vec![SeatId::new("s1"), frozen.clone()]));
+    assert!(SeatSlot::RequireAck(5).set(&mut send, frozen.clone()).is_err());
+    let mut inspect = parse(&["seat", "inspect", "s1"]);
+    SeatSlot::InspectSeat.set(&mut inspect, frozen.clone()).unwrap();
+    assert!(matches!(&inspect, CliAction::Wire(WireCommand::SeatInspect(q)) if q.seat == frozen));
+    let mut retire = parse(&["human", "seat", "retire", "s1", "--operator"]);
+    SeatSlot::RetireSeat.set(&mut retire, frozen.clone()).unwrap();
+    assert!(matches!(&retire, CliAction::Mutation(MutationSpec::Retire(s)) if *s == frozen));
+    let mut rebind = parse(&["human", "seat", "rebind", "s1", "--pane", "w1:p1", "--operator"]);
+    SeatSlot::RebindSeat.set(&mut rebind, frozen.clone()).unwrap();
+    assert!(matches!(&rebind, CliAction::Mutation(MutationSpec::Rebind { seat, .. }) if *seat == frozen));
+    assert!(SeatSlot::RebindReplace.set(&mut rebind, frozen.clone()).is_err());
+    let mut replace = parse(&[
+        "human", "seat", "rebind", "s1", "--pane", "w1:p1", "--replace", "s2", "--operator",
+    ]);
+    SeatSlot::RebindSeat.set(&mut replace, frozen.clone()).unwrap();
+    SeatSlot::RebindReplace.set(&mut replace, SeatId::new("other")).unwrap();
+    assert!(matches!(&replace, CliAction::Mutation(MutationSpec::Replace { seat, replace, .. })
+        if *seat == frozen && replace.as_str() == "other"));
+    let mut handoff = parse(&["handoff", "--existing", "--seat", "s1", "--", "work"]);
+    SeatSlot::HandoffExistingSeat.set(&mut handoff, frozen.clone()).unwrap();
+    assert!(matches!(&handoff, CliAction::TopologyHandoff(r) if r.seat.as_deref() == Some("frozen")));
+    // A slot on a foreign action is refused, not silently ignored.
+    assert!(SeatSlot::ReadSeat.set(&mut invite, frozen.clone()).is_err());
+    assert!(SeatSlot::InviteRecipient.set(&mut inbox, frozen).is_err());
+}
+
+#[test]
+fn seat_slot_mapping_matches_d4() {
+    let all = [
+        SeatSlot::ReadSeat,
+        SeatSlot::ThreadListMembership,
+        SeatSlot::InviteRecipient,
+        SeatSlot::DirectSendTarget,
+        SeatSlot::RequireAck(0),
+        SeatSlot::RequireAck(3),
+        SeatSlot::InspectSeat,
+        SeatSlot::RetireSeat,
+        SeatSlot::RebindSeat,
+        SeatSlot::RebindReplace,
+        SeatSlot::HandoffExistingSeat,
+    ];
+    for slot in all {
+        let allocate = matches!(
+            slot,
+            SeatSlot::InviteRecipient | SeatSlot::DirectSendTarget | SeatSlot::RequireAck(_)
+        );
+        assert_eq!(
+            slot.mapping(),
+            if allocate { SeatMapping::Allocate } else { SeatMapping::Lookup },
+            "{slot:?}"
+        );
+    }
+}
+
+#[test]
+fn direct_ack_and_duplicate_checks_are_reusable() {
+    let (a, b) = (SeatId::new("a"), SeatId::new("b"));
+    let mut only_target = vec![a.clone(), a.clone()];
+    check_direct_ack(&a, &mut only_target).unwrap();
+    assert_eq!(only_target, vec![a.clone()]);
+    let mut other = vec![a.clone(), b.clone()];
+    let err = check_direct_ack(&a, &mut other).unwrap_err();
+    assert!(err.detail.contains("may name only the target seat"), "{}", err.detail);
+    check_unique_recipients(&[a.clone(), b.clone()]).unwrap();
+    let err = check_unique_recipients(&[a.clone(), a]).unwrap_err();
+    assert!(err.detail.contains("duplicate explicit recipient"), "{}", err.detail);
+    assert_eq!(placeholder_seat().as_str(), SEAT_SELECTOR_PLACEHOLDER);
+}
+
+#[test]
+fn every_seat_valued_clap_argument_is_a_recorded_slot() {
+    // Reasoned exclusion: `--cooperative-seat` is caller identity plumbing (spec D4), not a
+    // seat selector argument.
+    const EXCLUDED: &[&str] = &["cooperative_seat"];
+    // (command path, arg id) -> sample argv carrying the unique raw value `zz9`.
+    let samples: &[(&str, &str, &[&str])] = &[
+        ("inbox", "seat", &["inbox", "--seat", "zz9"]),
+        ("pending-receipts", "seat", &["pending-receipts", "--seat", "zz9"]),
+        ("diagnostics", "seat", &["diagnostics", "--seat", "zz9"]),
+        ("warnings", "seat", &["warnings", "--seat", "zz9"]),
+        ("thread list", "seat", &["thread", "list", "--seat", "zz9"]),
+        ("invite", "seat", &["invite", "t1", "--seat", "zz9"]),
+        ("send", "seat", &["send", "--seat", "zz9", "--body", "x"]),
+        ("send", "require_ack", &["send", "t1", "--body", "x", "--require-ack", "zz9"]),
+        ("seat inspect", "seat", &["seat", "inspect", "zz9"]),
+        ("seat retire", "seat", &["human", "seat", "retire", "zz9", "--operator"]),
+        (
+            "seat rebind",
+            "seat",
+            &["human", "seat", "rebind", "zz9", "--pane", "w1:p1", "--operator"],
+        ),
+        (
+            "seat rebind",
+            "replace",
+            &["human", "seat", "rebind", "s1", "--pane", "w1:p1", "--replace", "zz9", "--operator"],
+        ),
+        ("handoff", "seat", &["handoff", "--existing", "--seat", "zz9", "--", "work"]),
+    ];
+    fn walk(cmd: &clap::Command, path: &str, found: &mut Vec<(String, String)>) {
+        for arg in cmd.get_arguments() {
+            let id = arg.get_id().as_str();
+            let names_seat = arg
+                .get_value_names()
+                .is_some_and(|names| names.iter().any(|n| matches!(n.as_str(), "SEAT" | "NEW")));
+            let seatish = id.contains("seat") || matches!(id, "require_ack" | "replace") || names_seat;
+            if arg.get_action().takes_values() && seatish {
+                found.push((path.to_owned(), id.to_owned()));
+            }
+        }
+        for sub in cmd.get_subcommands() {
+            let name = sub.get_name();
+            let next = if path.is_empty() { name.to_owned() } else { format!("{path} {name}") };
+            walk(sub, &next, found);
+        }
+    }
+    let mut cmd = Cli::command();
+    cmd.build();
+    let mut found = Vec::new();
+    walk(&cmd, "", &mut found);
+    found.sort();
+    found.dedup();
+    let mut covered = 0;
+    for (path, id) in &found {
+        if EXCLUDED.contains(&id.as_str()) {
+            continue;
+        }
+        let Some((_, _, argv)) = samples.iter().find(|(p, i, _)| p == path && i == id) else {
+            panic!(
+                "seat-valued argument `{id}` of `{path}` is not recorded: register a SeatSlot in \
+                 collect_seat_selectors and add a sample here"
+            );
+        };
+        assert!(
+            selectors(argv).iter().any(|(_, raw)| raw == "zz9"),
+            "`{id}` of `{path}` did not record its raw value"
+        );
+        covered += 1;
+    }
+    // Every sample is reached by the walk (no stale table entries).
+    assert_eq!(covered, samples.len(), "samples {samples:?} vs found {found:?}");
+}

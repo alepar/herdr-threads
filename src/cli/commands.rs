@@ -32,6 +32,213 @@ pub struct ParsedCli {
     /// `--agent-id`: the subagent id herdr-threads' Claude PreToolUse hook inserts (spec §1).
     /// Carried into a cooperative claim by [`ParsedCli::stamp_agent_id`].
     pub agent_id: Option<crate::protocol::ids::AgentId>,
+    /// Raw seat arguments, consumed once by the runtime stage before any journal or dispatch;
+    /// never journaled (spec D5).
+    pub seat_selectors: Vec<SeatSelectorArg>,
+}
+
+/// Where one seat argument lives in an action, and its D4 pane-to-seat class.
+/// Owns: the field write for every seat-argument position (`set`) and the lookup-or-allocate
+/// class (`mapping`). Must not resolve, look up or allocate (the runtime stage does).
+/// A new seat-taking argument is a new variant here plus one registration in
+/// `collect_seat_selectors`; the D8b tree-walk test fails until both exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeatSlot {
+    /// inbox / pending-receipts / diagnostics / warnings `--seat`.
+    ReadSeat,
+    /// `thread list --seat`.
+    ThreadListMembership,
+    /// `invite --seat`.
+    InviteRecipient,
+    /// `send --seat`.
+    DirectSendTarget,
+    /// `send --require-ack`; the index is the occurrence order of the raw values.
+    RequireAck(usize),
+    /// `seat inspect SEAT`.
+    InspectSeat,
+    /// `seat retire SEAT`.
+    RetireSeat,
+    /// `seat rebind SEAT` (the `seat` of Rebind and Replace).
+    RebindSeat,
+    /// `seat rebind --replace NEW`.
+    RebindReplace,
+    /// `handoff --existing --seat`.
+    HandoffExistingSeat,
+}
+
+/// The D4 decision as a value. `Lookup` never allocates (reads, operator repair, handoff
+/// `--existing`); `Allocate` goes through the journaled ResolveSeat (invite, ACK recipients,
+/// direct send). Carries no behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeatMapping {
+    Lookup,
+    Allocate,
+}
+
+/// One recorded seat argument: its slot and the raw user string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatSelectorArg {
+    pub slot: SeatSlot,
+    pub raw: String,
+}
+
+impl SeatSlot {
+    /// The D4 class of this slot.
+    pub fn mapping(self) -> SeatMapping {
+        match self {
+            Self::InviteRecipient | Self::DirectSendTarget | Self::RequireAck(_) => {
+                SeatMapping::Allocate
+            }
+            _ => SeatMapping::Lookup,
+        }
+    }
+
+    /// Write a frozen seat into the action. Errors when the action has no such slot (or a
+    /// `RequireAck` index is out of range): a bug-class error.
+    pub fn set(self, action: &mut CliAction, seat: SeatId) -> Result<(), ApiError> {
+        use crate::cli::topology_handoff::Request as TopologyRequest;
+        match (self, action) {
+            (
+                Self::ReadSeat,
+                CliAction::Wire(WireCommand::Inbox(query) | WireCommand::InboxBatchV2(query)),
+            ) => query.seat = Some(seat),
+            (Self::ReadSeat, CliAction::Wire(WireCommand::PendingReceipts(query))) => {
+                query.seat = Some(seat)
+            }
+            (Self::ReadSeat, CliAction::Wire(WireCommand::Diagnostics(query))) => {
+                query.seat = Some(seat)
+            }
+            (Self::ReadSeat, CliAction::Wire(WireCommand::Warnings(query))) => query.seat = seat,
+            (Self::ThreadListMembership, CliAction::Wire(WireCommand::Directory(query))) => {
+                query.membership = Some(seat)
+            }
+            (
+                Self::InviteRecipient,
+                CliAction::Mutation(MutationSpec::Invite { seat: slot, .. }),
+            ) => *slot = seat,
+            (Self::DirectSendTarget, CliAction::Mutation(MutationSpec::DirectSend(request))) => {
+                request.target = seat
+            }
+            (
+                Self::RequireAck(index),
+                CliAction::Mutation(
+                    MutationSpec::Send { require_ack, .. }
+                    | MutationSpec::DirectSend(super::direct_send::Request { require_ack, .. }),
+                ),
+            ) => {
+                *require_ack
+                    .get_mut(index)
+                    .ok_or_else(|| invalid("ACK recipient slot is out of range"))? = seat
+            }
+            (Self::InspectSeat, CliAction::Wire(WireCommand::SeatInspect(query))) => {
+                query.seat = seat
+            }
+            (Self::RetireSeat, CliAction::Mutation(MutationSpec::Retire(slot))) => *slot = seat,
+            (
+                Self::RebindSeat,
+                CliAction::Mutation(
+                    MutationSpec::Rebind { seat: slot, .. }
+                    | MutationSpec::Replace { seat: slot, .. },
+                ),
+            ) => *slot = seat,
+            (Self::RebindReplace, CliAction::Mutation(MutationSpec::Replace { replace, .. })) => {
+                *replace = seat
+            }
+            (
+                Self::HandoffExistingSeat,
+                CliAction::TopologyHandoff(TopologyRequest { seat: slot, .. }),
+            ) => *slot = Some(seat.as_str().to_owned()),
+            _ => return Err(invalid("command has no recipient seat selector")),
+        }
+        Ok(())
+    }
+
+    /// The read slot an omitted or pane-selected read seat fills, else `None`. Used by
+    /// `default_seat` and `resolve_recipient_seats` so neither matches action kinds itself.
+    pub fn read_slot_of(action: &CliAction) -> Option<Self> {
+        match action {
+            CliAction::Wire(
+                WireCommand::Inbox(_)
+                | WireCommand::InboxBatchV2(_)
+                | WireCommand::PendingReceipts(_)
+                | WireCommand::Diagnostics(_)
+                | WireCommand::Warnings(_),
+            ) => Some(Self::ReadSeat),
+            CliAction::Wire(WireCommand::Directory(_)) => Some(Self::ThreadListMembership),
+            _ => None,
+        }
+    }
+}
+
+/// Placeholder text for an action seat field whose value the runtime stage freezes later.
+pub const SEAT_SELECTOR_PLACEHOLDER: &str = "pending-seat-selector";
+
+/// A placeholder seat for a field the runtime stage freezes later.
+pub fn placeholder_seat() -> SeatId {
+    SeatId::new(SEAT_SELECTOR_PLACEHOLDER)
+}
+
+/// Direct ACK names only the target: refuse any recipient other than the target, then dedup.
+pub fn check_direct_ack(target: &SeatId, recipients: &mut Vec<SeatId>) -> Result<(), ApiError> {
+    if recipients.iter().any(|seat| seat != target) {
+        return Err(invalid("direct ACK requests may name only the target seat"));
+    }
+    recipients.dedup();
+    Ok(())
+}
+
+/// Refuse duplicate explicit recipients.
+pub fn check_unique_recipients(recipients: &[SeatId]) -> Result<(), ApiError> {
+    if recipients
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+        != recipients.len()
+    {
+        return Err(invalid("duplicate explicit recipient"));
+    }
+    Ok(())
+}
+
+/// Record every present seat argument of a command with its raw string.
+fn collect_seat_selectors(command: &Top) -> Vec<SeatSelectorArg> {
+    let mut out = Vec::new();
+    let mut record = |slot: SeatSlot, raw: &Option<String>| {
+        if let Some(raw) = raw {
+            out.push(SeatSelectorArg {
+                slot,
+                raw: raw.clone(),
+            });
+        }
+    };
+    match command {
+        Top::Inbox(args) => record(SeatSlot::ReadSeat, &args.seat),
+        Top::PendingReceipts(args) => record(SeatSlot::ReadSeat, &args.seat),
+        Top::Diagnostics(args) => record(SeatSlot::ReadSeat, &args.seat),
+        Top::Warnings(args) => record(SeatSlot::ReadSeat, &args.seat),
+        Top::Thread {
+            command: ThreadSub::List(args),
+        } => record(SeatSlot::ThreadListMembership, &args.seat),
+        Top::Invite(args) => record(SeatSlot::InviteRecipient, &args.seat),
+        Top::Send(args) => {
+            record(SeatSlot::DirectSendTarget, &args.seat);
+            for (index, raw) in args.require_ack.iter().enumerate() {
+                record(SeatSlot::RequireAck(index), &Some(raw.clone()));
+            }
+        }
+        Top::Seat { command } => match command {
+            SeatSub::Inspect { seat, .. } => record(SeatSlot::InspectSeat, &Some(seat.clone())),
+            SeatSub::Retire { seat, .. } => record(SeatSlot::RetireSeat, &Some(seat.clone())),
+            SeatSub::Rebind { seat, replace, .. } => {
+                record(SeatSlot::RebindSeat, &Some(seat.clone()));
+                record(SeatSlot::RebindReplace, replace);
+            }
+            _ => {}
+        },
+        Top::Handoff(args) => record(SeatSlot::HandoffExistingSeat, &args.seat),
+        _ => {}
+    }
+    out
 }
 
 impl ParsedCli {
@@ -2286,6 +2493,7 @@ fn parse_cli_in_registry(
         Top::Summary(args) => args.thread.clone(),
         _ => None,
     };
+    let seat_selectors = collect_seat_selectors(&cli.command);
     let action = match cli.command {
         Top::Follow(_) => unreachable!("follow was normalized to read"),
         Top::Thread { command } => match command {
@@ -2430,19 +2638,9 @@ fn parse_cli_in_registry(
                 .collect::<Result<Vec<_>, _>>()?;
             let direct_target = args.seat.map(|seat| id(seat, SeatId::parse)).transpose()?;
             if let Some(target) = &direct_target {
-                if recipients.iter().any(|seat| seat != target) {
-                    return Err(invalid("direct ACK requests may name only the target seat"));
-                }
-                recipients.dedup();
+                check_direct_ack(target, &mut recipients)?;
             }
-            if recipients
-                .iter()
-                .collect::<std::collections::HashSet<_>>()
-                .len()
-                != recipients.len()
-            {
-                return Err(invalid("duplicate explicit recipient"));
-            }
+            check_unique_recipients(&recipients)?;
             let thread = args.thread.map(thread_id).transpose()?;
             let deadline_millis = deadline(args.deadline)?;
             let relays_user = args.relays_user;
@@ -3050,6 +3248,7 @@ fn parse_cli_in_registry(
         require_ack_panes,
         thread_selector,
         agent_id,
+        seat_selectors,
     })
 }
 
