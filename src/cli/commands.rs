@@ -1481,7 +1481,7 @@ struct InviteArgs {
     selector: super::panes::PaneSelector,
     /// Thread to invite the seat into.
     thread: String,
-    /// Seat ID to invite.
+    /// Seat to invite.
     /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
     #[arg(long)]
     seat: Option<String>,
