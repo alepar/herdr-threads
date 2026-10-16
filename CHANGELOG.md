@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.2.0
+
+- **Name seats instead of copying seat IDs.** Every CLI seat argument (`send --seat`, `invite --seat`, `--require-ack`, `seat inspect`, `handoff --existing --seat` and the rest) accepts an exact seat ID or a `SPACE/TAB/PANE` name path. Names resolve by proximity to the caller: your tab first, then your workspace, then everywhere. An ambiguous name is refused with the candidate list, and the chosen seat is printed on a `resolved:` line. Operator repair by name (`seat retire`, `seat rebind`, `--replace`) acts only when the name matches exactly one pane anywhere; otherwise it is refused and needs the seat ID.
+- **The Claude mod channel survives a daemon restart.** An upgrade's daemon restart could leave a long-running Claude session without its push channel for the rest of the session (deliveries fell back to the hook's digest and wake markers): a transient daemon error before `watch` started exited with the code the mod treats as a permanent stop. `watch` now reports those as retryable, and the mod stops only after the child names a permanent reason.
+- **Seat retirement cleanup no longer stalls behind old retirements.** The scheduler walked every retirement ever recorded, one per 5-second tick, so a new retirement waited over 12 minutes behind 143 old ones (and daemon health read `degraded` meanwhile). Discovery now reads only pending jobs, so a sweep costs the same at 143 or 10,000 completed retirements; a separate read-only pass keeps retirement health recovery for completed jobs.
 ## v1.1.0
 
 - **`seat inspect`, `send --seat` and `seat list` work on seats with many stopped subagents.** A subagent stop disconnects its binding without ending it, so a long-lived seat collected hundreds of open disconnected subagent bindings, and the seat summary no longer fit a page (`seat history item cannot fit (invalid_budget)`). Presence now lists every connected or top-level binding plus only the 4 most recent disconnected subagents; `seat inspect` history still pages through all of them. The JSON shape is unchanged.
