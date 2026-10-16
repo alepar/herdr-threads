@@ -123,7 +123,8 @@ nickname always reads the topology to verify its prefix:
 **ID-shaped strings.** Only an *existing* seat ID takes step 1. A string that merely looks like
 a seat ID but names no seat falls through to name resolution, and normally ends in `not_found`
 after a topology read. A pane, tab or space label that equals an existing seat ID cannot be
-reached by name; use the pane ID or a longer path. The docs state this accepted limit.
+reached by name; use its pane ID (a longer path ending in such a label takes the nickname form).
+The docs state this accepted limit.
 
 **Unverifiable nickname.** A nickname whose seat has no live mapped target (unresolved, retired
 or unbound) is `Conflict` "cannot verify location of SEAT; pass the bare seat ID", as in step 2.
@@ -246,13 +247,20 @@ safe when all of these hold:
 - it is not shaped like a pane or tab ID;
 - it is unique among its siblings at that level (no other space, no other tab in the space, or
   no other pane in the tab with the same label);
-- it equals no host ID and no live agent name at any level.
+- it does not collide with what a three-segment reading could confuse it with. At the pane level,
+  no other pane in the same tab has it as an agent name or pane ID; the pane's own agent name
+  does not count, so a launched pane named after its label still renders its label. At the tab
+  and space levels, no sibling has it as an ID.
 
 No `{:?}` quoting and no escape grammar is used. Every part is therefore either a label that only
 this entity carries at that level, or an ID, which never contains `/`. A rendered full path, typed
 back as a seat argument, has a three-segment space/tab/pane reading that matches exactly the
-rendered pane. It resolves to that same pane unless some other label literally equals the whole
-rendered string. The docs state that residual case.
+rendered pane. It resolves to that same pane except in two residual cases, which the docs state:
+- some other label literally equals the whole rendered string;
+- the pane label equals an existing seat ID, so the pasted path takes the nickname form (D2
+  step 2).
+
+The resolve round-trip fixture includes a seat-ID-equal label to pin the second case.
 
 `seat_selector` owns rendering and parsing together. Two tests pin them:
 - a string round trip;
@@ -310,8 +318,10 @@ These match the existing `--pane` outcomes, so callers handle no new codes.
 ### D8a. Narrowing under `handoff --existing`
 
 Under `--existing`, `--space`/`--tab` have no launch meaning: the existing peer is not launched.
-With `--seat` they only narrow the seat name. The stage consumes them, and handoff never sees
-them.
+With `--seat`, the parser moves them out of the handoff request's selector into `SeatNarrowing`
+(D3), and they only narrow the seat name. Handoff's request never carries them, so its
+seat-with-space/tab refusal (`handoff_delivery.rs` ~238/347) cannot fire, and no stage-side
+clearing exists.
 
 ### D8b. Inventory of seat arguments
 
@@ -373,7 +383,7 @@ reasoned exclusion list, so a future seat argument cannot bypass resolution.
 ## Key abstractions
 
 **`seat_selector`** — new module (`src/cli/seat_selector.rs`), the pure name resolver over one `HostTopology` snapshot.
-- Owns: splitting a selector into readings (whole-string reading + the D3 segment table, with empty and ≥4 segments yielding nothing); per-level matching (space label|ID, tab label|ID, pane label|agent name|ID) and the sole-pane / sole-tab aliases; narrowing by already-resolved space/tab IDs; pooling and deduplicating by pane ID while keeping each pane's matched readings; ranking by `Tier` (closed enum `Tab | Space | Any`) and choosing the first non-empty tier; nickname-prefix verification (the same pool with tiering off, plus a membership test against the seat's mapped target); one path renderer (`space/tab/pane` as labels, else host IDs, `{:?}`-escaped and bounded) used by conflict candidates, the `resolved:` line and the nickname-mismatch message.
+- Owns: splitting a selector into readings (whole-string reading + the D3 segment table, with empty and ≥4 segments yielding nothing); per-level matching (space label|ID, tab label|ID, pane label|agent name|ID) and the sole-pane / sole-tab aliases; narrowing by already-resolved space/tab IDs; pooling and deduplicating by pane ID while keeping each pane's matched readings; ranking by `Tier` (closed enum `Tab | Space | Any`) and choosing the first non-empty tier; nickname-prefix verification (the same pool with tiering off, plus a membership test against the seat's mapped target); one path renderer (labels when safe per D6's Renderer contract, else host IDs, bounded; no `{:?}`) used by conflict candidates, the `resolved:` line and the nickname-mismatch message.
 - Hides: which reading matched, the readings table, tier precedence, and the bounded wire text (the 32-candidate safety cap, `N omitted`, the trailing qualification hint).
 - Must not: read the host or call the daemon, know which command it serves, allocate or look up seats, or print. Topology and caller come in as values; a candidate's seat is supplied by the runtime stage as a fallible lookup closure (rendered `seat=?` on failure), so the module stays pure and unit tests use hand-built topologies and a fake lookup.
 - Relationships: a leaf. It depends only on `host::observation` types and `ApiError`. `panes.rs` keeps its own scoped `--pane` rule (spec D3 "Considered"); the two share only the parent-narrowing helper (see `PaneSelector`).
@@ -391,12 +401,12 @@ reasoned exclusion list, so a future seat argument cannot bypass resolution.
 - Owns: the D4 decision as a value.
 - Hides: which reads, operator commands and handoff paths never allocate (TRUST-POLICY C4/A1).
 - Must not: carry behaviour. The stage maps `Lookup` to the existing `pane_seat` (with `no_seat_for_pane`/`mapping_error` unchanged) and `Allocate` to the existing journaled `ResolveSeat` allocation under the `ServiceAllocation` scope.
-- Relationships: the allocation is extracted once from `resolve_recipient_seats`'s `allocate` closure into a helper in `mod.rs`, shared by the `--pane`/`--require-ack-pane` path and this stage, so two callers exist now. The helper carries the preconditions that today precede allocation, in the same refuse-before-allocate order:
-  - the agent-without-session refusal from `run_caller_scoped`;
+- Relationships: the allocation is extracted once from `resolve_recipient_seats`'s `allocate` closure into a helper in `mod.rs`, shared by the `--pane`/`--require-ack-pane` path and this stage, so two callers exist now. The extraction is move-only: the closure body, nothing else. Refuse-before-allocate order is kept by `resolve_cli_seats`, not by the helper. Before its first `Allocate` mapping, the stage runs the same gates that today precede the closure, under the same conditions:
+  - the agent-without-session refusal: only when `run_caller_scoped` would apply it (actor not `Human`, not the `--operator` branch, and `caller_needs_identity`);
   - `require_send_time_receipts_capability` for p0 sends;
-  - the `INVITATION_CONFIRMATION_V1` capability for confirmed invites.
+  - the `INVITATION_CONFIRMATION_V1` capability for confirmed non-operator invites.
 
-  A refused command therefore never leaves a journaled `ResolveSeat`.
+  A refused command therefore never leaves a journaled `ResolveSeat`, and operator orphan invites keep working from any pane.
 
 **`resolve_cli_seats`** — new runtime stage in `src/cli/mod.rs` (spec D1), the only code that turns a `SeatSlot` raw string into a frozen `SeatId`.
 - Owns:
@@ -407,7 +417,6 @@ reasoned exclusion list, so a future seat argument cannot bypass resolution.
   - seat annotation of conflict candidates (at most 32 bounded lookups);
   - mapping through `SeatMapping` and freezing through `SeatSlot`;
   - the post-freeze ID checks moved out of parse time (D7: direct ACK names only the target; no duplicate recipients after dedup);
-  - clearing the narrowing flags it consumed, so handoff's "seat with space/tab" refusal (`handoff_delivery.rs` ~238/347) does not fire;
   - writing the `resolved:` lines to stderr before command output (D6).
 - Hides: when the host or daemon is touched. An exact ID never reads topology, so it works with Herdr down.
 - Must not: match names (`seat_selector` does), know command kinds (`SeatSlot` does), write any journal intent other than the existing allocation, or run on `retry`.
@@ -415,7 +424,7 @@ reasoned exclusion list, so a future seat argument cannot bypass resolution.
 - Lifecycle: one call per invocation; it owns nothing afterwards.
 - Errors: `HostUnavailable` (topology read, for the nickname and name forms and for an exact ID with `--space`/`--tab`); `not_found`/`conflict` (resolver); `invalid_request` (`no_seat_for_pane`, for reads and operator commands); `mapping_error` (a pane with several seats); allocation retry failures as today. No new codes; callers distinguish by `ErrorCode`.
 
-**`ParsedCli`** — extended: gains `seat_selectors` (a list of `SeatSlot` + raw string) and `seat_narrowing` (the `--space`/`--tab` values given with `--seat`, D3 Narrowing; never turned into a `pane_selector`). Action fields hold a placeholder `SeatId` until the stage freezes them, as `pending-pane-selector` does. `dispatch`'s guard refuses a leftover seat selector, as it does for pane and thread selectors. Parse-time `SeatId` comparisons move into the stage.
+**`ParsedCli`** — extended: gains `seat_selectors` (a list of `SeatSlot` + raw string) and `seat_narrowing` (the `--space`/`--tab` values given with `--seat`, D3 Narrowing; never turned into a `pane_selector`). Action fields hold a placeholder `SeatId` until the stage freezes them, as `pending-pane-selector` does. The stage itself is the enforcement: at its end it fails (`invalid_request`, a bug-class error) on any slot it did not freeze. `commands::dispatch`'s guard also refuses leftovers, but `dispatch` is test-only, so that is not the production guarantee. Parse-time `SeatId` comparisons move into the stage.
 
 **`PaneSelector` / `panes.rs`** — extended: `resolve_selector`'s hard-wired `--space`/`--tab` parent resolution (exact ID or unique label via `unique()`) is extracted into one helper that `resolve_selector` and the seat stage's narrowing both call, so the flag families cannot drift. The helper resolves a space (exact ID or unique label) and an optional tab (exact ID, or a unique label in that space). `--tab LABEL` without `--space` is scoped to the caller's space, and outside Herdr it needs `--space` or a tab ID. It returns `space` plus `Option<tab>`. Tab *defaulting* (the caller's tab, or the sole tab) stays in `resolve_selector`'s `--pane` path only; seat narrowing never defaults a tab.
 
@@ -439,7 +448,7 @@ Walk-through: `send --seat tryout/alice --body hi`.
 Future change: `--seat` on `history` touches one new `SeatSlot` variant (field write + `Lookup`) and one registration in `commands.rs`; the stage and the resolver do not change.
 
 Per spec D1, "Key decisions made": the stage lives in the ~4.3k-line `src/cli/mod.rs`. That is accepted, and it stays thin because matching, slot kinds and mapping class live in their own types. A task may still move it into a sibling file (`src/cli/seat_resolution.rs`) to keep `mod.rs` edits small.
-Per spec D5: raw strings live in `ParsedCli`, so action fields carry placeholders until freezing. `dispatch`'s guard must refuse leftovers, and the stage runs before caller defaulting.
+Per spec D5: raw strings live in `ParsedCli`, so action fields carry placeholders until freezing. the stage must refuse leftovers at its end, and the stage runs before caller defaulting.
 The spec's sketch of a pure resolver returning `Conflict` is refined. Candidates need daemon seat IDs, so the resolver returns a typed ambiguity, and the error is rendered after the stage supplies the seat-lookup closure.
 
 Digest:

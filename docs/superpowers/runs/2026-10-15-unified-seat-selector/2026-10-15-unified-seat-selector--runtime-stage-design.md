@@ -26,7 +26,7 @@ new product decision.
 
 - **Keeping each leaf green.** Before this subtree, `ht-u3ym.2` records slots inertly: names are
   still rejected at parse, and the clap conflicts stay. The flip to placeholders must land in the
-  same leaf as the dispatch guard and the stage, or a name could dispatch with a placeholder
+  same leaf as the stage and its leftover check, or a name could dispatch with a placeholder
   seat.
 - **Hot file.** `src/cli/mod.rs` is about 4.3k lines. The stage goes into a sibling file,
   `src/cli/seat_resolution.rs`, so leaves touching `mod.rs` keep their hunks small.
@@ -40,10 +40,9 @@ There are three leaves.
      returns the resolved space plus an optional tab. It does no tab defaulting: the caller's tab
      or sole-tab defaulting stays inside `resolve_selector`'s `--pane` path (root D3 Narrowing,
      Key abstractions `PaneSelector`);
-   - the guarded `allocate` closure in `resolve_recipient_seats` into a named function in
-     `mod.rs` that carries its refuse-before-allocate preconditions: the agent-without-session
-     refusal, the p0 send-time receipts capability and the invitation-confirmation capability
-     (root Key abstractions `SeatMapping`).
+   - the guarded `allocate` closure body in `resolve_recipient_seats` into a named function in
+     `mod.rs`. This is move-only. The gates stay where they are, and the stage re-runs them
+     before its own `Allocate` mappings (root Key abstractions `SeatMapping`).
 
    Behaviour is unchanged. Nothing else waits for this leaf except the stage.
 2. **The stage core plus the parser flip, together.** This leaf adds:
@@ -53,7 +52,11 @@ There are three leaves.
      stderr lines;
    - the call site in `run_parsed_in_pane`: after `resolve_cli_threads`/`resolve_cli_targets`,
      before `derive_caller`/`resolve_recipient_seats`, never on `retry`;
-   - the dispatch guard refusing leftover seat selectors;
+   - the stage's own end-of-stage check that fails on any unfrozen slot (the production
+     guarantee; `commands::dispatch` is test-only);
+   - before the first `Allocate` mapping, the gates that today precede allocation, under the
+     same conditions (root `SeatMapping`: session refusal only where `run_caller_scoped` applies
+     it, never on the `--operator` branch);
    - in `commands.rs`:
      - **every** seat-argument string becomes a slot with a placeholder action value, because
        `SeatId::parse` accepts nearly any ASCII string, so there is no syntactic ID/name split;
@@ -66,8 +69,8 @@ There are three leaves.
 3. **Command-path integration.** This leaf covers:
    - lifting the direct-send `--space/--tab` refusal (`--require-ack-pane` stays refused), with
      errors routed through `direct_send::pre_executor_error`;
-   - `handoff --existing --seat`: consuming the frozen seat and clearing the narrowing flags so
-     `handoff_delivery.rs`'s seat-with-space/tab refusal does not fire;
+   - `handoff --existing --seat`: consuming the frozen seat. Its `--space`/`--tab` were moved by
+     the leaf-2 parser into `SeatNarrowing` (root D8a), so the request carries none;
    - checking that the seat-repair commands (`inspect`/`retire`/`rebind`/`--replace`) receive
      frozen IDs.
 
@@ -99,7 +102,10 @@ an undefined syntactic split.
   - an exact ID works with the host down;
   - a name with the host down fails `host_unavailable`;
   - a read writes no `ResolveSeat` intent;
-  - a leftover selector is refused by the guard;
+  - a leftover selector is refused by the stage's end check, driven through the production
+    entry point (`run` with argv), not `commands::dispatch`;
+  - `human invite T --seat NAME --operator` from an agent pane still allocates (operator
+    branch exempt from the session refusal);
   - a direct ACK by name and by ID for the same seat deduplicates;
   - a direct ACK naming another seat is refused;
   - `--seat X --space S` on a multi-tab space searches every tab of `S`;
