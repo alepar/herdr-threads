@@ -1,7 +1,8 @@
 # super-auto run — 2026-10-14-cross-node-sync
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: roast-code
+phase: report
+roastCodeExit: converged
 roastCodeRound: 2
 codeMechanism: Workflow
 
@@ -74,3 +75,4 @@ feedback: evidence-only-fix pipeline defect sent via herdr agent prompt to super
 - coordination · ht-794l (peer seat snbemykTY, branch super-auto/inbox-injection-auto-ack) · "user ruling relayed: display auto-ACKs across nodes; agreed wire how=policy, no SettleHow variant, capability hook.context_receipts_v1; adapter OnHold::Fail; their combined proof aad7798bc green 51/51; this branch's two-node coverage ht-5fr.49"
 - stepBackCode-round-1: patch — Round 1: the findings are mostly independent defects; three of them are clusters where one rule was applied unevenly (node-scoped context resolution, sweeping consumers of the old instances/ layout, JoinError handling in the coordinator loop). Sweep each cluster with its rule. No redesign is needed.
 - scopeFilter-round-1: 4 in-scope ([Blocking] src/main.rs:117, [Should-fix] src/cli/mod.rs:616, [Should-fix] src/sync/coordinator/ingest.rs:203, [Should-fix] scripts/install.sh:383) · 11 punch-listed (see 2026-10-16-cross-node-sync-roast-pr-1-punch-list.txt; validate-native-demo.py and paths.rs by clusterOverride) · cluster dropped: join-error · fix beads ht-5fr.60 (node-context cluster), ht-5fr.61 (credit drop)
+- roast-code round 2 · Should-fix (2 confirmed) [converged] · 0 Blocking, 4 resolved, 11 punch-listed (open) · new: [Should-fix] scripts/wake-e2e.py:874 (11-char tagged IDs vs 8-char regexes in wake-e2e, validate-package.sh, real-ssh-e2e.py), [Nit] src/sync/coordinator/ingest.rs:294 (shared WorkerStatus slot) → punch list

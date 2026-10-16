@@ -1,0 +1,13 @@
+[Should-fix] Cargo.toml:64
+[Should-fix] src/store/materialize.rs:374
+[Should-fix] src/sync/coordinator.rs:934; src/sync/coordinator.rs:933; src/sync/coordinator.rs:935
+[Should-fix] src/sync/incarnations/sink.rs:443
+[Should-fix] scripts/validate-native-demo.py:3807
+[Should-fix] src/daemon/paths.rs:190
+[Nit] src/store/journal.rs:500
+[Nit] src/sync/coordinator.rs:950
+[Nit] integrations/skill/SKILL.md:144
+[Nit] CHANGELOG.md:5
+[Nit] AGENTS.md:20
+[Should-fix] scripts/wake-e2e.py:874
+[Nit] src/sync/coordinator/ingest.rs:294
