@@ -714,6 +714,17 @@ impl Rig {
         .to_vec()
     }
 
+    fn body_read_steps(&self, id: &str) -> Vec<Vec<String>> {
+        ["body", "ack"]
+            .into_iter()
+            .map(|verb| {
+                let mut argv = self.launch();
+                argv.extend([verb.to_owned(), id.to_owned()]);
+                argv
+            })
+            .collect()
+    }
+
     /// The mod's `watch` child as the setup-written launch runs it, in the
     /// session-shell environment (see [`Rig::raw_command`]), for B.
     fn raw_watch(&self, session: &str) -> Watch {
@@ -736,7 +747,7 @@ impl Rig {
 
     /// The truncation marker's steps as printed, each parsed into an argv.
     fn marker_steps(&self, body: &str) -> Vec<Vec<String>> {
-        let instruction = body.rsplit("…truncated; run ").next().unwrap();
+        let instruction = body.rsplit("…truncated; next: ").next().unwrap();
         instruction
             .split(", then ")
             .map(|step| {
@@ -3678,7 +3689,7 @@ fn text_accept_with_a_live_mod_channel_shows_the_opener_after_the_grace() {
 /// `truncated: true`; the mod must not ack it, and when it does the ack is a
 /// terminal refusal decided by the daemon from the stored length (the local
 /// hint file is not needed); the receipt settles when the agent follows the
-/// marker's own instruction (`body`, which is read-only, then `ack`). The
+/// marker's own text-inbox instruction (automatic ACK on complete display). The
 /// watch runs as the setup-written launch in the session-shell environment
 /// and the agent runs the marker exactly as printed.
 #[test]
@@ -3692,15 +3703,15 @@ fn truncated_body_streamed_with_marker_and_ack_refused_terminal() {
     assert_eq!(line["body_len"], 9000);
     let body = line["body"].as_str().unwrap();
     assert!(
-        body[8 * 1024..].starts_with("…truncated; run "),
+        body[8 * 1024..].starts_with("…truncated; next: "),
         "cut at the 8 KiB limit: {body}"
     );
     assert!(
         body.contains(&format!("--state-dir {}", rig.state.display())),
         "{body}"
     );
-    assert!(body.contains(&format!(" body {id}")), "{body}");
-    assert!(body.contains(&format!(" ack {id}")), "{body}");
+    assert!(body.ends_with(" inbox"), "{body}");
+    assert!(!body.contains(" ack "), "{body}");
     let result = rig.ack_result(SESSION_B, "context", &id);
     assert_eq!(result["result"], "refused_terminal", "{result}");
     assert_eq!(result["reason"], "truncated");
@@ -3731,9 +3742,9 @@ fn truncated_body_streamed_with_marker_and_ack_refused_terminal() {
             .unwrap(),
     );
     assert_ne!(bare.code, 0, "bare body: {}{}", bare.stdout, bare.stderr);
-    // Follow the marker as streamed: `body` (read-only), then `ack`.
+    // Follow the marker as streamed: text inbox displays and automatically ACKs.
     let steps = rig.marker_steps(body);
-    assert_eq!(steps.len(), 2, "{body}");
+    assert_eq!(steps.len(), 1, "{body}");
     let argv = &steps[0];
     let out = rig.run_marker_step(argv);
     assert_eq!(out.code, 0, "{argv:?}: {}{}", out.stdout, out.stderr);
@@ -3743,17 +3754,12 @@ fn truncated_body_streamed_with_marker_and_ack_refused_terminal() {
         out.stdout,
         out.stderr
     );
-    assert_eq!(rig.receipt_state(&id), "pending", "body is read-only");
-    let argv = &steps[1];
-    let out = rig.run_marker_step(argv);
-    assert_eq!(out.code, 0, "{argv:?}: {}{}", out.stdout, out.stderr);
     assert_eq!(rig.receipt_state(&id), "acked");
 }
 
-/// Spec D4: a lazy row has no receipt, so a cut lazy row's marker names only
-/// the read-only `body`.
+/// A cut lazy row uses text inbox too, completing its display without a receipt.
 #[test]
-fn truncated_lazy_row_marker_names_only_body() {
+fn truncated_lazy_row_marker_names_inbox() {
     let rig = Rig::new();
     let mut watch = rig.raw_watch(SESSION_B);
     watch.wait_connected();
@@ -3767,7 +3773,7 @@ fn truncated_lazy_row_marker_names_only_body() {
         body.contains(&format!("--state-dir {}", rig.state.display())),
         "{body}"
     );
-    assert!(body.contains(&format!(" body {id}")), "{body}");
+    assert!(body.ends_with(" inbox"), "{body}");
     assert!(!body.contains(" ack "), "{body}");
     let steps = rig.marker_steps(body);
     assert_eq!(steps.len(), 1, "{body}");
@@ -3780,7 +3786,11 @@ fn truncated_lazy_row_marker_names_only_body() {
         out.stdout,
         out.stderr
     );
-    assert_eq!(rig.lazy_state(&id), "pending", "reading completes nothing");
+    assert_eq!(
+        rig.lazy_state(&id),
+        "displayed",
+        "text inbox completes display"
+    );
 }
 
 /// ht-54r F1: a truncated ordinary message is refused by the mod's settlement, so the binding's
@@ -3803,7 +3813,7 @@ fn full_body_read_of_truncated_message_unblocks_binding_cursor() {
         cursor_of(&rig, &binding).is_none_or(|seq| seq < seq_long),
         "the refused display leaves the cursor behind it"
     );
-    let steps = rig.marker_steps(line["body"].as_str().unwrap());
+    let steps = rig.body_read_steps(&long);
     let out = rig.run_marker_step(&steps[0]);
     assert_eq!(out.code, 0, "{:?}: {}{}", steps[0], out.stdout, out.stderr);
     assert!(
@@ -3844,7 +3854,7 @@ fn full_body_read_passes_later_message_the_binding_already_displayed() {
     let mut watch = rig.raw_watch(SESSION_B);
     watch.wait_connected();
     let long = rig.send_ordinary(&"t".repeat(9000));
-    let line = watch.wait_item(&long);
+    watch.wait_item(&long);
     let refused = rig.ack_result(SESSION_B, "context", &long);
     assert_eq!(refused["result"], "refused_terminal", "{refused}");
     let later = rig.send_ordinary("displayed while held");
@@ -3856,7 +3866,7 @@ fn full_body_read_passes_later_message_the_binding_already_displayed() {
         cursor_of(&rig, &binding).is_none_or(|seq| seq < sequence_of(&rig, &long)),
         "held behind the truncated message"
     );
-    let steps = rig.marker_steps(line["body"].as_str().unwrap());
+    let steps = rig.body_read_steps(&long);
     let out = rig.run_marker_step(&steps[0]);
     assert_eq!(out.code, 0, "{:?}: {}{}", steps[0], out.stdout, out.stderr);
     let read_to = cursor_of(&rig, &binding);
@@ -3875,12 +3885,12 @@ fn machine_and_json_body_reads_do_not_advance_binding_cursor() {
     let mut watch = rig.raw_watch(SESSION_B);
     watch.wait_connected();
     let long = rig.send_ordinary(&"j".repeat(9000));
-    let line = watch.wait_item(&long);
+    watch.wait_item(&long);
     let refused = rig.ack_result(SESSION_B, "context", &long);
     assert_eq!(refused["result"], "refused_terminal", "{refused}");
     let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
     let before = cursor_of(&rig, &binding);
-    let body_step = rig.marker_steps(line["body"].as_str().unwrap()).remove(0);
+    let body_step = rig.body_read_steps(&long).remove(0);
     for flag in ["--json", "--machine"] {
         let mut argv = body_step.clone();
         argv.extend([
@@ -3915,13 +3925,13 @@ fn partial_body_read_does_not_advance_binding_cursor() {
     let mut watch = rig.raw_watch(SESSION_B);
     watch.wait_connected();
     let long = rig.send_ordinary(&"p".repeat(9000));
-    let line = watch.wait_item(&long);
+    watch.wait_item(&long);
     let refused = rig.ack_result(SESSION_B, "context", &long);
     assert_eq!(refused["result"], "refused_terminal", "{refused}");
     let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
     let before = cursor_of(&rig, &binding);
     let seq_long = sequence_of(&rig, &long);
-    let body_step = rig.marker_steps(line["body"].as_str().unwrap()).remove(0);
+    let body_step = rig.body_read_steps(&long).remove(0);
     let mut first = body_step.clone();
     first.extend(["--max-bytes".to_owned(), "4096".to_owned()]);
     let out = rig.run_marker_step(&first);

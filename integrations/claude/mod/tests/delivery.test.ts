@@ -142,6 +142,147 @@ const IDLE = { open: [], assumedBusy: false, abortHoldSince: null }
 const busyState = (id = 't1') => ({ open: [id], assumedBusy: false, abortHoldSince: null })
 const answered = { result: { ok: true }, text: 'out' }
 
+test('tool context bounds an ordered prefix and ACKs only that prefix', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  for (let i = 0; i < 33; i++) h.line(msg(`tool-bound-${i}`))
+  const first = await h.core.onToolCall({}, answered)
+  await flush()
+  expect((first.context[0].match(/^\[herdr-threads\] message /gm) ?? []).length).toBe(32)
+  expect(first.context[0]).toContain('next: herdr-threads inbox')
+  expect(h.core.snapshot().queue).toEqual(['tool-bound-32'])
+  expect(Object.keys(h.core.snapshot().rec.delivered).length).toBe(32)
+  const second = await h.core.onToolCall({}, answered)
+  await flush()
+  expect(second.context[0]).toContain('tool-bound-32')
+  expect(second.context[0]).not.toContain('next:')
+  expect(h.core.snapshot().queue).toEqual([])
+  h.core.dispose()
+})
+
+test('oversized first context offers routed inbox recovery and permits later delivery without ACKing it', async () => {
+  const h = await harness({ state: busyState(), argv: ['/opt/ht', '--state-dir', '/my state'] }).boot()
+  h.line(msg('huge', { body: '界'.repeat(65536) }))
+  h.line(msg('after-huge'))
+  const first = await h.core.onToolCall({}, answered)
+  await flush()
+  expect(first.context[0]).toBe("next: /opt/ht --state-dir '/my state' inbox")
+  expect(h.ackRuns()).toEqual([])
+  expect(h.core.snapshot().queue.length).toBe(2)
+  const second = await h.core.onToolCall({}, answered)
+  await flush()
+  expect(second.context[0]).toContain('after-huge')
+  expect(h.core.snapshot().rec.delivered.huge).toBeUndefined()
+  expect(h.core.snapshot().rec.delivered['after-huge']).toBe('context')
+  h.core.dispose()
+})
+
+test('tool byte budget counts UTF8, quoted labels, framing and the overflow continuation', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  const body = '界\n'.repeat(4500)
+  for (let i = 0; i < 4; i++) h.line(msg(`bytes-${i}`, { body, thread_name: 'quoted "界"' }))
+  const r = await h.core.onToolCall({}, answered)
+  await flush()
+  const text = r.context[0]
+  expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(65536)
+  expect(text).toContain('next: herdr-threads inbox')
+  expect(text).toContain('quoted \\"界\\"')
+  expect(h.core.snapshot().queue).toEqual(['bytes-2', 'bytes-3'])
+  expect(Object.keys(h.core.snapshot().rec.delivered)).toEqual(['bytes-0', 'bytes-1'])
+  h.core.dispose()
+})
+
+test('exactly 32 complete tool items need no recovery; denial preserves every item', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  for (let i = 0; i < 32; i++) h.line(msg(`exact-${i}`))
+  expect(await h.core.onToolCall({}, { deny: 'no' })).toEqual({ deny: 'no' })
+  expect(h.core.snapshot().queue.length).toBe(32)
+  expect(h.ackRuns()).toEqual([])
+  const r = await h.core.onToolCall({}, answered)
+  await flush()
+  expect(r.context[0]).not.toContain('next:')
+  expect(Object.keys(h.core.snapshot().rec.delivered).length).toBe(32)
+  expect(await h.core.onToolCall({}, answered)).toEqual(answered)
+  h.core.dispose()
+})
+
+test('overflow continuation bytes are reserved before selecting the complete prefix', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  const item = (id, body) => ({
+    id, body, kind: 'message', thread: 'T1', threadName: 'plans', sender: 'S1', senderName: 'alice',
+  })
+  const continuation = '\n\nnext: herdr-threads inbox'
+  const overhead = new TextEncoder().encode(frame([item('reserve-a', ''), item('reserve-b', 'b')])).length
+  const body = 'x'.repeat(65536 - overhead - continuation.length + 1)
+  h.line(msg('reserve-a', { body }))
+  h.line(msg('reserve-b', { body: 'b' }))
+  h.line(msg('reserve-c', { body: 'c' }))
+  const r = await h.core.onToolCall({}, answered)
+  await flush()
+  expect(new TextEncoder().encode(r.context[0]).length).toBeLessThanOrEqual(65536)
+  expect(r.context[0]).toContain('next: herdr-threads inbox')
+  expect(h.core.snapshot().queue).toEqual(['reserve-b', 'reserve-c'])
+  h.core.dispose()
+})
+
+test('truncated watch messages share one inbox continuation and never ACK', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  for (const id of ['partial-a', 'partial-b']) {
+    h.line(msg(id, { truncated: true, body: 'cut…truncated; next: herdr-threads inbox' }))
+  }
+  const r = await h.core.onToolCall({}, answered)
+  await flush()
+  expect(r.context[0].split('next: herdr-threads inbox').length).toBe(2)
+  expect(r.context[0]).not.toContain(' ack ')
+  expect(h.ackRuns()).toEqual([])
+  h.core.dispose()
+})
+
+test('a failed context result construction leaves messages queued and unACKed', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(msg('context-failure'))
+  let failed = false
+  try {
+    await h.core.onToolCall({}, { ...answered, context: { [Symbol.iterator]() { throw new Error('context failed') } } })
+  } catch {
+    failed = true
+  }
+  await flush()
+  expect(failed).toBe(true)
+  expect(h.core.snapshot().queue).toEqual(['context-failure'])
+  expect(h.core.snapshot().rec.delivered).toEqual({})
+  expect(h.ackRuns()).toEqual([])
+  h.core.dispose()
+})
+
+test('a partial invitation offers inbox recovery without acceptance or ACK authority', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(queuedInvitation(1, { truncated: true, wakes: true }))
+  const r = await h.core.onToolCall({}, answered)
+  await flush()
+  expect(r.context[0]).toContain('next: herdr-threads inbox')
+  expect(r.context[0]).toContain('next: herdr-threads accept T1')
+  expect(h.core.snapshot().rec.invitationVersions).toEqual({})
+  expect(h.ackRuns()).toEqual([])
+  h.core.dispose()
+})
+
+for (const active of [false, true]) {
+  test(`oversized ${active ? 'idle waking' : 'passive'} append recovers and continues without ACKing partial content`, async () => {
+    const h = await harness({ state: IDLE }).boot()
+    h.line(msg('append-huge', { body: '界'.repeat(65536), ack_required: active, wakes: active }))
+    await flush()
+    h.line(msg('append-next', { ack_required: active, wakes: active }))
+    await flush()
+    expect(h.appends[0]).toBe('next: herdr-threads inbox')
+    expect(h.appends[1]).toContain('append-next')
+    expect(h.core.snapshot().queue).toEqual(['append-huge'])
+    expect(h.core.snapshot().rec.delivered['append-huge']).toBeUndefined()
+    expect(h.core.snapshot().rec.delivered['append-next']).toBe('append')
+    expect(h.submits.length > 0).toBe(active)
+    h.core.dispose()
+  })
+}
+
 test('startup spawns watch with the session id and starts assumed busy', async () => {
   const h = await harness().boot()
   expect(h.spawns.length).toBe(1)
@@ -866,12 +1007,13 @@ test('delivered-but-unacked ids in $.store are re-acked, not delivered again', a
 
 test('acks are capped at 100 ids per watch ack invocation', async () => {
   const idsOf = (run: string[]) => run.slice(run.indexOf('--via') + 2)
-  // One busy-turn context completion delivers 150 messages, independently of
-  // the idle append envelope; ACKs still split into runs of 100 and 50.
-  const h = await harness({ state: busyState() }).boot()
+  // A persisted completion backlog is independent of bounded delivery batches.
   const ids = Array.from({ length: 150 }, (_, n) => `m${n + 1}`)
-  for (const id of ids) h.line(msg(id))
-  await h.core.onToolCall({ tool: 'Bash' }, answered)
+  const backlog = Object.fromEntries(ids.map((id) => [id, 'context']))
+  const h = await harness({
+    state: busyState(),
+    store: { 'delivered:s1': { delivered: { ...backlog }, unacked: backlog, attentionVersions: [] } },
+  }).boot()
   await flush()
   const runs = h.ackRuns()
   expect(runs.map((r: string[]) => idsOf(r).length)).toEqual([100, 50])
