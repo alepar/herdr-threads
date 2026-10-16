@@ -1,4 +1,11 @@
 use super::*;
+
+#[test]
+fn hook_context_receipt_capability_is_additive() {
+    assert!(ADVERTISED.contains(&"hook.context_receipts_v1"));
+    assert!(ADVERTISED.contains(&LAZY_HOOK_DELIVERY));
+    assert!(!Capabilities::none().supports("hook.context_receipts_v1"));
+}
 use crate::{
     client::local::LocalSocketClient,
     daemon::{

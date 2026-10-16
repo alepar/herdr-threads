@@ -351,6 +351,7 @@ impl LazyCommit {
         }
         match client.call(
             Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                receipt_candidates: Vec::new(),
                 messages: self.messages,
                 operation: OperationId::new(uuid::Uuid::new_v4().to_string()),
                 claim: self.claim,
