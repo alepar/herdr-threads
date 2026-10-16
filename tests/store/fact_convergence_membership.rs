@@ -617,3 +617,148 @@ fn follow_up_skips_a_seat_with_a_row() {
     }
     assert_eq!(joined_entries_for(&a, &sa), 1, "A did not re-join either");
 }
+
+// ---- the pending pair peer in the audience (reconcile item 16) ---------------------
+
+use herdr_threads::protocol::commands::DeliveryMode;
+use herdr_threads::protocol::results::ErrorCode;
+
+/// A and B, each with one bound, published seat, synced.
+fn pair_world(seed: u8) -> (Node, Node, SeatId, SeatId) {
+    let reg = registry();
+    let a = Node::open_commands(seed, u64::from(seed), reg);
+    let b = Node::open_commands(seed + 1, u64::from(seed + 1), reg);
+    let (sa, sb) = (a.local_seat(), b.local_seat());
+    a.bind_commands(&sa);
+    a.publish(&sa).unwrap();
+    b.bind_commands(&sb);
+    b.publish(&sb).unwrap();
+    sync_all(&[&a, &b]);
+    (a, b, sa, sb)
+}
+
+/// `(seat, receipt)` pairs of every `message.sent` entry in `node`'s journal,
+/// oldest first.
+fn sent_audiences(node: &Node) -> Vec<Vec<(String, String)>> {
+    node.query(
+        "SELECT payload FROM journal WHERE kind='message.sent' ORDER BY ingest_seq",
+        |r| r.get::<_, Vec<u8>>(0),
+    )
+    .iter()
+    .map(|p| {
+        let v: serde_json::Value = serde_json::from_slice(p).unwrap();
+        v["recipients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["seat"].as_str().unwrap().to_owned(),
+                    r["receipt"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    })
+    .collect()
+}
+
+#[test]
+fn pair_send_before_the_peer_join_arrives_names_the_peer() {
+    let (a, b, sa, sb) = pair_world(196);
+    let (t, _) = open_direct(&a, &sa, &sb);
+    // No sync: B's `membership.joined` has not arrived, so `sb` has no row.
+    assert_eq!(a.membership(&t, &sb), None);
+
+    // (i) a direct opener, (ii) an ACK send, (iii) a raw send on the pair.
+    let mut direct = a.prepare_request(&sa, &t, DeliveryMode::Lazy, "op-direct");
+    direct.direct_recipient = Some(sb.clone());
+    a.prepare_steps(&direct).unwrap();
+    let m1 = a.publish_prepared(&direct).expect("direct send accepted");
+    let m2 = a
+        .cmd_send_ack(&sa, &t, &[&sb], "op-ack")
+        .expect("ACK send accepted");
+    let m3 = a
+        .cmd_send(&sa, &t, DeliveryMode::Lazy, "op-raw")
+        .expect("raw pair send accepted");
+
+    // A stages no delivery for the remote peer, and an ACK row only for (ii).
+    assert_eq!(
+        count_of(
+            &a,
+            &format!(
+                "SELECT count(*) FROM lazy_recipients WHERE seat_id='{}'",
+                sb.as_str()
+            )
+        ),
+        0
+    );
+    assert_eq!(
+        count_of(
+            &a,
+            &format!(
+                "SELECT count(*) FROM prepared_recipients WHERE seat_id='{}' AND availability_provenance='remote'",
+                sb.as_str()
+            )
+        ),
+        1,
+        "only the ACK send stages a row for the remote peer"
+    );
+    let want = |receipt: &str| vec![(sb.as_str().to_owned(), receipt.to_owned())];
+    assert_eq!(
+        sent_audiences(&a),
+        vec![want("none"), want("ack"), want("none")],
+        "each message.sent names the pending peer"
+    );
+
+    sync_all(&[&a, &b]);
+    assert_eq!(b.membership(&t, &sb), Some(("joined".into(), 1, 1)));
+    assert_eq!(a.membership(&t, &sb), Some(("joined".into(), 1, 1)));
+    for message in [&m1, &m2, &m3] {
+        b.drive_send(message);
+    }
+    for message in [&m1, &m3] {
+        assert_eq!(
+            count_of(
+                &b,
+                &format!(
+                    "SELECT count(*) FROM lazy_recipients WHERE message_id='{}' AND seat_id='{}' AND priority=1",
+                    message.as_str(),
+                    sb.as_str()
+                )
+            ),
+            1,
+            "B delivers {} to its seat at p1",
+            message.as_str()
+        );
+    }
+    assert!(
+        b.receipt_state_of(&m2, &sb).is_some(),
+        "B holds a receipt for the ACK send"
+    );
+    for node in [&a, &b] {
+        herdr_threads::test_support::assert_no_local_delivery_for_remote(&node.raw());
+    }
+}
+
+#[test]
+fn pair_peer_with_a_row_still_needs_a_reinvite() {
+    let (a, b, sa, sb) = pair_world(198);
+    let (t, _) = open_direct(&a, &sa, &sb);
+    sync_all(&[&a, &b]);
+    assert_eq!(b.membership(&t, &sb), Some(("joined".into(), 1, 1)));
+    b.cmd_leave(&sb, &t, "op-leave").unwrap();
+    sync_all(&[&a, &b]);
+    assert_eq!(a.membership(&t, &sb).map(|m| m.0), Some("left".into()));
+
+    let mut direct = a.prepare_request(&sa, &t, DeliveryMode::Lazy, "op-after-leave");
+    direct.direct_recipient = Some(sb.clone());
+    let err = a
+        .prepare_steps(&direct)
+        .and_then(|()| a.publish_prepared(&direct).map(|_| ()))
+        .expect_err("a left peer is not pending");
+    assert_eq!(err.code, ErrorCode::Conflict, "{err:?}");
+    assert!(
+        err.detail.contains("must be explicitly reinvited"),
+        "{err:?}"
+    );
+}

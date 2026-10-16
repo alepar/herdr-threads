@@ -25,6 +25,7 @@ pub(crate) use direct::direct_pair_selection;
 pub use direct::ensure_direct_thread;
 pub(crate) use direct::guard_pair_member;
 pub(crate) use direct::guard_pair_service_owner;
+pub(crate) use direct::pending_auto_join;
 pub(crate) use direct::validate_pair_send;
 pub use direct::{direct_auto_join_payloads, resolve_direct_pair};
 pub use invitation::accept;

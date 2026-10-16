@@ -347,22 +347,38 @@ pub fn materialize_membership(
     payload: &MembershipPayload,
 ) -> Result<(), ApiError> {
     match transition {
-        Transition::Joined => materialize_joined(
-            tx,
-            m,
-            &JoinedTransition {
-                thread: &payload.thread,
-                seat: &payload.seat,
-                n: payload.n,
-                at: payload.at,
-                join_event: true,
-                actor: payload.actor.as_ref(),
-                seq: m.decision_seq,
-                episode: None,
-                direct_floor: None,
-                settle: true,
-            },
-        ),
+        Transition::Joined => {
+            // A pair seat's auto-join floors at the pair's first position
+            // (reconcile §2.3); any other join keeps `init_for_join`.
+            let direct_floor = if payload.actor.is_some()
+                && super::direct::direct_pair(tx, &payload.thread)?.is_some()
+            {
+                Some(
+                    crate::store::read_cursors::pair_auto_join_floor(tx, &payload.thread)?
+                        .ok_or_else(|| {
+                            api_error(ErrorCode::StoreCorrupt, "pair has no create event")
+                        })?,
+                )
+            } else {
+                None
+            };
+            materialize_joined(
+                tx,
+                m,
+                &JoinedTransition {
+                    thread: &payload.thread,
+                    seat: &payload.seat,
+                    n: payload.n,
+                    at: payload.at,
+                    join_event: true,
+                    actor: payload.actor.as_ref(),
+                    seq: m.decision_seq,
+                    episode: None,
+                    direct_floor,
+                    settle: true,
+                },
+            )
+        }
         Transition::Left => materialize_left(tx, m, payload),
     }
 }
@@ -387,8 +403,9 @@ pub(crate) struct JoinedTransition<'a> {
     /// The episode the transition opens; `None` allocates the next one. An
     /// accepted invitation opens the invitation's own episode.
     pub episode: Option<i64>,
-    /// The read-cursor floor of an accepted direct-pair invitation for a local
-    /// seat; `None` initializes the cursors as an ordinary join does.
+    /// The read-cursor floor for a local seat of an accepted direct-pair
+    /// invitation or a pair seat's auto-join (the pair's `create:` position);
+    /// `None` initializes the cursors as an ordinary join does.
     pub direct_floor: Option<u64>,
     /// Whether to settle the seat's other pending invitations `already_joined`
     /// (the one rule, on journaled threads). A node-local managed thread keeps

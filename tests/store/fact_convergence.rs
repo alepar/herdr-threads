@@ -398,7 +398,7 @@ impl Node {
         Ok(request)
     }
 
-    fn prepare_request(
+    pub fn prepare_request(
         &self,
         seat: &SeatId,
         thread: &ThreadId,
@@ -420,7 +420,7 @@ impl Node {
         }
     }
 
-    fn prepare_steps(&self, request: &SendMessage) -> Result<(), ApiError> {
+    pub fn prepare_steps(&self, request: &SendMessage) -> Result<(), ApiError> {
         let mut conn = self.raw();
         for _ in 0..10_000 {
             let step = messages::prepare_send_step(
