@@ -1809,11 +1809,7 @@ fn do_reissue(
     conn: &mut Connection,
     source: &Envelope,
 ) -> Result<Authored, ApiError> {
-    ctx.execute_decision(
-        conn,
-        |_| Ok(()),
-        |tx, d, ()| reissue(tx, ctx, d, source, ReissueSource::Forked),
-    )
+    ctx.execute_decision(conn, |_| Ok(()), |tx, d, ()| reissue(tx, ctx, d, source))
 }
 
 // Kills: a reissue that re-encodes the payload, ticks the HLC, drops

@@ -17,7 +17,7 @@ use herdr_threads::protocol::commands::{Ack, DeliveryMode};
 use herdr_threads::protocol::ids::{
     ExecutionId, HostTargetId, MessageId, NativeSessionId, OperationId, SeatId, ThreadId,
 };
-use herdr_threads::protocol::results::{ApiError, CommandResult};
+use herdr_threads::protocol::results::{ApiError, CommandResult, ErrorCode};
 use herdr_threads::store::journal;
 use herdr_threads::store::materialize::FactRoute;
 use herdr_threads::store::{receipts, schema};
@@ -453,6 +453,50 @@ fn mod_delivered_and_policy_write_the_ack_mod_key() {
             ]
         );
     }
+}
+
+#[test]
+fn settle_of_a_message_without_its_creating_fact_is_store_corrupt() {
+    // A pending receipt whose message no `message.sent` created, on a journaled
+    // thread, is a corrupt store: the ACK errors and authors nothing.
+    let w = rworld(158);
+    let m = w.send();
+    w.deliver(&[&m]);
+    // Journal rows are immutable, so lift the trigger for one statement and
+    // restore its exact definition: the entry then creates some other key.
+    let db = w.b.raw();
+    let trigger: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='journal_envelope_immutable'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    db.execute("DROP TRIGGER journal_envelope_immutable", [])
+        .unwrap();
+    let changed = db
+        .execute(
+            "UPDATE journal SET creates='mOtherKey001' WHERE creates=?1",
+            [m.as_str()],
+        )
+        .unwrap();
+    assert_eq!(changed, 1, "one message.sent created the message");
+    db.execute(&trigger, []).unwrap();
+    drop(db);
+    let before = w.b.query(
+        "SELECT count(*) FROM journal WHERE kind='receipt.settled'",
+        |r| r.get::<_, i64>(0),
+    );
+    let error = w.b.ack(&w.agent, "op-nofact", &[&m], false).unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt, "{}", error.detail);
+    assert_eq!(
+        w.b.query(
+            "SELECT count(*) FROM journal WHERE kind='receipt.settled'",
+            |r| r.get::<_, i64>(0)
+        ),
+        before
+    );
+    assert_eq!(w.b.settled_row(&m, &w.agent).unwrap().0, "pending");
 }
 
 #[test]

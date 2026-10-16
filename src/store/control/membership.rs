@@ -15,7 +15,7 @@
 //!   materializers; `invitation.created` and `invitation.answered` (ht-5fr.4.10)
 //!   call [`settle_superseded_invitations`] and [`materialize_joined`].
 
-use super::thread::{has_creating_fact, local_instance};
+use super::thread::local_instance;
 use super::{cooperative_payload_hash, decide_accountable, guard_pair_member, validate_actor};
 use crate::protocol::authority::{MutationPermit, ObligationRef};
 use crate::protocol::commands::Leave;
@@ -24,7 +24,7 @@ use crate::protocol::results::{ApiError, CommandResult, ErrorCode};
 use crate::protocol::time::CallBudget;
 use crate::store::attribution;
 use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
-use crate::store::materialize::{FactRoute, MaterializeInput};
+use crate::store::materialize::{FactRoute, MaterializeInput, journaled_route};
 use crate::store::schema::{self, EventInput};
 use crate::sync::facts::membership::{MembershipJoined, MembershipLeft, MembershipPayload};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -298,18 +298,14 @@ pub(super) fn next_transition(
         .ok_or_else(|| api_error(ErrorCode::SequenceExhausted, "membership ordinal exhausted"))
 }
 
-/// The route of a membership or invitation fact in `thread`. A journaled
-/// thread no fact created yet (a fixture whose journal never opened) would
-/// park the fact on its `needs`, so it keeps the node-local write it always had.
+/// The route of a membership or invitation fact in `thread` (see
+/// [`journaled_route`]); the creating fact is the thread's own.
 pub(super) fn membership_route(
     tx: &Transaction<'_>,
+    ctx: &StoreContext,
     thread: &ThreadId,
 ) -> Result<FactRoute, ApiError> {
-    let route = FactRoute::for_thread(tx, thread)?;
-    if route == FactRoute::Journal && !has_creating_fact(tx, thread.as_str())? {
-        return Ok(FactRoute::LocalOnly);
-    }
-    Ok(route)
+    journaled_route(tx, ctx.journal_open(), thread, thread.as_str())
 }
 
 /// Authors one membership transition for a command: through the journal for a
@@ -321,7 +317,7 @@ pub(crate) fn author_membership(
     transition: Transition,
     payload: &MembershipPayload,
 ) -> Result<(), ApiError> {
-    let route = membership_route(tx, &payload.thread)?;
+    let route = membership_route(tx, ctx, &payload.thread)?;
     let local = |tx: &Transaction<'_>, m: &MaterializeInput<'_>, p: &MembershipPayload| {
         materialize_membership(tx, m, transition, p)
     };

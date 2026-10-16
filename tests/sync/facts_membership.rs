@@ -7,7 +7,7 @@
 //! its rows) are shared with that file.
 
 use herdr_threads::protocol::ids::{SeatId, ThreadId};
-use herdr_threads::protocol::results::ApiError;
+use herdr_threads::protocol::results::{ApiError, ErrorCode};
 use herdr_threads::store::control::{self, Transition};
 use herdr_threads::store::journal;
 use herdr_threads::store::materialize::FactRoute;
@@ -739,4 +739,65 @@ fn ordinary_join_floor_is_the_head() {
     let cursor = binding_cursor(&node, &thread, &other).expect("a cursor");
     assert!(head > create);
     assert_eq!(cursor, head, "an ordinary join starts at the head");
+}
+
+// ---- a journaled thread no fact created is a corrupt store --------------------
+
+/// A command-capable node whose `member` seat is bound, published and joined
+/// (by direct rows) to a `journaled = 1` thread no `thread.created` created.
+pub fn node_with_orphan_thread(seed: u8) -> (Node, SeatId, ThreadId) {
+    let node = Node::open_commands(seed, u64::from(seed), registry());
+    let member = node.local_seat();
+    node.bind_commands(&member);
+    node.publish(&member).unwrap();
+    let thread = node.mint_thread();
+    let db = node.raw();
+    db.execute(
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,?2,'t','g',0,0,1)",
+        rusqlite::params![thread.as_str(), node.id.to_string()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES (?1,?2,'joined','joined',1)",
+        rusqlite::params![thread.as_str(), member.as_str()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,1)",
+        rusqlite::params![thread.as_str(), member.as_str()],
+    )
+    .unwrap();
+    (node, member, thread)
+}
+
+#[test]
+fn membership_on_a_journaled_thread_without_its_creating_fact_is_store_corrupt() {
+    let (node, _member, thread) = node_with_orphan_thread(97);
+    let joiner = node.local_seat();
+    node.bind_commands(&joiner);
+    node.publish(&joiner).unwrap();
+    let error = node.cmd_join(&joiner, &thread, "op-join").unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt, "{}", error.detail);
+    assert_eq!(
+        node.count("SELECT count(*) FROM journal WHERE kind LIKE 'membership.%'"),
+        0
+    );
+    assert!(node.membership(&thread, &joiner).is_none());
+}
+
+#[test]
+fn invitation_on_a_journaled_thread_without_its_creating_fact_is_store_corrupt() {
+    let (node, member, thread) = node_with_orphan_thread(98);
+    let invitee = node.local_seat();
+    node.bind_commands(&invitee);
+    node.publish(&invitee).unwrap();
+    let error = node
+        .cmd_invite(&member, &thread, &invitee, "op-invite")
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt, "{}", error.detail);
+    assert_eq!(
+        node.count("SELECT count(*) FROM journal WHERE kind LIKE 'invitation.%'"),
+        0
+    );
+    assert_eq!(node.count("SELECT count(*) FROM invitations"), 0);
 }

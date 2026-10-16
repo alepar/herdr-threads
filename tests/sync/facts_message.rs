@@ -1216,9 +1216,9 @@ fn oversized_send_is_refused_before_anything_is_authored() {
 }
 
 #[test]
-fn local_only_route_for_a_journal_less_thread_journals_nothing() {
-    // A pair thread `ensure_direct_thread` still inserts directly (no creating
-    // fact) keeps the node-local write: nothing is journaled for its send.
+fn send_on_a_journaled_thread_without_its_creating_fact_is_store_corrupt() {
+    // A journaled thread no `thread.created`/`thread.direct` created is a
+    // corrupt store: the send errors and writes nothing.
     let s = Sender::new();
     s.db()
         .execute(
@@ -1242,16 +1242,15 @@ fn local_only_route_for_a_journal_less_thread_journals_nothing() {
     }
     let mut request = s.request("op-nofact", DeliveryMode::Ordinary, None);
     request.thread = ThreadId::new("tNoFact000001");
-    s.send(&request).expect("the send");
+    let error = s.send(&request).unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt, "{}", error.detail);
     assert_eq!(
         s.count("SELECT count(*) FROM journal WHERE kind='message.sent'"),
         0
     );
     assert_eq!(
-        s.count(
-            "SELECT count(*) FROM messages WHERE thread_id='tNoFact000001' AND kind='ordinary'"
-        ),
-        1
+        s.count("SELECT count(*) FROM messages WHERE thread_id='tNoFact000001'"),
+        0
     );
 }
 

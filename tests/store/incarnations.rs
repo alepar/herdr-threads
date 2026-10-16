@@ -1514,7 +1514,7 @@ fn clone_suspect_holds_rotation_and_reissue_but_not_record_fork() {
     let low_proof = proof(o.old, 2, &o.entries[1], low.clone());
     let fork = record_fork(&tx, &low_proof, None).unwrap();
     assert_eq!(fork.frozen_at, 1, "record_fork still lowers the freeze");
-    upsert_branch_tip(&tx, &o.old, low.counter, low.hash, None).unwrap();
+    upsert_branch_tip(&tx, &o.old, low.counter, low.hash).unwrap();
     tx.commit().unwrap();
     assert_eq!(freeze_of(&o.conn, &o.old), ("frozen".into(), Some(1)));
 }
@@ -1967,7 +1967,7 @@ fn branch(o: &Owner, from: u64, to: u64, prev: [u8; 32], tag: &str) -> Vec<Envel
 
 fn tip_row(o: &mut Owner, tip: &Envelope) -> i64 {
     let tx = o.conn.transaction().unwrap();
-    let ix = upsert_branch_tip(&tx, &o.old, tip.counter, tip.hash, None).unwrap();
+    let ix = upsert_branch_tip(&tx, &o.old, tip.counter, tip.hash).unwrap();
     tx.commit().unwrap();
     ix
 }
@@ -2552,7 +2552,7 @@ fn status_reports_frozen_log_details() {
     let rival = o.fork(3, prev2, r#"{"id":"x3"}"#);
     let tx = o.conn.transaction().unwrap();
     record_fork(&tx, &proof(o.old, 3, &o.entries[2], rival.clone()), None).unwrap();
-    upsert_branch_tip(&tx, &o.old, rival.counter, rival.hash, None).unwrap();
+    upsert_branch_tip(&tx, &o.old, rival.counter, rival.hash).unwrap();
     tx.commit().unwrap();
 
     let before = status(&o.conn, &o.ctx).unwrap();

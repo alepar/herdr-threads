@@ -773,7 +773,7 @@ pub(crate) fn author_invitation(
     decision: DecisionInstant,
     payload: &InvitationCreatedPayload,
 ) -> Result<(), ApiError> {
-    membership_route(tx, &payload.thread)?.emit::<InvitationCreated>(
+    membership_route(tx, ctx, &payload.thread)?.emit::<InvitationCreated>(
         tx,
         ctx,
         decision,
@@ -802,7 +802,7 @@ fn author_answer(
     let thread = ThreadId::new(thread);
     // An invitation no fact created (a fixture row) answers node-locally too:
     // its `invitation.answered` would park on the invitation key.
-    let route = match membership_route(tx, &thread)? {
+    let route = match membership_route(tx, ctx, &thread)? {
         FactRoute::Journal if !has_creating_fact(tx, payload.invitation.as_str())? => {
             FactRoute::LocalOnly
         }

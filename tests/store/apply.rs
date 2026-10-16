@@ -1695,7 +1695,7 @@ impl Node {
         ctx.execute_decision(
             &mut self.conn,
             |_| Ok(()),
-            |tx, d, ()| jr::reissue(tx, ctx, d, source, jr::ReissueSource::Forked),
+            |tx, d, ()| jr::reissue(tx, ctx, d, source),
         )
         .unwrap()
     }
