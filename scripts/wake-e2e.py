@@ -1195,7 +1195,7 @@ class Recipient:
     def store_rows(self, sql, args=()):
         """Read-only rows from the run's own daemon store (never a shared one)."""
         rows = []
-        for db in sorted(self.run.state.glob("instances/*/threads.sqlite3")):
+        for db in sorted(self.run.state.glob("node/herdr-threads.db")):
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
             try:
                 rows += con.execute(sql, args).fetchall()

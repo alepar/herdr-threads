@@ -634,6 +634,31 @@ fn pane_listings_omit_remote() {
     );
 }
 
+// Kills: a seat inspect that labels a remote seat with an availability the
+// seats listing omits (a remote seat's state says `remote`).
+#[test]
+fn seat_inspect_of_a_remote_seat_has_no_availability() {
+    let f = fixture();
+    thread_with_both_members(&f);
+    let inspect = |seat: &str| {
+        let CommandResult::SeatInspect(inspection) = query(
+            &f,
+            Command::SeatInspect(SeatInspectQuery {
+                seat: SeatId::new(seat),
+                page: PageRequest { limit: 1, ..page() },
+            }),
+        ) else {
+            panic!("wrong result")
+        };
+        inspection
+    };
+    let remote = inspect("remote");
+    assert_eq!(remote.summary.continuity, ContinuityStatus::Remote);
+    assert_eq!(remote.summary.availability, None);
+    let local = inspect("local");
+    assert_eq!(local.summary.availability.as_deref(), Some("available"));
+}
+
 /// Reads at a late time so a contact at 0 is stale (`now` > 180 s).
 struct Late;
 impl Clock for Late {
