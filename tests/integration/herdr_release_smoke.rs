@@ -913,11 +913,12 @@ fn herdr_release_busy() {
         log.iter()
             .map(|e| {
                 format!(
-                    "{:+.1}s {} {} rc={} ctx={:.120} out={:.300} err={:.400}",
+                    "{:+.1}s {} {} rc={} in={:?} ctx={:.120} out={:.300} err={:.400}",
                     e["t"].as_f64().unwrap_or(0.0) - sent_at,
                     e["kind"],
                     e["event"],
                     e["rc"],
+                    e["data"].as_str().unwrap_or(""),
                     e["context"].as_str().unwrap_or(""),
                     e["stdout"].as_str().unwrap_or(""),
                     e["stderr"].as_str().unwrap_or("")
@@ -928,6 +929,20 @@ fn herdr_release_busy() {
     assert!(
         delivered,
         "p0 not delivered inside the busy turn (sent at +0.0s):\n{}",
+        timeline(&log).join("\n")
+    );
+    // No wake text reached the terminal while the turn ran (the stand-in reads it during tool
+    // calls, as Codex queues typed input).
+    let typed_mid_turn = log.iter().any(|e| {
+        e["kind"] == "input"
+            && e["during_turn"] == true
+            && e["data"]
+                .as_str()
+                .is_some_and(|d| d.contains("herdr-threads:"))
+    });
+    assert!(
+        !typed_mid_turn,
+        "a wake was typed into the busy turn (sent at +0.0s):\n{}",
         timeline(&log).join("\n")
     );
     // Nor after the turn: it was delivered in-turn.
