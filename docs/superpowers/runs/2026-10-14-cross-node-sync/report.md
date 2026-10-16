@@ -1,7 +1,7 @@
 status: completed with 0 unresolved Blocking, 3 escalations [degraded: code findings parked, final review: not ready (main v1.1.0 not merged; landing order vs ht-794l undecided; release tooling breaks on main — about.toml lacks BSD-3-Clause, 8-char ID regexes in wake-e2e/validate-package/real-ssh-e2e; punch-list robustness items open)]
 qualifier: code findings parked
 qualifier: final review: not ready (main v1.1.0 not merged; landing order vs ht-794l undecided; release tooling breaks on main — about.toml lacks BSD-3-Clause, 8-char ID regexes in wake-e2e/validate-package/real-ssh-e2e; punch-list robustness items open)
-metrics: pending (upstream-feedback not yet run)
+metrics: parked draft docs/superpowers/runs/2026-10-14-cross-node-sync/upstream-feedback-draft.md (not filed; awaiting the user)
 
 Run: epic ht-5fr, branch `super-auto/cross-node-sync` (tip d742211d8) vs `main`. Spec: `docs/superpowers/runs/2026-10-14-cross-node-sync/2026-10-14-cross-node-sync-design.md` plus six nested specs and `2026-10-15-cross-node-sync--main-v1-reconcile-design.md`. Ledger: `.superpowers/sdd/ht-5fr-plan/progress.md`.
 

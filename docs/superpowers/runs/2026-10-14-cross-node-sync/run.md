@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-14-cross-node-sync
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: report
+phase: finish
 roastCodeExit: converged
 roastCodeRound: 2
 codeMechanism: Workflow
@@ -93,3 +93,4 @@ feedback: evidence-only-fix pipeline defect sent via herdr agent prompt to super
 - post-loop changes: 15112f108..7e558f43a touched tests only (peer_stdio, topology_handoff, agy_delivery, summary_flow, token_diet) — no behaviour change, so no post-cap audit roast; listed in report Remaining as not roast-reviewed
 - baseAbsorbed: not absorbed — main 3ff902c77 (v1.1.0, 7 commits) merge refused by the permission layer; left to the human; the sweep did not judge the combined tree
 friction: 31 events
+- upstream-feedback: draft parked at upstream-feedback-draft.md (6 defects, 2 design questions, 3 doc gaps), awaiting the user's file/scrub decision at the phase-7 menu
