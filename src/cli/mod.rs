@@ -2792,16 +2792,13 @@ fn caller_need(
 
 fn default_seat(action: &mut CliAction, seat: crate::protocol::ids::SeatId) {
     match action {
-        CliAction::Wire(Command::Inbox(query) | Command::InboxBatchV2(query)) => {
-            query.seat = Some(seat)
-        }
-        CliAction::Wire(Command::PendingReceipts(query)) => query.seat = Some(seat),
-        CliAction::Wire(Command::Directory(query)) => query.membership = Some(seat),
-        CliAction::Wire(Command::Diagnostics(query)) => query.seat = Some(seat),
-        CliAction::Wire(Command::Warnings(query)) => query.seat = seat,
         CliAction::Wire(Command::Thread(query)) => query.caller = Some(seat),
         CliAction::Wire(Command::Participants(query)) => query.caller = Some(seat),
-        _ => {}
+        _ => {
+            if let Some(slot) = commands::SeatSlot::read_slot_of(action) {
+                let _ = slot.set(action, seat);
+            }
+        }
     }
 }
 
@@ -2917,28 +2914,24 @@ where
         let target = selector
             .direct_id()
             .ok_or_else(|| invalid_request("recipient pane was not frozen"))?;
-        let seat = if matches!(
+        let slot = if matches!(
             parsed.action,
             CliAction::Mutation(MutationSpec::Invite { .. })
         ) {
-            allocate(target)?
+            commands::SeatSlot::InviteRecipient
         } else {
-            pane_seat(client, &parsed.output, &target, clock.as_ref())?
-                .ok_or_else(|| no_seat_for_pane(&target))?
+            commands::SeatSlot::read_slot_of(&parsed.action)
+                .ok_or_else(|| invalid_request("command has no recipient seat selector"))?
         };
-        match &mut parsed.action {
-            CliAction::Mutation(MutationSpec::Invite {
-                seat: recipient, ..
-            }) => *recipient = seat,
-            CliAction::Wire(Command::Inbox(query) | Command::InboxBatchV2(query)) => {
-                query.seat = Some(seat)
+        let seat = match slot.mapping() {
+            commands::SeatMapping::Allocate => allocate(target)?,
+            commands::SeatMapping::Lookup => {
+                pane_seat(client, &parsed.output, &target, clock.as_ref())?
+                    .ok_or_else(|| no_seat_for_pane(&target))?
             }
-            CliAction::Wire(Command::PendingReceipts(query)) => query.seat = Some(seat),
-            CliAction::Wire(Command::Diagnostics(query)) => query.seat = Some(seat),
-            CliAction::Wire(Command::Directory(query)) => query.membership = Some(seat),
-            CliAction::Wire(Command::Warnings(query)) => query.seat = seat,
-            _ => return Err(invalid_request("command has no recipient seat selector")),
-        }
+        };
+        slot.set(&mut parsed.action, seat)
+            .map_err(|_| invalid_request("command has no recipient seat selector"))?;
     }
     if recipient {
         parsed.pane_selector = None;
