@@ -15,6 +15,11 @@ Amended 2026-10-13 for the one-process composer wake (ht-327): several bindings 
 composer for seat-level attention; no binding is chosen, merged, moved or ended.
 Amended 2026-10-14 for cross-node sync (ht-5fr): node identity and key custody, replicated facts, origin
 authority, peer identity binding, fork and clone repair, remote seats.
+Amended 2026-10-15 for the main v1 reconcile of cross-node sync
+(`docs/superpowers/runs/2026-10-14-cross-node-sync/2026-10-15-cross-node-sync--main-v1-reconcile-design.md`):
+`invitation.created` authority by issuer kind (a service or operator invitation names no inviter seat and is
+authorized by its signing origin node), the 1:1 pair auto-join authored by each seat's own home node, the
+`direct_auto_join` provenance value, and the node-local nudge threshold (N4, N5, A3).
 
 ## Abstract
 
@@ -218,6 +223,7 @@ records there are replay machinery, never its identity.
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. Also covers `sync clone-cleared` and the other mutating sync, peer and legacy commands (`sync resync`, `peer add`, `peer forget`, `legacy purge`). |
 | `replicated_from:<node_uuid>` | receipts, invitation answers (the accept and reject rows) and events applied from another node's fact (bindings never) | Applied as given from a fact authored and signed by node `<node_uuid>`; the authoring node's own provenance travels inside the fact. Never written for a locally authored fact. |
 | `local_journal` | receipts, invitation answers and events materialized from an own old incarnation's entry with no staged local attribution | A wipe or restore pull-back re-applied this node's own earlier fact; the original binding is not known here. Never on bindings. |
+| `direct_auto_join` | join observations and events of a 1:1 pair seat's auto-join only | The seat's home node joined it because its pair was created (main D7): in the creating transaction when the seat is local to the creator, else when its node applied the pair's `thread.direct` (N4). No binding acted; the derived event's `actor_seat` is the pair creator. Never on bindings or receipts; authorizes nothing (amended 2026-10-15, main v1 reconcile §2.2). |
 | `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), on any seat, beside whatever bindings the seat already holds, decided against the effective observation (A2). It carries the liveness fingerprint (pid and start time, from host process info) of the one process Herdr reports in the pane's foreground besides its shell; with none or several observable, nothing is recorded. Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, it keeps the seat generation, and it establishes no availability. Receipt deadlines start at send time independently of this binding. |
 | `cooperative_env_session` | binding claims | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`; and the session variable a registered adapter declares in its caller shape, today agy's `ANTIGRAVITY_CONVERSATION_ID`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
 | `cooperative_hook_agent` | binding claims | herdr-threads' own Claude PreToolUse hook inserted `--agent-id=<agent_id>` into a recognized `herdr-threads`/`ht` command, attributing the call to that subagent. Shapes the hook cannot recognize stay attributed to the parent session. Never on receipts. |
@@ -1089,12 +1095,26 @@ section 17):
 - the seat's home node for the seat-scoped kinds (`seat.*` retirement via `seat.retired`, `membership.*` i.e.
   `membership.joined` and `membership.left`, `invitation.answered` for the invitee's seat, and `receipt.settled`
   for the receipt's seat);
-- the inviter's home node for `invitation.created`;
+- for `invitation.created`, by its issuer kind (`inviter_kind`): a `seat` invitation names its inviter seat and
+  is authorized only from that seat's home node; a `service` invitation (a registered service author) or an
+  `operator` invitation (an operator command) names no inviter seat (the inviter is optional and, if present,
+  ignored for authority) and takes its authority from the signing origin node, which also owns its deadline and
+  overdue decision (`invitations.origin_node`). `invitations.inviter_seat_id` is set exactly for `seat`
+  invitations (amended 2026-10-15, main v1 reconcile §4);
 - the author seat's home node for `message.sent`;
 - the creator's home node for `thread.created`;
 - the home node of either pair seat for `thread.direct`;
 - for `seat.created`, the node whose tag the seat ID carries: the ID's tag is one the origin has held (from its
   initial tag up to its current retag step), so a seat minted under the origin's pre-retag tag still passes.
+
+A 1:1 pair's auto-join keeps this rule (amended 2026-10-15, main v1 reconcile §2): pair creation joins both
+reserved seats (A5 "Automatic pair reservation"), but no node authors another node's seat's join. The creating
+node authors its own seat's `membership.joined` (and its local peer's, when both seats are local); a remote peer's
+home node authors the peer's `membership.joined` when it applies the pair's `thread.direct`, only for a local,
+non-retired pair seat with no membership row in that thread. The join's optional `actor` (the pair creator) only
+fills the derived event's `actor_seat`, kept when it is one of the pair's two seats; it confers no authority and
+never causes a refusal. Until the peer's join arrives, the creator's node addresses the peer in its sends to the
+pair as a member whose auto-join is pending, and lists it as joined only once that join applies there.
 
 `thread.register` and the `node.*` kinds are authored by any node. A `thread.register` may name its acting seat (`actor`, written as the event's `actor_seat`): a node names only one of its local seats, and an applying node keeps a replicated actor only when that seat's home node is the origin, else it materializes the change with no actor; the fact itself is never refused for its actor. A re-issued fact keeps its original origin and
 passes. This is a deterministic consistency guard on replicated identity against buggy or version-skewed nodes: it
@@ -1109,7 +1129,10 @@ seats are not occupiable: a claim, a binding open or connect, a check-in or an o
 home is another node is refused with CallerUnverified "cooperative seat is not local" (enforced by ht-5fr.2.6
 through `seats::is_local_seat`). So no action is ever attributed on this node to a remote seat, and no fact is
 authored for it. Delivery rows, wakes and deadlines are created only for local seats; the sender's node owns the
-deadline and overdue decision for an obligation it authored. Catch-up extensions exist only for local bindings, so a remote recipient
+deadline and overdue decision for an obligation it authored. A seat's nudge threshold is node-local: only the
+seat's home node stores and reads it, the wake decision for a replicated message is made there against the
+message's replicated priority and the seat's current threshold, and setting the threshold of a remote seat is
+refused like any other action naming it (amended 2026-10-15, main v1 reconcile §1.1). Catch-up extensions exist only for local bindings, so a remote recipient
 mid catch-up can be reported overdue earlier than a local one would be (accepted limit).
 
 **N6. Peer identity binding.** A link handshake is refused with `auth_failed` when SHA-256(hello pubkey)[0..16]
@@ -1701,6 +1724,10 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   unlinked nodes, or ingested after the hold's cap, cannot suppress, so that message is offered again.
 - **Automatic archival on a stale view.** An archive decided before a remote seat's concurrent join applied
   locally archives the thread on every node until an explicit reopen; posts into it still apply and deliver.
+- **A remote pair peer joins one round trip late.** When a 1:1 pair is created on one node for a seat homed on
+  another, the peer's membership is authored by its own home node (N4), so until that join arrives the creating
+  node does not list the peer as joined. Nothing is lost: the creator's sends address the peer as a member whose
+  auto-join is pending, and the peer's read floor is the pair's start (amended 2026-10-15, main v1 reconcile §2).
 
 ## Decision record
 

@@ -33,7 +33,7 @@ Membership facts carry a home-node transition ordinal `n` for idempotence.
 
 `receipt.settled` is one fact per receipt and carries a settle-batch tag, so the grouped ACK info event is appended once per (batch, thread), when the batch's last receipt in that thread applies.
 
-Crossed direct-pair invitations settle `already_joined` from either arrival order. Supersession compares the invitee's joined transition ordinal with the `invitee_n` the inviter saw, never the current membership state, so it is order-independent (root §5 invariant; §3 audit).
+Direct pairs auto-join both seats with no invitation: each pair seat's home node authors that seat's `membership.joined` when it creates or applies the pair's `thread.direct`, so crossed creates converge by membership ordinal (amended 2026-10-15 (main v1 reconcile): see [main-v1-reconcile](2026-10-15-cross-node-sync--main-v1-reconcile-design.md) §2). Crossed ordinary invitations settle `already_joined` from either arrival order. Supersession compares the invitee's joined transition ordinal with the `invitee_n` the inviter saw, never the current membership state, so it is order-independent (root §5 invariant; §3 audit).
 
 Handlers reject a fact whose origin is not the kind's authorized author (§17); that is an authority check on replicated identity, not a view check.
 
@@ -87,15 +87,15 @@ The publish fence drops `captured_timeline_revision` for preparations with no un
 
 No command writes a replicated table directly after this subepic. A test-support assertion enforces it (Testing, "write-path closure").
 
-**Restore-window authoring hold** (root §7). While `SyncState.own_history.active(now)` (ht-5fr.3 §7 step 3a), `FactRoute::Journal` refuses to author `receipt.settled`, `membership.joined`, `membership.left`, `invitation.answered` or `seat.retired` for a local seat with a retryable `Unavailable "own history catching up"`, before anything is written, because the node's unpulled old tail may hold a different fact for that key (root §5). Commands that author one of them (`ack`, `accept`, `reject`, `join`, `leave`, `create_thread*`, `ensure_direct_thread`, seat retirement) fail with that error and are retried by their caller. `settle_pending`'s display entry points (`ack_displayed`, `ack_mod_delivered`, `delivery_confirm`, `ack_policy_delivered`) do not fail the delivery: they skip the settlement and leave the receipts pending, so the bounded re-offer shows them again after the hold unless the old tail settled them. The retirement job retries after the hold. Sends, invitations, thread and register facts and `seat.created` are not held. The refusal lifts with the hold, at the latest at its 5-minute cap; a same-key fact authored after the cap while the old tail is unpulled is root §12's restore-window residual.
+**Restore-window authoring hold** (root §7). While `SyncState.own_history.active(now)` (ht-5fr.3 §7 step 3a), `FactRoute::Journal` refuses to author `receipt.settled`, `membership.joined`, `membership.left`, `invitation.answered` or `seat.retired` for a local seat with a retryable `ServiceBusy "own history catching up"` (amended 2026-10-15 (main v1 reconcile), a recorded deviation from the original `Unavailable`, which `ErrorCode` does not have; display entry points recognize the refusal by code and detail through `is_own_history_hold`: see [main-v1-reconcile](2026-10-15-cross-node-sync--main-v1-reconcile-design.md) §5), before anything is written, because the node's unpulled old tail may hold a different fact for that key (root §5). Commands that author one of them (`ack`, `accept`, `reject`, `join`, `leave`, `create_thread*`, `ensure_direct_thread`, seat retirement) fail with that error and are retried by their caller. `settle_pending`'s display entry points (`ack_displayed`, `ack_mod_delivered`, `delivery_confirm`, `ack_policy_delivered`) do not fail the delivery: they skip the settlement and leave the receipts pending, so the bounded re-offer shows them again after the hold unless the old tail settled them. The retirement job retries after the hold. Sends, invitations, thread and register facts and `seat.created` are not held. The refusal lifts with the hold, at the latest at its 5-minute cap; a same-key fact authored after the cap while the old tail is unpulled is root §12's restore-window residual.
 
 Per-command fact order:
 
 | Command | Facts, in order |
 |---|---|
 | `create_thread*` | `thread.created`, `membership.joined{creator}` |
-| `ensure_direct_thread` (new pair) | `thread.direct`, `membership.joined{caller}`, `invitation.created{recipient}` |
-| `invite` / `operator_orphan_invite` | `invitation.created` |
+| `ensure_direct_thread` (new pair) | `thread.direct`, `membership.joined{caller}`, then `membership.joined{recipient, actor = caller}` only when the recipient is a local seat; no invitation (a remote recipient's home node authors its join on applying `thread.direct`; amended 2026-10-15 (main v1 reconcile): see [main-v1-reconcile](2026-10-15-cross-node-sync--main-v1-reconcile-design.md) §2) |
+| `invite` / `operator_orphan_invite` / voluntary service invite | `invitation.created` (`inviter_kind` seat / operator / service) |
 | `accept` | `invitation.answered{accepted}` |
 | `reject` | `invitation.answered{rejected}` |
 | `join` / `leave` | `membership.joined` / `membership.left` |
@@ -272,7 +272,8 @@ Handlers build it from `ApplyContext`, using `decision_seq`, `origin.node`, `ori
     - If present and `(hlc, origin.node) < (created_hlc, created_node)`: update `created_hlc`, `created_node` and `threads.created_at`, so every node converges on the earliest creator. Nothing else changes, and no event is appended.
     - The derived `create` info event (key `create:<thread>`) is appended once, by whichever apply inserts the row.
   - New `direct_threads` columns: `created_hlc INTEGER NOT NULL`, `created_node TEXT NOT NULL` (hex32 CHECK).
-- **Crossed creates.** A and B open the same pair while partitioned. Each node authors `thread.direct`, joins its own seat and invites the other. After exchange both seats are joined, and each invitation settles `already_joined` (§6) with no wake. The pair ends with one thread, two joined members and two settled invitations on every node.
+- **Pair auto-join** (amended 2026-10-15 (main v1 reconcile): see [main-v1-reconcile](2026-10-15-cross-node-sync--main-v1-reconcile-design.md) §2). The `ThreadDirect` handler queues, through `ApplyContext::follow_up`, a `membership.joined{seat, n = 1, actor = creator}` for each pair seat that is local, not retired and has no `memberships` row in the thread; the creating command does the same inline through the one helper `direct::auto_join_local_pair_seats`. No invitation is authored, and joins write no attention. Until the remote peer's join arrives, the creator's node stages that peer in every send's audience (it has no membership row, so its auto-join is pending).
+- **Crossed creates.** A and B open the same pair while partitioned. Each node authors `thread.direct` and joins its own seat, and neither invites the other. After exchange each node applies the other's `thread.direct` as a min-register update, its own seat already has a row so it authors nothing more, and the other seat's join arrives in the other's log. The pair ends with one thread, two members joined at `n = 1` and no invitation on every node, and the pairing wakes nobody.
 
 **Considered.**
 - Writing the direct default topic as a register at the earliest HLC: root §6 forbids it, and the label is a pure function of the pair.
@@ -281,15 +282,15 @@ Handlers build it from `ApplyContext`, using `decision_seq`, `origin.node`, `ori
 ### 6. Invitations: `invitation.created`, `invitation.answered`, `already_joined`
 
 **Recommended.**
-- **`invitation.created` v1** `{invitation, thread, inviter, invitee, invitee_n, created_at, duration_ms, deadline_at: Option<i64>, confirmation: Option<"lazy"|"require_ack">}`. `deadline_at` is `None` exactly when the invitation is lazy. `invitee_n` is the invitee's `memberships.home_transition` for that thread in the inviter's view at authoring (0 without a row); A2 already refuses to invite a seat that view shows joined.
-  - Root's "content, required flag" maps to `confirmation` and `duration_ms`. An invitation has no free text today: the context an invitee sees is derived from the thread on its own node (`invitation_content`). `require_ack` is the required flag. Service requirement invitations (`requirement_episodes`) are node-local (§2).
+- **`invitation.created` v1** `{invitation, thread, inviter: Option<SeatId>, inviter_kind: "seat"|"service"|"operator", invitee, invitee_n, created_at, duration_ms, deadline_at: i64, actor_label: Option<String>}` (amended 2026-10-15 (main v1 reconcile): see [main-v1-reconcile](2026-10-15-cross-node-sync--main-v1-reconcile-design.md) §1.2, §4). Every invitation is priority 0, wakes the invitee and carries a deadline (main D6): `deadline_at` is required and equals `created_at + duration_ms`; there is no `confirmation` field and no lazy invitation. `inviter` is required for `inviter_kind = seat` and optional (absent in v1) for `service` and `operator`. `actor_label` names the service author or the operator audit label for the derived event. `invitee_n` is the invitee's `memberships.home_transition` for that thread in the inviter's view at authoring (0 without a row); A2 already refuses to invite a seat that view shows joined.
+  - Root's "content, required flag" no longer maps to a payload field: every invitation is confirming. An invitation has no free text today: the context an invitee sees is derived from the thread on its own node (`invitation_content`). Service requirement invitations (`requirement_episodes`) are node-local (§2).
   - **`materialize_invitation`:**
     1. No-op if the ID exists.
     2. `episode = service_controls::next_invitation_episode(thread, invitee)`, a local position.
-    3. Insert `invitations(…, state, created_at, created_decision_seq = decision_seq, frozen_duration_ms = duration_ms, deadline_at = deadline_at.unwrap_or(created_at + duration_ms), confirmation, inviter_seat_id = inviter, invitee_n, origin_node)`.
+    3. Insert `invitations(…, state, created_at, created_decision_seq = decision_seq, frozen_duration_ms = duration_ms, deadline_at, confirmation = ('require_ack' for a seat inviter, else NULL: main's stored shape), inviter_seat_id = (inviter for a seat inviter, else NULL), inviter_kind, invitee_n, origin_node)`.
     4. If the invitee's seat is `retired`, the row is inserted with `state = 'recipient_retired'` (`retired_at` = the seat's) and nothing else happens. If the invitee's membership row has `last_joined_n > invitee_n` (a joined transition the inviter had not seen, whether still joined or since left), the row is inserted with `state = 'already_joined'` and nothing else happens: no membership change, no DeliveryTail, no deadline. The current membership `state` is never consulted, because it depends on how many of the invitee's concurrent transitions applied first.
-    5. Otherwise the membership row becomes or is inserted as `invited` (today's UPDATE/INSERT). The derived `invite` info event (key `invite:<invitation>`) is appended, and the membership revision and directory/inbox filters are bumped. If the invitee is local and `!suppress(answer_key(invitation))`, `DeliveryTail::invitation(tx, invitee, timed)` runs (§10).
-  - `invitations.state` CHECK gains `'already_joined'`. The digest and presentation triggers already treat any non-`pending` state as settled. `inviter_seat_id` becomes `NOT NULL` for journaled threads (the payload always names the inviter, including the former policy-less direct path); service invitations on local-only threads keep `NULL`.
+    5. Otherwise the membership row becomes or is inserted as `invited` (today's UPDATE/INSERT). The derived `invite` info event (key `invite:<invitation>`) is appended, and the membership revision and directory/inbox filters are bumped. If the invitee is local and `!suppress(answer_key(invitation))`, `DeliveryTail::invitation(tx, invitee)` runs (§10) and always writes the invitee's invitation `wake_work` (every invitation is p0).
+  - `invitations.state` CHECK gains `'already_joined'`. The digest and presentation triggers already treat any non-`pending` state as settled. `inviter_seat_id` is `NOT NULL` exactly when `inviter_kind = 'seat'`, on journaled and local-only threads alike; service and operator invitations keep `NULL` and take their authority from the signing origin node (§17). Amended 2026-10-15 (main v1 reconcile): see [main-v1-reconcile](2026-10-15-cross-node-sync--main-v1-reconcile-design.md) §4.
 - **`invitation.answered` v1** `{invitation, outcome: "accepted"|"rejected", reason: Option<String ≤ 256 B>, answered_at, n}`. `n` is the invitee's membership transition ordinal for an accept (§7), and `0` for a reject.
   - **`materialize_answer`:** a no-op unless the invitation is `pending`. Otherwise:
     - **Late overdue.** If `answered_at > deadline_at` and the invitation is timed, call `record_overdue_if_pending` (it acts only on the inviter's node, §13).
@@ -307,7 +308,7 @@ Handlers build it from `ApplyContext`, using `decision_seq`, `origin.node`, `ori
 ### 7. Membership: `membership.joined`, `membership.left`
 
 **Recommended.**
-- Payload `{thread, seat, n, at}`, where `n ≥ 1` is the seat's home-node transition ordinal for that thread.
+- Payload `{thread, seat, n, at, actor: Option<SeatId>}`, where `n ≥ 1` is the seat's home-node transition ordinal for that thread. `actor` (joined only, additive, omitted when absent) is the pair creator of a 1:1 auto-join; it only fills the derived join event's `actor_seat` (kept when it is one of the pair's seats, else dropped; the fact is never refused for it). An auto-joined pair seat's read-cursor floor is the pair's first local position, not the join, and its attribution observation is `direct_auto_join` with no binding. Amended 2026-10-15 (main v1 reconcile): see [main-v1-reconcile](2026-10-15-cross-node-sync--main-v1-reconcile-design.md) §2.2, §2.3.
   - New column `memberships.home_transition INTEGER NOT NULL DEFAULT 0`. The home node computes `n = home_transition + 1` at authoring, inside the transaction.
   - New column `memberships.last_joined_n INTEGER NOT NULL DEFAULT 0`: the highest `n` of an applied joined transition (a join or an accept). It only grows, so it is order-independent, and invitation supersession reads it (§6).
   - Membership transitions of a seat are authored only by its home node and totally ordered in its log (root §6), so a re-issued or duplicate fact has `n ≤ home_transition` and is a no-op.
@@ -330,46 +331,49 @@ Handlers build it from `ApplyContext`, using `decision_seq`, `origin.node`, `ori
 ### 8. Messages: `message.sent`
 
 **Recommended.**
-- **Payload v1:**
+- **Payload v1** (amended 2026-10-15 (main v1 reconcile): see [main-v1-reconcile](2026-10-15-cross-node-sync--main-v1-reconcile-design.md) §1.1; `mode` and `nudge` are gone):
 
   ```text
   { message, thread, author, body,
-    mode: "lazy"|"ordinary", nudge: bool,
+    priority: 0..=9, require_ack: bool,
     relays_user: bool, user_intent: Option<..>,
     sent_at, duration_ms,
     recipients: [ { seat, receipt: "none"|"ack", deadline_at: Option<i64> } ] }
   ```
 
-  - `require_ack` is implied by any `receipt: ack`.
+  - `priority` is the message's delivery priority exactly as main stores it (`messages.priority`); it is required. Every delivery row of the message is staged at it.
+  - `require_ack` is true iff the send named explicit ACK recipients (`--require-ack`); it decides the recorded `delivery_mode` (`ordinary` iff true), which the `[pN]` read annotation depends on. It implies `priority = 0` (D3), and every `receipt: ack` recipient implies it; a human explicit ACK recipient is `receipt: none`. A payload breaking these rules is `Rejected`.
   - `recipients` is the complete audience the author fixed (root §6). It is sorted by seat ID and excludes the author.
 - **Author** (`publish_send`, inside the publish closure after the existing revision checks):
   1. Read the sealed preparation's `prepared_recipients` (ack recipients, `frozen_duration_ms`, `eligible_at_snapshot`) and `lazy_recipients`.
-  2. Build `recipients`:
-     - `ack` for prepared rows, with `deadline_at = sent_at + duration` when `eligible_at_snapshot = 1`, else `None`;
-     - `none` for lazy recipients and for joined human members.
+  2. Build `recipients` (receipts only for explicit ACK recipients, main D9):
+     - `ack` for prepared rows (explicit ACK recipients that are not human), with `deadline_at = sent_at + duration` when `eligible_at_snapshot = 1`, else `None`;
+     - `none` for every other audience member, a human explicit ACK recipient included. On a direct thread the audience also holds the other pair seat while its auto-join is pending (§5).
+
+     `priority` is the sealed preparation's priority, and `require_ack` is whether the request named explicit ACK recipients.
   3. `ensure_published` the author and every local recipient, stage `send:<message>` attribution, then author.
 
   The prep phase (`stage_recipient`) gets one change for remote recipients: `expects_ack = remote_kind != 'human'` (instead of `open_binding_role`), `availability_provenance = 'remote'`, `eligible_at_snapshot = 1`, and no unavailable-warning evaluation, because the sender has no availability evidence for another node's seat.
 - **`materialize_message`:**
   1. **No-op** when `messages.id` exists.
   2. `prep = send_preparation_id_for_message(message)` (the inverse of `derived_message_id`, so `m<tag><8>` ↔ `p<tag><8>`).
-  3. **Local branch.** When `local_origin` and `send_preparations(prep)` is `sealed` with no manifest, it adopts the staged rows. The staged audience must equal `recipients`: the same seat set, the same ack flags, and frozen durations matching `deadline_at − sent_at` for eligible rows. Otherwise it is `Rejected(StoreCorrupt "staged audience differs from authored audience")`, which aborts the command. Root walk-through: "reuses a local preparation's staged rows, keyed by message ID".
+  3. **Local branch.** When `local_origin` and `send_preparations(prep)` is `sealed` with no manifest, it adopts the staged rows. The staged audience must equal `recipients`: the same seat set, the same ack flags, frozen durations matching `deadline_at − sent_at` for eligible rows, the staged `priority` equal to the payload's, the staged `delivery_mode` matching `require_ack`, and the delivery-row seats equal to the local `none` recipients. Otherwise it is `Rejected(StoreCorrupt "staged audience differs from authored audience")`, which aborts the command. Root walk-through: "reuses a local preparation's staged rows, keyed by message ID".
   4. **Synthesized branch** (remote origin, or own old incarnation without a preparation):
-     - insert `send_preparations(id = prep, operation_scope = 'replicated:<origin uuid>', operation_key = message, digest = SHA-256(payload bytes), status = 'sealed', delivery_mode = mode, origin = 'replicated', captured_* = current values, interval_high_water = current max interval ordinal)`;
+     - insert `send_preparations(id = prep, operation_scope = 'replicated:<origin uuid>', operation_key = message, digest = SHA-256(payload bytes), status = 'sealed', delivery_mode = (require_ack ? 'ordinary' : 'lazy'), priority = priority, origin = 'replicated', captured_* = current values, interval_high_water = current max interval ordinal)`;
      - one `prepared_recipients` row per `ack` recipient, local or remote (`frozen_duration_ms = max(1, deadline_at − sent_at)` and `eligible_at_snapshot = 1` when `deadline_at` is `Some`; else `duration_ms` and `0`; `availability_provenance = 'replicated'`), in payload order as `receipt_ordinal`;
-     - one `lazy_recipients` row per local recipient of a lazy message;
+     - one delivery row (`lazy_recipients`, `priority = priority`) per local `none` recipient that is not suppressed (amended 2026-10-15 (main v1 reconcile): see [main-v1-reconcile](2026-10-15-cross-node-sync--main-v1-reconcile-design.md) §1.1);
      - no `prepared_unavailable_warnings`: unavailable warnings are the sender's derived events.
 
      `send_preparations` gets `origin TEXT NOT NULL DEFAULT 'local' CHECK(origin IN ('local','replicated'))`. The cleanup and abandon paths ignore `replicated` rows, which are born sealed and published.
   5. **Publication** is `insert_publication`, refactored to take `MaterializeInput` and a `PublicationAuthor`:
-     - `messages(decision_at = sent_at, decision_seq, sequence = threads.next_sequence, origin_node, native_observation`/`sender_binding_id` from `attribution::take`);
+     - `messages(decision_at = sent_at, decision_seq, sequence = threads.next_sequence, origin_node, priority, delivery_mode = (require_ack ? 'ordinary' : 'lazy'), native_observation`/`sender_binding_id` from `attribution::take`);
      - `send_manifests`;
      - `next_sequence`/`timeline_revision`/filters;
      - then `DeliveryTail::message(...)` (§10).
 
      A `PublicationAuthor::Native` built from the payload carries `observation` and `binding` from the attribution (`binding = None` for remote). `messages.sender_binding_id` is nullable already.
   6. **Retired recipients.** For each `ack` recipient whose seat is `retired` at apply, `project_receipt` writes `recipient_retired` (`retired_at` = the seat's `retired_at`) in the job instead of `pending` (§4).
-- **Remote recipients** get exactly the `prepared_recipients` row (and, through the job, a `receipt_state` row). No lazy row, no attention, no wake (root §6 "remote recipients only get receipt rows").
+- **Remote recipients** get exactly the `prepared_recipients` row (and, through the job, a `receipt_state` row). No delivery row, no attention, no wake (root §6 "remote recipients only get receipt rows"). Whether a local recipient's delivery row wakes it is decided on its own node, against its node-local nudge threshold at wake time; the threshold is never replicated.
 - **Programmatic (service) sends** target managed, local-only threads and are never journaled (§2).
 
 **Considered.**
@@ -413,17 +417,17 @@ pub(crate) struct DeliveryTail;
 impl DeliveryTail {
     /// After the message, manifest and staged rows exist.
     pub fn message(tx, m: &MaterializeInput, message: &MessageId, prep: &str,
-                   mode: DeliveryMode, ack_recipients: i64, warnings: i64) -> Result<(), ApiError>;
-    /// Invitation to a local invitee that is not suppressed.
-    pub fn invitation(tx, invitee: &SeatId, timed: bool) -> Result<(), ApiError>;
+                   priority: DeliveryPriority, ack_recipients: i64, warnings: i64) -> Result<(), ApiError>;
+    /// Invitation to a local invitee that is not suppressed (always a wake source: p0).
+    pub fn invitation(tx, invitee: &SeatId) -> Result<(), ApiError>;
     /// The one attention writer: `wake_work` upsert, a no-op for remote seats.
     pub fn attention(tx, seat: &str, reason_bits: i64) -> Result<(), ApiError>;
 }
 ```
 
-- **`message`** writes the `send_attention` work job (`work:send:<message>`, `high_water = ack_recipients + warnings + 1`) for every ordinary message with at least one ack recipient or warning, **on every node**. The job projects `receipt_state` for all ack recipients (a replicated table) and calls `attention` per recipient, and `attention` skips remote seats. For lazy messages it runs `lazy_delivery::note_published`, whose `wake_on='all'` statement gains `AND s.is_local=1` (and, through the synthesized branch, holds only local recipients).
-- **Suppression.** Before staging delivery for a local recipient, `materialize_message` asks `m.suppress(receipt_settle_key(message, seat))`. A suppressed recipient keeps its `prepared_recipients` row (receipt state is replicated) but gets no lazy row. The job's projection for it calls `attention` with a skip flag, so no `wake_work` bump happens. That flag is the new `send_manifests.suppressed_seats TEXT` (a `'\n'`-joined sorted list, NULL when empty), read by `send_unit`. Settled history therefore never wakes anyone (root §7).
-- **`invitation`** writes today's `wake_work` reason-bit-1 upsert when `timed`, through `attention`. The inbox filter bump stays with the materializer.
+- **`message`** writes the `send_attention` work job (`work:send:<message>`, `high_water = ack_recipients + warnings + 1`) for every message with at least one ack recipient or warning, **on every node**. The job projects `receipt_state` for all ack recipients (a replicated table) and calls `attention` per recipient, and `attention` skips remote seats. For every message with delivery rows it runs `lazy_delivery::note_published`, whose `wake_work` insert (main's threshold rule: only seats whose nudge threshold admits the row's priority, through `NudgeThreshold`'s store-side SQL fragment) gains `AND s.is_local=1` (and, through the synthesized branch, holds only local recipients). Amended 2026-10-15 (main v1 reconcile): see [main-v1-reconcile](2026-10-15-cross-node-sync--main-v1-reconcile-design.md) §1.1.
+- **Suppression.** Before staging delivery for a local recipient, `materialize_message` asks `m.suppress(receipt_settle_key(message, seat))`. A suppressed recipient keeps its `prepared_recipients` row (receipt state is replicated) but gets no delivery row. The job's projection for it calls `attention` with a skip flag, so no `wake_work` bump happens. That flag is the new `send_manifests.suppressed_seats TEXT` (a `'\n'`-joined sorted list, NULL when empty), read by `send_unit`. Settled history therefore never wakes anyone (root §7).
+- **`invitation`** writes today's `wake_work` reason-bit-1 upsert, through `attention`, for every invitation (main D6: no lazy invitations). The inbox filter bump stays with the materializer.
 - `materialization::bump` (send, warning attribution, service notifications) becomes `DeliveryTail::attention`. `control.rs`'s two inline `wake_work` upserts (`invite`, `resolve_direct_pair`) move into the invitation materializer's DeliveryTail call.
 - **Coalescing.** `wake_work` is one row per seat with an `attention_version` counter, so N facts for one seat during bulk catch-up produce one row and one dispatch (root §7). The Wakes lane is kicked by the table as today. ht-5fr.2's per-host wake workers select by `seats.host_id`, and remote seats have none.
 - **Invariant**, enforced by test: no `wake_work`, `lazy_recipients`, `warning_offer`, `in_turn_offer` or `catch_up` row ever names a seat with `is_local = 0`.
@@ -540,7 +544,8 @@ impl DeliveryTail {
 **Recommended.** Handlers return `FactError::Rejected` (recorded `failed`, counted as processed, and `sync unapplied replay`-able) for:
 - **an origin that is not the kind's authorized author** (root §6 "Author authority is not author view"). One helper, `materialize::require_author(tx, m: &MaterializeInput, rule: AuthorRule)`, called first by each handler, with the closed `AuthorRule`:
   - `SeatHome(seat)`: `origin_node == seats.home_node` for `seat.retired`, `membership.joined`/`.left`, `receipt.settled` (the receipt's seat) and `invitation.answered` (the invitation's invitee);
-  - `SeatHome(inviter)` for `invitation.created`, `SeatHome(author)` for `message.sent`, `SeatHome(creator)` for `thread.created`;
+  - `SeatHome(inviter)` for an `invitation.created` with `inviter_kind = seat`; `Any` (the signing origin node is the authority) for a `service` or `operator` invitation, which names no inviter seat (amended 2026-10-15 (main v1 reconcile): see [main-v1-reconcile](2026-10-15-cross-node-sync--main-v1-reconcile-design.md) §4);
+  - `SeatHome(author)` for `message.sent`, `SeatHome(creator)` for `thread.created`;
   - `EitherSeatHome(seat_lo, seat_hi)` for `thread.direct`;
   - `OwnTag(seat)` for `seat.created`: the seat ID's tag is `tag_for(origin_node, k)` for some `k` from 0 to the origin's current `tag_k` in `node_directory` (the origin's own retags precede the fact in its log, so every node checks against the same `k`);
   - `Any` for `thread.register` (any node whose seat wrote it) and the `node.*` kinds (their log is the node).
@@ -571,7 +576,7 @@ All store tests use ht-5fr.3's seeded identities. Two `SqliteStore`s in one test
 - **Convergence** (`tests/store/fact_convergence.rs`):
   - **send/ACK:** A sends to B's seat; after sync, B has the message, a `pending` receipt and a `wake_work` row for its local seat; A has the receipt row and no `wake_work` for the remote seat. B ACKs; after sync, both show `acked` with the same `acked_at`, A's sparse-due row is gone, and A's timeline has the `ack` event.
   - **ACK batch of 3 in 2 threads:** exactly 2 `ack` events on both nodes, with the same keys and message lists.
-  - **Crossed direct pair:** A and B each run `ensure_direct_thread` toward the other while unsynced. After sync, there is one `d…` thread with the same `created_at` (earliest creator) on both, both seats are joined, both invitations are `already_joined`, and neither seat got an invitation `wake_work` from the crossing.
+  - **Crossed direct pair:** A and B each run `ensure_direct_thread` toward the other while unsynced. After sync, there is one `d…` thread with the same `created_at` (earliest creator) on both, both seats are joined at `n = 1`, no invitation exists, and neither seat got a `wake_work` from the crossing. A one-sided create: B authors the peer's `membership.joined` as a follow-up of A's `thread.direct` (amended 2026-10-15 (main v1 reconcile): see [main-v1-reconcile](2026-10-15-cross-node-sync--main-v1-reconcile-design.md) §Tests).
   - **Three nodes (A authors, C relays):** C applies B's `membership.joined` before A's `invitation.created`, and the reverse order on a fourth store. Both end `already_joined`.
   - **LWW:** concurrent topic writes on A and B converge to the higher `(hlc, node)` and append exactly one topic event on the losing node's side when the winner arrives.
   - **Archive:** concurrent archive and reopen converge. A message into an archived thread still applies on the receiver.
@@ -581,7 +586,7 @@ All store tests use ht-5fr.3's seeded identities. Two `SqliteStore`s in one test
   - B authors `receipt.settled`, B's store is wiped (fresh store with the same seed), B re-ingests its old log and A's log. The message applies with no `lazy_recipients`/`wake_work` for the settled seat, and the settlement then applies.
   - **Wipe, then pull foreign first:** the same setup, but A's log (with the `message.sent`) is ingested on B **before** B's own old log, with the own-history hold set (B's old log advertised beyond B's contiguous). Nothing of A's applies while the hold is set; after B's old log is ingested the hold clears, the message applies with no `lazy_recipients`/`wake_work` for the settled seat, and no wake is dispatched.
   - **Own old unsettled:** B sends a `require_ack` message from one local seat to another, B's store is restored to a copy from before the send (or wiped), and B pulls the old tail back. While the hold is set nothing of the tail applies; after it clears the unsettled message writes its lazy row and `wake_work` for the recipient, while a settled message in the same tail writes neither.
-  - **Restore-window authoring hold:** with the own-history hold active, `ack`, `accept`, `join` and `leave` for a local seat fail with retryable `Unavailable "own history catching up"` and write nothing; `ack_displayed` leaves the receipt pending; a send and an invite succeed; after the hold clears the same `ack` succeeds, and when the old tail already held a settlement for that receipt, the restored node authors no second `receipt.settled`.
+  - **Restore-window authoring hold:** with the own-history hold active, `ack`, `accept`, `join` and `leave` for a local seat fail with retryable `ServiceBusy "own history catching up"` (amended 2026-10-15, main v1 reconcile §5) and write nothing; `ack_displayed` leaves the receipt pending; a send and an invite succeed; after the hold clears the same `ack` succeeds, and when the old tail already held a settlement for that receipt, the restored node authors no second `receipt.settled`.
 - **Order permutation** (root §5 invariant; `tests/store/fact_order.rs`): for each row of the §3 audit, the same fact set is applied into two fresh stores in two different causal orders (by ingesting the logs in opposite orders), and `replicated_projection` is identical in strict mode:
   - crossed `thread.direct` (creator fields);
   - `invitation.created` concurrent with the invitee's join, and with the invitee's join then leave (both end `already_joined`, membership `left`);
@@ -600,7 +605,7 @@ All store tests use ht-5fr.3's seeded identities. Two `SqliteStore`s in one test
 - **Publication:** a seat allocated by observation authors nothing. Its first send publishes it once, with `kind` from its binding. A human-bound seat publishes `human`, and a remote sender then stages no ACK expectation for it.
 - **Local branch:** a forced mismatch between the staged audience and the payload aborts the send with nothing committed.
 - **Write-path closure:** a test-support SQLite authorizer hook (`test_support::write_guard`) is armed around every converted command in the existing store suites. A write to any replicated table outside an apply savepoint or a `materialize::local_only` scope (managed threads, §2) fails the test. Replicated tables: `seats` (insert of remote rows, `state`/`retired_*`), `threads`, `direct_threads`, `invitations`, `invitation_rejections`, `memberships`, `membership_intervals`, `messages` (ordinary), `send_manifests`, `prepared_recipients`, `receipt_state`, `thread_registers`. The existing store suites (`tests/store/messages.rs`, `author_role.rs`, control, receipts, archival, invitation suites) pass unchanged except for expected ID shapes and the documented event keys.
-- **Fence:** 20 remote messages applied into a thread while a local seat sends 10 lazy messages through the prep/publish pair. All 10 publish without a `snapshot changed` conflict. A prep with an unavailable warning still conflicts on a timeline bump.
+- **Fence:** 20 remote messages applied into a thread while a local seat sends 10 priority-1 messages through the prep/publish pair. All 10 publish without a `snapshot changed` conflict. A prep with an unavailable warning still conflicts on a timeline bump.
 - **Oracle:** `test_support::journal_oracle::replicated_projection` (ht-5fr.3) gains the converted tables' replicated columns:
   - `threads(id, topic, goal, name, archived, created_at, journaled)`;
   - `direct_threads(thread_id, seat_a, seat_b, created_hlc, created_node)`;
@@ -608,11 +613,11 @@ All store tests use ht-5fr.3's seeded identities. Two `SqliteStore`s in one test
   - `memberships(thread, seat, state, home_transition, last_joined_n)`;
   - `invitations(id, thread, seat, state, deadline_at, confirmation, inviter, invitee_n, origin_node, accepted_at)`;
   - `invitation_rejections(invitation_id, reason)`;
-  - `messages(id, thread, actor_seat_id, body, decision_at, origin_node)` for `kind='ordinary'`;
+  - `messages(id, thread, actor_seat_id, body, decision_at, origin_node, priority, delivery_mode)` for `kind='ordinary'` (priority and delivery_mode amended 2026-10-15, main v1 reconcile §Tests);
   - `prepared_recipients(message, seat, frozen_duration_ms, eligible)`;
   - `receipt_state(message, seat, state, deadline_at, acked_at, settle_batch, retired_at)`.
 
-  Attribution columns, every local position and every delivery table are excluded. A scripted multi-command workload (create, pair, invite, accept, reject, send lazy and ordinary, ACK, topic, archive, retire) replayed into an empty store matches in strict mode.
+  Attribution columns, every local position and every delivery table are excluded. A scripted multi-command workload (create, pair, invite, accept, reject, send at priorities 0, 1 and 3 and with `--require-ack`, ACK, topic, archive, retire) replayed into an empty store matches in strict mode.
 - **Checks:** `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `scripts/check-harness-neutral` (all new files are core and name no harness), `nice scripts/check-default-features`, and focused `nice cargo test --locked --all-features facts fact_convergence messages receipts control archival invitation wake`.
 
 Suggested task cut (files):
