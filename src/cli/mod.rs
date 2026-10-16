@@ -30,6 +30,7 @@ pub mod panes;
 pub(crate) mod peer_locations;
 mod picker;
 pub mod retry;
+pub mod seat_selector;
 pub(crate) mod send_priority;
 pub mod setup;
 pub mod skill;

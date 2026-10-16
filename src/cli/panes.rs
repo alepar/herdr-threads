@@ -268,7 +268,7 @@ pub const FIND_PANE_ID_HINT: &str =
 pub const NAME_PRECEDENCE: &str = "an exact pane ID wins; pane label and live agent name match together within the selected tab; a tab label is an alias only when that tab holds exactly one pane";
 
 /// Tab IDs have an unambiguous separator/prefix, unlike workspace labels such as `work`.
-fn looks_like_tab_id(value: &str) -> bool {
+pub(crate) fn looks_like_tab_id(value: &str) -> bool {
     value.split_once(':').is_some_and(|(space, tab)| {
         space.len() > 1
             && space.starts_with('w')
