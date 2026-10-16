@@ -8,3 +8,4 @@ idea: Unified seat selector across the herdr-threads CLI. Every place that accep
 branch: super-auto/unified-seat-selector
 base: main
 spec: 2026-10-15-unified-seat-selector-design.md
+epic: ht-u3ym
