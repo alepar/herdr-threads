@@ -3432,6 +3432,34 @@ mod scoped_runtime {
     }
 
     #[test]
+    fn agent_without_session_is_refused_before_any_seat_read() {
+        // The refusal needs no seat, so it precedes pass 1: no SeatInspect, Seats, topology or
+        // ResolveSeat call for a name or an exact ID.
+        for args in [
+            &["inbox", "--seat", "alice"][..],
+            &["send", "--seat", "alice", "--body", "hi"][..],
+        ] {
+            let runtime = Runtime::new(seat_snapshot());
+            let _origin =
+                crate::cli::caller::fix_origin(crate::cli::caller::CallerOrigin::Refused(
+                    crate::harness::caller_env::EnvRefusal::NoHarness,
+                ));
+            let error = api_error(runtime.run(args));
+            assert_eq!(
+                error.code,
+                ErrorCode::SessionClaimRequired,
+                "{args:?} {error:?}"
+            );
+            assert!(
+                runtime.calls.lock().unwrap().is_empty(),
+                "{args:?}: {:?}",
+                runtime.calls.lock().unwrap()
+            );
+            assert!(runtime.host_calls.lock().unwrap().is_empty(), "{args:?}");
+        }
+    }
+
+    #[test]
     fn refused_commands_journal_no_resolve_seat() {
         // (a) an agent without a session is refused before the recipient is allocated.
         let runtime = Runtime::new(seat_snapshot());

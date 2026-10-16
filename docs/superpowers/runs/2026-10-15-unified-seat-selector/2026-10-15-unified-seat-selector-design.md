@@ -405,7 +405,7 @@ reasoned exclusion list, so a future seat argument cannot bypass resolution.
   - `derive_caller` (the agent-without-session refusal, the agent-evidence and actor-harness guards, `caller_not_located`), or for `--operator` the non-Human actor refusal;
   - one gate point, `run_gates`: `require_send_time_receipts_capability` for p0 sends, the `INVITATION_CONFIRMATION_V1` capability for confirmed non-operator invites, and the direct-send capabilities (`DIRECT_THREADS_V1`, `LAZY_SEND`) for direct send.
 
-  The direct-ACK comparison runs at the end of pass 1 on seat or pane IDs, before anything is allocated. A refused command therefore never leaves a journaled `ResolveSeat`, and operator orphan invites keep working from any pane.
+  The direct-ACK comparison runs at the end of pass 1 on seat or pane IDs, before anything is allocated. A command refused by those earlier checks therefore leaves no journaled `ResolveSeat`; refusals that run later (the selection and mapping checks, the direct-send claim and caller-binding checks) can leave an idempotent guarded seat for a real pane. Operator orphan invites keep working from any pane.
 
 **`resolve_cli_seats`** — new runtime stage in `src/cli/mod.rs` (spec D1), the only code that turns a `SeatSlot` raw string into a frozen `SeatId`.
 - Owns:

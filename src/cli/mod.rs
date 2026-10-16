@@ -722,11 +722,15 @@ fn run_parsed_in_pane<W: Write>(
             _ => Err(invalid_request("unexpected thread resolution result")),
         }
     })?;
-    // Pass 1 of the seat stage: every seat argument resolves to a canonical seat ID (lookups,
+    // Pass 1 of the seat stage (after the agent-without-session refusal below): every seat
+    // argument resolves to a canonical seat ID (lookups,
     // exact IDs) or a pane, before the caller derivation and the --operator branch's recipient
     // resolution, with no journal write. Allocate panes wait in `deferred` for pass 2, which runs
     // after the caller derivation / actor refusal and the capability gates, so a refused command
     // allocates nothing. A retry carries no slots: a no-op there.
+    // The agent-without-session refusal precedes pass 1: it needs no seat, so a refused agent
+    // issues no SeatInspect, Seats or topology call.
+    derive_refusing_origin(&parsed)?;
     let seats_resolved = seat_resolution::resolve_cli_seats(
         &mut parsed,
         &connection,
@@ -1090,6 +1094,23 @@ fn caller_needs_identity(action: &CliAction) -> bool {
     )
 }
 
+/// The caller origin of a non-`human` command, refusing an agent without a session id for the
+/// actions that call the daemon as a cooperative caller. It depends only on the action kind and
+/// the actor, so the seat stage runs it before pass 1 reads any seat.
+fn derive_refusing_origin(
+    parsed: &commands::ParsedCli,
+) -> Result<Option<caller::CallerOrigin>, RunError> {
+    let origin = (parsed.actor != actor_route::InvocationActor::Human)
+        .then(|| caller::derive(parsed))
+        .flatten();
+    if let Some(caller::CallerOrigin::Refused(refusal)) = &origin
+        && caller_needs_identity(&parsed.action)
+    {
+        return Err(caller::refusal_error(refusal));
+    }
+    Ok(origin)
+}
+
 /// A daemon connection opened on first use and then shared, so one CLI
 /// invocation never connects twice.
 struct LazyConnection<C, F> {
@@ -1187,14 +1208,7 @@ where
     // refused before any daemon call, reads included.
     // The `human` namespace is a person's explicit choice: it keeps the pane-context path, and
     // its own guard (TRUST-POLICY A4) refuses it under an agent harness.
-    let origin = (parsed.actor != actor_route::InvocationActor::Human)
-        .then(|| caller::derive(&parsed))
-        .flatten();
-    if let Some(caller::CallerOrigin::Refused(refusal)) = &origin
-        && caller_needs_identity(&parsed.action)
-    {
-        return Err(caller::refusal_error(refusal));
-    }
+    let origin = derive_refusing_origin(&parsed)?;
     let _origin = caller::ActiveGuard::enter(origin);
     match &parsed.action {
         CliAction::Handoff(request) => {
