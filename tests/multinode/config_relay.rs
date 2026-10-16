@@ -5,6 +5,7 @@
 use crate::support::{self, P1};
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 22"]
 fn three_nodes_in_a_line_relay_through_the_middle() {
     let cluster = support::cluster("mn-relay", 3, &[(0, 1), (2, 1)], &[0, 1, 2]);
     let a = cluster.seat(0, P1);

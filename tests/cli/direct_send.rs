@@ -174,9 +174,6 @@ impl Fixture {
         }
     }
     /// Pairs created from now on auto-join both seats (the current behaviour).
-    fn auto_join(&self) {
-        self.db.pragma_update(None, "application_id", 0).unwrap();
-    }
     fn run(&self, args: &[&str], writer: &mut impl Write) -> Result<(), RunError> {
         self.run_with_journal(args, writer, &self.journal)
     }
@@ -698,7 +695,7 @@ fn lost_committed_replies_restart_with_exact_keys_body_and_lazy_audience() {
         f.run_with_journal(&["retry", &recovery], &mut output, &reopened)
             .unwrap();
         assert_eq!(f.count("direct_threads"), 1);
-        assert_eq!(f.count("invitations"), 1);
+        assert_eq!(f.count("invitations"), 0);
         assert_eq!(f.count("lazy_recipients"), 1);
         assert_eq!(
             f.db.query_row(
@@ -832,7 +829,7 @@ fn assert_direct_send_frozen_claim_survives_changed_caller(
         .unwrap();
     assert!(reopened.page(&Default::default()).unwrap().items.is_empty());
     assert_eq!(f.count("direct_threads"), 1);
-    assert_eq!(f.count("invitations"), 1);
+    assert_eq!(f.count("invitations"), 0);
     assert_eq!(
         f.db.query_row(
             "SELECT count(*) FROM messages WHERE body='frozen caller body'",
@@ -1032,7 +1029,7 @@ fn nudge_and_explicit_target_ack_use_ordinary_delivery() {
             // Only an explicit ACK recipient owes a receipt (D9): a bare nudge is a priority-0 row.
             assert_eq!(f.count("lazy_recipients"), 1);
             assert_eq!(f.count("receipts"), 0);
-            assert_eq!(f.count("invitations"), 1);
+            assert_eq!(f.count("invitations"), 0);
             continue;
         }
         assert_eq!(f.count("lazy_recipients"), 0);
@@ -1051,7 +1048,7 @@ fn nudge_and_explicit_target_ack_use_ordinary_delivery() {
             herdr_threads::store::effective::EffectiveReceiptState::Pending
         );
         assert_eq!(receipt.seat_id, "seat-b");
-        assert_eq!(f.count("invitations"), 1);
+        assert_eq!(f.count("invitations"), 0);
     }
 }
 
@@ -1182,7 +1179,7 @@ fn contradictory_saved_send_is_refused_without_publishing_another_message() {
         .unwrap(),
         0
     );
-    assert_eq!(f.count("invitations"), 1);
+    assert_eq!(f.count("invitations"), 0);
 }
 
 #[test]
@@ -1389,7 +1386,7 @@ fn deterministic_send_refusal_retains_staged_thread_body_and_retry() {
     assert!(rendered.contains(&recovery));
     assert_eq!(f.recovery(), recovery);
     assert_eq!(f.count("direct_threads"), 1);
-    assert_eq!(f.count("invitations"), 1);
+    assert_eq!(f.count("invitations"), 0);
     assert_eq!(
         f.db.query_row(
             "SELECT count(*) FROM messages WHERE body='retained'",
@@ -1569,13 +1566,11 @@ fn old_direct_peer_with_lazy_support_refuses_creation_policy_before_any_effect()
     );
 }
 
-// ht-yha.6: with an auto-joining daemon (direct.auto_join_v1) a direct send needs no invitation:
+// ht-yha.6: a direct send needs no invitation:
 // both pair seats are joined at creation, the message is sent, and no accept step is printed.
 #[test]
-#[ignore = "pending ht-5fr reconcile item 11"]
 fn direct_send_to_an_auto_joining_daemon_records_no_invitation() {
     let f = Fixture::new(false);
-    f.auto_join();
     let mut out = vec![];
     f.run(&["send", "--seat", "seat-b", "--body", "hello"], &mut out)
         .unwrap();
@@ -1661,7 +1656,7 @@ fn human_lazy_and_historical_ensure_and_existing_requested_policy_keep_old_episo
         )
         .unwrap();
         assert_eq!(ensured_thread(&first), ensured_thread(&second));
-        assert_eq!(f.count("invitations"), 1);
+        assert_eq!(f.count("invitations"), 0);
     }
 }
 
@@ -1675,8 +1670,9 @@ fn modern_ensure_returns_actual_canonical_policy_and_selection_outcome() {
     .unwrap();
     let first = serde_json::to_value(first).unwrap();
     assert_eq!(first["kind"], "direct_thread_ensured");
-    assert_eq!(first["data"]["outcome"], "created");
-    assert_eq!(first["data"]["invitation"]["confirmation"], "require_ack");
+    // The local recipient auto-joined at creation: no invitation exists.
+    assert_eq!(first["data"]["outcome"], "already_joined");
+    assert_eq!(first["data"]["invitation"], serde_json::Value::Null);
     let second = ensure_call(
         &f,
         ensure_command(false, Some(initial_policy(false)), "actual-reuse"),
@@ -1684,8 +1680,8 @@ fn modern_ensure_returns_actual_canonical_policy_and_selection_outcome() {
     .unwrap();
     let second = serde_json::to_value(second).unwrap();
     assert_eq!(second["kind"], "direct_thread_ensured");
-    assert_eq!(second["data"]["outcome"], "existing_pending");
-    assert_eq!(second["data"]["invitation"], first["data"]["invitation"]);
+    assert_eq!(second["data"]["outcome"], "already_joined");
+    assert_eq!(second["data"]["invitation"], serde_json::Value::Null);
     assert_eq!(second["data"]["thread"], first["data"]["thread"]);
     let replay = ensure_call(
         &f,
@@ -1704,12 +1700,10 @@ fn ensured_thread(result: &CommandResult) -> herdr_threads::protocol::ids::Threa
     })
 }
 #[test]
-fn modern_ensure_joined_rejected_and_left_use_actual_canonical_lifecycle() {
-    use herdr_threads::protocol::{
-        commands::{Accept, Leave, Reject},
-        ids::*,
-    };
-    for state in ["joined", "rejected", "left"] {
+fn modern_ensure_joined_and_left_use_actual_canonical_lifecycle() {
+    use herdr_threads::protocol::{commands::Leave, ids::*};
+    // A pair has no invitation to accept or reject: both seats join at creation.
+    for state in ["joined", "left"] {
         let f = Fixture::new(false);
         let first = ensure_call(
             &f,
@@ -1723,42 +1717,16 @@ fn modern_ensure_joined_rejected_and_left_use_actual_canonical_lifecycle() {
         let mut recipient = initial.claim;
         recipient.seat = SeatId::new("seat-b");
         recipient.target = HostTargetId::new("seat-b");
-        if state == "rejected" {
-            let invitation: String =
-                f.db.query_row("SELECT id FROM invitations", [], |r| r.get(0))
-                    .unwrap();
+        if state == "left" {
             ensure_call(
                 &f,
-                Command::Reject(Reject {
+                Command::Leave(Leave {
                     thread: thread.clone(),
-                    invitation: InvitationId::new(invitation),
-                    reason: "declined".into(),
-                    operation: OperationId::new("decline"),
+                    operation: OperationId::new("leave"),
                     claim: recipient,
                 }),
             )
             .unwrap();
-        } else {
-            ensure_call(
-                &f,
-                Command::Accept(Accept {
-                    thread: thread.clone(),
-                    operation: OperationId::new("accept"),
-                    claim: recipient.clone(),
-                }),
-            )
-            .unwrap();
-            if state == "left" {
-                ensure_call(
-                    &f,
-                    Command::Leave(Leave {
-                        thread: thread.clone(),
-                        operation: OperationId::new("leave"),
-                        claim: recipient,
-                    }),
-                )
-                .unwrap();
-            }
         }
         let result = ensure_call(
             &f,
@@ -1772,24 +1740,18 @@ fn modern_ensure_joined_rejected_and_left_use_actual_canonical_lifecycle() {
             assert!(result.is_err(), "{state} participant was resurrected");
         }
         assert_eq!(f.count("direct_threads"), 1);
-        assert_eq!(f.count("invitations"), 1);
+        assert_eq!(f.count("invitations"), 0);
     }
 }
 
 #[test]
-fn historical_ensure_omits_new_result_and_modern_reuse_reports_old_timed_origin_honestly() {
+fn historical_ensure_omits_new_result_and_modern_reuse_reports_the_joined_pair() {
     let f = Fixture::new(false);
     let historical = ensure_call(&f, ensure_command(false, None, "historical-initial")).unwrap();
     let historical = serde_json::to_value(&historical).unwrap();
     assert_eq!(historical["kind"], "thread_created");
     assert!(historical["data"].is_string());
-    let row: (i64, Option<String>) =
-        f.db.query_row(
-            "SELECT deadline_at,inviter_seat_id FROM invitations",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
+    assert_eq!(f.count("invitations"), 0);
     let modern = ensure_call(
         &f,
         ensure_command(false, Some(initial_policy(false)), "modern-old-pair"),
@@ -1797,11 +1759,8 @@ fn historical_ensure_omits_new_result_and_modern_reuse_reports_old_timed_origin_
     .unwrap();
     let modern = serde_json::to_value(modern).unwrap();
     assert_eq!(modern["kind"], "direct_thread_ensured");
-    assert_eq!(modern["data"]["outcome"], "existing_pending");
-    assert_eq!(modern["data"]["invitation"]["confirmation"], "require_ack");
-    assert_eq!(modern["data"]["invitation"]["effective_deadline_at"], row.0);
-    assert_eq!(modern["data"]["invitation"]["inviter"], "seat-a");
-    assert_eq!(row.1.as_deref(), Some("seat-a"));
+    assert_eq!(modern["data"]["outcome"], "already_joined");
+    assert_eq!(modern["data"]["invitation"], serde_json::Value::Null);
     let replay = ensure_call(&f, ensure_command(false, None, "historical-initial")).unwrap();
     assert_eq!(serde_json::to_value(replay).unwrap(), historical);
 }
@@ -1832,7 +1791,7 @@ fn json_output_uses_the_versioned_send_envelope_with_the_thread() {
         })
         .unwrap();
     assert_eq!(direct["result"]["data"], message.as_str());
-    assert_eq!(direct["result"]["selection"]["outcome"], "created");
+    assert_eq!(direct["result"]["selection"]["outcome"], "already_joined");
     assert_eq!(
         serde_json::from_value::<CommandResult>(direct["result"].clone()).unwrap(),
         CommandResult::MessageSent(herdr_threads::protocol::ids::MessageId::new(message))

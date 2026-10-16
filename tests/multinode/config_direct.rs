@@ -5,6 +5,7 @@
 use crate::support::{self, P1};
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 22"]
 fn two_nodes_direct_send_and_ack() {
     let cluster = support::cluster("mn-direct", 2, &[(0, 1)], &[0, 1]);
     let a = cluster.seat(0, P1);

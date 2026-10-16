@@ -15,6 +15,7 @@
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
 
+use super::membership::MembershipJoined;
 use super::payload::{ReferencedSeats, RegisterField, seat_key, thread_key};
 use super::{ApplyContext, FactError, FactKind, with_input};
 use crate::protocol::ids::{SeatId, ThreadId, direct_thread_id};
@@ -203,7 +204,25 @@ impl FactKind for ThreadDirect {
                 Self::NAME,
                 &AuthorRule::EitherSeatHome(payload.seat_lo.clone(), payload.seat_hi.clone()),
             )?;
-            control::materialize_thread_direct(tx, m, &payload)
+            control::materialize_thread_direct(tx, m, &payload)?;
+            // The creating command authors its own joins inline; any other
+            // application owes this node's pair seats their auto-join.
+            if !m.local_origin || m.own_history {
+                control::direct_auto_join_payloads(tx, m, &payload)
+            } else {
+                Ok(Vec::new())
+            }
+        })
+        .and_then(|joins| {
+            for join in &joins {
+                cx.follow_up::<MembershipJoined>(join).map_err(|e| {
+                    FactError::Store(ApiError::new(
+                        ErrorCode::StoreCorrupt,
+                        format!("auto-join follow-up: {e}"),
+                    ))
+                })?;
+            }
+            Ok(())
         })
     }
 }

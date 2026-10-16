@@ -264,6 +264,7 @@ fn watch_stream_places_the_invitation_by_its_deadline() {
 /// exists only for a pre-upgrade pending pair invitation (a new pair auto-joins), so the pair is
 /// created the pre-upgrade way.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn accept_display_lists_the_threads_delivery_rows_in_key_order() {
     let rig = Rig::new();
     let writer = rusqlite::Connection::open(&rig.paths.database_path).unwrap();

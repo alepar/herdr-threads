@@ -417,3 +417,203 @@ fn later_invitation_after_the_leave_stays_pending() {
     }
     assert_eq!(w.a.membership_projection(), w.b.membership_projection());
 }
+
+// ---- 1:1 pair auto-join (reconcile item 11) ------------------------------------
+
+/// Opens the pair of `caller` and `recipient` through the real
+/// `resolve_direct_pair` (copied from `fact_convergence_invitation`).
+fn open_direct(node: &Node, caller: &SeatId, recipient: &SeatId) -> (ThreadId, bool) {
+    use herdr_threads::protocol::authority::{CallerClaim, CallerRole, Harness};
+    use herdr_threads::protocol::ids::{ExecutionId, HostTargetId, NativeSessionId};
+    let claim = CallerClaim {
+        instance: node.id.to_string(),
+        host: herdr_threads::test_support::test_host_locator(),
+        seat: caller.clone(),
+        binding_generation: 1,
+        role: CallerRole::TopLevel,
+        harness: Harness::Human,
+        native_session: NativeSessionId::new("human"),
+        execution: ExecutionId::new("execution"),
+        target: HostTargetId::new("w1:p1"),
+        agent_id: None,
+        liveness: None,
+    };
+    node.run(|tx, d| {
+        herdr_threads::store::control::resolve_direct_pair(
+            tx,
+            node.ctx(),
+            d,
+            &claim,
+            recipient,
+            None,
+            None,
+        )
+    })
+    .unwrap()
+}
+
+fn count_of(node: &Node, sql: &str) -> i64 {
+    node.query(sql, |r| r.get::<_, i64>(0))[0]
+}
+
+/// How many `membership.joined` entries in `node`'s journal name `seat`.
+fn joined_entries_for(node: &Node, seat: &SeatId) -> usize {
+    node.query(
+        "SELECT payload FROM journal WHERE kind='membership.joined'",
+        |r| r.get::<_, Vec<u8>>(0),
+    )
+    .iter()
+    .filter(|payload| {
+        serde_json::from_slice::<serde_json::Value>(payload).unwrap()["seat"] == seat.as_str()
+    })
+    .count()
+}
+
+fn join_event(node: &Node, thread: &ThreadId, seat: &SeatId) -> serde_json::Value {
+    let rows = node.query(
+        &format!(
+            "SELECT event_json FROM messages WHERE thread_id='{}' AND event_key='join:{}:{}:1'",
+            thread.as_str(),
+            thread.as_str(),
+            seat.as_str()
+        ),
+        |r| r.get::<_, String>(0),
+    );
+    assert_eq!(rows.len(), 1, "one join event for {}", seat.as_str());
+    serde_json::from_str(&rows[0]).unwrap()
+}
+
+#[test]
+fn one_sided_pair_peer_node_authors_the_peer_join() {
+    let reg = registry();
+    let (a, b) = (Node::with(190, reg), Node::with(191, reg));
+    let (sa, sb) = (a.local_seat(), b.local_seat());
+    a.publish(&sa).unwrap();
+    b.publish(&sb).unwrap();
+    sync_all(&[&a, &b]);
+
+    let (t, created) = open_direct(&a, &sa, &sb);
+    assert!(created);
+    // On A: no invitation, the creator joined, the remote peer has no row yet.
+    assert_eq!(count_of(&a, "SELECT count(*) FROM invitations"), 0);
+    assert_eq!(a.membership(&t, &sa), Some(("joined".into(), 1, 1)));
+    assert_eq!(a.membership(&t, &sb), None);
+    assert_eq!(joined_entries_for(&a, &sb), 0, "A never authors B's join");
+
+    sync_all(&[&a, &b]);
+    for node in [&a, &b] {
+        assert_eq!(
+            node.membership(&t, &sb),
+            Some(("joined".into(), 1, 1)),
+            "{:?}",
+            node.id
+        );
+        assert_eq!(count_of(node, "SELECT count(*) FROM invitations"), 0);
+        assert_eq!(
+            count_of(node, "SELECT count(*) FROM fact_attribution_staging"),
+            0
+        );
+    }
+    // B authored exactly one join for its seat, in its own log, after A's
+    // thread.direct: the entry carries dependencies on A's log.
+    assert_eq!(joined_entries_for(&b, &sb), 1);
+    let deps_of_join: Vec<usize> = b
+        .query(
+            "SELECT payload,deps FROM journal WHERE kind='membership.joined'",
+            |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?)),
+        )
+        .into_iter()
+        .filter(|(payload, _)| {
+            serde_json::from_slice::<serde_json::Value>(payload).unwrap()["seat"] == sb.as_str()
+        })
+        .map(|(_, deps)| deps.len())
+        .collect();
+    assert_eq!(deps_of_join.len(), 1);
+    assert!(
+        deps_of_join[0] > herdr_threads::sync::envelope::Deps::empty().encode().len(),
+        "the follow-up lists A's log among its dependencies"
+    );
+    // Its derived join event names the creator and the auto-join provenance.
+    for node in [&a, &b] {
+        let event = join_event(node, &t, &sb);
+        assert_eq!(event["actor_seat"], sa.as_str(), "{event}");
+    }
+    let event = join_event(&b, &t, &sb);
+    assert_eq!(event["observation"], "direct_auto_join", "{event}");
+    // Joins are no wake source.
+    assert!(
+        b.query("SELECT 1 FROM wake_work", |r| r.get::<_, i64>(0))
+            .is_empty()
+    );
+    for node in [&a, &b] {
+        herdr_threads::test_support::assert_no_local_delivery_for_remote(&node.raw());
+    }
+}
+
+#[test]
+fn local_pair_auto_joins_inline() {
+    let reg = registry();
+    let a = Node::open_commands(192, 192, reg);
+    let (sa, sb) = (a.local_seat(), a.local_seat());
+    a.bind_commands(&sa);
+    a.bind_commands(&sb);
+    let (t, created) = open_direct(&a, &sa, &sb);
+    assert!(created);
+    assert_eq!(a.count_kind("thread.direct"), 1);
+    assert_eq!(a.count_kind("membership.joined"), 2);
+    assert_eq!(count_of(&a, "SELECT count(*) FROM invitations"), 0);
+    assert_eq!(a.intervals(&t, &sa).len(), 1);
+    assert_eq!(a.intervals(&t, &sb).len(), 1);
+    let payloads: Vec<serde_json::Value> = a
+        .query(
+            "SELECT payload FROM journal WHERE kind='membership.joined' ORDER BY ingest_seq",
+            |r| r.get::<_, Vec<u8>>(0),
+        )
+        .iter()
+        .map(|p| serde_json::from_slice(p).unwrap())
+        .collect();
+    assert!(payloads[0].get("actor").is_none(), "the creating join");
+    assert_eq!(payloads[1]["actor"], sa.as_str(), "the peer's auto-join");
+    // One join event, for the peer; the creator's join is the `create:` event.
+    let joins = a.query(
+        &format!(
+            "SELECT event_key FROM messages WHERE thread_id='{}' AND event_key LIKE 'join:%'",
+            t.as_str()
+        ),
+        |r| r.get::<_, String>(0),
+    );
+    assert_eq!(joins.len(), 1, "{joins:?}");
+    let event = join_event(&a, &t, &sb);
+    assert_eq!(event["actor_seat"], sa.as_str());
+    assert_eq!(event["observation"], "direct_auto_join");
+    assert_eq!(
+        count_of(&a, "SELECT count(*) FROM fact_attribution_staging"),
+        0
+    );
+}
+
+#[test]
+fn follow_up_skips_a_seat_with_a_row() {
+    let reg = registry();
+    let (a, b) = (Node::with(193, reg), Node::with(194, reg));
+    let (sa, sb) = (a.local_seat(), b.local_seat());
+    a.publish(&sa).unwrap();
+    b.publish(&sb).unwrap();
+    sync_all(&[&a, &b]);
+
+    // A opens the pair; B, still partitioned, opens it, joins and leaves.
+    let (t, _) = open_direct(&a, &sa, &sb);
+    open_direct(&b, &sb, &sa);
+    b.left(&t, &sb, 2).unwrap();
+    assert_eq!(b.membership(&t, &sb), Some(("left".into(), 2, 1)));
+
+    sync_all(&[&a, &b]);
+    // B applied A's thread.direct while holding a row for its seat: it
+    // authored no second join, and the leave stands on both nodes.
+    assert_eq!(joined_entries_for(&b, &sb), 1);
+    assert_eq!(joined_entries_for(&a, &sb), 1);
+    for node in [&a, &b] {
+        assert_eq!(node.membership(&t, &sb), Some(("left".into(), 2, 1)));
+    }
+    assert_eq!(joined_entries_for(&a, &sa), 1, "A did not re-join either");
+}

@@ -35,6 +35,12 @@ pub struct MembershipPayload {
     pub n: u64,
     /// Origin wall-clock Unix ms of the transition.
     pub at: i64,
+    /// The 1:1 pair creator, set only on a pair seat's auto-join (reconcile
+    /// section 2.2). Informational: the fact is authored by `seat`'s home node
+    /// and never refused for its actor; the derived join event names it as
+    /// `actor_seat` only when it is one of the pair's two seats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<SeatId>,
 }
 
 impl ReferencedSeats for MembershipPayload {

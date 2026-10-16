@@ -774,6 +774,7 @@ fn emit_membership<K: FactKind<Payload = MembershipPayload>>(
         seat: seat.clone(),
         n,
         at: 1,
+        actor: None,
     };
     node.run(|tx, d| {
         FactRoute::Journal

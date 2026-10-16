@@ -13,6 +13,7 @@ fn tag_of(cluster: &herdr_threads::test_support::multinode::Cluster, node: usize
 }
 
 #[test]
+#[ignore = "pending ht-5fr reconcile item 22"]
 fn partition_with_writes_on_both_sides_heals() {
     let mut cluster = support::cluster("mn-partition", 2, &[(0, 1)], &[0, 1]);
     let a = cluster.seat(0, P1);

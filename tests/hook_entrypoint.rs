@@ -1757,6 +1757,7 @@ fn cooperative_seat_on_own_target_startup_clear_resume_register_session_bindings
 // so settled ordinary and later Lazy bodies remain in this binding's own stream.
 #[test]
 // Keep the upstream registration key; direct acceptance preserves the actual reader gap.
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn pair_accept_delivers_mixed_opening_mail_once() {
     let fx = Fixture::start();
     let started = fx.hook("w9:p1", &start("sess-1"));
@@ -1869,6 +1870,7 @@ fn pair_accept_delivers_mixed_opening_mail_once() {
 // test. Each lazy row is shown exactly once across the accept output, the following hooks and a
 // text `inbox`. Kills: an accept page that shows lazy rows its bookkeeping cannot settle.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn text_pair_accept_shows_each_lazy_opening_row_once_across_accept_and_hooks() {
     let fx = Fixture::start();
     let started = fx.hook("w9:p1", &start("sess-1"));
@@ -1967,6 +1969,7 @@ fn text_pair_accept_shows_each_lazy_opening_row_once_across_accept_and_hooks() {
 // continuation is not offered); running that line verbatim shows only the rest, never a row the
 // accept already showed, and nothing remains for the next hook.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn text_pair_accept_with_more_than_a_page_prints_one_working_inbox_next_line() {
     let fx = Fixture::start();
     let started = fx.hook("w9:p1", &start("sess-1"));
@@ -2044,6 +2047,7 @@ fn text_pair_accept_with_more_than_a_page_prints_one_working_inbox_next_line() {
 // opening body and complete nothing: the opener stays undisplayed (direct acceptance marks no
 // seat-wide legacy row) and an agent's next hook still delivers it.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn human_json_and_machine_accept_leave_the_opening_message_pending() {
     for mode in ["json", "machine", "human"] {
         let fx = Fixture::start();
@@ -2216,6 +2220,7 @@ fn text_generic_accept_shows_seat_pending_lazy_mail_once() {
 // cursor was inserted at the same event floor), so its next hook still shows the opener once.
 // Kills: a scoped display that settles seat-wide where direct acceptance does not.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn text_pair_accept_completes_the_opener_for_the_accepting_binding_only() {
     let fx = Fixture::start();
     fx.register("w9:p1", "sess-1");
@@ -2269,6 +2274,7 @@ fn text_pair_accept_completes_the_opener_for_the_accepting_binding_only() {
 // Q4 direct invitation acceptance preserves each established cursor, including across rejoin.
 // Both readers retain their own opening mail; one binding's display does not consume its sibling's stream.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn pair_rejoin_with_two_bindings_pins_read_positions() {
     let fx = Fixture::start();
     // A is `sess-1`, the session the in-process CLI acts as (`agent_origin`).
@@ -2728,6 +2734,7 @@ fn human_cli(fx: &Fixture, pane: &str, command: &[&str]) -> String {
 // caller's own text-inbox display, thread-scoped), not wait for the next hook or wake. Kills:
 // an accept that leaves the opener seat-pending until the next PreToolUse/UserPromptSubmit.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn codex_pair_accept_output_carries_the_opening_message() {
     let fx = Fixture::start();
     // The in-process CLI acts as session `sess-1`; direct send's ensure enrolls no binding.

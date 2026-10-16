@@ -81,6 +81,25 @@ pub(crate) fn stage(
     Ok(())
 }
 
+/// Stages an attribution no local binding made (binding NULL, generation 0)
+/// under `key`: a node's own decision on an event it did not command, such as
+/// `direct_auto_join`. Staging a key twice replaces the first.
+pub(crate) fn stage_unbound(
+    tx: &Transaction<'_>,
+    key: &str,
+    observation: &str,
+) -> Result<(), ApiError> {
+    tx.execute(
+        "INSERT INTO fact_attribution_staging(staging_key,binding_id,binding_generation,observation) \
+         VALUES(?1,NULL,0,?2) \
+         ON CONFLICT(staging_key) DO UPDATE SET binding_id=NULL, \
+         binding_generation=0, observation=excluded.observation",
+        params![key, observation],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
 /// Drops the attribution staged under `key`, if any: a command that staged it
 /// and then did not author the fact (a skipped settlement) leaves nothing behind.
 pub(crate) fn discard(tx: &Transaction<'_>, key: &str) -> Result<(), ApiError> {

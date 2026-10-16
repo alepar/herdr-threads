@@ -90,7 +90,6 @@ fn open_binding(db: &Connection, seat: &str) -> BindingId {
 }
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 11"]
 fn direct_send_creates_pair_with_both_seats_joined_and_no_invitation() {
     let (store, db, path) = auto_join_fixture();
     let first = ensure_with(&store, "s1", "s2", "first", None);
@@ -143,7 +142,6 @@ fn direct_send_creates_pair_with_both_seats_joined_and_no_invitation() {
 }
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 11"]
 fn creation_policy_is_ignored() {
     for confirmation in [
         InvitationConfirmation::Lazy,
@@ -170,7 +168,6 @@ fn creation_policy_is_ignored() {
 }
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 11"]
 fn first_direct_message_is_a_row_at_its_priority() {
     // p1 does not wake a T=0 peer; p0 does. Each opener is a delivery row at its own priority.
     for (priority, wakes) in [(1u8, false), (0u8, true)] {
@@ -200,7 +197,6 @@ fn first_direct_message_is_a_row_at_its_priority() {
 }
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 11"]
 fn peer_offline_then_session_starts_is_offered_opener_and_later_sends() {
     let (store, db, path) = auto_join_fixture();
     // The peer has no open binding when the pair is created and written to.
@@ -457,7 +453,6 @@ fn operator_orphan_invitation_stays_timed_with_effective_require_ack() {
 }
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 11"]
 fn ack_send_on_an_auto_joined_pair_has_a_receipt_and_no_invitation() {
     // The automatic handoff route ensures the pair (no invitation) and sends its body with the
     // recipient as an explicit ACK recipient (priority 0, deadline).
@@ -502,6 +497,47 @@ fn ack_send_on_an_auto_joined_pair_has_a_receipt_and_no_invitation() {
     assert_eq!(count(&db, "prepared_recipients WHERE seat_id='s2'"), 1);
     assert_eq!(count(&db, "lazy_recipients"), 0);
     drop(store);
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Reconcile item 11: right after creation a remote recipient has no row (its
+/// home node owes the auto-join), and the selection reports it joined with no
+/// invitation instead of refusing.
+#[test]
+fn a_remote_recipient_awaiting_its_auto_join_reports_already_joined() {
+    use crate::store::control::direct::{direct_pair_selection, pending_auto_join};
+    let (_store, db, path) = auto_join_fixture();
+    db.execute_batch(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+         VALUES ('s9',(SELECT id FROM local_node),'remote','native',0,0,'abababababababababababababababab',0,'agent',1); \
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('dpair',(SELECT id FROM local_node),'t','g',0,0,1); \
+         INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id,created_hlc,created_node) VALUES ((SELECT id FROM local_node),'s1','s9','dpair',0,(SELECT id FROM local_node)); \
+         INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES ('dpair','s1','joined','joined',0);",
+    )
+    .unwrap();
+    let (t, remote, local) = (ThreadId::new("dpair"), SeatId::new("s9"), SeatId::new("s1"));
+    assert!(pending_auto_join(&db, &t, &remote).unwrap());
+    assert!(!pending_auto_join(&db, &t, &local).unwrap(), "has a row");
+    assert!(
+        !pending_auto_join(&db, &t, &SeatId::new("s3")).unwrap(),
+        "not a pair seat"
+    );
+    let CommandResult::DirectThreadEnsured(ensured) =
+        direct_pair_selection(&db, t.clone(), &remote, true, true).unwrap()
+    else {
+        panic!("a modern ensure result");
+    };
+    assert_eq!(ensured.outcome, DirectThreadEnsureOutcome::AlreadyJoined);
+    assert!(ensured.invitation.is_none());
+    // Once the row exists as `left`, the pair needs an explicit repair again.
+    db.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,home_transition,last_joined_n) VALUES ('dpair','s9','left','left',2,1)",
+        [],
+    )
+    .unwrap();
+    assert!(!pending_auto_join(&db, &t, &remote).unwrap());
+    assert!(direct_pair_selection(&db, t, &remote, false, true).is_err());
     drop(db);
     let _ = std::fs::remove_file(path);
 }

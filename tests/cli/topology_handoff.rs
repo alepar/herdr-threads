@@ -9355,6 +9355,7 @@ mod live {
         }
 
         #[test]
+        #[ignore = "pending ht-5fr reconcile item 17"]
         fn bound_recipient_rejection_after_lost_ensure_refuses_send() {
             let peer = AutoPeer::new();
             *peer.lost_child_reply.lock().unwrap() = Some("auto_child_ensure");

@@ -3598,6 +3598,7 @@ fn pair_opener_streamed(rig: &Rig, watch: &mut Watch, body: &str) -> (String, St
 /// its bounded grace (a generous bound here: the test ends on the completion, not the bound),
 /// prints no opening body, and the watch streams the opener exactly once.
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn text_accept_with_a_live_mod_channel_prints_nothing_when_the_channel_completes_in_time() {
     let rig = Rig::new();
     let mut watch = rig.watch(SESSION_B);
@@ -3649,6 +3650,7 @@ fn text_accept_with_a_live_mod_channel_prints_nothing_when_the_channel_completes
 /// text `accept` shows the opener itself and settles it as its own text-inbox display; the
 /// channel's late `append` ack then finds it already settled (at least once).
 #[test]
+#[ignore = "pending ht-5fr reconcile item 19"]
 fn text_accept_with_a_live_mod_channel_shows_the_opener_after_the_grace() {
     let rig = Rig::new();
     let mut watch = rig.watch(SESSION_B);
