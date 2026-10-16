@@ -4137,8 +4137,10 @@ async fn automatic_reply(
     let reply = client
         .call_async(
             command,
+            // Each round trip gets its own budget from now: a test clock budget shared by every
+            // call in the test ran out on a loaded CI runner.
             &CallBudget {
-                deadline: crate::protocol::time::MonoInstant(10000),
+                deadline: crate::protocol::time::MonoInstant(TestClock.monotonic_now().0 + 30_000),
                 cancellation: Default::default(),
             },
         )
