@@ -307,6 +307,8 @@ impl Drop for HookHandlerPhase<'_> {
 
 struct Counting {
     inner: Arc<dyn herdr_threads::ports::LocalService>,
+    completions:
+        Arc<std::sync::Mutex<Vec<herdr_threads::protocol::commands::CompleteInboxDelivery>>>,
     check_ins: Arc<AtomicU64>,
     parse_failures: Arc<AtomicU64>,
     withheld_capabilities: Arc<AtomicU64>,
@@ -324,6 +326,9 @@ impl Counting {
         &self,
         command: &Command,
     ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        if let Command::CompleteInboxDelivery(request) = command {
+            self.completions.lock().unwrap().push(request.clone());
+        }
         if (matches!(command, Command::CompleteInboxDelivery(_))
             && self.mode.load(Ordering::SeqCst) == FAIL_COMPLETION)
             || (matches!(command, Command::AdvanceCursors(_))
@@ -900,6 +905,8 @@ fn publish_fixture_snapshot(
 
 struct Fixture {
     root: PathBuf,
+    completions:
+        Arc<std::sync::Mutex<Vec<herdr_threads::protocol::commands::CompleteInboxDelivery>>>,
     state: PathBuf,
     host: PathBuf,
     db: PathBuf,
@@ -996,6 +1003,8 @@ impl Fixture {
         let (counted, moded, raced) =
             (Arc::clone(&check_ins), Arc::clone(&mode), Arc::clone(&race));
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let completions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_completions = Arc::clone(&completions);
         let worker = std::thread::spawn(move || {
             let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
             let service_clock = Arc::clone(&clock);
@@ -1073,6 +1082,7 @@ impl Fixture {
                         ) as Arc<dyn LocalService>;
                         Ok(Arc::new(Counting {
                             inner,
+                            completions: captured_completions,
                             check_ins: counted,
                             parse_failures: parsed_failures,
                             withheld_capabilities: withheld,
@@ -1102,6 +1112,7 @@ impl Fixture {
         let codex = herdr_threads::harness::setup::shell_command(&codex_argv).unwrap();
         Self {
             root,
+            completions,
             state,
             host,
             db,
@@ -2636,6 +2647,255 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
             "{table}"
         );
     }
+}
+
+// Native receipt settlement is seat-wide; unread delivery and wake remain each binding's own.
+#[test]
+fn native_hook_auto_ack_preserves_sibling_unread_and_delivery_wake() {
+    use herdr_threads::{
+        ports::StorePort,
+        protocol::{ids::BindingId, pagination::PageRequest, priority::NudgeThreshold},
+        store::{SqliteStore, StoreSettings, lazy_delivery},
+    };
+
+    let fx = Fixture::start();
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "native-siblings"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    fx.register("w9:p1", "sess-b");
+    fx.hook("w9:p1", &tool("sess-1"));
+    fx.hook("w9:p1", &tool("sess-b"));
+    let binding = |session: &str| {
+        BindingId::new(fx.count_text(&format!(
+        "SELECT binding_id FROM occupant_bindings WHERE seat_id='seat' AND native_session='{session}' AND ended_at IS NULL"
+    )))
+    };
+    let (a, b) = (binding("sess-1"), binding("sess-b"));
+    assert_ne!(a, b);
+    assert_eq!(fx.count("SELECT count(DISTINCT liveness_pid) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND liveness='connected' AND role='top_level'"), 2,
+        "separate harness processes permit independent wake targets");
+    let cursor = |binding: &BindingId| {
+        fx.count(&format!(
+            "SELECT seq FROM binding_cursors WHERE binding_id='{}' AND thread_id='{thread}'",
+            binding.as_str()
+        ))
+    };
+    let (floor_a, floor_b) = (cursor(&a), cursor(&b));
+    fx.completions.lock().unwrap().clear();
+    let message = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &[
+            "send",
+            &thread,
+            "--body",
+            "requested sibling receipt",
+            "--require-ack",
+            "seat",
+        ],
+    ));
+    // A requested receipt has no delivery row. Default p1 mail supplies an independent row,
+    // whose own unread/wake predicate must survive the seat-level receipt's settlement.
+    let delivery = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "independent sibling delivery"],
+    ));
+    assert_eq!(
+        fx.count(&format!(
+            "SELECT priority FROM lazy_recipients WHERE message_id='{delivery}' AND seat_id='seat'"
+        )),
+        1
+    );
+    assert_eq!(
+        fx.count(&format!(
+            "SELECT priority FROM messages WHERE id='{message}'"
+        )),
+        0
+    );
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+    let store = SqliteStore::new(
+        StoreContext::new(fx.db.clone(), Arc::clone(&clock)),
+        fx.descriptor.instance_uuid.to_string(),
+        StoreSettings {
+            daemon_boot: Some(fx.descriptor.boot_id),
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
+    let budget = || CallBudget {
+        deadline: herdr_threads::protocol::time::MonoInstant(clock.monotonic_now().0 + 5000),
+        cancellation: Cancellation::default(),
+    };
+    let candidate = || {
+        store
+            .wake_candidates(PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|c| c.seat.as_str() == "seat")
+    };
+    assert!(
+        candidate().unwrap().has_pending_receipt,
+        "control: receipt initially owes attention"
+    );
+    let shown = fx.hook("w9:p1", &tool("sess-1"));
+    assert_eq!(shown.code, Some(0), "{}", shown.stderr);
+    assert!(shown.stderr.is_empty(), "{}", shown.stderr);
+    let context = context_of(&shown);
+    for body in ["requested sibling receipt", "independent sibling delivery"] {
+        assert_eq!(context.matches(body).count(), 1, "{context}");
+    }
+    for directive in [
+        "- pending mail",
+        "More inbox content may remain",
+        " ack ",
+        "- inbox fallback",
+    ] {
+        assert!(!context.contains(directive), "{directive}: {context}");
+    }
+    let requests = fx.completions.lock().unwrap().clone();
+    let receipts: Vec<_> = requests
+        .iter()
+        .filter(|r| !r.receipt_candidates.is_empty())
+        .collect();
+    assert_eq!(receipts.len(), 1, "{requests:?}");
+    assert_eq!(
+        receipts[0]
+            .receipt_candidates
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        [&message]
+    );
+    assert_eq!(receipts[0].claim.native_session.as_str(), "sess-1");
+    assert!(cursor(&a) > floor_a);
+    assert_eq!(
+        cursor(&b),
+        floor_b,
+        "native completion must not advance a sibling"
+    );
+    let receipt = || {
+        fx.count_text(&format!(
+        "SELECT ack_observation FROM receipt_state WHERE message_id='{message}' AND seat_id='seat' AND state='acked'"
+    ))
+    };
+    let observation = receipt();
+    let source: serde_json::Value = serde_json::from_str(&observation).unwrap();
+    assert_eq!(source["action_provenance"], "cooperative_hook_context");
+    assert_eq!(source["via"], "hook_context");
+    assert_eq!(source["session"], "sess-1");
+    assert_eq!(fx.count_text(&format!("SELECT ack_binding_id FROM receipt_state WHERE message_id='{message}' AND seat_id='seat'")), a.as_str());
+    let terminal_events = || {
+        fx.count(&format!(
+        "SELECT count(*) FROM messages WHERE thread_id='{thread}' AND json_extract(event_json,'$.event')='ack' AND json_extract(event_json,'$.seat')='seat'"
+    ))
+    };
+    assert_eq!(terminal_events(), 1);
+    assert!(
+        candidate().is_none(),
+        "T=0 excludes the independent p1 row after receipt settlement"
+    );
+
+    let db = rusqlite::Connection::open(&fx.db).unwrap();
+    assert_eq!(
+        lazy_delivery::wake_frontier(&db, "seat", NudgeThreshold::new(0).unwrap()).unwrap(),
+        None
+    );
+    let frontier =
+        lazy_delivery::wake_frontier(&db, "seat", NudgeThreshold::new(1).unwrap()).unwrap();
+    assert!(
+        frontier.is_some(),
+        "sibling retains admitted independent delivery work"
+    );
+    db.execute("UPDATE seats SET nudge_threshold=1 WHERE id='seat'", [])
+        .unwrap();
+    let remaining = candidate().expect("T=1 admits the sibling's unread delivery");
+    assert!(!remaining.has_pending_receipt);
+    assert_eq!(remaining.pending_lazy(), frontier);
+    assert_eq!(
+        remaining
+            .targets
+            .iter()
+            .map(|t| &t.binding)
+            .collect::<Vec<_>>(),
+        [&b]
+    );
+    // The fixture normally observes an empty shell. Simulate the host's occupied harness
+    // observation at each UI boundary; discovery alone must never authorize a busy nudge.
+    db.execute("UPDATE observed_targets SET occupancy='occupied',ui_state='active_turn' WHERE target_id='w9:p1'", []).unwrap();
+    let busy = candidate().unwrap();
+    assert!(
+        store.reserve_wake(&busy, &budget()).unwrap().is_none(),
+        "busy process cannot be nudged"
+    );
+    db.execute(
+        "UPDATE observed_targets SET ui_state='idle' WHERE target_id='w9:p1'",
+        [],
+    )
+    .unwrap();
+    let idle = candidate().unwrap();
+    let reservation = store
+        .reserve_wake(&idle, &budget())
+        .unwrap()
+        .expect("idle unread sibling is wake eligible");
+    assert_eq!(reservation.reasons, ["lazy"]);
+    assert!(
+        !store
+            .wake_owed_to_binding(&reservation, Some(&a), &budget())
+            .unwrap()
+    );
+    assert!(
+        store
+            .wake_owed_to_binding(&reservation, Some(&b), &budget())
+            .unwrap()
+    );
+
+    let sibling = fx.hook("w9:p1", &tool("sess-b"));
+    assert_eq!(sibling.code, Some(0), "{}", sibling.stderr);
+    assert!(sibling.stderr.is_empty(), "{}", sibling.stderr);
+    let context = context_of(&sibling);
+    for body in ["requested sibling receipt", "independent sibling delivery"] {
+        assert_eq!(context.matches(body).count(), 1, "{context}");
+    }
+    assert!(cursor(&b) > floor_b);
+    assert_eq!(
+        receipt(),
+        observation,
+        "sibling replay cannot rewrite receipt attribution"
+    );
+    assert_eq!(
+        terminal_events(),
+        1,
+        "one seat-level terminal ACK across both displays"
+    );
+    assert_eq!(
+        lazy_delivery::wake_frontier(&db, "seat", NudgeThreshold::new(1).unwrap()).unwrap(),
+        None
+    );
+    assert!(
+        !store
+            .wake_owed_to_binding(&reservation, Some(&b), &budget())
+            .unwrap(),
+        "sibling display clears only its own delivery wake"
+    );
+    for session in ["sess-1", "sess-b"] {
+        let repeat = fx.hook("w9:p1", &tool(session));
+        assert_eq!(repeat.code, Some(0), "{}", repeat.stderr);
+        assert!(
+            repeat.stdout.is_empty(),
+            "{session}: {}",
+            String::from_utf8_lossy(&repeat.stdout)
+        );
+    }
+    assert_eq!(terminal_events(), 1);
+    assert_eq!(receipt(), observation);
 }
 
 // Actual eligible hooks retry after completion uncertainty without an arrival,
