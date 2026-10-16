@@ -7784,7 +7784,6 @@ mod live {
         }
 
         #[test]
-        #[ignore = "pending ht-5fr reconcile item 17"]
         fn parsed_new_tab_automatic_route_creates_one_pair_and_starts_once() {
             let peer = AutoPeer::new();
             let (messages_before, invitations_before) = {
@@ -7863,6 +7862,28 @@ mod live {
                     .get::<_, i64>(0))
                     .unwrap(),
                 invitations_before,
+            );
+            // Item 17: the pair auto-joins the recipient; no invitation exists for it.
+            assert_eq!(
+                db.query_row(
+                    "SELECT state FROM memberships WHERE thread_id=?1 AND seat_id=?2",
+                    rusqlite::params![
+                        selected.as_str(),
+                        status.attachment.unwrap().resolved_seat.as_str()
+                    ],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                "joined"
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM invitations WHERE thread_id=?1",
+                    [selected.as_str()],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
             );
         }
 
@@ -8966,7 +8987,6 @@ mod live {
         /// the applied caller argv unchanged, so its automatic plan launches with
         /// `--prompt-interactive` placing the frozen prompt and completes.
         #[test]
-        #[ignore = "pending ht-5fr reconcile item 17"]
         fn automatic_new_tab_agy_completes_end_to_end_with_prompt_interactive() {
             let peer = AutoPeer::with_kind("agy");
             assert_eq!(peer.identity.plan.payload.launch.harness.as_str(), "agy");
@@ -9034,7 +9054,6 @@ mod live {
         }
 
         #[test]
-        #[ignore = "pending ht-5fr reconcile item 17"]
         fn parsed_new_tab_selector_enters_public_runtime_dispatch() {
             let peer = AutoPeer::new();
             let mut parsed = super::super::super::super::commands::parse_argv([
@@ -9290,7 +9309,6 @@ mod live {
         }
 
         #[test]
-        #[ignore = "pending ht-5fr reconcile item 17"]
         fn lost_automatic_ensure_or_send_reply_replays_one_exact_child() {
             for lost in ["auto_child_ensure", "auto_child_send"] {
                 let peer = AutoPeer::new();
@@ -9355,8 +9373,7 @@ mod live {
         }
 
         #[test]
-        #[ignore = "pending ht-5fr reconcile item 17"]
-        fn bound_recipient_rejection_after_lost_ensure_refuses_send() {
+        fn bound_recipient_leave_after_lost_ensure_refuses_send() {
             let peer = AutoPeer::new();
             *peer.lost_child_reply.lock().unwrap() = Some("auto_child_ensure");
             let mut launcher = DownstreamLauncher::default();
@@ -9387,22 +9404,32 @@ mod live {
             let status = peer.status();
             let thread = status.thread.expect("Ensure selected canonical pair");
             let attachment = status.attachment.unwrap();
-            let invitation: String = peer
-                .base
-                .peer
-                .state
-                .lock()
-                .unwrap()
-                .db
-                .query_row(
-                    "SELECT id FROM invitations WHERE thread_id=?1 AND seat_id=?2",
-                    rusqlite::params![thread.as_str(), attachment.resolved_seat.as_str()],
-                    |row| row.get(0),
+            // Item 17: the pair auto-joined the recipient; there is no invitation to reject.
+            let (membership, invitations): (String, i64) = {
+                let state = peer.base.peer.state.lock().unwrap();
+                (
+                    state
+                        .db
+                        .query_row(
+                            "SELECT state FROM memberships WHERE thread_id=?1 AND seat_id=?2",
+                            rusqlite::params![thread.as_str(), attachment.resolved_seat.as_str()],
+                            |row| row.get(0),
+                        )
+                        .unwrap(),
+                    state
+                        .db
+                        .query_row(
+                            "SELECT count(*) FROM invitations WHERE thread_id=?1",
+                            rusqlite::params![thread.as_str()],
+                            |row| row.get(0),
+                        )
+                        .unwrap(),
                 )
-                .unwrap();
+            };
+            assert_eq!((membership.as_str(), invitations), ("joined", 0));
 
             // The recipient is a real newly mapped seat. Give that pane its own
-            // lifecycle check-in before exercising the ordinary Reject command.
+            // lifecycle check-in before exercising the ordinary Leave command.
             let mut recipient = peer.identity.claim.clone();
             recipient.seat = attachment.resolved_seat;
             recipient.target = attachment.created.root_pane;
@@ -9451,14 +9478,12 @@ mod live {
             else {
                 panic!("recipient check-in result")
             };
-            let reject = crate::protocol::commands::Reject {
+            let leave = crate::protocol::commands::Leave {
                 thread,
-                invitation: crate::protocol::ids::InvitationId::new(invitation),
-                reason: "declined".into(),
                 operation: crate::protocol::ids::OperationId::new(uuid::Uuid::new_v4().to_string()),
                 claim: checked.context,
             };
-            let mutation = crate::protocol::commands::PermitMutation::Reject(reject);
+            let mutation = crate::protocol::commands::PermitMutation::Leave(leave);
             let permit = peer
                 .store
                 .issue_cooperative_permit(
