@@ -76,15 +76,38 @@ export const batchOrder = (items) => [...items].sort((a, b) => {
   return pa !== pb ? pa - pb : da === db ? 0 : da < db ? -1 : 1
 })
 
-/** Keep whole items queued when the next framed append would exceed its envelope. */
-function appendBatch(items) {
+const shellArg = (arg) => /^[a-zA-Z0-9_@%+=:,./-]+$/.test(arg)
+  ? arg : "'" + arg.replace(/'/g, "'\\''") + "'"
+
+/** A bounded complete prefix, with recovery included in the rendered byte budget.
+ * An individually oversized item stays queued but yields later opportunities once
+ * its recovery was emitted. Reconnect discards this local hint with the queue.
+ */
+function appendBatch(items, argv) {
   const batch = []
+  batch.deferred = []
   const encoder = new TextEncoder()
+  const recovery = 'next: ' + [...argv, 'inbox'].map(shellArg).join(' ')
+  const render = (selected, more) => {
+    const truncated = selected.some((it) => it.truncated)
+    const framed = selected.length ? frame(selected.map((it) => {
+      if (!it.truncated || (it.kind !== 'message' && it.kind !== 'lazy')) return it
+      // The watch marker is service-authored and last; replace its per-body
+      // recipe with the single batch continuation below.
+      const cut = it.body.lastIndexOf('…truncated;')
+      return cut < 0 ? it : { ...it, body: it.body.slice(0, cut) + '…truncated' }
+    })) : ''
+    return framed + (more || truncated ? (framed ? '\n\n' : '') + recovery : '')
+  }
   for (const item of items) {
     if (batch.length === APPEND_MAX_ITEMS
-        || encoder.encode(frame([...batch, item])).length > APPEND_MAX_BYTES) break
+        || encoder.encode(render([...batch, item], batch.length + 1 < items.length)).length > APPEND_MAX_BYTES) {
+      if (!batch.length) batch.deferred.push(item)
+      break
+    }
     batch.push(item)
   }
+  batch.text = render(batch, batch.length < items.length)
   return batch
 }
 
@@ -418,6 +441,12 @@ export function createCore(io) {
     return ackIds(ackable)
   }
 
+  function completeBatch(batch, via) {
+    for (const item of batch.deferred) item.recoveryOffered = true
+    if (!batch.length) return Promise.resolve()
+    return complete(batch, via)
+  }
+
   function ackIds(ids) {
     const groups = {}
     for (const id of ids) {
@@ -515,8 +544,8 @@ export function createCore(io) {
         if (io.now() - S.draftSince < DRAFT_WAIT_MS) return held('draft', ids)
       }
       S.draftSince = null
-      const batch = appendBatch(batchOrder(S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id))))
-      if (!batch.length && !S.turns.wake) return
+      const batch = appendBatch(batchOrder(S.queue.filter((q) => !passive(q) && !q.inflight && !q.recoveryOffered && q.run === S.run && !predHas(q.id))), cmd())
+      if (!batch.text && !S.turns.wake) return
       const gen = S.gen
       for (const it of batch) it.inflight = true
       S.submitInflight = true
@@ -531,10 +560,10 @@ export function createCore(io) {
 
   async function deliverIdle(batch, gen) {
     const bids = batch.map((i) => i.id)
-    if (batch.length) {
+    if (batch.text) {
       let p
       try {
-        p = Promise.resolve(io.append(frame(batch)))
+        p = Promise.resolve(io.append(batch.text))
       } catch (err) {
         p = Promise.reject(err)
       }
@@ -560,7 +589,7 @@ export function createCore(io) {
         return
       }
       // The append is the delivery: the items are settled by it, and the wake below only gives them a turn.
-      void complete(batch, 'append')
+      void completeBatch(batch, 'append')
       S.turns.wake = { sid: S.sid, at: io.now() }
       persistTurns()
       await S.stateChain
@@ -606,15 +635,15 @@ export function createCore(io) {
   async function pumpLazy() {
     if (S.inert || S.disposed || S.appendInflight || !S.live) return
     if (io.now() < S.appendBackoffUntil) return
-    const batch = appendBatch(batchOrder(S.queue.filter((q) => passive(q) && !q.inflight && q.run === S.run)))
-    if (!batch.length) return
+    const batch = appendBatch(batchOrder(S.queue.filter((q) => passive(q) && !q.inflight && !q.recoveryOffered && q.run === S.run)), cmd())
+    if (!batch.text) return
     const gen = S.gen
     for (const it of batch) it.inflight = true
     S.appendInflight = true
     const ids = batch.map((i) => i.id)
     let p
     try {
-      p = Promise.resolve(io.append(frame(batch)))
+      p = Promise.resolve(io.append(batch.text))
     } catch (err) {
       p = Promise.reject(err)
     }
@@ -634,7 +663,7 @@ export function createCore(io) {
           ledger('refused', { ids, via: 'append', reason: `deny:${r.deny}` })
           return
         }
-        return complete(batch, 'append')
+        return completeBatch(batch, 'append')
       })
       .then(() => pumpLazy())
   }
@@ -800,10 +829,11 @@ export function createCore(io) {
     const answered =
       result && result.result !== undefined && result.deny === undefined && result.isError !== true
     if (!answered || !S.live) return result
-    const batch = batchOrder(S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id)))
-    if (!batch.length) return result
-    void complete(batch, 'context')
-    return { ...result, context: [...(result.context ?? []), frame(batch)] }
+    const batch = appendBatch(batchOrder(S.queue.filter((q) => !passive(q) && !q.inflight && !q.recoveryOffered && q.run === S.run && !predHas(q.id))), cmd())
+    if (!batch.text) return result
+    const output = { ...result, context: [...(result.context ?? []), batch.text] }
+    void completeBatch(batch, 'context')
+    return output
   }
 
   function onSessionEnd(reason) {

@@ -131,11 +131,14 @@ fn top_level_session_start_enrolls_and_prints_the_startup_check_in() {
     let hook = run(&fx, &home, "SessionStart", "session-start-top");
     let text = system_message(&hook);
     assert!(
-        text.starts_with("Use inbox; follow its next: commands"),
+        text.starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"),
         "{text}"
     );
     assert!(text.contains(herdr_threads::harness::agy::AGY_COMMAND_GUIDANCE.trim_end()));
-    assert!(!text.contains("unavailable"), "{text}");
+    assert!(
+        !text.contains("herdr-threads: check-in unavailable ("),
+        "{text}"
+    );
     assert!(
         text.len() <= 4096,
         "the startup context stays within the encode bound"
@@ -156,7 +159,10 @@ fn a_child_session_start_in_an_enrolled_pane_leaves_the_binding_alone() {
     let child = run(&fx, &home, "SessionStart", "session-start-child");
     let text = system_message(&child);
     assert!(text.to_lowercase().contains("subagent"), "{text}");
-    assert!(!text.starts_with("Use inbox"), "{text}");
+    assert!(
+        !text.starts_with("Complete hook/channel deliveries"),
+        "{text}"
+    );
     assert_eq!(generation(&fx), generation_before);
     assert_eq!(live_binding(&fx, TOP), 1, "the top-level binding stays");
     assert_eq!(live_bindings(&fx), 1);
@@ -179,7 +185,10 @@ fn clear_rotates_the_generation_and_binds_the_new_conversation() {
         "SessionStart",
         "session-start-after-clear",
     ));
-    assert!(text.starts_with("Use inbox"), "{text}");
+    assert!(
+        text.starts_with("Complete hook/channel deliveries"),
+        "{text}"
+    );
     // Session-keyed bindings: the new conversation is a new binding at the same seat generation;
     // the earlier one, of the same agy process, is superseded (disconnected, never ended).
     assert_eq!(generation(&fx), enrolled);
@@ -215,7 +224,7 @@ fn inv0_resume_reattaches_the_seat_by_c1_from_the_first_turn_start() {
         "a lifecycle from a turn start carries the supersede line: {text}"
     );
     assert!(
-        text[LIFECYCLE_PREFIX.len()..].starts_with("Use inbox"),
+        text[LIFECYCLE_PREFIX.len()..].starts_with("Complete hook/channel deliveries"),
         "{text}"
     );
     assert_eq!(
@@ -335,7 +344,7 @@ fn a_resume_of_an_earlier_conversation_with_a_state_file_rebinds_by_c1() {
     ));
     assert!(text.starts_with(LIFECYCLE_PREFIX), "{text}");
     assert!(
-        text[LIFECYCLE_PREFIX.len()..].starts_with("Use inbox"),
+        text[LIFECYCLE_PREFIX.len()..].starts_with("Complete hook/channel deliveries"),
         "{text}"
     );
     assert_eq!(
@@ -372,7 +381,10 @@ fn a_session_start_without_a_presence_lock_enrolls_nothing() {
     let before = (generation(&fx), fx.check_ins.load(Ordering::SeqCst));
     let hook = run(&fx, &home, "SessionStart", "session-start-top");
     let text = system_message(&hook);
-    assert!(!text.starts_with("Use inbox"), "{text}");
+    assert!(
+        !text.starts_with("Complete hook/channel deliveries"),
+        "{text}"
+    );
     assert_eq!(live_bindings(&fx), 0);
     assert_eq!(
         (generation(&fx), fx.check_ins.load(Ordering::SeqCst)),
@@ -441,7 +453,10 @@ fn daemon_down_prints_one_check_in_unavailable_message(cases: &[(&str, &str, &st
             text.contains("herdr-threads: check-in unavailable ("),
             "{layout} {name}: {text}"
         );
-        assert!(!text.contains("Use inbox"), "{layout} {name}: {text}");
+        assert!(
+            !text.contains("Complete hook/channel deliveries"),
+            "{layout} {name}: {text}"
+        );
         assert!(
             text.len()
                 <= herdr_threads::cli::hook::MAX_CONTEXT
@@ -558,7 +573,10 @@ fn agy_lazy_row_settles_only_through_the_transcript_confirm_never_hook_context()
         "SessionStart",
         "session-start-after-clear",
     ));
-    assert!(text.starts_with("Use inbox"), "{text}");
+    assert!(
+        text.starts_with("Complete hook/channel deliveries"),
+        "{text}"
+    );
     assert!(
         !text.contains("passive hello") && !text.contains(INBOX_HEADER),
         "the lifecycle context carries no lazy body or inbox block: {text}"

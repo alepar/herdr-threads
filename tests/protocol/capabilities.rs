@@ -1,4 +1,11 @@
 use super::*;
+
+#[test]
+fn hook_context_receipt_capability_is_additive() {
+    assert!(ADVERTISED.contains(&"hook.context_receipts_v1"));
+    assert!(ADVERTISED.contains(&LAZY_HOOK_DELIVERY));
+    assert!(!Capabilities::none().supports("hook.context_receipts_v1"));
+}
 use crate::{
     client::local::LocalSocketClient,
     daemon::{
@@ -272,6 +279,7 @@ fn capability_constants_are_stable() {
     assert_eq!(SEAT_MANAGED_LAUNCH, "seat.managed_launch");
     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
+    assert_eq!(HOOK_CONTEXT_RECEIPTS_V1, "hook.context_receipts_v1");
     assert_eq!(DELIVERY_PRESENTATION_V2, "delivery.presentation_v2");
     assert_eq!(MOD_WATCH_PRESENTATION_V2, "mod.watch_presentation_v2");
     assert_eq!(BINDING_CURSORS, "inbox.binding_cursors_v1");
@@ -308,6 +316,7 @@ fn capability_constants_are_stable() {
             "seat.wake_on_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
+            "hook.context_receipts_v1",
             "delivery.presentation_v2",
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
@@ -568,6 +577,7 @@ fn every_advertised_capability_has_a_handler() {
                     ErrorCode::NotFound
                 );
             }
+            HOOK_CONTEXT_RECEIPTS_V1 => probe_hook_context_receipts(),
             BINDING_CURSORS => probe_binding_cursors(),
             INBOX_THREAD_SCOPE => probe_inbox_thread_scope(),
             INBOX_PUSHED_HOLD => probe_inbox_pushed_hold(),
@@ -638,6 +648,174 @@ fn every_advertised_capability_has_a_handler() {
             other => panic!("{other} is advertised but has no handler probe here"),
         }
     }
+}
+
+/// Exercise the advertised native-context source through the actual configured daemon:
+/// a requested receipt must settle canonically, retaining source provenance across replay.
+fn probe_hook_context_receipts() {
+    use crate::{
+        ports::StorePort,
+        protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            commands::{
+                CheckIn, CheckInMode, CompleteInboxDelivery, CreateThread, DeliveryMode, Join,
+                LazyCompletionVia, SendMessage,
+            },
+            ids::{ExecutionId, HostTargetId, NativeSessionId, OperationId, SeatId},
+        },
+        service::{dispatch::DomainService, fair_writer::FairWriter},
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let isolated = TestIsolation::new("hook-context-capability-route");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let instance = crate::node::NodeUuid::new_v4();
+    let context = StoreContext::new(isolated.path("store.db"), clock.clone())
+        .with_test_host()
+        .with_node_seed(crate::test_support::node_seed_for(instance));
+    let db = context.open_writer().unwrap();
+    let boot = Uuid::new_v4();
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
+    for seat in ["origin", "recipient"] {
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?1,0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat, instance.to_string()]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),?2,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc-'||?2,'coherent_enumeration',1)", rusqlite::params![instance.to_string(),seat]).unwrap();
+    }
+    let store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(context, instance.to_string(), StoreSettings::default()).unwrap(),
+    );
+    let domain = DomainService::new(instance.to_string(), store, clock)
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
+    let handler = ControlService::new(
+        StopController::new(instance, boot, Cancellation::default()),
+        move |_: &CallBudget| HealthInputs::unknown(instance, boot),
+        domain,
+    );
+    let call = |command| {
+        handler
+            .handle(command, PeerIdentity::from_kernel(501), &budget())
+            .unwrap()
+    };
+    let CommandResult::Capabilities(caps) = call(Command::Capabilities) else {
+        panic!("capabilities")
+    };
+    assert!(
+        caps.capabilities
+            .iter()
+            .any(|name| name == HOOK_CONTEXT_RECEIPTS_V1),
+        "configured actual capability response must advertise the selected routes"
+    );
+    let check_in = |seat: &str| {
+        let session = format!("session-{seat}");
+        let claim = CallerClaim {
+            host: crate::test_support::test_host_locator(),
+            instance: instance.to_string(),
+            seat: SeatId::new(seat),
+            binding_generation: 0,
+            role: CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new(&session),
+            execution: ExecutionId::new(Uuid::new_v4().to_string()),
+            target: HostTargetId::new(seat),
+            agent_id: None,
+            liveness: Some(crate::test_support::isolation::stand_in_fingerprint(
+                "codex", &session,
+            )),
+        };
+        let CommandResult::CheckedIn(checked) = call(Command::CheckIn(CheckIn {
+            lineage_parent: None,
+            mode: CheckInMode::Lifecycle {
+                expected_binding_generation: 0,
+            },
+            claim,
+            operation: OperationId::new(format!("check-in-{seat}")),
+        })) else {
+            panic!("canonical binding")
+        };
+        checked.context
+    };
+    let origin = check_in("origin");
+    let recipient = check_in("recipient");
+    let CommandResult::ThreadCreated(thread) = call(Command::CreateThread(CreateThread {
+        name: None,
+        topic: "hook receipt capability".into(),
+        goal: "canonical receipt settlement".into(),
+        operation: OperationId::new("receipt-create"),
+        claim: origin.clone(),
+    })) else {
+        panic!("created thread")
+    };
+    call(Command::Join(Join {
+        thread: thread.clone(),
+        operation: OperationId::new("receipt-join"),
+        claim: recipient.clone(),
+    }));
+    let CommandResult::MessageSent(message) = call(Command::SendMessage(SendMessage {
+        priority: None,
+        delivery_mode: DeliveryMode::Ordinary,
+        thread,
+        body: "complete native context".into(),
+        direct_recipient: None,
+        invited_recipients: vec![recipient.seat.clone()],
+        deadline_millis: Some(300_000),
+        operation: OperationId::new("receipt-send"),
+        claim: origin,
+        relays_user: false,
+        user_intent: None,
+    })) else {
+        panic!("published requested receipt")
+    };
+    let receipt = || {
+        db.query_row(
+        "SELECT state,ack_observation FROM receipt_state WHERE message_id=?1 AND seat_id='recipient'",
+        [message.as_str()],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+    ).unwrap()
+    };
+    assert_eq!(
+        crate::store::effective::effective_receipt(&db, message.as_str(), "recipient")
+            .unwrap()
+            .expect("the published send requests a recipient receipt")
+            .state,
+        crate::store::effective::EffectiveReceiptState::Pending
+    );
+    let command = Command::CompleteInboxDelivery(CompleteInboxDelivery {
+        messages: vec![],
+        receipt_candidates: vec![message.clone()],
+        operation: OperationId::new("receipt-complete"),
+        claim: recipient,
+        via: Some(LazyCompletionVia::HookContext),
+    });
+    assert!(command.validate().is_ok());
+    assert_eq!(
+        serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+        command
+    );
+    let completed = call(command.clone());
+    assert_eq!(completed, CommandResult::InboxDeliveryCompleted(vec![]));
+    let (state, observation) = receipt();
+    assert_eq!(state, "acked");
+    let observation: serde_json::Value = serde_json::from_str(&observation.unwrap()).unwrap();
+    assert_eq!(observation["action_provenance"], "cooperative_hook_context");
+    assert_eq!(observation["via"], "hook_context");
+    assert_eq!(observation["session"], "session-recipient");
+    let settled = receipt();
+    assert_eq!(call(command), completed);
+    assert_eq!(
+        receipt(),
+        settled,
+        "exact replay preserves canonical attribution"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM messages WHERE kind='info' AND event_key LIKE 'ack_mod:%'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1,
+        "one terminal receipt event across replay"
+    );
 }
 
 /// The cursor command is served by the store, which decides it against the canonical view: a
@@ -820,6 +998,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "seat.wake_on_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
+            "hook.context_receipts_v1",
             "delivery.presentation_v2",
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",

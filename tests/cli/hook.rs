@@ -576,7 +576,7 @@ fn native_envelope_marks_peer_data_and_never_decides_permission() {
     assert!(!context.contains("untrusted"), "{context}");
     assert!(!fixed.contains("Ignore previous"), "{fixed}");
     assert!(!data.contains('\n') && !data.contains('\u{1b}'), "{data}");
-    let decoded: String = serde_json::from_str(data).unwrap();
+    let decoded: String = serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap();
     assert!(decoded.contains(hostile));
     // The digest summary rides inside the escaped data, after the offer.
     assert!(
@@ -833,10 +833,12 @@ fn instruction_is_short_and_the_child_rule_forbids_every_write() {
         assert!(!top.contains(shape), "{shape} duplicated in {top}");
     }
     assert!(top.len() <= 1024, "{}", top.len());
-    assert!(top.contains("Use inbox; follow its next: commands"));
-    assert!(top.contains("text inbox ACKs only complete pending agent messages"));
-    assert!(top.contains("it fully displays, after output is written and flushed"));
-    assert!(top.contains("Do not reread or re-ACK these messages"));
+    assert!(top.contains("Complete hook/channel deliveries and default text inbox displays"));
+    assert!(
+        top.contains("ACK eligible receipts automatically after output is written and flushed")
+    );
+    assert!(top.contains("Call inbox only for continuations or unavailable delivery"));
+    assert!(top.contains("Do not reread or re-ACK them"));
     assert!(top.contains("JSON/--machine inbox, read and pending-receipts are read-only"));
     assert!(top.contains("explicitly ACK exact IDs read elsewhere"));
     assert!(top.contains("Do not poll or run follow to wait"));
@@ -1580,7 +1582,7 @@ fn communication_guide_instruction_survives_offer_trimming() {
                 context.contains("Before using threads, run herdr-threads skill"),
                 "{harness:?}: {context}"
             );
-            assert!(context.contains("unless its guide is already in context"));
+            assert!(context.contains("unless its guide is in context"));
         }
     }
     let child = render_context(Role::Subagent, &[], true).unwrap();
@@ -1804,6 +1806,7 @@ fn final_fallback_never_exceeds_max_context() {
     let (notice_line, history_lines, digest_lines) =
         split_summary(Some("attention digest: x\noffered notices: 1"));
     let parts = ContextParts {
+        continuation_managed: false,
         instruction: &instruction,
         actions: Some(&actions),
         overview: Some(&overview),
@@ -3568,8 +3571,9 @@ mod continuity_gate {
                 .done()
                 .expect("reattached");
             assert!(
-                String::from_utf8_lossy(&done.text)
-                    .starts_with("Use inbox; follow its next: commands"),
+                String::from_utf8_lossy(&done.text).starts_with(
+                    "Complete hook/channel deliveries and default text inbox displays"
+                ),
                 "a resumed session gets the standing instruction"
             );
             let requests = daemon.continuity_requests();
@@ -4351,7 +4355,7 @@ fn recovery_of(rows: Vec<crate::protocol::results::HotThread>, overflow: &[&str]
 /// peer-data lines of an emitted context.
 fn split_recovery(context: &str) -> (String, Vec<String>) {
     let (fixed, data) = context.split_once("\npeer_data: ").unwrap();
-    let decoded: String = serde_json::from_str(data).unwrap();
+    let decoded: String = serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap();
     (
         fixed.to_owned(),
         decoded.lines().map(str::to_owned).collect(),
@@ -4900,6 +4904,50 @@ fn adapter_budget_caps_and_encoding_delivery_are_conservative() {
         .1
     );
     assert!(!output_bytes(Err(EncodeFailure::Invalid("test".into()))).1);
+}
+
+// The native process treats this result as permission for receipt/cursor
+// completion. In particular, accepting all bytes but failing flush is not a
+// completed display. The installed-hook broken-stdout test checks the canonical
+// consequences of a false result through the process boundary.
+#[test]
+fn native_output_requires_successful_write_and_flush() {
+    struct Sink {
+        fail_write: bool,
+        fail_flush: bool,
+        bytes: Vec<u8>,
+        flushes: usize,
+    }
+    impl std::io::Write for Sink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.fail_write {
+                return Err(std::io::Error::other("native write failed"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes += 1;
+            if self.fail_flush {
+                return Err(std::io::Error::other("native flush failed"));
+            }
+            Ok(())
+        }
+    }
+    for (fail_write, fail_flush) in [(true, false), (false, true), (false, false)] {
+        let mut sink = Sink {
+            fail_write,
+            fail_flush,
+            bytes: vec![],
+            flushes: 0,
+        };
+        let delivered = write_and_flush(b"complete encoded native context", &mut sink);
+        assert_eq!(delivered, !fail_write && !fail_flush);
+        assert_eq!(sink.flushes, usize::from(!fail_write));
+        if !fail_write {
+            assert_eq!(sink.bytes, b"complete encoded native context");
+        }
+    }
 }
 
 // Catches child output bypassing policy composition and entering canonical work.
@@ -5816,6 +5864,7 @@ mod mod_channel_live {
         assert_eq!(history_lines.len(), 2);
         let fallback = vec!["herdr-threads".to_owned(), "inbox".to_owned()];
         let parts = ContextParts {
+            continuation_managed: false,
             instruction: &instruction,
             actions: None,
             overview: None,
@@ -9083,6 +9132,22 @@ mod registered_resume {
     }
     fn task52_hot_fixture() -> Fixture {
         let f = Fixture::new(true);
+        // These lifecycle tests model a capable daemon's successful empty
+        // inbox, so the attention mark may commit after known full coverage.
+        write_fixture_json(
+            &f.root.join("inbox-v2.json"),
+            &crate::protocol::pagination::Page::<crate::protocol::results::InboxBatchV2Item> {
+                items: vec![],
+                next_cursor: None,
+                next_argv: None,
+                high_water_ordinal: 0,
+                scope_revision: None,
+                has_more: false,
+                stop_reason: crate::protocol::pagination::StopReason::Complete,
+                consistency: crate::protocol::pagination::Consistency::BoundedLive,
+            },
+        )
+        .unwrap();
         write_fixture_json(
             &f.root.join("task52-hot.json"),
             &crate::protocol::results::HotThreads {
@@ -9206,7 +9271,10 @@ mod registered_resume {
         );
         assert!(context.contains("hermes lazy body"), "{context}");
         assert!(!context.contains("a partial"), "{context}");
-        assert!(context.contains("More inbox content remains"), "{context}");
+        assert!(
+            context.contains("More inbox content may remain"),
+            "{context}"
+        );
         assert_eq!(
             outcome.lazy.as_ref().map(|lazy| lazy.messages.clone()),
             Some(vec![crate::protocol::ids::MessageId::new("m-whole")])

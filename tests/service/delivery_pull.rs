@@ -1129,6 +1129,7 @@ fn presentation_q3_complete_inbox_delivery_coalesces_many_real_thread_gaps() {
     let sibling_cursors = q3_cursors(&f, &b);
     let receipts = q3_receipt_snapshot(&f);
     let request = CompleteInboxDelivery {
+        receipt_candidates: Vec::new(),
         messages: messages.clone(),
         operation: OperationId::new("q3-many-complete"),
         claim: a.clone(),
@@ -1191,6 +1192,7 @@ fn presentation_q3_complete_inbox_delivery_coalesces_many_real_thread_gaps() {
     f.service
         .handle(
             Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                receipt_candidates: Vec::new(),
                 operation: OperationId::new("q3-many-complete-noop"),
                 ..request
             }),
@@ -2470,7 +2472,7 @@ fn the_marker_prefix_reaches_the_truncation_marker() {
     else {
         panic!("not a pull reply");
     };
-    assert!(page(reply).text.contains("/opt/ht --state-dir /s body big"));
+    assert!(page(reply).text.contains("/opt/ht --state-dir /s inbox"));
 }
 
 /// One pending invitation for seat `s` (what wakes a seat without a message).
@@ -10104,6 +10106,7 @@ fn presentation_reclamation_requires_published_addressed_lazy_completion() {
         .service
         .handle(
             Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                receipt_candidates: Vec::new(),
                 messages: shown.clone(),
                 operation: OperationId::new("reclamation-full-lazy-display"),
                 claim: recipient.clone(),
@@ -11778,7 +11781,7 @@ fn presentation_capacity_due_promoted_lazy_defers_oversize_render_then_retries()
                     assert!(content.truncated);
                     assert_eq!(content.body_len, 65536);
                     assert_eq!(
-                        content.body.matches("herdr-threads body").count(),
+                        content.body.matches("herdr-threads inbox").count(),
                         1,
                         "one producer marker"
                     );
@@ -11912,6 +11915,7 @@ fn presentation_capacity_due_walk_preserves_partial_body_until_real_ack() {
                 .handle(
                     Command::CompleteInboxDelivery(
                         crate::protocol::commands::CompleteInboxDelivery {
+                            receipt_candidates: Vec::new(),
                             messages: vec![first.clone()],
                             operation: OperationId::new("partial-lazy-completion"),
                             claim: window.recipient.clone(),
@@ -12406,7 +12410,7 @@ fn presentation_owner_replay_nonfull_once_per_lease_preserves_physical_metadata(
         assert_eq!(message.0, mode == DeliveryMode::Lazy && !promoted);
         assert_eq!(message.1.truncated, large);
         assert_eq!(
-            message.1.body.matches("herdr-threads body").count(),
+            message.1.body.matches("herdr-threads inbox").count(),
             usize::from(large)
         );
         if mode == DeliveryMode::Lazy {
@@ -13300,6 +13304,7 @@ fn presentation_owner_replay_preserves_partial_body_until_real_ack() {
                 .handle(
                     Command::CompleteInboxDelivery(
                         crate::protocol::commands::CompleteInboxDelivery {
+                            receipt_candidates: Vec::new(),
                             messages: vec![first.clone()],
                             operation: OperationId::new("partial-lazy-completion"),
                             claim: window.recipient.clone(),

@@ -955,6 +955,10 @@ pub enum LazyCompletionVia {
 #[serde(deny_unknown_fields)]
 pub struct CompleteInboxDelivery {
     pub messages: Vec<MessageId>,
+    /// Existing receipt obligations whose complete bodies were emitted in native hook context.
+    /// Requires `hook.context_receipts_v1` and `via = hook_context`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub receipt_candidates: Vec<MessageId>,
     pub operation: OperationId,
     pub claim: CallerClaim,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1530,8 +1534,13 @@ impl Command {
                 Ok(())
             }
             Self::CompleteInboxDelivery(completion)
-                if completion.messages.is_empty()
-                    || completion.messages.len() > MAX_BATCH_ITEMS =>
+                if completion.messages.len() + completion.receipt_candidates.len() == 0
+                    || completion.messages.len() + completion.receipt_candidates.len()
+                        > MAX_BATCH_ITEMS
+                    || has_duplicate(&completion.messages)
+                    || has_duplicate(&completion.receipt_candidates)
+                    || (!completion.receipt_candidates.is_empty()
+                        && completion.via != Some(LazyCompletionVia::HookContext)) =>
             {
                 Err("invalid inbox delivery completion batch size")
             }

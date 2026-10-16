@@ -769,6 +769,7 @@ impl SemanticMutation {
             }),
             Self::CompleteInboxDelivery { messages } => {
                 Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                    receipt_candidates: Vec::new(),
                     via: None,
                     messages: messages.clone(),
                     operation,

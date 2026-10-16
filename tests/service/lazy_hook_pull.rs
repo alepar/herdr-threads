@@ -242,6 +242,7 @@ fn complete(
 ) -> Result<CommandResult, crate::protocol::results::ApiError> {
     f.service.handle(
         Command::CompleteInboxDelivery(CompleteInboxDelivery {
+            receipt_candidates: Vec::new(),
             messages: vec![MessageId::new(id)],
             operation: OperationId::new(operation),
             claim: claim.clone(),

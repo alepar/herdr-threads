@@ -10,10 +10,12 @@
 
 use herdr_threads::ports::StorePort;
 use herdr_threads::protocol::authority::Harness;
-use herdr_threads::protocol::commands::{Ack, AckModDelivered, DeliveryMode, PermitMutation};
+use herdr_threads::protocol::commands::{
+    Ack, AckModDelivered, CompleteInboxDelivery, DeliveryMode, LazyCompletionVia, PermitMutation,
+};
 use herdr_threads::protocol::delivery::DeliveryConfirm;
 use herdr_threads::protocol::ids::{MessageId, OperationId, SeatId};
-use herdr_threads::protocol::results::{CommandResult, ErrorCode};
+use herdr_threads::protocol::results::{ApiError, CommandResult, ErrorCode};
 use herdr_threads::protocol::watch::ModDeliveryVia;
 use herdr_threads::store::materialize::FactRoute;
 use herdr_threads::sync::facts::payload::ReceiptObligation;
@@ -60,12 +62,13 @@ enum CompletionPath {
     Inbox,
     Mod,
     HookPull,
+    HookContext,
 }
 
 impl CompletionPath {
     fn harness(self) -> Harness {
         match self {
-            Self::Inbox => Harness::Codex,
+            Self::Inbox | Self::HookContext => Harness::Codex,
             Self::Mod => Harness::Claude,
             Self::HookPull => Harness::Agent(
                 herdr_threads::harness::registry::builtins()
@@ -76,6 +79,15 @@ impl CompletionPath {
     }
 
     fn complete(self, w: &RWorld, id: &MessageId, operation: &str) {
+        self.try_complete(w, id, operation).unwrap();
+    }
+
+    fn try_complete(
+        self,
+        w: &RWorld,
+        id: &MessageId,
+        operation: &str,
+    ) -> Result<CommandResult, ApiError> {
         let claim = w.b.completion_claim(&w.agent, self.harness());
         let operation = OperationId::new(operation);
         let mutation = match self {
@@ -95,15 +107,19 @@ impl CompletionPath {
                 operation,
                 claim,
             }),
+            Self::HookContext => PermitMutation::CompleteInboxDelivery(CompleteInboxDelivery {
+                messages: vec![],
+                receipt_candidates: vec![id.clone()],
+                via: Some(LazyCompletionVia::HookContext),
+                operation,
+                claim,
+            }),
         };
-        let permit =
-            w.b.store
-                .issue_cooperative_permit(
-                    herdr_threads::store::cooperative_permit_request(&mutation).unwrap(),
-                    &budget(),
-                )
-                .unwrap();
-        w.b.store.mutate(mutation, permit, &budget()).unwrap();
+        let permit = w.b.store.issue_cooperative_permit(
+            herdr_threads::store::cooperative_permit_request(&mutation)?,
+            &budget(),
+        )?;
+        w.b.store.mutate(mutation, permit, &budget())
     }
 }
 
@@ -120,6 +136,28 @@ fn public_completion_replicates_only_shown_ids(path: CompletionPath) {
     );
     assert_eq!(w.b.settled_row(&withheld, &w.agent).unwrap().0, "pending");
     assert_eq!(w.b.count_kind("receipt.settled"), 1);
+
+    if matches!(path, CompletionPath::HookContext) {
+        let observations: Vec<String> = w.b.query(
+            "SELECT ack_observation FROM receipt_state WHERE state='acked'",
+            |r| r.get(0),
+        );
+        assert_eq!(observations.len(), 1);
+        let observation: serde_json::Value = serde_json::from_str(&observations[0]).unwrap();
+        assert_eq!(observation["action_provenance"], "cooperative_hook_context");
+        assert_eq!(observation["via"], "hook_context");
+        let facts: Vec<_> = origin_entries(&w.b, w.b.id)
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .filter(|entry| entry.kind == "receipt.settled")
+            .collect();
+        assert_eq!(facts.len(), 1);
+        let payload: serde_json::Value = serde_json::from_slice(&facts[0].payload).unwrap();
+        assert_eq!(
+            payload["how"], "policy",
+            "reuse the existing wire settlement kind"
+        );
+    }
 
     // Replaying an operation and repeating the display under a fresh operation
     // must not author another fact, including while the sender is offline.
@@ -204,6 +242,40 @@ fn mod_completion_replicates_only_shown_ids() {
 #[test]
 fn hook_pull_completion_replicates_only_shown_ids() {
     public_completion_replicates_only_shown_ids(CompletionPath::HookPull);
+}
+
+#[test]
+fn hook_context_completion_replicates_only_shown_ids() {
+    public_completion_replicates_only_shown_ids(CompletionPath::HookContext);
+}
+
+#[test]
+fn hook_context_completion_during_hold_retries_and_replicates_after_release() {
+    let w = rworld_as(234, Harness::Codex);
+    let message = w.send();
+    w.deliver(&[&message]);
+    hold_on(&w.b);
+    CompletionPath::HookContext
+        .try_complete(&w, &message, "held-display")
+        .expect_err("a refused receipt completion must not report a successful display commit");
+    for node in [&w.a, &w.b] {
+        assert_eq!(node.settled_row(&message, &w.agent).unwrap().0, "pending");
+        assert_eq!(node.count_kind("receipt.settled"), 0);
+    }
+    assert_eq!(
+        w.b.count("SELECT count(*) FROM fact_attribution_staging"),
+        0,
+        "a refused display leaves no staged attribution"
+    );
+    hold_off(&w.b);
+    CompletionPath::HookContext.complete(&w, &message, "retry-display");
+    ship_origin(&w.b, w.b.id, &w.a.store);
+    for node in [&w.a, &w.b] {
+        assert_eq!(node.settled_row(&message, &w.agent).unwrap().0, "acked");
+        assert_eq!(node.count_kind("receipt.settled"), 1);
+        assert_eq!(node.ack_events(&w.thread).len(), 1);
+    }
+    assert_eq!(w.a.count("SELECT count(*) FROM receipt_due_sparse"), 0);
 }
 
 // ---- send, ACK, sync -----------------------------------------------------------

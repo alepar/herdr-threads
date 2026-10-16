@@ -450,9 +450,12 @@ fn hook_emits_compact_instructions_without_ack_and_child_emits_only_summary_guid
     let mut out = vec![];
     run_hook_event(&j, &cj, &event, Some(&seed), 1, &client, &Clock, &mut out).unwrap();
     let text = String::from_utf8(out).unwrap();
-    assert!(text.contains("text inbox ACKs only complete pending agent messages"));
+    assert!(text.contains("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"));
     assert!(text.contains("after output is written and flushed"));
     assert!(text.contains("Accept invitations separately"));
+    assert!(text.contains("Call inbox only for continuations or unavailable delivery"));
+    assert!(text.contains("JSON/--machine inbox, read and pending-receipts are read-only"));
+    assert!(text.contains("explicitly ACK exact IDs read elsewhere"));
     assert_eq!(client.calls.lock().unwrap().len(), 2);
     event.role = Role::Subagent;
     event.event_id = "child".into();

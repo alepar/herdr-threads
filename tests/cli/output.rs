@@ -302,6 +302,7 @@ fn invitation_policy_lazy_hook_display_remains_recoverable_without_acceptance() 
         results::InboxBatchV2Item,
     };
     let offer = crate::cli::hook_inbox::InboxOffer {
+        receipt_completion: true,
         in_turn_offer: false,
         claim: CallerClaim {
             host: crate::test_support::test_host_locator(),

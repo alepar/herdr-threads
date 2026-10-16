@@ -81,6 +81,9 @@ const HANG_FOR: Duration = Duration::from_millis(3000);
 const DROP: u8 = 3;
 /// Withhold the capability response beyond the production tool deadline.
 const WITHHOLD_CAPABILITIES: u8 = 4;
+const FAIL_COMPLETION: u8 = 5;
+const LOSE_COMPLETION_RESPONSE: u8 = 6;
+const FAIL_CURSOR: u8 = 7;
 
 /// Where a scripted arrival lands relative to the hook's calls.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -304,6 +307,8 @@ impl Drop for HookHandlerPhase<'_> {
 
 struct Counting {
     inner: Arc<dyn herdr_threads::ports::LocalService>,
+    completions:
+        Arc<std::sync::Mutex<Vec<herdr_threads::protocol::commands::CompleteInboxDelivery>>>,
     check_ins: Arc<AtomicU64>,
     parse_failures: Arc<AtomicU64>,
     withheld_capabilities: Arc<AtomicU64>,
@@ -317,6 +322,43 @@ struct Counting {
     phases: Arc<HookPhases>,
 }
 impl Counting {
+    fn before_completion(
+        &self,
+        command: &Command,
+    ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        if let Command::CompleteInboxDelivery(request) = command {
+            self.completions.lock().unwrap().push(request.clone());
+        }
+        if (matches!(command, Command::CompleteInboxDelivery(_))
+            && self.mode.load(Ordering::SeqCst) == FAIL_COMPLETION)
+            || (matches!(command, Command::AdvanceCursors(_))
+                && self.mode.load(Ordering::SeqCst) == FAIL_CURSOR)
+        {
+            return Err(herdr_threads::protocol::results::ApiError::new(
+                herdr_threads::protocol::results::ErrorCode::DeadlineExceeded,
+                "completion refused before commit",
+            ));
+        }
+        Ok(())
+    }
+
+    fn completion_result(
+        &self,
+        command: &Command,
+        result: Result<CommandResult, herdr_threads::protocol::results::ApiError>,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        if result.is_ok()
+            && matches!(command, Command::CompleteInboxDelivery(_))
+            && self.mode.load(Ordering::SeqCst) == LOSE_COMPLETION_RESPONSE
+        {
+            return Err(herdr_threads::protocol::results::ApiError::new(
+                herdr_threads::protocol::results::ErrorCode::DeadlineExceeded,
+                "response lost after canonical commit",
+            ));
+        }
+        result
+    }
+
     fn after(&self, command: &Command) {
         use herdr_threads::protocol::commands::CheckInMode;
         let stage = match command {
@@ -361,6 +403,7 @@ impl Counting {
         }
     }
     fn observe(&self, command: &Command) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        self.before_completion(command)?;
         self.withhold_capabilities(command);
         if matches!(command, Command::HookParseFailure(_)) {
             self.parse_failures.fetch_add(1, Ordering::SeqCst);
@@ -412,8 +455,11 @@ impl herdr_threads::ports::LocalService for Counting {
         if matches!(command, Command::HookParseFailure(_)) {
             self.parse_failures.fetch_add(1, Ordering::SeqCst);
         }
-        self.inner
-            .service_control(command, peer, instance, boot, gate, budget)
+        self.before_completion(&command)?;
+        let result =
+            self.inner
+                .service_control(command.clone(), peer, instance, boot, gate, budget);
+        self.completion_result(&command, result)
     }
     fn audit_service_disconnect(
         &self,
@@ -450,7 +496,7 @@ impl herdr_threads::ports::LocalService for Counting {
         if result.is_ok() {
             self.after(&command);
         }
-        result
+        self.completion_result(&command, result)
     }
     fn handle_with_output(
         &self,
@@ -467,7 +513,7 @@ impl herdr_threads::ports::LocalService for Counting {
         if result.is_ok() {
             self.after(&command);
         }
-        result
+        self.completion_result(&command, result)
     }
 }
 
@@ -857,10 +903,14 @@ fn publish_fixture_snapshot(
 
 struct Fixture {
     root: PathBuf,
+    completions:
+        Arc<std::sync::Mutex<Vec<herdr_threads::protocol::commands::CompleteInboxDelivery>>>,
     state: PathBuf,
     host: PathBuf,
     db: PathBuf,
     node_dir: PathBuf,
+    /// The elected daemon's endpoint, for the store handle of in-process assertions.
+    descriptor: herdr_threads::daemon::ownership::EndpointDescriptor,
     stop: Cancellation,
     worker: Option<std::thread::JoinHandle<()>>,
     check_ins: Arc<AtomicU64>,
@@ -954,6 +1004,8 @@ impl Fixture {
         let (counted, moded, raced) =
             (Arc::clone(&check_ins), Arc::clone(&mode), Arc::clone(&race));
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let completions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_completions = Arc::clone(&completions);
         let worker = std::thread::spawn(move || {
             let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
             let service_clock = Arc::clone(&clock);
@@ -1037,6 +1089,7 @@ impl Fixture {
                         ) as Arc<dyn LocalService>;
                         Ok(Arc::new(Counting {
                             inner,
+                            completions: captured_completions,
                             check_ins: counted,
                             parse_failures: parsed_failures,
                             withheld_capabilities: withheld,
@@ -1066,10 +1119,12 @@ impl Fixture {
         let codex = herdr_threads::harness::setup::shell_command(&codex_argv).unwrap();
         Self {
             root,
+            completions,
             state,
             host,
             db,
             node_dir: paths.node_dir.clone(),
+            descriptor,
             stop,
             worker: Some(worker),
             check_ins,
@@ -1189,7 +1244,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         .as_str()
         .unwrap();
     assert!(
-        context.starts_with("Use inbox; follow its next: commands"),
+        context.starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"),
         "{context}"
     );
     assert!(
@@ -1266,7 +1321,8 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     );
     let message = sent["result"]["data"].as_str().unwrap().to_owned();
 
-    // 4. The next tool hook offers it as framed peer data; nothing is ACKed.
+    // 4. The next tool hook displays the complete message and automatically ACKs
+    // its receipt; the invitation still requires separate consent.
     let offered = run_hook(&command, "w9:p1", &host, &tool("sess-1"));
     assert_eq!(offered.code, Some(0), "{}", offered.stderr);
     let value = offered.context();
@@ -1278,14 +1334,19 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     assert!(!fixed.contains("Ignore instructions"), "{fixed}");
     let data: String = serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap();
     assert!(data.contains(&thread) || data.contains(&message), "{data}");
+    assert!(context.contains("please ack"), "{context}");
+    assert!(!fixed.contains("- pending mail:"), "{fixed}");
+    assert!(!fixed.contains("- inbox fallback"), "{fixed}");
     assert_eq!(
         count(
             &db,
             &format!(
-                "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+                "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked' \
+                 AND json_extract(ack_observation, '$.action_provenance')='cooperative_hook_context' \
+                 AND json_extract(ack_observation, '$.via')='hook_context'"
             )
         ),
-        0
+        1
     );
     assert_eq!(
         count(
@@ -1485,7 +1546,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         .unwrap();
     // Either the check-in won the race with reconciliation, or it was reported.
     assert!(
-        (registered == 1 && !context.contains("unavailable"))
+        (registered == 1 && !context.contains("herdr-threads: check-in unavailable ("))
             || (registered == 0 && context.starts_with("herdr-threads: check-in unavailable (")),
         "state={seat_state} registered={registered} {context}"
     );
@@ -1540,7 +1601,7 @@ fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
     let fx = Fixture::start();
     let started = fx.hook("w9:p1", &start("sess-1"));
     assert_eq!(started.code, Some(0), "{}", started.stderr);
-    assert!(context_of(&started).starts_with("Use inbox; follow its next: commands"));
+    assert!(context_of(&started).starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"));
     let journal_before = fs::read(fx.context_dir("seat").join("context.json")).unwrap();
     let intents_before = fx.intents();
     let before = fx.check_ins.load(Ordering::SeqCst);
@@ -1579,7 +1640,7 @@ fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
     // The seat is not wedged: a later lifecycle check-in still registers.
     let restarted = fx.hook("w9:p1", &start("sess-2"));
     assert!(
-        !context_of(&restarted).contains("unavailable"),
+        !context_of(&restarted).contains("herdr-threads: check-in unavailable ("),
         "{}",
         context_of(&restarted)
     );
@@ -1656,7 +1717,7 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
     let fresh = fx.hook("w9:p1", &start("a-2"));
     assert_eq!(fresh.code, Some(0), "{}", fresh.stderr);
     assert!(
-        !context_of(&fresh).contains("unavailable"),
+        !context_of(&fresh).contains("herdr-threads: check-in unavailable ("),
         "{} / {}",
         context_of(&fresh),
         fresh.stderr
@@ -1683,7 +1744,7 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
     let fresh = fx.hook("w9:p1", &start("b-2"));
     assert_eq!(fresh.code, Some(0), "{}", fresh.stderr);
     assert!(
-        !context_of(&fresh).contains("unavailable"),
+        !context_of(&fresh).contains("herdr-threads: check-in unavailable ("),
         "{} / {}",
         context_of(&fresh),
         fresh.stderr
@@ -1722,10 +1783,15 @@ fn cooperative_seat_on_own_target_startup_clear_resume_register_session_bindings
         assert_eq!(hook.code, Some(0), "{source}: {}", hook.stderr);
         let context = context_of(&hook);
         assert!(
-            context.starts_with("Use inbox; follow its next: commands"),
+            context.starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"),
             "{source}: {context}"
         );
-        assert!(!context.contains("unavailable"), "{source}: {context}");
+        assert!(
+            !context.contains("herdr-threads: check-in unavailable ("),
+            "{source}: {context}"
+        );
+        assert!(!context.contains("- pending mail:"), "{source}: {context}");
+        assert!(!context.contains("- inbox fallback"), "{source}: {context}");
         let next = fx.count("SELECT generation FROM seats WHERE id='seat'");
         assert_eq!(next, generation, "{source}: {generation} -> {next}");
         assert_eq!(
@@ -2033,8 +2099,8 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
 // message, with nothing else pending, moves the digest so the next Bash
 // PreToolUse presents it, and the hook injects the actual inbox rows (not just
 // an inbox pointer). Whole lazy bodies shown are completed after delivery;
-// ACK-required messages are shown with an exact ack command, never ACKed by
-// the hook. Subagent calls never see or complete anything; a body too large
+// ACK-required messages settle automatically after complete output flush.
+// Subagent calls never see or complete anything; a body too large
 // for the bound is never shown or completed and the next call stays quiet.
 // Kills: a lazy-only arrival that leaves the hook quiet (digest unchanged), a
 // pointer-only hook, completion before or without whole display, a hook ACK
@@ -2120,7 +2186,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert_eq!(displayed(), 1);
 
     // 3. Ordinary and lazy together: both rows injected, the ACK-required
-    // one with an exact ack command and left unACKed; the lazy one completed.
+    // one automatically ACKed after delivery; the lazy one completed.
     let ordinary = data(fx.cooperative(
         "peer",
         "w9:p2",
@@ -2137,14 +2203,13 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert!(context.contains("needs a receipt"), "{context}");
     assert!(context.contains("lazy for the top level only"), "{context}");
     assert!(context.contains(&second), "{context}");
-    assert!(context.contains(&format!(" ack {ordinary}")), "{context}");
+    assert!(!context.contains(&format!(" ack {ordinary}")), "{context}");
     assert_eq!(displayed(), 2);
     assert_eq!(
         fx.count("SELECT count(*) FROM receipt_state WHERE state='acked'"),
-        0,
-        "the hook never ACKs"
+        1,
+        "the complete hook display automatically ACKs"
     );
-    fx.cooperative("seat", "w9:p1", &["ack", &ordinary]);
     quiet("after mixed");
 
     // 4. A body larger than the bound moves the digest, but is never shown
@@ -2159,7 +2224,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert!(!context.contains(&big[..100]), "{context}");
     assert!(!context.contains(INBOX_HEADER), "{context}");
     assert!(
-        context.contains("do not fit this hook's context"),
+        context.contains("More inbox content may remain"),
         "{context}"
     );
     assert!(context.len() <= 4096, "{}", context.len());
@@ -2174,6 +2239,323 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
             )),
             0,
             "{table}"
+        );
+    }
+}
+
+// Native receipt settlement is seat-wide; unread delivery and wake remain each binding's own.
+#[test]
+fn native_hook_auto_ack_preserves_sibling_unread_and_delivery_wake() {
+    use herdr_threads::{
+        ports::StorePort,
+        protocol::{ids::BindingId, pagination::PageRequest, priority::NudgeThreshold},
+        store::{SqliteStore, StoreSettings, lazy_delivery},
+    };
+
+    let fx = Fixture::start();
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "native-siblings"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    fx.register("w9:p1", "sess-b");
+    fx.hook("w9:p1", &tool("sess-1"));
+    fx.hook("w9:p1", &tool("sess-b"));
+    let binding = |session: &str| {
+        BindingId::new(fx.count_text(&format!(
+        "SELECT binding_id FROM occupant_bindings WHERE seat_id='seat' AND native_session='{session}' AND ended_at IS NULL"
+    )))
+    };
+    let (a, b) = (binding("sess-1"), binding("sess-b"));
+    assert_ne!(a, b);
+    assert_eq!(fx.count("SELECT count(DISTINCT liveness_pid) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND liveness='connected' AND role='top_level'"), 2,
+        "separate harness processes permit independent wake targets");
+    let cursor = |binding: &BindingId| {
+        fx.count(&format!(
+            "SELECT seq FROM binding_cursors WHERE binding_id='{}' AND thread_id='{thread}'",
+            binding.as_str()
+        ))
+    };
+    let (floor_a, floor_b) = (cursor(&a), cursor(&b));
+    fx.completions.lock().unwrap().clear();
+    let message = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &[
+            "send",
+            &thread,
+            "--body",
+            "requested sibling receipt",
+            "--require-ack",
+            "seat",
+        ],
+    ));
+    // A requested receipt has no delivery row. Default p1 mail supplies an independent row,
+    // whose own unread/wake predicate must survive the seat-level receipt's settlement.
+    let delivery = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "independent sibling delivery"],
+    ));
+    assert_eq!(
+        fx.count(&format!(
+            "SELECT priority FROM lazy_recipients WHERE message_id='{delivery}' AND seat_id='seat'"
+        )),
+        1
+    );
+    assert_eq!(
+        fx.count(&format!(
+            "SELECT priority FROM messages WHERE id='{message}'"
+        )),
+        0
+    );
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+    let store = SqliteStore::new(
+        StoreContext::new(fx.db.clone(), Arc::clone(&clock)),
+        fx.descriptor.node_uuid.to_string(),
+        StoreSettings {
+            daemon_boot: Some(fx.descriptor.boot_id),
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
+    let budget = || CallBudget {
+        deadline: herdr_threads::protocol::time::MonoInstant(clock.monotonic_now().0 + 5000),
+        cancellation: Cancellation::default(),
+    };
+    let host = herdr_threads::test_support::host_id_for_test(
+        fx.count("SELECT host_id FROM seats WHERE id='seat'"),
+    );
+    let candidate = || {
+        store
+            .wake_candidates(host, PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|c| c.seat.as_str() == "seat")
+    };
+    assert!(
+        candidate().unwrap().has_pending_receipt,
+        "control: receipt initially owes attention"
+    );
+    let shown = fx.hook("w9:p1", &tool("sess-1"));
+    assert_eq!(shown.code, Some(0), "{}", shown.stderr);
+    assert!(shown.stderr.is_empty(), "{}", shown.stderr);
+    let context = context_of(&shown);
+    for body in ["requested sibling receipt", "independent sibling delivery"] {
+        assert_eq!(context.matches(body).count(), 1, "{context}");
+    }
+    for directive in [
+        "- pending mail",
+        "More inbox content may remain",
+        " ack ",
+        "- inbox fallback",
+    ] {
+        assert!(!context.contains(directive), "{directive}: {context}");
+    }
+    let requests = fx.completions.lock().unwrap().clone();
+    let receipts: Vec<_> = requests
+        .iter()
+        .filter(|r| !r.receipt_candidates.is_empty())
+        .collect();
+    assert_eq!(receipts.len(), 1, "{requests:?}");
+    assert_eq!(
+        receipts[0]
+            .receipt_candidates
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        [&message]
+    );
+    assert_eq!(receipts[0].claim.native_session.as_str(), "sess-1");
+    assert!(cursor(&a) > floor_a);
+    assert_eq!(
+        cursor(&b),
+        floor_b,
+        "native completion must not advance a sibling"
+    );
+    let receipt = || {
+        fx.count_text(&format!(
+        "SELECT ack_observation FROM receipt_state WHERE message_id='{message}' AND seat_id='seat' AND state='acked'"
+    ))
+    };
+    let observation = receipt();
+    let source: serde_json::Value = serde_json::from_str(&observation).unwrap();
+    assert_eq!(source["action_provenance"], "cooperative_hook_context");
+    assert_eq!(source["via"], "hook_context");
+    assert_eq!(source["session"], "sess-1");
+    assert_eq!(fx.count_text(&format!("SELECT ack_binding_id FROM receipt_state WHERE message_id='{message}' AND seat_id='seat'")), a.as_str());
+    let terminal_events = || {
+        fx.count(&format!(
+        "SELECT count(*) FROM messages WHERE thread_id='{thread}' AND json_extract(event_json,'$.event')='ack' AND json_extract(event_json,'$.seat')='seat'"
+    ))
+    };
+    assert_eq!(terminal_events(), 1);
+    assert!(
+        candidate().is_none(),
+        "T=0 excludes the independent p1 row after receipt settlement"
+    );
+
+    let db = rusqlite::Connection::open(&fx.db).unwrap();
+    assert_eq!(
+        lazy_delivery::wake_frontier(&db, "seat", NudgeThreshold::new(0).unwrap()).unwrap(),
+        None
+    );
+    let frontier =
+        lazy_delivery::wake_frontier(&db, "seat", NudgeThreshold::new(1).unwrap()).unwrap();
+    assert!(
+        frontier.is_some(),
+        "sibling retains admitted independent delivery work"
+    );
+    db.execute("UPDATE seats SET nudge_threshold=1 WHERE id='seat'", [])
+        .unwrap();
+    let remaining = candidate().expect("T=1 admits the sibling's unread delivery");
+    assert!(!remaining.has_pending_receipt);
+    assert_eq!(remaining.pending_lazy(), frontier);
+    assert_eq!(
+        remaining
+            .targets
+            .iter()
+            .map(|t| &t.binding)
+            .collect::<Vec<_>>(),
+        [&b]
+    );
+    // The fixture normally observes an empty shell. Simulate the host's occupied harness
+    // observation at each UI boundary; discovery alone must never authorize a busy nudge.
+    db.execute("UPDATE observed_targets SET occupancy='occupied',ui_state='active_turn' WHERE target_id='w9:p1'", []).unwrap();
+    let busy = candidate().unwrap();
+    assert!(
+        store
+            .reserve_wake(host, &busy, &budget())
+            .unwrap()
+            .is_none(),
+        "busy process cannot be nudged"
+    );
+    db.execute(
+        "UPDATE observed_targets SET ui_state='idle' WHERE target_id='w9:p1'",
+        [],
+    )
+    .unwrap();
+    let idle = candidate().unwrap();
+    let reservation = store
+        .reserve_wake(host, &idle, &budget())
+        .unwrap()
+        .expect("idle unread sibling is wake eligible");
+    assert_eq!(reservation.reasons, ["lazy"]);
+    assert!(
+        !store
+            .wake_owed_to_binding(&reservation, Some(&a), &budget())
+            .unwrap()
+    );
+    assert!(
+        store
+            .wake_owed_to_binding(&reservation, Some(&b), &budget())
+            .unwrap()
+    );
+
+    let sibling = fx.hook("w9:p1", &tool("sess-b"));
+    assert_eq!(sibling.code, Some(0), "{}", sibling.stderr);
+    assert!(sibling.stderr.is_empty(), "{}", sibling.stderr);
+    let context = context_of(&sibling);
+    for body in ["requested sibling receipt", "independent sibling delivery"] {
+        assert_eq!(context.matches(body).count(), 1, "{context}");
+    }
+    assert!(cursor(&b) > floor_b);
+    assert_eq!(
+        receipt(),
+        observation,
+        "sibling replay cannot rewrite receipt attribution"
+    );
+    assert_eq!(
+        terminal_events(),
+        1,
+        "one seat-level terminal ACK across both displays"
+    );
+    assert_eq!(
+        lazy_delivery::wake_frontier(&db, "seat", NudgeThreshold::new(1).unwrap()).unwrap(),
+        None
+    );
+    assert!(
+        !store
+            .wake_owed_to_binding(&reservation, Some(&b), &budget())
+            .unwrap(),
+        "sibling display clears only its own delivery wake"
+    );
+    for session in ["sess-1", "sess-b"] {
+        let repeat = fx.hook("w9:p1", &tool(session));
+        assert_eq!(repeat.code, Some(0), "{}", repeat.stderr);
+        assert!(
+            repeat.stdout.is_empty(),
+            "{session}: {}",
+            String::from_utf8_lossy(&repeat.stdout)
+        );
+    }
+    assert_eq!(terminal_events(), 1);
+    assert_eq!(receipt(), observation);
+}
+
+// Actual eligible hooks retry after completion uncertainty without an arrival,
+// explicit inbox/ACK, timer or local retry journal. Covers receipt-only requests.
+#[test]
+fn native_hook_completion_failures_retry_on_the_next_unchanged_attention_hook() {
+    for failure in [FAIL_COMPLETION, FAIL_CURSOR, LOSE_COMPLETION_RESPONSE] {
+        let fx = Fixture::start();
+        fx.register("w9:p1", "sess-1");
+        fx.register("w9:p2", "peer-sess");
+        let thread = data(fx.cooperative(
+            "peer",
+            "w9:p2",
+            &["thread", "create", "--topic", "retry-hook"],
+        ));
+        fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+        fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+        // Drain enrollment/invitation attention before the one receipt arrival.
+        fx.hook("w9:p1", &tool("sess-1"));
+        let message = data(fx.cooperative(
+            "peer",
+            "w9:p2",
+            &[
+                "send",
+                &thread,
+                "--body",
+                "receipt-only recovery",
+                "--require-ack",
+                "seat",
+            ],
+        ));
+        fx.mode.store(failure, Ordering::SeqCst);
+        let first = fx.hook("w9:p1", &tool("sess-1"));
+        assert!(context_of(&first).contains("receipt-only recovery"));
+        assert!(
+            first.stderr.contains("delivery completion uncertain"),
+            "{}",
+            first.stderr
+        );
+        let acked = || {
+            fx.count(&format!(
+                "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+            ))
+        };
+        assert_eq!(acked(), i64::from(failure != FAIL_COMPLETION));
+        fx.mode.store(PASS, Ordering::SeqCst);
+        // No new message or manual settlement between these two hook invocations.
+        let next = fx.hook("w9:p1", &tool("sess-1"));
+        assert!(
+            context_of(&next).contains("receipt-only recovery"),
+            "{}",
+            next.stderr
+        );
+        assert!(next.stderr.is_empty(), "{}", next.stderr);
+        assert_eq!(acked(), 1);
+        let quiet = fx.hook("w9:p1", &tool("sess-1"));
+        assert!(
+            quiet.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&quiet.stdout)
         );
     }
 }
@@ -3926,9 +4308,6 @@ fn ready_command_ending(context: &str, label: &str, tail: &str) -> String {
         .unwrap_or_else(|| panic!("no `{label}` line ending `{tail}` in {context}"));
     line.split_once(": ").unwrap().1.to_owned()
 }
-fn ready_command(context: &str, label: &str) -> String {
-    ready_command_ending(context, label, "")
-}
 
 /// The escaped peer data section, decoded.
 fn peer_data(context: &str) -> String {
@@ -3981,7 +4360,7 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
         "- accept (if topic and goal fit your role/remit): ",
         &format!(" accept {thread}"),
     );
-    let inbox = ready_command_ending(&context, "- pending mail", " inbox");
+    assert!(!context.contains("- pending mail"), "{context}");
     // Review B1: the startup directory overview for the one thread is
     // delivered with the commands, within the budget.
     let peer = peer_data(&context);
@@ -3996,7 +4375,7 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     assert!(!peer.contains("overview has_more"), "{peer}");
     assert!(!accept.contains("--seat"), "{fixed}");
     assert!(accept.ends_with(&format!(" accept {thread}")), "{accept}");
-    assert!(inbox.ends_with(" inbox"), "{inbox}");
+    assert!(!context.contains("inbox fallback"), "{context}");
 
     // The digest form is refused with an actionable error, not not_found.
     let digest_form = accept.replace(
@@ -4014,7 +4393,8 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
 
     // One complete text inbox display settles the receipt; there is no
     // separate history read or manual ACK command.
-    for command in [&inbox, &accept] {
+    {
+        let command = &accept;
         let out = run_in_pane(&fx, "w9:p1", command);
         assert_eq!(
             out.status.code(),
@@ -4023,6 +4403,15 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+    // Acceptance remains explicit; the following normal hook carries the
+    // newly accessible body and automatically settles its receipt.
+    let delivered = fx.hook("w9:p1", &tool("sess-1"));
+    let delivered_context = context_of(&delivered);
+    assert!(delivered_context.contains("handoff"), "{delivered_context}");
+    assert!(
+        !delivered_context.contains("- pending mail"),
+        "{delivered_context}"
+    );
     assert_eq!(
         fx.count(&format!("SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND seat_id='seat' AND state='acked' AND ack_actor_seat_id='seat'")),
         1,
@@ -4066,14 +4455,8 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     let offered = fx.hook("w9:p1", &tool("sess-1"));
     assert_eq!(offered.code, Some(0), "{}", offered.stderr);
     let context = context_of(&offered);
-    let inbox = ready_command_ending(&context, "- pending mail", " inbox");
-    let out = run_in_pane(&fx, "w9:p1", &inbox);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(context.contains("second"), "{context}");
+    assert!(!context.contains("- pending mail"), "{context}");
     assert_eq!(
         fx.count(&format!("SELECT count(*) FROM receipt_state WHERE message_id='{second}' AND seat_id='seat' AND state='acked' AND ack_actor_seat_id='seat'")),
         1
@@ -4110,12 +4493,12 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     let acked_keys = keys(&acked);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&acked).unwrap()["action_provenance"],
-        "cooperative_inbox_display"
+        "cooperative_hook_context"
     );
     assert_eq!(
         acked_keys
             .into_iter()
-            .filter(|key| key != "action_provenance")
+            .filter(|key| key != "action_provenance" && key != "via")
             .collect::<Vec<_>>(),
         accepted_keys
     );
@@ -4217,7 +4600,8 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
     for label in ["\"age_millis_signed\":", "\"created_at", "\"joined_"] {
         assert!(peer.contains(label), "{label}: {peer}");
     }
-    let mut commands = vec![ready_command_ending(&context, "- pending mail", " inbox")];
+    assert!(!context.contains("- pending mail"), "{context}");
+    let mut commands = Vec::new();
     for (thread, _, _, _) in &threads {
         commands.push(ready_command_ending(
             &context,
@@ -4239,6 +4623,8 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+    let delivered = fx.hook("w9:p1", &tool("sess-1"));
+    assert!(context_of(&delivered).contains("handoff"));
     for (_, invitation, message, _) in &threads {
         assert_eq!(
             fx.count(&format!(
@@ -4295,27 +4681,24 @@ fn deep_state_dir_startup_context_fits_and_names_the_main_thread() {
         context.len()
     );
     let state = fx.state.to_str().unwrap();
-    // The one ready inbox command labels the main thread whose overview is
-    // retained and carries the exact long state path.
-    let inbox = ready_command(&context, "- pending mail for ");
-    assert!(
-        inbox.contains(state),
-        "exact state dir in the command: {inbox}"
-    );
-    let mail_label = fixed_section(&context)
+    // The bounded native page overflow owns one exact routed continuation.
+    let inbox = context
         .lines()
-        .find(|line| line.starts_with("- pending mail for "))
-        .unwrap();
-    let main = mail_label
-        .strip_prefix("- pending mail for ")
-        .unwrap()
-        .split(" and other threads: ")
-        .next()
-        .unwrap();
+        .find_map(|line| line.strip_prefix("More inbox content may remain: run "))
+        .and_then(|line| line.strip_suffix("; follow its next: commands."))
+        .expect("one native inbox continuation")
+        .to_owned();
+    assert!(inbox.contains(state), "exact state dir in command: {inbox}");
+    assert_eq!(
+        context
+            .matches("More inbox content may remain: run ")
+            .count(),
+        1
+    );
     let peer = peer_data(&context);
     assert!(
-        peer.contains(&format!("\"thread\":\"{main}\"")),
-        "main thread row: {peer}"
+        peer.contains("\"thread\":"),
+        "retained main thread row: {peer}"
     );
     assert!(peer.contains("overview has_more:"), "{peer}");
     assert!(!peer.contains(state), "{peer}");
@@ -4892,7 +5275,7 @@ fn hook_path_takeover_replaces_a_human_occupant_with_a_new_agent_generation() {
     let takeover = fx.hook("w9:p1", &start("agent-2"));
     assert_eq!(takeover.code, Some(0), "{}", takeover.stderr);
     assert!(
-        !context_of(&takeover).contains("unavailable"),
+        !context_of(&takeover).contains("herdr-threads: check-in unavailable ("),
         "{} / {}",
         context_of(&takeover),
         takeover.stderr
@@ -6045,7 +6428,7 @@ mod continuity {
             assert_eq!(resumed.code, Some(0), "{harness}: {}", resumed.stderr);
             let context = context_of(&resumed);
             assert!(
-                context.starts_with("Use inbox; follow its next: commands"),
+                context.starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"),
                 "{harness}: {context}"
             );
             assert_eq!(
@@ -6999,4 +7382,87 @@ fn versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capab
     );
     // The withheld response outlasted the hook: release it only now.
     fx.mode.store(PASS, Ordering::SeqCst);
+}
+
+/// The installed hook must leave both receipt and binding progress untouched
+/// when its actual stdout cannot deliver the encoded context. The next normal
+/// hook recovers without a new arrival or an explicit inbox/ACK command.
+#[test]
+fn native_hook_broken_stdout_does_not_settle_or_hide_receipt_mail() {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+
+    let fx = Fixture::start();
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "broken-output"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    fx.hook("w9:p1", &tool("sess-1"));
+    let message = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &[
+            "send",
+            &thread,
+            "--body",
+            "receipt survives broken native output",
+            "--require-ack",
+            "seat",
+        ],
+    ));
+    let cursor_sql = format!(
+        "SELECT COALESCE(sum(c.seq),0) FROM binding_cursors c \
+         JOIN occupant_bindings b ON b.binding_id=c.binding_id \
+         WHERE b.seat_id='seat' AND c.thread_id='{thread}'"
+    );
+    let before = fx.count(&cursor_sql);
+    // A real open output descriptor with no reader yields EPIPE. Closing fd 1
+    // before exec is insufficient: a runtime may reopen it onto /dev/null.
+    let (sink, reader) = UnixStream::pair().unwrap();
+    drop(reader);
+    let sink: OwnedFd = sink.into();
+    let mut command = herdr_threads::test_support::harness_shim::under_harness(
+        "claude",
+        Path::new("/bin/sh"),
+        &["-c", &fx.command],
+        &[],
+    );
+    command
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", "w9:p1")
+        .env("HERDR_SOCKET_PATH", &fx.host)
+        .env("PATH", harness_path(&fx.host))
+        .env_remove("HERDR_PLUGIN_STATE_DIR")
+        .env_remove("HERDR_BIN_PATH")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(sink))
+        .stderr(Stdio::piped());
+    let mut child = command.spawn_owned().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&tool("sess-1"))
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    assert_eq!(
+        fx.count(&cursor_sql),
+        before,
+        "failed output moved the cursor"
+    );
+    let receipt_sql = format!(
+        "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+    );
+    assert_eq!(fx.count(&receipt_sql), 0, "failed output ACKed a receipt");
+    let retry = fx.hook("w9:p1", &tool("sess-1"));
+    assert!(context_of(&retry).contains("receipt survives broken native output"));
+    assert_eq!(fx.count(&receipt_sql), 1);
+    assert!(fx.count(&cursor_sql) > before);
+    assert!(fx.hook("w9:p1", &tool("sess-1")).stdout.is_empty());
 }

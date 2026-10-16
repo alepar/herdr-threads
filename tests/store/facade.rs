@@ -2185,6 +2185,7 @@ fn invalid_inbox_completion_writes_no_state() {
         liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     };
     let completion = CompleteInboxDelivery {
+        receipt_candidates: Vec::new(),
         via: None,
         messages: vec![MessageId::new("m")],
         operation: OperationId::new("done"),
