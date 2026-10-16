@@ -142,7 +142,7 @@ rule or approval request. Other commands stay sandboxed. This is separate from t
 unqualified `updatedInput` invocation rewrite described above.
 
 ```sh
-herdr-threads launch --pane bob --kind codex -- "You are Bob. Read your inbox."
+herdr-threads launch --pane bob --kind codex -- "You are Bob. Review the change."
 herdr-threads handoff --new-thread --thread-name review --pane bob --kind codex -- "Review the change"
 ```
 
