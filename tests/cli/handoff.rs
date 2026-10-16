@@ -1719,10 +1719,7 @@ fn handoff_bootstrap_prefers_recipient_hook_commands_and_replays_exact_fallback(
             .ends_with("null"),
         "unknown paths require exact fallback"
     );
-    let fallback = prompt
-        .split_once("Otherwise use the exact fallback:")
-        .unwrap()
-        .1;
+    let fallback = prompt.split_once("use the exact fallback:").unwrap().1;
     assert!(
         fallback.contains(
             "herdr-threads --state-dir '/tmp/handoff state' --host-endpoint /tmp/handoff.sock inbox"
@@ -2218,6 +2215,16 @@ fn handoff_bootstrap_is_one_native_shell_argument() {
     assert!(prompt.contains("Launch does not accept invitations or ACK messages"));
 }
 
+// Template-free plans retain frozen V1 bytes; newer plans capture today's
+// bootstrap at preparation. Tests must not conflate the two render contracts.
+fn expected_plan_bootstrap(plan: &HandoffPlan) -> String {
+    if plan.startup_input.is_some() {
+        bootstrap(&ThreadId::new("t1"), &plan.context, &claim().instance)
+    } else {
+        bootstrap_v1::prompt("t1", &plan.context, &claim().instance)
+    }
+}
+
 struct RecordingLauncher {
     inner: Launcher,
     requests: Vec<LaunchRequest>,
@@ -2231,11 +2238,7 @@ impl RecordingLauncher {
     }
     fn check_frozen(&self, plan: &HandoffPlan) {
         let mut expected = plan.request.launch.clone();
-        expected.argv.push(bootstrap(
-            &ThreadId::new("t1"),
-            &plan.context,
-            &claim().instance,
-        ));
+        expected.argv.push(expected_plan_bootstrap(plan));
         assert!(!self.requests.is_empty());
         for actual in &self.requests {
             assert_eq!(actual, &expected);
@@ -2350,10 +2353,7 @@ fn check_registered_report(
     let suffix = &options[options.iter().position(|v| v == "--").unwrap() + 1..];
     assert_eq!(&suffix[..suffix.len() - 1], plan.request.launch.argv);
     let prompt = suffix.last().unwrap();
-    assert_eq!(
-        prompt,
-        &bootstrap(&ThreadId::new("t1"), &plan.context, &claim().instance)
-    );
+    assert_eq!(prompt, &expected_plan_bootstrap(plan));
     let routing = prompt
         .strip_prefix("Expected handoff command routing (JSON data): ")
         .unwrap()
@@ -2485,7 +2485,7 @@ fn registered_handoff_refusal_preserves_canonical_recovery_and_frozen_launch() {
             assert_eq!(launcher.preflights, 1);
             assert_eq!(
                 launcher.submitted_argv.last().unwrap(),
-                &bootstrap(&ThreadId::new("t1"), &plan.context, &claim().instance)
+                &expected_plan_bootstrap(&plan)
             );
             assert_eq!(client.calls.lock().unwrap().len(), 3);
             assert!(journal.load(&reference).is_err());
@@ -3198,11 +3198,7 @@ fn handoff_manual_recovery_preserves_frozen_options_without_reentry() {
             serde_json::from_value(report["manual_launch_after_confirming_no_start_argv"].clone())
                 .unwrap();
         let mut expected = plan.request.launch.argv.clone();
-        expected.push(bootstrap(
-            &ThreadId::new("t1"),
-            &plan.context,
-            &claim().instance,
-        ));
+        expected.push(expected_plan_bootstrap(&plan));
         for options in [
             if harness == crate::harness::context::Harness::Codex {
                 "--no-daemon --model 'frozen model'"
@@ -3330,11 +3326,7 @@ fn stage_a_manual_recovery_extra_key_lossless_shell_parser_resolver() {
     };
     let reference = frozen(&journal);
     let mut expected = plan.request.launch.argv.clone();
-    expected.push(bootstrap(
-        &ThreadId::new("t1"),
-        &plan.context,
-        &claim().instance,
-    ));
+    expected.push(expected_plan_bootstrap(&plan));
     for key in [
         "HERDR_THREADS_FOURTH_OPTS",
         "HERDR_THREADS_SUCCESSOR_OPTS",
@@ -4677,9 +4669,18 @@ fn frozen_v1_prompt_literals_bind_routing_quoting_and_thread() {
     // Today's renderer repeats the filesystem lookup: for the same retained
     // namespace it now yields null, so recomposition could not have accepted a
     // genuine object-routing report once these paths disappeared.
-    assert_eq!(
-        bootstrap(&ThreadId::new("t9"), &context, instance),
-        prompts[1]
+    let current = bootstrap(&ThreadId::new("t9"), &context, instance);
+    assert!(current.starts_with("Expected handoff command routing (JSON data): null"));
+    assert!(current.contains(fallback));
+    assert!(
+        current.contains(
+            "If no matching hook is trusted, or delivery reports incomplete or unavailable"
+        )
+    );
+    assert!(current.contains("including an empty inbox, needs no inbox call"));
+    assert_ne!(
+        current, prompts[1],
+        "current guidance evolves independently of frozen V1"
     );
     assert_eq!(
         bootstrap_v1::retained_prompts("t9", &context, "not-a-uuid"),
@@ -4695,7 +4696,7 @@ fn frozen_v1_prompt_literals_bind_routing_quoting_and_thread() {
         state.join("h.sock").to_str().unwrap(),
     );
     let produced = bootstrap_v1::prompt("t1", &context, &claim().instance);
-    assert_eq!(
+    assert_ne!(
         produced,
         bootstrap(&ThreadId::new("t1"), &context, &claim().instance)
     );
@@ -4726,10 +4727,11 @@ fn frozen_v1_prompt_and_manual_projection_ignore_current_renderer_drift() {
     };
     let reference = frozen(&journal);
     let v1 = bootstrap_v1::prompt("t1", &plan.context, &claim().instance);
+    let current = bootstrap(&ThreadId::new("t1"), &plan.context, &claim().instance);
     let _drift = crate::harness::launch::current_drift::arm(Some(" DRIFTED"), None);
     assert_eq!(
         bootstrap(&ThreadId::new("t1"), &plan.context, &claim().instance),
-        format!("{v1} DRIFTED"),
+        format!("{current} DRIFTED"),
         "the current renderer observes the simulated drift"
     );
     assert_eq!(

@@ -892,3 +892,12 @@ fn receipt_only_completion_uses_original_claim_and_no_fake_lazy_ids() {
             && done.via == Some(LazyCompletionVia::HookContext)));
     assert!(matches!(&calls[2], Command::AdvanceCursors(_)));
 }
+
+#[test]
+fn a_withheld_continuation_never_claims_completed_delivery() {
+    let offer = page_offer(vec![lazy("m1", "pending")], true);
+    let rendered = render("c".repeat(500), &offer, &prefix(), 550);
+    assert_eq!(rendered.coverage, DeliveryCoverage::Unavailable);
+    assert!(rendered.displayed.is_empty());
+    assert!(!rendered.context.contains("/s inbox"));
+}

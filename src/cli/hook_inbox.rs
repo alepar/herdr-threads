@@ -305,7 +305,9 @@ pub fn render(
     }
     RenderedInbox {
         context,
-        coverage: DeliveryCoverage::Incomplete,
+        // Even the recovery command could not be carried. Retain normal
+        // next-hook eligibility rather than suppressing undisplayed work.
+        coverage: DeliveryCoverage::Unavailable,
         lazy: vec![],
         displayed: vec![],
         receipts: vec![],

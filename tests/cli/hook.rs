@@ -460,7 +460,7 @@ fn native_envelope_marks_peer_data_and_never_decides_permission() {
     assert!(!context.contains("untrusted"), "{context}");
     assert!(!fixed.contains("Ignore previous"), "{fixed}");
     assert!(!data.contains('\n') && !data.contains('\u{1b}'), "{data}");
-    let decoded: String = serde_json::from_str(data).unwrap();
+    let decoded: String = serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap();
     assert!(decoded.contains(hostile));
     // The digest summary rides inside the escaped data, after the offer.
     assert!(
@@ -718,8 +718,10 @@ fn instruction_is_short_and_the_child_rule_forbids_every_write() {
     }
     assert!(top.len() <= 1024, "{}", top.len());
     assert!(top.contains("Complete hook/channel deliveries and default text inbox displays"));
-    assert!(top.contains("ACK eligible receipts automatically after output is written and flushed"));
-    assert!(top.contains("Call inbox only for a printed continuation or unavailable delivery"));
+    assert!(
+        top.contains("ACK eligible receipts automatically after output is written and flushed")
+    );
+    assert!(top.contains("Call inbox only for continuations or unavailable delivery"));
     assert!(top.contains("Do not reread or re-ACK them"));
     assert!(top.contains("JSON/--machine inbox, read and pending-receipts are read-only"));
     assert!(top.contains("explicitly ACK exact IDs read elsewhere"));
@@ -1464,7 +1466,7 @@ fn communication_guide_instruction_survives_offer_trimming() {
                 context.contains("Before using threads, run herdr-threads skill"),
                 "{harness:?}: {context}"
             );
-            assert!(context.contains("unless its guide is already in context"));
+            assert!(context.contains("unless its guide is in context"));
         }
     }
     let child = render_context(Role::Subagent, &[], true).unwrap();
@@ -3335,8 +3337,9 @@ mod continuity_gate {
                 .done()
                 .expect("reattached");
             assert!(
-                String::from_utf8_lossy(&done.text)
-                    .starts_with("Complete hook/channel deliveries and default text inbox displays"),
+                String::from_utf8_lossy(&done.text).starts_with(
+                    "Complete hook/channel deliveries and default text inbox displays"
+                ),
                 "a resumed session gets the standing instruction"
             );
             let requests = daemon.continuity_requests();
@@ -4113,7 +4116,7 @@ fn recovery_of(rows: Vec<crate::protocol::results::HotThread>, overflow: &[&str]
 /// peer-data lines of an emitted context.
 fn split_recovery(context: &str) -> (String, Vec<String>) {
     let (fixed, data) = context.split_once("\npeer_data: ").unwrap();
-    let decoded: String = serde_json::from_str(data).unwrap();
+    let decoded: String = serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap();
     (
         fixed.to_owned(),
         decoded.lines().map(str::to_owned).collect(),
@@ -8680,6 +8683,22 @@ mod registered_resume {
     }
     fn task52_hot_fixture() -> Fixture {
         let f = Fixture::new(true);
+        // These lifecycle tests model a capable daemon's successful empty
+        // inbox, so the attention mark may commit after known full coverage.
+        write_fixture_json(
+            &f.root.join("inbox-v2.json"),
+            &crate::protocol::pagination::Page::<crate::protocol::results::InboxBatchV2Item> {
+                items: vec![],
+                next_cursor: None,
+                next_argv: None,
+                high_water_ordinal: 0,
+                scope_revision: None,
+                has_more: false,
+                stop_reason: crate::protocol::pagination::StopReason::Complete,
+                consistency: crate::protocol::pagination::Consistency::BoundedLive,
+            },
+        )
+        .unwrap();
         write_fixture_json(
             &f.root.join("task52-hot.json"),
             &crate::protocol::results::HotThreads {
