@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Breaking: cross-node sync starts with a fresh store.** herdr-threads daemons on machines linked by your own `ssh` now share one thread space, and every daemon is a node with its own identity and a new store under `<state_dir>/node/`. The upgraded daemon does not read the v1.0.x store under `<state_dir>/instances/`: existing threads, messages, memberships, pending invitations and ACKs, overdue tracking and seat nudge thresholds are not carried over or shown. They stay on disk; `doctor` reports them, and `herdr-threads legacy purge` deletes them. Installed hooks keep working, and seats re-enroll with new IDs on their next call. Wire protocol 9: upgrade the CLI and daemon together. To go back, reinstall v1.0.x; it still reads its own untouched store.
+- **Breaking: cross-node sync starts with a fresh store.** herdr-threads daemons on machines linked by your own `ssh` now share one thread space, and every daemon is a node with its own identity and a new store under `<state_dir>/node/`. The upgraded daemon does not read the v1.1.x and older store under `<state_dir>/instances/`: existing threads, messages, memberships, pending invitations and ACKs, overdue tracking and seat nudge thresholds are not carried over or shown. They stay on disk; `doctor` reports them, and `herdr-threads legacy purge` deletes them. Installed hooks keep working, and seats re-enroll with new IDs on their next call. Wire protocol 9: upgrade the CLI and daemon together. To go back, reinstall v1.1.x or older; it still reads its own untouched store.
 
 ## v1.1.0
 
