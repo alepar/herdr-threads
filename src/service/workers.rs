@@ -1026,8 +1026,8 @@ pub fn start_deadline_worker_ticking(
                                 status.record_success(port.store.clock().utc_now());
                             }
                             if outcome.progressed_with_more() {
-                                // Retirement and work progress do not reopen the
-                                // tick gate themselves.
+                                // Discovery continuation and job progress do not
+                                // reopen the tick gate themselves.
                                 driver.after_committed_change();
                             }
                             if cancellation.is_cancelled()

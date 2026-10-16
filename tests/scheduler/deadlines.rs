@@ -372,6 +372,85 @@ fn progressed_with_more_needs_unfinished_progress() {
 }
 
 #[test]
+fn retirement_backlog_drains_without_a_safety_tick_per_completed_job() {
+    use crate::service::{fair_writer::FairWriter, workers::ScheduledStore};
+    use crate::store::{SqliteStore, StoreSettings, connection::StoreContext};
+    use std::sync::Arc;
+
+    // Catch discovery being paced at five seconds per historical completion.
+    // Exercise both a boot backlog and an arrival beyond a frozen sweep.
+    for arrives_during_sweep in [false, true] {
+        let path = crate::test_support::scratch::temp_path(format!(
+            "ht-retirement-backlog-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let clock = Arc::new(FakeClock::default());
+        let context = StoreContext::new(path, clock.clone());
+        let db = context.open_writer().unwrap();
+        db.execute(
+            "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
+            [],
+        )
+        .unwrap();
+        let seed = |n: usize, complete: bool| {
+            let seat = format!("seat-{n}");
+            let job = format!("job-{n}");
+            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES (?1,'i','retired','native',1,0,1,1)", [&seat]).unwrap();
+            db.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,status,phase,processed_units) VALUES (?1,?2,1,'boot',1,'target',1,?3,?4,?5)", rusqlite::params![job,seat,if complete { "complete" } else { "pending" },if complete { "complete" } else { "select_thread" },i64::from(complete)]).unwrap();
+        };
+        for n in 0..143 {
+            seed(n, true);
+        }
+        if !arrives_during_sweep {
+            seed(143, false);
+        }
+        let port = ScheduledStore::new(
+            Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap()),
+            Arc::new(FairWriter::new(32)),
+        );
+        let mut driver = DeadlineDriver::new(&port);
+        let mut outcome = driver.drive(&budget()).unwrap();
+        if arrives_during_sweep {
+            seed(143, false);
+        }
+        let mut calls = 1;
+        loop {
+            if outcome.progressed_with_more() || outcome.due_continuation {
+                driver.after_committed_change();
+            } else if arrives_during_sweep && clock.monotonic_now().0 == 0 {
+                // A fresh high water is captured on the next safety tick.
+                clock.mono.store(5_000, Ordering::SeqCst);
+            } else {
+                break;
+            }
+            calls += 1;
+            assert!(
+                calls <= 300,
+                "discovery must stop at each frozen high water"
+            );
+            let turn_budget = CallBudget {
+                deadline: MonoInstant(10_000),
+                cancellation: Cancellation::default(),
+            };
+            outcome = driver.drive(&turn_budget).unwrap();
+            assert!(outcome.retirement_error.is_none(), "{outcome:?}");
+        }
+        let (status, processed): (String, i64) = db
+            .query_row(
+                "SELECT status,processed_units FROM retirements WHERE id='job-143'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "complete",
+            "arrival during sweep: {arrives_during_sweep}; {calls} calls"
+        );
+        assert_eq!(processed, 1, "the no-membership job needs just one unit");
+    }
+}
+
+#[test]
 fn retirement_jobs_rotate_retry_and_resume_without_blocking_due_scans() {
     let port = RetirementPort::new();
     let mut driver = DeadlineDriver::new(&port).with_tick_millis(1_000);

@@ -97,10 +97,16 @@ pub struct DriveOutcome {
 }
 
 impl DriveOutcome {
-    /// A retirement or work job committed progress and reported more pending,
-    /// so the lane re-runs at once instead of waiting for its safety tick.
+    /// Continue a successful retirement discovery sweep as well as unfinished
+    /// job progress. Terminal retirement records still provide recovery coverage,
+    /// but must not cost one safety tick each before pending jobs are reached.
     pub fn progressed_with_more(&self) -> bool {
-        (self.retirement_progressed && !self.retirement_complete)
+        (self.retirement_error.is_none()
+            && self
+                .retirement_discovery
+                .as_ref()
+                .is_some_and(|progress| !progress.reached_end))
+            || (self.retirement_progressed && !self.retirement_complete)
             || (self.work_progressed && !self.work_complete)
     }
 }
