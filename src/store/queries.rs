@@ -1556,18 +1556,27 @@ fn availability_label(db: &QueryConnection, seat: &str) -> Result<String, ApiErr
     )
 }
 
+/// Disconnected subagent bindings listed in presence, most recent first. A subagent stop
+/// disconnects its binding but never ends it, so they accumulate without bound on a long-lived
+/// seat; older ones stay in the paged `seat inspect` history.
+const PRESENCE_DISCONNECTED_SUBAGENTS: i64 = 4;
+
 /// Presence of one seat (spec §3): `active` from the seat-active predicate, plus its open
-/// bindings in ordinal order.
+/// bindings in ordinal order: every connected or top-level one and the
+/// [`PRESENCE_DISCONNECTED_SUBAGENTS`] most recent disconnected subagents.
 fn presence(db: &QueryConnection, seat: &str) -> Result<(bool, Vec<BindingPresence>), ApiError> {
     let active = super::bindings::seat_active(db, &SeatId::new(seat))?;
     let mut stmt = db
         .prepare_cached(
             "SELECT harness,role,liveness,agent_id FROM occupant_bindings \
-             WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal",
+             WHERE seat_id=?1 AND ended_at IS NULL AND (role<>'subagent' OR liveness='connected' \
+             OR ordinal IN (SELECT ordinal FROM occupant_bindings WHERE seat_id=?1 \
+             AND ended_at IS NULL AND role='subagent' AND liveness<>'connected' \
+             ORDER BY ordinal DESC LIMIT ?2)) ORDER BY ordinal",
         )
         .map_err(|e| db.map_error(e))?;
     let bindings = stmt
-        .query_map([seat], |r| {
+        .query_map(params![seat, PRESENCE_DISCONNECTED_SUBAGENTS], |r| {
             let role: String = r.get(1)?;
             let liveness: String = r.get(2)?;
             let agent_id: String = r.get(3)?;
