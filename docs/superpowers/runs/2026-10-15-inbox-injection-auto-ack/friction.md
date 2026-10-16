@@ -25,3 +25,7 @@
 - [2026-10-16] Code roast round2 manual fan-out with inherited GPT substitutions: all 12 scouts returned no candidates, no judges needed; no degradation.
 
 - [2026-10-16] Final1572-test affected sweep caught17 superseded guide/capability/golden expectations omitted from leaf checks and both PR roast reports.1555 passed; no runtime fault observed. One allowed sweep-fix pass filed as ht-794l.9/.10, with obsolete tests explicitly named as defects; root will rerun same filter. Separate combined-node proof51/51 passed after mechanical golden final-newline correction; initial compiler API mismatches adapted in proof only.
+
+- [2026-10-16] 2026-10-16 phase6 spent sweep-fix pass: initial1555/1572affected pass exposed17obsolete test contracts not caught earlier focused selection; tasks9/10 explicitly authorized preserving new spec invariants. .9 masked broad unavailable literal and oldACK0 exposed after initial guide fixes; repaired precise errors/autoACK+consent, no source change. .10 actual capability probe needed virtual pending receipt projection rather than raw receipt row, no product defect. Owned stand-ins after failed fixture runs scoped-cleaned, final OS checks clean.
+
+- [2026-10-16] 2026-10-16 final profile timing caveat: newly filed sweep-fix beads9/10 projected ready from initial invocation; profile attributes2h05m earlier-phase time as retry wait and makes10bottleneck. Preserve raw profile but do not interpret as task scheduling idle; latestcap2 also differs earliercap4.

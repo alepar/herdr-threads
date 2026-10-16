@@ -1,0 +1,1455 @@
+{
+  "version": 1,
+  "epic": "ht-794l",
+  "cap": 2,
+  "earlyUnblock": true,
+  "runtimeSlots": null,
+  "invocations": [
+    {
+      "runId": "01a14370-c025-7c03-b925-82099a0c02e2",
+      "dir": "/Users/alepar/.codex/sessions/2026/10/15/rollout-2026-10-15T23-40-25-01a14370-c025-7c03-b925-82099a0c02e2.jsonl",
+      "source": "codex",
+      "start": "2026-10-16T06:41:17.377Z",
+      "end": "2026-10-16T09:05:56.981Z",
+      "agents": 84,
+      "timed": 84,
+      "journal": true
+    }
+  ],
+  "window": {
+    "start": "2026-10-16T06:41:17.377Z",
+    "lastLanding": "2026-10-16T09:04:27.415Z",
+    "end": "2026-10-16T09:05:56.981Z",
+    "graphMs": 8590038,
+    "wallMs": 8679604
+  },
+  "shape": {
+    "beads": 7,
+    "edges": 4,
+    "depth": 3,
+    "width": 2.3,
+    "levels": [
+      5,
+      1,
+      1
+    ],
+    "criticalPath": [
+      "ht-794l.1",
+      "ht-794l.2",
+      "ht-794l.4"
+    ],
+    "fanOut": [
+      {
+        "id": "ht-794l.1",
+        "direct": 2,
+        "transitive": 2
+      },
+      {
+        "id": "ht-794l.2",
+        "direct": 1,
+        "transitive": 1
+      },
+      {
+        "id": "ht-794l.3",
+        "direct": 1,
+        "transitive": 1
+      }
+    ],
+    "cycles": []
+  },
+  "cuts": [],
+  "beads": [
+    {
+      "id": "ht-794l.1",
+      "n": null,
+      "deps": [],
+      "dependents": [
+        "ht-794l.4",
+        "ht-794l.2"
+      ],
+      "attempts": [
+        null,
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T06:41:17.378Z",
+      "dispatchedAt": "2026-10-16T06:43:26.362Z",
+      "landedAt": "2026-10-16T07:53:25.170Z",
+      "waitMs": 128984,
+      "waitCause": "retry",
+      "carriedMs": 0,
+      "implMs": 2661555,
+      "implByTool": {
+        "read": 907,
+        "git": 143,
+        "shell": 24286,
+        "other": 4080,
+        "test": 7307,
+        "poll": 1247350,
+        "edit": 9266,
+        "build": 2933
+      },
+      "implToolMs": 1296272,
+      "reviewMs": 77891,
+      "fixMs": 517153,
+      "stackWaitMs": 0,
+      "queueWaitMs": 355456,
+      "laneMs": 1095211,
+      "seamMs": 22685,
+      "blockerMs": 0,
+      "reworkMs": 1,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-794l.3",
+      "n": null,
+      "deps": [],
+      "dependents": [
+        "ht-794l.4"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T06:41:17.378Z",
+      "dispatchedAt": "2026-10-16T06:43:33.023Z",
+      "landedAt": "2026-10-16T07:34:42.727Z",
+      "waitMs": 135645,
+      "waitCause": "planning",
+      "carriedMs": 0,
+      "implMs": 2545528,
+      "implByTool": {
+        "read": 2408,
+        "git": 21366,
+        "shell": 76249,
+        "other": 4878,
+        "edit": 9881,
+        "poll": 1023862,
+        "test": 16052,
+        "build": 2408
+      },
+      "implToolMs": 1157104,
+      "reviewMs": 81480,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 13961,
+      "laneMs": 432643,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-794l.2",
+      "n": null,
+      "deps": [
+        "ht-794l.1"
+      ],
+      "dependents": [
+        "ht-794l.4"
+      ],
+      "attempts": [
+        null,
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T06:41:17.378Z",
+      "dispatchedAt": "2026-10-16T06:56:49.481Z",
+      "landedAt": "2026-10-16T08:00:10.291Z",
+      "waitMs": 932103,
+      "waitCause": "retry",
+      "carriedMs": 0,
+      "implMs": 2933403,
+      "implByTool": {
+        "read": 7459,
+        "git": 3335,
+        "shell": 93415,
+        "other": 3821,
+        "poll": 430388,
+        "test": 37216,
+        "build": 1240
+      },
+      "implToolMs": 576874,
+      "reviewMs": 127834,
+      "fixMs": 0,
+      "stackWaitMs": 342712,
+      "queueWaitMs": 23721,
+      "laneMs": 381400,
+      "seamMs": 26641,
+      "blockerMs": 0,
+      "reworkMs": 1,
+      "criticalMs": 0,
+      "stackParents": [
+        "ht-794l.1"
+      ],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-794l.4",
+      "n": null,
+      "deps": [
+        "ht-794l.1",
+        "ht-794l.3",
+        "ht-794l.2"
+      ],
+      "dependents": [],
+      "attempts": [
+        null,
+        null,
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T06:41:17.378Z",
+      "dispatchedAt": "2026-10-16T07:20:40.578Z",
+      "landedAt": "2026-10-16T08:04:10.841Z",
+      "waitMs": 2363200,
+      "waitCause": "retry",
+      "carriedMs": 0,
+      "implMs": 1220918,
+      "implByTool": {
+        "read": 4528,
+        "git": 19863,
+        "shell": 40155,
+        "other": 3004,
+        "edit": 2424,
+        "poll": 190176,
+        "build": 1177,
+        "test": 15890
+      },
+      "implToolMs": 277217,
+      "reviewMs": 64196,
+      "fixMs": 0,
+      "stackWaitMs": 1058276,
+      "queueWaitMs": 15107,
+      "laneMs": 225443,
+      "seamMs": 28912,
+      "blockerMs": 0,
+      "reworkMs": 3,
+      "criticalMs": 0,
+      "stackParents": [
+        "ht-794l.1",
+        "ht-794l.3",
+        "ht-794l.2"
+      ],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-794l.8",
+      "n": null,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        null,
+        null,
+        null,
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T06:41:17.378Z",
+      "dispatchedAt": "2026-10-16T08:19:56.303Z",
+      "landedAt": "2026-10-16T08:31:06.165Z",
+      "waitMs": 5918925,
+      "waitCause": "retry",
+      "carriedMs": 0,
+      "implMs": 490693,
+      "implByTool": {
+        "read": 692,
+        "git": 6072,
+        "shell": 19282,
+        "other": 486,
+        "edit": 5436,
+        "test": 14941,
+        "poll": 60301
+      },
+      "implToolMs": 107210,
+      "reviewMs": 73107,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 17176,
+      "laneMs": 81820,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 13,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-794l.9",
+      "n": null,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        null,
+        null,
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T06:41:17.378Z",
+      "dispatchedAt": "2026-10-16T08:46:34.985Z",
+      "landedAt": "2026-10-16T09:02:07.166Z",
+      "waitMs": 7517607,
+      "waitCause": "retry",
+      "carriedMs": 0,
+      "implMs": 706128,
+      "implByTool": {
+        "read": 631,
+        "git": 11980,
+        "shell": 22587,
+        "poll": 166498,
+        "test": 20755,
+        "other": 607,
+        "build": 11341
+      },
+      "implToolMs": 234399,
+      "reviewMs": 83311,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 15186,
+      "laneMs": 114165,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 2,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-794l.10",
+      "n": null,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        null,
+        null,
+        null,
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T06:41:17.378Z",
+      "dispatchedAt": "2026-10-16T08:46:44.520Z",
+      "landedAt": "2026-10-16T09:04:27.415Z",
+      "waitMs": 7527142,
+      "waitCause": "retry",
+      "carriedMs": 0,
+      "implMs": 865199,
+      "implByTool": {
+        "read": 301,
+        "git": 6402,
+        "shell": 31989,
+        "test": 27414,
+        "poll": 243244,
+        "other": 1224,
+        "build": 4535
+      },
+      "implToolMs": 315109,
+      "reviewMs": 49465,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 16837,
+      "laneMs": 116837,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 3,
+      "criticalMs": 8590037,
+      "stackParents": [],
+      "lateEdges": []
+    }
+  ],
+  "criticalPath": {
+    "ms": 8590038,
+    "byCategory": {
+      "planning": 1,
+      "wait": 7527139,
+      "implement": 865202,
+      "dispatch": 31394,
+      "review": 49465,
+      "merge": 116837
+    },
+    "laneContentionMs": 0,
+    "redo": {
+      "stack-conflict": {
+        "ms": 0,
+        "beads": []
+      },
+      "cancelled": {
+        "ms": 0,
+        "beads": []
+      },
+      "retry": {
+        "ms": 3,
+        "beads": [
+          "ht-794l.10"
+        ]
+      }
+    },
+    "segments": [
+      {
+        "kind": "planning",
+        "bead": null,
+        "label": "plan",
+        "via": null,
+        "start": "2026-10-16T06:41:17.377Z",
+        "ms": 1
+      },
+      {
+        "kind": "wait",
+        "bead": "ht-794l.10",
+        "label": "planned → impl:ht-794l.10",
+        "via": null,
+        "start": "2026-10-16T06:41:17.378Z",
+        "ms": 7527139
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-794l.10",
+        "label": "impl:ht-794l.10",
+        "via": "planned",
+        "start": "2026-10-16T08:46:44.517Z",
+        "ms": 1
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-794l.10",
+        "label": "impl:ht-794l.10",
+        "via": "retry",
+        "start": "2026-10-16T08:46:44.518Z",
+        "ms": 1
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-794l.10",
+        "label": "impl:ht-794l.10",
+        "via": "retry",
+        "start": "2026-10-16T08:46:44.519Z",
+        "ms": 1
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-794l.10",
+        "label": "impl:ht-794l.10",
+        "via": "retry",
+        "start": "2026-10-16T08:46:44.520Z",
+        "ms": 865199
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-794l.10",
+        "label": "chain → review:ht-794l.10",
+        "via": null,
+        "start": "2026-10-16T09:01:09.719Z",
+        "ms": 14557
+      },
+      {
+        "kind": "review",
+        "bead": "ht-794l.10",
+        "label": "review:ht-794l.10",
+        "via": "chain",
+        "start": "2026-10-16T09:01:24.276Z",
+        "ms": 1
+      },
+      {
+        "kind": "review",
+        "bead": "ht-794l.10",
+        "label": "review:ht-794l.10",
+        "via": "chain",
+        "start": "2026-10-16T09:01:24.277Z",
+        "ms": 1
+      },
+      {
+        "kind": "review",
+        "bead": "ht-794l.10",
+        "label": "review:ht-794l.10",
+        "via": "chain",
+        "start": "2026-10-16T09:01:24.278Z",
+        "ms": 49463
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-794l.10",
+        "label": "chain → merge:ht-794l.10",
+        "via": null,
+        "start": "2026-10-16T09:02:13.741Z",
+        "ms": 16837
+      },
+      {
+        "kind": "merge",
+        "bead": "ht-794l.10",
+        "label": "merge:ht-794l.10",
+        "via": "chain",
+        "start": "2026-10-16T09:02:30.578Z",
+        "ms": 1
+      },
+      {
+        "kind": "merge",
+        "bead": "ht-794l.10",
+        "label": "merge:ht-794l.10",
+        "via": "chain",
+        "start": "2026-10-16T09:02:30.579Z",
+        "ms": 1
+      },
+      {
+        "kind": "merge",
+        "bead": "ht-794l.10",
+        "label": "merge:ht-794l.10",
+        "via": "chain",
+        "start": "2026-10-16T09:02:30.580Z",
+        "ms": 116835
+      }
+    ]
+  },
+  "bottleneck": {
+    "bead": "ht-794l.10",
+    "ms": 8590037,
+    "share": 0.9999998835860796,
+    "byCategory": {
+      "wait": 7527139,
+      "implement": 865202,
+      "dispatch": 31394,
+      "review": 49465,
+      "merge": 116837
+    },
+    "implByTool": {
+      "read": 301,
+      "git": 6402,
+      "shell": 31989,
+      "test": 27414,
+      "poll": 243244,
+      "other": 1224,
+      "build": 4535
+    },
+    "calls": [
+      {
+        "name": "exec",
+        "cat": "poll",
+        "what": "cargo fmt --check",
+        "ms": 24665
+      },
+      {
+        "name": "exec",
+        "cat": "poll",
+        "what": "git diff --check",
+        "ms": 13134
+      },
+      {
+        "name": "exec",
+        "cat": "shell",
+        "what": "bash /Users/alepar/.codex/plugins/cache/superpowers-alepar/…",
+        "ms": 11539
+      },
+      {
+        "name": "exec",
+        "cat": "poll",
+        "what": "cargo test --locked --all-features --test combined hook_rec…",
+        "ms": 11185
+      },
+      {
+        "name": "exec",
+        "cat": "poll",
+        "what": "write_stdin",
+        "ms": 10023
+      },
+      {
+        "name": "exec",
+        "cat": "poll",
+        "what": "write_stdin",
+        "ms": 10014
+      },
+      {
+        "name": "exec",
+        "cat": "test",
+        "what": "cargo test --locked --all-features --lib protocol::capabili…",
+        "test": "cargo test --locked --all-features --lib protocol::capabilities::tests",
+        "ms": 9088
+      },
+      {
+        "name": "exec",
+        "cat": "shell",
+        "what": "git rebase super-auto/inbox-injection-auto-ack",
+        "ms": 9056
+      },
+      {
+        "name": "exec",
+        "cat": "poll",
+        "what": "write_stdin",
+        "ms": 8449
+      },
+      {
+        "name": "exec",
+        "cat": "poll",
+        "what": "bash /Users/alepar/.codex/plugins/cache/superpowers-alepar/…",
+        "ms": 8365
+      }
+    ]
+  },
+  "lane": {
+    "busyMs": 1825956,
+    "seamMs": 78238,
+    "spanMs": 5817331,
+    "merges": 27,
+    "firstTryFailed": 7,
+    "firstTryKnown": 7,
+    "queueWaitMs": 457444,
+    "stackWaitMs": 1400988,
+    "peakQueue": 1
+  },
+  "runtime": {
+    "slots": null,
+    "peak": 5,
+    "fullMs": 0
+  },
+  "concurrency": {
+    "dispatches": 84,
+    "wallMs": 8679604,
+    "busyMs": 6939452,
+    "byActive": {
+      "0": 1740152,
+      "1": 2210502,
+      "2": 1960980,
+      "3": 2767970
+    },
+    "peak": 5,
+    "kinds": [
+      {
+        "kind": "plan",
+        "mapped": true,
+        "ms": 453452,
+        "n": 8
+      },
+      {
+        "kind": "impl",
+        "mapped": true,
+        "ms": 11423447,
+        "n": 19
+      },
+      {
+        "kind": "review",
+        "mapped": true,
+        "ms": 557284,
+        "n": 16
+      },
+      {
+        "kind": "merge",
+        "mapped": true,
+        "ms": 1747718,
+        "n": 27
+      },
+      {
+        "kind": "seam-review",
+        "mapped": true,
+        "ms": 78238,
+        "n": 5
+      },
+      {
+        "kind": "fix",
+        "mapped": true,
+        "ms": 517153,
+        "n": 2
+      },
+      {
+        "kind": "final-review",
+        "mapped": true,
+        "ms": 154258,
+        "n": 7
+      }
+    ],
+    "coordinatorMergeMs": 0
+  },
+  "tests": {
+    "busyMs": 11940600,
+    "testMs": 148555,
+    "pollMs": 3533130,
+    "cappedCalls": 0
+  },
+  "slowTests": [
+    {
+      "cmd": "cargo test --locked --all-features --lib protocol::capabilities::tests",
+      "ms": 15070,
+      "runs": 2,
+      "longestMs": 9088
+    },
+    {
+      "cmd": "cargo nextest run --locked --all-features --lib -E 'test(cli::hook_inbox::tests) or test(…",
+      "ms": 13244,
+      "runs": 2,
+      "longestMs": 9644
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib --test hook_entrypoint --test integration -- har…",
+      "ms": 12040,
+      "runs": 1,
+      "longestMs": 12040
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib cli::hook::tests::adapter_budget_caps_and_encodi…",
+      "ms": 11722,
+      "runs": 1,
+      "longestMs": 11722
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test hook_entrypoint -- native_hook_completion_failu…",
+      "ms": 11179,
+      "runs": 3,
+      "longestMs": 8478
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib -- protocol::watch::tests delivery::page::tests …",
+      "ms": 8860,
+      "runs": 3,
+      "longestMs": 3545
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test hook_entrypoint native_hook_auto_ack_preserves_…",
+      "ms": 8791,
+      "runs": 2,
+      "longestMs": 5882
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test hook_entrypoint -- installed_claude_hook_checks…",
+      "ms": 7481,
+      "runs": 1,
+      "longestMs": 7481
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib protocol::capabilities::tests::every_advertised_…",
+      "ms": 6760,
+      "runs": 2,
+      "longestMs": 5489
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test hook_entrypoint text_pair_accept_completes_the_…",
+      "ms": 6150,
+      "runs": 1,
+      "longestMs": 6150
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib protocol::capabilities::tests::capability_consta…",
+      "ms": 5584,
+      "runs": 2,
+      "longestMs": 4286
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined hook_receipt_completion",
+      "ms": 5347,
+      "runs": 1,
+      "longestMs": 5347
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib -- cli::hook_inbox::tests cli::hook::tests cli::…",
+      "ms": 5334,
+      "runs": 2,
+      "longestMs": 2965
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib -- inbox_display_ack_records_claim_and_only_sett…",
+      "ms": 5148,
+      "runs": 1,
+      "longestMs": 5148
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test hook_entrypoint native_hook_broken_stdout_does_…",
+      "ms": 4168,
+      "runs": 2,
+      "longestMs": 2962
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test integration -- mod_delivery::truncated_body_str…",
+      "ms": 2981,
+      "runs": 1,
+      "longestMs": 2981
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib ack_last_pending_receipt_for_left_seat_invalidat…",
+      "ms": 2341,
+      "runs": 1,
+      "longestMs": 2341
+    },
+    {
+      "cmd": "cargo nextest run --locked --all-features --lib -E 'test(cli::hook::neutral_tests) or tes…",
+      "ms": 2303,
+      "runs": 1,
+      "longestMs": 2303
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined delivery::extraction",
+      "ms": 1349,
+      "runs": 1,
+      "longestMs": 1349
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined hook_receipt_completion_retains_left_a…",
+      "ms": 1292,
+      "runs": 1,
+      "longestMs": 1292
+    }
+  ],
+  "conflicts": [],
+  "simulation": {
+    "asRunMs": 7700560,
+    "actualMs": 8590038,
+    "fit": 0.9,
+    "unlimitedSlotsMs": 7105516,
+    "unlimitedLanesMs": 7700560,
+    "lowerBoundMs": 7105516,
+    "graphChain": [
+      "ht-794l.1",
+      "ht-794l.2",
+      "ht-794l.4"
+    ],
+    "whatIfs": [
+      {
+        "kind": "faster",
+        "target": "faster ht-794l.2",
+        "ms": 6361692.5,
+        "savingMs": 1338867.5,
+        "note": "its implement time halved"
+      },
+      {
+        "kind": "faster",
+        "target": "faster ht-794l.1",
+        "ms": 6405469,
+        "savingMs": 1295091,
+        "note": "its implement time halved"
+      },
+      {
+        "kind": "cut",
+        "target": "cut ht-794l.4 <- ht-794l.2",
+        "ms": 6699237,
+        "savingMs": 1001323,
+        "note": "payoff if this edge were cut — whether it can be is a design call"
+      },
+      {
+        "kind": "split",
+        "target": "split ht-794l.2",
+        "ms": 6786869,
+        "savingMs": 913691,
+        "note": "its 1 dependent(s) wait only for a contract slice ≈30% of its implement time"
+      },
+      {
+        "kind": "slots",
+        "target": "unlimited slots",
+        "ms": 7105516,
+        "savingMs": 595044,
+        "note": "no slot cap"
+      },
+      {
+        "kind": "cut",
+        "target": "cut ht-794l.2 <- ht-794l.1",
+        "ms": 7312685,
+        "savingMs": 387875,
+        "note": "payoff if this edge were cut — whether it can be is a design call"
+      },
+      {
+        "kind": "split",
+        "target": "split ht-794l.1",
+        "ms": 7428882.5,
+        "savingMs": 271677.5,
+        "note": "its 2 dependent(s) wait only for a contract slice ≈30% of its implement time"
+      }
+    ],
+    "verdict": "graph-bound"
+  },
+  "unmeasured": [],
+  "context": {
+    "agents": [
+      {
+        "harness": "codex",
+        "role": "coordinator",
+        "label": "coordinator",
+        "file": "/Users/alepar/.codex/sessions/2026/10/15/rollout-2026-10-15T23-40-25-01a14370-c025-7c03-b925-82099a0c02e2.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 466,
+        "peak": 216858,
+        "peakAt": "2026-10-16T09:06:08.605Z",
+        "first": 33549,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 46,
+        "tasks": 3,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/plan",
+        "file": "/Users/alepar/.codex/sessions/2026/10/15/rollout-2026-10-15T23-41-17-01a14371-8be9-78e1-8e38-5a3569d6b6da.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 21,
+        "peak": 76481,
+        "peakAt": "2026-10-16T06:45:33.906Z",
+        "first": 33146,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 16,
+        "tasks": 2,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/impl_ht_794l_1",
+        "file": "/Users/alepar/.codex/sessions/2026/10/15/rollout-2026-10-15T23-43-26-01a14373-83b8-7af1-a9f1-416292d34eb9.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 160,
+        "peak": 180833,
+        "peakAt": "2026-10-16T07:27:47.867Z",
+        "first": 33362,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 38,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/impl_ht_794l_3",
+        "file": "/Users/alepar/.codex/sessions/2026/10/15/rollout-2026-10-15T23-43-32-01a14373-9db6-7300-9b9f-a306fbe6bf0b.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 170,
+        "peak": 188607,
+        "peakAt": "2026-10-16T07:25:58.515Z",
+        "first": 33315,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 40,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/impl_ht_794l_2",
+        "file": "/Users/alepar/.codex/sessions/2026/10/15/rollout-2026-10-15T23-56-49-01a1437f-c4dc-71d0-9e80-4e9747113b08.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 189,
+        "peak": 287660,
+        "peakAt": "2026-10-16T07:45:42.845Z",
+        "first": 33416,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 61,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/impl_ht_794l_4",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T00-20-40-01a14395-9ad3-7673-9416-7b160b01aa90.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 106,
+        "peak": 160523,
+        "peakAt": "2026-10-16T07:41:01.448Z",
+        "first": 33775,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 34,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/review_ht_794l_3",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T00-25-54-01a1439a-659a-7eb3-919e-3c33ebe60a35.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 9,
+        "peak": 64291,
+        "peakAt": "2026-10-16T07:27:16.030Z",
+        "first": 33586,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 14,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/merge_ht_794l_3",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T00-27-29-01a1439b-da5f-7752-88d1-fe6e143b1427.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 48,
+        "peak": 50771,
+        "peakAt": "2026-10-16T07:34:42.702Z",
+        "first": 33663,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 11,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/review_ht_794l_1",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T00-27-56-01a1439c-4257-7ef2-9a59-ae8b52985ebc.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 9,
+        "peak": 71269,
+        "peakAt": "2026-10-16T07:29:14.466Z",
+        "first": 33580,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 15,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/merge_ht_794l_1",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T00-35-09-01a143a2-df10-7f60-bfcb-b03861008a20.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 54,
+        "peak": 52038,
+        "peakAt": "2026-10-16T07:53:25.133Z",
+        "first": 33651,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 11,
+        "tasks": 3,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/seam_review_ht_794l_1",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T00-35-59-01a143a3-a0a8-7612-b463-a66a792dbc2a.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 4,
+        "peak": 46897,
+        "peakAt": "2026-10-16T07:36:22.098Z",
+        "first": 33522,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 10,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/fix_ht_794l_1",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T00-41-00-01a143a8-3809-7c61-bc38-289b946032c1.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 42,
+        "peak": 94714,
+        "peakAt": "2026-10-16T07:49:37.543Z",
+        "first": 33721,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 20,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/review_ht_794l_4",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T00-41-27-01a143a8-a333-7081-a2d7-69ba28fc4c9d.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 8,
+        "peak": 56511,
+        "peakAt": "2026-10-16T07:42:31.879Z",
+        "first": 33596,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 12,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/review_ht_794l_2",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T00-45-34-01a143ac-6737-7f03-aa24-b9c1e24b9e67.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 13,
+        "peak": 88202,
+        "peakAt": "2026-10-16T07:47:42.422Z",
+        "first": 33629,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 19,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/merge_ht_794l_2",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T00-53-48-01a143b3-f22b-7801-aef6-80174e479aa5.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 33,
+        "peak": 46124,
+        "peakAt": "2026-10-16T08:00:10.273Z",
+        "first": 33649,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 10,
+        "tasks": 2,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/seam_review_ht_794l_2",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T00-54-34-01a143b4-a404-7842-8e04-1f5b00ddd27b.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 4,
+        "peak": 50996,
+        "peakAt": "2026-10-16T07:55:00.997Z",
+        "first": 33554,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 11,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/merge_ht_794l_4",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T01-00-25-01a143b9-ff1d-7760-ac91-6d83a9513a2b.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 22,
+        "peak": 45741,
+        "peakAt": "2026-10-16T08:04:10.818Z",
+        "first": 33667,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 10,
+        "tasks": 2,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/seam_review_ht_794l_4",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T01-01-35-01a143bb-0f6c-7f41-8188-707e4e592500.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 5,
+        "peak": 50003,
+        "peakAt": "2026-10-16T08:02:03.998Z",
+        "first": 33569,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 11,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/final_review",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T01-04-53-01a143be-158f-7ee2-8bc3-ca5020390e59.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 10,
+        "peak": 75488,
+        "peakAt": "2026-10-16T08:05:52.956Z",
+        "first": 33890,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 16,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/plan_fix_round1",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T01-17-59-01a143ca-159f-71d1-927c-210ef8fbf680.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 10,
+        "peak": 57925,
+        "peakAt": "2026-10-16T08:19:35.466Z",
+        "first": 34434,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 12,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/impl_ht_794l_8",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T01-19-56-01a143cb-dca1-7582-a459-8021dcd84aeb.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 43,
+        "peak": 115694,
+        "peakAt": "2026-10-16T08:28:06.967Z",
+        "first": 34668,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 24,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/review_ht_794l_8",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T01-28-14-01a143d3-7558-7e80-97bd-74e5c7677c6e.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 10,
+        "peak": 52744,
+        "peakAt": "2026-10-16T08:29:27.149Z",
+        "first": 34524,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 11,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/merge_ht_794l_8",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T01-29-44-01a143d4-d5ed-7582-a8fd-50741166d44c.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 8,
+        "peak": 39918,
+        "peakAt": "2026-10-16T08:31:06.146Z",
+        "first": 34524,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 8,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/final_review_fix_round1",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T01-31-36-01a143d6-8aed-7512-8ded-8f75c5c5ce46.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 7,
+        "peak": 73854,
+        "peakAt": "2026-10-16T08:32:14.105Z",
+        "first": 34741,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 16,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/plan_sweep_fix",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T01-44-05-01a143e1-f90f-7bd2-9717-d47b06cf03f5.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 9,
+        "peak": 65152,
+        "peakAt": "2026-10-16T08:46:09.373Z",
+        "first": 34773,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 14,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/impl_ht_794l_9",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T01-46-34-01a143e4-41c9-7842-a90d-e7a87e1b4f5d.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 53,
+        "peak": 134947,
+        "peakAt": "2026-10-16T08:58:21.031Z",
+        "first": 34996,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 28,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/impl_ht_794l_10",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T01-46-44-01a143e4-66f0-7b11-9b0c-e91d00cb99ec.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 63,
+        "peak": 116807,
+        "peakAt": "2026-10-16T09:01:09.700Z",
+        "first": 34917,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 25,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/review_ht_794l_9",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T01-58-34-01a143ef-3c37-7230-96a9-c507d623852f.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 9,
+        "peak": 68359,
+        "peakAt": "2026-10-16T08:59:57.797Z",
+        "first": 34844,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 14,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/merge_ht_794l_9",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T02-00-12-01a143f0-bd31-72c2-8144-1676502f8f8e.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 22,
+        "peak": 46293,
+        "peakAt": "2026-10-16T09:02:07.146Z",
+        "first": 34849,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 10,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/review_ht_794l_10",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T02-01-24-01a143f1-d39d-75e2-8725-03d8243518ac.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 7,
+        "peak": 50501,
+        "peakAt": "2026-10-16T09:02:13.721Z",
+        "first": 34820,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 11,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/merge_ht_794l_10",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T02-02-30-01a143f2-d69c-7962-ab2b-078a8963dbd1.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 16,
+        "peak": 41042,
+        "peakAt": "2026-10-16T09:04:27.380Z",
+        "first": 34806,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 9,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      },
+      {
+        "harness": "codex",
+        "role": "agent",
+        "label": "code/final_review_sweep_fix",
+        "file": "/Users/alepar/.codex/sessions/2026/10/16/rollout-2026-10-16T02-05-00-01a143f5-1fb3-7c11-a2e1-b9b3caef05a5.jsonl",
+        "model": "gpt-6.1-sol",
+        "requests": 10,
+        "peak": 92261,
+        "peakAt": "2026-10-16T09:05:56.957Z",
+        "first": 35082,
+        "window": 475000,
+        "windowSource": "transcript",
+        "peakPct": 19,
+        "tasks": 1,
+        "compactions": [],
+        "unmeasured": null
+      }
+    ],
+    "summary": {
+      "n": 32,
+      "measured": 32,
+      "high": 0,
+      "multiTask": 4,
+      "compacted": 0,
+      "compactions": 0,
+      "byCause": {
+        "cap": 0,
+        "early": 0,
+        "idle": 0,
+        "manual": 0,
+        "unknown": 0
+      },
+      "coordinator": {
+        "peak": 216858,
+        "window": 475000,
+        "peakPct": 46,
+        "compactions": 0
+      },
+      "max": {
+        "label": "code/impl_ht_794l_2",
+        "peakPct": 61
+      },
+      "reasons": []
+    }
+  },
+  "summary": [
+    "Profile: ht-794l · 1 invocation · 2026-10-16T06:41Z → 2026-10-16T09:05Z · wall 2h25m (task graph 2h23m, after the last landing 2m) · agents 84 (timed 84) · beads dispatched 7, landed 7, planned 7",
+    "Profile: shape — 7 beads · 4 edges · depth 3 · width 2.3 · beads per level 5/1/1 · widest fan-out ht-794l.1 (2 direct, 2 transitive dependents)",
+    "Profile: bound — graph lower bound 1h58m along ht-794l.1 → ht-794l.2 → ht-794l.4 (unlimited slots and merge lanes) · model of the run 2h08m (cap 2, one merge lane) vs actual 2h23m (90%) → graph-bound: the 3-bead dependency chain set the pace — reshaping it is the lever",
+    "Profile: critical path — 2h23m = implement 14m · review 49s · merge 2m · dispatch 31s · wait 2h05m",
+    "Profile: critical chain — plan planning 0s → ht-794l.10 implement+review+merge 17m",
+    "Profile: bottleneck — ht-794l.10 — 2h23m on the critical path (100%) · implement 14m · review 49s · merge 2m · dispatch 31s · wait 2h05m · implement on the path 14m: test 27s · poll 4m · build 5s · git 6s · shell 32s · other 1s · model 9m (longest: \"cargo fmt --check\" 25s, \"git diff --check\" 13s) · 4 attempts (?, ?, ?, IMPLEMENTED) · dependents 0",
+    "Profile: waits — ready→start, summed per bead (beads wait at the same time, so not wall time): 6h49m over 7 of 7 landed beads — planning 2m (1) · retry 6h46m (6)",
+    "Profile: early unblock — 2 landed beads had in-run blockers · stacked on an implementation 2 · bounced on a stack conflict then waited for the merge 0 (0s) · waited for a merge without one 0",
+    "Profile: tests — implementers and fixers, summed: 2m running tests and 59m polling background runs, 31% of their 3h19m · 0 Bash call(s) ran into the 10-minute tool limit",
+    "Profile: merge lane — busy 30m of 1h37m (31%) · seam reviews and fixes 1m (4% of busy) · 27 merge dispatches, first try not merged for 7 of 7 · queue wait 8m total, peak 1 waiting · stack-parent wait 23m",
+    "Profile: concurrency — 84 dispatches over 2h25m · a dispatch running 1h56m (80%) · dispatches at once: 0 for 20% · 1 for 25% · 2 for 23% · 3+ for 32% of the time · peak 5",
+    "Profile: dispatch time by kind, summed — impl 3h10m (19) · merge 29m (27) · review 9m (16) · fix 9m (2) · plan 8m (8) · final-review 3m (7) · seam-review 1m (5)",
+    "Profile: runtime — peak 5 agents at once · slot cap 2",
+    "Profile: what-if — faster ht-794l.2 → 1h46m (−22m, 17%) — its implement time halved",
+    "Profile: what-if — faster ht-794l.1 → 1h47m (−22m, 17%) — its implement time halved",
+    "Profile: what-if — cut ht-794l.4 <- ht-794l.2 → 1h52m (−17m, 13%) — payoff if this edge were cut — whether it can be is a design call",
+    "Profile: what-if — split ht-794l.2 → 1h53m (−15m, 12%) — its 1 dependent(s) wait only for a contract slice ≈30% of its implement time",
+    "Profile: what-if — unlimited slots → 1h58m (−10m, 8%) — no slot cap",
+    "Profile: what-if — cut ht-794l.2 <- ht-794l.1 → 2h02m (−6m, 5%) — payoff if this edge were cut — whether it can be is a design call",
+    "Profile: context — agents 32 (measured 32) · peak≥80% 0 · tasks>1 4 · compacted 0 agents, 0 compactions · coordinator 217K/475K (46%), 0 compactions · max code/impl_ht_794l_2 61%",
+    "Profile: context agent — code/impl_ht_794l_2 peak 288K/475K (61%) · first 33K · compactions 0",
+    "Profile: unmeasured — none"
+  ]
+}

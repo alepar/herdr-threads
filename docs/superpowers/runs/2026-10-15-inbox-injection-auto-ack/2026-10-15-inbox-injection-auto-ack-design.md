@@ -93,6 +93,8 @@ Digest:
 
 ## Post-Implementation Notes
 
+2026-10-16 — Changes vs. original design: receipt ownership, rather than current membership, permits retained obligations after Leave/reinvitation; no invitation consent is implied. Attention suppression follows successful receipt/lazy/cursor completion, including unchanged-attention retry after unknown output bookkeeping. Cross-node integration uses existing `how=policy` signed settlement with atomic own-history-hold failure; hook provenance stays recipient-local. These refinements preserve the Goal.
+
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
 
 2026-10-16: Compatibility amendment from p2p message `mW0Fc5lV7`: the existing receipt wire representation is `how=policy`. `cooperative_hook_context`/`via` stay in the recipient-local observation; remote state does not promise those details. This supersedes the original section 6 requirement to preserve hook provenance in a new `SettleHow` representation. No wire extension or protocol bump. Final combined-candidate, two-node evidence belongs to the caller after code roast; local tests alone do not establish cross-node readiness.

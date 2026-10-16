@@ -20,14 +20,14 @@ stepBackDesign-round-1: patch — Gate attention-mark advancement on successful 
 graph-pass: depth 3→3 · width 1.3→1.3 · applied 0 · parked 0
 
 codeBuckets:
-  completed: ht-794l.1, ht-794l.2, ht-794l.3, ht-794l.4, ht-794l.8
+  completed: ht-794l.1, ht-794l.2, ht-794l.3, ht-794l.4, ht-794l.8, ht-794l.9, ht-794l.10
   escalated:
   pendingRetry:
   parked:
   stalled: false
-  review: ready (final-review-fix-round-1.md; caller final-SHA sweep and combined-node proof pending)
-  sweep: d51ca797 — 1555 passed, 17 failed, 0 errors, 4841 skipped; failing: see sweep-initial-failures.md; command: affected-sweep-command.txt nextest command @ d51ca79772e9896bd6e4beb6980f0080f4835b81
-  slowness: fresh task-path links and peer contention exceeded build budgets; merged-tree lint 1m32 and 2m04; no demonstrated source-only regression
+  review: ready (final-review-sweep-fix.md; final affected rerun and scoped audit pending)
+  sweep: SWEEP DEFERRED (caller-owned)
+  slowness: Fresh task-path Rust links/cold metadata and peer contention greatly exceeded1m build/lint budgets; initial all-target filtered build narrowed thereafter; Measured merged-tree lint1m32 and2m04 (actual checking, no lock messages); preserve limitation, no demonstrated source-only regression; Scoped process helper requires escalation; sandbox ps/kill may claim inaccurate stopped; authoritative final cleanup clean; .8 task clippy62s; merged-tree clippy1.35s no lock wait; final profile model108%actual; New profile retry wait/bottleneck includes earlier invocation time before sweep-fix tasks9/10 existed; latestcap2/historicalcap4 distinction. Not actual task idle delay.; Final sweep-fix merge checks23.86s/23.63s clippy, all gates under1minute.
   worktreesKept:
   processSweep: stopped 0 · survived 0
 roastCodeRound: 2
