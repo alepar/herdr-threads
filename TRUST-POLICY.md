@@ -97,7 +97,7 @@ seat or ends a binding. Lookup slots (reads, operator repair, `handoff --existin
 ACK-recipient names allocate where their pane forms (`--pane`, `--require-ack-pane`) already do; direct send by name
 or pane ID (`send --seat`) is a new guarded allocation surface (spec D4), with no prior pane form. Every such
 allocation is an ordinary guarded `ResolveSeat` that runs only after every seat argument has resolved and after the
-caller derivation and the command's capability refusals, so a refused command leaves no allocated seat. Operator repair by name (`seat retire`, `rebind`,
+caller derivation and the stage's capability gates; refusals that run later (the selection and mapping checks, the direct-send claim and caller-binding checks) can leave an idempotent guarded seat for a real pane. Operator repair by name (`seat retire`, `rebind`,
 `--replace`) acts only on the one seat the name uniquely resolves to through the current canonical mapping (lookup,
 never allocation), shown on the `resolved:` line, with the operator still deciding via `--operator`; the name is
 not heuristic continuity evidence and moves no seat by itself.

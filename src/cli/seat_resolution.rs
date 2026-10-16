@@ -12,7 +12,10 @@
 //! to a pane waits in the returned `DeferredSeats`. Pass 2 (`allocate_deferred_seats`) runs the
 //! journaled `ResolveSeat` for those panes, and the caller runs it only after every slot has
 //! resolved and after the refusals that can follow (the caller derivation, the `--operator`
-//! actor refusal), behind one gate point (`run_gates`), so a refused command leaves no allocation.
+//! actor refusal), behind one gate point (`run_gates`). Refusals that run later (the selection and
+//! mapping checks, the direct-send claim and caller-binding checks) can still leave an idempotent
+//! guarded seat for a real pane; the stage does not promise that a refused command allocates
+//! nothing.
 //!
 //! Must not: match names (`seat_selector` does), know command kinds (`SeatSlot` does), write any
 //! journal intent other than the shared allocation, or run on `retry` (a retry carries no slots).
