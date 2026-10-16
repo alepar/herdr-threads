@@ -7,7 +7,6 @@ use crate::support::{self, P1};
 use crate::{FutureKind, note};
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 22"]
 fn unknown_kind_relays_parked_and_later_kinds_still_apply() {
     let mut cluster = support::cluster("mn-mixed", 3, &[(0, 1), (2, 1)], &[0, 2]);
     let a = cluster.seat(0, P1);

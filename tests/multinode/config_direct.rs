@@ -2,16 +2,17 @@
 //! direct send with `--require-ack` from A to B's seat, delivered and woken on
 //! B, ACKed on B, settled on both.
 
-use crate::support::{self, P1};
+use crate::support::{self, P1, P2, P3};
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 22"]
 fn two_nodes_direct_send_and_ack() {
     let cluster = support::cluster("mn-direct", 2, &[(0, 1)], &[0, 1]);
     let a = cluster.seat(0, P1);
     let b = cluster.seat(1, P1);
-    support::wait_seats(&cluster, 0, 2);
-    support::wait_seats(&cluster, 1, 2);
+    let slow = cluster.seat(1, P3);
+    let person = cluster.human_seat(1, P2);
+    support::wait_seats(&cluster, 0, 4);
+    support::wait_seats(&cluster, 1, 4);
 
     let (thread, message) = support::send(
         &cluster,
@@ -56,5 +57,98 @@ fn two_nodes_direct_send_and_ack() {
             "node {node} holds the pair thread"
         );
     }
+
+    // D9: a person named with `--require-ack` gets a p0 delivery row on their
+    // own node and no receipt on either node.
+    let (_, to_person) = support::send(
+        &cluster,
+        &a,
+        &[
+            "--seat",
+            &person.id,
+            "--body",
+            "for a person",
+            "--require-ack",
+            &person.id,
+        ],
+    );
+    cluster.wait_converged(crate::WAIT);
+    cluster.wait_until("the person's delivery row on node 1", crate::WAIT, || {
+        cluster.scalar(
+            1,
+            "SELECT priority FROM lazy_recipients WHERE message_id = ?1 AND seat_id = ?2",
+            &[&to_person, &person.id],
+        )
+    });
+    assert_eq!(
+        cluster
+            .scalar(
+                1,
+                "SELECT priority FROM lazy_recipients WHERE message_id = ?1 AND seat_id = ?2",
+                &[&to_person, &person.id],
+            )
+            .as_deref(),
+        Some("0"),
+        "an ACK request is p0, so is the person's row"
+    );
+    for node in [0, 1] {
+        assert_eq!(
+            cluster.scalar(
+                node,
+                "SELECT count(*) FROM receipt_state WHERE message_id = ?1",
+                &[&to_person],
+            ),
+            Some("0".into()),
+            "node {node}: no receipt for a person"
+        );
+    }
+    assert_eq!(
+        cluster.scalar(
+            0,
+            "SELECT count(*) FROM lazy_recipients WHERE message_id = ?1",
+            &[&to_person],
+        ),
+        Some("0".into()),
+        "the sender's node stages no row for a remote seat"
+    );
+
+    // Overdue is recorded on the sender's node only.
+    let (_, unanswered) = support::send(
+        &cluster,
+        &a,
+        &[
+            "--seat",
+            &slow.id,
+            "--body",
+            "answer soon",
+            "--require-ack",
+            &slow.id,
+            "--deadline",
+            "1",
+        ],
+    );
+    let overdue = |node: usize| {
+        cluster
+            .scalar(
+                node,
+                "SELECT warning_message_id IS NOT NULL FROM receipt_state \
+                 WHERE message_id = ?1 AND seat_id = ?2",
+                &[&unanswered, &slow.id],
+            )
+            .as_deref()
+            == Some("1")
+    };
+    cluster.wait_until("node 0 to record the overdue warning", crate::WAIT, || {
+        overdue(0).then_some(())
+    });
+    cluster.wait_converged(crate::WAIT);
+    assert!(
+        !overdue(1),
+        "the recipient's node records no overdue warning"
+    );
+    assert_eq!(
+        support::receipt(&cluster, 1, &unanswered, &slow).as_deref(),
+        Some("pending")
+    );
     drop(cluster);
 }

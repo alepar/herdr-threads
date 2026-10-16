@@ -15,6 +15,19 @@ pub const P3: &str = "w1:p3";
 /// dial target; every node in `hosted` gets a fake Herdr server with
 /// [`P1`], [`P2`] and [`P3`].
 pub fn cluster(label: &str, n: usize, links: &[(usize, usize)], hosted: &[usize]) -> Cluster {
+    cluster_with_panes(label, n, links, hosted, &[P1, P2, P3])
+}
+
+/// [`cluster`] with `panes` on every hosted node's fake server, for a test
+/// that needs one recipient seat per wake case (a seat is woken at most once
+/// per 30 s).
+pub fn cluster_with_panes(
+    label: &str,
+    n: usize,
+    links: &[(usize, usize)],
+    hosted: &[usize],
+    panes: &[&str],
+) -> Cluster {
     let mut cluster = Cluster::start(
         label,
         crate::BIN,
@@ -25,9 +38,28 @@ pub fn cluster(label: &str, n: usize, links: &[(usize, usize)], hosted: &[usize]
         },
     );
     for node in hosted {
-        cluster.add_host(*node, &[P1, P2, P3]);
+        cluster.add_host(*node, panes);
     }
     cluster
+}
+
+/// Sets `seat`'s nudge threshold to `t` on its own node (the threshold is
+/// node-local; a remote seat's is refused).
+pub fn set_threshold(cluster: &Cluster, seat: &Seat, t: i32) {
+    let value = t.to_string();
+    cluster.ok_as(Some(seat), seat.node, &["nudge-threshold", &value]);
+    assert_eq!(
+        cluster
+            .scalar(
+                seat.node,
+                "SELECT nudge_threshold FROM seats WHERE id = ?1",
+                &[&seat.id]
+            )
+            .as_deref(),
+        Some(value.as_str()),
+        "{}'s threshold",
+        seat.id
+    );
 }
 
 /// Sends as `from` and returns `(thread, message)`.

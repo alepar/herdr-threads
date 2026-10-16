@@ -5,7 +5,6 @@
 use crate::support::{self, P1};
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 22"]
 fn one_node_with_two_hosts_reaches_seats_on_both() {
     let mut cluster = support::cluster("mn-two-hosts", 2, &[(1, 0)], &[0, 1]);
     cluster.add_host(0, &[support::P1, support::P2]);

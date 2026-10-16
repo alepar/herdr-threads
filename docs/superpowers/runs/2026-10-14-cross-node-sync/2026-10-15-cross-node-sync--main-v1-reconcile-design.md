@@ -280,3 +280,20 @@ Unchanged: the pre-release wake e2e stays single-node (root §13).
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+### 2026-10-16: items 11 to 23 implemented
+
+What the implementation did relative to this design:
+
+- **Items 11 to 13, 15 (pair auto-join authoring).** `resolve_direct_pair` authors `thread.direct`, `joined{caller}` and, for a local recipient only, `joined{recipient}`. A remote recipient's home node authors its own `joined` as the `ThreadDirect` follow-up, so a pair opened across nodes shows one seat joined until the recipient's node has applied the create. `MembershipPayload.actor` is optional and the derived join event keeps `actor_seat` only for a pair seat. The `direct_auto_join` attribution observation is the follow-up fallback.
+- **Item 14 (read floor).** An auto-joined pair seat's cursors are seeded at the pair's `create:` event position, not the join-time head, so a late auto-join still sees the opener. A consequence the multinode wipe test shows: a wiped and restored pair seat's `inbox` walk starts at that floor and lists an already acknowledged opener as history (no `ack_candidate`); it has no delivery row and wakes nobody.
+- **Item 16 (pending peer).** `require_pair_lifecycle` and the `walk_audience` explicit pass accept a not-retired pair peer with no `memberships` row yet, and `build_message_sent` names it `none`. Accepted snapshot race: for a raw thread send, if the peer's `membership.joined` lands between preparation and publish, the peer has a row past the preparation's interval high water and the payload leaves it out, as for any member that joins after the snapshot. A `--seat` direct send always names the peer through `direct_recipient`.
+- **Item 17.** The handoff automatic pair route has no invitation.
+- **Items 18, 20, 21.** `nudge-threshold` and `wake-on` refuse a remote seat; the oracle projects `messages.priority`, `messages.delivery_mode` and per-node delivery-row priority, and excludes the threshold.
+- **Items 22 and 23 (this entry).** The multinode suite no longer carries any `pending ht-5fr reconcile item 22` ignore marker (13 tests had one). `config_pair` (crossed creates heal to one joined thread with no wake; a one-sided create delivers p0 before p1s with one wake) and `config_invite` (invitation wakes at T = 0, deadline and `require_ack` confirmation agree on both nodes, overdue only on the inviter's node, `invite --lazy` refused) are new. `config_delivery` runs the threshold matrix on one seat per case, `config_direct` adds the D9 person recipient and origin-only overdue, `config_relay` adds a relayed pair auto-join with no joined fact authored by the relay, `config_partition` and the sweep write into a pair at several priorities. The test harness gained `Cluster::human_seat` and a `set_threshold` step.
+
+Where a multinode expectation differed from the Tests list above:
+
+- A seat is woken for an invitation only while the invitation is still pending, and the notification backoff spaces a second wake of the same seat by about 30 s. The sweep therefore waits for each invitee's one wake before accepting, and judges the later `-p 0` and `--require-ack` sends on delivery only. The wake matrix itself runs on fresh seats in `config_delivery`.
+- The wipe test no longer asserts that the settled opener is absent from the restored seat's inbox (see item 14 above); it asserts that no delivery row exists for it, that it is acknowledged, and that the seat is woken once, for the unsettled message.
+- The partition test opens the pair before the cut, so the unreachable-node marker has a remote participant to name; a pair created while cut has only the creator joined until the heal, which `config_pair` covers.

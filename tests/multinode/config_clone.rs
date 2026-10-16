@@ -25,7 +25,6 @@ fn incarnations_of_b(cluster: &Cluster, at: usize, b: usize) -> i64 {
 }
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 22"]
 fn cloned_node_directory_is_detected_and_repaired_by_the_operator() {
     let mut cluster = support::cluster("mn-clone", 2, &[(0, 1)], &[0, 1]);
     let b = cluster.seat(0, P1);

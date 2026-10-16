@@ -751,6 +751,45 @@ impl Cluster {
             .unwrap()
     }
 
+    /// Records `pane` of `node`'s first fake server as a person's seat
+    /// (`human me init --operator` with that pane as the caller's context)
+    /// and returns it. The pane must not also host an agent seat of the
+    /// test: one pane is one seat. The returned [`Seat`] names the person's
+    /// seat as a recipient; it carries no agent session, so it is not a
+    /// caller for [`Cluster::run_as`].
+    pub fn human_seat(&self, node: usize, pane: &str) -> Seat {
+        let host = &self.nodes[node].hosts[0];
+        let output = self
+            .iso
+            .command(&self.bin)
+            .arg("human")
+            .arg("--json")
+            .arg("--state-dir")
+            .arg(&self.nodes[node].state)
+            .arg("--host-endpoint")
+            .arg(host.socket())
+            .args(["me", "init", "--operator"])
+            .env("HERDR_PANE_ID", pane)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "human me init on {pane}: {output:?}"
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("me init prints JSON");
+        Seat {
+            id: value["result"]["data"]["seat"]
+                .as_str()
+                .expect("a person's seat id")
+                .to_owned(),
+            node,
+            pane: pane.to_owned(),
+            host: 0,
+            session: String::new(),
+        }
+    }
+
     /// Copies `node`'s state directory (daemon stopped around the copy).
     pub fn backup(&mut self, node: usize) -> Backup {
         let was_up = self.nodes[node].up;
