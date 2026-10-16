@@ -1183,6 +1183,7 @@ fn lazy_inbox_v2_ack_candidates_follow_registered_agent_harnesses() {
     assert_eq!(hermes.as_ref(), Some(&ordinary));
     // The renderer reads only the page; the claim matters for completion.
     let offer = InboxOffer {
+        receipt_completion: true,
         in_turn_offer: false,
         page,
         claim: claim(),
@@ -1191,7 +1192,7 @@ fn lazy_inbox_v2_ack_candidates_follow_registered_agent_harnesses() {
     let (context_text, lazy) = append(String::new(), &offer, &["herdr-threads".to_owned()], 4096);
     assert!(lazy.is_empty(), "ordinary rows are never lazy-completed");
     assert!(
-        context_text.contains(&format!("herdr-threads ack {}", ordinary.as_str())),
+        !context_text.contains(&format!("herdr-threads ack {}", ordinary.as_str())),
         "{context_text}"
     );
     for (harness, wanted) in [("claude", true), ("codex", true), ("not-a-harness", false)] {

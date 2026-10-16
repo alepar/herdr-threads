@@ -81,6 +81,9 @@ const HANG_FOR: Duration = Duration::from_millis(3000);
 const DROP: u8 = 3;
 /// Withhold the capability response beyond the production tool deadline.
 const WITHHOLD_CAPABILITIES: u8 = 4;
+const FAIL_COMPLETION: u8 = 5;
+const LOSE_COMPLETION_RESPONSE: u8 = 6;
+const FAIL_CURSOR: u8 = 7;
 
 /// Where a scripted arrival lands relative to the hook's calls.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -317,6 +320,40 @@ struct Counting {
     phases: Arc<HookPhases>,
 }
 impl Counting {
+    fn before_completion(
+        &self,
+        command: &Command,
+    ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        if (matches!(command, Command::CompleteInboxDelivery(_))
+            && self.mode.load(Ordering::SeqCst) == FAIL_COMPLETION)
+            || (matches!(command, Command::AdvanceCursors(_))
+                && self.mode.load(Ordering::SeqCst) == FAIL_CURSOR)
+        {
+            return Err(herdr_threads::protocol::results::ApiError::new(
+                herdr_threads::protocol::results::ErrorCode::DeadlineExceeded,
+                "completion refused before commit",
+            ));
+        }
+        Ok(())
+    }
+
+    fn completion_result(
+        &self,
+        command: &Command,
+        result: Result<CommandResult, herdr_threads::protocol::results::ApiError>,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        if result.is_ok()
+            && matches!(command, Command::CompleteInboxDelivery(_))
+            && self.mode.load(Ordering::SeqCst) == LOSE_COMPLETION_RESPONSE
+        {
+            return Err(herdr_threads::protocol::results::ApiError::new(
+                herdr_threads::protocol::results::ErrorCode::DeadlineExceeded,
+                "response lost after canonical commit",
+            ));
+        }
+        result
+    }
+
     fn after(&self, command: &Command) {
         use herdr_threads::protocol::commands::CheckInMode;
         let stage = match command {
@@ -361,6 +398,7 @@ impl Counting {
         }
     }
     fn observe(&self, command: &Command) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        self.before_completion(command)?;
         self.withhold_capabilities(command);
         if matches!(command, Command::HookParseFailure(_)) {
             self.parse_failures.fetch_add(1, Ordering::SeqCst);
@@ -412,8 +450,11 @@ impl herdr_threads::ports::LocalService for Counting {
         if matches!(command, Command::HookParseFailure(_)) {
             self.parse_failures.fetch_add(1, Ordering::SeqCst);
         }
-        self.inner
-            .service_control(command, peer, instance, boot, gate, budget)
+        self.before_completion(&command)?;
+        let result =
+            self.inner
+                .service_control(command.clone(), peer, instance, boot, gate, budget);
+        self.completion_result(&command, result)
     }
     fn audit_service_disconnect(
         &self,
@@ -450,7 +491,7 @@ impl herdr_threads::ports::LocalService for Counting {
         if result.is_ok() {
             self.after(&command);
         }
-        result
+        self.completion_result(&command, result)
     }
     fn handle_with_output(
         &self,
@@ -467,7 +508,7 @@ impl herdr_threads::ports::LocalService for Counting {
         if result.is_ok() {
             self.after(&command);
         }
-        result
+        self.completion_result(&command, result)
     }
 }
 
@@ -2453,8 +2494,8 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
 // message, with nothing else pending, moves the digest so the next Bash
 // PreToolUse presents it, and the hook injects the actual inbox rows (not just
 // an inbox pointer). Whole lazy bodies shown are completed after delivery;
-// ACK-required messages are shown with an exact ack command, never ACKed by
-// the hook. Subagent calls never see or complete anything; a body too large
+// ACK-required messages settle automatically after complete output flush.
+// Subagent calls never see or complete anything; a body too large
 // for the bound is never shown or completed and the next call stays quiet.
 // Kills: a lazy-only arrival that leaves the hook quiet (digest unchanged), a
 // pointer-only hook, completion before or without whole display, a hook ACK
@@ -2540,7 +2581,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert_eq!(displayed(), 1);
 
     // 3. Ordinary and lazy together: both rows injected, the ACK-required
-    // one with an exact ack command and left unACKed; the lazy one completed.
+    // one automatically ACKed after delivery; the lazy one completed.
     let ordinary = data(fx.cooperative(
         "peer",
         "w9:p2",
@@ -2557,14 +2598,13 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert!(context.contains("needs a receipt"), "{context}");
     assert!(context.contains("lazy for the top level only"), "{context}");
     assert!(context.contains(&second), "{context}");
-    assert!(context.contains(&format!(" ack {ordinary}")), "{context}");
+    assert!(!context.contains(&format!(" ack {ordinary}")), "{context}");
     assert_eq!(displayed(), 2);
     assert_eq!(
         fx.count("SELECT count(*) FROM receipt_state WHERE state='acked'"),
-        0,
-        "the hook never ACKs"
+        1,
+        "the complete hook display automatically ACKs"
     );
-    fx.cooperative("seat", "w9:p1", &["ack", &ordinary]);
     quiet("after mixed");
 
     // 4. A body larger than the bound moves the digest, but is never shown
@@ -2579,7 +2619,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert!(!context.contains(&big[..100]), "{context}");
     assert!(!context.contains(INBOX_HEADER), "{context}");
     assert!(
-        context.contains("do not fit this hook's context"),
+        context.contains("More inbox content may remain"),
         "{context}"
     );
     assert!(context.len() <= 4096, "{}", context.len());
@@ -2594,6 +2634,68 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
             )),
             0,
             "{table}"
+        );
+    }
+}
+
+// Actual eligible hooks retry after completion uncertainty without an arrival,
+// explicit inbox/ACK, timer or local retry journal. Covers receipt-only requests.
+#[test]
+fn native_hook_completion_failures_retry_on_the_next_unchanged_attention_hook() {
+    for failure in [FAIL_COMPLETION, FAIL_CURSOR, LOSE_COMPLETION_RESPONSE] {
+        let fx = Fixture::start();
+        fx.register("w9:p1", "sess-1");
+        fx.register("w9:p2", "peer-sess");
+        let thread = data(fx.cooperative(
+            "peer",
+            "w9:p2",
+            &["thread", "create", "--topic", "retry-hook"],
+        ));
+        fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+        fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+        // Drain enrollment/invitation attention before the one receipt arrival.
+        fx.hook("w9:p1", &tool("sess-1"));
+        let message = data(fx.cooperative(
+            "peer",
+            "w9:p2",
+            &[
+                "send",
+                &thread,
+                "--body",
+                "receipt-only recovery",
+                "--require-ack",
+                "seat",
+            ],
+        ));
+        fx.mode.store(failure, Ordering::SeqCst);
+        let first = fx.hook("w9:p1", &tool("sess-1"));
+        assert!(context_of(&first).contains("receipt-only recovery"));
+        assert!(
+            first.stderr.contains("delivery completion uncertain"),
+            "{}",
+            first.stderr
+        );
+        let acked = || {
+            fx.count(&format!(
+                "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+            ))
+        };
+        assert_eq!(acked(), i64::from(failure != FAIL_COMPLETION));
+        fx.mode.store(PASS, Ordering::SeqCst);
+        // No new message or manual settlement between these two hook invocations.
+        let next = fx.hook("w9:p1", &tool("sess-1"));
+        assert!(
+            context_of(&next).contains("receipt-only recovery"),
+            "{}",
+            next.stderr
+        );
+        assert!(next.stderr.is_empty(), "{}", next.stderr);
+        assert_eq!(acked(), 1);
+        let quiet = fx.hook("w9:p1", &tool("sess-1"));
+        assert!(
+            quiet.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&quiet.stdout)
         );
     }
 }
@@ -4446,9 +4548,6 @@ fn ready_command_ending(context: &str, label: &str, tail: &str) -> String {
         .unwrap_or_else(|| panic!("no `{label}` line ending `{tail}` in {context}"));
     line.split_once(": ").unwrap().1.to_owned()
 }
-fn ready_command(context: &str, label: &str) -> String {
-    ready_command_ending(context, label, "")
-}
 
 /// The escaped peer data section, decoded.
 fn peer_data(context: &str) -> String {
@@ -4501,7 +4600,7 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
         "- accept (if topic and goal fit your role/remit): ",
         &format!(" accept {thread}"),
     );
-    let inbox = ready_command_ending(&context, "- pending mail", " inbox");
+    assert!(!context.contains("- pending mail"), "{context}");
     // Review B1: the startup directory overview for the one thread is
     // delivered with the commands, within the budget.
     let peer = peer_data(&context);
@@ -4516,7 +4615,7 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     assert!(!peer.contains("overview has_more"), "{peer}");
     assert!(!accept.contains("--seat"), "{fixed}");
     assert!(accept.ends_with(&format!(" accept {thread}")), "{accept}");
-    assert!(inbox.ends_with(" inbox"), "{inbox}");
+    assert!(!context.contains("inbox fallback"), "{context}");
 
     // The digest form is refused with an actionable error, not not_found.
     let digest_form = accept.replace(
@@ -4534,7 +4633,8 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
 
     // One complete text inbox display settles the receipt; there is no
     // separate history read or manual ACK command.
-    for command in [&inbox, &accept] {
+    {
+        let command = &accept;
         let out = run_in_pane(&fx, "w9:p1", command);
         assert_eq!(
             out.status.code(),
@@ -4543,6 +4643,15 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+    // Acceptance remains explicit; the following normal hook carries the
+    // newly accessible body and automatically settles its receipt.
+    let delivered = fx.hook("w9:p1", &tool("sess-1"));
+    let delivered_context = context_of(&delivered);
+    assert!(delivered_context.contains("handoff"), "{delivered_context}");
+    assert!(
+        !delivered_context.contains("- pending mail"),
+        "{delivered_context}"
+    );
     assert_eq!(
         fx.count(&format!("SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND seat_id='seat' AND state='acked' AND ack_actor_seat_id='seat'")),
         1,
@@ -4586,14 +4695,8 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     let offered = fx.hook("w9:p1", &tool("sess-1"));
     assert_eq!(offered.code, Some(0), "{}", offered.stderr);
     let context = context_of(&offered);
-    let inbox = ready_command_ending(&context, "- pending mail", " inbox");
-    let out = run_in_pane(&fx, "w9:p1", &inbox);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(context.contains("second"), "{context}");
+    assert!(!context.contains("- pending mail"), "{context}");
     assert_eq!(
         fx.count(&format!("SELECT count(*) FROM receipt_state WHERE message_id='{second}' AND seat_id='seat' AND state='acked' AND ack_actor_seat_id='seat'")),
         1
@@ -4630,12 +4733,12 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     let acked_keys = keys(&acked);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&acked).unwrap()["action_provenance"],
-        "cooperative_inbox_display"
+        "cooperative_hook_context"
     );
     assert_eq!(
         acked_keys
             .into_iter()
-            .filter(|key| key != "action_provenance")
+            .filter(|key| key != "action_provenance" && key != "via")
             .collect::<Vec<_>>(),
         accepted_keys
     );
@@ -4737,7 +4840,8 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
     for label in ["\"age_millis_signed\":", "\"created_at", "\"joined_"] {
         assert!(peer.contains(label), "{label}: {peer}");
     }
-    let mut commands = vec![ready_command_ending(&context, "- pending mail", " inbox")];
+    assert!(!context.contains("- pending mail"), "{context}");
+    let mut commands = Vec::new();
     for (thread, _, _, _) in &threads {
         commands.push(ready_command_ending(
             &context,
@@ -4759,6 +4863,8 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+    let delivered = fx.hook("w9:p1", &tool("sess-1"));
+    assert!(context_of(&delivered).contains("handoff"));
     for (_, invitation, message, _) in &threads {
         assert_eq!(
             fx.count(&format!(
@@ -4815,27 +4921,24 @@ fn deep_state_dir_startup_context_fits_and_names_the_main_thread() {
         context.len()
     );
     let state = fx.state.to_str().unwrap();
-    // The one ready inbox command labels the main thread whose overview is
-    // retained and carries the exact long state path.
-    let inbox = ready_command(&context, "- pending mail for ");
-    assert!(
-        inbox.contains(state),
-        "exact state dir in the command: {inbox}"
-    );
-    let mail_label = fixed_section(&context)
+    // The bounded native page overflow owns one exact routed continuation.
+    let inbox = context
         .lines()
-        .find(|line| line.starts_with("- pending mail for "))
-        .unwrap();
-    let main = mail_label
-        .strip_prefix("- pending mail for ")
-        .unwrap()
-        .split(" and other threads: ")
-        .next()
-        .unwrap();
+        .find_map(|line| line.strip_prefix("More inbox content may remain: run "))
+        .and_then(|line| line.strip_suffix("; follow its next: commands."))
+        .expect("one native inbox continuation")
+        .to_owned();
+    assert!(inbox.contains(state), "exact state dir in command: {inbox}");
+    assert_eq!(
+        context
+            .matches("More inbox content may remain: run ")
+            .count(),
+        1
+    );
     let peer = peer_data(&context);
     assert!(
-        peer.contains(&format!("\"thread\":\"{main}\"")),
-        "main thread row: {peer}"
+        peer.contains("\"thread\":"),
+        "retained main thread row: {peer}"
     );
     assert!(peer.contains("overview has_more:"), "{peer}");
     assert!(!peer.contains(state), "{peer}");

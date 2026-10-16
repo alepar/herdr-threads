@@ -95,8 +95,9 @@ message**, not the system prompt. Ordinary string `api_content` is skipped for
 MoA/codex_app_server; multimodal and spill paths need their own actual measurement.
 `_persist_disabled` may omit the hook entirely. Zero child callback samples cannot
 PASS child delivery. Cooperative receipts retain `cooperative_top_level`; default
-text inbox's separate `cooperative_inbox_display` claim is not model-consumption
-proof. No callback or driver output is a daemon acknowledgment.
+text inbox's `cooperative_inbox_display` and complete native-hook output's
+`cooperative_hook_context` claims settle eligible receipts automatically after
+flush; neither is model-consumption proof. No callback or driver output is a daemon acknowledgment.
 
 ## Adapter author boundary
 

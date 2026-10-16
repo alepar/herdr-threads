@@ -1511,7 +1511,7 @@ fn render_bootstrap<W: Write>(
         &super::hook::CommandRouting::from_context(instance, context),
     )
     .map_err(io::Error::other)?;
-    writer.write_all(" Prefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Open your durable inbox using that matching group. Otherwise use the exact fallback: `".as_bytes())?;
+    writer.write_all(" Prefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Use complete task messages injected by that matching group. If no matching hook is trusted, or delivery reports incomplete or unavailable, use the exact fallback: `".as_bytes())?;
     let mut inbox = super::hook::cli_prefix(context);
     inbox.push("inbox".into());
     for (index, token) in inbox.into_iter().enumerate() {
@@ -1523,7 +1523,7 @@ fn render_bootstrap<W: Write>(
     }
     write!(
         writer,
-        "`. The task for thread {} is stored in inbox; follow its printed next: commands for complete bodies. Do not reread it with read/body. When waiting for replies, finish your turn and let hooks notify you of new mail; do not poll or run follow. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.",
+        "`. The task for thread {} is stored in inbox. Complete delivery, including an empty inbox, needs no inbox call. Follow printed next: commands for incomplete delivery. Do not reread it with read/body. When waiting for replies, finish your turn and let hooks notify you of new mail; do not poll or run follow. Launch does not accept invitations or ACK messages. Accept invitations separately; complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically.",
         thread
     )?;
     #[cfg(any(test, feature = "test-support"))]

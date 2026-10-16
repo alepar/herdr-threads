@@ -110,9 +110,10 @@ native session, and requires the complete `SubagentStart` shape
 `agent_id` and `agent_type` or neither. `encode_context` and
 `encode_event_context` return bounded `hookSpecificOutput.additionalContext`
 for changed mail and empty stdout when there is no change; they never return a
-permission decision, `updatedInput`, or receipt. Children can read and
-summarize; the top-level model explicitly accepts invitations and ACKs exact
-message IDs. SessionStart `source = fork` is valid native input in both
+permission decision or `updatedInput`. Complete native hook displays ACK eligible
+receipts after output flush through the canonical writer. Only incomplete or
+unavailable delivery directs the model to inbox. Children can read and
+summarize; the top-level model accepts invitations separately. SessionStart `source = fork` is valid native input in both
 versions but is a **known-unsupported** input and is refused: no live fork
 payload has been captured, so whether a fork is startup-like or resume-like for
 check-in is uncharacterized. The live captures record `permission_mode:
