@@ -306,3 +306,62 @@ fn pump_with_no_state_flag_or_env_uses_the_default_state_dir() {
     wait_for_log(&state, "sync: link up ");
     assert!(state.join("node/node.key").exists());
 }
+
+/// sshd relays the pump's stdout from one thread with non-blocking reads. On Linux, a pump
+/// that copied with `io::copy` spliced the socket into stdout, and a splice waiting on an
+/// idle socket holds the stdout pipe's lock: sshd's read then blocked in the kernel, sshd
+/// never forwarded the dialer's hello, and every real-ssh link timed out its handshake.
+/// After the preamble, a non-blocking read of an idle pump's stdout must return at once.
+#[test]
+fn idle_pump_stdout_never_blocks_a_nonblocking_reader() {
+    use std::os::fd::AsRawFd;
+    let iso = TestIsolation::new("peer-stdio-nonblocking-relay");
+    let state = iso.path("state");
+    let _stop = StopDaemon(&iso, &state);
+    let mut child = pump(&iso, &state);
+    let mut stdout = child.stdout.take().unwrap();
+    let _stdin = child.stdin.take().unwrap();
+    let fd = stdout.as_raw_fd();
+    // SAFETY: fd is the open read end of the child's stdout pipe, owned by `stdout`.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        assert!(flags >= 0);
+        assert_eq!(libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK), 0);
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + WAIT;
+        let mut got = Vec::new();
+        let mut buf = [0u8; 64];
+        while got.len() < PREAMBLE.len() {
+            match stdout.read(&mut buf) {
+                Ok(0) => panic!("pump closed stdout before the preamble"),
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "no preamble");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("reading the pump's stdout: {error}"),
+            }
+        }
+        assert_eq!(&got[..], PREAMBLE);
+        // Let the pump's daemon-to-stdout side settle on the idle socket.
+        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        let idle = stdout.read(&mut buf);
+        let _ = tx.send((idle.map_err(|e| e.kind()), started.elapsed()));
+    });
+    let (idle, took) = rx.recv_timeout(Duration::from_secs(5)).expect(
+        "a non-blocking read of the idle pump's stdout blocked (splice holds the pipe lock)",
+    );
+    assert_eq!(
+        idle,
+        Err(std::io::ErrorKind::WouldBlock),
+        "idle pump has nothing to say"
+    );
+    assert!(
+        took < Duration::from_secs(1),
+        "non-blocking read took {took:?}"
+    );
+    drop(child);
+}

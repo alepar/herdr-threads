@@ -17,7 +17,7 @@ use crate::{
 use std::{
     ffi::OsString,
     fs::File,
-    io::{self, Write},
+    io::{self, Read, Write},
     mem::ManuallyDrop,
     net::Shutdown,
     os::{fd::FromRawFd, unix::net::UnixStream},
@@ -110,18 +110,38 @@ pub fn run_stdio(context: &RuntimeContext) -> i32 {
     thread::spawn(move || {
         // Stdin EOF is the end of this side's stream: tell the daemon, then
         // keep draining the socket until it closes.
-        match io::copy(&mut *stdin, &mut up_socket) {
+        match pump(&mut *stdin, &mut up_socket) {
             Ok(_) => {
                 let _ = up_socket.shutdown(Shutdown::Write);
             }
             Err(_) => std::process::exit(EXIT_IO),
         }
     });
-    let down = thread::spawn(move || match io::copy(&mut down_socket, &mut *stdout) {
+    let down = thread::spawn(move || match pump(&mut down_socket, &mut *stdout) {
         Ok(_) => 0,
         Err(_) => EXIT_IO,
     });
     std::process::exit(down.join().unwrap_or(EXIT_IO));
+}
+
+/// Copy `from` into `to` until EOF with plain reads and writes, flushing each chunk.
+/// Never `io::copy`: on Linux, with a pipe on one side, std splices, and a splice blocked
+/// on the socket holds the stdout pipe's lock, so a single-threaded relay reading that pipe
+/// (sshd) blocks and stops feeding stdin: the handshake deadlocks over real ssh.
+fn pump(from: &mut impl Read, to: &mut impl Write) -> io::Result<u64> {
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let n = match from.read(&mut buf) {
+            Ok(0) => return Ok(total),
+            Ok(n) => n,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        to.write_all(&buf[..n])?;
+        to.flush()?;
+        total += n as u64;
+    }
 }
 
 /// Ensure the node daemon (store-only is fine; the host, if any, is only an

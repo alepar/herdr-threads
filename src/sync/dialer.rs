@@ -451,6 +451,9 @@ struct TaskState {
     /// The clock reading of this task's last store write.
     last_write_ms: i64,
     noise_logged: bool,
+    /// The last attempt outcome written to daemon.log: an unchanged outcome is not
+    /// logged again, so a target that keeps failing the same way logs once.
+    last_outcome_logged: Option<String>,
 }
 
 impl TaskState {
@@ -462,6 +465,7 @@ impl TaskState {
             learned: row.learned_node,
             last_write_ms: 0,
             noise_logged: false,
+            last_outcome_logged: None,
         }
     }
 
@@ -618,6 +622,8 @@ async fn session(
                     ));
                 }
                 state.learned = Some(node_uuid);
+                // A link that came up makes the next failure news again.
+                state.last_outcome_logged = None;
                 ctx.signals.target_linked(target.target_id, node_uuid);
                 state.last_write_ms = record(
                     ctx,
@@ -730,8 +736,28 @@ async fn finish(
         }
         DialTransition::Dialing | DialTransition::Linked { .. } => {}
     }
+    log_outcome(ctx, state, &target.ssh_dest, &transition);
     state.last_write_ms = record(ctx, target.target_id, &target.ssh_dest, transition).await;
     true
+}
+
+/// One daemon.log line per change in a target's attempt outcome (backoff reason, not
+/// installed, stopped), so a failing link says why without `peer list`; the attempt
+/// count and retry time are left out so a steady failure logs once.
+fn log_outcome(ctx: &TaskCtx, state: &mut TaskState, dest: &str, transition: &DialTransition) {
+    let outcome = match transition {
+        DialTransition::Backoff { error, .. } => format!("dial failed, backing off: {error}"),
+        DialTransition::NotInstalled => "dial failed: herdr-threads is not installed there".into(),
+        DialTransition::Stopped { reason, .. } => format!("dial stopped: {reason:?}"),
+        DialTransition::Dialing | DialTransition::Linked { .. } => {
+            state.last_outcome_logged = None;
+            return;
+        }
+    };
+    if state.last_outcome_logged.as_deref() != Some(outcome.as_str()) {
+        (ctx.log)(&format!("sync peer {dest}: {outcome}"));
+        state.last_outcome_logged = Some(outcome);
+    }
 }
 
 async fn run_task(
@@ -1314,6 +1340,10 @@ mod tests {
     }
 
     fn rig(command: &str) -> Rig {
+        rig_logging(command, Arc::new(|_| {}))
+    }
+
+    fn rig_logging(command: &str, log: LogFn) -> Rig {
         let store = Arc::new(MemorySyncStore::new());
         let clock = Arc::new(TestClock(Instant::now()));
         let (tx, dialed) = mpsc::channel(4);
@@ -1322,7 +1352,7 @@ mod tests {
             DialerDeps {
                 store: store.clone(),
                 clock: clock.clone(),
-                log: Arc::new(|_| {}),
+                log,
                 dialed: tx,
                 signals: signals.clone(),
             },
@@ -1367,6 +1397,39 @@ mod tests {
             .await
             .expect("a dial arrives")
             .expect("the dialer is running")
+    }
+
+    /// A failing dial says why in daemon.log, not only in `peer list`'s `last_error`
+    /// (the first live real-ssh run failed with no dialer line at all).
+    #[tokio::test]
+    async fn a_failed_dial_logs_its_reason() {
+        let lines = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = lines.clone();
+        let rig = rig_logging(
+            r#": {dest}; echo 'ssh: connect to host b: refused' >&2; exit 255"#,
+            Arc::new(move |line: &str| sink.lock().unwrap().push(line.to_owned())),
+        );
+        let one = rig.store.add_target("one");
+        rig.dialer.shared().request_reload();
+        until("backoff recorded", || {
+            row(&rig, one).state == DialState::Backoff
+        })
+        .await;
+        until("failure logged", || {
+            lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("dial failed"))
+        })
+        .await;
+        let logged = lines.lock().unwrap().clone();
+        let failure = logged.iter().find(|l| l.contains("dial failed")).unwrap();
+        assert!(
+            failure.starts_with("sync peer one: dial failed"),
+            "{failure}"
+        );
+        assert!(failure.contains("refused"), "names the cause: {failure}");
     }
 
     #[tokio::test]
