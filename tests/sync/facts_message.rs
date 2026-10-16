@@ -67,8 +67,10 @@ pub fn sent(
         thread: thread.clone(),
         author: author.clone(),
         body: "hello".into(),
-        mode,
-        nudge: false,
+        // The fixtures' two shapes under main's model: an ACK send (p0, explicit
+        // ACK recipients, recorded `ordinary`) and a default send (p1, recorded `lazy`).
+        priority: if mode.is_ordinary() { 0 } else { 1 },
+        require_ack: mode.is_ordinary(),
         relays_user: false,
         user_intent: None,
         sent_at: SENT_AT,
@@ -86,7 +88,9 @@ fn seat_n(n: usize) -> SeatId {
 impl Node {
     /// A sealed local preparation in `thread` the way `prepare_send_step`
     /// leaves one: `acks` are `(seat, frozen duration, eligible)` rows,
-    /// `lazy` the staged lazy recipients. Returns the message ID the
+    /// `lazy` the staged delivery rows. `mode` `ordinary` is an ACK send
+    /// (priority 0), `lazy` a default one (priority 1); every delivery row
+    /// carries the preparation's priority. Returns the message ID the
     /// preparation derives.
     pub fn stage_prep(
         &self,
@@ -99,10 +103,11 @@ impl Node {
         let message =
             MessageId::new(send_message_id_for_preparation(&prep).expect("a send preparation"));
         let db = self.raw();
+        let priority: i64 = if mode == "ordinary" { 0 } else { 1 };
         db.execute(
-            "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status,delivery_mode) \
-             VALUES (?1,(SELECT id FROM local_node),'seat:stage',?1,zeroblob(32),?2,0,0,0,0,0,0,0,?3,'building',?4)",
-            params![prep, thread.as_str(), acks.len() as i64, mode],
+            "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status,delivery_mode,priority) \
+             VALUES (?1,(SELECT id FROM local_node),'seat:stage',?1,zeroblob(32),?2,0,0,0,0,0,0,0,?3,'building',?4,?5)",
+            params![prep, thread.as_str(), acks.len() as i64, mode, priority],
         )
         .expect("stage the preparation");
         for (n, (seat, frozen, eligible)) in acks.iter().enumerate() {
@@ -115,8 +120,8 @@ impl Node {
         }
         for seat in lazy {
             db.execute(
-                "INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,?3,?4)",
-                params![prep, message.as_str(), thread.as_str(), seat.as_str()],
+                "INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES (?1,?2,?3,?4,?5)",
+                params![prep, message.as_str(), thread.as_str(), seat.as_str(), priority],
             )
             .expect("stage a lazy recipient");
         }
@@ -217,13 +222,14 @@ impl Fixture {
         }
     }
 
-    /// An ordinary message: `acker` owes a timed receipt, `quiet` nothing.
+    /// An ACK send: `acker` owes a timed receipt, `quiet` gets a p0 delivery
+    /// row (D9).
     fn ordinary(&self) -> MessageSentPayload {
         let message = self.node.stage_prep(
             &self.thread,
             "ordinary",
             &[(&self.acker, FIVE_MIN, true)],
-            &[],
+            &[&self.quiet],
         );
         self.ordinary_payload(&message)
     }
@@ -256,8 +262,8 @@ fn round_trip() {
         thread: ThreadId::new("tAbc12345678"),
         author: SeatId::new("sAAAA12345678"),
         body: "hi".into(),
-        mode: DeliveryMode::Ordinary,
-        nudge: false,
+        priority: 0,
+        require_ack: true,
         relays_user: true,
         user_intent: Some(herdr_threads::protocol::summary::UserIntent::Request),
         sent_at: 1_700_000_000_000,
@@ -274,7 +280,7 @@ fn round_trip() {
     let json = serde_json::to_string(&payload).unwrap();
     assert_eq!(
         json,
-        r#"{"message":"mAbc12345678","thread":"tAbc12345678","author":"sAAAA12345678","body":"hi","mode":"ordinary","nudge":false,"relays_user":true,"user_intent":"request","sent_at":1700000000000,"duration_ms":300000,"recipients":[{"seat":"sBBBB12345678","receipt":"ack","deadline_at":1700000300000},{"seat":"sCCCC12345678","receipt":"none","deadline_at":null}]}"#
+        r#"{"message":"mAbc12345678","thread":"tAbc12345678","author":"sAAAA12345678","body":"hi","priority":0,"require_ack":true,"relays_user":true,"user_intent":"request","sent_at":1700000000000,"duration_ms":300000,"recipients":[{"seat":"sBBBB12345678","receipt":"ack","deadline_at":1700000300000},{"seat":"sCCCC12345678","receipt":"none","deadline_at":null}]}"#
     );
     assert_eq!(
         serde_json::from_str::<MessageSentPayload>(&json).unwrap(),
@@ -282,13 +288,20 @@ fn round_trip() {
     );
     // An additive field is ignored; the optional fields default.
     let newer: MessageSentPayload = serde_json::from_str(
-        r#"{"message":"mAbc12345678","thread":"tAbc12345678","author":"sAAAA12345678","body":"hi","sent_at":5,"future":{"x":1}}"#,
+        r#"{"message":"mAbc12345678","thread":"tAbc12345678","author":"sAAAA12345678","body":"hi","priority":3,"sent_at":5,"future":{"x":1}}"#,
     )
     .unwrap();
-    assert_eq!(newer.mode, DeliveryMode::Ordinary);
+    assert_eq!(newer.priority, 3);
     assert_eq!(
-        (newer.nudge, newer.relays_user, newer.user_intent),
+        (newer.require_ack, newer.relays_user, newer.user_intent),
         (false, false, None)
+    );
+    // `priority` has no default: a payload without it does not decode.
+    assert!(
+        serde_json::from_str::<MessageSentPayload>(
+            r#"{"message":"mAbc12345678","thread":"tAbc12345678","author":"sAAAA12345678","body":"hi","sent_at":5}"#,
+        )
+        .is_err()
     );
     assert_eq!((newer.duration_ms, newer.recipients.len()), (0, 0));
     assert_eq!(MessageSent::NAME, "message.sent");
@@ -306,6 +319,70 @@ fn round_trip() {
             SeatId::new("sCCCC12345678")
         ]
     );
+}
+
+// Kills: a receiver that accepts a priority past 9, an ACK send above p0
+// (D3), an `ack` recipient on a send without explicit ACK recipients, or a
+// deadline on a recipient that owes no receipt (reconcile amendment §1.1).
+#[test]
+fn check_rejects_invalid_priority_shapes() {
+    let message = MessageId::new("mAbc12345678");
+    let thread = ThreadId::new("tAbc12345678");
+    let author = SeatId::new("sAuthor123456");
+    let acker = SeatId::new("sAcker1234567");
+    let ack = sent(
+        &message,
+        &thread,
+        &author,
+        DeliveryMode::Ordinary,
+        FIVE_MIN,
+        vec![spec(
+            &acker,
+            ReceiptObligation::Ack,
+            Some(SENT_AT + FIVE_MIN),
+        )],
+    );
+    ack.check().expect("a p0 ACK send");
+    let plain = sent(
+        &message,
+        &thread,
+        &author,
+        DeliveryMode::Lazy,
+        0,
+        vec![spec(&acker, ReceiptObligation::None, None)],
+    );
+    plain.check().expect("a p1 send");
+    let human_only = MessageSentPayload {
+        recipients: vec![spec(&acker, ReceiptObligation::None, None)],
+        ..ack.clone()
+    };
+    human_only
+        .check()
+        .expect("require_ack with only human explicit recipients has no ack recipient");
+    type Mutation = Box<dyn Fn(&mut MessageSentPayload)>;
+    let invalid: Vec<(&str, MessageSentPayload, Mutation)> = vec![
+        ("priority 10", plain.clone(), Box::new(|p| p.priority = 10)),
+        (
+            "require_ack at p1",
+            ack.clone(),
+            Box::new(|p| p.priority = 1),
+        ),
+        (
+            "ack recipient without require_ack",
+            ack.clone(),
+            Box::new(|p| p.require_ack = false),
+        ),
+        (
+            "deadline on a none recipient",
+            plain.clone(),
+            Box::new(|p| p.recipients[0].deadline_at = Some(SENT_AT)),
+        ),
+    ];
+    for (what, mut payload, mutate) in invalid {
+        mutate(&mut payload);
+        let error = payload.check().unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "{what}");
+    }
 }
 
 #[test]
@@ -577,7 +654,17 @@ fn staged_audience_mismatch_aborts_nothing_committed() {
             }),
         ),
         ("another duration", Box::new(|p| p.duration_ms += 1)),
-        ("another mode", Box::new(|p| p.mode = DeliveryMode::Lazy)),
+        (
+            "another priority and recorded mode",
+            Box::new(|p| {
+                p.priority = 1;
+                p.require_ack = false;
+                for r in &mut p.recipients {
+                    r.receipt = ReceiptObligation::None;
+                    r.deadline_at = None;
+                }
+            }),
+        ),
         (
             "another thread",
             Box::new(|p| p.thread = ThreadId::new("tOther000001")),
@@ -850,6 +937,8 @@ impl Sender {
         self.store.context().open_writer().unwrap()
     }
 
+    /// `Ordinary` is an ACK send naming `acker` (`--require-ack`, p0);
+    /// `Lazy` a default p1 send.
     fn request(&self, operation: &str, mode: DeliveryMode, deadline: Option<u64>) -> SendMessage {
         SendMessage {
             delivery_mode: mode,
@@ -857,7 +946,11 @@ impl Sender {
             thread: self.thread.clone(),
             body: "hello".into(),
             direct_recipient: None,
-            invited_recipients: vec![],
+            invited_recipients: if mode.is_ordinary() {
+                vec![self.acker.clone()]
+            } else {
+                vec![]
+            },
             deadline_millis: deadline,
             operation: OperationId::new(operation),
             claim: CallerClaim {
@@ -964,7 +1057,7 @@ fn local_send_authors_exactly_one_message_sent() {
         (payload.author.clone(), payload.sent_at),
         (s.author.clone(), SENT_AT)
     );
-    assert_eq!(payload.mode, DeliveryMode::Ordinary);
+    assert_eq!((payload.priority, payload.require_ack), (0, true));
     // The audience is complete: the registered agent owes a timed receipt, the
     // binding-less member owes nothing, the author is excluded.
     let mut expected = vec![
@@ -1032,7 +1125,7 @@ fn lazy_local_send_authors_none_receipts() {
     )
     .unwrap();
     assert_eq!(payload.message, message);
-    assert_eq!(payload.mode, DeliveryMode::Lazy);
+    assert_eq!((payload.priority, payload.require_ack), (1, false));
     assert!(
         payload
             .recipients
@@ -1206,7 +1299,11 @@ impl Sender {
 fn remote_recipients_staged_without_availability_evidence() {
     let s = Sender::new();
     let (remote_agent, remote_human) = s.add_remote_members();
-    let request = s.request("op-remote", DeliveryMode::Ordinary, None);
+    let mut request = s.request("op-remote", DeliveryMode::Ordinary, None);
+    // Explicit ACK recipients on both nodes (D9: receipts only for them).
+    request
+        .invited_recipients
+        .extend([remote_agent.clone(), remote_human.clone()]);
     let CommandResult::MessageSent(message) = s.send(&request).expect("the send") else {
         panic!("not a MessageSent result")
     };

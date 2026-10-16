@@ -87,10 +87,21 @@ impl Node {
         .unwrap();
     }
 
-    /// Runs the message's `send_attention` job to completion.
+    /// Runs the message's `send_attention` job to completion; a message
+    /// without receipts or warnings has none (D9), so there is nothing to run.
     pub fn drive_send(&self, message: &MessageId) {
         let mut db = self.raw();
         let job = format!("work:send:{}", message.as_str());
+        let exists: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM work_jobs WHERE id=?1)",
+                [&job],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if !exists {
+            return;
+        }
         for _ in 0..64 {
             let progress = advance_work(
                 &mut db,
@@ -270,10 +281,14 @@ fn send_to_remote_seat_reaches_b() {
         Some(("pending".into(), Some(SENT_AT + FIVE_MIN))),
         "B has a pending receipt for its local seat"
     );
+    // The agent's receipt and the human's p0 delivery row (D9) both admit at
+    // T = 0; A wakes neither remote seat.
+    let mut local = vec![w.agent.as_str().to_owned(), w.human.as_str().to_owned()];
+    local.sort();
     assert_eq!(
         w.b.wake_seats(),
-        vec![w.agent.as_str().to_owned()],
-        "wake_work for its local seat only"
+        local,
+        "wake_work for its local seats only"
     );
     w.check_no_remote_delivery();
 }
@@ -296,9 +311,23 @@ fn human_remote_recipient_no_ack_expected() {
         );
         assert_eq!(node.receipt(&message, &w.human), None);
     }
-    assert!(
-        !w.b.wake_seats().contains(&w.human.as_str().to_owned()),
-        "the human is not woken for a receipt"
+    // D9: the human owes no receipt; it gets a delivery row at the message
+    // priority (p0) on its own node only.
+    assert_eq!(
+        w.b.count(&format!(
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id='{}' AND priority=0",
+            w.human.as_str()
+        )),
+        1,
+        "a p0 delivery row for the human on B"
+    );
+    assert_eq!(
+        w.a.count(&format!(
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id='{}'",
+            w.human.as_str()
+        )),
+        0,
+        "no delivery row for the remote human on A"
     );
     w.check_no_remote_delivery();
 }
@@ -402,10 +431,12 @@ fn suppressed_ack_recipient_keeps_receipt_but_no_wake() {
         &w.author,
         DeliveryMode::Ordinary,
         FIVE_MIN,
-        vec![
-            spec(&w.agent, ReceiptObligation::Ack, Some(SENT_AT + FIVE_MIN)),
-            spec(&w.human, ReceiptObligation::None, None),
-        ],
+        // The agent alone: a p0 delivery row for the human would wake it (D9).
+        vec![spec(
+            &w.agent,
+            ReceiptObligation::Ack,
+            Some(SENT_AT + FIVE_MIN),
+        )],
     );
     w.b.settle(&message, &w.agent);
     w.a.author_sent(&payload).unwrap();

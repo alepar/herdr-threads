@@ -393,7 +393,19 @@ impl Node {
         mode: DeliveryMode,
         operation: &str,
     ) -> Result<SendMessage, ApiError> {
-        let request = SendMessage {
+        let request = self.prepare_request(seat, thread, mode, operation);
+        self.prepare_steps(&request)?;
+        Ok(request)
+    }
+
+    fn prepare_request(
+        &self,
+        seat: &SeatId,
+        thread: &ThreadId,
+        mode: DeliveryMode,
+        operation: &str,
+    ) -> SendMessage {
+        SendMessage {
             delivery_mode: mode,
             priority: None,
             user_intent: None,
@@ -405,13 +417,16 @@ impl Node {
             operation: OperationId::new(operation),
             claim: self.claim_of(seat),
             relays_user: false,
-        };
+        }
+    }
+
+    fn prepare_steps(&self, request: &SendMessage) -> Result<(), ApiError> {
         let mut conn = self.raw();
         for _ in 0..10_000 {
             let step = messages::prepare_send_step(
                 self.ctx(),
                 &mut conn,
-                &request,
+                request,
                 messages::MessageLimits::default(),
                 &budget(),
                 DurableWorkAdmission { max_units: 16 },
@@ -420,7 +435,7 @@ impl Node {
                 break;
             }
         }
-        Ok(request)
+        Ok(())
     }
 
     /// Publishes a prepared send with the write guard armed.
@@ -456,6 +471,21 @@ impl Node {
         operation: &str,
     ) -> Result<MessageId, ApiError> {
         let request = self.prepare_send(seat, thread, mode, operation)?;
+        self.publish_prepared(&request)
+    }
+
+    /// An ACK send (`--require-ack`, p0) naming `acks` as the explicit ACK
+    /// recipients: under D9 only they owe a receipt.
+    pub fn cmd_send_ack(
+        &self,
+        seat: &SeatId,
+        thread: &ThreadId,
+        acks: &[&SeatId],
+        operation: &str,
+    ) -> Result<MessageId, ApiError> {
+        let mut request = self.prepare_request(seat, thread, DeliveryMode::Ordinary, operation);
+        request.invited_recipients = acks.iter().map(|seat| (*seat).clone()).collect();
+        self.prepare_steps(&request)?;
         self.publish_prepared(&request)
     }
 
@@ -1182,13 +1212,8 @@ fn oracle_scripted_workload_strict() {
         w.a.cmd_send(&w.author, &w.thread, DeliveryMode::Lazy, "op-send-lazy")
             .unwrap();
     let ordinary =
-        w.a.cmd_send(
-            &w.author,
-            &w.thread,
-            DeliveryMode::Ordinary,
-            "op-send-ordinary",
-        )
-        .unwrap();
+        w.a.cmd_send_ack(&w.author, &w.thread, &[&w.agent], "op-send-ordinary")
+            .unwrap();
     w.deliver(&ordinary);
     w.a.drive_if_any(&lazy);
     w.b.drive_if_any(&lazy);

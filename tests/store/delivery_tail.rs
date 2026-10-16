@@ -166,11 +166,11 @@ fn assert_no_local_delivery_for_remote_fails_on_a_remote_row() {
 }
 
 #[test]
-fn lazy_note_published_skips_remote_wake_on_all_recipient() {
+fn note_published_skips_a_remote_recipient_whose_threshold_admits_the_row() {
     let db = fixture();
     db.execute_batch(&format!("\
-        UPDATE seats SET wake_on='all' WHERE id IN ('s1','r1');\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','{INSTANCE}','actor','op',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');\
+        UPDATE seats SET nudge_threshold=-1 WHERE id IN ('s1','r1');\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES('prep-1','{INSTANCE}','actor','op',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1);\
         INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','msg-1','t','s1'),('prep-1','msg-1','t','r1');\
     ")).unwrap();
     let tx = db.unchecked_transaction().unwrap();

@@ -3,7 +3,7 @@
 use crate::ports::{DurableWorkAdmission, SendPreparationProgress};
 use crate::protocol::{
     authority::{MutationPermit, ObligationRef},
-    commands::{DeliveryMode, SendMessage},
+    commands::SendMessage,
     ids::{
         MessageId, SeatId, ServiceAuthorId, ThreadId, prefix, send_message_id_for_preparation,
         send_preparation_id_for_message,
@@ -1051,11 +1051,11 @@ fn audience_mismatch() -> ApiError {
 fn adoptable_preparation(
     tx: &Transaction<'_>,
     prep_id: &str,
-) -> Result<Option<(String, String)>, ApiError> {
+) -> Result<Option<(String, String, i64)>, ApiError> {
     tx.query_row(
-        "SELECT thread_id,delivery_mode FROM send_preparations WHERE id=?1 AND status='sealed' AND origin='local' AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",
+        "SELECT thread_id,delivery_mode,priority FROM send_preparations WHERE id=?1 AND status='sealed' AND origin='local' AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",
         [prep_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )
     .optional()
     .map_err(store_error)
@@ -1076,7 +1076,7 @@ pub(super) fn adopt_service_preparation(
     sent_at: i64,
 ) -> Result<Publication, ApiError> {
     if adoptable_preparation(tx, prep_id)?
-        .is_none_or(|(prep_thread, _)| prep_thread != thread.as_str())
+        .is_none_or(|(prep_thread, _, _)| prep_thread != thread.as_str())
     {
         return Err(api_error(ErrorCode::Conflict, "send preparation missing"));
     }
@@ -1113,13 +1113,15 @@ pub(super) fn build_message_sent(
         send_message_id_for_preparation(prep_id)
             .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "invalid send preparation ID"))?,
     );
-    let high_water: i64 = tx
+    let (high_water, priority): (i64, i64) = tx
         .query_row(
-            "SELECT interval_high_water FROM send_preparations WHERE id=?1",
+            "SELECT interval_high_water,priority FROM send_preparations WHERE id=?1",
             [prep_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(store_error)?;
+    let priority = u8::try_from(priority)
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "stored priority out of range"))?;
     let author = &request.claim.seat;
     let mut audience: std::collections::BTreeMap<String, RecipientSpec> = Default::default();
     let none = |seat: &str| RecipientSpec {
@@ -1185,14 +1187,10 @@ pub(super) fn build_message_sent(
         thread: request.thread.clone(),
         author: author.clone(),
         body: request.body.clone(),
-        // Interim until message.sent carries priority: the recorded mode
-        // (`ordinary` iff the send named explicit ACK recipients).
-        mode: if request.invited_recipients.is_empty() {
-            DeliveryMode::Lazy
-        } else {
-            DeliveryMode::Ordinary
-        },
-        nudge: false,
+        // The sealed preparation's priority (main's `resolved_priority`,
+        // frozen in the intent digest) and main's recorded-mode rule.
+        priority,
+        require_ack: !request.invited_recipients.is_empty(),
         relays_user: request.relays_user,
         user_intent: request.user_intent,
         sent_at,
@@ -1212,22 +1210,19 @@ fn is_remote_seat(tx: &Transaction<'_>, seat: &str) -> Result<bool, ApiError> {
 }
 
 /// Whether the audience staged for `prep_id` is the one `payload` fixed: the
-/// same thread and recorded delivery mode, the same ack seats with the same
-/// timing, and a delivery row for exactly the local `none` recipients.
+/// same thread, priority and recorded delivery mode, the same ack seats with
+/// the same timing, and a delivery row for exactly the local `none` recipients.
 fn check_staged_audience(
     tx: &Transaction<'_>,
     prep_id: &str,
     prep_thread: &str,
     prep_mode: &str,
+    prep_priority: i64,
     payload: &MessageSentPayload,
 ) -> Result<(), ApiError> {
-    let mode = if payload.mode.is_ordinary() {
-        "ordinary"
-    } else {
-        "lazy"
-    };
     if prep_thread != payload.thread.as_str()
-        || prep_mode != mode
+        || prep_mode != payload.recorded_mode()
+        || prep_priority != i64::from(payload.priority)
         || payload
             .recipients
             .windows(2)
@@ -1313,8 +1308,9 @@ fn check_staged_audience(
 ///
 /// A `replicated` preparation is sealed here (it is `building` only while its
 /// rows are inserted) and its manifest is written by the publication that follows. It holds a `prepared_recipients` row per
-/// `ack` recipient, local or remote, in payload order, and for a lazy message
-/// a `lazy_recipients` row per local recipient that is not suppressed. It
+/// `ack` recipient, local or remote, in payload order, and a delivery row
+/// (`lazy_recipients`, at the payload priority) per local `none` recipient
+/// that is not suppressed. It
 /// never holds `prepared_unavailable_warnings`: those are the sender's
 /// derived events.
 fn synthesize_preparation(
@@ -1341,13 +1337,8 @@ fn synthesize_preparation(
         .count();
     let ack_count = i64::try_from(ack_count)
         .map_err(|_| api_error(ErrorCode::SequenceExhausted, "recipient ordinal exhausted"))?;
-    let mode = if payload.mode.is_ordinary() {
-        "ordinary"
-    } else {
-        "lazy"
-    };
-    // Interim until message.sent carries priority: main's v47 mapping.
-    let priority = DeliveryPriority::from_mode(payload.mode);
+    let mode = payload.recorded_mode();
+    let priority = payload.delivery_priority()?;
     tx.execute(
         "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_cursor,recipient_count,warning_count,status,prepared_at,delivery_mode,origin,priority) \
          VALUES (?1,(SELECT id FROM local_node),?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12,?12,0,'building',?13,?14,'replicated',?15)",
@@ -1471,8 +1462,15 @@ pub fn materialize_message(
         None
     };
     let mut suppressed = Vec::new();
-    if let Some((prep_thread, prep_mode)) = adopted {
-        check_staged_audience(tx, &prep_id, &prep_thread, &prep_mode, payload)?;
+    if let Some((prep_thread, prep_mode, prep_priority)) = adopted {
+        check_staged_audience(
+            tx,
+            &prep_id,
+            &prep_thread,
+            &prep_mode,
+            prep_priority,
+            payload,
+        )?;
     } else {
         let taken: bool = tx
             .query_row(

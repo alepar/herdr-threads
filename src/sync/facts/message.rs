@@ -10,10 +10,12 @@
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
 
-use super::payload::{RecipientSpec, ReferencedSeats, message_key, seat_key, thread_key};
+use super::payload::{
+    ReceiptObligation, RecipientSpec, ReferencedSeats, message_key, seat_key, thread_key,
+};
 use super::{ApplyContext, FactError, FactKind, with_input};
-use crate::protocol::commands::DeliveryMode;
 use crate::protocol::ids::{MessageId, SeatId, ThreadId};
+use crate::protocol::priority::DeliveryPriority;
 use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::summary::UserIntent;
 use crate::store::materialize::{AuthorRule, require_author};
@@ -33,19 +35,26 @@ pub const AUTHOR_PAYLOAD_LIMIT: usize = 448 * 1024;
 /// `recipients` is the complete audience the author fixed: sorted by seat ID,
 /// the author excluded. A recipient with `receipt: ack` owes a receipt;
 /// `deadline_at` is `sent_at + duration` when the author's availability
-/// evidence made the receipt timed, else `None`. `require_ack` is implied by
-/// any `ack` recipient.
+/// evidence made the receipt timed, else `None`.
+///
+/// Main's priority model (reconcile amendment §1.1): `priority` is the
+/// message's immutable delivery priority (`messages.priority`, required: a
+/// defaulted priority would silently change wake behaviour); `require_ack`
+/// says the send named explicit ACK recipients (`--require-ack`), which
+/// decides the recorded `delivery_mode` (`ordinary` iff true). An `ack`
+/// recipient exists only for an explicit ACK recipient that is not a human
+/// (D9), so a send whose explicit ACK recipients are all humans has
+/// `require_ack` and no `ack` recipient.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageSentPayload {
     pub message: MessageId,
     pub thread: ThreadId,
     pub author: SeatId,
     pub body: String,
+    /// 0..=9, 0 most urgent; checked by [`MessageSentPayload::check`].
+    pub priority: u8,
     #[serde(default)]
-    pub mode: DeliveryMode,
-    /// Reserved: no send command sets it yet.
-    #[serde(default)]
-    pub nudge: bool,
+    pub require_ack: bool,
     #[serde(default)]
     pub relays_user: bool,
     #[serde(default)]
@@ -68,6 +77,44 @@ impl ReferencedSeats for MessageSentPayload {
 }
 
 impl MessageSentPayload {
+    /// The payload rules every node checks before authority (amendment
+    /// §1.1); a failure is `InvalidRequest`, so the entry is `Rejected`:
+    /// `priority <= 9`; `require_ack` implies priority 0 (D3); an `ack`
+    /// recipient requires `require_ack`; a `none` recipient has no deadline.
+    pub fn check(&self) -> Result<(), ApiError> {
+        let invalid = |detail: &str| Err(ApiError::new(ErrorCode::InvalidRequest, detail));
+        if self.priority > 9 {
+            return invalid("message.sent priority out of range");
+        }
+        if self.require_ack && self.priority != 0 {
+            return invalid("message.sent require_ack needs priority 0");
+        }
+        for recipient in &self.recipients {
+            match recipient.receipt {
+                ReceiptObligation::Ack if !self.require_ack => {
+                    return invalid("message.sent ack recipient without require_ack");
+                }
+                ReceiptObligation::None if recipient.deadline_at.is_some() => {
+                    return invalid("message.sent deadline on a recipient that owes no receipt");
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// The checked priority.
+    pub fn delivery_priority(&self) -> Result<DeliveryPriority, ApiError> {
+        DeliveryPriority::new(self.priority)
+            .map_err(|detail| ApiError::new(ErrorCode::InvalidRequest, detail))
+    }
+
+    /// The recorded `delivery_mode`: `ordinary` iff the send named explicit
+    /// ACK recipients (main's rule).
+    pub fn recorded_mode(&self) -> &'static str {
+        if self.require_ack { "ordinary" } else { "lazy" }
+    }
+
     /// Refuses a payload the journal could not carry (`InvalidRequest`
     /// "audience too large to replicate"), before anything is authored.
     pub fn validate_for_author(&self) -> Result<(), ApiError> {
@@ -124,6 +171,7 @@ impl FactKind for MessageSent {
         cx: &mut ApplyContext<'_>,
         payload: MessageSentPayload,
     ) -> Result<(), FactError> {
+        payload.check().map_err(FactError::Rejected)?;
         with_input(cx, |m| {
             require_author(
                 tx,
