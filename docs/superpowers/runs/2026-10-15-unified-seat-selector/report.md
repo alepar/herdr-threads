@@ -1,5 +1,5 @@
 status: clean
-metrics: pending (upstream-feedback not yet run)
+metrics: docs/superpowers/runs/2026-10-15-unified-seat-selector/upstream-feedback-draft.md (parked draft, not filed)
 
 # Report: unified seat selector (run 2026-10-15-unified-seat-selector)
 
