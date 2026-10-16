@@ -92,17 +92,33 @@ pub trait SyncReadiness: Send + Sync {
     fn round_state(&self, since: MonoInstant) -> RoundState;
     /// An enabled dial target exists (a link may still come up).
     fn has_enabled_target(&self) -> bool;
+    /// `(ingested, drained)` Apply epochs: entries ingested up to `ingested`
+    /// are applied or parked once `drained >= ingested`.
+    fn apply_epochs(&self) -> (u64, u64);
 }
 
-impl SyncReadiness for crate::sync::coordinator::SyncHandle {
+/// The production readiness: the sync handle's round signal, held back until
+/// the Apply lane drained what was ingested before the round completed.
+pub struct SyncHoldReadiness {
+    pub sync: crate::sync::coordinator::SyncHandle,
+    pub epochs: Arc<crate::store::connection::ApplyEpochs>,
+}
+
+impl SyncReadiness for SyncHoldReadiness {
     fn request_round(&self, at: MonoInstant) {
-        self.signals().request_round(at);
+        self.sync.signals().request_round(at);
     }
     fn round_state(&self, since: MonoInstant) -> RoundState {
-        self.signals().round_state(since)
+        self.sync.signals().round_state(since)
     }
     fn has_enabled_target(&self) -> bool {
-        self.enabled_target_count() > 0
+        // Before the Dialer's first reload the count is an unknown 0: a node
+        // with a target must not look target-less at start (it would release
+        // the hold, and the due scan would warn for a deadline the peer met).
+        !self.sync.dial_targets_loaded() || self.sync.enabled_target_count() > 0
+    }
+    fn apply_epochs(&self) -> (u64, u64) {
+        (self.epochs.ingested(), self.epochs.drained())
     }
 }
 
@@ -120,6 +136,9 @@ struct SyncHoldGate {
     armed_at: MonoInstant,
     /// When the round was requested; `None` until the sync runtime is set.
     since: Option<MonoInstant>,
+    /// The `ingested` epoch seen when the round completed; the hold lasts
+    /// until the Apply lane's `drained` epoch reaches it.
+    apply_target: Option<u64>,
 }
 
 impl SyncHoldGate {
@@ -130,6 +149,7 @@ impl SyncHoldGate {
             active: false,
             armed_at: MonoInstant(0),
             since: None,
+            apply_target: None,
         }
     }
 
@@ -148,6 +168,7 @@ impl SyncHoldGate {
             self.active = true;
             self.armed_at = now;
             self.since = None;
+            self.apply_target = None;
         }
         if !self.active {
             return false;
@@ -163,9 +184,20 @@ impl SyncHoldGate {
         let held = !expired
             && match (self.since, ready) {
                 (Some(since), Some(sync)) => match sync.round_state(since) {
-                    RoundState::Complete => false,
-                    RoundState::Pending { .. } => true,
-                    RoundState::NoLinks => sync.has_enabled_target(),
+                    RoundState::Complete => {
+                        // Complete means everything is stored, not applied:
+                        // wait for the Apply lane to drain what was ingested.
+                        let (ingested, drained) = sync.apply_epochs();
+                        drained < *self.apply_target.get_or_insert(ingested)
+                    }
+                    RoundState::Pending { .. } => {
+                        self.apply_target = None;
+                        true
+                    }
+                    RoundState::NoLinks => {
+                        self.apply_target = None;
+                        sync.has_enabled_target()
+                    }
                 },
                 _ => true,
             };

@@ -76,7 +76,49 @@ pub const INGEST_HEADROOM_BYTES: u64 = 256 * 1024 * 1024;
 /// install (a registry upgrade is a reopen with a new `StoreContext`).
 /// Role: read by Journal, ApplyEngine (registry) and the commit guard. New
 /// journal runtime state (the own-history hold, ht-5fr.3.16) is a field here.
+/// Responsibility: owns the two counters that say whether the Apply lane has
+/// applied (or parked) every entry ingested so far. Ingest bumps `ingested`
+/// after it commits a pending row; the Apply lane records `drained` after a
+/// full pass that began at that `ingested` value. The deadline lane's sync
+/// hold reads both. It never touches the store.
+#[derive(Debug)]
+pub struct ApplyEpochs {
+    ingested: AtomicU64,
+    drained: AtomicU64,
+}
+
+impl ApplyEpochs {
+    /// `ingested` starts at 1: a reopened store may hold `pending` rows from a
+    /// previous process, so the first full drain must come before a release.
+    pub(crate) fn new() -> Self {
+        Self {
+            ingested: AtomicU64::new(1),
+            drained: AtomicU64::new(0),
+        }
+    }
+
+    /// Count of ingests that stored pending rows (plus the startup epoch).
+    pub fn ingested(&self) -> u64 {
+        self.ingested.load(Ordering::Acquire)
+    }
+
+    /// Highest ingest epoch a full Apply drain has covered.
+    pub fn drained(&self) -> u64 {
+        self.drained.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn note_ingested(&self) {
+        self.ingested.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn note_drained(&self, epoch: u64) {
+        self.drained.fetch_max(epoch, Ordering::AcqRel);
+    }
+}
+
 pub struct SyncState {
+    /// Ingest and Apply-drain epochs the deadline lane's sync hold reads.
+    pub(crate) apply_epochs: Arc<ApplyEpochs>,
     pub(crate) identity: Arc<NodeIdentity>,
     pub(crate) hlc: std::sync::Mutex<Hlc>,
     pub(crate) registry: &'static FactRegistry,
@@ -101,6 +143,11 @@ pub struct SyncState {
 }
 
 impl SyncState {
+    /// The ingest and drain epochs of the Apply lane.
+    pub fn apply_epochs(&self) -> &Arc<ApplyEpochs> {
+        &self.apply_epochs
+    }
+
     /// Whether this process has started a new incarnation since `open`.
     pub fn rotated_since_start(&self) -> bool {
         self.rotated_since_start.load(Ordering::Acquire)

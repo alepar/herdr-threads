@@ -776,6 +776,8 @@ pub struct DialShared {
     nudge: Notify,
     explicit: AtomicBool,
     count: AtomicUsize,
+    /// Set by the first completed reload diff; until then `count` is unknown.
+    loaded: AtomicBool,
 }
 
 impl DialShared {
@@ -794,6 +796,12 @@ impl DialShared {
     pub fn enabled_targets(&self) -> usize {
         self.count.load(Ordering::Acquire)
     }
+
+    /// Whether a reload diff has completed, so `enabled_targets` is the real
+    /// count and not the initial 0.
+    pub fn targets_loaded(&self) -> bool {
+        self.loaded.load(Ordering::Acquire)
+    }
 }
 
 /// See the module documentation.
@@ -811,6 +819,7 @@ impl Dialer {
             nudge: Notify::new(),
             explicit: AtomicBool::new(false),
             count: AtomicUsize::new(0),
+            loaded: AtomicBool::new(false),
         });
         let cancel = Cancellation::default();
         let supervisor = Supervisor {
@@ -968,6 +977,7 @@ impl Supervisor {
             }
         }
         self.shared.count.store(self.tasks.len(), Ordering::Release);
+        self.shared.loaded.store(true, Ordering::Release);
     }
 
     fn spawn_task(&self, target: DialTarget) -> TaskEntry {
@@ -1493,6 +1503,7 @@ mod tests {
         rig.store.add_target("one");
         shared.request_reload();
         until("one target", || shared.enabled_targets() == 1).await;
+        assert!(shared.targets_loaded(), "a counted target means loaded");
         rig.store.add_target("two");
         shared.request_reload();
         until("two targets", || shared.enabled_targets() == 2).await;

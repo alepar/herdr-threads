@@ -567,6 +567,12 @@ impl SyncHandle {
         self.dial.enabled_targets()
     }
 
+    /// Whether the Dialer finished its first target reload, so
+    /// [`Self::enabled_target_count`] is not the initial 0.
+    pub fn dial_targets_loaded(&self) -> bool {
+        self.dial.targets_loaded()
+    }
+
     /// The actor's links, answered within `budget` or `StoreBusy`.
     pub async fn snapshot(&self, budget: &CallBudget) -> Result<SyncSnapshot, ApiError> {
         let busy = || ApiError::new(ErrorCode::StoreBusy, "sync coordinator did not answer");
