@@ -92,9 +92,12 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 
 Seats are never merged. Pane labels, saved addresses, terminal-id hints and Herdr's agent field may *suggest*
 candidates in diagnostics; they never move a seat, allocate one, or end a binding.
-A seat-argument name is a locator that the CLI resolves once to a canonical seat before submission, allocating only
-where the matching pane form already allocates (invite, ACK recipients, direct send) through ordinary guarded
-resolution, and never moving a seat or ending a binding. Operator repair by name (`seat retire`, `rebind`,
+A seat-argument name is a locator that the CLI resolves once to a canonical seat before submission, and never moves a
+seat or ends a binding. Lookup slots (reads, operator repair, `handoff --existing`) never allocate. Invite and
+ACK-recipient names allocate where their pane forms (`--pane`, `--require-ack-pane`) already do; direct send by name
+or pane ID (`send --seat`) is a new guarded allocation surface (spec D4), with no prior pane form. Every such
+allocation is an ordinary guarded `ResolveSeat` that runs only after every seat argument has resolved and after the
+caller derivation and the command's capability refusals, so a refused command leaves no allocated seat. Operator repair by name (`seat retire`, `rebind`,
 `--replace`) acts only on the one seat the name uniquely resolves to through the current canonical mapping (lookup,
 never allocation), shown on the `resolved:` line, with the operator still deciding via `--operator`; the name is
 not heuristic continuity evidence and moves no seat by itself.

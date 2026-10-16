@@ -263,6 +263,26 @@ fn inspect<C: LocalClient + ?Sized>(
     }
     Ok(v)
 }
+/// The capability refusals `start` applies before it inspects the caller: send-time receipts for
+/// an ordinary-mode request, then the direct-thread protocol (always with the creation policy
+/// `start` sets, and the lazy-send capability for a lazy request). The seat stage's allocation
+/// gate calls this too, so a refused direct send allocates nothing.
+pub(crate) fn require_capabilities<C: LocalClient + ?Sized>(
+    request: &Request,
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    if request.legacy_mode() == Some(DeliveryMode::Ordinary) {
+        super::require_send_time_receipts_capability(client, clock)?;
+    }
+    capability(
+        client,
+        clock,
+        request.legacy_mode() == Some(DeliveryMode::Lazy),
+        true,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
     request: Request,
@@ -286,15 +306,7 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
         send_key: OperationId::new(uuid::Uuid::new_v4().to_string()),
     };
     p.validate_claim(&claim)?;
-    if p.request.legacy_mode() == Some(DeliveryMode::Ordinary) {
-        super::require_send_time_receipts_capability(client, clock)?;
-    }
-    capability(
-        client,
-        clock,
-        p.request.legacy_mode() == Some(DeliveryMode::Lazy),
-        p.creation_policy.is_some(),
-    )?;
+    require_capabilities(&p.request, client, clock)?;
     let caller = inspect(client, clock, &claim.seat)?;
     if caller.summary.generation != claim.binding_generation
         || caller.summary.target.as_ref() != Some(&claim.target)

@@ -722,11 +722,13 @@ fn run_parsed_in_pane<W: Write>(
             _ => Err(invalid_request("unexpected thread resolution result")),
         }
     })?;
-    // Seat arguments become canonical seat IDs before any journal intent, the caller derivation
-    // and the --operator branch's recipient resolution. A retry carries no slots: a no-op there.
+    // Pass 1 of the seat stage: every seat argument resolves to a canonical seat ID (lookups,
+    // exact IDs) or a pane, before the caller derivation and the --operator branch's recipient
+    // resolution, with no journal write. Allocate panes wait in `deferred` for pass 2, which runs
+    // after the caller derivation / actor refusal and the capability gates, so a refused command
+    // allocates nothing. A retry carries no slots: a no-op there.
     let seats_resolved = seat_resolution::resolve_cli_seats(
         &mut parsed,
-        &paths,
         &connection,
         &clock,
         || host.topology(&budget()),
@@ -738,7 +740,8 @@ fn run_parsed_in_pane<W: Write>(
         },
         &mut io::stderr(),
     );
-    seats_resolved.map_err(|error| direct_send::pre_executor_error(error, &parsed, &paths))?;
+    let deferred =
+        seats_resolved.map_err(|error| direct_send::pre_executor_error(error, &parsed, &paths))?;
     if let CliAction::MeInit { operator } = &parsed.action {
         let operator = *operator;
         return me::run_me_init(
@@ -820,6 +823,15 @@ fn run_parsed_in_pane<W: Write>(
                 "--operator cannot be combined with --cooperative-* caller selection: operator repair is attributed to the local user, never to a seat",
             ));
         }
+        require_operator_actor(&parsed)?;
+        seat_resolution::allocate_deferred_seats(
+            deferred,
+            &mut parsed,
+            &paths,
+            &connection,
+            &clock,
+            &mut io::stderr(),
+        )?;
         resolve_recipient_seats(&mut parsed, &paths, &connection, &clock)?;
         let CliAction::Mutation(mutation) = &parsed.action else {
             unreachable!()
@@ -839,8 +851,9 @@ fn run_parsed_in_pane<W: Write>(
         crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock));
     let Some(parsed) = peer_locations::with_source(peer_source, || {
         human::with_seat_labels(seat_labels, || {
-            run_caller_scoped(
+            run_caller_scoped_deferred(
                 parsed,
+                deferred,
                 caller_pane,
                 &context,
                 &paths,
@@ -1103,11 +1116,44 @@ impl<C, F: Fn() -> Result<(uuid::Uuid, C), RunError>> LazyConnection<C, F> {
 
 /// Derive the caller, then run the seat-acting action or the wire read on the
 /// one shared connection. Returns the action back, unrun, when it is neither.
-// Allowed: the parsed action and caller plus the runtime context (B5 agent
-// evidence), paths, shared connection, clock, budget and writer.
+/// [`run_caller_scoped_deferred`] for a command with no deferred seat allocation (the read
+/// seams' tests).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn run_caller_scoped<C, F, W>(
+    parsed: commands::ParsedCli,
+    caller_pane: Option<&str>,
+    context: &RuntimeContext,
+    paths: &InstancePaths,
+    connection: &LazyConnection<C, F>,
+    clock: &Arc<dyn Clock>,
+    budget: &dyn Fn() -> CallBudget,
+    writer: &mut W,
+) -> Result<Option<commands::ParsedCli>, RunError>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    W: Write,
+{
+    run_caller_scoped_deferred(
+        parsed,
+        seat_resolution::DeferredSeats::none(),
+        caller_pane,
+        context,
+        paths,
+        connection,
+        clock,
+        budget,
+        writer,
+    )
+}
+
+// Allowed: the parsed action, the seat stage's deferred allocations and the caller plus the
+// runtime context (B5 agent evidence), paths, shared connection, clock, budget and writer.
+#[allow(clippy::too_many_arguments)]
+fn run_caller_scoped_deferred<C, F, W>(
     mut parsed: commands::ParsedCli,
+    deferred: seat_resolution::DeferredSeats,
     caller_pane: Option<&str>,
     context: &RuntimeContext,
     paths: &InstancePaths,
@@ -1181,6 +1227,18 @@ where
     let selected = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock);
     let selection =
         selected.map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
+    // Pass 2 of the seat stage: the journaled allocations, now that the caller is derived and
+    // every earlier refusal has run. Before `resolve_recipient_seats`, so pane-form ACK seats
+    // still dedupe against the frozen IDs.
+    seat_resolution::allocate_deferred_seats(
+        deferred,
+        &mut parsed,
+        paths,
+        connection,
+        clock,
+        &mut io::stderr(),
+    )
+    .map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
     resolve_recipient_seats(&mut parsed, paths, connection, clock)?;
     let _inbox =
         output::InboxInvocationGuard::enter(&parsed, selection.as_ref().map(|s| s.seat.clone()));
@@ -2662,6 +2720,16 @@ fn operator_semantic(mutation: &MutationSpec) -> Option<SemanticMutation> {
     })
 }
 
+/// Operator actions are a person's explicit choice: only the `human` namespace may run them.
+fn require_operator_actor(parsed: &commands::ParsedCli) -> Result<(), RunError> {
+    if parsed.actor != actor_route::InvocationActor::Human {
+        return Err(invalid_request(
+            "operator actions require `herdr-threads human` before routing flags",
+        ));
+    }
+    Ok(())
+}
+
 fn run_operator<W: Write>(
     semantic: SemanticMutation,
     parsed: &commands::ParsedCli,
@@ -2669,11 +2737,7 @@ fn run_operator<W: Write>(
     clock: &Arc<dyn Clock>,
     writer: &mut W,
 ) -> Result<(), RunError> {
-    if parsed.actor != actor_route::InvocationActor::Human {
-        return Err(invalid_request(
-            "operator actions require `herdr-threads human` before routing flags",
-        ));
-    }
+    require_operator_actor(parsed)?;
     let (instance, _, client) = connect(paths, clock)?;
     let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
     retry::run_new_api_to_writer(
