@@ -525,10 +525,14 @@ fn agent_facing_machine_text_is_compact() {
         assert!(read.starts_with("[p0] "), "read {bound}: {read}");
         assert!(read.contains(&probe), "read {bound}: {read}");
     }
-    // A one-hit search page needs 574 bytes from the daemon even unannotated
-    // (`search match cannot fit`, required minimum 574), so search is measured from
-    // there: the `[p0]` row never pushes a fitting page into a refusal.
-    for bound in [574, 575, 589, 600] {
+    // A one-hit search page needs 592 bytes from the daemon even unannotated
+    // (`search match cannot fit`, required minimum 592; 574 on 8-character ids, and the
+    // 3-character node tag adds 18 bytes over its 6 id occurrences: message, the
+    // `preview_detail` body argv, author, event_author, thread and the continuation's
+    // `--thread`), so search is measured from there: minimum, minimum + 1, minimum + the
+    // 18-byte `[p0] <id>\n` row, and a roomier bound. The `[p0]` row never pushes a
+    // fitting page into a refusal.
+    for bound in [592, 593, 610, 618] {
         let bound_arg = bound.to_string();
         let search = plugin.text(
             Some(hatter),
