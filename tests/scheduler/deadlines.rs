@@ -1,8 +1,11 @@
 use super::*;
+use crate::node::NodeUuid;
 use crate::ports::DuePhaseCursor;
 use crate::protocol::ids::SeatId;
 use crate::protocol::time::{Cancellation, MonoInstant, UtcMillis};
-use crate::sync::signals::RoundState;
+use crate::store::sync_dial_targets::TargetId;
+use crate::sync::signals::{LinkRound, RoundState, SyncSignals};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -1502,6 +1505,107 @@ fn cold_start_unreachable_peer_warns_after_60s() {
     port.deadline.store(0, Ordering::SeqCst);
     let sync = FakeSync::new(RoundState::Pending { links: 1 }, true);
     let mut driver = held_driver(&port, &sync);
+    let mut elapsed = 0;
+    while elapsed < 59_000 {
+        assert!(
+            driver.drive(&budget()).unwrap().due_held,
+            "held at {elapsed}"
+        );
+        advance(&port, 1_000);
+        elapsed += 1_000;
+    }
+    assert_eq!(port.warnings.load(Ordering::SeqCst), 0);
+    advance(&port, 1_000);
+    let out = driver.drive(&budget()).unwrap();
+    assert!(!out.due_held);
+    assert_eq!(out.due_warnings_added, 1, "warned once the 60 s passed");
+}
+
+/// A real `SyncSignals` behind the readiness trait (every target enabled).
+struct SignalsSync(Arc<SyncSignals>);
+impl SyncReadiness for SignalsSync {
+    fn request_round(&self, at: MonoInstant) {
+        self.0.request_round(at);
+    }
+    fn round_state(&self, since: MonoInstant) -> RoundState {
+        self.0.round_state(since)
+    }
+    fn has_enabled_target(&self) -> bool {
+        true
+    }
+    fn apply_epochs(&self) -> (u64, u64) {
+        (0, 0)
+    }
+}
+
+fn held_signals_driver<'a>(
+    port: &'a FakePort,
+    signals: &Arc<SyncSignals>,
+) -> DeadlineDriver<'a, FakePort> {
+    let slot = Arc::new(SyncHoldSlot::new());
+    let _ = slot.set(Arc::new(SignalsSync(signals.clone())) as Arc<dyn SyncReadiness>);
+    DeadlineDriver::new(port)
+        .with_tick_millis(1_000)
+        .with_sync_hold(slot)
+}
+
+fn link_round(node: NodeUuid, port: &FakePort, complete: bool) -> LinkRound {
+    LinkRound {
+        node,
+        started: MonoInstant(port.clock.mono.load(Ordering::SeqCst)),
+        complete,
+    }
+}
+
+// Kills: a hold counting only active links, which releases overdue emission
+// when the first target's round completes before the second target links.
+#[test]
+fn two_targets_one_unlinked_hold_until_it_links_and_completes() {
+    let (a, b) = (NodeUuid::from_u128(0xa), NodeUuid::from_u128(0xb));
+    let (t1, t2) = (TargetId(1), TargetId(2));
+    let port = FakePort::default();
+    port.deadline.store(0, Ordering::SeqCst); // already overdue
+    let signals = Arc::new(SyncSignals::new());
+    let mut driver = held_signals_driver(&port, &signals);
+    let first = BTreeMap::from([(1, link_round(a, &port, true))]);
+    signals.publish_for_test(first.clone(), BTreeMap::from([(t1, Some(a)), (t2, None)]));
+    for _ in 0..5 {
+        let out = driver.drive(&budget()).unwrap();
+        assert!(out.due_held && out.due_warnings_added == 0);
+        advance(&port, 1_000);
+    }
+    assert_eq!(
+        port.due_calls.load(Ordering::SeqCst),
+        0,
+        "no scan while held"
+    );
+    // The second target links, but its round has not completed.
+    let mut both = first.clone();
+    both.insert(2, link_round(b, &port, false));
+    signals.publish_for_test(both.clone(), BTreeMap::from([(t1, Some(a)), (t2, Some(b))]));
+    assert!(driver.drive(&budget()).unwrap().due_held);
+    // Its round completes and the settlement applied: released, no warning.
+    both.insert(2, link_round(b, &port, true));
+    signals.publish_for_test(both, BTreeMap::from([(t1, Some(a)), (t2, Some(b))]));
+    port.deadline.store(i64::MAX, Ordering::SeqCst);
+    let out = driver.drive(&budget()).unwrap();
+    assert!(!out.due_held);
+    assert_eq!(out.due_warnings_added, 0);
+    assert_eq!(port.warnings.load(Ordering::SeqCst), 0);
+}
+
+// Kills: a hold that waits for a target that never links without a bound.
+#[test]
+fn two_targets_one_never_links_release_at_the_cap() {
+    let a = NodeUuid::from_u128(0xa);
+    let port = FakePort::default();
+    port.deadline.store(0, Ordering::SeqCst);
+    let signals = Arc::new(SyncSignals::new());
+    let mut driver = held_signals_driver(&port, &signals);
+    signals.publish_for_test(
+        BTreeMap::from([(1, link_round(a, &port, true))]),
+        BTreeMap::from([(TargetId(1), Some(a)), (TargetId(2), None)]),
+    );
     let mut elapsed = 0;
     while elapsed < 59_000 {
         assert!(

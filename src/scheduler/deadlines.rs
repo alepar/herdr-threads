@@ -88,7 +88,8 @@ pub trait DeadlinePort {
 pub trait SyncReadiness: Send + Sync {
     /// Ask for a fresh sync round on every active link.
     fn request_round(&self, at: MonoInstant);
-    /// Whether every active link completed a round that began at or after `since`.
+    /// Whether every active link and every enabled dial target completed a
+    /// round that began at or after `since`.
     fn round_state(&self, since: MonoInstant) -> RoundState;
     /// An enabled dial target exists (a link may still come up).
     fn has_enabled_target(&self) -> bool;
