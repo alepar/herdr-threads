@@ -6,7 +6,8 @@ Run: [2026-10-15-unified-seat-selector](run.md) · branch `super-auto/unified-se
 
 Every CLI argument that names a seat accepts an exact seat ID or a name: a pane, tab or space
 label, a live agent name, or a `/`-joined path of them. The CLI resolves the name to exactly
-one seat, or fails and lists every candidate. Nearer panes win ties: the caller's tab, then
+one seat, or fails and lists every candidate (a safety cap of 32, with an omitted count, guards
+only pathological topologies). Nearer panes win ties: the caller's tab, then
 its workspace, then anywhere. When a name was resolved, one stderr line shows which space, tab,
 pane and seat it picked.
 
@@ -101,6 +102,19 @@ today. Rejected: that makes every name syntactically an ID. Checking the daemon 
 than the topology first, keeps old scripts that pass IDs working byte-for-byte, with no Herdr
 dependency.
 
+**Narrowing with an exact ID or nickname.** When `--space`/`--tab` accompany an exact seat ID
+(step 1) or a nickname (step 2), the seat's live mapped target must lie inside the narrowed
+space/tab. That check reads the topology, which is fine because the caller asked for it.
+- Outside the narrowed space/tab: `Conflict`, naming the seat's live path.
+- No live target: `Conflict` "cannot verify location of SEAT".
+- Host unreachable: `HostUnavailable`.
+
+Without narrowing, an exact ID still reads nothing from Herdr.
+
+**Unverifiable nickname.** A nickname whose seat has no live mapped target (unresolved, retired
+or unbound) is `Conflict` "cannot verify location of SEAT; pass the bare seat ID", as in step 2.
+It is never `not_found`, because the seat exists.
+
 ### D3. Interpretations, matching and tiers (pure resolver)
 
 The resolver collects candidates from every interpretation, then tiers them.
@@ -146,7 +160,8 @@ The first non-empty tier wins:
 - **No pane in any tier:** `NotFound` (exit 1). The detail names the selector and says it is
   neither a seat ID nor a matching name.
 
-**Conflict detail.** It lists at most 8 candidates, with an `N omitted` count. Each candidate
+**Conflict detail.** It lists every candidate, with a safety cap of 32 and an `N omitted` count
+beyond it (the user asked for every match; 32 only guards pathological topologies). Each candidate
 gives:
 - the reading that matched (`tab=tryout pane=alice`);
 - its `space/tab/pane` path, each part a label or the host ID when there is no label, escaped
@@ -155,7 +170,7 @@ gives:
 - its seat ID, `seat=none` when the pane has no resolved seat.
 
 The detail ends with the qualification hint: a longer path, `--space/--tab`, or an exact seat or
-pane ID. Looking up candidate seats takes at most 8 bounded `collect_pane_seats` reads. A failed
+pane ID. Looking up candidate seats takes at most 32 bounded `collect_pane_seats` reads. A failed
 lookup prints `seat=?` and does not hide the conflict.
 
 **Considered.** Choosing between readings by a fixed priority (for example, tab/pane before
@@ -204,7 +219,9 @@ the verified nickname form. It is one line per resolved argument, on **stderr**,
 resolved: project/tryout/alice w4:p7 seat=sAb12Cd34 (tier: space)
 ```
 
-The path parts are labels, or host IDs when there is no label, each escaped and bounded like
+The path is always the **full live** `space/tab/pane` path of the chosen pane, whatever reading
+or alias matched (a one-segment `alice` still prints `project/tryout/alice`). The path parts are
+labels, or host IDs when there is no label, each escaped and bounded like
 conflict candidates. A seat allocated by the guarded path prints its new ID. **Size:** 40–100
 bytes per line for typical labels (at most about 3 × 64-byte bounded parts plus IDs). Static
 explanation stays in the skill (AGENTS.md token-efficiency rules (a), (b), (d), (f)).
@@ -234,6 +251,14 @@ IDs.
 
 These match the existing `--pane` outcomes, so callers handle no new codes.
 
+### D8b. Inventory of seat arguments
+
+Every clap argument whose value is a seat is a `SeatSlot`. The one exclusion is
+`--cooperative-seat`, which is caller identity plumbing and stays exact (D4). A parser test
+walks the clap command tree and fails if any seat-valued argument (id or value name `SEAT`,
+`NEW`, or a `--seat`/`--require-ack`/`--replace` flag) is neither recorded as a slot nor on the
+reasoned exclusion list, so a future seat argument cannot bypass resolution.
+
 ### D9. Docs, skill, trust policy
 
 - **`docs/agent-usage.md`.** A new "Seat selectors" paragraph next to the "Thread IDs and names"
@@ -247,6 +272,11 @@ These match the existing `--pane` outcomes, so callers handle no new codes.
   form already allocates (invite, ACK recipients, direct send), through ordinary guarded
   resolution, and never moves a seat or ends a binding. No invariant is weakened. The sentence
   makes explicit that name selection is the same locator path as the existing `--pane` forms.
+  A second sentence covers operator repair by name (`seat retire`/`rebind`/`--replace`): it acts
+  only on the one seat the name uniquely resolves to through the current canonical mapping
+  (lookup, never allocation). That seat is shown on the `resolved:` line, and the operator still
+  decides with `--operator`. The name is not heuristic continuity evidence: it moves no seat by
+  itself.
 
 ### D10. Tests
 
@@ -307,7 +337,7 @@ These match the existing `--pane` outcomes, so callers handle no new codes.
   - a private classification (exact | nickname | pane ID | name) that decides whether mapping is skipped and whether a `resolved:` line prints;
   - the lazy, once-per-invocation topology and live-caller reads, shared across all slots like `resolve_cli_targets`;
   - resolving the `--space`/`--tab` narrowing once;
-  - seat annotation of conflict candidates (at most 8 bounded lookups);
+  - seat annotation of conflict candidates (at most 32 bounded lookups);
   - mapping through `SeatMapping` and freezing through `SeatSlot`;
   - the post-freeze ID checks moved out of parse time (D7: direct ACK names only the target; no duplicate recipients after dedup);
   - clearing the narrowing flags it consumed, so handoff's "seat with space/tab" refusal (`handoff_delivery.rs` ~238/347) does not fire;
