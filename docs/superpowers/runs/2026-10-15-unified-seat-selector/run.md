@@ -11,6 +11,7 @@ spec: 2026-10-15-unified-seat-selector-design.md
 epic: ht-u3ym
 roastDesignRound: 2
 roastCodeRound: 1
+roast-code: 2026-10-16-unified-seat-selector-roast-pr-1.md
 roast-design: 2026-10-15-unified-seat-selector-roast-design-1.md, 2026-10-15-unified-seat-selector-roast-design-2.md
 approvals:
 - top-split · auto · ht-u3ym.1 LEAF, ht-u3ym.2 LEAF, ht-u3ym.3 PROMOTE, ht-u3ym.4 LEAF, ht-u3ym.5 LEAF

@@ -1,0 +1,5 @@
+r1 [Nit] src/cli/seat_resolution.rs:416; src/cli/seat_resolution.rs:423
+r1 [Nit] src/cli/seat_resolution.rs:187
+r1 [Nit] src/cli/seat_resolution.rs:230; src/cli/seat_resolution.rs:234
+r1 [Must-fix] untested: full suite, clippy -D warnings, check-default-features, fmt not run on the branch (deferred sweep)
+r1 [Must-fix] TRUST-POLICY.md C1 direct-send allocation wording
