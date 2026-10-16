@@ -9,7 +9,7 @@ use crate::{
     service::kicks::{CommitKicks, LaneSet},
     store::{
         SqliteStore, StoreSettings,
-        connection::StoreContext,
+        connection::{HoldSource, OWN_HISTORY_HOLD_MAX, OwnHistoryHold, StoreContext},
         journal::{self as jr, Authored},
     },
     sync::{
@@ -295,6 +295,10 @@ impl LaneFx {
         db.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
+    fn hold(&self) -> Arc<OwnHistoryHold> {
+        Arc::clone(self.store.context().sync().unwrap().own_history_hold())
+    }
+
     fn applied_puts(&self) -> i64 {
         self.count("SELECT COUNT(*) FROM journal WHERE kind='test.put' AND apply_state='applied'")
     }
@@ -495,4 +499,51 @@ fn worker_stops_on_factory_stop() {
     let handle = fx.handle.take().unwrap();
     wait_until("the worker to finish", || handle.is_finished());
     handle.join().unwrap();
+}
+
+/// A held foreign log, started lane, nothing applied yet.
+fn held_fx(label: &str) -> LaneFx {
+    let mut fx = LaneFx::new(label, 1);
+    fx.hold().set(HoldSource::Links, true, fx.pacer.now());
+    let mut source = fx.source("src", 2);
+    source.put_all(0, 2);
+    fx.ship(&source);
+    fx.start();
+    fx.wait_idle(1);
+    assert_eq!(
+        fx.applied_puts(),
+        0,
+        "held: foreign log, flag set, under the cap"
+    );
+    fx
+}
+
+#[test]
+fn held_foreign_entries_apply_at_the_hold_cap_without_new_ingest() {
+    let fx = held_fx("apply-hold-cap");
+    fx.advance(OWN_HISTORY_HOLD_MAX);
+    wait_until("the cap to lift the hold", || fx.applied_puts() == 2);
+    assert_eq!(fx.hold().expiry_logs(), 1);
+}
+
+#[test]
+fn hold_wait_is_bounded_by_the_remaining_cap() {
+    let hold = OwnHistoryHold::new(Arc::default());
+    assert_eq!(hold.remaining(MonoInstant(5)), None);
+    hold.set(HoldSource::Links, true, MonoInstant(1_000));
+    assert_eq!(
+        hold.remaining(MonoInstant(61_000)),
+        Some(Duration::from_millis(OWN_HISTORY_HOLD_MAX - 60_000))
+    );
+    assert!(!hold.active(MonoInstant(1_000 + OWN_HISTORY_HOLD_MAX)));
+    assert_eq!(
+        hold.remaining(MonoInstant(1_000 + OWN_HISTORY_HOLD_MAX)),
+        None
+    );
+    hold.set(HoldSource::Links, false, MonoInstant(400_000));
+    hold.set(HoldSource::Branches, true, MonoInstant(500_000));
+    assert_eq!(
+        hold.remaining(MonoInstant(500_000)),
+        Some(Duration::from_millis(OWN_HISTORY_HOLD_MAX))
+    );
 }
