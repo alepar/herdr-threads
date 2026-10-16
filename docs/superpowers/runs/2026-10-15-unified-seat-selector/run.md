@@ -46,3 +46,4 @@ codeBuckets:
 - final-review fix round: ht-u3ym.12 filed (M1 + TRUST-POLICY.md:99 Nit), once per run
 baseAbsorbed: 3ff902c77 → b761a8194, 0 conflicted files
 friction: 4 events
+- handoff: merge+minor-release request sent to main tab seat sRpHoWRVk (w4:t1 main) — thread twctq0OmF message mWmPinBDW, p0; this run does not merge or release itself (user instruction)
