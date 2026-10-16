@@ -535,7 +535,7 @@ Delivery and authority gates read the binding's role, liveness and harness, neve
 | ACK, accept, reject an ordinary invitation, send, leave, archive, reopen | a connected top-level binding of the seat (top-level agent or declared human); never a subagent binding |
 | advance one's own binding's read cursors (`AdvanceCursors`, a display of its own stream) | any binding of the seat, subagent bindings included; it moves only the caller's own binding cursors and settles nothing |
 | display ACK after text inbox output | any connected top-level agent binding of the seat, for exact canonical pending agent receipts fully displayed on the page; the daemon decides eligibility again before settlement |
-| native hook context receipt completion | an exact connected registered top-level standard-hook agent binding, for existing addressed ordinary agent receipts in a joined thread, after complete context output was written and flushed; never a subagent or hook-pull claim |
+| native hook context receipt completion | an exact connected registered top-level standard-hook agent binding, for existing addressed ordinary agent receipts (including retained work after leave and explicit invitee receipts), after complete context output was written and flushed; never a subagent or hook-pull claim; no membership acceptance |
 | open a mod delivery channel (`watch`) | the pane's top-level session of a push-channel harness through its mod, for its own connected top-level binding (the claim's native session); several bindings of one seat each hold their own; recorded as `cooperative_mod_channel`; it grants no other row |
 | mod delivery ACK (`watch ack`) | the connected top-level binding of a push-channel harness that holds a live channel (grace included), the one the claim's key names; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |
 | hook-pull delivery (`DeliveryPull`, `DeliveryConfirm`) | the connected top-level binding of a hook-pull harness that the claim's key (seat, harness, native session) names, from any of its top-level hooks (including `Stop`); settlement only for ids the daemon offered to that binding; the daemon decides each id against A2 again; recorded as `cooperative_hook_delivery` |
@@ -1551,7 +1551,7 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   generation and its offered ledger, not the process.
 - **Native context claims are cooperative.** A same-user process could claim complete emitted context
   through `CompleteInboxDelivery`; the daemon revalidates the exact connected registered top-level
-  standard-hook binding, canonical joined membership and existing addressed agent receipts, not
+  standard-hook binding and existing addressed agent receipts, independently of current membership, not
   ingestion or cognition. Encoding, write or flush failure and partial bodies confer no claim.
   Post-output completion failure leaves work eligible for later automatic delivery; uncertain
   responses can duplicate presentation but not the canonical terminal receipt transition. Receipt

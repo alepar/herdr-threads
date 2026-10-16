@@ -1,7 +1,8 @@
 use herdr_threads::protocol::{
     authority::{CallerClaim, CallerRole, Harness, MutationPermit, ObligationRef},
     commands::{
-        Command, CompleteInboxDelivery, DeliveryMode, InboxQuery, PermitMutation, SendMessage,
+        Command, CompleteInboxDelivery, DeliveryMode, InboxQuery, Invite, Leave, PermitMutation,
+        SendMessage,
     },
     ids::*,
     output::{OutputFormat, OutputSpec, encode_selected},
@@ -218,6 +219,13 @@ fn complete(
     iso: &TestIsolation,
     request: CompleteInboxDelivery,
 ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+    mutate(iso, PermitMutation::CompleteInboxDelivery(request))
+}
+
+fn mutate(
+    iso: &TestIsolation,
+    mutation: PermitMutation,
+) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
     use herdr_threads::ports::StorePort;
     let store = herdr_threads::store::SqliteStore::new(
         StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)),
@@ -225,12 +233,94 @@ fn complete(
         Default::default(),
     )
     .unwrap();
-    let mutation = PermitMutation::CompleteInboxDelivery(request);
     let permit = store.issue_cooperative_permit(
         herdr_threads::store::cooperative_permit_request(&mutation)?,
         &budget(),
     )?;
     store.mutate(mutation, permit, &budget())
+}
+
+#[test]
+fn hook_receipt_completion_retains_left_and_invited_obligations_without_joining() {
+    for reinvite in [false, true] {
+        let (iso, context, mut conn) = fixture("hook-receipt-left");
+        let retained = send(
+            &iso,
+            &context,
+            &mut conn,
+            "before-leave",
+            "retained receipt",
+            DeliveryMode::Ordinary,
+        );
+        mutate(
+            &iso,
+            PermitMutation::Leave(Leave {
+                thread: ThreadId::new("t"),
+                operation: OperationId::new("leave"),
+                claim: claim(),
+            }),
+        )
+        .unwrap();
+        let mut candidates = vec![retained];
+        if reinvite {
+            mutate(
+                &iso,
+                PermitMutation::Invite(Invite {
+                    confirmation: None,
+                    thread: ThreadId::new("t"),
+                    seat: SeatId::new("b"),
+                    deadline_millis: None,
+                    operation: OperationId::new("reinvite"),
+                    claim: send_request().claim,
+                }),
+            )
+            .unwrap();
+            candidates.push(send(
+                &iso,
+                &context,
+                &mut conn,
+                "while-invited",
+                "explicit invitee receipt",
+                DeliveryMode::Ordinary,
+            ));
+        }
+        let page = query(&context, PageRequest::default(), &OutputSpec::default());
+        for id in &candidates {
+            assert!(page.items.iter().any(
+                |item| matches!(item, InboxBatchV2Item::Message { message, .. } if message == id)
+            ));
+        }
+        let request: CompleteInboxDelivery = serde_json::from_value(serde_json::json!({
+            "messages":[], "receipt_candidates":candidates, "operation":"hook-left",
+            "claim":claim(), "via":"hook_context"
+        }))
+        .unwrap();
+        complete(&iso, request.clone()).unwrap();
+        complete(&iso, request).unwrap();
+        for id in &candidates {
+            let (state, observation): (String, String) = conn.query_row(
+                "SELECT state,ack_observation FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+                [id.as_str()], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).unwrap();
+            assert_eq!(state, "acked");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&observation).unwrap()["action_provenance"],
+                "cooperative_hook_context"
+            );
+        }
+        let state: String = conn
+            .query_row(
+                "SELECT state FROM memberships WHERE thread_id='t' AND seat_id='b'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, if reinvite { "invited" } else { "left" });
+        assert_eq!(conn.query_row(
+            "SELECT count(*) FROM invitations WHERE thread_id='t' AND seat_id='b' AND state='pending'",
+            [], |r| r.get::<_, i64>(0),
+        ).unwrap(), i64::from(reinvite));
+    }
 }
 
 #[test]
@@ -283,7 +373,6 @@ fn hook_receipt_completion_refuses_ineligible_claims_atomically() {
         "stale",
         "foreign",
         "subagent",
-        "unjoined",
         "unknown",
         "wrong-source",
         "hook-pull",
@@ -309,10 +398,6 @@ fn hook_receipt_completion_refuses_ineligible_claims_atomically() {
             }
             "foreign" => value["claim"]["instance"] = serde_json::json!("other"),
             "subagent" => value["claim"]["role"] = serde_json::json!("subagent"),
-            "unjoined" => {
-                conn.execute("UPDATE memberships SET state='left' WHERE seat_id='b'", [])
-                    .unwrap();
-            }
             "unknown" => value["receipt_candidates"] = serde_json::json!([id, "unknown"]),
             "wrong-source" => {
                 value.as_object_mut().unwrap().remove("via");

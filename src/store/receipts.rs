@@ -67,10 +67,12 @@ pub(super) fn validate_hook_context(
         ));
     }
     for id in messages {
-        let addressed: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM messages m JOIN memberships mm ON mm.thread_id=m.thread_id AND mm.seat_id=?2 AND mm.state='joined' WHERE m.id=?1 AND m.instance_id=?3 AND m.kind='ordinary')",
-            params![id.as_str(),claim.seat.as_str(),claim.instance], |r|r.get(0),
+        let ordinary: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE id=?1 AND instance_id=?2 AND kind='ordinary')",
+            params![id.as_str(),claim.instance], |r|r.get(0),
         ).map_err(store_error)?;
+        // Existing addressed receipts survive leave and may precede invitation acceptance.
+        // Receipt ownership, not current membership, authorizes their settlement.
         let eligible = effective::effective_receipt(tx, id.as_str(), claim.seat.as_str())?
             .is_some_and(|r| {
                 matches!(
@@ -78,7 +80,7 @@ pub(super) fn validate_hook_context(
                     EffectiveReceiptState::Pending | EffectiveReceiptState::Acknowledged
                 )
             });
-        if !addressed || !eligible {
+        if !ordinary || !eligible {
             return Err(api_error(
                 ErrorCode::InvalidRequest,
                 "native context receipt is not an addressed agent obligation",
