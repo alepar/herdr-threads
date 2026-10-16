@@ -19,7 +19,7 @@ use herdr_threads::{
         ids::{HostBootId, HostLocator, HostTargetId, SeatId, ThreadId},
         output::{OutputFormat, OutputSpec, encode_selected},
         pagination::PageRequest,
-        results::{CommandResult, ContinuityStatus},
+        results::{CommandResult, ContinuityStatus, PresenceAvailability},
         time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
     },
     store::{
@@ -157,6 +157,40 @@ fn remote_seat(db: &Connection, seat: &str) {
     .unwrap();
 }
 
+/// A seat that is remote (`is_local=0`) but otherwise exactly like a local
+/// one: resolved, on the fixture's host with a target, an observed target and
+/// an open binding. The baseline CHECKs forbid such a row (a remote seat has no
+/// host or target and state `remote`/`retired`), so it is inserted with
+/// `ignore_check_constraints` on; only a corrupt store could hold it. It exists
+/// so that `is_local` is the only thing separating it from a candidate local
+/// seat: a statement that drops its `is_local` filter then selects it, where
+/// the plain remote row is already excluded by host, target or state.
+fn adversarial_remote_seat(db: &Connection, seat: &str, pane: &str) {
+    let host: i64 = db
+        .query_row("SELECT host_id FROM herdr_hosts", [], |r| r.get(0))
+        .unwrap();
+    db.pragma_update(None, "ignore_check_constraints", "ON")
+        .unwrap();
+    db.execute(
+        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,remote_kind,published,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,?4,0,'agent',1,?5)",
+        params![seat, NODE, pane, FOREIGN_NODE, host],
+    )
+    .unwrap();
+    db.pragma_update(None, "ignore_check_constraints", "OFF")
+        .unwrap();
+    db.execute(
+        "INSERT OR IGNORE INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch,occupancy,ui_state,verified_execution,top_level_occupant) VALUES (?1,?2,'host',1,1,0,'fresh','term-'||?2,'inc','coherent_enumeration',1,'occupied','idle','exec',1)",
+        params![host, pane],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES (?1,1,1,?2,'host',1,'codex','session','exec','fresh',0,0,'term-'||?2,'inc',4243,8)",
+        params![seat, pane],
+    )
+    .unwrap();
+    pending_invitation(db, seat);
+}
+
 fn retire_remote(db: &Connection, seat: &str) {
     db.execute(
         "UPDATE seats SET state='retired',retired_at=1,retired_seq=1 WHERE id=?1",
@@ -220,6 +254,7 @@ fn remote_rows(db: &Connection) -> String {
 #[test]
 fn reconciliation_ignores_remote_seats() {
     let f = fixture();
+    adversarial_remote_seat(&f.db, "ghost", "ghost-pane");
     let before = remote_rows(&f.db);
     let admission = f
         .store
@@ -270,7 +305,7 @@ fn reconciliation_ignores_remote_seats() {
 #[test]
 fn wake_candidates_never_select_remote() {
     let f = fixture();
-    let before = remote_rows(&f.db);
+    adversarial_remote_seat(&f.db, "ghost", "ghost-pane");
     let items = f
         .store
         .wake_candidates(f.host, PageRequest::default(), &budget())
@@ -293,8 +328,32 @@ fn wake_candidates_never_select_remote() {
         ["local"],
         "batch cleanup never visits a remote seat"
     );
+    // Both seats hold an ACK-required receipt inside its soft-poke window
+    // (clock 100: soft point <= 100 < deadline 101), so only locality can
+    // keep the remote one out.
+    for (n, seat) in ["local", "ghost"].into_iter().enumerate() {
+        let thread = format!("t-{seat}");
+        let message = format!("pm-{seat}");
+        f.db.execute(
+            "UPDATE memberships SET state='joined' WHERE thread_id=?1 AND seat_id=?2",
+            params![thread, seat],
+        )
+        .unwrap();
+        f.db.execute(
+            "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES (?1,?2,?3,1,'ordinary','body',?4,0)",
+            params![message, NODE, thread, n as i64 + 1],
+        )
+        .unwrap();
+        f.db.execute(
+            "INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,?2,?3,'pending',101,0,101)",
+            params![message, thread, seat],
+        )
+        .unwrap();
+    }
+    let before = remote_rows(&f.db);
     let pokes = f.store.poke_candidates(f.host, 16, &budget()).unwrap();
-    assert!(pokes.iter().all(|due| due.seat.as_str() != "remote"));
+    let poked: Vec<&str> = pokes.iter().map(|due| due.seat.as_str()).collect();
+    assert_eq!(poked, ["local"], "only the local seat is poked");
     assert_eq!(remote_rows(&f.db), before, "no remote row changed");
 }
 
@@ -303,13 +362,14 @@ fn wake_candidates_never_select_remote() {
 #[test]
 fn liveness_sample_ignores_remote() {
     let f = fixture();
+    adversarial_remote_seat(&f.db, "ghost", "ghost-pane");
     let before = remote_rows(&f.db);
     let candidates = f.store.liveness_candidates(None, &budget()).unwrap();
     let seats: Vec<&str> = candidates.iter().map(|c| c.binding.seat.as_str()).collect();
     assert_eq!(seats, ["local"], "only the local binding is sampled");
     let by_seat = f
         .store
-        .liveness_candidates(Some(&SeatId::new("remote")), &budget())
+        .liveness_candidates(Some(&SeatId::new("ghost")), &budget())
         .unwrap();
     assert!(by_seat.is_empty(), "a remote seat is never a candidate");
     assert_eq!(remote_rows(&f.db), before, "no remote row changed");
@@ -490,14 +550,14 @@ fn reads_render_remote_state_and_null_panes() {
         .iter()
         .find(|p| p.seat.as_str() == "remote")
         .expect("the remote member is listed");
-    assert_eq!(remote.availability.as_deref(), Some("remote"));
+    assert_eq!(remote.availability, Some(PresenceAvailability::Remote));
     assert!(!remote.active && remote.bindings.is_empty());
     let local = list
         .items
         .iter()
         .find(|p| p.seat.as_str() == "local")
         .unwrap();
-    assert_eq!(local.availability.as_deref(), Some("available"));
+    assert_eq!(local.availability, Some(PresenceAvailability::Available));
     let compact = text(&participants, OutputFormat::Text);
     assert!(
         compact.contains("remote joined remote\n"),
@@ -523,13 +583,9 @@ fn reads_render_remote_state_and_null_panes() {
         panic!("wrong result")
     };
     assert_eq!(details.participants.items.len(), 2);
-    assert!(
-        details
-            .participants
-            .items
-            .iter()
-            .any(|p| p.seat.as_str() == "remote" && p.availability.as_deref() == Some("remote"))
-    );
+    assert!(details.participants.items.iter().any(
+        |p| p.seat.as_str() == "remote" && p.availability == Some(PresenceAvailability::Remote)
+    ));
 
     let CommandResult::Directory(directory) = query(
         &f,
@@ -656,7 +712,10 @@ fn seat_inspect_of_a_remote_seat_has_no_availability() {
     assert_eq!(remote.summary.continuity, ContinuityStatus::Remote);
     assert_eq!(remote.summary.availability, None);
     let local = inspect("local");
-    assert_eq!(local.summary.availability.as_deref(), Some("available"));
+    assert_eq!(
+        local.summary.availability,
+        Some(PresenceAvailability::Available)
+    );
 }
 
 /// Reads at a late time so a contact at 0 is stale (`now` > 180 s).

@@ -6171,9 +6171,10 @@ fn participants_report_active_and_open_bindings() {
         assert_eq!((g.0, g.1, &g.2), (w.0, w.1, &w.2));
     }
     assert!(participants.items.iter().all(|p| {
-        p.availability
-            .as_deref()
-            .is_some_and(|a| a == "available" || a.starts_with("unavailable@"))
+        matches!(
+            p.availability,
+            Some(PresenceAvailability::Available | PresenceAvailability::UnavailableSince(_))
+        )
     }));
 }
 

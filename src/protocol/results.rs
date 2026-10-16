@@ -1092,8 +1092,45 @@ pub struct SeatSummary {
     pub bindings: Vec<BindingPresence>,
     /// Availability slot, filled by the liveness worker; absent until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub availability: Option<String>,
+    pub availability: Option<PresenceAvailability>,
 }
+/// The presence availability slot of a seat or participant row. On the wire it
+/// is the string `available`, `unavailable@<unix-ms>` (since when) or `remote`
+/// (a seat homed on another node: no bindings here, so no availability).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresenceAvailability {
+    Available,
+    UnavailableSince(UtcMillis),
+    Remote,
+}
+
+impl Serialize for PresenceAvailability {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Available => serializer.serialize_str("available"),
+            Self::UnavailableSince(since) => {
+                serializer.collect_str(&format_args!("unavailable@{}", since.0))
+            }
+            Self::Remote => serializer.serialize_str("remote"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PresenceAvailability {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        match text.as_str() {
+            "available" => Ok(Self::Available),
+            "remote" => Ok(Self::Remote),
+            other => other
+                .strip_prefix("unavailable@")
+                .and_then(|ms| ms.parse::<i64>().ok())
+                .map(|ms| Self::UnavailableSince(UtcMillis(ms)))
+                .ok_or_else(|| serde::de::Error::custom("unknown presence availability")),
+        }
+    }
+}
+
 /// One open binding as shown in presence listings; session ids are not presentation data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1646,7 +1683,7 @@ pub struct Participant {
     pub bindings: Vec<BindingPresence>,
     /// Availability slot, filled by the liveness worker; absent until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub availability: Option<String>,
+    pub availability: Option<PresenceAvailability>,
     /// Set on the first row of each unreachable home node in the page: the
     /// reader prints one `node <tag> unreachable` line per node, not per seat.
     #[serde(default, skip_serializing_if = "Option::is_none")]

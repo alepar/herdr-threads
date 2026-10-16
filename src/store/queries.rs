@@ -37,9 +37,10 @@ use crate::protocol::{
         CommandResult, ContinuityStatus, DeliveryAggregates, DeliveryInspection, Diagnostic,
         ErrorCode, HoldSummary, InboxBatchItem, InboxItem, InvitationAcceptance, MappingStatus,
         MembershipStatus, MessageContent, MessageDetails, MessageKind, MessageSummary,
-        OpenBindingSummary, OperationStatus, Participant, PendingReceipt, ReceiptStatus, Recipient,
-        RepairHistory, RetirementStatus, SearchHit, SearchPage, SeatHistoryItem, SeatInspection,
-        SeatSummary, StructuredEvent, ThreadDetails, ThreadSummary, WarningRecipient, WarningRef,
+        OpenBindingSummary, OperationStatus, Participant, PendingReceipt, PresenceAvailability,
+        ReceiptStatus, Recipient, RepairHistory, RetirementStatus, SearchHit, SearchPage,
+        SeatHistoryItem, SeatInspection, SeatSummary, StructuredEvent, ThreadDetails,
+        ThreadSummary, WarningRecipient, WarningRef,
     },
     service::EventAuthor,
     time::{CallBudget, Clock, MonoInstant, UtcMillis},
@@ -1556,14 +1557,14 @@ fn seat_summary(
     })
 }
 
-/// The presence `availability` slot: `available`, or `unavailable@<unix-ms>` (since when); the
+/// The presence `availability` slot of a local seat: available, or unavailable since a time; the
 /// human renderer turns the latter into `unavailable since <time>`.
-fn availability_label(db: &QueryConnection, seat: &str) -> Result<String, ApiError> {
+fn availability_label(db: &QueryConnection, seat: &str) -> Result<PresenceAvailability, ApiError> {
     Ok(
         match super::bindings::seat_availability(db, &SeatId::new(seat))? {
-            super::bindings::SeatAvailability::Available => "available".to_owned(),
+            super::bindings::SeatAvailability::Available => PresenceAvailability::Available,
             super::bindings::SeatAvailability::Unavailable { since } => {
-                format!("unavailable@{}", since.0)
+                PresenceAvailability::UnavailableSince(since)
             }
         },
     )
@@ -1808,7 +1809,7 @@ fn participants(
             bindings,
             // A remote seat has no bindings here: its state slot reads `remote`.
             availability: Some(if seat_state == "remote" {
-                "remote".to_owned()
+                PresenceAvailability::Remote
             } else {
                 availability_label(db, &seat)?
             }),

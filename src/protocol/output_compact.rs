@@ -22,8 +22,8 @@ use crate::protocol::{
     pagination::Page,
     results::{
         CheckInResult, CommandResult, InboxBatchItem, InboxBatchV2Item, InboxItem, MessageContent,
-        MessageDetails, MessageKind, MessageSummary, Participant, PendingReceipt, ThreadDetails,
-        WarningRef,
+        MessageDetails, MessageKind, MessageSummary, Participant, PendingReceipt,
+        PresenceAvailability, ThreadDetails, WarningRef,
     },
     service::EventAuthor,
     time::UtcMillis,
@@ -761,13 +761,15 @@ fn participant_row(participant: &Participant, out: &mut String) {
             snake(&participant.physical_state)
         ));
     }
-    out.push_str(if participant.availability.as_deref() == Some("remote") {
-        " remote"
-    } else if participant.active {
-        " active"
-    } else {
-        " inactive"
-    });
+    out.push_str(
+        if participant.availability == Some(PresenceAvailability::Remote) {
+            " remote"
+        } else if participant.active {
+            " active"
+        } else {
+            " inactive"
+        },
+    );
     if participant.is_self {
         out.push_str(" self");
     }
