@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.2.1
+
+- **One-way store upgrade to schema 48.** The first daemon start of 1.2.1 adds an index for open restore holds (`migrations/0048_recovery_hold_health.sql`); v1.2.0 and older then refuse the upgraded store (`unsupported schema version 48`). Back up the state directory first if you might go back to 1.2.0. The wire protocol stays 8, so mixed CLI and daemon versions within 1.x keep working.
+- **Restore holds explain themselves.** After a Herdr restart that holds seats for recovery, the lifecycle hook and CLI errors now say why (baseline hold, explicit hold or missing recovery evidence) and give the exact `seat inspect`, `rebind` or fresh-seat repair command, listing up to three blockers. `daemon health` fills `held_targets`, and `doctor` shows hold counts and how to lift them. Health checks no longer scan the whole hold history (4,000 historical holds exceeded the health work bound before).
+- **A still-running session recovers its seat after a daemon upgrade.** A seat left unresolved by an upgrade now reattaches when the same native harness session sends its next lifecycle or turn event, without restarting the agent or a resumed SessionStart. The same unique-candidate and ownership guards apply, a different session never takes an old seat, and an older daemon (without the `seat.continuity_same_session_v1` capability) keeps its previous behaviour. Ambiguous or owned refusals now name their candidates or owner.
 ## v1.2.0
 
 - **Name seats instead of copying seat IDs.** Every CLI seat argument (`send --seat`, `invite --seat`, `--require-ack`, `seat inspect`, `handoff --existing --seat` and the rest) accepts an exact seat ID or a `SPACE/TAB/PANE` name path. Names resolve by proximity to the caller: your tab first, then your workspace, then everywhere. An ambiguous name is refused with the candidate list, and the chosen seat is printed on a `resolved:` line. Operator repair by name (`seat retire`, `seat rebind`, `--replace`) acts only when the name matches exactly one pane anywhere; otherwise it is refused and needs the seat ID.
