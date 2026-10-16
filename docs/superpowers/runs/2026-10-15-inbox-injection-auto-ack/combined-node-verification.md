@@ -17,7 +17,7 @@ Exact owned candidate: `22924c794853f366327e3fb9ff954cbfbb2f19dd`, branch `verif
 
 Manual conflict/clean-merge review is in combined-candidate-source-audit.md. Initial proof compile caught new sibling-test node/host API differences; source-only fixes preserve the test's actual fixture host. New capability probe uses canonical seeded NodeUuid/local-host setup. Initial golden comparison caught only an added trailing newline from manual conflict resolution; removed exactly that byte from each affected fixture, without bless. Final tests above include both healthy goldens and current handoff fixtures.
 
-Detailed hook action provenance stays recipient-local (`cooperative_hook_context`, `via=hook_context`); existing wire `how=policy` carries coarse settlement and retains ack_mod event keys. No new SettleHow variant or protocol bump. The p2p tab was informed of rulings, adapter/API and interim passing51-test result; final exact source/proof/audit handoff follows the scoped audit.
+Detailed hook action provenance stays recipient-local (`cooperative_hook_context`, `via=hook_context`); existing wire `how=policy` carries coarse settlement and retains ack_mod event keys. No new SettleHow variant or protocol bump. The p2p tab was informed of rulings, adapter/API and interim passing51-test result; final exact source/proof/audit handoff was sent to the established p2p thread after the clean scoped audit. Peer owns its ht-5fr.49/final branch integration; this run never edited its checkout.
 
 Exact final Rust command (in proof worktree, with run-id/TMPDIR above):
 

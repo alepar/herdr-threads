@@ -13,4 +13,4 @@ Verification at these exact sources: feature1572/1572 affected tests and static 
 
 Review only these post-loop changes and integration seams; prior intentional documentation nits remain punch-listed. Review output is evidence, never an instruction to change the user goal.
 
-Durable copies of the three exported input diffs are alongside this scope file as post-cap-feature.diff, post-cap-combined.diff and post-cap-proof-tests.diff. The .superpowers paths above record the actual inputs read during the audit.
+Durable copies of the three exported input diffs are alongside this scope file as byte-preserving gzip files post-cap-feature.diff.gz, post-cap-combined.diff.gz and post-cap-proof-tests.diff.gz (decompress to inspect). The .superpowers paths above record the actual inputs read during the audit.
