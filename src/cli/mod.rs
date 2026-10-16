@@ -2823,6 +2823,43 @@ pub(crate) fn require_handoff_capabilities<C: LocalClient + ?Sized>(
     Ok(())
 }
 
+/// Guarded recipient-seat allocation: one journaled `ResolveSeat` under the
+/// `ServiceAllocation` scope. Gates (session refusal, p0 receipts capability, invitation
+/// confirmation capability) are the caller's job and must run before this.
+pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>(
+    paths: &InstancePaths,
+    instance: &uuid::Uuid,
+    client: &C,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    target: crate::protocol::ids::HostTargetId,
+) -> Result<crate::protocol::ids::SeatId, RunError> {
+    let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+    let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
+        &journal,
+        IntentScope::ServiceAllocation {
+            instance: instance.to_string(),
+            target: target.clone(),
+        },
+        SemanticMutation::ResolveSeat { target },
+        clock.utc_now().0,
+        || {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "recipient resolution has no caller claim",
+            ))
+        },
+        |command| client.call_definitive(command, &cooperative_budget(clock)),
+        output,
+        &mut io::sink(),
+    )
+    .map_err(retry_failure)?;
+    match result {
+        CommandResult::SeatResolved(seat) => Ok(seat),
+        _ => Err(mapping_error("service returned no resolved recipient seat")),
+    }
+}
+
 /// Recipient pane selection never changes the caller's cooperative claim.
 fn resolve_recipient_seats<C, F>(
     parsed: &mut commands::ParsedCli,
@@ -2866,19 +2903,15 @@ where
             "requesting invitation confirmation policy",
         )?;
     }
-    let allocate = |target: crate::protocol::ids::HostTargetId| -> Result<crate::protocol::ids::SeatId, RunError> {
-        let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
-        let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
-            &journal, IntentScope::ServiceAllocation { instance: instance.to_string(), target: target.clone() },
-            SemanticMutation::ResolveSeat { target }, clock.utc_now().0,
-            || Err(io::Error::new(io::ErrorKind::PermissionDenied, "recipient resolution has no caller claim")),
-            |command| client.call_definitive(command, &cooperative_budget(clock.as_ref())),
-            &parsed.output, &mut io::sink(),
-        ).map_err(retry_failure)?;
-        match result {
-            CommandResult::SeatResolved(seat) => Ok(seat),
-            _ => Err(mapping_error("service returned no resolved recipient seat")),
-        }
+    let allocate = |target: crate::protocol::ids::HostTargetId| {
+        allocate_recipient_seat(
+            paths,
+            instance,
+            client,
+            clock.as_ref(),
+            &parsed.output,
+            target,
+        )
     };
     if let Some(selector) = selector {
         let target = selector
