@@ -861,10 +861,28 @@ fn herdr_release_busy() {
             Err(format!("pre={pre} tools={tools}"))
         }
     });
-    let status = m.status(&agent_pane);
+    // Herdr classifies by sampling the screen: give it the first seconds of the 8 s tool call
+    // to report the agent working, then send while that call still runs.
+    wait_for(
+        "Herdr reports the mid-tool agent working",
+        Duration::from_secs(6),
+        || {
+            let status = m.status(&agent_pane);
+            if status == "working" {
+                Ok(())
+            } else {
+                Err(status)
+            }
+        },
+    );
+    let tools = m
+        .log_of(&agent_pane)
+        .iter()
+        .filter(|e| e["kind"] == "tool")
+        .count();
     assert_eq!(
-        status, "working",
-        "Herdr does not report the mid-tool agent working"
+        tools, 0,
+        "the first tool call ended before Herdr reported the agent working"
     );
     let sent_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
