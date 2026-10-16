@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-15-inbox-injection-auto-ack
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: fix-loop
+phase: roast-code
 codeMechanism: ordinary-subagents
 
 idea: hooks/channels only direct to call inbox when directly injected messages doesnt cover entire inbox, ie there are more. agent should never need to call inbox explicitly, unless there's a spike of messages received and it overflows the size that hook/channel can inject in a single turn. messages injected by hooks/channels or read via inbox do generate automatic receipt ack. normally, agent should never have the need to call explicit ack cli command. let's fix via $super-auto and communicate to p2p tab (it might care about the second ruling specifically, make sure this auto ack works scross multiple nodes too). fully autonomous, both roasts on.
@@ -20,17 +20,17 @@ stepBackDesign-round-1: patch — Gate attention-mark advancement on successful 
 graph-pass: depth 3→3 · width 1.3→1.3 · applied 0 · parked 0
 
 codeBuckets:
-  completed: ht-794l.1, ht-794l.2, ht-794l.3, ht-794l.4
+  completed: ht-794l.1, ht-794l.2, ht-794l.3, ht-794l.4, ht-794l.8
   escalated:
   pendingRetry:
   parked:
   stalled: false
-  review: ready (final-review-code.md; caller final-SHA sweep and combined-node proof pending)
+  review: ready (final-review-fix-round-1.md; caller final-SHA sweep and combined-node proof pending)
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: fresh task-path links and peer contention exceeded build budgets; merged-tree lint 1m32 and 2m04; no demonstrated source-only regression
   worktreesKept:
   processSweep: stopped 0 · survived 0
-roastCodeRound: 1
+roastCodeRound: 2
 roast-code: 2026-10-15-inbox-injection-auto-ack-roast-pr-1.md
 stepBackCode-round-1: patch — independent sibling-isolation regression and stale policy wording need focused fixes; neither exposes a flawed design decision.
 scopeFilter-round-1: [Should-fix] src/cli/hook_inbox.rs:365 in-scope — Missing regression coverage for goal-named automatic receipt settlement preserving pending delivery and independent wake eligibility for sibling bindings.
