@@ -166,6 +166,9 @@ impl FactKind for MessageSent {
         keys
     }
 
+    /// Authority: the origin is the author's home node. Membership of the
+    /// author and recipients is not re-checked (accepted limit,
+    /// TRUST-POLICY).
     fn apply(
         tx: &Transaction<'_>,
         cx: &mut ApplyContext<'_>,
