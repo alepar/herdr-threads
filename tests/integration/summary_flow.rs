@@ -3027,39 +3027,65 @@ fn inbox_history_fixture_at(history_count: i64, stage: Stage) -> Fixture {
     fx
 }
 
-fn add_pending_physical(fx: &Fixture, sent: &str) -> rusqlite::Connection {
-    let db = rusqlite::Connection::open(fx.world.node_dir.join("herdr-threads.db")).unwrap();
-    db.busy_timeout(Duration::from_secs(5)).unwrap();
-    let instance: String = db
-        .query_row("SELECT instance_id FROM seats WHERE id=?1", [&fx.b], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    let high: i64 = db
-        .query_row(
-            "SELECT decision_seq FROM local_node WHERE id=?1",
-            [&instance],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let seq: i64 = db
-        .query_row(
-            "SELECT next_sequence FROM threads WHERE id=?1",
-            [&fx.thread],
-            |r| r.get(0),
-        )
-        .unwrap();
-    // Supported legacy physical receipts must not hide behind settled rows.
-    // Fresh sparse sends alternate ahead of the physical history instead.
-    let offset: i64 = db.query_row("SELECT coalesce(max(event_offset),0)+1 FROM messages WHERE instance_id=?1 AND decision_seq=?2", rusqlite::params![instance,high], |r| r.get(0)).unwrap();
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,event_offset,decision_at) VALUES (?1,?2,?3,?4,'ordinary','USEFUL PENDING BODY',?5,?6,0)", rusqlite::params![sent,instance,fx.thread,seq,high,offset]).unwrap();
-    db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,?2,?3,'pending',300000)", rusqlite::params![sent,fx.thread,fx.b]).unwrap();
-    db.execute(
-        "UPDATE threads SET next_sequence=next_sequence+1 WHERE id=?1",
-        [&fx.thread],
+/// The useful pending mail: a real send (so `message.sent` creates it) behind the fixture's
+/// physical settled history. The v2 reader is shown a plain p1 send, which is lazy: B's row is a
+/// `lazy_recipients` row, not a receipt. The v1 reader predates delivery rows and walks receipts
+/// only, so it is shown a require-ACK send, whose receipt B's display settles.
+fn add_pending_sent(fx: &Fixture, v1: bool) -> (rusqlite::Connection, String) {
+    let sent = if v1 {
+        fx.send_as_a(useful_body(v1), &["--require-ack", &fx.b])
+    } else {
+        fx.send_as_a(useful_body(v1), &[])
+    };
+    let db = fx.world.db();
+    if v1 {
+        // The deadline worker projects the receipt in the background.
+        wait_until("useful pending projection", Duration::from_secs(60), || {
+            db.query_row(
+                "SELECT count(*) FROM receipt_state WHERE message_id=?1 AND seat_id=?2",
+                rusqlite::params![sent, fx.b],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                == 1
+        });
+    }
+    assert_eq!(
+        useful_state(&db, &sent, &fx.b, v1),
+        "pending",
+        "a fresh send is pending for B"
+    );
+    (db, sent)
+}
+
+/// The useful mail's body, distinct per reader: the v1 display does not move B's binding cursors,
+/// so the v2 pass still lists the v1 pass's mail beside its own.
+fn useful_body(v1: bool) -> &'static str {
+    if v1 {
+        "USEFUL PENDING BODY v1"
+    } else {
+        "USEFUL PENDING BODY v2"
+    }
+}
+
+/// B's state for the useful mail: its receipt (v1) or its delivery row (v2).
+fn useful_state(db: &rusqlite::Connection, message: &str, seat: &str, v1: bool) -> String {
+    let table = if v1 {
+        "receipt_state"
+    } else {
+        "lazy_recipients"
+    };
+    db.query_row(
+        &format!("SELECT state FROM {table} WHERE message_id=?1 AND seat_id=?2"),
+        rusqlite::params![message, seat],
+        |r| r.get(0),
     )
-    .unwrap();
-    db
+    .unwrap()
+}
+
+/// The state `useful_state` reports once B's display settled the mail.
+fn settled_state(v1: bool) -> &'static str {
+    if v1 { "acked" } else { "displayed" }
 }
 
 // The physical-history cases below share one fixture between the v1
@@ -3077,21 +3103,8 @@ fn inbox_first_useful_page_skips_historical_work() {
     inbox_first_useful_page_historical_only_reaches_empty(&fx, &proxy);
     for v1 in [true, false] {
         let mark = select_reader(&proxy, v1);
-        let sent = if v1 {
-            "useful-pending-v1"
-        } else {
-            "useful-pending-v2"
-        };
-        let db = add_pending_physical(&fx, sent);
-        assert_eq!(
-            db.query_row(
-                "SELECT state FROM receipts WHERE message_id=?1",
-                [sent],
-                |r| r.get::<_, String>(0)
-            )
-            .unwrap(),
-            "pending"
-        );
+        let (db, sent) = add_pending_sent(&fx, v1);
+        let sent = sent.as_str();
         for args in [
             vec!["inbox", "--machine"],
             vec!["--json", "inbox"],
@@ -3102,14 +3115,9 @@ fn inbox_first_useful_page_skips_historical_work() {
                 .exec_in_pane(None, Some(PANE_B), None, &args, false);
             assert_eq!(readonly.code, 0, "{}", readonly.stderr);
             assert_eq!(
-                db.query_row(
-                    "SELECT state FROM receipts WHERE message_id=?1",
-                    [sent],
-                    |r| r.get::<_, String>(0)
-                )
-                .unwrap(),
+                useful_state(&db, sent, &fx.b, v1),
                 "pending",
-                "read-only inbox must not ACK unseen mail"
+                "read-only inbox must not display unseen mail"
             );
         }
         let out = fx
@@ -3121,32 +3129,25 @@ fn inbox_first_useful_page_skips_historical_work() {
         );
         assert_eq!(out.code, 0, "{}", out.stderr);
         assert_eq!(
-            out.stdout.matches("USEFUL PENDING BODY").count(),
+            out.stdout.matches(useful_body(v1)).count(),
             1,
             "first page must show the pending body once, got {:?}",
             out.stdout
         );
-        assert_eq!(
-            db.query_row(
-                "SELECT state FROM receipts WHERE message_id=?1",
-                [sent],
-                |r| r.get::<_, String>(0)
-            )
-            .unwrap(),
-            "acked"
-        );
-        let db = fx.world.db();
-        let observation: String = db
-            .query_row(
-                "SELECT ack_observation FROM receipts WHERE message_id=?1 AND seat_id=?2",
-                rusqlite::params![sent, fx.b],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&observation).unwrap()["action_provenance"],
-            "cooperative_inbox_display"
-        );
+        assert_eq!(useful_state(&db, sent, &fx.b, v1), settled_state(v1));
+        if v1 {
+            let observation: String = db
+                .query_row(
+                    "SELECT ack_observation FROM receipt_state WHERE message_id=?1 AND seat_id=?2",
+                    rusqlite::params![sent, fx.b],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&observation).unwrap()["action_provenance"],
+                "cooperative_inbox_display"
+            );
+        }
         assert_reader(&proxy, mark, v1);
     }
 }
@@ -3193,14 +3194,13 @@ fn inbox_first_useful_page_scan_cap_preserves_pending_and_exact_continuation() {
     // = 100): the first invocation must stop on a continuation.
     let fx = inbox_history_fixture(900);
     let proxy = useful_page_proxy(&fx);
-    for v1 in [true, false] {
+    // Only the v2 reader: a real require-ACK receipt is a manifest-sourced candidate that the v1
+    // reader orders ahead of the physical history (its body is on the first page), so the bounded
+    // scan has nothing to cap there. A lazy delivery row sits behind the history in v2.
+    for v1 in [false] {
         let mark = select_reader(&proxy, v1);
-        let sent = if v1 {
-            "useful-pending-v1"
-        } else {
-            "useful-pending-v2"
-        };
-        let db = add_pending_physical(&fx, sent);
+        let (db, sent) = add_pending_sent(&fx, v1);
+        let sent = sent.as_str();
         let mut args = vec!["inbox".to_owned()];
         let mut saw_body = false;
         for invocation in 0..10 {
@@ -3209,19 +3209,13 @@ fn inbox_first_useful_page_scan_cap_preserves_pending_and_exact_continuation() {
                 .world
                 .exec_in_pane(None, Some(PANE_B), None, &refs, false);
             assert_eq!(out.code, 0, "{}", out.stderr);
-            let state: String = db
-                .query_row(
-                    "SELECT state FROM receipts WHERE message_id=?1",
-                    [sent],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            if out.stdout.contains("USEFUL PENDING BODY") {
+            let state = useful_state(&db, sent, &fx.b, v1);
+            if out.stdout.contains(useful_body(v1)) {
                 assert!(
                     invocation > 0,
                     "first invocation must retain a continuation after bounded scanning"
                 );
-                assert_eq!(state, "acked");
+                assert_eq!(state, settled_state(v1));
                 saw_body = true;
                 break;
             }
