@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **The Herdr release matrix covers every user-facing feature.** `scripts/herdr-release-smoke` now runs four tests against each listed Herdr release (core features, launch and every handoff target, wake and nudge threshold, busy agent) on a stand-in Codex that runs the installed hooks as Codex does, alongside Herdr's own Codex integration; a release's tests run in parallel and `--jobs` releases at once (about two minutes for 0.9.1 to 0.9.5). Coverage and deliberate exclusions: `docs/validation/herdr-release-matrix.md`.
+
 ## v1.0.1
 
 - **`handoff --new-tab` works again on the default automatic channel.** Since v0.10.0 a new-tab handoff without `--new-thread` or `--thread` failed on every Herdr version with `unknown outcome: response family mismatch` before creating the tab, leaving a `possible_creation` attempt for `retry`. The client now accepts the daemon's submission-check and seat-resolution replies for those steps. `handoff --pane`, `--existing`, `--new-thread` and `launch` were not affected. If an earlier attempt was left in `possible_creation`, check it with its printed `retry_argv` before running the handoff again.

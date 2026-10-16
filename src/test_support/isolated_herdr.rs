@@ -62,6 +62,9 @@ fn helper_with_path(args: &[&OsStr], path: Option<&OsStr>) -> Output {
     let mut cmd = Command::new("sh");
     if let Some(path) = path {
         cmd.env("PATH", path);
+        // The server's environment is every pane's: no caller harness markers (a CLAUDE_PID
+        // from the session running the tests would name one process for every Claude in it).
+        crate::test_support::isolation::scrub_env(&mut cmd);
     }
     cmd.arg("-c")
         .arg(r#". "$1"; shift; "$@""#)

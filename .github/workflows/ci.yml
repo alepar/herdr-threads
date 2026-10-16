@@ -331,10 +331,12 @@ jobs:
 
   herdr-releases:
     name: Herdr release matrix (private Herdr servers; manual)
-    # scripts/herdr-release-smoke: the e2e smoke (plugin link, startup daemon,
-    # seats, required ACK round trip, stand-in agent) against every official
-    # Herdr release in tests/herdr-releases.tsv, each binary checksum-verified
-    # and each run in its own private IsolatedHerdr root. It first fails when
+    # scripts/herdr-release-smoke: the Herdr release matrix (core features,
+    # launch and every handoff target, wake and threshold, busy agent, on a
+    # hook-running stand-in Codex; docs/validation/herdr-release-matrix.md)
+    # against every official Herdr release in tests/herdr-releases.tsv, each
+    # binary checksum-verified and each test on its own private IsolatedHerdr
+    # server. It first fails when
     # GitHub has an official release >= 0.9.1 that the list lacks (add it with
     # `scripts/herdr-release-smoke --update`). Manual dispatch, like the
     # package gate; the release checklist requires it green on the release SHA.
@@ -378,10 +380,11 @@ jobs:
   linux-e2e:
     name: Herdr release smoke and wake-e2e self-test (Linux ${{ matrix.arch }})
     # The no-credential e2e checks on both Linux architectures, every push:
-    # scripts/herdr-release-smoke (plugin link, startup daemon, seats, required
-    # ACK round trip, stand-in agent) against every official Herdr release in
-    # tests/herdr-releases.tsv, each binary checksum-verified and each run in
-    # its own private IsolatedHerdr root, and the wake-e2e driver's
+    # scripts/herdr-release-smoke (the Herdr release matrix: core features,
+    # launch and every handoff target, wake and threshold, busy agent, on a
+    # hook-running stand-in Codex) against every official Herdr release in
+    # tests/herdr-releases.tsv, each binary checksum-verified and each test on
+    # its own private IsolatedHerdr server, and the wake-e2e driver's
     # --self-test (credential, cleanup, completeness and oracle paths with
     # fakes). The live wake matrix drives authenticated agents and never runs
     # in CI (AGENTS.md "Pre-release wake e2e"); nor does --check-upstream (the
