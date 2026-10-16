@@ -846,16 +846,44 @@ fn herdr_release_busy() {
     // A turn with two tool calls, the first busy for 8 s: Herdr reports it working.
     let line = "run: sleep 8 ;; true";
     m.start_turn(&agent_pane, line);
-    wait_for("agent working", Duration::from_secs(10), || {
-        let status = m.status(&agent_pane);
-        if status == "working" {
+    // Send once the turn's first tool call runs (its PreToolUse hook is done and no tool result
+    // yet), so the p0 lands mid-turn, after the turn-start hook, before the next tool boundary.
+    wait_for("first tool call running", Duration::from_secs(10), || {
+        let log = m.log_of(&agent_pane);
+        let pre = log
+            .iter()
+            .filter(|e| e["kind"] == "hook" && e["event"] == "PreToolUse")
+            .count();
+        let tools = log.iter().filter(|e| e["kind"] == "tool").count();
+        if pre == 1 && tools == 0 {
             Ok(())
         } else {
-            Err(status)
+            Err(format!("pre={pre} tools={tools}"))
         }
     });
-    // A p0 (`--nudge`) sent mid-turn never nudges the busy agent: the next
-    // tool boundary of the same turn delivers it.
+    // Herdr classifies by sampling the screen: give it the first seconds of the 8 s tool call
+    // to report the agent working, then send while that call still runs.
+    wait_for(
+        "Herdr reports the mid-tool agent working",
+        Duration::from_secs(6),
+        || {
+            let status = m.status(&agent_pane);
+            if status == "working" {
+                Ok(())
+            } else {
+                Err(status)
+            }
+        },
+    );
+    let tools = m
+        .log_of(&agent_pane)
+        .iter()
+        .filter(|e| e["kind"] == "tool")
+        .count();
+    assert_eq!(
+        tools, 0,
+        "the first tool call ended before Herdr reported the agent working"
+    );
     let sent_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -881,33 +909,49 @@ fn herdr_release_busy() {
             && e["event"] == "PreToolUse"
             && e["context"].as_str().is_some_and(|c| c.contains("busy-p0"))
     });
-    let timeline: Vec<String> = log
-        .iter()
-        .map(|e| {
-            format!(
-                "{:+.1}s {} {} rc={} ctx={:.120} out={:.300} err={:.400}",
-                e["t"].as_f64().unwrap_or(0.0) - sent_at,
-                e["kind"],
-                e["event"],
-                e["rc"],
-                e["context"].as_str().unwrap_or(""),
-                e["stdout"].as_str().unwrap_or(""),
-                e["stderr"].as_str().unwrap_or("")
-            )
-        })
-        .collect();
+    let timeline = |log: &[Value]| -> Vec<String> {
+        log.iter()
+            .map(|e| {
+                format!(
+                    "{:+.1}s {} {} rc={} in={:?} ctx={:.120} out={:.300} err={:.400}",
+                    e["t"].as_f64().unwrap_or(0.0) - sent_at,
+                    e["kind"],
+                    e["event"],
+                    e["rc"],
+                    e["data"].as_str().unwrap_or(""),
+                    e["context"].as_str().unwrap_or(""),
+                    e["stdout"].as_str().unwrap_or(""),
+                    e["stderr"].as_str().unwrap_or("")
+                )
+            })
+            .collect()
+    };
     assert!(
         delivered,
         "p0 not delivered inside the busy turn (sent at +0.0s):\n{}",
-        timeline.join("\n")
+        timeline(&log).join("\n")
+    );
+    // No wake text reached the terminal while the turn ran (the stand-in reads it during tool
+    // calls, as Codex queues typed input).
+    let typed_mid_turn = log.iter().any(|e| {
+        e["kind"] == "input"
+            && e["during_turn"] == true
+            && e["data"]
+                .as_str()
+                .is_some_and(|d| d.contains("herdr-threads:"))
+    });
+    assert!(
+        !typed_mid_turn,
+        "a wake was typed into the busy turn (sent at +0.0s):\n{}",
+        timeline(&log).join("\n")
     );
     // Nor after the turn: it was delivered in-turn.
     thread::sleep(Duration::from_secs(8));
     assert_eq!(
         woken(),
         0,
-        "a busy (then served) agent was nudged: {:?}",
-        m.log_of(&agent_pane)
+        "a busy (then served) agent was nudged (sent at +0.0s):\n{}",
+        timeline(&m.log_of(&agent_pane)).join("\n")
     );
     println!("herdr {}: busy matrix passed", m.version);
 }

@@ -824,15 +824,20 @@ fn hermes_bare_enrollment_configurations_with_daemon_up() {
     assert_open_pair(&smoke.hermes_rows(&pane), "S11", "side-S");
 }
 
-/// Two open bindings from two driver processes: the newer session is connected;
-/// the earlier one stays open and was not superseded (different process, spec
-/// section 3). Its liveness is timing-dependent (worker recheck), so not asserted.
+/// Two open bindings from two driver processes: neither was superseded (different
+/// processes, spec section 3) and both stay open. Liveness is timing-dependent: a
+/// driver has exited by the time this runs, so the liveness worker (5 s cadence)
+/// may already have disconnected either binding as `liveness_process_exit`; the
+/// newer one is connected unless that happened.
 fn assert_open_pair(rows: &[(String, String, Option<String>, String)], older: &str, newer: &str) {
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert_eq!(rows[0].0, older, "{rows:?}");
     assert_ne!(rows[0].2.as_deref(), Some("superseded"), "{rows:?}");
     assert_eq!(rows[1].0, newer, "{rows:?}");
-    assert_eq!(rows[1].1, "connected", "{rows:?}");
+    assert!(
+        rows[1].1 == "connected" || rows[1].2.as_deref() == Some("liveness_process_exit"),
+        "the newer binding is connected, or its exited driver was reaped: {rows:?}"
+    );
 }
 
 #[test]
