@@ -974,7 +974,6 @@ fn automatic_call(
     f.call(Command::AutomaticHandoffDelivery(Box::new(request)))
 }
 #[test]
-#[ignore = "pending ht-5fr reconcile item 17"]
 fn automatic_canonical_ensure_attaches_exact_pair_and_replays_without_reinviting() {
     let f = Fixture::new();
     let request = automatic_request(&f);
@@ -1023,11 +1022,12 @@ fn automatic_canonical_ensure_attaches_exact_pair_and_replays_without_reinviting
     )
     .unwrap();
     assert_eq!(automatic_call(&f, request.ensure()).unwrap(), result);
+    // Item 17: the pair auto-joins both seats; the replay authors no invitation.
     assert_eq!(
         f.db.query_row("SELECT count(*) FROM invitations", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        1
+        0
     );
     assert_eq!(
         f.db.query_row(
@@ -1579,7 +1579,6 @@ fn automatic_generic_selected_runtime_defaults_refuse_without_effects() {
 }
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 17"]
 fn automatic_canonical_historical_ensure_keeps_original_claim_namespace_and_fence() {
     use herdr_threads::protocol::results::ErrorCode;
     let f = Fixture::new();
@@ -1634,7 +1633,7 @@ fn automatic_canonical_historical_ensure_keeps_original_claim_namespace_and_fenc
             f.db.query_row("SELECT count(*) FROM invitations", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            1
+            0
         );
     }
 }
@@ -1701,10 +1700,9 @@ fn automatic_canonical_registration_refuses_cross_role_and_legacy_key_adoption()
 }
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 17"]
 fn automatic_canonical_complete_requires_published_frozen_send() {
     use herdr_threads::protocol::{
-        commands::{OperatorRetire, Reject},
+        commands::{Leave, OperatorRetire},
         ids::*,
     };
     let f = Fixture::new();
@@ -1769,18 +1767,20 @@ fn automatic_canonical_complete_requires_published_frozen_send() {
     assert!(
         matches!(completed, CommandResult::Handoff(ref status) if status.state == HandoffState::Completed)
     );
-    let invitation: String =
+    // Item 17: the pair auto-joined the peer, so there is no invitation to decline;
+    // the peer leaves instead.
+    assert_eq!(
         f.db.query_row(
-            "SELECT id FROM invitations WHERE thread_id=?1",
+            "SELECT count(*) FROM invitations WHERE thread_id=?1",
             [thread.as_str()],
-            |r| r.get(0),
+            |r| r.get::<_, i64>(0)
         )
-        .unwrap();
-    f.call(Command::Reject(Reject {
+        .unwrap(),
+        0
+    );
+    f.call(Command::Leave(Leave {
         thread: thread.clone(),
-        invitation: InvitationId::new(invitation),
-        reason: "declined after publication".into(),
-        operation: OperationId::new("reject-after-complete"),
+        operation: OperationId::new("leave-after-complete"),
         claim: peer,
     }))
     .unwrap();
@@ -2239,65 +2239,29 @@ fn automatic_peer_claim(
     claim
 }
 #[test]
-#[ignore = "pending ht-5fr reconcile item 17"]
-fn automatic_canonical_lost_ensure_then_real_reject_or_leave_cannot_publish_or_reinvite() {
-    use herdr_threads::protocol::{
-        commands::{Accept, Leave, Reject},
-        ids::*,
-    };
-    for phase in ["reject", "leave"] {
+fn automatic_canonical_lost_ensure_then_real_leave_cannot_publish_or_reinvite() {
+    use herdr_threads::protocol::{commands::Leave, ids::*};
+    // Item 17: the pair auto-joins the peer, so the only real lifecycle decision
+    // is leaving; there is no invitation to reject.
+    {
+        let phase = "leave";
         let f = Fixture::new();
         let request = automatic_request(&f);
         let peer = automatic_peer_claim(&f, &request);
         automatic_call(&f, request.begin()).unwrap();
         let ensured = automatic_call(&f, request.ensure()).unwrap();
         let thread = automatic_selected_thread(&ensured).unwrap().clone();
-        if phase == "reject" {
-            let invitation: String =
-                f.db.query_row(
-                    "SELECT id FROM invitations WHERE thread_id=?1",
-                    [thread.as_str()],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            f.call(Command::Reject(Reject {
-                thread: thread.clone(),
-                invitation: InvitationId::new(invitation),
-                reason: "declined".into(),
-                operation: OperationId::new("reject-peer"),
-                claim: peer,
-            }))
-            .unwrap();
-        } else {
-            f.call(Command::Accept(Accept {
-                thread: thread.clone(),
-                operation: OperationId::new("accept-peer"),
-                claim: peer.clone(),
-            }))
-            .unwrap();
-            f.call(Command::Leave(Leave {
-                thread: thread.clone(),
-                operation: OperationId::new("leave-peer"),
-                claim: peer,
-            }))
-            .unwrap();
-        }
-        // Reject itself now appends a warning notice. Freeze the all-kind
-        // baseline after that ordinary decision so retry gets no false credit.
+        f.call(Command::Leave(Leave {
+            thread: thread.clone(),
+            operation: OperationId::new("leave-peer"),
+            claim: peer,
+        }))
+        .unwrap();
+        // Freeze the all-kind baseline after the lifecycle decision so retry
+        // gets no false credit.
         let messages_after_lifecycle: i64 =
             f.db.query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
                 .unwrap();
-        if phase == "reject" {
-            assert_eq!(
-                f.db.query_row(
-                    "SELECT count(*) FROM messages WHERE thread_id=?1 AND kind='warn'",
-                    [thread.as_str()],
-                    |r| r.get::<_, i64>(0)
-                )
-                .unwrap(),
-                1
-            );
-        }
         assert_eq!(automatic_call(&f, request.ensure()).unwrap(), ensured);
         assert!(automatic_call(&f, request.send(thread)).is_err(), "{phase}");
         assert_eq!(
@@ -2310,7 +2274,7 @@ fn automatic_canonical_lost_ensure_then_real_reject_or_leave_cannot_publish_or_r
             f.db.query_row("SELECT count(*) FROM invitations", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            1
+            0
         );
         assert_eq!(
             f.db.query_row(
@@ -2324,12 +2288,11 @@ fn automatic_canonical_lost_ensure_then_real_reject_or_leave_cannot_publish_or_r
     }
 }
 #[test]
-#[ignore = "pending ht-5fr reconcile item 17"]
-fn automatic_canonical_real_reject_between_preparation_and_publication_refuses() {
+fn automatic_canonical_real_leave_between_preparation_and_publication_refuses() {
     use herdr_threads::{
         ports::{BootstrapStorePort, DurableWorkAdmission, SendPreparationProgress},
         protocol::{
-            commands::{PermitMutation, Reject},
+            commands::{Leave, PermitMutation},
             ids::*,
         },
     };
@@ -2360,18 +2323,10 @@ fn automatic_canonical_real_reject_between_preparation_and_publication_refuses()
             SendPreparationProgress::Committed(_) => panic!("fresh preparation"),
         }
     }
-    let invitation: String =
-        f.db.query_row(
-            "SELECT id FROM invitations WHERE thread_id=?1",
-            [thread.as_str()],
-            |r| r.get(0),
-        )
-        .unwrap();
-    f.call(Command::Reject(Reject {
+    // Item 17: the auto-joined peer has no invitation to reject; it leaves.
+    f.call(Command::Leave(Leave {
         thread,
-        invitation: InvitationId::new(invitation),
-        reason: "declined".into(),
-        operation: OperationId::new("reject-interleave"),
+        operation: OperationId::new("leave-interleave"),
         claim: peer,
     }))
     .unwrap();
