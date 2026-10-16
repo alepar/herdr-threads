@@ -321,8 +321,8 @@ fn offer_attention(offer: &CheckInResult) -> serde_json::Value {
 }
 
 fn parsed_send(f: &Fixture, words: Vec<String>, operation: &str) -> SendMessage {
-    use herdr_threads::cli::commands::{CliAction, parse_argv};
-    let parsed = parse_argv(words).unwrap();
+    use herdr_threads::cli::commands::{CliAction, parse_argv_exact_seats};
+    let parsed = parse_argv_exact_seats(words).unwrap();
     let CliAction::Mutation(spec) = parsed.action else {
         panic!("expected send mutation")
     };

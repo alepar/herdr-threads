@@ -123,7 +123,7 @@ only: an absolute existing directory, defaulting to the invocation cwd, normaliz
 before publication. --space selects one live workspace by exact ID or unique label;
 omission for creation uses the caller's live workspace, never UI focus. New-tab is
 intentional creation even if its label already exists; it does not focus the tab.
-For --existing, --space and --tab may qualify --pane, but conflict with --seat.
+For --existing, --space and --tab qualify --pane, or narrow a --seat name.
 Delivery forbids --kind, --harness-binary, --name and --agent-arg and ignores the
 launch-option environment. An unresolved, held, retired or foreign seat refuses.
 An unbound resolved seat may receive staged work; this does not establish a

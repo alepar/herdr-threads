@@ -30,6 +30,8 @@ pub mod panes;
 pub(crate) mod peer_locations;
 mod picker;
 pub mod retry;
+mod seat_resolution;
+pub mod seat_selector;
 pub(crate) mod send_priority;
 pub mod setup;
 pub mod skill;
@@ -724,6 +726,32 @@ fn run_parsed_in_pane<W: Write>(
             _ => Err(invalid_request("unexpected thread resolution result")),
         }
     })?;
+    // Pass 1 of the seat stage (after the agent-without-session refusal below): every seat
+    // argument resolves to a canonical seat ID (lookups,
+    // exact IDs) or a pane, before the caller derivation and the --operator branch's recipient
+    // resolution, with no journal write. Allocate panes wait in `deferred` for pass 2, which runs
+    // after the caller derivation / actor refusal and the capability gates; refusals that run
+    // later (selection and mapping checks, the direct-send claim and caller-binding checks) can
+    // still leave an idempotent guarded seat for a real pane. A retry carries no slots: a no-op
+    // there.
+    // The agent-without-session refusal precedes pass 1: it needs no seat, so a refused agent
+    // issues no SeatInspect, Seats or topology call.
+    derive_refusing_origin(&parsed)?;
+    let seats_resolved = seat_resolution::resolve_cli_seats(
+        &mut parsed,
+        &connection,
+        &clock,
+        || host.topology(&budget()),
+        || {
+            caller_pane
+                .filter(|pane| !pane.is_empty())
+                .map(|pane| host.current_pane(pane, &budget()))
+                .transpose()
+        },
+        &mut io::stderr(),
+    );
+    let deferred =
+        seats_resolved.map_err(|error| direct_send::pre_executor_error(error, &parsed, &paths))?;
     if let CliAction::MeInit { operator } = &parsed.action {
         let operator = *operator;
         return me::run_me_init(
@@ -805,6 +833,15 @@ fn run_parsed_in_pane<W: Write>(
                 "--operator cannot be combined with --cooperative-* caller selection: operator repair is attributed to the local user, never to a seat",
             ));
         }
+        require_operator_actor(&parsed)?;
+        seat_resolution::allocate_deferred_seats(
+            deferred,
+            &mut parsed,
+            &paths,
+            &connection,
+            &clock,
+            &mut io::stderr(),
+        )?;
         resolve_recipient_seats(&mut parsed, &paths, &connection, &clock)?;
         let CliAction::Mutation(mutation) = &parsed.action else {
             unreachable!()
@@ -824,8 +861,9 @@ fn run_parsed_in_pane<W: Write>(
         crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock));
     let Some(parsed) = peer_locations::with_source(peer_source, || {
         human::with_seat_labels(seat_labels, || {
-            run_caller_scoped(
+            run_caller_scoped_deferred(
                 parsed,
+                deferred,
                 caller_pane,
                 &context,
                 &paths,
@@ -1062,6 +1100,23 @@ fn caller_needs_identity(action: &CliAction) -> bool {
     )
 }
 
+/// The caller origin of a non-`human` command, refusing an agent without a session id for the
+/// actions that call the daemon as a cooperative caller. It depends only on the action kind and
+/// the actor, so the seat stage runs it before pass 1 reads any seat.
+fn derive_refusing_origin(
+    parsed: &commands::ParsedCli,
+) -> Result<Option<caller::CallerOrigin>, RunError> {
+    let origin = (parsed.actor != actor_route::InvocationActor::Human)
+        .then(|| caller::derive(parsed))
+        .flatten();
+    if let Some(caller::CallerOrigin::Refused(refusal)) = &origin
+        && caller_needs_identity(&parsed.action)
+    {
+        return Err(caller::refusal_error(refusal));
+    }
+    Ok(origin)
+}
+
 /// A daemon connection opened on first use and then shared, so one CLI
 /// invocation never connects twice.
 struct LazyConnection<C, F> {
@@ -1088,11 +1143,44 @@ impl<C, F: Fn() -> Result<(uuid::Uuid, C), RunError>> LazyConnection<C, F> {
 
 /// Derive the caller, then run the seat-acting action or the wire read on the
 /// one shared connection. Returns the action back, unrun, when it is neither.
-// Allowed: the parsed action and caller plus the runtime context (B5 agent
-// evidence), paths, shared connection, clock, budget and writer.
+/// [`run_caller_scoped_deferred`] for a command with no deferred seat allocation (the read
+/// seams' tests).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn run_caller_scoped<C, F, W>(
+    parsed: commands::ParsedCli,
+    caller_pane: Option<&str>,
+    context: &RuntimeContext,
+    paths: &InstancePaths,
+    connection: &LazyConnection<C, F>,
+    clock: &Arc<dyn Clock>,
+    budget: &dyn Fn() -> CallBudget,
+    writer: &mut W,
+) -> Result<Option<commands::ParsedCli>, RunError>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    W: Write,
+{
+    run_caller_scoped_deferred(
+        parsed,
+        seat_resolution::DeferredSeats::none(),
+        caller_pane,
+        context,
+        paths,
+        connection,
+        clock,
+        budget,
+        writer,
+    )
+}
+
+// Allowed: the parsed action, the seat stage's deferred allocations and the caller plus the
+// runtime context (B5 agent evidence), paths, shared connection, clock, budget and writer.
+#[allow(clippy::too_many_arguments)]
+fn run_caller_scoped_deferred<C, F, W>(
     mut parsed: commands::ParsedCli,
+    deferred: seat_resolution::DeferredSeats,
     caller_pane: Option<&str>,
     context: &RuntimeContext,
     paths: &InstancePaths,
@@ -1126,14 +1214,7 @@ where
     // refused before any daemon call, reads included.
     // The `human` namespace is a person's explicit choice: it keeps the pane-context path, and
     // its own guard (TRUST-POLICY A4) refuses it under an agent harness.
-    let origin = (parsed.actor != actor_route::InvocationActor::Human)
-        .then(|| caller::derive(&parsed))
-        .flatten();
-    if let Some(caller::CallerOrigin::Refused(refusal)) = &origin
-        && caller_needs_identity(&parsed.action)
-    {
-        return Err(caller::refusal_error(refusal));
-    }
+    let origin = derive_refusing_origin(&parsed)?;
     let _origin = caller::ActiveGuard::enter(origin);
     match &parsed.action {
         CliAction::Handoff(request) => {
@@ -1166,6 +1247,18 @@ where
     let selected = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock);
     let selection =
         selected.map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
+    // Pass 2 of the seat stage: the journaled allocations, now that the caller is derived and
+    // every earlier refusal has run. Before `resolve_recipient_seats`, so pane-form ACK seats
+    // still dedupe against the frozen IDs.
+    seat_resolution::allocate_deferred_seats(
+        deferred,
+        &mut parsed,
+        paths,
+        connection,
+        clock,
+        &mut io::stderr(),
+    )
+    .map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
     resolve_recipient_seats(&mut parsed, paths, connection, clock)?;
     let _inbox =
         output::InboxInvocationGuard::enter(&parsed, selection.as_ref().map(|s| s.seat.clone()));
@@ -2647,6 +2740,16 @@ fn operator_semantic(mutation: &MutationSpec) -> Option<SemanticMutation> {
     })
 }
 
+/// Operator actions are a person's explicit choice: only the `human` namespace may run them.
+fn require_operator_actor(parsed: &commands::ParsedCli) -> Result<(), RunError> {
+    if parsed.actor != actor_route::InvocationActor::Human {
+        return Err(invalid_request(
+            "operator actions require `herdr-threads human` before routing flags",
+        ));
+    }
+    Ok(())
+}
+
 fn run_operator<W: Write>(
     semantic: SemanticMutation,
     parsed: &commands::ParsedCli,
@@ -2654,11 +2757,7 @@ fn run_operator<W: Write>(
     clock: &Arc<dyn Clock>,
     writer: &mut W,
 ) -> Result<(), RunError> {
-    if parsed.actor != actor_route::InvocationActor::Human {
-        return Err(invalid_request(
-            "operator actions require `herdr-threads human` before routing flags",
-        ));
-    }
+    require_operator_actor(parsed)?;
     let (instance, _, client) = connect(paths, clock)?;
     let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
     retry::run_new_api_to_writer(
@@ -2796,16 +2895,13 @@ fn caller_need(
 
 fn default_seat(action: &mut CliAction, seat: crate::protocol::ids::SeatId) {
     match action {
-        CliAction::Wire(Command::Inbox(query) | Command::InboxBatchV2(query)) => {
-            query.seat = Some(seat)
-        }
-        CliAction::Wire(Command::PendingReceipts(query)) => query.seat = Some(seat),
-        CliAction::Wire(Command::Directory(query)) => query.membership = Some(seat),
-        CliAction::Wire(Command::Diagnostics(query)) => query.seat = Some(seat),
-        CliAction::Wire(Command::Warnings(query)) => query.seat = seat,
         CliAction::Wire(Command::Thread(query)) => query.caller = Some(seat),
         CliAction::Wire(Command::Participants(query)) => query.caller = Some(seat),
-        _ => {}
+        _ => {
+            if let Some(slot) = commands::SeatSlot::read_slot_of(action) {
+                let _ = slot.set(action, seat);
+            }
+        }
     }
 }
 
@@ -2825,6 +2921,43 @@ pub(crate) fn require_handoff_capabilities<C: LocalClient + ?Sized>(
         )?;
     }
     Ok(())
+}
+
+/// Guarded recipient-seat allocation: one journaled `ResolveSeat` under the
+/// `ServiceAllocation` scope. Gates (session refusal, p0 receipts capability, invitation
+/// confirmation capability) are the caller's job and must run before this.
+pub(crate) fn allocate_recipient_seat<C: LocalClient + ?Sized>(
+    paths: &InstancePaths,
+    instance: &uuid::Uuid,
+    client: &C,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    target: crate::protocol::ids::HostTargetId,
+) -> Result<crate::protocol::ids::SeatId, RunError> {
+    let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+    let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
+        &journal,
+        IntentScope::ServiceAllocation {
+            instance: instance.to_string(),
+            target: target.clone(),
+        },
+        SemanticMutation::ResolveSeat { target },
+        clock.utc_now().0,
+        || {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "recipient resolution has no caller claim",
+            ))
+        },
+        |command| client.call_definitive(command, &cooperative_budget(clock)),
+        output,
+        &mut io::sink(),
+    )
+    .map_err(retry_failure)?;
+    match result {
+        CommandResult::SeatResolved(seat) => Ok(seat),
+        _ => Err(mapping_error("service returned no resolved recipient seat")),
+    }
 }
 
 /// Recipient pane selection never changes the caller's cooperative claim.
@@ -2870,46 +3003,38 @@ where
             "requesting invitation confirmation policy",
         )?;
     }
-    let allocate = |target: crate::protocol::ids::HostTargetId| -> Result<crate::protocol::ids::SeatId, RunError> {
-        let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
-        let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
-            &journal, IntentScope::ServiceAllocation { instance: instance.to_string(), target: target.clone() },
-            SemanticMutation::ResolveSeat { target }, clock.utc_now().0,
-            || Err(io::Error::new(io::ErrorKind::PermissionDenied, "recipient resolution has no caller claim")),
-            |command| client.call_definitive(command, &cooperative_budget(clock.as_ref())),
-            &parsed.output, &mut io::sink(),
-        ).map_err(retry_failure)?;
-        match result {
-            CommandResult::SeatResolved(seat) => Ok(seat),
-            _ => Err(mapping_error("service returned no resolved recipient seat")),
-        }
+    let allocate = |target: crate::protocol::ids::HostTargetId| {
+        allocate_recipient_seat(
+            paths,
+            instance,
+            client,
+            clock.as_ref(),
+            &parsed.output,
+            target,
+        )
     };
     if let Some(selector) = selector {
         let target = selector
             .direct_id()
             .ok_or_else(|| invalid_request("recipient pane was not frozen"))?;
-        let seat = if matches!(
+        let slot = if matches!(
             parsed.action,
             CliAction::Mutation(MutationSpec::Invite { .. })
         ) {
-            allocate(target)?
+            commands::SeatSlot::InviteRecipient
         } else {
-            pane_seat(client, &parsed.output, &target, clock.as_ref())?
-                .ok_or_else(|| no_seat_for_pane(&target))?
+            commands::SeatSlot::read_slot_of(&parsed.action)
+                .ok_or_else(|| invalid_request("command has no recipient seat selector"))?
         };
-        match &mut parsed.action {
-            CliAction::Mutation(MutationSpec::Invite {
-                seat: recipient, ..
-            }) => *recipient = seat,
-            CliAction::Wire(Command::Inbox(query) | Command::InboxBatchV2(query)) => {
-                query.seat = Some(seat)
+        let seat = match slot.mapping() {
+            commands::SeatMapping::Allocate => allocate(target)?,
+            commands::SeatMapping::Lookup => {
+                pane_seat(client, &parsed.output, &target, clock.as_ref())?
+                    .ok_or_else(|| no_seat_for_pane(&target))?
             }
-            CliAction::Wire(Command::PendingReceipts(query)) => query.seat = Some(seat),
-            CliAction::Wire(Command::Diagnostics(query)) => query.seat = Some(seat),
-            CliAction::Wire(Command::Directory(query)) => query.membership = Some(seat),
-            CliAction::Wire(Command::Warnings(query)) => query.seat = seat,
-            _ => return Err(invalid_request("command has no recipient seat selector")),
-        }
+        };
+        slot.set(&mut parsed.action, seat)
+            .map_err(|_| invalid_request("command has no recipient seat selector"))?;
     }
     if recipient {
         parsed.pane_selector = None;
@@ -3393,6 +3518,11 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
     clock: &dyn Clock,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    if !parsed.seat_selectors.is_empty() || parsed.seat_narrowing.is_some() {
+        return Err(invalid_request(
+            "seat selectors require runtime resolution before dispatch",
+        ));
+    }
     let _namespace = human::invocation_scope(parsed.actor);
     if let CliAction::Retry(recovery) = &parsed.action {
         retry::preflight_original_actor(

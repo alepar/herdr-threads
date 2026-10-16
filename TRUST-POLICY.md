@@ -92,6 +92,17 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 
 Seats are never merged. Pane labels, saved addresses, terminal-id hints and Herdr's agent field may *suggest*
 candidates in diagnostics; they never move a seat, allocate one, or end a binding.
+A seat-argument name is a locator that the CLI resolves once to a canonical seat before submission, and never moves a
+seat or ends a binding. Lookup slots (reads, operator repair, `handoff --existing`) never allocate. Invite and
+ACK-recipient names allocate where their pane forms (`--pane`, `--require-ack-pane`) already do; direct send by name
+or pane ID (`send --seat`) is a new guarded allocation surface (spec D4), with no prior pane form. Every such
+allocation is an ordinary guarded `ResolveSeat` that runs only after every seat argument has resolved and after the
+caller derivation and the stage's capability gates; refusals that run later (the selection and mapping checks, the direct-send claim and caller-binding checks) can leave an idempotent guarded seat for a real pane. Operator repair by name (`seat retire`, `rebind`,
+`--replace`) acts only on the one seat the name resolves to through the current canonical mapping (lookup,
+never allocation) when the name matches exactly one pane anywhere in the topology: it never uses proximity tiering,
+and a name matching more than one pane is refused with the candidate list, requiring the seat ID. The chosen seat is
+shown on the `resolved:` line, with the operator still deciding via `--operator`; the name is
+not heuristic continuity evidence and moves no seat by itself.
 
 **C2. Restore holds.** After a new or unknown Herdr incarnation while nonretired seats exist, every saved
 seat whose continuity is not structurally proven becomes unresolved, and the daemon takes a coherent baseline

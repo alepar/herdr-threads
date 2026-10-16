@@ -1,5 +1,5 @@
 use super::*;
-use crate::cli::commands::{CliAction, parse_argv};
+use crate::cli::commands::{CliAction, parse_argv, parse_argv_exact_seats};
 use crate::protocol::{
     commands::{
         BodyReadRequest, Command, DeliveryInspectQuery, DiagnosticsQuery, DirectoryMembership,
@@ -1655,7 +1655,7 @@ fn inbox_continuation_stales_when_published_receipt_enters_examined_thread() {
         UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
     let error = query(&store, "i", &q(first.next_cursor), &budget()).unwrap_err();
     assert_eq!(error.code, ErrorCode::CursorStale);
-    let parsed = parse_argv(error.restart_argv.unwrap()).unwrap();
+    let parsed = parse_argv_exact_seats(error.restart_argv.unwrap()).unwrap();
     assert!(
         matches!(parsed.action, CliAction::Wire(Command::Inbox(ref query))
         if query.seat.as_ref().is_some_and(|seat|seat.as_str()=="s") && query.page.cursor.is_none())
@@ -2068,7 +2068,7 @@ fn filtered_diagnostics_emits_parseable_contextual_continuation() {
         panic!()
     };
     assert!(page.has_more);
-    let parsed = parse_argv(page.next_argv.unwrap()).unwrap();
+    let parsed = parse_argv_exact_seats(page.next_argv.unwrap()).unwrap();
     assert_eq!(parsed.output, output);
     assert!(
         matches!(parsed.action, CliAction::Wire(Command::Diagnostics(ref q))
@@ -3075,7 +3075,7 @@ fn directory_default_pages_quiet_joined_invited_and_archived_memberships() {
         };
         if page.has_more {
             let argv = page.next_argv.as_ref().expect("server continuation");
-            let parsed = parse_argv(argv.clone()).unwrap();
+            let parsed = parse_argv_exact_seats(argv.clone()).unwrap();
             assert!(
                 matches!(parsed.action, CliAction::Wire(Command::Directory(ref q))
                 if q.membership.as_ref().is_some_and(|seat| seat.as_str()=="s")
@@ -3143,7 +3143,7 @@ fn directory_cursor_stales_only_on_relevant_member_revision() {
         panic!()
     };
     assert!(first.has_more);
-    let parsed = parse_argv(first.next_argv.clone().unwrap()).unwrap();
+    let parsed = parse_argv_exact_seats(first.next_argv.clone().unwrap()).unwrap();
     assert!(
         matches!(parsed.action,CliAction::Wire(Command::Directory(ref q)) if q.membership.as_ref().is_some_and(|s|s.as_str()=="s") && q.membership_filter==DirectoryMembership::Joined)
     );

@@ -1,0 +1,969 @@
+{
+  "version": 1,
+  "epic": "ht-u3ym",
+  "cap": 8,
+  "earlyUnblock": true,
+  "runtimeSlots": 10,
+  "invocations": [
+    {
+      "runId": "wf_5c95ff14-b24",
+      "dir": "/Users/alepar/.aisw/profiles/claude/claude-1/projects/-Users-alepar-AleCode-herdr-threads/98dc3862-0eb6-419e-a6a0-ff579878ac1a/subagents/workflows/wf_5c95ff14-b24",
+      "source": "workflow",
+      "start": "2026-10-16T05:25:22.810Z",
+      "end": "2026-10-16T08:53:29.578Z",
+      "agents": 67,
+      "timed": 67,
+      "journal": true
+    }
+  ],
+  "window": {
+    "start": "2026-10-16T05:25:22.810Z",
+    "lastLanding": "2026-10-16T08:45:41.640Z",
+    "end": "2026-10-16T08:53:29.578Z",
+    "graphMs": 12018830,
+    "wallMs": 12486768
+  },
+  "shape": {
+    "beads": 8,
+    "edges": 13,
+    "depth": 5,
+    "width": 1.6,
+    "levels": [
+      3,
+      1,
+      1,
+      2,
+      1
+    ],
+    "criticalPath": [
+      "ht-u3ym.3.1",
+      "ht-u3ym.3.2",
+      "ht-u3ym.3.3",
+      "ht-u3ym.4",
+      "ht-u3ym.6"
+    ],
+    "fanOut": [
+      {
+        "id": "ht-u3ym.1",
+        "direct": 2,
+        "transitive": 5
+      },
+      {
+        "id": "ht-u3ym.2",
+        "direct": 2,
+        "transitive": 5
+      },
+      {
+        "id": "ht-u3ym.3.1",
+        "direct": 2,
+        "transitive": 5
+      },
+      {
+        "id": "ht-u3ym.3.2",
+        "direct": 2,
+        "transitive": 4
+      },
+      {
+        "id": "ht-u3ym.3.3",
+        "direct": 3,
+        "transitive": 3
+      }
+    ],
+    "cycles": []
+  },
+  "cuts": [],
+  "beads": [
+    {
+      "id": "ht-u3ym.1",
+      "n": 1,
+      "deps": [],
+      "dependents": [
+        "ht-u3ym.3.2",
+        "ht-u3ym.6"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T05:35:20.895Z",
+      "dispatchedAt": "2026-10-16T05:35:22.988Z",
+      "landedAt": "2026-10-16T06:22:25.630Z",
+      "waitMs": 2093,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 2285099,
+      "implByTool": {
+        "read": 6163,
+        "git": 78,
+        "shell": 11421,
+        "edit": 7631,
+        "test": 1168276,
+        "poll": 502990,
+        "build": 326169
+      },
+      "implToolMs": 2022728,
+      "reviewMs": 51803,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 1833,
+      "laneMs": 481814,
+      "seamMs": 179730,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 2287192,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-u3ym.2",
+      "n": 2,
+      "deps": [],
+      "dependents": [
+        "ht-u3ym.3.2",
+        "ht-u3ym.6"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T05:35:20.895Z",
+      "dispatchedAt": "2026-10-16T05:35:24.758Z",
+      "landedAt": "2026-10-16T06:13:22.419Z",
+      "waitMs": 3863,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 1493648,
+      "implByTool": {
+        "read": 5837,
+        "git": 93,
+        "shell": 25830,
+        "bd": 4699,
+        "other": 2,
+        "edit": 125,
+        "test": 105336,
+        "poll": 1223598
+      },
+      "implToolMs": 1364160,
+      "reviewMs": 27157,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 294069,
+      "laneMs": 460707,
+      "seamMs": 169722,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-u3ym.3.1",
+      "n": 3,
+      "deps": [],
+      "dependents": [
+        "ht-u3ym.3.2",
+        "ht-u3ym.6"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T05:35:20.895Z",
+      "dispatchedAt": "2026-10-16T05:35:24.760Z",
+      "landedAt": "2026-10-16T06:05:29.104Z",
+      "waitMs": 3865,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 1113477,
+      "implByTool": {
+        "read": 2214,
+        "git": 1179,
+        "shell": 23252,
+        "build": 71369,
+        "test": 957438
+      },
+      "implToolMs": 1055452,
+      "reviewMs": 28188,
+      "fixMs": 0,
+      "stackWaitMs": 1478,
+      "queueWaitMs": 1952,
+      "laneMs": 657270,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-u3ym.3.2",
+      "n": 4,
+      "deps": [
+        "ht-u3ym.3.1",
+        "ht-u3ym.2",
+        "ht-u3ym.1"
+      ],
+      "dependents": [
+        "ht-u3ym.3.3",
+        "ht-u3ym.6"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T06:13:28.087Z",
+      "dispatchedAt": "2026-10-16T06:13:30.181Z",
+      "landedAt": "2026-10-16T08:04:06.387Z",
+      "waitMs": 2094,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 6447442,
+      "implByTool": {
+        "git": 5130,
+        "shell": 106401,
+        "read": 45575,
+        "edit": 608,
+        "build": 563743,
+        "poll": 4278209,
+        "test": 614499
+      },
+      "implToolMs": 5600435,
+      "reviewMs": 71356,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 2019,
+      "laneMs": 112307,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 6638300,
+      "stackParents": [
+        "ht-u3ym.1"
+      ],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-u3ym.3.3",
+      "n": 5,
+      "deps": [
+        "ht-u3ym.3.2"
+      ],
+      "dependents": [
+        "ht-u3ym.4",
+        "ht-u3ym.5",
+        "ht-u3ym.6"
+      ],
+      "attempts": [
+        "STACK_CONFLICT",
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T08:00:57.623Z",
+      "dispatchedAt": "2026-10-16T08:04:16.472Z",
+      "landedAt": "2026-10-16T08:16:12.914Z",
+      "waitMs": 198849,
+      "waitCause": "stack-conflict",
+      "carriedMs": 0,
+      "implMs": 609333,
+      "implByTool": {
+        "read": 5995,
+        "git": 10184,
+        "shell": 11701,
+        "other": 1,
+        "test": 374359,
+        "build": 74582
+      },
+      "implToolMs": 476822,
+      "reviewMs": 35447,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 1923,
+      "laneMs": 67784,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 21249,
+      "criticalMs": 619418,
+      "stackParents": [],
+      "lateEdges": [
+        "ht-u3ym.3.2"
+      ]
+    },
+    {
+      "id": "ht-u3ym.4",
+      "n": 6,
+      "deps": [
+        "ht-u3ym.3.3"
+      ],
+      "dependents": [
+        "ht-u3ym.6"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T08:14:25.805Z",
+      "dispatchedAt": "2026-10-16T08:14:27.761Z",
+      "landedAt": "2026-10-16T08:32:02.273Z",
+      "waitMs": 1956,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 942649,
+      "implByTool": {
+        "read": 9375,
+        "git": 1111,
+        "shell": 6994,
+        "bd": 2073,
+        "test": 451615,
+        "poll": 166149
+      },
+      "implToolMs": 636499,
+      "reviewMs": 37808,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 1927,
+      "laneMs": 69092,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 944605,
+      "stackParents": [
+        "ht-u3ym.3.3"
+      ],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-u3ym.5",
+      "n": 7,
+      "deps": [
+        "ht-u3ym.3.3"
+      ],
+      "dependents": [
+        "ht-u3ym.6"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T08:14:25.805Z",
+      "dispatchedAt": "2026-10-16T08:14:27.762Z",
+      "landedAt": "2026-10-16T08:25:51.440Z",
+      "waitMs": 1957,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 620004,
+      "implByTool": {
+        "read": 3474,
+        "git": 1250,
+        "shell": 7238,
+        "bd": 4165,
+        "test": 473,
+        "poll": 543923
+      },
+      "implToolMs": 557970,
+      "reviewMs": 22878,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 1791,
+      "laneMs": 37047,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [
+        "ht-u3ym.3.3"
+      ],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-u3ym.6",
+      "n": 8,
+      "deps": [
+        "ht-u3ym.2",
+        "ht-u3ym.3.2",
+        "ht-u3ym.4",
+        "ht-u3ym.5",
+        "ht-u3ym.1",
+        "ht-u3ym.3.1",
+        "ht-u3ym.3.3"
+      ],
+      "dependents": [],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-16T08:30:10.410Z",
+      "dispatchedAt": "2026-10-16T08:30:13.447Z",
+      "landedAt": "2026-10-16T08:45:41.640Z",
+      "waitMs": 3037,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 822458,
+      "implByTool": {
+        "read": 7277,
+        "git": 13742,
+        "shell": 10033,
+        "bd": 4047,
+        "build": 194560,
+        "edit": 4257,
+        "test": 473557
+      },
+      "implToolMs": 703363,
+      "reviewMs": 25724,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 1768,
+      "laneMs": 76237,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 931230,
+      "stackParents": [
+        "ht-u3ym.4"
+      ],
+      "lateEdges": []
+    }
+  ],
+  "criticalPath": {
+    "ms": 12018830,
+    "byCategory": {
+      "startup": 171933,
+      "ready": 8465,
+      "dispatch": 29820,
+      "planning": 416007,
+      "implement": 11106981,
+      "review": 97080,
+      "merge": 188544
+    },
+    "laneContentionMs": 0,
+    "redo": {
+      "stack-conflict": {
+        "ms": 193654,
+        "beads": [
+          "ht-u3ym.3.3"
+        ]
+      },
+      "cancelled": {
+        "ms": 0,
+        "beads": []
+      },
+      "retry": {
+        "ms": 0,
+        "beads": []
+      }
+    },
+    "segments": [
+      {
+        "kind": "startup",
+        "bead": null,
+        "label": "run start",
+        "via": null,
+        "start": "2026-10-16T05:25:22.810Z",
+        "ms": 171933
+      },
+      {
+        "kind": "ready",
+        "bead": null,
+        "label": "bd-ready",
+        "via": null,
+        "start": "2026-10-16T05:28:14.743Z",
+        "ms": 8465
+      },
+      {
+        "kind": "dispatch",
+        "bead": null,
+        "label": "previous → plan",
+        "via": null,
+        "start": "2026-10-16T05:28:23.208Z",
+        "ms": 1680
+      },
+      {
+        "kind": "planning",
+        "bead": null,
+        "label": "plan",
+        "via": "previous",
+        "start": "2026-10-16T05:28:24.888Z",
+        "ms": 416007
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-u3ym.1",
+        "label": "planned → impl:ht-u3ym.1",
+        "via": null,
+        "start": "2026-10-16T05:35:20.895Z",
+        "ms": 2093
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-u3ym.1",
+        "label": "impl:ht-u3ym.1",
+        "via": "planned",
+        "start": "2026-10-16T05:35:22.988Z",
+        "ms": 2285099
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-u3ym.3.2",
+        "label": "dep → impl:ht-u3ym.3.2",
+        "via": null,
+        "start": "2026-10-16T06:13:28.087Z",
+        "ms": 2094
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-u3ym.3.2",
+        "label": "impl:ht-u3ym.3.2",
+        "via": "dep",
+        "start": "2026-10-16T06:13:30.181Z",
+        "ms": 6447442
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-u3ym.3.2",
+        "label": "chain → review:ht-u3ym.3.2",
+        "via": null,
+        "start": "2026-10-16T08:00:57.623Z",
+        "ms": 3082
+      },
+      {
+        "kind": "review",
+        "bead": "ht-u3ym.3.2",
+        "label": "review:ht-u3ym.3.2",
+        "via": "chain",
+        "start": "2026-10-16T08:01:00.705Z",
+        "ms": 71356
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-u3ym.3.2",
+        "label": "chain → merge:ht-u3ym.3.2",
+        "via": null,
+        "start": "2026-10-16T08:02:12.061Z",
+        "ms": 2019
+      },
+      {
+        "kind": "merge",
+        "bead": "ht-u3ym.3.2",
+        "label": "merge:ht-u3ym.3.2",
+        "via": "chain",
+        "start": "2026-10-16T08:02:14.080Z",
+        "ms": 112307
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-u3ym.3.3",
+        "label": "stack-conflict → impl:ht-u3ym.3.3",
+        "via": null,
+        "start": "2026-10-16T08:04:06.387Z",
+        "ms": 10085
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-u3ym.3.3",
+        "label": "impl:ht-u3ym.3.3",
+        "via": "stack-conflict",
+        "start": "2026-10-16T08:04:16.472Z",
+        "ms": 609333
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-u3ym.4",
+        "label": "dep → impl:ht-u3ym.4",
+        "via": null,
+        "start": "2026-10-16T08:14:25.805Z",
+        "ms": 1956
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-u3ym.4",
+        "label": "impl:ht-u3ym.4",
+        "via": "dep",
+        "start": "2026-10-16T08:14:27.761Z",
+        "ms": 942649
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-u3ym.6",
+        "label": "dep → impl:ht-u3ym.6",
+        "via": null,
+        "start": "2026-10-16T08:30:10.410Z",
+        "ms": 3037
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-u3ym.6",
+        "label": "impl:ht-u3ym.6",
+        "via": "dep",
+        "start": "2026-10-16T08:30:13.447Z",
+        "ms": 822458
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-u3ym.6",
+        "label": "chain → review:ht-u3ym.6",
+        "via": null,
+        "start": "2026-10-16T08:43:55.905Z",
+        "ms": 2006
+      },
+      {
+        "kind": "review",
+        "bead": "ht-u3ym.6",
+        "label": "review:ht-u3ym.6",
+        "via": "chain",
+        "start": "2026-10-16T08:43:57.911Z",
+        "ms": 25724
+      },
+      {
+        "kind": "dispatch",
+        "bead": "ht-u3ym.6",
+        "label": "chain → merge:ht-u3ym.6",
+        "via": null,
+        "start": "2026-10-16T08:44:23.635Z",
+        "ms": 1768
+      },
+      {
+        "kind": "merge",
+        "bead": "ht-u3ym.6",
+        "label": "merge:ht-u3ym.6",
+        "via": "chain",
+        "start": "2026-10-16T08:44:25.403Z",
+        "ms": 76237
+      }
+    ]
+  },
+  "bottleneck": {
+    "bead": "ht-u3ym.3.2",
+    "ms": 6638300,
+    "share": 0.5523249767240239,
+    "byCategory": {
+      "dispatch": 7195,
+      "implement": 6447442,
+      "review": 71356,
+      "merge": 112307
+    },
+    "implByTool": {
+      "git": 5130,
+      "shell": 106401,
+      "read": 45575,
+      "edit": 608,
+      "build": 563743,
+      "poll": 4278209,
+      "test": 614499
+    },
+    "calls": [
+      {
+        "name": "Bash",
+        "cat": "build",
+        "what": "python3 - <<'EOF'",
+        "ms": 121476
+      },
+      {
+        "name": "Bash",
+        "cat": "test",
+        "what": "cargo fmt",
+        "test": "cargo test --locked --all-features --test combined golden_surfaces::",
+        "ms": 120534
+      },
+      {
+        "name": "Bash",
+        "cat": "build",
+        "what": "python3 - <<'EOF'",
+        "ms": 115664
+      },
+      {
+        "name": "Bash",
+        "cat": "test",
+        "what": "cargo nextest run --locked --all-features --lib --no-fail-f…",
+        "test": "cargo nextest run --locked --all-features --lib --no-fail-fast",
+        "ms": 115513
+      },
+      {
+        "name": "Bash",
+        "cat": "build",
+        "what": "cargo clippy --locked --all-targets --all-features -- -D wa…",
+        "ms": 115421
+      },
+      {
+        "name": "Bash",
+        "cat": "poll",
+        "what": "for k in $(seq 19)",
+        "ms": 115250
+      },
+      {
+        "name": "Bash",
+        "cat": "poll",
+        "what": "python3 - <<'EOF'",
+        "ms": 115180
+      },
+      {
+        "name": "Bash",
+        "cat": "poll",
+        "what": "for k in $(seq 19)",
+        "ms": 115178
+      },
+      {
+        "name": "Bash",
+        "cat": "poll",
+        "what": "for i in $(seq 19)",
+        "ms": 115153
+      },
+      {
+        "name": "Bash",
+        "cat": "poll",
+        "what": "for i in $(seq 19)",
+        "ms": 115131
+      }
+    ]
+  },
+  "lane": {
+    "busyMs": 1954132,
+    "seamMs": 349452,
+    "spanMs": 10269806,
+    "merges": 10,
+    "firstTryFailed": 2,
+    "firstTryKnown": 8,
+    "queueWaitMs": 307282,
+    "stackWaitMs": 1478,
+    "peakQueue": 1
+  },
+  "runtime": {
+    "slots": 10,
+    "peak": 4,
+    "fullMs": 0
+  },
+  "concurrency": null,
+  "tests": {
+    "busyMs": 14355359,
+    "testMs": 4145553,
+    "pollMs": 6714869,
+    "cappedCalls": 1
+  },
+  "slowTests": [
+    {
+      "cmd": "cargo test --locked --all-features --lib cli::seat_selector",
+      "ms": 1168276,
+      "runs": 4,
+      "longestMs": 600696
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined lazy_send",
+      "ms": 583573,
+      "runs": 1,
+      "longestMs": 583573
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib cli::commands",
+      "ms": 462423,
+      "runs": 4,
+      "longestMs": 273333
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib cli::panes",
+      "ms": 373865,
+      "runs": 1,
+      "longestMs": 373865
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib scoped_runtime",
+      "ms": 250130,
+      "runs": 5,
+      "longestMs": 122405
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib cli::cooperative_tests::scoped_runtime",
+      "ms": 210701,
+      "runs": 4,
+      "longestMs": 104571
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib cli::",
+      "ms": 200600,
+      "runs": 5,
+      "longestMs": 110590
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib seat_selector_matrix::explore -- --nocapture",
+      "ms": 153236,
+      "runs": 4,
+      "longestMs": 82530
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib $f",
+      "ms": 124229,
+      "runs": 1,
+      "longestMs": 124229
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined golden_surfaces::",
+      "ms": 120534,
+      "runs": 1,
+      "longestMs": 120534
+    },
+    {
+      "cmd": "cargo nextest run --locked --all-features --lib --no-fail-fast",
+      "ms": 115513,
+      "runs": 1,
+      "longestMs": 115513
+    },
+    {
+      "cmd": "cargo nextest run --locked --all-features --lib --no-fail-fast cli::",
+      "ms": 100663,
+      "runs": 1,
+      "longestMs": 100663
+    },
+    {
+      "cmd": "cargo nextest run --locked --all-targets --all-features --no-fail-fast",
+      "ms": 97617,
+      "runs": 4,
+      "longestMs": 66528
+    },
+    {
+      "cmd": "cargo nextest run --locked --all-features --no-fail-fast --test integration -E 'test(conf…",
+      "ms": 62627,
+      "runs": 5,
+      "longestMs": 25373
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib seat_selector_matrix",
+      "ms": 52643,
+      "runs": 1,
+      "longestMs": 52643
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib r9_pane_forms -- --nocapture",
+      "ms": 35035,
+      "runs": 1,
+      "longestMs": 35035
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib cli::launch::task23_tests::hermes_effective",
+      "ms": 25526,
+      "runs": 1,
+      "longestMs": 25526
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib --no-run",
+      "ms": 6955,
+      "runs": 2,
+      "longestMs": 5437
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib -- retry_carries every_seat_taking",
+      "ms": 934,
+      "runs": 1,
+      "longestMs": 934
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined $f",
+      "ms": 473,
+      "runs": 1,
+      "longestMs": 473
+    }
+  ],
+  "conflicts": [
+    {
+      "file": "src/cli/mod.rs",
+      "stackConflicts": 1,
+      "seamOverlaps": 2,
+      "declaredBy": 4
+    }
+  ],
+  "simulation": {
+    "asRunMs": 11990690,
+    "actualMs": 12018830,
+    "fit": 1,
+    "unlimitedSlotsMs": 11990690,
+    "unlimitedLanesMs": 11990690,
+    "lowerBoundMs": 11990690,
+    "graphChain": [
+      "ht-u3ym.1",
+      "ht-u3ym.3.2",
+      "ht-u3ym.3.3",
+      "ht-u3ym.4",
+      "ht-u3ym.6"
+    ],
+    "whatIfs": [
+      {
+        "kind": "faster",
+        "target": "faster ht-u3ym.3.2",
+        "ms": 8766969,
+        "savingMs": 3223721,
+        "note": "its implement time halved"
+      },
+      {
+        "kind": "split",
+        "target": "split ht-u3ym.3.2",
+        "ms": 9514289,
+        "savingMs": 2476401,
+        "note": "its 2 dependent(s) wait only for a contract slice ≈30% of its implement time"
+      },
+      {
+        "kind": "cut",
+        "target": "cut ht-u3ym.3.3 <- ht-u3ym.3.2",
+        "ms": 10255045,
+        "savingMs": 1735645,
+        "note": "payoff if this edge were cut — whether it can be is a design call"
+      },
+      {
+        "kind": "cut",
+        "target": "cut ht-u3ym.3.2 <- ht-u3ym.1",
+        "ms": 11199239,
+        "savingMs": 791451,
+        "note": "payoff if this edge were cut — whether it can be is a design call"
+      },
+      {
+        "kind": "split",
+        "target": "split ht-u3ym.1",
+        "ms": 11199239,
+        "savingMs": 791451,
+        "note": "its 2 dependent(s) wait only for a contract slice ≈30% of its implement time"
+      },
+      {
+        "kind": "faster",
+        "target": "faster ht-u3ym.1",
+        "ms": 11199239,
+        "savingMs": 791451,
+        "note": "its implement time halved"
+      },
+      {
+        "kind": "cut",
+        "target": "cut ht-u3ym.4 <- ht-u3ym.3.3",
+        "ms": 11668045,
+        "savingMs": 322645,
+        "note": "payoff if this edge were cut — whether it can be is a design call"
+      },
+      {
+        "kind": "early",
+        "target": "every early unblock taken",
+        "ms": 11807027,
+        "savingMs": 183663,
+        "note": "no stack conflicts: dependents stack on implemented blockers instead of waiting for their merge"
+      }
+    ],
+    "verdict": "graph-bound"
+  },
+  "unmeasured": [],
+  "summary": [
+    "Profile: ht-u3ym · 1 invocation · 2026-10-16T05:25Z → 2026-10-16T08:53Z · wall 3h28m (task graph 3h20m, after the last landing 8m) · agents 67 (timed 67) · beads dispatched 8, landed 8, planned 8",
+    "Profile: shape — 8 beads · 13 edges · depth 5 · width 1.6 · beads per level 3/1/1/2/1 · widest fan-out ht-u3ym.1 (2 direct, 5 transitive dependents)",
+    "Profile: bound — graph lower bound 3h20m along ht-u3ym.1 → ht-u3ym.3.2 → ht-u3ym.3.3 → ht-u3ym.4 → ht-u3ym.6 (unlimited slots and merge lanes) · model of the run 3h20m (cap 8, one merge lane) vs actual 3h20m (100%) → graph-bound: the 5-bead dependency chain set the pace — reshaping it is the lever",
+    "Profile: critical path — 3h20m = implement 3h05m · review 2m · merge 3m · planning 7m · ready 8s · startup 3m · dispatch 30s",
+    "Profile: critical chain — bd-ready ready 8s → plan planning 7m → ht-u3ym.1 implement 38m → ht-u3ym.3.2 implement+review+merge 1h51m → ht-u3ym.3.3 implement 10m → ht-u3ym.4 implement 16m → ht-u3ym.6 implement+review+merge 15m",
+    "Profile: bottleneck — ht-u3ym.3.2 — 1h51m on the critical path (55%) · implement 1h47m · review 1m · merge 2m · dispatch 7s · implement on the path 1h47m: test 10m · poll 1h11m · build 9m · git 5s · read 46s · shell 2m · model 14m (longest: \"python3 - <<'EOF'\" 2m, \"cargo fmt\" 2m) · dependents 2 direct, 4 transitive",
+    "Profile: waits — ready→start, summed per bead (beads wait at the same time, so not wall time): 3m over 1 of 8 landed beads — stack-conflict 3m (1)",
+    "Profile: early unblock — 5 landed beads had in-run blockers · stacked on an implementation 4 · bounced on a stack conflict then waited for the merge 1 (3m) · waited for a merge without one 0",
+    "Profile: rework — 21s of dispatch time in attempts that did not land — ht-u3ym.3.3 21s (STACK_CONFLICT; landed later)",
+    "Profile: tests — implementers and fixers, summed: 1h09m running tests and 1h52m polling background runs, 76% of their 3h59m · 1 Bash call(s) ran into the 10-minute tool limit",
+    "Profile: slow tests — cargo test --locked --all-features --lib cli::seat_selector 19m (4 runs, longest 10m) · cargo test --locked --all-features --test combined lazy_send 10m (1 run, longest 10m) · cargo test --locked --all-features --lib cli::commands 8m (4 runs, longest 5m) · cargo test --locked --all-features --lib cli::panes 6m (1 run, longest 6m) · cargo test --locked --all-features --lib scoped_runtime 4m (5 runs, longest 2m)",
+    "Profile: redo — on the critical path, up to stack-conflict re-cuts 3m (ht-u3ym.3.3) — from a bead's first attempt to its final one; the what-ifs model the real saving",
+    "Profile: merge lane — busy 33m of 2h51m (19%) · seam reviews and fixes 6m (18% of busy) · 10 merge dispatches, first try not merged for 2 of 8 · queue wait 5m total, peak 1 waiting · stack-parent wait 1s",
+    "Profile: conflicts — src/cli/mod.rs (stack conflicts 1, seam overlaps 2, declared by 4)",
+    "Profile: runtime — peak 4 agents at once of 10 runtime slots · full 0% of the run · slot cap 8",
+    "Profile: what-if — faster ht-u3ym.3.2 → 2h26m (−54m, 27%) — its implement time halved",
+    "Profile: what-if — split ht-u3ym.3.2 → 2h39m (−41m, 21%) — its 2 dependent(s) wait only for a contract slice ≈30% of its implement time",
+    "Profile: what-if — cut ht-u3ym.3.3 <- ht-u3ym.3.2 → 2h51m (−29m, 14%) — payoff if this edge were cut — whether it can be is a design call",
+    "Profile: what-if — cut ht-u3ym.3.2 <- ht-u3ym.1 → 3h07m (−13m, 7%) — payoff if this edge were cut — whether it can be is a design call",
+    "Profile: what-if — split ht-u3ym.1 → 3h07m (−13m, 7%) — its 2 dependent(s) wait only for a contract slice ≈30% of its implement time",
+    "Profile: what-if — faster ht-u3ym.1 → 3h07m (−13m, 7%) — its implement time halved",
+    "Profile: unmeasured — none"
+  ]
+}

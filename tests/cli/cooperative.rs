@@ -2054,7 +2054,7 @@ fn recipient_panes_reads_do_not_allocate_and_invite_uses_guarded_resolution() {
                 },
             ))
         });
-        let mut parsed = crate::cli::commands::parse_argv(argv).unwrap();
+        let mut parsed = crate::cli::commands::parse_argv_exact_seats(argv).unwrap();
         crate::cli::panes::resolve_cli_targets(
             &mut parsed,
             || panic!("direct IDs"),
@@ -2141,6 +2141,75 @@ mod scoped_runtime {
             "tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"main"},{"tab_id":"w1:t2","workspace_id":"w1","label":"tryout"}],
             "panes":[p("w1:p1","w1:t1","caller"),p("w1:p2","w1:t2","alice")],"agents":[]})
     }
+    /// One seat of the fixture daemon's table (`SeatInspect`, `Seats`, `ResolveSeat`).
+    #[derive(Clone)]
+    struct FixtureSeat {
+        id: String,
+        target: Option<String>,
+        resolved: bool,
+        retired: bool,
+        /// Whether `SeatInspect` reports an open (codex) binding on the seat's target.
+        bound: bool,
+    }
+    impl FixtureSeat {
+        fn mapped(id: &str, target: Option<&str>) -> Self {
+            Self {
+                id: id.into(),
+                target: target.map(Into::into),
+                resolved: true,
+                retired: false,
+                bound: false,
+            }
+        }
+        fn summary(&self) -> SeatSummary {
+            SeatSummary {
+                seat: SeatId::new(self.id.as_str()),
+                target: self.target.as_deref().map(HostTargetId::new),
+                continuity: if self.resolved {
+                    ContinuityStatus::Resolved
+                } else {
+                    ContinuityStatus::Unresolved
+                },
+                generation: 1,
+                created_at: crate::protocol::time::UtcMillis(0),
+                retired_at: self.retired.then_some(crate::protocol::time::UtcMillis(1)),
+                active: false,
+                bindings: Vec::new(),
+                availability: None,
+            }
+        }
+        fn inspection(&self) -> crate::protocol::results::SeatInspection {
+            crate::protocol::results::SeatInspection {
+                summary: self.summary(),
+                mapping: crate::protocol::results::MappingStatus {
+                    state: if self.resolved {
+                        ContinuityStatus::Resolved
+                    } else {
+                        ContinuityStatus::Unresolved
+                    },
+                    target: self.target.as_deref().map(HostTargetId::new),
+                    detail_argv: None,
+                },
+                hold: None,
+                retirement: None,
+                open_binding: self
+                    .bound
+                    .then(|| crate::protocol::results::OpenBindingSummary {
+                        provenance: "fixture".into(),
+                        harness: "codex".into(),
+                        target: HostTargetId::new(self.target.as_deref().unwrap_or_default()),
+                    }),
+                history: empty(),
+            }
+        }
+    }
+    /// `recipient` lives at `w1:p2`; `foreign` is resolved but has no live target.
+    fn default_seats() -> Vec<FixtureSeat> {
+        vec![
+            FixtureSeat::mapped("recipient", Some("w1:p2")),
+            FixtureSeat::mapped("foreign", None),
+        ]
+    }
     struct Runtime {
         root: PathBuf,
         paths: InstancePaths,
@@ -2148,11 +2217,27 @@ mod scoped_runtime {
         calls: Arc<Mutex<Vec<Command>>>,
         host_calls: Arc<Mutex<Vec<Value>>>,
         journals: Arc<Mutex<Vec<Value>>>,
+        /// The `pane.current` answer.
+        current: Arc<Mutex<String>>,
+        /// The `session.snapshot` answer; a test may relabel panes between runs.
+        snapshot: Arc<Mutex<Value>>,
+        capabilities: Arc<Mutex<Vec<String>>>,
         stop: Arc<AtomicBool>,
         workers: Vec<thread::JoinHandle<()>>,
     }
     impl Runtime {
         fn new(snapshot: Value) -> Self {
+            Self::with_seats(snapshot, default_seats())
+        }
+        fn with_seats(snapshot: Value, seats: Vec<FixtureSeat>) -> Self {
+            Self::build(snapshot, seats, true)
+        }
+        /// A runtime whose Herdr endpoint has no listener (every Herdr read is
+        /// `host_unavailable`, as `src/host/native.rs` tests document) while the daemon is up.
+        fn host_down(snapshot: Value) -> Self {
+            Self::build(snapshot, default_seats(), false)
+        }
+        fn build(snapshot: Value, seats: Vec<FixtureSeat>, host_up: bool) -> Self {
             let root = PathBuf::from("/tmp")
                 .canonicalize()
                 .unwrap()
@@ -2170,10 +2255,26 @@ mod scoped_runtime {
             let calls = Arc::new(Mutex::new(vec![]));
             let host_calls = Arc::new(Mutex::new(vec![]));
             let journals = Arc::new(Mutex::new(vec![]));
+            let seats = Arc::new(Mutex::new(seats));
+            let current = Arc::new(Mutex::new(String::from("w1:p2")));
+            let snapshot = Arc::new(Mutex::new(snapshot));
+            let host_snapshot = Arc::clone(&snapshot);
+            let capabilities = Arc::new(Mutex::new(vec![
+                crate::protocol::capabilities::INBOX_BATCH.to_owned(),
+            ]));
             let stop = Arc::new(AtomicBool::new(false));
             let host_stop = Arc::clone(&stop);
+            let host_current = Arc::clone(&current);
             let host_seen = Arc::clone(&host_calls);
+            let host_listener = if host_up {
+                Some(host)
+            } else {
+                drop(host);
+                fs::remove_file(root.join("host.sock")).unwrap();
+                None
+            };
             let host_worker = thread::spawn(move || {
+                let Some(host) = host_listener else { return };
                 loop {
                     let (mut stream, _) = host.accept().unwrap();
                     if host_stop.load(Ordering::SeqCst) {
@@ -2189,11 +2290,11 @@ mod scoped_runtime {
                     let result = match request["method"].as_str().unwrap() {
                         "ping" => json!({"type":"pong","version":"0.9.1","protocol":22}),
                         "session.snapshot" => {
-                            json!({"type":"session_snapshot","snapshot":snapshot})
+                            json!({"type":"session_snapshot","snapshot":host_snapshot.lock().unwrap().clone()})
                         }
                         "pane.current" => {
                             assert!(request["params"]["caller_pane_id"].is_string());
-                            json!({"type":"pane_current","pane":{"pane_id":"w1:p2","focused":false}})
+                            json!({"type":"pane_current","pane":{"pane_id":host_current.lock().unwrap().as_str(),"focused":false}})
                         }
                         other => panic!("unexpected host method {other}"),
                     };
@@ -2201,6 +2302,8 @@ mod scoped_runtime {
                 }
             });
             let daemon_stop = Arc::clone(&stop);
+            let daemon_seats = Arc::clone(&seats);
+            let daemon_capabilities = Arc::clone(&capabilities);
             let seen = Arc::clone(&calls);
             let journal_seen = Arc::clone(&journals);
             let intents = paths.instance_dir.join("intents");
@@ -2241,8 +2344,23 @@ mod scoped_runtime {
                                 name: Some("team café".into()),
                             },
                         )),
-                        Command::ResolveSeat(_) => {
-                            Ok(CommandResult::SeatResolved(SeatId::new("recipient")))
+                        Command::ResolveSeat(query) => {
+                            let mut table = daemon_seats.lock().unwrap();
+                            let target = query.target.as_str();
+                            let existing = table.iter().find(|seat| {
+                                seat.resolved
+                                    && !seat.retired
+                                    && seat.target.as_deref() == Some(target)
+                            });
+                            let id = match existing {
+                                Some(seat) => seat.id.clone(),
+                                None => {
+                                    let id = format!("alloc-{}", table.len() + 1);
+                                    table.push(FixtureSeat::mapped(&id, Some(target)));
+                                    id
+                                }
+                            };
+                            Ok(CommandResult::SeatResolved(SeatId::new(id)))
                         }
                         Command::OperatorOrphanInvite(_) => {
                             Ok(CommandResult::OperatorInvited(InvitationId::new("i123")))
@@ -2251,56 +2369,31 @@ mod scoped_runtime {
                             Err(ApiError::not_found("fixture refuses repair"))
                         }
                         Command::Seats(query) => Ok(CommandResult::Seats(Page {
-                            items: vec![SeatSummary {
-                                seat: SeatId::new("recipient"),
-                                target: Some(HostTargetId::new("w1:p2")),
-                                continuity: ContinuityStatus::Resolved,
-                                generation: 1,
-                                created_at: crate::protocol::time::UtcMillis(0),
-                                retired_at: None,
-                                active: false,
-                                bindings: Vec::new(),
-                                availability: None,
-                            }]
-                            .into_iter()
-                            .filter(|seat| {
-                                query
-                                    .target
-                                    .as_ref()
-                                    .is_none_or(|target| seat.target.as_ref() == Some(target))
-                            })
-                            .collect(),
+                            items: daemon_seats
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .filter(|seat| seat.resolved && !seat.retired)
+                                .map(FixtureSeat::summary)
+                                .filter(|seat| {
+                                    query
+                                        .target
+                                        .as_ref()
+                                        .is_none_or(|target| seat.target.as_ref() == Some(target))
+                                })
+                                .collect(),
                             ..empty()
                         })),
-                        Command::SeatInspect(_) => Ok(CommandResult::SeatInspect(
-                            crate::protocol::results::SeatInspection {
-                                summary: SeatSummary {
-                                    seat: SeatId::new("recipient"),
-                                    target: Some(HostTargetId::new("w1:p2")),
-                                    continuity: ContinuityStatus::Resolved,
-                                    generation: 1,
-                                    created_at: crate::protocol::time::UtcMillis(0),
-                                    retired_at: None,
-                                    active: false,
-                                    bindings: Vec::new(),
-                                    availability: None,
-                                },
-                                mapping: crate::protocol::results::MappingStatus {
-                                    state: ContinuityStatus::Resolved,
-                                    target: Some(HostTargetId::new("w1:p2")),
-                                    detail_argv: None,
-                                },
-                                hold: None,
-                                retirement: None,
-                                open_binding: None,
-                                history: empty(),
-                            },
-                        )),
+                        Command::SeatInspect(query) => daemon_seats
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .find(|seat| seat.id == query.seat.as_str())
+                            .map(|seat| CommandResult::SeatInspect(seat.inspection()))
+                            .ok_or_else(|| ApiError::not_found("seat not found")),
                         Command::Capabilities => Ok(CommandResult::Capabilities(
                             crate::protocol::results::CapabilityList {
-                                capabilities: vec![
-                                    crate::protocol::capabilities::INBOX_BATCH.into(),
-                                ],
+                                capabilities: daemon_capabilities.lock().unwrap().clone(),
                             },
                         )),
                         Command::InboxBatch(_) => Ok(CommandResult::InboxBatch(Page {
@@ -2359,6 +2452,9 @@ mod scoped_runtime {
                 calls,
                 host_calls,
                 journals,
+                current,
+                snapshot,
+                capabilities,
                 stop,
                 workers: vec![host_worker, daemon_worker],
             }
@@ -2399,6 +2495,22 @@ mod scoped_runtime {
             json: bool,
             caller: &str,
         ) -> Result<(), crate::cli::RunError> {
+            self.run_with_host(args, json, caller).0
+        }
+        /// stdout of a run in the default caller pane.
+        fn run_capture(
+            &self,
+            args: &[&str],
+            json: bool,
+        ) -> (Result<(), crate::cli::RunError>, Vec<u8>) {
+            self.run_with_host(args, json, "w1:p99")
+        }
+        fn run_with_host(
+            &self,
+            args: &[&str],
+            json: bool,
+            caller: &str,
+        ) -> (Result<(), crate::cli::RunError>, Vec<u8>) {
             let state = self.root.join("state");
             let host = self.root.join("host.sock");
             let (human, args) = if args.first() == Some(&"human") {
@@ -2426,7 +2538,9 @@ mod scoped_runtime {
                 args
             };
             argv.extend(args.iter().map(|value| value.to_string()));
-            crate::cli::run_in_pane(argv, Some(caller), &mut Vec::new())
+            let mut out = Vec::new();
+            let result = crate::cli::run_in_pane(argv, Some(caller), &mut out);
+            (result, out)
         }
     }
     #[test]
@@ -2759,9 +2873,12 @@ mod scoped_runtime {
             runtime.run(&args).unwrap();
             let calls = runtime.calls.lock().unwrap();
             let has_thread = args.contains(&"--thread") || args.contains(&"--active");
+            // `inbox --seat recipient` also makes the stage's exact-ID SeatInspect (spec D2 step 1).
             assert_eq!(
                 calls.len(),
-                if has_thread || args[0] == "inbox" {
+                if args[0] == "inbox" {
+                    3
+                } else if has_thread {
                     2
                 } else {
                     1
@@ -2769,7 +2886,8 @@ mod scoped_runtime {
                 "{args:?}: {calls:?}"
             );
             if args[0] == "inbox" {
-                assert!(matches!(calls.first(), Some(Command::Capabilities)));
+                assert!(matches!(calls.first(), Some(Command::SeatInspect(_))));
+                assert!(matches!(calls.get(1), Some(Command::Capabilities)));
                 assert!(
                     matches!(calls.last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("recipient")) && q.page.cursor.is_none() && q.page.limit == 20)
                 );
@@ -2942,6 +3060,1632 @@ mod scoped_runtime {
                 .is_err()
         );
         assert!(runtime.calls.lock().unwrap().is_empty());
+    }
+
+    // ---- seat resolution stage (ht-u3ym.3.2) --------------------------------------------
+
+    /// `snapshot()` plus an empty pane `w1:p3` "dave" (no seat) in `w1:t1`, and a second space
+    /// `w2` "other" whose tab `w2:t1` "tryout" holds `w2:p1` labelled "alice".
+    fn seat_snapshot() -> Value {
+        let mut host = snapshot();
+        let pane = |id: &str, tab: &str, space: &str, label: &str| json!({"pane_id":id,"terminal_id":id,"workspace_id":space,"tab_id":tab,"label":label,"focused":false,"agent_status":"idle","revision":1});
+        host["workspaces"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"workspace_id":"w2","label":"other"}));
+        host["tabs"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"tab_id":"w2:t1","workspace_id":"w2","label":"tryout"}));
+        let panes = host["panes"].as_array_mut().unwrap();
+        panes.push(pane("w1:p3", "w1:t1", "w1", "dave"));
+        panes.push(pane("w2:p1", "w2:t1", "w2", "alice"));
+        host
+    }
+    fn api_error(result: Result<(), crate::cli::RunError>) -> ApiError {
+        match result {
+            Err(crate::cli::RunError::Api(error)) => error,
+            other => panic!("expected an API error, got {other:?}"),
+        }
+    }
+    fn resolve_seat_calls(runtime: &Runtime) -> Vec<String> {
+        runtime
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|command| match command {
+                Command::ResolveSeat(query) => Some(query.target.as_str().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+    /// Seat allocation runs after the caller derivation (ht-u3ym.11): a located caller (the
+    /// recipient's lifecycle context in `w1:p2`) plus the direct-send capabilities.
+    fn located_caller(runtime: &Runtime) {
+        runtime.capabilities.lock().unwrap().extend([
+            crate::protocol::capabilities::DIRECT_THREADS_V1.to_owned(),
+            crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1.to_owned(),
+            crate::protocol::capabilities::LAZY_SEND.to_owned(),
+        ]);
+        runtime.install_context("w1:p2");
+    }
+    fn no_resolve_seat_journal(runtime: &Runtime) {
+        assert!(
+            !runtime
+                .journals
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["semantic"]["kind"] == "resolve_seat"),
+            "a ResolveSeat intent was journaled"
+        );
+    }
+
+    #[test]
+    fn seat_name_direct_send_allocates_and_prints_resolved_line() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        located_caller(&runtime);
+        let (result, stdout) =
+            runtime.run_with_host(&["send", "--seat", "dave", "--body", "hi"], false, "w1:p2");
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("resolved: project/"), "{lines:?}");
+        assert!(lines[0].contains("w1:p3 seat=alloc-"), "{lines:?}");
+        assert!(lines[0].contains("(tier: space)"), "{lines:?}");
+        assert!(lines[0].len() <= 260, "{lines:?}");
+        assert!(!String::from_utf8_lossy(&stdout).contains("resolved:"));
+        assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p3".to_owned()]);
+        assert!(runtime.journals.lock().unwrap().iter().any(|entry| {
+            entry["semantic"]["kind"] == "resolve_seat"
+                && entry["header"]["scope"]["kind"] == "service_allocation"
+                && entry["semantic"]["target"] == "w1:p3"
+        }));
+        // The command may fail later (the fixture daemon lacks the direct-send protocol), but
+        // never as a seat-selector error.
+        if let Err(crate::cli::RunError::Api(error)) = result {
+            assert!(
+                !matches!(
+                    error.code,
+                    ErrorCode::NotFound | ErrorCode::Conflict | ErrorCode::HostUnavailable
+                ),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_seat_id_works_with_host_down() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::host_down(snapshot());
+        runtime.run(&["inbox", "--seat", "recipient"]).unwrap();
+        assert!(runtime.host_calls.lock().unwrap().is_empty());
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.first(), Some(Command::SeatInspect(q)) if q.seat.as_str() == "recipient")
+        );
+        assert!(
+            matches!(calls.last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("recipient")))
+        );
+        assert!(crate::cli::seat_resolution::take_resolved_lines_for_test().is_empty());
+    }
+
+    #[test]
+    fn seat_name_with_host_down_is_host_unavailable() {
+        let runtime = Runtime::host_down(snapshot());
+        let error = api_error(runtime.run(&["inbox", "--seat", "alice"]));
+        assert_eq!(error.code, ErrorCode::HostUnavailable, "{error:?}");
+        assert!(
+            !runtime
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|command| matches!(command, Command::Inbox(_)))
+        );
+    }
+
+    #[test]
+    fn seat_name_read_writes_no_resolve_seat_intent() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        runtime
+            .run(&["inbox", "--seat", "alice", "--space", "project"])
+            .unwrap();
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("recipient"))),
+            "{calls:?}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|command| matches!(command, Command::ResolveSeat(_)))
+        );
+        drop(calls);
+        no_resolve_seat_journal(&runtime);
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("w1:p2 seat=recipient"), "{lines:?}");
+    }
+
+    #[test]
+    fn lookup_name_without_a_seat_prints_nothing_and_is_refused() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        let error = api_error(runtime.run(&["inbox", "--seat", "dave"]));
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+        assert!(
+            error
+                .detail
+                .contains("no resolved seat is mapped to pane w1:p3")
+        );
+        assert!(crate::cli::seat_resolution::take_resolved_lines_for_test().is_empty());
+        assert!(resolve_seat_calls(&runtime).is_empty());
+    }
+
+    #[test]
+    fn leftover_seat_selector_is_refused_by_the_stage() {
+        let runtime = Runtime::new(snapshot());
+        let _skip = crate::cli::seat_resolution::skip_first_freeze_for_test();
+        let error = api_error(runtime.run(&["inbox", "--seat", "recipient"]));
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+        assert_eq!(
+            error.detail,
+            "seat selector was not resolved before dispatch"
+        );
+        assert!(
+            !runtime
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|command| matches!(command, Command::Inbox(_) | Command::InboxBatch(_)))
+        );
+    }
+
+    #[test]
+    fn operator_invite_by_name_from_agent_pane_still_allocates() {
+        let runtime = Runtime::new(seat_snapshot());
+        let _origin = crate::cli::caller::fix_origin(crate::cli::caller::CallerOrigin::Refused(
+            crate::harness::caller_env::EnvRefusal::NoHarness,
+        ));
+        runtime
+            .run(&[
+                "human",
+                "invite",
+                "t123",
+                "--seat",
+                "alice",
+                "--space",
+                "project",
+                "--operator",
+            ])
+            .unwrap();
+        assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p2".to_owned()]);
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.last(), Some(Command::OperatorOrphanInvite(q)) if q.seat.as_str() == "recipient"),
+            "{calls:?}"
+        );
+    }
+
+    // ---- command-path integration (ht-u3ym.3.3) -------------------------------------------
+
+    /// `seat_snapshot()` with `w1:p3` labelled "bob" (tab `main`) and seat `peer` mapped to it.
+    fn bob_runtime() -> Runtime {
+        let mut host = seat_snapshot();
+        host["panes"][2]["label"] = json!("bob");
+        let mut seats = default_seats();
+        seats.push(FixtureSeat::mapped("peer", Some("w1:p3")));
+        Runtime::with_seats(host, seats)
+    }
+
+    #[test]
+    fn handoff_existing_seat_name_with_tab_reaches_delivery() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = bob_runtime();
+        runtime.capabilities.lock().unwrap().extend([
+            crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned(),
+            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.to_owned(),
+            crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1.to_owned(),
+        ]);
+        runtime.install_context("w1:p2");
+        let result = runtime.run_mode_in_pane(
+            &[
+                "handoff",
+                "--existing",
+                "--seat",
+                "bob",
+                "--tab",
+                "main",
+                "--thread",
+                "t123",
+                "--",
+                "work",
+            ],
+            false,
+            "w1:p2",
+        );
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("w1:p3 seat=peer"), "{lines:?}");
+        if let Err(crate::cli::RunError::Api(error)) = &result {
+            assert!(
+                !error
+                    .detail
+                    .contains("invalid existing-peer delivery request")
+                    && !error
+                        .detail
+                        .contains("invalid automatic existing-peer request"),
+                "{error:?}"
+            );
+        }
+        let calls = runtime.calls.lock().unwrap();
+        let lookup = calls
+            .iter()
+            .position(|c| matches!(c, Command::Seats(_)))
+            .expect("the stage looks the pane's seat up");
+        assert!(
+            calls
+                .iter()
+                .skip(lookup)
+                .any(|c| matches!(c, Command::SeatInspect(q) if q.seat.as_str() == "peer")),
+            "the delivery path never inspected the frozen seat: {calls:?}\n{result:?}"
+        );
+        drop(calls);
+        no_resolve_seat_journal(&runtime);
+    }
+
+    #[test]
+    fn seat_inspect_name_returns_the_mapped_seat() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = bob_runtime();
+        let (result, stdout) = runtime.run_capture(&["seat", "inspect", "bob"], true);
+        result.unwrap();
+        let text = String::from_utf8(stdout).unwrap();
+        assert!(text.contains("\"peer\""), "{text}");
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.last(), Some(Command::SeatInspect(q)) if q.seat.as_str() == "peer"),
+            "{calls:?}"
+        );
+        drop(calls);
+        assert_eq!(
+            crate::cli::seat_resolution::take_resolved_lines_for_test().len(),
+            1
+        );
+        no_resolve_seat_journal(&runtime);
+    }
+
+    #[test]
+    fn seat_repair_by_name_freezes_ids() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = bob_runtime();
+        // The fixture refuses the operator commands themselves; the journaled intent is what
+        // counts.
+        let _ = runtime.run(&[
+            "human",
+            "seat",
+            "retire",
+            "project/tryout/alice",
+            "--operator",
+        ]);
+        let _ = runtime.run(&[
+            "human",
+            "seat",
+            "rebind",
+            "project/tryout/alice",
+            "--pane",
+            "w1:p3",
+            "--replace",
+            "project/main/bob",
+            "--operator",
+        ]);
+        let journals = runtime.journals.lock().unwrap();
+        let text = journals.iter().map(Value::to_string).collect::<String>();
+        assert!(
+            journals
+                .iter()
+                .any(|e| e["semantic"]["kind"] == "operator_retire"
+                    && e["semantic"]["seat"] == "recipient"),
+            "{text}"
+        );
+        assert!(
+            journals.iter().any(|e| e["semantic"]["seat"] == "recipient"
+                && e["semantic"]["replace"] == "peer"),
+            "{text}"
+        );
+        assert!(!text.contains("pending-seat-selector"), "{text}");
+        drop(journals);
+        no_resolve_seat_journal(&runtime);
+        assert!(resolve_seat_calls(&runtime).is_empty());
+    }
+
+    #[test]
+    fn direct_send_seat_name_with_space_narrows() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        located_caller(&runtime);
+        let result = runtime.run_mode_in_pane(
+            &[
+                "send", "--seat", "alice", "--space", "other", "--body", "hi",
+            ],
+            true,
+            "w1:p2",
+        );
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}\n{result:?}");
+        assert!(lines[0].contains("other/"), "{lines:?}");
+        assert!(lines[0].contains("w2:p1 seat="), "{lines:?}");
+        assert_eq!(resolve_seat_calls(&runtime), vec!["w2:p1".to_owned()]);
+        if let Err(crate::cli::RunError::Api(error)) = result {
+            assert!(
+                !matches!(
+                    error.code,
+                    ErrorCode::NotFound | ErrorCode::Conflict | ErrorCode::HostUnavailable
+                ),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_without_session_is_refused_before_any_seat_read() {
+        // The refusal needs no seat, so it precedes pass 1: no SeatInspect, Seats, topology or
+        // ResolveSeat call for a name or an exact ID.
+        for args in [
+            &["inbox", "--seat", "alice"][..],
+            &["send", "--seat", "alice", "--body", "hi"][..],
+        ] {
+            let runtime = Runtime::new(seat_snapshot());
+            let _origin =
+                crate::cli::caller::fix_origin(crate::cli::caller::CallerOrigin::Refused(
+                    crate::harness::caller_env::EnvRefusal::NoHarness,
+                ));
+            let error = api_error(runtime.run(args));
+            assert_eq!(
+                error.code,
+                ErrorCode::SessionClaimRequired,
+                "{args:?} {error:?}"
+            );
+            assert!(
+                runtime.calls.lock().unwrap().is_empty(),
+                "{args:?}: {:?}",
+                runtime.calls.lock().unwrap()
+            );
+            assert!(runtime.host_calls.lock().unwrap().is_empty(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn refused_commands_journal_no_resolve_seat() {
+        // (a) an agent without a session is refused before the recipient is allocated.
+        let runtime = Runtime::new(seat_snapshot());
+        {
+            let _origin =
+                crate::cli::caller::fix_origin(crate::cli::caller::CallerOrigin::Refused(
+                    crate::harness::caller_env::EnvRefusal::NoHarness,
+                ));
+            let error = api_error(runtime.run(&["invite", "t123", "--seat", "dave"]));
+            assert_eq!(error.code, ErrorCode::SessionClaimRequired, "{error:?}");
+        }
+        assert!(resolve_seat_calls(&runtime).is_empty());
+        no_resolve_seat_journal(&runtime);
+        // (b) a p0 send is refused for the missing receipts capability before allocation (a
+        // located caller, so the refusal comes from the gate and not from the caller derivation).
+        runtime.install_context("w1:p2");
+        let error = api_error(runtime.run_mode_in_pane(
+            &["send", "t123", "--body", "x", "--require-ack", "dave"],
+            true,
+            "w1:p2",
+        ));
+        assert_eq!(error.code, ErrorCode::Unsupported, "{error:?}");
+        assert!(error.detail.contains("send_time_receipts"), "{error:?}");
+        assert!(resolve_seat_calls(&runtime).is_empty());
+        no_resolve_seat_journal(&runtime);
+    }
+
+    #[test]
+    fn seat_space_narrowing_searches_every_tab() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let mut seats = default_seats();
+        seats.push(FixtureSeat::mapped("other-seat", Some("w2:p1")));
+        let runtime = Runtime::with_seats(seat_snapshot(), seats);
+        *runtime.current.lock().unwrap() = "w2:p1".into();
+        runtime.run(&["inbox", "--seat", "alice"]).unwrap();
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("w2:p1 seat=other-seat (tier: tab)"),
+            "{lines:?}"
+        );
+        // --space project searches every tab of the space (alice lives in its second tab).
+        runtime
+            .run(&["inbox", "--seat", "alice", "--space", "project"])
+            .unwrap();
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("w1:p2 seat=recipient"), "{lines:?}");
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("recipient")))
+        );
+    }
+
+    #[test]
+    fn name_and_id_for_same_seat_dedupe_in_direct_ack() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        located_caller(&runtime);
+        runtime.capabilities.lock().unwrap().extend([
+            crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned(),
+            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.to_owned(),
+        ]);
+        let result = runtime.run_mode_in_pane(
+            &[
+                "send",
+                "--seat",
+                "alice",
+                "--require-ack",
+                "recipient",
+                "--body",
+                "x",
+            ],
+            true,
+            "w1:p2",
+        );
+        // Past the stage: the name allocated recipient's own pane, and no direct-ACK refusal.
+        assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p2".to_owned()]);
+        if let Err(crate::cli::RunError::Api(error)) = result {
+            assert!(!error.detail.contains("direct ACK"), "{error:?}");
+        }
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+    }
+
+    #[test]
+    fn repeated_name_resolves_and_prints_once() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        located_caller(&runtime);
+        runtime.capabilities.lock().unwrap().extend([
+            crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned(),
+            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.to_owned(),
+        ]);
+        let _ = runtime.run_mode_in_pane(
+            &[
+                "send",
+                "t123",
+                "--body",
+                "x",
+                "--require-ack",
+                "dave",
+                "--require-ack",
+                "dave",
+            ],
+            true,
+            "w1:p2",
+        );
+        assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p3".to_owned()]);
+        let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+    }
+
+    #[test]
+    fn nickname_unverifiable_and_narrowed_exact_id() {
+        let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+        let runtime = Runtime::new(seat_snapshot());
+        runtime
+            .run(&["inbox", "--seat", "project/alice/recipient"])
+            .unwrap();
+        assert!(crate::cli::seat_resolution::take_resolved_lines_for_test().is_empty());
+        let error = api_error(runtime.run(&["inbox", "--seat", "other/recipient"]));
+        assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+        assert!(error.detail.contains("project/tryout/alice"), "{error:?}");
+        let error = api_error(runtime.run(&["inbox", "--seat", "project/foreign"]));
+        assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+        assert!(
+            error.detail.contains("cannot verify location of foreign"),
+            "{error:?}"
+        );
+        let error = api_error(runtime.run(&["inbox", "--seat", "recipient", "--space", "other"]));
+        assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+        assert!(error.detail.contains("project/tryout/alice"), "{error:?}");
+        // Inside the narrowing, the exact ID passes.
+        runtime
+            .run(&[
+                "inbox",
+                "--seat",
+                "recipient",
+                "--space",
+                "project",
+                "--tab",
+                "tryout",
+            ])
+            .unwrap();
+    }
+
+    /// The D4 configuration matrix (ht-u3ym.4): every seat-taking command, with a name and with an
+    /// exact seat ID, through the real `run_in_pane` entry point against the fake Herdr host and
+    /// the fake daemon above.
+    ///
+    /// Already covered by the ht-u3ym.3.2 / 3.3 tests above, and not repeated here:
+    /// `seat_name_direct_send_allocates_and_prints_resolved_line`, `exact_seat_id_works_with_host_down`,
+    /// `seat_name_with_host_down_is_host_unavailable`, `seat_name_read_writes_no_resolve_seat_intent`,
+    /// `lookup_name_without_a_seat_prints_nothing_and_is_refused` (Lookup slot, pane with no seat),
+    /// `leftover_seat_selector_is_refused_by_the_stage`, `operator_invite_by_name_from_agent_pane_still_allocates`,
+    /// `handoff_existing_seat_name_with_tab_reaches_delivery` (handoff `--existing --seat NAME --tab T`),
+    /// `seat_inspect_name_returns_the_mapped_seat`, `seat_repair_by_name_freezes_ids`,
+    /// `direct_send_seat_name_with_space_narrows`, `refused_commands_journal_no_resolve_seat`,
+    /// `seat_space_narrowing_searches_every_tab`, `name_and_id_for_same_seat_dedupe_in_direct_ack`,
+    /// `repeated_name_resolves_and_prints_once`, and `nickname_unverifiable_and_narrowed_exact_id`
+    /// (mismatching and unverifiable nicknames, exact ID inside and outside `--space`/`--tab`).
+    ///
+    /// Topology: space `w1` "project" with tab `w1:t1` "main" (`w1:p1` "caller", `w1:p3` "bob" with
+    /// agent name "builder", `w1:p4` "dave" without a seat) and tab `w1:t2` "tryout" (`w1:p2`
+    /// "alice"); space `w2` "other" with tab `w2:t1` "tryout" (`w2:p1` "alice") and tab `w2:t2`
+    /// "lab" (`w2:p2` labelled `a/b`, `w2:p5` labelled `a`). Seats: `recipient` at `w1:p2` (the
+    /// calling agent of every mutating case), `peer` at `w1:p3`, `far` at `w2:p1`, `slash` at
+    /// `w2:p2`, `ghost` (resolved, no target), `gone` (retired). The fake host's `pane.current`
+    /// answer is `w1:p1` unless a case says otherwise.
+    mod seat_selector_matrix {
+        use super::*;
+
+        /// Where mutating cases run: the calling agent's pane (`recipient`'s context).
+        const CALLER_PANE: &str = "w1:p2";
+
+        fn matrix_snapshot() -> Value {
+            let pane = |id: &str, space: &str, tab: &str, label: &str| json!({"pane_id":id,"terminal_id":id,"workspace_id":space,"tab_id":tab,"label":label,"focused":false,"agent_status":"idle","revision":1});
+            json!({"version":"0.9.1","protocol":22,"layouts":[],
+                "workspaces":[{"workspace_id":"w1","label":"project"},{"workspace_id":"w2","label":"other"}],
+                "tabs":[
+                    {"tab_id":"w1:t1","workspace_id":"w1","label":"main"},
+                    {"tab_id":"w1:t2","workspace_id":"w1","label":"tryout"},
+                    {"tab_id":"w2:t1","workspace_id":"w2","label":"tryout"},
+                    {"tab_id":"w2:t2","workspace_id":"w2","label":"lab"}],
+                "panes":[
+                    pane("w1:p1","w1","w1:t1","caller"),
+                    pane("w1:p3","w1","w1:t1","bob"),
+                    pane("w1:p4","w1","w1:t1","dave"),
+                    pane("w1:p2","w1","w1:t2","alice"),
+                    pane("w2:p1","w2","w2:t1","alice"),
+                    pane("w2:p2","w2","w2:t2","a/b"),
+                    pane("w2:p5","w2","w2:t2","a")],
+                "agents":[{"pane_id":"w1:p3","name":"builder"}]})
+        }
+
+        fn matrix_seats() -> Vec<FixtureSeat> {
+            let mut gone = FixtureSeat::mapped("gone", Some("w1:p1"));
+            gone.retired = true;
+            let mut recipient = FixtureSeat::mapped("recipient", Some("w1:p2"));
+            recipient.bound = true;
+            vec![
+                recipient,
+                FixtureSeat::mapped("peer", Some("w1:p3")),
+                FixtureSeat::mapped("far", Some("w2:p1")),
+                FixtureSeat::mapped("slash", Some("w2:p2")),
+                FixtureSeat::mapped("ghost", None),
+                gone,
+            ]
+        }
+
+        /// A runtime over the matrix topology; the live caller (`pane.current`) is `w1:p1`.
+        fn matrix_runtime() -> Runtime {
+            let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
+            let runtime = Runtime::with_seats(matrix_snapshot(), matrix_seats());
+            *runtime.current.lock().unwrap() = "w1:p1".into();
+            runtime
+        }
+
+        /// A runtime whose daemon offers the capabilities of the mutating paths, with the calling
+        /// agent's lifecycle context installed for `CALLER_PANE`.
+        fn caller_runtime() -> Runtime {
+            let runtime = matrix_runtime();
+            runtime.capabilities.lock().unwrap().extend([
+                crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned(),
+                crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.to_owned(),
+                crate::protocol::capabilities::DIRECT_THREADS_V1.to_owned(),
+                crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1.to_owned(),
+                crate::protocol::capabilities::LAZY_SEND.to_owned(),
+                crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1.to_owned(),
+            ]);
+            runtime.install_context(CALLER_PANE);
+            runtime
+        }
+
+        fn as_caller(runtime: &Runtime, args: &[&str]) -> Result<(), crate::cli::RunError> {
+            runtime.run_mode_in_pane(args, true, CALLER_PANE)
+        }
+
+        /// A read with no caller pane at all: every candidate is in tier `any`.
+        fn without_caller_pane(
+            runtime: &Runtime,
+            args: &[&str],
+        ) -> (Result<(), crate::cli::RunError>, Vec<u8>) {
+            runtime.run_with_host(args, true, "")
+        }
+
+        fn lines() -> Vec<String> {
+            crate::cli::seat_resolution::take_resolved_lines_for_test()
+        }
+
+        fn calls(runtime: &Runtime) -> Vec<Command> {
+            runtime.calls.lock().unwrap().clone()
+        }
+
+        fn position(calls: &[Command], wanted: impl Fn(&Command) -> bool) -> usize {
+            calls
+                .iter()
+                .position(wanted)
+                .unwrap_or_else(|| panic!("command not issued: {calls:#?}"))
+        }
+
+        /// The seat a read command carries to the daemon.
+        fn read_seat(command: &Command) -> Option<String> {
+            match command {
+                Command::Inbox(q) => q.seat.as_ref(),
+                Command::PendingReceipts(q) => q.seat.as_ref(),
+                Command::Diagnostics(q) => q.seat.as_ref(),
+                Command::Warnings(q) => Some(&q.seat),
+                Command::Directory(q) => q.membership.as_ref(),
+                _ => None,
+            }
+            .map(|seat| seat.as_str().to_owned())
+        }
+
+        fn frozen_read_seats(runtime: &Runtime) -> Vec<String> {
+            calls(runtime).iter().filter_map(read_seat).collect()
+        }
+
+        fn journal_text(runtime: &Runtime) -> String {
+            runtime
+                .journals
+                .lock()
+                .unwrap()
+                .iter()
+                .map(Value::to_string)
+                .collect()
+        }
+
+        fn journaled(runtime: &Runtime, kind: &str) -> Vec<Value> {
+            runtime
+                .journals
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|entry| entry["semantic"]["kind"] == kind)
+                .map(|entry| entry["semantic"].clone())
+                .collect()
+        }
+
+        /// The frozen mutation of the journaled `kind` intent (a `frozen` cooperative semantic).
+        fn frozen_mutation(runtime: &Runtime, kind: &str) -> Value {
+            let journals = runtime.journals.lock().unwrap();
+            journals
+                .iter()
+                .find(|entry| entry["semantic"]["mutation"]["kind"] == kind)
+                .unwrap_or_else(|| panic!("no {kind} intent: {journals:#?}"))["semantic"]
+                ["mutation"]
+                .clone()
+        }
+
+        /// Conflict and unavailable detail lines, as the user sees them.
+        fn conflict_candidates(detail: &str) -> Vec<(String, String, String)> {
+            detail
+                .lines()
+                .filter(|line| line.starts_with("  ") && line.contains(" seat="))
+                .map(|line| {
+                    let words = line.split_whitespace().collect::<Vec<_>>();
+                    let n = words.len();
+                    (
+                        words[n - 3].to_owned(),
+                        words[n - 2].to_owned(),
+                        words[n - 1].trim_start_matches("seat=").to_owned(),
+                    )
+                })
+                .collect()
+        }
+
+        #[test]
+        fn d4_reads_by_name_and_exact_id() {
+            for (command, base) in [
+                ("inbox", vec!["inbox"]),
+                ("pending-receipts", vec!["pending-receipts"]),
+                ("diagnostics", vec!["diagnostics"]),
+                ("warnings", vec!["warnings"]),
+                ("thread list", vec!["thread", "list"]),
+            ] {
+                let mut by_name = base.clone();
+                by_name.extend(["--seat", "alice", "--tab", "tryout", "--space", "project"]);
+                let mut by_id = base.clone();
+                by_id.extend(["--seat", "recipient"]);
+                let mut stdouts = Vec::new();
+                for (row, args, printed) in [("name", by_name, 1), ("id", by_id, 0)] {
+                    let runtime = matrix_runtime();
+                    let (result, stdout) = runtime.run_capture(&args, true);
+                    result.unwrap_or_else(|e| panic!("{command} by {row}: {e:?}"));
+                    assert_eq!(
+                        frozen_read_seats(&runtime),
+                        vec!["recipient".to_owned()],
+                        "{command} by {row}"
+                    );
+                    let printed_lines = lines();
+                    assert_eq!(
+                        printed_lines.len(),
+                        printed,
+                        "{command} by {row}: {printed_lines:?}"
+                    );
+                    if printed == 1 {
+                        assert!(
+                            printed_lines[0].contains("w1:p2 seat=recipient"),
+                            "{command}: {printed_lines:?}"
+                        );
+                    }
+                    assert!(
+                        resolve_seat_calls(&runtime).is_empty(),
+                        "{command} by {row} allocated"
+                    );
+                    no_resolve_seat_journal(&runtime);
+                    stdouts.push(String::from_utf8(stdout).unwrap());
+                }
+                assert!(
+                    !stdouts[0].contains("resolved:"),
+                    "{command}: the resolved line leaked into stdout"
+                );
+                assert_eq!(
+                    stdouts[0], stdouts[1],
+                    "{command}: --json stdout differs between a name and its ID"
+                );
+            }
+        }
+
+        #[test]
+        fn d4_invite_by_name_and_id() {
+            // A name: the empty pane `dave` is allocated a seat first, and the invitation carries
+            // the allocated ID.
+            let runtime = caller_runtime();
+            let _ = as_caller(&runtime, &["invite", "t123", "--seat", "dave"]);
+            assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p4".to_owned()]);
+            let issued = calls(&runtime);
+            let allocated = position(&issued, |c| matches!(c, Command::ResolveSeat(_)));
+            let invite = position(&issued, |c| matches!(c, Command::Invite(_)));
+            assert!(allocated < invite, "{issued:#?}");
+            let Command::Invite(sent) = &issued[invite] else {
+                unreachable!()
+            };
+            assert!(sent.seat.as_str().starts_with("alloc-"), "{sent:?}");
+            assert_eq!(
+                frozen_mutation(&runtime, "invite")["seat"],
+                sent.seat.as_str()
+            );
+            let printed = lines();
+            assert_eq!(printed.len(), 1, "{printed:?}");
+            assert!(printed[0].contains("w1:p4 seat=alloc-"), "{printed:?}");
+            // An exact seat ID: no allocation, no resolved line.
+            let runtime = caller_runtime();
+            let _ = as_caller(&runtime, &["invite", "t123", "--seat", "peer"]);
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            no_resolve_seat_journal(&runtime);
+            assert_eq!(frozen_mutation(&runtime, "invite")["seat"], "peer");
+            assert!(lines().is_empty());
+        }
+
+        #[test]
+        fn d4_send_require_ack_mixed_names_ids_dedupe() {
+            let runtime = caller_runtime();
+            let _ = as_caller(
+                &runtime,
+                &[
+                    "send",
+                    "t123",
+                    "--body",
+                    "x",
+                    "--require-ack",
+                    "bob",
+                    "--require-ack",
+                    "peer",
+                    "--require-ack",
+                    "bob",
+                ],
+            );
+            assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p3".to_owned()]);
+            let printed = lines();
+            assert_eq!(printed.len(), 1, "{printed:?}");
+            assert!(printed[0].contains("w1:p3 seat=peer"), "{printed:?}");
+            let issued = calls(&runtime);
+            let Command::SendMessage(sent) =
+                &issued[position(&issued, |c| matches!(c, Command::SendMessage(_)))]
+            else {
+                unreachable!()
+            };
+            assert_eq!(sent.invited_recipients, vec![SeatId::new("peer")]);
+            assert_eq!(
+                frozen_mutation(&runtime, "send_message")["invited_recipients"],
+                json!(["peer"])
+            );
+            // Exact IDs only: nothing is allocated or printed.
+            let runtime = caller_runtime();
+            let _ = as_caller(
+                &runtime,
+                &[
+                    "send",
+                    "t123",
+                    "--body",
+                    "x",
+                    "--require-ack",
+                    "peer",
+                    "--require-ack",
+                    "far",
+                ],
+            );
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            assert_eq!(
+                frozen_mutation(&runtime, "send_message")["invited_recipients"],
+                json!(["peer", "far"])
+            );
+            assert!(lines().is_empty());
+        }
+
+        #[test]
+        fn two_require_ack_names_one_repeated_print_one_line_per_distinct_name() {
+            let runtime = caller_runtime();
+            let _ = as_caller(
+                &runtime,
+                &[
+                    "send",
+                    "t123",
+                    "--body",
+                    "x",
+                    "--require-ack",
+                    "bob",
+                    "--require-ack",
+                    "dave",
+                    "--require-ack",
+                    "bob",
+                ],
+            );
+            assert_eq!(
+                resolve_seat_calls(&runtime),
+                vec!["w1:p3".to_owned(), "w1:p4".to_owned()]
+            );
+            let printed = lines();
+            assert_eq!(printed.len(), 2, "{printed:?}");
+            assert!(printed[0].contains("w1:p3 seat=peer"), "{printed:?}");
+            assert!(printed[1].contains("w1:p4 seat=alloc-"), "{printed:?}");
+            let recipients =
+                frozen_mutation(&runtime, "send_message")["invited_recipients"].clone();
+            assert_eq!(recipients[0], "peer", "{recipients}");
+            assert_eq!(recipients.as_array().unwrap().len(), 2, "{recipients}");
+        }
+
+        #[test]
+        fn d4_direct_send_empty_pane_allocates_then_sends() {
+            let runtime = caller_runtime();
+            let result = as_caller(&runtime, &["send", "--seat", "dave", "--body", "hi"]);
+            let issued = calls(&runtime);
+            let allocated = position(&issued, |c| matches!(c, Command::ResolveSeat(_)));
+            let ensure = position(&issued, |c| matches!(c, Command::EnsureDirectThread(_)));
+            assert!(allocated < ensure, "{issued:#?}\n{result:?}");
+            let (Command::ResolveSeat(resolve), Command::EnsureDirectThread(ensured)) =
+                (&issued[allocated], &issued[ensure])
+            else {
+                unreachable!()
+            };
+            assert_eq!(resolve.target.as_str(), "w1:p4");
+            assert!(
+                ensured.recipient.as_str().starts_with("alloc-"),
+                "{ensured:?}"
+            );
+            // The direct-send intent names the allocated ID, never the label.
+            let intent = journaled(&runtime, "frozen")
+                .into_iter()
+                .find(|semantic| semantic["mutation"]["kind"] == "direct_send")
+                .unwrap_or_else(|| panic!("no direct-send intent: {}", journal_text(&runtime)));
+            assert_eq!(
+                intent["mutation"]["request"]["target"],
+                ensured.recipient.as_str(),
+                "{intent}"
+            );
+            assert!(!intent.to_string().contains("dave"), "{intent}");
+            assert_eq!(lines().len(), 1);
+            // An exact seat ID goes straight to the send.
+            let runtime = caller_runtime();
+            let _ = as_caller(&runtime, &["send", "--seat", "peer", "--body", "hi"]);
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            let issued = calls(&runtime);
+            let Command::EnsureDirectThread(ensured) =
+                &issued[position(&issued, |c| matches!(c, Command::EnsureDirectThread(_)))]
+            else {
+                unreachable!()
+            };
+            assert_eq!(ensured.recipient.as_str(), "peer");
+            assert!(lines().is_empty());
+        }
+
+        #[test]
+        fn d4_handoff_existing_by_name_and_id() {
+            // The name rows (`--seat bob --tab main`) are covered by
+            // `handoff_existing_seat_name_with_tab_reaches_delivery`; the exact-ID row is here.
+            let runtime = caller_runtime();
+            let result = as_caller(
+                &runtime,
+                &[
+                    "handoff",
+                    "--existing",
+                    "--seat",
+                    "peer",
+                    "--thread",
+                    "t123",
+                    "--",
+                    "work",
+                ],
+            );
+            assert!(lines().is_empty());
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            no_resolve_seat_journal(&runtime);
+            if let Err(crate::cli::RunError::Api(error)) = &result {
+                assert!(
+                    !error
+                        .detail
+                        .contains("invalid existing-peer delivery request"),
+                    "{error:?}"
+                );
+            }
+            let issued = calls(&runtime);
+            assert!(
+                issued
+                    .iter()
+                    .any(|c| matches!(c, Command::SeatInspect(q) if q.seat.as_str() == "peer")),
+                "{issued:#?}\n{result:?}"
+            );
+        }
+
+        /// Operator repair never uses proximity tiering: a name matching seats in the caller's
+        /// space and elsewhere is refused with the candidates, and nothing is retired.
+        #[test]
+        fn seat_repair_by_name_refuses_any_multiple_match() {
+            for args in [
+                vec!["human", "seat", "retire", "alice", "--operator"],
+                vec![
+                    "human",
+                    "seat",
+                    "rebind",
+                    "alice",
+                    "--pane",
+                    "w1:p4",
+                    "--operator",
+                ],
+                vec![
+                    "human",
+                    "seat",
+                    "rebind",
+                    "project/main/bob",
+                    "--pane",
+                    "w1:p4",
+                    "--replace",
+                    "alice",
+                    "--operator",
+                ],
+            ] {
+                let runtime = matrix_runtime();
+                let result = runtime.run(&args);
+                let Err(crate::cli::RunError::Api(error)) = result else {
+                    panic!("{args:?}: expected a conflict, got {result:?}");
+                };
+                assert_eq!(
+                    error.code,
+                    crate::protocol::results::ErrorCode::Conflict,
+                    "{args:?}: {error:?}"
+                );
+                assert!(
+                    error.detail.contains("w1:p2") && error.detail.contains("w2:p1"),
+                    "{args:?}: {}",
+                    error.detail
+                );
+                assert!(
+                    journaled(&runtime, "operator_retire").is_empty()
+                        && !journal_text(&runtime).contains("operator_rebind")
+                        && !journal_text(&runtime).contains("\"replace\""),
+                    "{args:?}: {}",
+                    journal_text(&runtime)
+                );
+            }
+        }
+
+        #[test]
+        fn d4_seat_repair_by_name_and_id() {
+            // `single`/`double`: resolved lines printed for one name / for two names.
+            for (row, seat, single, double) in [("name", "bob", 1, 2), ("id", "peer", 0, 0)] {
+                // seat inspect
+                let runtime = matrix_runtime();
+                let (result, _) = runtime.run_capture(&["seat", "inspect", seat], true);
+                result.unwrap_or_else(|e| panic!("inspect {row}: {e:?}"));
+                assert!(
+                    matches!(calls(&runtime).last(), Some(Command::SeatInspect(q)) if q.seat.as_str() == "peer"),
+                    "inspect {row}"
+                );
+                assert_eq!(lines().len(), single, "inspect {row}");
+                // seat retire
+                let runtime = matrix_runtime();
+                let _ = runtime.run(&["human", "seat", "retire", seat, "--operator"]);
+                assert_eq!(
+                    journaled(&runtime, "operator_retire")
+                        .iter()
+                        .map(|s| s["seat"].clone())
+                        .collect::<Vec<_>>(),
+                    vec![json!("peer")],
+                    "retire {row}: {}",
+                    journal_text(&runtime)
+                );
+                assert_eq!(lines().len(), single, "retire {row}");
+                assert!(resolve_seat_calls(&runtime).is_empty(), "retire {row}");
+                no_resolve_seat_journal(&runtime);
+                // seat rebind SEAT --pane P
+                let runtime = matrix_runtime();
+                let _ = runtime.run(&[
+                    "human",
+                    "seat",
+                    "rebind",
+                    seat,
+                    "--pane",
+                    "w1:p4",
+                    "--operator",
+                ]);
+                let rebinds = journaled(&runtime, "operator_rebind");
+                assert_eq!(rebinds.len(), 1, "rebind {row}: {}", journal_text(&runtime));
+                assert_eq!(rebinds[0]["seat"], "peer", "rebind {row}");
+                assert_eq!(rebinds[0]["target"], "w1:p4", "rebind {row}");
+                assert_eq!(lines().len(), single, "rebind {row}");
+                assert!(resolve_seat_calls(&runtime).is_empty(), "rebind {row}");
+                no_resolve_seat_journal(&runtime);
+                // seat rebind SEAT --pane P --replace NEW: NEW is the agent name "builder" (peer)
+                // or the ID; SEAT is the other seat, `recipient` (by its full path, or ID).
+                let runtime = matrix_runtime();
+                let subject = if row == "name" {
+                    "project/tryout/alice"
+                } else {
+                    "recipient"
+                };
+                let new = if row == "name" { "builder" } else { "peer" };
+                let _ = runtime.run(&[
+                    "human",
+                    "seat",
+                    "rebind",
+                    subject,
+                    "--pane",
+                    "w1:p3",
+                    "--replace",
+                    new,
+                    "--operator",
+                ]);
+                let replaces = journaled(&runtime, "operator_replace");
+                assert_eq!(
+                    replaces.len(),
+                    1,
+                    "replace {row}: {}",
+                    journal_text(&runtime)
+                );
+                assert_eq!(replaces[0]["seat"], "recipient", "replace {row}");
+                assert_eq!(replaces[0]["replace"], "peer", "replace {row}");
+                assert_eq!(lines().len(), double, "replace {row}");
+                assert!(resolve_seat_calls(&runtime).is_empty(), "replace {row}");
+                no_resolve_seat_journal(&runtime);
+                assert!(!journal_text(&runtime).contains("pending-seat-selector"));
+            }
+        }
+
+        #[test]
+        fn seat_inspect_of_a_name_without_a_seat_is_refused_and_allocates_nothing() {
+            let runtime = matrix_runtime();
+            let error = api_error(runtime.run(&["seat", "inspect", "dave"]));
+            assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+            assert!(error.detail.contains("w1:p4"), "{error:?}");
+            assert!(lines().is_empty());
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            no_resolve_seat_journal(&runtime);
+        }
+
+        #[test]
+        fn narrowing_with_exact_id() {
+            let runtime = matrix_runtime();
+            runtime
+                .run(&["inbox", "--seat", "far", "--space", "other"])
+                .unwrap();
+            runtime
+                .run(&[
+                    "inbox", "--seat", "far", "--space", "other", "--tab", "tryout",
+                ])
+                .unwrap();
+            assert_eq!(frozen_read_seats(&runtime), vec!["far", "far"]);
+            assert!(lines().is_empty(), "an exact ID prints no resolved line");
+            let error = api_error(runtime.run(&["inbox", "--seat", "far", "--space", "project"]));
+            assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+            assert!(error.detail.contains("other/tryout/alice"), "{error:?}");
+            let error = api_error(
+                runtime.run(&["inbox", "--seat", "far", "--space", "other", "--tab", "lab"]),
+            );
+            assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+            // Without narrowing, an exact ID reads nothing from Herdr.
+            let runtime = matrix_runtime();
+            runtime.run(&["inbox", "--seat", "far"]).unwrap();
+            assert!(
+                runtime.host_calls.lock().unwrap().is_empty(),
+                "{:?}",
+                runtime.host_calls.lock().unwrap()
+            );
+        }
+
+        #[test]
+        fn nickname_round_trip_as_the_transcript_renders_it() {
+            let labels = |target: &str, tab: &str, tab_label: &str, pane: &str| {
+                crate::host::observation::SeatHostLabels {
+                    terminal: target.into(),
+                    incarnation: None,
+                    target: HostTargetId::new(target),
+                    workspace_id: "w1".into(),
+                    workspace_label: Some("project".into()),
+                    tab_id: tab.into(),
+                    tab_label: Some(tab_label.into()),
+                    pane_label: Some(pane.into()),
+                }
+            };
+            for (seat, target, tab, tab_label, pane, expected) in [
+                (
+                    "recipient",
+                    "w1:p2",
+                    "w1:t2",
+                    "tryout",
+                    "alice",
+                    "project/alice/recipient",
+                ),
+                ("peer", "w1:p3", "w1:t1", "main", "bob", "project/bob/peer"),
+            ] {
+                let nick = crate::cli::irc::agent_seat_nick(
+                    &SeatId::new(seat),
+                    Some(&labels(target, tab, tab_label, pane)),
+                );
+                assert_eq!(nick, expected);
+                let runtime = matrix_runtime();
+                runtime
+                    .run(&["inbox", "--seat", &nick])
+                    .unwrap_or_else(|e| panic!("{nick}: {e:?}"));
+                assert_eq!(frozen_read_seats(&runtime), vec![seat.to_owned()], "{nick}");
+                assert!(lines().is_empty(), "{nick} is a nickname, not a name");
+            }
+            // The same nickname through an agent name of the pane.
+            let runtime = matrix_runtime();
+            runtime
+                .run(&["inbox", "--seat", "project/builder/peer"])
+                .unwrap();
+            assert_eq!(frozen_read_seats(&runtime), vec!["peer"]);
+        }
+
+        #[test]
+        fn conflicts_and_not_found() {
+            let runtime = matrix_runtime();
+            let (result, stdout) =
+                without_caller_pane(&runtime, &["inbox", "--seat", "tryout/alice"]);
+            let error = api_error(result);
+            assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+            assert_eq!(
+                conflict_candidates(&error.detail)
+                    .into_iter()
+                    .map(|(_, pane, seat)| (pane, seat))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("w1:p2".to_owned(), "recipient".to_owned()),
+                    ("w2:p1".to_owned(), "far".to_owned())
+                ],
+                "{error:?}"
+            );
+            // Exactly one trailing hint line, after the candidates.
+            let detail_lines = error.detail.lines().collect::<Vec<_>>();
+            assert!(detail_lines[0].starts_with("ambiguous seat tryout/alice: 2 candidates"));
+            assert!(
+                detail_lines.last().unwrap().starts_with("qualify with"),
+                "{detail_lines:?}"
+            );
+            assert_eq!(
+                detail_lines
+                    .iter()
+                    .filter(|line| line.starts_with("qualify with"))
+                    .count(),
+                1
+            );
+            assert!(stdout.is_empty(), "--json stdout carries no error text");
+            assert!(frozen_read_seats(&runtime).is_empty());
+            assert!(lines().is_empty());
+            // The human form fails the same way.
+            let (human, stdout) =
+                runtime.run_with_host(&["inbox", "--seat", "tryout/alice"], false, "");
+            assert_eq!(api_error(human).code, ErrorCode::Conflict);
+            assert!(stdout.is_empty());
+            // Neither a name nor a seat.
+            for selector in ["zed", "sNotASeat1"] {
+                let error = api_error(runtime.run(&["inbox", "--seat", selector]));
+                assert_eq!(error.code, ErrorCode::NotFound, "{selector}: {error:?}");
+                assert!(error.detail.contains(selector), "{error:?}");
+            }
+            assert!(lines().is_empty());
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            no_resolve_seat_journal(&runtime);
+        }
+
+        #[test]
+        fn paste_back_candidate_paths() {
+            let runtime = matrix_runtime();
+            let (result, _) = without_caller_pane(&runtime, &["inbox", "--seat", "tryout/alice"]);
+            let candidates = conflict_candidates(&api_error(result).detail);
+            assert_eq!(candidates.len(), 2, "{candidates:?}");
+            for (path, pane, seat) in &candidates {
+                let (result, _) = without_caller_pane(&runtime, &["inbox", "--seat", path]);
+                result.unwrap_or_else(|e| panic!("{path}: {e:?}"));
+                assert_eq!(frozen_read_seats(&runtime).last(), Some(seat), "{path}");
+                let printed = lines();
+                assert_eq!(printed.len(), 1, "{path}: {printed:?}");
+                assert!(
+                    printed[0].contains(&format!("{pane} seat={seat}")),
+                    "{path}: {printed:?}"
+                );
+            }
+            // A label containing `/` renders as its pane ID, and that path pastes back.
+            let (result, _) = without_caller_pane(&runtime, &["inbox", "--seat", "a/b"]);
+            result.unwrap();
+            let printed = lines();
+            assert_eq!(printed.len(), 1, "{printed:?}");
+            assert!(
+                printed[0].contains("other/lab/w2:p2 w2:p2 seat=slash"),
+                "{printed:?}"
+            );
+            let (result, _) =
+                without_caller_pane(&runtime, &["inbox", "--seat", "other/lab/w2:p2"]);
+            result.unwrap();
+            assert_eq!(frozen_read_seats(&runtime).last().unwrap(), "slash");
+            let printed = lines();
+            assert!(
+                printed[0].contains("other/lab/w2:p2 w2:p2 seat=slash"),
+                "{printed:?}"
+            );
+        }
+
+        #[test]
+        fn tiers_end_to_end() {
+            // The caller's tab wins over another tab of the same name.
+            let runtime = matrix_runtime();
+            *runtime.current.lock().unwrap() = "w1:p2".into();
+            runtime.run(&["inbox", "--seat", "alice"]).unwrap();
+            assert_eq!(frozen_read_seats(&runtime), vec!["recipient"]);
+            assert!(lines()[0].contains("(tier: tab)"));
+            // The caller's space wins over another space.
+            *runtime.current.lock().unwrap() = "w1:p1".into();
+            runtime.run(&["inbox", "--seat", "alice"]).unwrap();
+            assert_eq!(frozen_read_seats(&runtime).last().unwrap(), "recipient");
+            let printed = lines();
+            assert!(
+                printed[0].contains("w1:p2 seat=recipient (tier: space)"),
+                "{printed:?}"
+            );
+            // The other space's caller flips it.
+            *runtime.current.lock().unwrap() = "w2:p5".into();
+            runtime.run(&["inbox", "--seat", "alice"]).unwrap();
+            assert_eq!(frozen_read_seats(&runtime).last().unwrap(), "far");
+            assert!(lines()[0].contains("w2:p1 seat=far (tier: space)"));
+            // No caller pane: both are tier `any`.
+            let (result, _) = without_caller_pane(&runtime, &["inbox", "--seat", "alice"]);
+            let error = api_error(result);
+            assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+            assert!(error.detail.contains("(tier: any)"), "{error:?}");
+            // A stale caller pane (Herdr no longer knows it) is the same: tier `any`.
+            *runtime.current.lock().unwrap() = "w9:p9".into();
+            let error = api_error(runtime.run(&["inbox", "--seat", "alice"]));
+            assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+            assert!(lines().is_empty());
+        }
+
+        #[test]
+        fn host_down_names_fail_ids_work() {
+            let _ = lines();
+            let runtime = Runtime::build(matrix_snapshot(), matrix_seats(), false);
+            runtime.install_context(CALLER_PANE);
+            runtime.capabilities.lock().unwrap().extend([
+                crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned(),
+                crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.to_owned(),
+            ]);
+            // Mixed in one invocation: the name needs Herdr, so the whole command is refused
+            // before anything is allocated or journaled.
+            let error = api_error(as_caller(
+                &runtime,
+                &[
+                    "send",
+                    "t123",
+                    "--body",
+                    "x",
+                    "--require-ack",
+                    "recipient",
+                    "--require-ack",
+                    "alice",
+                ],
+            ));
+            assert_eq!(error.code, ErrorCode::HostUnavailable, "{error:?}");
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            no_resolve_seat_journal(&runtime);
+            assert!(journaled(&runtime, "frozen").is_empty());
+            // The same command with IDs only needs no Herdr.
+            let _ = as_caller(
+                &runtime,
+                &[
+                    "send",
+                    "t123",
+                    "--body",
+                    "x",
+                    "--require-ack",
+                    "recipient",
+                    "--require-ack",
+                    "peer",
+                ],
+            );
+            assert_eq!(
+                frozen_mutation(&runtime, "send_message")["invited_recipients"],
+                json!(["recipient", "peer"])
+            );
+            assert!(lines().is_empty());
+        }
+
+        #[test]
+        fn r9_pane_forms_unchanged() {
+            // --pane on invite: allocation of the pane's seat, no name resolution, no resolved line.
+            let runtime = caller_runtime();
+            let _ = runtime.run_with_host(
+                &[
+                    "human",
+                    "invite",
+                    "t123",
+                    "--tab",
+                    "tryout",
+                    "--pane",
+                    "alice",
+                    "--operator",
+                ],
+                true,
+                CALLER_PANE,
+            );
+            assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p2".to_owned()]);
+            assert!(lines().is_empty());
+            // --require-ack-pane on a send.
+            let runtime = caller_runtime();
+            let _ = as_caller(
+                &runtime,
+                &[
+                    "send",
+                    "t123",
+                    "--body",
+                    "x",
+                    "--tab",
+                    "main",
+                    "--require-ack-pane",
+                    "bob",
+                ],
+            );
+            assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p3".to_owned()]);
+            assert_eq!(
+                frozen_mutation(&runtime, "send_message")["invited_recipients"],
+                json!(["peer"])
+            );
+            assert!(lines().is_empty());
+            // --seat never combines with --pane / --require-ack-pane, and a direct send refuses
+            // --require-ack-pane.
+            for (args, expected) in [
+                (
+                    vec!["inbox", "--seat", "peer", "--pane", "alice"],
+                    "--seat conflicts with pane selectors",
+                ),
+                (
+                    vec![
+                        "send",
+                        "--seat",
+                        "peer",
+                        "--require-ack-pane",
+                        "alice",
+                        "--body",
+                        "b",
+                    ],
+                    "pane ACK selectors are not supported",
+                ),
+            ] {
+                let runtime = caller_runtime();
+                let refused = api_error(as_caller(&runtime, &args));
+                assert_eq!(refused.code, ErrorCode::InvalidRequest, "{args:?}");
+                assert!(refused.detail.contains(expected), "{args:?}: {refused:?}");
+                assert!(resolve_seat_calls(&runtime).is_empty(), "{args:?}");
+                no_resolve_seat_journal(&runtime);
+                assert!(lines().is_empty());
+            }
+        }
+
+        #[test]
+        fn retry_direct_send_after_relabel_keeps_frozen_seat() {
+            let runtime = caller_runtime();
+            // The fake daemon refuses the direct thread, so the journaled intent stays pending
+            // and the error names the retry.
+            let error = api_error(as_caller(
+                &runtime,
+                &["send", "--seat", "bob", "--body", "hi"],
+            ));
+            let reference = error
+                .restart_argv
+                .as_ref()
+                .and_then(|argv| argv.last())
+                .cloned()
+                .unwrap_or_else(|| panic!("no retry reference: {error:?}"));
+            assert!(error.detail.contains("retry"), "{error:?}");
+            assert_eq!(lines().len(), 1);
+            let intent = journaled(&runtime, "frozen")
+                .into_iter()
+                .find(|semantic| semantic["mutation"]["kind"] == "direct_send")
+                .unwrap_or_else(|| panic!("no direct-send intent: {}", journal_text(&runtime)));
+            assert_eq!(intent["mutation"]["request"]["target"], "peer", "{intent}");
+            // Herdr now labels the old pane "zoe" and gives "bob" to the empty pane.
+            {
+                let mut snapshot = runtime.snapshot.lock().unwrap();
+                for pane in snapshot["panes"].as_array_mut().unwrap() {
+                    match pane["pane_id"].as_str().unwrap() {
+                        "w1:p3" => pane["label"] = json!("zoe"),
+                        "w1:p4" => pane["label"] = json!("bob"),
+                        _ => {}
+                    }
+                }
+            }
+            let snapshots_before = runtime
+                .host_calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call["method"] == "session.snapshot")
+                .count();
+            assert_eq!(snapshots_before, 1);
+            let before = calls(&runtime).len();
+            let _ = as_caller(&runtime, &["retry", &reference]);
+            let retried = calls(&runtime).split_off(before);
+            let ensured = retried
+                .iter()
+                .find_map(|c| match c {
+                    Command::EnsureDirectThread(ensured) => {
+                        Some(ensured.recipient.as_str().to_owned())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the retry never reached the daemon: {retried:#?}"));
+            assert_eq!(ensured, "peer", "{retried:#?}");
+            assert!(
+                !retried.iter().any(|c| matches!(c, Command::ResolveSeat(_))),
+                "{retried:#?}"
+            );
+            assert_eq!(
+                runtime
+                    .host_calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|call| call["method"] == "session.snapshot")
+                    .count(),
+                snapshots_before,
+                "the retry re-read the Herdr topology"
+            );
+            assert!(lines().is_empty(), "a retry prints no resolved line");
+            assert_eq!(
+                resolve_seat_calls(&runtime),
+                vec!["w1:p3".to_owned()],
+                "only the original send allocated"
+            );
+        }
+
+        // ---- the allocation point (ht-u3ym.11): pass 2 runs last ----------------------------
+
+        #[test]
+        fn derive_caller_refusal_allocates_nothing() {
+            for args in [
+                &["invite", "t123", "--seat", "dave"][..],
+                &["send", "--seat", "dave", "--body", "hi"][..],
+            ] {
+                let runtime = caller_runtime();
+                // A pane with no mapped seat and no context: the caller is not located.
+                let result = runtime.run_mode_in_pane(args, true, "w1:p99");
+                let error = api_error(result);
+                assert_eq!(error.code, ErrorCode::InvalidRequest, "{args:?}: {error:?}");
+                assert!(resolve_seat_calls(&runtime).is_empty(), "{args:?}");
+                no_resolve_seat_journal(&runtime);
+                assert!(
+                    lines().is_empty(),
+                    "{args:?}: a refused command printed {:?}",
+                    lines()
+                );
+            }
+        }
+
+        #[test]
+        fn operator_actor_refusal_allocates_nothing() {
+            // `--operator` without `human` is refused before the allocation point.
+            let runtime = caller_runtime();
+            let result = as_caller(
+                &runtime,
+                &["invite", "t123", "--seat", "dave", "--operator"],
+            );
+            let error = api_error(result);
+            assert!(
+                error.detail.contains("operator actions require"),
+                "{error:?}"
+            );
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            no_resolve_seat_journal(&runtime);
+        }
+
+        #[test]
+        fn direct_send_without_direct_threads_capability_allocates_nothing() {
+            let runtime = caller_runtime();
+            runtime.capabilities.lock().unwrap().retain(|capability| {
+                capability != crate::protocol::capabilities::DIRECT_THREADS_V1
+            });
+            let error = api_error(as_caller(
+                &runtime,
+                &["send", "--seat", "dave", "--body", "hi"],
+            ));
+            assert_eq!(error.code, ErrorCode::Unsupported, "{error:?}");
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            no_resolve_seat_journal(&runtime);
+            assert!(
+                lines().is_empty(),
+                "a refused command printed {:?}",
+                lines()
+            );
+        }
+
+        #[test]
+        fn failing_later_ack_slot_allocates_nothing() {
+            let runtime = caller_runtime();
+            let error = api_error(as_caller(
+                &runtime,
+                &[
+                    "send",
+                    "t123",
+                    "--body",
+                    "x",
+                    "--require-ack",
+                    "bob",
+                    "--require-ack",
+                    "typo",
+                ],
+            ));
+            assert_eq!(error.code, ErrorCode::NotFound, "{error:?}");
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            no_resolve_seat_journal(&runtime);
+        }
+
+        #[test]
+        fn direct_ack_mismatch_refused_before_allocation() {
+            let runtime = caller_runtime();
+            let error = api_error(as_caller(
+                &runtime,
+                &[
+                    "send",
+                    "--seat",
+                    "dave",
+                    "--require-ack",
+                    "bob",
+                    "--body",
+                    "x",
+                ],
+            ));
+            assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+            assert!(
+                error
+                    .detail
+                    .contains("direct ACK requests may name only the target seat"),
+                "{error:?}"
+            );
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            no_resolve_seat_journal(&runtime);
+        }
     }
 }
 
@@ -4511,7 +6255,7 @@ mod main539_composition {
         }
         fn run(&self, argv: Vec<String>, output: &mut Vec<u8>) -> Result<(), crate::cli::RunError> {
             crate::cli::run_cooperative(
-                crate::cli::commands::parse_argv(argv).unwrap(),
+                crate::cli::commands::parse_argv_exact_seats(argv).unwrap(),
                 &self.journal,
                 &self.contexts,
                 None,
@@ -4630,7 +6374,14 @@ mod main539_composition {
             fail_invite: false,
         };
         let error = crate::cli::run_cooperative(
-            crate::cli::commands::parse_argv(["ht", "invite", "t", "--seat", "recipient"]).unwrap(),
+            crate::cli::commands::parse_argv_exact_seats([
+                "ht",
+                "invite",
+                "t",
+                "--seat",
+                "recipient",
+            ])
+            .unwrap(),
             &f.journal,
             &f.contexts,
             None,
@@ -4819,7 +6570,7 @@ mod main539_composition {
             let mut argv = vec!["ht", "invite", "t", "--seat", "recipient"];
             argv.extend(flags.iter().copied());
             let error = crate::cli::run_cooperative(
-                crate::cli::commands::parse_argv(argv).unwrap(),
+                crate::cli::commands::parse_argv_exact_seats(argv).unwrap(),
                 &f.journal,
                 &f.contexts,
                 None,
