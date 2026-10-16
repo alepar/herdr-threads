@@ -56,7 +56,7 @@
 
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -127,6 +127,9 @@ const PACER_TICK: Duration = Duration::from_secs(1);
 const HOUSEKEEPING_TICK: Duration = Duration::from_secs(1);
 /// Each active link gets a `seen` this often.
 const SEEN_EVERY_MS: u64 = 10_000;
+/// How long the in-flight `entries` of a source a log was just moved away
+/// from are dropped without counting as unsolicited.
+const REPLACED_GRACE_MS: u64 = 5_000;
 /// `LogOnlyForkSink` logs at most once per log (or clone subject) per this many
 /// milliseconds.
 const FORK_LOG_EVERY_MS: u64 = 3_600_000;
@@ -658,6 +661,7 @@ impl SyncCoordinator {
             links: BTreeMap::new(),
             by_node: BTreeMap::new(),
             rx: BTreeMap::new(),
+            replaced: BTreeMap::new(),
             local: Vector::default(),
             paused: BTreeSet::new(),
             headroom_until: None,
@@ -774,6 +778,9 @@ struct LinkEntry {
     last_have_sent: Vector,
     /// When the last `have` went out.
     last_have_at: Option<MonoInstant>,
+    /// The full `have` of more than [`MAX_HAVE_LOGS`] logs was logged as
+    /// truncated for this link.
+    have_truncation_logged: AtomicBool,
     /// The current sync round; only an active link has one.
     round: Option<RoundTrack>,
     /// When the last `seen` went out.
@@ -825,6 +832,9 @@ struct Actor {
     by_node: BTreeMap<NodeUuid, Vec<u64>>,
     /// Where each wanted log is pulled from.
     rx: BTreeMap<LogKey, RxSource>,
+    /// Sources `apply_pick` just moved a log away from, with the end of the
+    /// grace in which their in-flight `entries` are not counted unsolicited.
+    replaced: BTreeMap<(LogKey, u64), MonoInstant>,
     /// The last read of `journal.vector()`.
     local: Vector,
     /// Logs not to be pulled (a fork the sink holds).
@@ -1094,6 +1104,7 @@ impl Actor {
                         branch_busy: false,
                         last_have_sent: Vector::default(),
                         last_have_at: None,
+                        have_truncation_logged: AtomicBool::new(false),
                         round: None,
                         seen_at: None,
                         polled_inbound: 0,
@@ -1651,6 +1662,17 @@ impl Actor {
             .take(MAX_HAVE_LOGS)
             .map(|(key, head)| serve::have_log(key, head))
             .collect();
+        if self.local.0.len() > MAX_HAVE_LOGS
+            && !entry.have_truncation_logged.swap(true, Ordering::AcqRel)
+        {
+            // The frame has no field for a marker; the peer learns the rest
+            // through deltas and `want`.
+            (self.deps.log)(&format!(
+                "sync: have to {} lists {MAX_HAVE_LOGS} of {} logs",
+                uuid8(&entry.handle.peer().node),
+                self.local.0.len()
+            ));
+        }
         let forks = if entry.fork_cap() {
             self.fork_refs()
         } else {
@@ -1749,6 +1771,8 @@ impl Actor {
             Some(new) => {
                 if let Some(old) = current {
                     self.send_unwant(old, &log);
+                    let until = MonoInstant(self.mono().0 + REPLACED_GRACE_MS);
+                    self.replaced.insert((log, old), until);
                 }
                 self.start_rx(log, new);
             }
@@ -1805,14 +1829,25 @@ impl Actor {
             .map(|(log, src)| (*log, src.link))
             .collect();
         for (log, link_id) in stalled {
-            if let Some(entry) = self.links.get_mut(&link_id) {
+            let before = self.links.get_mut(&link_id).and_then(|entry| {
                 entry
                     .errors
-                    .insert(log, MonoInstant(now.0 + routing::STALL_PENALTY_MS));
-            }
+                    .insert(log, MonoInstant(now.0 + routing::STALL_PENALTY_MS))
+            });
             match self.pick(&log) {
                 Some(new) => self.apply_pick(log, Some(new)),
-                None => self.start_rx(log, link_id),
+                None => {
+                    // The sole candidate: no penalty, or the next reselect
+                    // would drop it. Ask again and judge it after another
+                    // stall window (`start_rx` resets `last_progress`).
+                    if let Some(entry) = self.links.get_mut(&link_id) {
+                        match before {
+                            Some(until) => entry.errors.insert(log, until),
+                            None => entry.errors.remove(&log),
+                        };
+                    }
+                    self.start_rx(log, link_id);
+                }
             }
         }
     }
@@ -1838,6 +1873,7 @@ impl Actor {
         let now = self.mono();
         self.resolve_probes(now);
         self.expire_penalties(now);
+        self.replaced.retain(|_, until| until.0 > now.0);
         self.lift_pauses(now);
         self.expire_pin(now);
         self.failover(now);
@@ -2223,6 +2259,10 @@ impl Actor {
             }
         }
         self.link_cancel.cancel();
+        // Each in-flight handshake counted itself in at start and would have
+        // counted out on completion; aborting skips that.
+        self.count
+            .fetch_sub(self.handshakes.len(), Ordering::AcqRel);
         self.handshakes.abort_all();
         self.serve_jobs.abort_all();
         self.branch_jobs.abort_all();
@@ -2287,30 +2327,37 @@ async fn admit(
         let journal = journal.clone();
         tokio::task::spawn_blocking(move || held_genesis_pubkey(journal.as_ref(), &node)).await
     };
-    match held {
-        Ok(Ok(Some(key))) if key != established.peer.pubkey => {
-            let close = PeerFrame::Close {
-                reason: CloseReason::AuthFailed,
-                detail: None,
-            };
-            let _ = timeout(CLOSE_WRITE_TIMEOUT, async {
-                write_peer_frame(&mut established.writer, &close).await?;
-                established.writer.flush().await
-            })
-            .await;
-            Err(LinkError::Refused(CloseReason::AuthFailed))
-        }
-        Ok(Ok(_)) => Ok(established),
+    let refuse = match held {
+        Ok(Ok(Some(key))) if key != established.peer.pubkey => CloseReason::AuthFailed,
+        Ok(Ok(_)) => return Ok(established),
+        // Fail closed: an impostor must not get in because the lookup broke.
+        // `busy` is a retry class, so the peer dials again later.
         Ok(Err(e)) => {
             log(&format!(
-                "sync: held key lookup for {} failed: {:?}",
+                "sync: held key lookup for {} failed: {:?}; link refused",
                 uuid8(&node),
                 e.code
             ));
-            Ok(established)
+            CloseReason::Busy
         }
-        Err(_) => Ok(established),
-    }
+        Err(_) => {
+            log(&format!(
+                "sync: held key lookup for {} panicked; link refused",
+                uuid8(&node)
+            ));
+            CloseReason::Busy
+        }
+    };
+    let close = PeerFrame::Close {
+        reason: refuse,
+        detail: None,
+    };
+    let _ = timeout(CLOSE_WRITE_TIMEOUT, async {
+        write_peer_frame(&mut established.writer, &close).await?;
+        established.writer.flush().await
+    })
+    .await;
+    Err(LinkError::Refused(refuse))
 }
 
 /// The public key in the lowest-incarnation genesis this journal holds for
@@ -2892,6 +2939,155 @@ mod tests {
         }
         assert!(d.report.recv().await.is_none());
         assert_eq!(rig.handle.link_count(), 0);
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    /// A journal whose `vector()` is replaced: it fails, or lists `many`
+    /// logs; everything else is the memory journal's.
+    struct VectorStub {
+        inner: MemoryJournal,
+        stub: Result<Vector, ErrorCode>,
+    }
+
+    impl JournalPort for VectorStub {
+        fn vector(&self, _: &CallBudget) -> Result<Vector, ApiError> {
+            match &self.stub {
+                Ok(vector) => Ok(vector.clone()),
+                Err(code) => Err(ApiError::new(code.clone(), "stubbed vector failure")),
+            }
+        }
+        fn stored_hash(
+            &self,
+            log: &LogKey,
+            counter: u64,
+            budget: &CallBudget,
+        ) -> Result<Option<[u8; 32]>, ApiError> {
+            self.inner.stored_hash(log, counter, budget)
+        }
+        fn serve(
+            &self,
+            log: &LogKey,
+            from: u64,
+            limits: BatchLimits,
+            budget: &CallBudget,
+        ) -> Result<Vec<Envelope>, ApiError> {
+            self.inner.serve(log, from, limits, budget)
+        }
+        fn serve_branch(
+            &self,
+            log: &LogKey,
+            tip: (u64, [u8; 32]),
+            from: u64,
+            limits: BatchLimits,
+            budget: &CallBudget,
+        ) -> Result<Option<Vec<Envelope>>, ApiError> {
+            self.inner.serve_branch(log, tip, from, limits, budget)
+        }
+        fn log_meta(
+            &self,
+            log: &LogKey,
+            budget: &CallBudget,
+        ) -> Result<Option<crate::sync::journal_port::LogMeta>, ApiError> {
+            self.inner.log_meta(log, budget)
+        }
+        fn ingest(
+            &self,
+            log: &LogKey,
+            entries: Vec<Envelope>,
+            budget: &CallBudget,
+        ) -> Result<IngestOutcome, ApiError> {
+            self.inner.ingest(log, entries, budget)
+        }
+        fn apply_pending(&self, budget: &CallBudget) -> Result<ApplyProgress, ApiError> {
+            self.inner.apply_pending(budget)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_releases_in_flight_handshake_counts() {
+        let rig = start();
+        // The remote end never answers: the handshake stays in flight.
+        let _d = dial(&rig, 5, "d-host").await;
+        until(|| rig.handle.link_count() == 1).await;
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+        assert_eq!(rig.handle.link_count(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn held_key_lookup_failure_refuses_the_link() {
+        let journal = VectorStub {
+            inner: MemoryJournal::new(identity(1)),
+            stub: Err(ErrorCode::StoreBusy),
+        };
+        let rig = start_with(Arc::new(journal));
+        let peer = peer_hello(2);
+
+        let mut est = connect_inbound(&rig, &peer).await;
+        assert_eq!(next_close(&mut est).await, CloseReason::Busy);
+        until(|| rig.handle.link_count() == 0).await;
+
+        let mut d = dial(&rig, 5, "d-host").await;
+        let mut est = answer_dialed(&mut d.remote, &peer).await;
+        assert_eq!(next_close(&mut est).await, CloseReason::Busy);
+        match d.report.recv().await.expect("one report") {
+            DialReport::LinkEnded { why, peer_node, .. } => {
+                assert!(
+                    matches!(why, LinkError::Refused(CloseReason::Busy)),
+                    "{why:?}"
+                );
+                assert_eq!(peer_node, None);
+            }
+            other => panic!("expected only LinkEnded, got {other:?}"),
+        }
+        assert_eq!(rig.handle.link_count(), 0);
+        assert_eq!(snapshot(&rig).await.links.len(), 0, "nothing admitted");
+        let lines = rig.lines.lock().unwrap().clone();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("held key lookup") && l.contains("link refused")),
+            "{lines:?}"
+        );
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn full_have_truncation_is_logged() {
+        let total = MAX_HAVE_LOGS + 1;
+        let mut vector = Vector::default();
+        for i in 0..total {
+            vector.0.insert(
+                LogKey {
+                    node: NodeUuid::from_u128(0x1000 + i as u128),
+                    incarnation: 1,
+                },
+                crate::sync::LogHead {
+                    counter: 1,
+                    head_hash: [0; 32],
+                    state: crate::sync::LogState::Active,
+                    frozen_at: None,
+                },
+            );
+        }
+        let journal = VectorStub {
+            inner: MemoryJournal::new(identity(1)),
+            stub: Ok(vector),
+        };
+        let rig = start_with(Arc::new(journal));
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        let (full, _, logs) = b.expect_have().await;
+        assert!(full);
+        assert_eq!(logs.len(), MAX_HAVE_LOGS);
+        let lines = rig.lines.lock().unwrap().clone();
+        let wanted = format!("lists {MAX_HAVE_LOGS} of {total} logs");
+        assert_eq!(
+            lines.iter().filter(|l| l.contains(&wanted)).count(),
+            1,
+            "{lines:?}"
+        );
         rig.cancel.cancel();
         rig.join.await.unwrap();
     }
@@ -3512,6 +3708,35 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
         b.expect_unwant(log_node, 1).await;
         c.expect_want(log_node, 1, 1).await;
+        rig.cancel.cancel();
+        rig.join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sole_stalled_source_stays_the_rx_source() {
+        let (rig, _journal) = rig_with_self_log();
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        let log_node = node_of(9);
+        b.send_have(true, false, vec![have_log(log_node, 1, 10)])
+            .await;
+        b.expect_want(log_node, 1, 1).await;
+        tokio::time::sleep(Duration::from_secs(31)).await;
+        b.expect_want(log_node, 1, 1).await;
+
+        // The next reselect must not see a penalty and drop the source.
+        b.send_have(true, false, vec![have_log(log_node, 1, 10)])
+            .await;
+        b.quiet().await;
+        assert_eq!(
+            snapshot(&rig).await.links[0].rx_logs,
+            1,
+            "still the rx source"
+        );
+
+        // It is judged again only after another stall window.
+        tokio::time::sleep(Duration::from_secs(31)).await;
+        b.expect_want(log_node, 1, 1).await;
         rig.cancel.cancel();
         rig.join.await.unwrap();
     }
@@ -4870,6 +5095,41 @@ mod tests {
         let snap = snapshot(&rig).await;
         assert_eq!(snap.links[1].unsolicited, 1);
         assert_eq!(snap.links[0].unsolicited, 1);
+        assert_eq!(journal.ingests.load(Ordering::SeqCst), 0);
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn entries_from_a_just_replaced_source_are_not_unsolicited() {
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 2);
+        let mut b = connect(&rig, 0, &peer_hello(2)).await;
+        b.expect_have().await;
+        let mut c = connect(&rig, 1, &peer_hello(3)).await;
+        c.expect_have().await;
+        b.send_have(true, false, vec![have_log(f.log.node, 1, 3)])
+            .await;
+        c.send_have(true, false, vec![have_log(f.log.node, 1, 2)])
+            .await;
+        b.find_want(f.log.node, 1, 1).await;
+
+        // B stalls; the log moves to C.
+        b.pump(31_000).await;
+        c.find_want(f.log.node, 1, 1).await;
+
+        // A frame B had in flight arrives: dropped, credit granted, not counted.
+        let frame = entries_frame(&f.log, &f.envs[..2]);
+        let len = wire_len(&frame);
+        b.send(frame).await;
+        assert_eq!(b.find_credit().await, len);
+        assert_eq!(snapshot(&rig).await.links[b.idx].unsolicited, 0);
+
+        // Past the grace the same frame is unsolicited.
+        b.pump(REPLACED_GRACE_MS + 1_000).await;
+        let frame = entries_frame(&f.log, &f.envs[..2]);
+        b.send(frame).await;
+        assert_eq!(b.find_credit().await, len);
+        assert_eq!(snapshot(&rig).await.links[b.idx].unsolicited, 1);
         assert_eq!(journal.ingests.load(Ordering::SeqCst), 0);
         stop(rig).await;
     }
