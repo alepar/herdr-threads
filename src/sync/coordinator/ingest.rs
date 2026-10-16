@@ -161,7 +161,11 @@ impl Actor {
                 .is_some_and(|l| l.mode == LinkMode::Active && !l.closing);
         if !routed {
             self.grant(link_id, len);
-            if let Some(entry) = self.links.get_mut(&link_id) {
+            let in_grace = self
+                .replaced
+                .get(&(log, link_id))
+                .is_some_and(|until| until.0 > self.mono().0);
+            if !in_grace && let Some(entry) = self.links.get_mut(&link_id) {
                 entry.unsolicited += 1;
             }
             return;
