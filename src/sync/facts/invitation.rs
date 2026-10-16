@@ -29,8 +29,7 @@ use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
 
 use super::payload::{
-    AnswerOutcome, Confirmation, InviterKind, ReferencedSeats, answer_key, invitation_key,
-    seat_key, thread_key,
+    AnswerOutcome, InviterKind, ReferencedSeats, answer_key, invitation_key, seat_key, thread_key,
 };
 use super::{ApplyContext, FactError, FactKind, with_input};
 use crate::protocol::ids::{InvitationId, SeatId, ThreadId};
@@ -60,13 +59,10 @@ pub struct InvitationCreatedPayload {
     pub invitee_n: u64,
     pub created_at: i64,
     pub duration_ms: i64,
-    /// `None` exactly when the invitation is lazy (the deadline then is
-    /// `created_at + duration_ms`, kept only as stored data).
-    #[serde(default)]
-    pub deadline_at: Option<i64>,
-    /// `None` for a policy-less invitation (a service or operator one).
-    #[serde(default)]
-    pub confirmation: Option<Confirmation>,
+    /// Required: `created_at + duration_ms`. Every invitation is confirming
+    /// (main D6: priority 0, wakes the invitee, overdue warning to the
+    /// inviter); a missing deadline would silently change that on a receiver.
+    pub deadline_at: i64,
     /// The issuing service author's ID or the operator's audit label, for the
     /// derived event of a service or operator invitation.
     #[serde(default)]
@@ -101,6 +97,12 @@ impl InvitationCreatedPayload {
             return Err(ApiError::new(
                 ErrorCode::InvalidRequest,
                 "invitation duration must be positive",
+            ));
+        }
+        if self.created_at.checked_add(self.duration_ms) != Some(self.deadline_at) {
+            return Err(ApiError::new(
+                ErrorCode::InvalidRequest,
+                "invitation deadline is not created_at plus its duration",
             ));
         }
         self.checked_inviter().map(|_| ())

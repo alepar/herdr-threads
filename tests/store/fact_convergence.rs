@@ -672,7 +672,9 @@ impl World {
         deadline_at: i64,
     ) -> InvitationId {
         let mut payload = self.a.created_payload(thread, &self.author, invitee);
-        payload.deadline_at = Some(deadline_at);
+        // A deadline is always created_at + duration_ms: move the creation.
+        payload.created_at = deadline_at - payload.duration_ms;
+        payload.deadline_at = deadline_at;
         self.a.author_created(&payload).unwrap();
         payload.invitation
     }

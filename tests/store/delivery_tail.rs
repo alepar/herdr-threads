@@ -78,7 +78,7 @@ fn attention_on_remote_seat_writes_nothing() {
     let db = fixture();
     DeliveryTail::attention(&db, "r1", 1).unwrap();
     DeliveryTail::attention_unless_retired(&db, "r1", 4).unwrap();
-    DeliveryTail::invitation(&db, &SeatId::new("r1"), true).unwrap();
+    DeliveryTail::invitation(&db, &SeatId::new("r1")).unwrap();
     assert_eq!(version(&db, "r1"), None);
     // The local seat takes the same call.
     DeliveryTail::attention(&db, "s1", 1).unwrap();
@@ -93,12 +93,11 @@ fn attention_on_remote_seat_writes_nothing() {
     assert_eq!((bits, v), (5, 2));
 }
 
+// Every invitation is p0 and confirming (main D6): it always wakes a local invitee.
 #[test]
-fn untimed_invitation_writes_no_attention() {
+fn every_invitation_writes_attention() {
     let db = fixture();
-    DeliveryTail::invitation(&db, &SeatId::new("s1"), false).unwrap();
-    assert_eq!(version(&db, "s1"), None);
-    DeliveryTail::invitation(&db, &SeatId::new("s1"), true).unwrap();
+    DeliveryTail::invitation(&db, &SeatId::new("s1")).unwrap();
     assert_eq!(version(&db, "s1"), Some(1));
 }
 

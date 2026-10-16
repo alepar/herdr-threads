@@ -35,7 +35,7 @@ use crate::store::schema::{self, EventInput};
 use crate::sync::facts::invitation::{
     InvitationAnswered, InvitationAnsweredPayload, InvitationCreated, InvitationCreatedPayload,
 };
-use crate::sync::facts::payload::{AnswerOutcome, Confirmation, InviterKind, answer_key};
+use crate::sync::facts::payload::{AnswerOutcome, InviterKind, answer_key};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 /// Prefer work the caller can still settle over a newer accepted invitation.
@@ -521,27 +521,9 @@ pub fn invite(
     mut permit: MutationPermit,
     installation_default_ms: Option<u64>,
 ) -> Result<CommandResult, ApiError> {
-    if command.confirmation == Some(crate::protocol::commands::InvitationConfirmation::Lazy)
-        && command.deadline_millis.is_some()
-    {
-        return Err(api_error(
-            ErrorCode::InvalidRequest,
-            "lazy invitation conflicts with deadline",
-        ));
-    }
-    if command.confirmation == Some(crate::protocol::commands::InvitationConfirmation::RequireAck)
-        && command.claim.harness == crate::protocol::authority::Harness::Human
-    {
-        return Err(api_error(
-            ErrorCode::InvalidRequest,
-            "human invitation cannot require agent confirmation",
-        ));
-    }
-    let confirmation = command.confirmation.map(|mode| match mode {
-        crate::protocol::commands::InvitationConfirmation::Lazy => Confirmation::Lazy,
-        crate::protocol::commands::InvitationConfirmation::RequireAck => Confirmation::RequireAck,
-    });
-    let timed = confirmation != Some(Confirmation::Lazy);
+    // Main's `invitation_policy` (ht-yha.6, D6): every new invitation is
+    // confirming with a deadline. A requested `confirmation` is accepted for
+    // old clients and ignored; a human may request RequireAck.
     let duration = command
         .deadline_millis
         .or(installation_default_ms)
@@ -652,8 +634,7 @@ pub fn invite(
                     invitee_n,
                     created_at: decision.utc.0,
                     duration_ms: duration,
-                    deadline_at: timed.then_some(deadline.0),
-                    confirmation,
+                    deadline_at: deadline.0,
                     actor_label: None,
                 },
             )?;
@@ -752,8 +733,7 @@ pub fn operator_orphan_invite(
                     invitee_n,
                     created_at: decision.utc.0,
                     duration_ms: duration,
-                    deadline_at: Some(deadline.0),
-                    confirmation: None,
+                    deadline_at: deadline.0,
                     actor_label: Some(actor.audit_label()),
                 },
             )?;
@@ -926,15 +906,10 @@ pub(crate) fn insert_invitation(
     } else {
         "pending"
     };
-    let deadline = match p.deadline_at {
-        Some(deadline) => deadline,
-        None => p.created_at.checked_add(p.duration_ms).ok_or_else(|| {
-            api_error(
-                ErrorCode::InvalidRequest,
-                "invitation deadline out of range",
-            )
-        })?,
-    };
+    let deadline = p.deadline_at;
+    // Main's stored shape per issuer: a seat inviter's invitation records
+    // `require_ack`; operator and service invitations record none.
+    let confirmation = (p.inviter_kind == InviterKind::Seat).then_some("require_ack");
     let episode =
         crate::store::service_controls::next_invitation_episode(tx, &p.thread, &p.invitee)?;
     let inviter = match p.inviter_kind {
@@ -957,7 +932,7 @@ pub(crate) fn insert_invitation(
             p.duration_ms,
             deadline,
             if state == "recipient_retired" { seat_retired_at } else { None },
-            p.confirmation.map(Confirmation::as_str),
+            confirmation,
             inviter,
             m.origin_node.to_string(),
             invitee_n,
@@ -987,7 +962,6 @@ pub(crate) fn insert_invitation(
         prior.as_ref().map(|(state, _)| state.as_str()),
         episode,
     )?;
-    let timed = p.confirmation != Some(Confirmation::Lazy);
     if event {
         invite_event(tx, m, p, deadline, episode)?;
     }
@@ -1000,7 +974,7 @@ pub(crate) fn insert_invitation(
                 .map_err(|e| api_error(ErrorCode::InvalidRequest, e.to_string()))?,
         )?
     {
-        DeliveryTail::invitation(tx, &p.invitee, timed)?;
+        DeliveryTail::invitation(tx, &p.invitee)?;
     }
     schema::bump_filter_revision(tx, &instance, "directory", "all")?;
     bump_member_directory(tx, &instance, &p.invitee)?;
@@ -1072,12 +1046,8 @@ fn invite_event(
             let mut payload = serde_json::json!({"action":"invite",
                 "actor_seat":p.inviter.as_ref().map(SeatId::as_str),
                 "seat":p.invitee.as_str(),"invitation":id});
-            if p.confirmation != Some(Confirmation::Lazy) {
-                payload["deadline_at"] = serde_json::json!(deadline);
-            }
-            if let Some(mode) = p.confirmation {
-                payload["confirmation"] = serde_json::json!(mode.as_str());
-            }
+            payload["deadline_at"] = serde_json::json!(deadline);
+            payload["confirmation"] = serde_json::json!("require_ack");
             (format!("invite:{id}"), payload, None)
         }
         InviterKind::Operator => (

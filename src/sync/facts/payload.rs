@@ -92,25 +92,6 @@ impl InviterKind {
     }
 }
 
-/// An invitation's confirmation mode: `lazy` (no deadline, never wakes) or
-/// `require_ack`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Confirmation {
-    Lazy,
-    RequireAck,
-}
-
-impl Confirmation {
-    /// The `invitations.confirmation` spelling.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Lazy => "lazy",
-            Self::RequireAck => "require_ack",
-        }
-    }
-}
-
 /// The LWW registers of a thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -208,8 +189,6 @@ mod tests {
         round(&InviterKind::Seat, "\"seat\"");
         round(&InviterKind::Service, "\"service\"");
         round(&InviterKind::Operator, "\"operator\"");
-        round(&Confirmation::Lazy, "\"lazy\"");
-        round(&Confirmation::RequireAck, "\"require_ack\"");
         round(&AnswerOutcome::Accepted, "\"accepted\"");
         round(&AnswerOutcome::Rejected, "\"rejected\"");
         round(&RegisterField::Topic, "\"topic\"");

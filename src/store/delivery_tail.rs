@@ -82,17 +82,11 @@ impl DeliveryTail {
         Ok(())
     }
 
-    /// The attention a new invitation gives its invitee; written only when the
-    /// invitation is `timed` (it has a deadline the wake worker must watch).
-    pub(crate) fn invitation(
-        tx: &Connection,
-        invitee: &SeatId,
-        timed: bool,
-    ) -> Result<(), ApiError> {
-        if timed {
-            Self::attention(tx, invitee.as_str(), REASON_NEW_ATTENTION)?;
-        }
-        Ok(())
+    /// The attention a new invitation gives its invitee: every invitation is
+    /// priority 0 and confirming (main D6), so it always wakes. A no-op for a
+    /// remote invitee.
+    pub(crate) fn invitation(tx: &Connection, invitee: &SeatId) -> Result<(), ApiError> {
+        Self::attention(tx, invitee.as_str(), REASON_NEW_ATTENTION)
     }
 
     /// The one `wake_work` attention upsert: sets `reason_bits` and advances

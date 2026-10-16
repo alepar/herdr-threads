@@ -16,9 +16,7 @@ use herdr_threads::sync::EntityKey;
 use herdr_threads::sync::facts::invitation::{
     InvitationAnswered, InvitationAnsweredPayload, InvitationCreated, InvitationCreatedPayload,
 };
-use herdr_threads::sync::facts::payload::{
-    AnswerOutcome, Confirmation, InviterKind, ReferencedSeats,
-};
+use herdr_threads::sync::facts::payload::{AnswerOutcome, InviterKind, ReferencedSeats};
 use herdr_threads::sync::facts::{FactKind, FactRegistry};
 
 use crate::facts_membership::thread_of;
@@ -76,8 +74,7 @@ impl Node {
             invitee_n: u64::try_from(invitee_n).unwrap(),
             created_at: CREATED_AT,
             duration_ms: DURATION_MS,
-            deadline_at: Some(CREATED_AT + DURATION_MS),
-            confirmation: Some(Confirmation::RequireAck),
+            deadline_at: CREATED_AT + DURATION_MS,
             actor_label: None,
         }
     }
@@ -251,14 +248,13 @@ fn round_trips_keys() {
         invitee_n: 2,
         created_at: 1_700_000_000_000,
         duration_ms: 60_000,
-        deadline_at: Some(1_700_000_060_000),
-        confirmation: Some(Confirmation::RequireAck),
+        deadline_at: 1_700_000_060_000,
         actor_label: None,
     };
     let json = serde_json::to_string(&payload).unwrap();
     assert_eq!(
         json,
-        r#"{"invitation":"iAbc12345678","thread":"tAbc12345678","inviter":"sInviter0001","inviter_kind":"seat","invitee":"sInvitee0001","invitee_n":2,"created_at":1700000000000,"duration_ms":60000,"deadline_at":1700000060000,"confirmation":"require_ack","actor_label":null}"#
+        r#"{"invitation":"iAbc12345678","thread":"tAbc12345678","inviter":"sInviter0001","inviter_kind":"seat","invitee":"sInvitee0001","invitee_n":2,"created_at":1700000000000,"duration_ms":60000,"deadline_at":1700000060000,"actor_label":null}"#
     );
     assert_eq!(
         serde_json::from_str::<InvitationCreatedPayload>(&json).unwrap(),
@@ -266,13 +262,17 @@ fn round_trips_keys() {
     );
     // An additive field is ignored; a missing kind is a seat invitation.
     let newer: InvitationCreatedPayload = serde_json::from_str(
-        r#"{"invitation":"iAbc12345678","thread":"tAbc12345678","inviter":"sInviter0001","invitee":"sInvitee0001","created_at":1,"duration_ms":5,"future":{"x":1}}"#,
+        r#"{"invitation":"iAbc12345678","thread":"tAbc12345678","inviter":"sInviter0001","invitee":"sInvitee0001","created_at":1,"duration_ms":5,"deadline_at":6,"future":{"x":1}}"#,
     )
     .unwrap();
     assert_eq!(newer.inviter_kind, InviterKind::Seat);
-    assert_eq!(
-        (newer.invitee_n, newer.deadline_at, newer.confirmation),
-        (0, None, None)
+    assert_eq!((newer.invitee_n, newer.deadline_at), (0, 6));
+    // `deadline_at` has no default: a payload without it does not decode.
+    assert!(
+        serde_json::from_str::<InvitationCreatedPayload>(
+            r#"{"invitation":"iAbc12345678","thread":"tAbc12345678","inviter":"sInviter0001","invitee":"sInvitee0001","created_at":1,"duration_ms":5}"#,
+        )
+        .is_err()
     );
 
     assert_eq!(InvitationCreated::NAME, "invitation.created");
@@ -650,7 +650,6 @@ fn service_and_operator_kinds_apply_on_the_signing_node_without_a_seat() {
     let service = InvitationCreatedPayload {
         inviter: None,
         inviter_kind: InviterKind::Service,
-        confirmation: None,
         actor_label: Some("svc-author".into()),
         ..node.created_payload(&thread, &SeatId::new("unused"), &guest)
     };
@@ -663,7 +662,6 @@ fn service_and_operator_kinds_apply_on_the_signing_node_without_a_seat() {
     let operator = InvitationCreatedPayload {
         inviter: None,
         inviter_kind: InviterKind::Operator,
-        confirmation: None,
         actor_label: Some("operator:local-user:501".into()),
         invitation: node.mint_invitation(),
         ..service.clone()
@@ -691,6 +689,18 @@ fn service_and_operator_kinds_apply_on_the_signing_node_without_a_seat() {
     assert!(node.invitation(&nameless.invitation).is_none());
 }
 
+// Kills: a receiver that accepts a deadline other than created_at +
+// duration_ms (reconcile amendment §1.2).
+#[test]
+fn deadline_off_its_duration_is_refused() {
+    let node = Node::with(149, registry());
+    let (thread, creator, guest) = local_pair(&node);
+    let mut payload = node.created_payload(&thread, &creator, &guest);
+    payload.deadline_at += 1;
+    node.author_created(&payload).unwrap_err();
+    assert!(node.invitation(&payload.invitation).is_none());
+}
+
 #[test]
 fn service_kind_from_another_node_applies_without_a_service_author() {
     let reg = registry();
@@ -703,7 +713,6 @@ fn service_kind_from_another_node_applies_without_a_service_author() {
     let payload = InvitationCreatedPayload {
         inviter: None,
         inviter_kind: InviterKind::Service,
-        confirmation: None,
         actor_label: Some("svc-author".into()),
         ..a.created_payload(&thread, &SeatId::new("unused"), &seat)
     };

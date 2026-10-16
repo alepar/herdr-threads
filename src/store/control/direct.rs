@@ -13,7 +13,7 @@ use crate::store::materialize::{FactRoute, local_only};
 use crate::store::schema;
 use crate::sync::facts::invitation::InvitationCreatedPayload;
 use crate::sync::facts::membership::MembershipPayload;
-use crate::sync::facts::payload::{Confirmation, InviterKind};
+use crate::sync::facts::payload::InviterKind;
 use crate::sync::facts::thread::{ThreadDirect, ThreadDirectPayload};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
@@ -286,20 +286,9 @@ pub fn resolve_direct_pair(
             .validate()
             .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
     }
-    if creation_policy.is_some_and(|p| {
-        p.confirmation == crate::protocol::commands::InvitationConfirmation::RequireAck
-    }) && claim.harness == crate::protocol::authority::Harness::Human
-    {
-        return Err(api_error(
-            ErrorCode::InvalidRequest,
-            "human invitation cannot require agent confirmation",
-        ));
-    }
-    let confirmation = creation_policy.map(|p| match p.confirmation {
-        crate::protocol::commands::InvitationConfirmation::Lazy => Confirmation::Lazy,
-        crate::protocol::commands::InvitationConfirmation::RequireAck => Confirmation::RequireAck,
-    });
-    let timed = confirmation != Some(Confirmation::Lazy);
+    // Main's `invitation_policy` (D6): the pair invitation is confirming with
+    // a deadline; a requested confirmation is accepted and ignored. (Pair
+    // auto-join, which drops this invitation, is reconcile item 11.)
     let duration = i64::try_from(
         creation_policy
             .and_then(|p| p.deadline_millis)
@@ -374,8 +363,7 @@ pub fn resolve_direct_pair(
             invitee_n: 0,
             created_at: decision.utc.0,
             duration_ms: duration,
-            deadline_at: timed.then_some(deadline.0),
-            confirmation,
+            deadline_at: deadline.0,
             actor_label: None,
         },
     )?;

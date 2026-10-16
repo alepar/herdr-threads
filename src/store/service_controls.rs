@@ -444,8 +444,7 @@ fn invite(
             invitee_n: u64::try_from(invitee_n).unwrap_or(0),
             created_at: at.0,
             duration_ms: duration,
-            deadline_at: Some(deadline.0),
-            confirmation: None,
+            deadline_at: deadline.0,
             actor_label: Some(author.as_str().to_owned()),
         };
         if v.constraint == InvitationConstraint::Required {
@@ -541,7 +540,7 @@ fn invite(
         },
         EventAuthor::Programmatic(author.clone()),
     )?;
-    super::delivery_tail::DeliveryTail::invitation(tx, &v.seat, true)?;
+    super::delivery_tail::DeliveryTail::invitation(tx, &v.seat)?;
     schema::bump_membership_revision(tx, &v.thread)?;
     schema::bump_filter_revision(tx, instance, "directory", "all")?;
     schema::bump_filter_revision(
