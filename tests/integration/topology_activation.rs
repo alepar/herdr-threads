@@ -1474,6 +1474,10 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
         false,
     );
     assert!(!out.status.success());
+    let refused_starts = f.starts.load(Ordering::Relaxed);
+    // Two seconds at 100 ms spacing bounds the confirmed refusal attempts;
+    // subsequent canonical phase replays must add no native requests.
+    assert!((1..=21).contains(&refused_starts));
     assert_eq!(
         f.db()
             .query_row("SELECT state FROM bootstrap_handoffs", [], |r| r
@@ -1619,7 +1623,7 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
         before_send
     );
     assert_eq!(f.creates.load(Ordering::Relaxed), 1);
-    assert_eq!(f.starts.load(Ordering::Relaxed), 1);
+    assert_eq!(f.starts.load(Ordering::Relaxed), refused_starts);
 }
 
 fn public_unknown_created_pane_agent_retry_chain(retain_request: bool) {
@@ -1874,10 +1878,10 @@ fn public_unknown_created_pane_agent_retry_chain(retain_request: bool) {
         !first.status.success(),
         "the owned native peer confirms a pre-start refusal"
     );
-    assert_eq!(
-        f.starts.load(Ordering::Relaxed),
-        1,
-        "first public retry stderr: {}",
+    let refused_starts = f.starts.load(Ordering::Relaxed);
+    assert!(
+        (1..=21).contains(&refused_starts),
+        "first public retry made {refused_starts} start requests: {}",
         String::from_utf8_lossy(&first.stderr)
     );
     assert_eq!(f.creates.load(Ordering::Relaxed), 1);
@@ -1932,8 +1936,8 @@ fn public_unknown_created_pane_agent_retry_chain(retain_request: bool) {
     assert_eq!(f.creates.load(Ordering::Relaxed), 1);
     assert_eq!(
         f.starts.load(Ordering::Relaxed),
-        2,
-        "one refused submission and one successful start"
+        refused_starts + 1,
+        "bounded refusal attempts followed by exactly one successful start"
     );
     assert!(journal.load(&reference).is_err());
     assert!(!progress_path.exists());
@@ -1984,7 +1988,7 @@ fn public_unknown_created_pane_agent_retry_chain(retain_request: bool) {
         frame
     );
     assert_eq!(f.creates.load(Ordering::Relaxed), 1);
-    assert_eq!(f.starts.load(Ordering::Relaxed), 2);
+    assert_eq!(f.starts.load(Ordering::Relaxed), refused_starts + 1);
     assert_eq!(operations(), completed_operations);
     assert_eq!(
         f.db()

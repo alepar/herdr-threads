@@ -36,6 +36,11 @@ const CONFIRMED_PRESTART_REFUSALS: [&str; 3] = [
     "agent_name_taken",
     "agent_process_hint_unsupported",
 ];
+/// A new pane may not yet have an interactive shell. Retry only Herdr's
+/// confirmed pre-submission busy refusal, for at most two seconds and while
+/// preserving the caller's minimum startup budget.
+const PANE_READY_WINDOW: Duration = Duration::from_secs(2);
+const PANE_READY_RETRY: Duration = Duration::from_millis(100);
 /// Interval between bounded readiness polls after a submitted start.
 const START_POLL_MILLIS: u64 = 250;
 /// Polling time before a started-but-undetected agent is checked for an early
@@ -347,10 +352,19 @@ impl NativeCli {
             })?;
         // The readable name first; when Herdr refuses it as taken by another
         // live agent (checked before anything is typed), one retry with a
-        // short seat suffix. Never more than these two submissions.
+        // short seat suffix. Only confirmed pre-start refusals may retry.
         let [first_name, retry_name] = request.agent_name_candidates();
         let mut name = first_name;
+        let readiness_started = Instant::now();
         let (name, parsed, remaining, started, submitted_at_mono) = loop {
+            self.check_epoch(current_epoch)
+                .map_err(ports::NativeLaunchFailure::not_submitted)?;
+            if context.budget.cancellation.is_cancelled() {
+                return Err(before_start(
+                    ErrorCode::Cancelled,
+                    "native start cancelled before submission",
+                ));
+            }
             let remaining = context
                 .budget
                 .deadline
@@ -442,7 +456,7 @@ impl NativeCli {
                 )
                 .map(|(body, _)| body)
             };
-            let (refusal, name_taken) = match response {
+            let (refusal, name_taken, pane_busy) = match response {
                 Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
                 Ok(raw) => {
                     let parsed: serde_json::Value = match serde_json::from_str(&raw) {
@@ -458,9 +472,33 @@ impl NativeCli {
                     if !code.is_some_and(|code| CONFIRMED_PRESTART_REFUSALS.contains(&code)) {
                         return Ok(NativeLaunchOutcome::OutcomeUnknown);
                     }
-                    (host_error, code == Some("agent_name_taken"))
+                    (
+                        host_error,
+                        code == Some("agent_name_taken"),
+                        code == Some("agent_pane_busy"),
+                    )
                 }
             };
+            if pane_busy && readiness_started.elapsed() < PANE_READY_WINDOW {
+                let remaining = context
+                    .budget
+                    .deadline
+                    .0
+                    .saturating_sub(self.clock.monotonic_now().0);
+                if remaining > 3_000 + PANE_READY_RETRY.as_millis() as u64
+                    && !context.budget.cancellation.wait_blocking(PANE_READY_RETRY)
+                    && readiness_started.elapsed() < PANE_READY_WINDOW
+                    && !context.budget.is_exhausted(self.clock.as_ref())
+                    && context
+                        .budget
+                        .deadline
+                        .0
+                        .saturating_sub(self.clock.monotonic_now().0)
+                        > 3_000
+                {
+                    continue;
+                }
+            }
             if name_taken && name != retry_name && !context.budget.cancellation.is_cancelled() {
                 name = retry_name.clone();
                 continue;
@@ -2509,6 +2547,15 @@ pub(crate) mod tests {
             MonoInstant(self.0.elapsed().as_millis() as u64)
         }
     }
+    struct FrozenClock;
+    impl Clock for FrozenClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(0)
+        }
+    }
     fn read(stream: &mut UnixStream) -> Value {
         let mut line = String::new();
         BufReader::new(stream).read_line(&mut line).unwrap();
@@ -3922,7 +3969,7 @@ pub(crate) mod tests {
             ("agent_blocked", false),
             ("agent_not_ready", false),
         ] {
-            let (request, context, observation) = launch_fixture();
+            let (request, mut context, observation) = launch_fixture();
             // A taken name is retried exactly once; a second refusal stands.
             let attempts = if code == "agent_name_taken" { 2 } else { 1 };
             let exchanges: Vec<Exchange> = (0..attempts)
@@ -3933,7 +3980,11 @@ pub(crate) mod tests {
                     })
                 })
                 .collect();
-            let (socket, cli, worker) = serve_sequence(exchanges);
+            let (socket, mut cli, worker) = serve_sequence(exchanges);
+            // Exactly the minimum startup allowance plus one retry interval:
+            // there is no spare caller budget for a readiness retry.
+            cli.clock = Arc::new(FrozenClock);
+            context.budget.deadline = MonoInstant(3_100);
             let result = cli.guarded_start_cli(&request, &context, &observation);
             if busy {
                 assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
@@ -5982,11 +6033,109 @@ pub(crate) mod tests {
             "tab_id":"w4:t1","workspace_id":"w4"})
     }
 
+    /// Legacy and process-hint starts share the same refusal retry boundary.
+    /// Kills: returning the first not-yet-interactive-shell refusal to the caller.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn new_pane_readiness_retries_both_native_transports_before_submission() {
+        for process_hint in [false, true] {
+            let (mut request, mut context, mut observation) = launch_fixture();
+            let registry = crate::harness::launch::tests::process_hint_registry(true);
+            if process_hint {
+                request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+                request.process_hint = true;
+            }
+            let name = request.agent_name();
+            let mut starts = 0;
+            let mut host = HintSocketFixture::new(move |stream, wire| {
+                match wire["method"].as_str().unwrap() {
+                    "ping" => answer(
+                        stream,
+                        wire,
+                        json!({"type":"pong","version":"0.9.1","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}}),
+                    ),
+                    "agent.start" => {
+                        starts += 1;
+                        assert_eq!(wire["params"]["name"], name);
+                        assert_eq!(wire["params"]["pane_id"], "w4:p1");
+                        if starts == 1 {
+                            refuse(stream, wire, "agent_pane_busy");
+                        } else {
+                            answer(stream, wire, started(name.clone()));
+                        }
+                    }
+                    "pane.get" => answer(stream, wire, json!({"type":"pane_info"})),
+                    "pane.process_info" => answer(stream, wire, process_info_fixture()),
+                    other => panic!("unexpected operation: {other}"),
+                }
+            });
+            if process_hint {
+                host.cli.registry = registry;
+                host.bind_preflight(&mut request, &mut context, &mut observation);
+            }
+            let result = host
+                .cli
+                .guarded_start_with_evidence(&request, &context, &observation);
+            let frames = host.finish();
+            let outcome = result.expect("new pane must become launchable");
+            assert!(matches!(
+                outcome,
+                NativeLaunchOutcome::ObservedStartup { .. }
+            ));
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|wire| wire["method"] == "agent.start")
+                    .count(),
+                2
+            );
+        }
+    }
+
+    /// A permanently busy target must remain a clean, bounded pre-start refusal.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn new_pane_readiness_exhaustion_remains_not_submitted() {
+        let (request, context, observation) = launch_fixture();
+        let host = HintSocketFixture::new(|stream, wire| match wire["method"].as_str().unwrap() {
+            "ping" => answer(
+                stream,
+                wire,
+                json!({"type":"pong","version":"0.9.1","protocol":22}),
+            ),
+            "agent.start" => refuse(stream, wire, "agent_pane_busy"),
+            other => panic!("unexpected operation: {other}"),
+        });
+        let started = Instant::now();
+        let failure = host
+            .cli
+            .guarded_start_with_evidence(&request, &context, &observation)
+            .expect_err("persistent refusal must not claim a possible start");
+        let elapsed = started.elapsed();
+        let frames = host.finish();
+        assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+        assert_eq!(failure.error.code, ErrorCode::TargetUnsafe);
+        assert!(failure.error.detail.contains("agent_pane_busy"));
+        assert!(
+            frames
+                .iter()
+                .filter(|wire| wire["method"] == "agent.start")
+                .count()
+                > 1
+        );
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "retry exceeded bounded window: {elapsed:?}"
+        );
+    }
+
     #[test]
     fn handoff_native_confirmed_refusal_has_not_submitted_evidence() {
-        let (request, context, observation) = launch_fixture();
-        let (socket, cli, worker) =
+        let (request, mut context, observation) = launch_fixture();
+        let (socket, mut cli, worker) =
             fixture(|stream, wire| refuse(stream, &wire, "agent_pane_busy"));
+        cli.clock = Arc::new(FrozenClock);
+        context.budget.deadline = MonoInstant(3_100);
         let failure = cli
             .guarded_start_with_evidence(&request, &context, &observation)
             .unwrap_err();
