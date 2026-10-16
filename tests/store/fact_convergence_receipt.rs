@@ -8,9 +8,13 @@
 //! The helpers (a command-capable world, shipping one origin's log into
 //! another store) are in `facts_receipt`.
 
-use herdr_threads::protocol::commands::DeliveryMode;
-use herdr_threads::protocol::ids::{MessageId, SeatId};
+use herdr_threads::ports::StorePort;
+use herdr_threads::protocol::authority::Harness;
+use herdr_threads::protocol::commands::{Ack, AckModDelivered, DeliveryMode, PermitMutation};
+use herdr_threads::protocol::delivery::DeliveryConfirm;
+use herdr_threads::protocol::ids::{MessageId, OperationId, SeatId};
 use herdr_threads::protocol::results::{CommandResult, ErrorCode};
+use herdr_threads::protocol::watch::ModDeliveryVia;
 use herdr_threads::store::materialize::FactRoute;
 use herdr_threads::sync::facts::payload::ReceiptObligation;
 use herdr_threads::sync::facts::seat::SeatRetired;
@@ -22,7 +26,8 @@ use herdr_threads::test_support::journal_oracle::{
 use crate::facts_membership::thread_of;
 use crate::facts_message::{FIVE_MIN, SENT_AT, sent, spec};
 use crate::facts_receipt::{
-    RWorld, SETTLED_AT, ack_key, drain, ingest, origin_entries, rworld, settled, ship_origin,
+    RWorld, SETTLED_AT, ack_key, drain, ingest, origin_entries, rworld, rworld_as, settled,
+    ship_origin,
 };
 use crate::facts_seat::{Node, budget, hold_off, hold_on, registry, retired_payload};
 use crate::facts_thread::sync_all;
@@ -45,6 +50,154 @@ fn wiped_b(world: &RWorld, seed: u8) -> Node {
     let b2 = Node::open_commands(seed, 999, registry());
     assert_eq!(b2.id, world.b.id, "the same node");
     b2
+}
+
+// These calls deliberately enter through StorePort, not `author_settled`: losing the
+// receipt fact in any public completion path must break cross-node convergence.
+// Service channel/offer admission and output-flush evidence are tested separately.
+#[derive(Clone, Copy)]
+enum CompletionPath {
+    Inbox,
+    Mod,
+    HookPull,
+}
+
+impl CompletionPath {
+    fn harness(self) -> Harness {
+        match self {
+            Self::Inbox => Harness::Codex,
+            Self::Mod => Harness::Claude,
+            Self::HookPull => Harness::Agent(
+                herdr_threads::harness::registry::builtins()
+                    .agent("agy")
+                    .unwrap(),
+            ),
+        }
+    }
+
+    fn complete(self, w: &RWorld, id: &MessageId, operation: &str) {
+        let claim = w.b.completion_claim(&w.agent, self.harness());
+        let operation = OperationId::new(operation);
+        let mutation = match self {
+            Self::Inbox => PermitMutation::AckDisplayed(Ack {
+                messages: vec![id.clone()],
+                operation,
+                claim,
+            }),
+            Self::Mod => PermitMutation::AckModDelivered(AckModDelivered {
+                via: ModDeliveryVia::Context,
+                messages: vec![id.clone()],
+                operation,
+                claim,
+            }),
+            Self::HookPull => PermitMutation::DeliveryConfirm(DeliveryConfirm {
+                ids: vec![id.clone()],
+                operation,
+                claim,
+            }),
+        };
+        let permit =
+            w.b.store
+                .issue_cooperative_permit(
+                    herdr_threads::store::cooperative_permit_request(&mutation).unwrap(),
+                    &budget(),
+                )
+                .unwrap();
+        w.b.store.mutate(mutation, permit, &budget()).unwrap();
+    }
+}
+
+fn public_completion_replicates_only_shown_ids(path: CompletionPath) {
+    let w = rworld_as(230, path.harness());
+    let (shown, withheld) = (w.send(), w.send());
+    w.deliver(&[&shown, &withheld]);
+    path.complete(&w, &shown, "display-1");
+    assert_eq!(w.b.settled_row(&shown, &w.agent).unwrap().0, "acked");
+    assert_eq!(
+        w.a.settled_row(&shown, &w.agent).unwrap().0,
+        "pending",
+        "the sender remains pending while settlement is offline"
+    );
+    assert_eq!(w.b.settled_row(&withheld, &w.agent).unwrap().0, "pending");
+    assert_eq!(w.b.count_kind("receipt.settled"), 1);
+
+    // Replaying an operation and repeating the display under a fresh operation
+    // must not author another fact, including while the sender is offline.
+    path.complete(&w, &shown, "display-1");
+    path.complete(&w, &shown, "display-2");
+    assert_eq!(w.b.count_kind("receipt.settled"), 1);
+    ship_origin(&w.b, w.b.id, &w.a.store);
+    ship_origin(&w.b, w.b.id, &w.a.store);
+    for node in [&w.a, &w.b] {
+        assert_eq!(
+            node.settled_row(&shown, &w.agent),
+            w.b.settled_row(&shown, &w.agent)
+        );
+        assert_eq!(node.settled_row(&withheld, &w.agent).unwrap().0, "pending");
+        assert_eq!(
+            node.settled_row(&shown, &w.peer),
+            None,
+            "display creates no new obligation"
+        );
+        assert_eq!(node.count_kind("receipt.settled"), 1);
+        assert_eq!(node.ack_events(&w.thread).len(), 1);
+    }
+    assert_eq!(
+        w.a.count("SELECT count(*) FROM receipt_due_sparse"),
+        1,
+        "only the withheld message still has a sender-side deadline"
+    );
+
+    // Ship the recipient's REAL signed log first: its settlement and membership
+    // depend on the sender's history, so application must wait, then converge.
+    let fresh = OracleStore::open([232; 32], registry());
+    ship_origin(&w.b, w.b.id, &fresh);
+    let pending: i64 = fresh
+        .context()
+        .open_query(budget())
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM journal WHERE apply_state='pending'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(pending > 0, "foreign dependencies have not arrived");
+    ship_origin(&w.a, w.a.id, &fresh);
+    let db = fresh.context().open_query(budget()).unwrap();
+    for (id, expected) in [(&shown, "acked"), (&withheld, "pending")] {
+        let state: String = db
+            .query_row(
+                "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2",
+                rusqlite::params![id.as_str(), w.agent.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, expected);
+    }
+    let unapplied: i64 = db
+        .query_row(
+            "SELECT count(*) FROM journal WHERE apply_state!='applied'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(unapplied, 0, "reordered real logs fully apply");
+}
+
+#[test]
+fn inbox_display_completion_replicates_only_shown_ids() {
+    public_completion_replicates_only_shown_ids(CompletionPath::Inbox);
+}
+
+#[test]
+fn mod_completion_replicates_only_shown_ids() {
+    public_completion_replicates_only_shown_ids(CompletionPath::Mod);
+}
+
+#[test]
+fn hook_pull_completion_replicates_only_shown_ids() {
+    public_completion_replicates_only_shown_ids(CompletionPath::HookPull);
 }
 
 // ---- send, ACK, sync -----------------------------------------------------------
