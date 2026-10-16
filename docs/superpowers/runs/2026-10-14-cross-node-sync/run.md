@@ -1,7 +1,8 @@
 # super-auto run — 2026-10-14-cross-node-sync
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: code
+phase: roast-code
+roastCodeRound: 1
 codeMechanism: Workflow
 
 idea: Cross-node herdr-threads sync. Seed: the vision spec docs/superpowers/specs/2026-10-13-cross-node-sync-vision-design.md plus research in docs/superpowers/research/2026-10-13-cross-node-sync/. Write the actual (detailed) spec, checking for any gaps, split into beads; all autonomously; both roasts on.
@@ -36,6 +37,8 @@ fix-beads-pre-roast: ht-5fr.38 (two branch test failures) · ht-5fr.39 (stale do
 code-run-4: coordinator wf_3465ea49-f0a · stopReason closure-unconfirmed (stale: ht-5fr.15 already closed) · 129 merges, all reconcile and pre-roast beads merged (+ ht-5fr.49 two-node auto-ACK, ht-5fr.51 accept-grace) · final review: not ready — overdue hold lifts before ingested settlements apply (config_wipe flake); hold ignores unlinked dial targets; loop_inventory fails; main 7 commits behind (v1.1.0)
 fix-beads-run-4: ht-5fr.53 (hold waits for apply) · ht-5fr.54 (hold counts unlinked dial targets) · ht-5fr.55 (loop_inventory allowlist) · ht-5fr.56 (silent local-only fallbacks → errors) · ht-5fr.57 (SKILL.md wording, pre-accept body flush coverage)
 main-merge-3: REFUSED by the permission layer (session merge of main v1.1.0, 7 commits) — left for the human; must precede the merge to main
+
+code-run-5: coordinator wf_b06245f4-b3c · stopReason closure-unconfirmed (stale ht-5fr.15) · ht-5fr.53–.58 merged, all ht-5fr beads closed; stale ht-33gb closed · final review: no new product defect; must-fix: main v1.1.0 merge (human), full suite on merged tree, landing order vs ht-794l (human); follow-ups: journaled_route test-build fallback, author_answer local-only route
 
 approvals:
 - top-split · auto · ht-5fr.1 PROMOTE, ht-5fr.2 PROMOTE, ht-5fr.3 PROMOTE, ht-5fr.4 PROMOTE, ht-5fr.5 PROMOTE, ht-5fr.6 PROMOTE, ht-5fr.7 LEAF, ht-5fr.8 LEAF, ht-5fr.9 LEAF, ht-5fr.10 LEAF, ht-5fr.11 LEAF, ht-5fr.12 LEAF, ht-5fr.13 LEAF
