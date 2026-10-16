@@ -99,11 +99,29 @@ impl Node {
         acks: &[(&SeatId, i64, bool)],
         lazy: &[&SeatId],
     ) -> MessageId {
+        self.stage_prep_at(
+            thread,
+            mode,
+            if mode == "ordinary" { 0 } else { 1 },
+            acks,
+            lazy,
+        )
+    }
+
+    /// [`Self::stage_prep`] with the preparation's delivery priority chosen
+    /// (a default send may carry any `-p`); its delivery rows carry it.
+    pub fn stage_prep_at(
+        &self,
+        thread: &ThreadId,
+        mode: &str,
+        priority: i64,
+        acks: &[(&SeatId, i64, bool)],
+        lazy: &[&SeatId],
+    ) -> MessageId {
         let prep = generate_public_id(prefix::SEND_PREPARATION, &tag_for(self.id, 0));
         let message =
             MessageId::new(send_message_id_for_preparation(&prep).expect("a send preparation"));
         let db = self.raw();
-        let priority: i64 = if mode == "ordinary" { 0 } else { 1 };
         db.execute(
             "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status,delivery_mode,priority) \
              VALUES (?1,(SELECT id FROM local_node),'seat:stage',?1,zeroblob(32),?2,0,0,0,0,0,0,0,?3,'building',?4,?5)",

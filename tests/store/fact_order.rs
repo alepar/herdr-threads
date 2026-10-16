@@ -319,6 +319,68 @@ fn send_vs_seat_retired() {
     );
 }
 
+// Kills: a projection or apply order that loses a message's priority: a p3
+// default send and a concurrent p0 `--require-ack` send cross, and both fresh
+// stores, the live ones and the replay read the same priority and mode.
+#[test]
+fn concurrent_sends_of_different_priority() {
+    let t = trio(160);
+    let (thread, author) = thread_of(&t.a, "shared");
+    t.a.joined(&thread, &author, 1).unwrap();
+    let other = t.b.local_seat();
+    t.b.enroll(&other, "codex", "session-other").unwrap();
+    t.setup_done();
+    t.b.joined(&thread, &other, 1).unwrap();
+    t.setup_done();
+
+    // A: a default send at p3 to B's seat. B: an ACK request at p0 to A's.
+    let low: MessageId = t.a.stage_prep_at(&thread, "lazy", 3, &[], &[]);
+    let mut p3 = sent(
+        &low,
+        &thread,
+        &author,
+        DeliveryMode::Lazy,
+        0,
+        vec![spec(&other, ReceiptObligation::None, None)],
+    );
+    p3.priority = 3;
+    t.a.author_sent(&p3).unwrap();
+    let urgent: MessageId =
+        t.b.stage_prep(&thread, "ordinary", &[(&author, FIVE_MIN, true)], &[]);
+    t.b.author_sent(&sent(
+        &urgent,
+        &thread,
+        &other,
+        DeliveryMode::Ordinary,
+        FIVE_MIN,
+        vec![spec(
+            &author,
+            ReceiptObligation::Ack,
+            Some(SENT_AT + FIVE_MIN),
+        )],
+    ))
+    .unwrap();
+    t.check();
+    for node in [&t.x, &t.y, &t.a, &t.b, &t.c] {
+        let shape = |m: &MessageId| {
+            node.query(
+                &format!(
+                    "SELECT priority,delivery_mode FROM messages WHERE id='{}'",
+                    m.as_str()
+                ),
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )
+        };
+        assert_eq!(shape(&low), vec![(3, "lazy".to_owned())], "{:?}", node.id);
+        assert_eq!(
+            shape(&urgent),
+            vec![(0, "ordinary".to_owned())],
+            "{:?}",
+            node.id
+        );
+    }
+}
+
 #[test]
 fn concurrent_registers() {
     let t = trio(150);

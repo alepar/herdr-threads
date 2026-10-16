@@ -18,9 +18,11 @@ use herdr_threads::store::journal;
 use herdr_threads::store::materialization::advance_work;
 use herdr_threads::store::materialize::FactRoute;
 use herdr_threads::store::messages;
+use herdr_threads::store::wake;
 use herdr_threads::sync::EntityKey;
 use herdr_threads::sync::facts::payload::{ReceiptObligation, ReferencedSeats, receipt_settle_key};
 use herdr_threads::sync::facts::{ApplyContext, FactError, FactKind, FactRegistry};
+use herdr_threads::test_support::journal_oracle::{LOCAL_DELIVERY_ROWS, replicated_projection};
 use herdr_threads::test_support::{assert_no_local_delivery_for_remote, fact_exchange};
 
 use crate::facts_membership::thread_of;
@@ -731,4 +733,214 @@ fn remote_message_carries_no_local_binding() {
         "{}",
         rows[0].1
     );
+}
+
+// ---- the priority matrix (reconcile 1.1, D9) ----------------------------------------
+
+impl Node {
+    /// `(priority, delivery_mode)` of a message row.
+    fn message_shape(&self, message: &MessageId) -> Option<(i64, String)> {
+        self.query(
+            &format!(
+                "SELECT priority,delivery_mode FROM messages WHERE id='{}'",
+                message.as_str()
+            ),
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .into_iter()
+        .next()
+    }
+
+    fn set_threshold(&self, seat: &SeatId, value: i64) {
+        self.raw()
+            .execute(
+                "UPDATE seats SET nudge_threshold=?1 WHERE id=?2",
+                rusqlite::params![value, seat.as_str()],
+            )
+            .unwrap();
+    }
+
+    fn clear_wakes(&self) {
+        self.raw().execute("DELETE FROM wake_work", []).unwrap();
+    }
+
+    /// The delivery rows of the local seats as `(message, seat, priority)`.
+    fn delivery_rows(&self) -> std::collections::BTreeSet<(String, String, i64)> {
+        self.query(
+            "SELECT message_id,seat_id,priority FROM lazy_recipients",
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .into_iter()
+        .collect()
+    }
+}
+
+fn sorted(seats: &[&SeatId]) -> Vec<String> {
+    let mut out: Vec<String> = seats.iter().map(|s| s.as_str().to_owned()).collect();
+    out.sort();
+    out
+}
+
+// Kills: a priority or delivery mode that differs between the author and the
+// receiver, a receipt for a recipient that owes none (the human, or an agent
+// that no explicit ACK names), a delivery row at the wrong priority, a wake
+// that ignores the seat's own threshold or reaches a remote seat, and a
+// threshold raise after apply that wakes more or less than once.
+#[test]
+fn priority_matrix_converges_with_local_delivery_rows() {
+    let w = world(240);
+    // B's three seats carry thresholds T = 0 (agent), -1 (human), 3 (third).
+    let third = w.b.local_seat();
+    w.b.enroll(&third, "codex", "b-third").unwrap();
+    w.b.publish(&third).unwrap();
+    sync_all(&[&w.a, &w.b]);
+    w.b.joined(&w.thread, &third, 1).unwrap();
+    sync_all(&[&w.a, &w.b]);
+    w.b.set_threshold(&w.agent, 0);
+    w.b.set_threshold(&w.human, -1);
+    w.b.set_threshold(&third, 3);
+
+    let all_seats = [&w.agent, &w.human, &third];
+    let mut expected_rows = std::collections::BTreeSet::new();
+    let mut messages: Vec<(MessageId, i64, &str)> = Vec::new();
+
+    // Default sends at p0, p1, p3 and p4 name every member without an ACK.
+    // Wakes judged against each seat's own threshold: p <= T, T < 0 is all.
+    let by_priority: [(i64, Vec<&SeatId>); 4] = [
+        (0, vec![&w.agent, &w.human, &third]),
+        (1, vec![&w.human, &third]),
+        (3, vec![&w.human, &third]),
+        (4, vec![&w.human]),
+    ];
+    for (priority, woken) in by_priority {
+        w.b.clear_wakes();
+        let message = w.a.stage_prep_at(&w.thread, "lazy", priority, &[], &[]);
+        let recipients = all_seats
+            .iter()
+            .map(|seat| spec(seat, ReceiptObligation::None, None))
+            .collect();
+        let mut payload = sent(
+            &message,
+            &w.thread,
+            &w.author,
+            DeliveryMode::Lazy,
+            0,
+            recipients,
+        );
+        payload.priority = u8::try_from(priority).unwrap();
+        w.a.author_sent(&payload).unwrap();
+        fact_exchange::sync(&w.a.store, &w.b.store);
+        for node in [&w.a, &w.b] {
+            node.drive_send(&message);
+        }
+        for seat in all_seats {
+            expected_rows.insert((
+                message.as_str().to_owned(),
+                seat.as_str().to_owned(),
+                priority,
+            ));
+        }
+        assert_eq!(
+            w.b.wake_seats(),
+            sorted(&woken),
+            "p{priority}: B wakes the seats whose threshold admits it"
+        );
+        assert!(w.a.wake_seats().is_empty(), "A has no remote seat to wake");
+        messages.push((message, priority, "lazy"));
+    }
+
+    // Two `--require-ack` sends: one naming the agent, one naming the human.
+    w.b.clear_wakes();
+    let ack_agent = w.send_ordinary();
+    messages.push((ack_agent.clone(), 0, "ordinary"));
+    expected_rows.insert((
+        ack_agent.as_str().to_owned(),
+        w.human.as_str().to_owned(),
+        0,
+    ));
+    let ack_human = w.a.stage_prep(&w.thread, "ordinary", &[], &[]);
+    let payload = sent(
+        &ack_human,
+        &w.thread,
+        &w.author,
+        DeliveryMode::Ordinary,
+        0,
+        vec![spec(&w.human, ReceiptObligation::None, None)],
+    );
+    w.a.author_sent(&payload).unwrap();
+    messages.push((ack_human.clone(), 0, "ordinary"));
+    expected_rows.insert((
+        ack_human.as_str().to_owned(),
+        w.human.as_str().to_owned(),
+        0,
+    ));
+    fact_exchange::sync(&w.a.store, &w.b.store);
+
+    for node in [&w.a, &w.b] {
+        for (message, _, _) in &messages {
+            node.drive_send(message);
+        }
+        for (message, priority, mode) in &messages {
+            assert_eq!(
+                node.message_shape(message),
+                Some((*priority, (*mode).to_owned())),
+                "priority and delivery_mode read the same on every node"
+            );
+        }
+        // A receipt exists only for the agent ACK recipient of the one send
+        // that names it; the human and the third seat never owe one.
+        for (message, _, _) in &messages {
+            let owed = *message == ack_agent;
+            assert_eq!(node.receipt(message, &w.agent).is_some(), owed);
+            assert_eq!(node.receipt(message, &w.human), None);
+            assert_eq!(node.receipt(message, &third), None);
+        }
+    }
+    assert_eq!(
+        w.b.delivery_rows(),
+        expected_rows,
+        "B holds a delivery row per local `none` recipient at the message priority"
+    );
+    let stranger = herdr_threads::node::NodeIdentity::from_seed([99; 32]).uuid();
+    let local_rows = replicated_projection(&w.b.store, stranger, &[LOCAL_DELIVERY_ROWS]);
+    let projected: std::collections::BTreeSet<(String, i64)> = local_rows
+        .values()
+        .flatten()
+        .map(|row| {
+            let cell = |name: &str| row.iter().find(|(k, _)| *k == name).unwrap().1.clone();
+            (cell("seat"), cell("priority").parse().unwrap())
+        })
+        .collect();
+    let expected_projected: std::collections::BTreeSet<(String, i64)> = expected_rows
+        .iter()
+        .map(|(_, seat, priority)| (seat.clone(), *priority))
+        .collect();
+    assert_eq!(
+        (local_rows.values().flatten().count(), projected),
+        (expected_rows.len(), expected_projected),
+        "the oracle's per-node spec sees exactly those rows with their priority"
+    );
+    assert!(
+        w.a.delivery_rows().is_empty(),
+        "A keeps no delivery row for a remote seat"
+    );
+
+    // The explicit sends wake by their receipt and p0 rows: the agent for its
+    // receipt, the human for its p0 row, never the seat nothing names.
+    assert_eq!(w.b.wake_seats(), sorted(&[&w.agent, &w.human]));
+    assert!(w.a.wake_seats().is_empty());
+    w.b.clear_wakes();
+    // Raising the agent's threshold after apply re-judges it and writes
+    // exactly one wake; the next p1 row it already holds now admits.
+    w.b.set_threshold(&w.agent, 1);
+    {
+        let db = w.b.raw();
+        wake::note_new_attention(&db, &w.agent).unwrap();
+    }
+    assert_eq!(
+        w.b.attention(&w.agent).map(|(_, version)| version),
+        Some(1),
+        "one wake write for the raise"
+    );
+    w.check_no_remote_delivery();
 }

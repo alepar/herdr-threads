@@ -410,6 +410,11 @@ fn strict_mode_detects_inverted_order() {
 /// Inserts the same replicated rows into `store`, with `skew` shifting every
 /// local position, attribution and delivery-side column.
 fn seed_converted(store: &OracleStore, skew: i64, body: &str) {
+    seed_converted_with(store, skew, body, 0, "ordinary");
+}
+
+/// [`seed_converted`] with the message's delivery priority and mode chosen.
+fn seed_converted_with(store: &OracleStore, skew: i64, body: &str, priority: i64, mode: &str) {
     let conn = store.context().open_writer().unwrap();
     let me: String = conn
         .query_row("SELECT id FROM local_node", [], |r| r.get(0))
@@ -443,15 +448,17 @@ fn seed_converted(store: &OracleStore, skew: i64, body: &str) {
     .unwrap();
     conn.execute(
         "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,decision_seq, \
-         body,decision_at,origin_node,native_observation) \
-         VALUES('m1',?1,'t1',?2,'ordinary','s-r',?3,?6,42,?4,?5)",
+         body,decision_at,origin_node,native_observation,priority,delivery_mode) \
+         VALUES('m1',?1,'t1',?2,'ordinary','s-r',?3,?6,42,?4,?5,?7,?8)",
         rusqlite::params![
             me,
             1 + skew,
             1 + skew,
             "ab".repeat(16),
             format!("obs{skew}"),
-            body
+            body,
+            priority,
+            mode
         ],
     )
     .unwrap();
@@ -472,6 +479,46 @@ fn table_rows<'a>(
         .find(|(label, _)| label.as_str() == table || label.starts_with(&format!("{table} where")))
         .unwrap_or_else(|| panic!("{table} is not projected"));
     rows
+}
+
+// Kills: a projection that ignores the message's delivery priority.
+#[test]
+fn changed_message_priority_projects_differently() {
+    let a = OracleStore::open([41; 32], registry());
+    let b = OracleStore::open([42; 32], registry());
+    seed_converted_with(&a, 0, "hello", 0, "ordinary");
+    seed_converted_with(&b, 0, "hello", 3, "ordinary");
+    let (pa, pb) = (converted_projection(&a), converted_projection(&b));
+    assert_ne!(table_rows(&pa, "messages"), table_rows(&pb, "messages"));
+}
+
+// Kills: a projection that ignores the message's delivery mode.
+#[test]
+fn changed_message_delivery_mode_projects_differently() {
+    let a = OracleStore::open([41; 32], registry());
+    let b = OracleStore::open([42; 32], registry());
+    seed_converted_with(&a, 0, "hello", 1, "ordinary");
+    seed_converted_with(&b, 0, "hello", 1, "lazy");
+    let (pa, pb) = (converted_projection(&a), converted_projection(&b));
+    assert_ne!(table_rows(&pa, "messages"), table_rows(&pb, "messages"));
+}
+
+// Kills: a projection that includes the node-local nudge threshold, which
+// differs between nodes by design (reconcile 1.1).
+#[test]
+fn nudge_threshold_is_not_projected() {
+    let a = OracleStore::open([41; 32], registry());
+    let b = OracleStore::open([42; 32], registry());
+    seed_converted(&a, 0, "hello");
+    seed_converted(&b, 0, "hello");
+    let before = converted_projection(&b);
+    b.context()
+        .open_writer()
+        .unwrap()
+        .execute("UPDATE seats SET nudge_threshold=5 WHERE id='s-r'", [])
+        .unwrap();
+    assert_eq!(before, converted_projection(&b), "threshold is node-local");
+    assert_eq!(converted_projection(&a), converted_projection(&b));
 }
 
 // Kills: a projection that includes a local position, an attribution column or

@@ -43,6 +43,7 @@ pub struct InvitationRow {
     pub origin: String,
     pub invitee_n: i64,
     pub deadline_at: i64,
+    pub confirmation: Option<String>,
     pub episode: i64,
     pub accepted_at: Option<i64>,
     pub retired_at: Option<i64>,
@@ -146,7 +147,7 @@ impl Node {
         self.query(
             &format!(
                 "SELECT state,thread_id,seat_id,inviter_seat_id,inviter_kind,origin_node,invitee_n,\
-                 deadline_at,episode,accepted_at,retired_at FROM invitations WHERE id='{}'",
+                 deadline_at,episode,accepted_at,retired_at,confirmation FROM invitations WHERE id='{}'",
                 id.as_str()
             ),
             |r| {
@@ -162,6 +163,7 @@ impl Node {
                     episode: r.get(8)?,
                     accepted_at: r.get(9)?,
                     retired_at: r.get(10)?,
+                    confirmation: r.get(11)?,
                 })
             },
         )
@@ -646,7 +648,14 @@ fn reject_records_reason_warn_event_and_keeps_pending_row() {
 #[test]
 fn service_and_operator_kinds_apply_on_the_signing_node_without_a_seat() {
     let node = Node::with(146, registry());
-    let (thread, _creator, guest) = local_pair(&node);
+    let (thread, creator, guest) = local_pair(&node);
+    // The confirmation is derived from the issuer kind on apply: only a seat
+    // invitation requires an ACK; the payload carries no such field.
+    let seat = node.created_payload(&thread, &creator, &guest);
+    node.author_created(&seat).unwrap();
+    let row = node.invitation(&seat.invitation).unwrap();
+    assert_eq!(row.confirmation.as_deref(), Some("require_ack"));
+    assert_eq!(row.deadline_at, seat.created_at + seat.duration_ms);
     let service = InvitationCreatedPayload {
         inviter: None,
         inviter_kind: InviterKind::Service,
@@ -659,6 +668,7 @@ fn service_and_operator_kinds_apply_on_the_signing_node_without_a_seat() {
         (row.state.as_str(), row.inviter, row.kind.as_str()),
         ("pending", None, "service")
     );
+    assert_eq!(row.confirmation, None, "a service invitation owes no ACK");
     let operator = InvitationCreatedPayload {
         inviter: None,
         inviter_kind: InviterKind::Operator,
@@ -669,9 +679,11 @@ fn service_and_operator_kinds_apply_on_the_signing_node_without_a_seat() {
     node.author_created(&operator).unwrap();
     let row = node.invitation(&operator.invitation).unwrap();
     assert_eq!((row.inviter, row.kind.as_str()), (None, "operator"));
+    assert_eq!(row.confirmation, None, "an operator invitation owes no ACK");
     assert_eq!(
         node.invitation_events(&thread),
         vec![
+            format!("invite:{}", seat.invitation.as_str()),
             format!("service_invite:{}:ordinary", service.invitation.as_str()),
             format!("operator_invite:{}", operator.invitation.as_str())
         ],
