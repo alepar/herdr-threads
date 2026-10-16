@@ -47,7 +47,7 @@ use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::time::UtcMillis;
 use crate::store::connection::DecisionInstant;
 use crate::store::connection::{StoreContext, SyncState, api_error, store_error};
-use crate::store::journal::{self, ReissueSource};
+use crate::store::journal::{self};
 use crate::sync::coordinator::{CloneKind, CloneReport};
 use crate::sync::envelope::{Envelope, GENESIS_KIND};
 use crate::sync::facts::{GenesisPayload, Predecessor};
@@ -343,17 +343,7 @@ fn reissue_pass_ungated(
         )?
         .and_then(|mut entries| entries.pop())
         .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "re-issue source entry missing"))?;
-        let authored = journal::reissue(
-            tx,
-            ctx,
-            decision,
-            &source,
-            if candidate.forked {
-                ReissueSource::Forked
-            } else {
-                ReissueSource::Journal
-            },
-        )?;
+        let authored = journal::reissue(tx, ctx, decision, &source)?;
         tx.execute(
             "INSERT INTO sync_reissues(source_log_ix,source_counter,source_hash,target_ingest_seq,reissued_at) \
              VALUES (?1,?2,?3,?4,?5)",
@@ -756,7 +746,6 @@ fn rotate_for_fork(
         &proof.log,
         proof.conflicting.counter,
         proof.conflicting.hash,
-        source,
     )?;
     Ok(Rotation::Forked {
         rotated,
@@ -979,14 +968,12 @@ const MIN_SEARCH_SPAN: u64 = 256;
 /// known keeps its progress (`next_from`, `search_span`), except that an
 /// `unavailable` row, or a `complete` row that completed short of its tip
 /// (`next_from <= tip_counter`), returns to `pulling`. Returns the row's
-/// `branch_ix`. `_source` is the advertiser; the sink keeps sources in
-/// memory, the table has no column for it. Not gated by the clone gate.
+/// `branch_ix`. Not gated by the clone gate.
 pub fn upsert_branch_tip(
     tx: &Transaction<'_>,
     log: &LogKey,
     counter: u64,
     hash: [u8; 32],
-    _source: Option<NodeUuid>,
 ) -> Result<i64, ApiError> {
     let (log_ix, frozen_at): (i64, Option<i64>) = tx
         .query_row(

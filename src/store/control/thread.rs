@@ -23,7 +23,7 @@ use crate::protocol::ids::{SeatId, ServiceAuthorId, ThreadId, prefix};
 use crate::protocol::results::{ApiError, CommandResult, ErrorCode};
 use crate::protocol::time::CallBudget;
 use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
-use crate::store::materialize::{self, FactRoute, MaterializeInput, local_only};
+use crate::store::materialize::{self, FactRoute, MaterializeInput, journaled_route, local_only};
 use crate::store::schema::{self, EventInput};
 use crate::store::seats;
 use crate::store::thread_registers::{self, RegisterOutcome};
@@ -450,15 +450,12 @@ pub(crate) fn author_register(
     decision: DecisionInstant,
     payload: &ThreadRegisterPayload,
 ) -> Result<(), ApiError> {
-    let route = FactRoute::for_thread(tx, &payload.thread)?;
-    // A thread no fact created (a fixture whose journal never opened) has no
-    // creating entry, so a register fact for it would park on its `needs`:
-    // such a thread keeps the node-local write it always had.
-    let route = if route == FactRoute::Journal && !has_creating_fact(tx, payload.thread.as_str())? {
-        FactRoute::LocalOnly
-    } else {
-        route
-    };
+    let route = journaled_route(
+        tx,
+        ctx.is_some_and(StoreContext::journal_open),
+        &payload.thread,
+        payload.thread.as_str(),
+    )?;
     match (route, ctx) {
         (FactRoute::Journal, Some(ctx)) => {
             let floor = thread_registers::current(tx, &payload.thread, store_field(payload.field))

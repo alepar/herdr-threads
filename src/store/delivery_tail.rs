@@ -24,7 +24,6 @@ use crate::protocol::ids::{MessageId, SeatId};
 use crate::protocol::results::{ApiError, ErrorCode};
 use crate::store::connection::{api_error, store_error};
 use crate::store::lazy_delivery;
-use crate::store::materialize::MaterializeInput;
 
 /// Reason bit for new message or invitation attention.
 const REASON_NEW_ATTENTION: i64 = 1;
@@ -44,13 +43,8 @@ impl DeliveryTail {
     /// whose nudge threshold admits the row's priority). Every row of one
     /// preparation carries the message priority, so the priority is read from
     /// the rows, not passed.
-    ///
-    /// `_m` is the apply input of the publication; it is reserved
-    /// (suppression rides the manifest column), and every caller passes
-    /// `Some`.
     pub(crate) fn message(
         tx: &Transaction<'_>,
-        _m: Option<&MaterializeInput<'_>>,
         message: &MessageId,
         prep: &str,
         ack_recipients: i64,

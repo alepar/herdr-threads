@@ -944,7 +944,7 @@ impl Core {
                 // store already holds, else the peer's, probed for alone.
                 self.d.sink.note_tip_source(log, &have.head, source);
                 if self.local_entry(&log, have.counter, head)?.is_some() {
-                    self.record_tip(log, have.counter, head, source)?;
+                    self.record_tip(log, have.counter, head)?;
                     self.d.sink.set_have_memo(source, log, memo.0, memo.1);
                     continue;
                 }
@@ -1052,19 +1052,9 @@ impl Core {
 
     /// Records a signed branch tip of a frozen own log, starts its pull and
     /// turns the own-history `Branches` hold on while it pulls.
-    fn record_tip(
-        &mut self,
-        log: LogKey,
-        counter: u64,
-        hash: [u8; 32],
-        source: NodeUuid,
-    ) -> Result<(), ApiError> {
+    fn record_tip(&mut self, log: LogKey, counter: u64, hash: [u8; 32]) -> Result<(), ApiError> {
         quantum!(self, |tx, _ctx, _decision| store::upsert_branch_tip(
-            tx,
-            &log,
-            counter,
-            hash,
-            Some(source)
+            tx, &log, counter, hash
         ));
         self.refresh_branches_flag()?;
         self.schedule_pulls()
@@ -1269,7 +1259,7 @@ impl Core {
                     return Ok(());
                 }
                 if meta.own && meta.state == LogState::Frozen {
-                    self.record_tip(log, want.tip.counter, tip_hash, source)?;
+                    self.record_tip(log, want.tip.counter, tip_hash)?;
                 }
                 Ok(())
             }

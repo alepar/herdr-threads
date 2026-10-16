@@ -875,3 +875,24 @@ fn local_only_creation_journals_nothing() {
     assert!(node.register(&thread, "topic").is_none(), "no register");
     assert!(node.event_keys(&thread).is_empty(), "no creation event");
 }
+
+#[test]
+fn register_on_a_journaled_thread_without_its_creating_fact_is_store_corrupt() {
+    let (node, member, thread) = crate::facts_membership::node_with_orphan_thread(99);
+    let error = node
+        .cmd_set_topic(&member, &thread, "new topic", "op-topic")
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt, "{}", error.detail);
+    assert_eq!(
+        node.count("SELECT count(*) FROM journal WHERE kind='thread.register'"),
+        0
+    );
+    assert_eq!(
+        node.count(&format!(
+            "SELECT count(*) FROM threads WHERE id='{}' AND topic='t'",
+            thread.as_str()
+        )),
+        1,
+        "the topic is unchanged"
+    );
+}

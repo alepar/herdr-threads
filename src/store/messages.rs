@@ -20,7 +20,7 @@ use super::{
     attribution,
     connection::{StoreContext, api_error, store_error},
     effective::{self, UnavailableWarningKey},
-    materialize::{FactRoute, MaterializeInput},
+    materialize::{FactRoute, MaterializeInput, journaled_route},
     schema,
 };
 use crate::sync::facts::message::{MessageSent, MessageSentPayload};
@@ -993,14 +993,7 @@ pub(super) fn insert_publication_suppressing(
     .map_err(store_error)?;
     schema::bump_timeline_revision(tx, thread)?;
     schema::bump_filter_revision(tx, &instance, "directory", thread.as_str())?;
-    super::delivery_tail::DeliveryTail::message(
-        tx,
-        Some(m),
-        &id,
-        prep_id,
-        recipient_count,
-        warning_count,
-    )?;
+    super::delivery_tail::DeliveryTail::message(tx, &id, prep_id, recipient_count, warning_count)?;
     Ok(Publication {
         message: id,
         sequence: base,
@@ -1489,26 +1482,14 @@ pub fn materialize_message(
     Ok(())
 }
 
-/// The route a send takes: the journal for a journaled thread whose creating
-/// fact exists, a node-local write for any other.
-///
-/// Transitional (ht-5fr.4.10): a pair thread `ensure_direct_thread` still
-/// inserts directly has no creating fact, so `message.sent` for it would park
-/// on its `needs`; until that command authors `thread.direct` such a thread,
-/// and a store whose journal never opened (a fixture; the daemon opens it
-/// before serving), keep the node-local write.
+/// The route a send takes (see [`journaled_route`]); the creating fact is the
+/// thread's own.
 fn send_route(
     tx: &Transaction<'_>,
     context: &StoreContext,
     thread: &ThreadId,
 ) -> Result<FactRoute, ApiError> {
-    let route = FactRoute::for_thread(tx, thread)?;
-    if route == FactRoute::Journal
-        && (!context.journal_open() || !super::control::has_creating_fact(tx, thread.as_str())?)
-    {
-        return Ok(FactRoute::LocalOnly);
-    }
-    Ok(route)
+    journaled_route(tx, context.journal_open(), thread, thread.as_str())
 }
 
 /// Publishes only a sealed, revision-current preparation after a fresh caller proof.

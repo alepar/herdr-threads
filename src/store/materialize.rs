@@ -148,6 +148,57 @@ pub fn is_own_history_hold(error: &ApiError) -> bool {
     error.code == ErrorCode::ServiceBusy && error.detail == OWN_HISTORY_HOLD_DETAIL
 }
 
+/// The route of a fact in `thread` whose entity `creates` names (the thread
+/// id for a send, a membership or a register write, the message id for a
+/// settlement): the one place a command decides between the journal and a
+/// node-local write. `journal_open` is whether the store's journal is open.
+///
+/// | thread | journal | creating fact | route |
+/// |---|---|---|---|
+/// | service-managed (`journaled = 0`) | any | any | `LocalOnly` |
+/// | journaled | open | present | `Journal` |
+/// | journaled | open | absent | `StoreCorrupt` |
+/// | journaled | not open | any | `LocalOnly` in a test or `test-support` build (a fixture store that never opened the journal creates journaled threads node-locally), else `Unsupported` |
+///
+/// A clean-start store authors every journaled thread through `thread.created`
+/// or `thread.direct` and every send through `message.sent`, and journal rows
+/// are never deleted, so a journaled entity without its creating fact is
+/// corruption; a node-local write for it would never replicate. The daemon
+/// opens the journal before serving, so the last row is unreachable in
+/// production.
+pub(crate) fn journaled_route(
+    tx: &Transaction<'_>,
+    journal_open: bool,
+    thread: &ThreadId,
+    creates: &str,
+) -> Result<FactRoute, ApiError> {
+    let route = FactRoute::for_thread(tx, thread)?;
+    if route == FactRoute::LocalOnly {
+        return Ok(route);
+    }
+    if !journal_open {
+        #[cfg(any(test, feature = "test-support"))]
+        return Ok(FactRoute::LocalOnly);
+        #[cfg(not(any(test, feature = "test-support")))]
+        return Err(api_error(ErrorCode::Unsupported, "journal not open"));
+    }
+    let created: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM journal WHERE creates=?1)",
+            [creates],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if created {
+        Ok(FactRoute::Journal)
+    } else {
+        Err(api_error(
+            ErrorCode::StoreCorrupt,
+            format!("journaled entity {creates} has no creating fact"),
+        ))
+    }
+}
+
 /// How a command turns a decided payload into rows: through the journal, or
 /// as a node-local write for a service-managed thread.
 ///

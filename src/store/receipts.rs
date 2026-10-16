@@ -41,7 +41,7 @@ use super::{
     connection::{DecisionInstant, StoreContext, api_error, store_error},
     control::AccountableActor,
     effective::{self, EffectiveReceiptState},
-    materialize::{FactRoute, MaterializeInput, is_own_history_hold},
+    materialize::{FactRoute, MaterializeInput, is_own_history_hold, journaled_route},
     schema::{self, EventInput},
 };
 
@@ -590,31 +590,15 @@ fn batch_id(operation: &OperationId) -> String {
     format!("h:{hex}")
 }
 
-/// The route a settlement of `message` takes: the journal when `message.sent`
-/// created it there, a node-local write for a service-managed thread, a store
-/// whose journal never opened (a fixture) or a message no fact created
-/// (transitional: pair threads until ht-5fr.4.10), which `receipt.settled`
-/// would park on its `needs`.
+/// The route a settlement of `message` takes (see [`journaled_route`]); the
+/// creating fact is the message's `message.sent`.
 fn settle_route(
     tx: &Transaction<'_>,
     context: &StoreContext,
     thread: &ThreadId,
     message: &MessageId,
 ) -> Result<FactRoute, ApiError> {
-    let route = FactRoute::for_thread(tx, thread)?;
-    if route == FactRoute::Journal {
-        let created: bool = tx
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM journal WHERE creates=?1)",
-                [message.as_str()],
-                |r| r.get(0),
-            )
-            .map_err(store_error)?;
-        if !context.journal_open() || !created {
-            return Ok(FactRoute::LocalOnly);
-        }
-    }
-    Ok(route)
+    journaled_route(tx, context.journal_open(), thread, message.as_str())
 }
 
 /// Settles validated pending receipts of one seat: per message in request

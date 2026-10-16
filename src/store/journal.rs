@@ -667,15 +667,6 @@ fn author_encoded(
     })
 }
 
-/// Where the envelope handed to [`reissue`] was held: the `journal` chain of
-/// its log, or `journal_forked` (a lost branch). Recorded by the caller's
-/// `sync_reissues` row; the copy itself is the same either way.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReissueSource {
-    Journal,
-    Forked,
-}
-
 /// Journal's second authoring entry point: re-authors `source`, an entry of a
 /// frozen own log or of one of its branches, as the next entry of the active
 /// self log, and applies it under [`apply::ApplyMode::Reissue`].
@@ -701,7 +692,6 @@ pub fn reissue(
     ctx: &StoreContext,
     decision: DecisionInstant,
     source: &Envelope,
-    _source_where: ReissueSource,
 ) -> Result<Authored, ApiError> {
     let sync = ctx.sync()?;
     let active = active_self_log(tx)?;
