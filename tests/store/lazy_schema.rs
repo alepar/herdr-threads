@@ -25,7 +25,7 @@ fn lazy_schema_upgrade25_defaults_existing_messages_to_ordinary() {
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        47
+        schema::LATEST_VERSION
     );
 }
 
@@ -480,9 +480,9 @@ fn plan(db: &Connection, sql: &str, args: &[&dyn rusqlite::ToSql]) -> Vec<String
 }
 
 #[test]
-fn priority_schema_fresh_database_is_v47_with_audited_shape() {
+fn priority_schema_fresh_database_has_audited_shape() {
     let db = fixture();
-    assert_eq!(scalar(&db, "PRAGMA user_version"), 47);
+    assert_eq!(scalar(&db, "PRAGMA user_version"), schema::LATEST_VERSION);
     for (table, column, not_null, default) in [
         ("messages", "priority", 1, Some("0")),
         ("send_preparations", "priority", 1, Some("0")),
@@ -533,7 +533,7 @@ fn priority_schema_upgrade46_backfills_priority_threshold_and_publication() {
     // Published lazy message at decision 7, and a staged lazy preparation.
     db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS}) VALUES('prep-2','i','scope','prep-2',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy'),('prep-3','i','scope','prep-3',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy'); INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-2','msg-2','t','a'),('prep-3','msg-3','t','a'); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('msg-2','i','t',2,'ordinary',7,'passive',0,'lazy'); INSERT INTO send_manifests({MANIFEST_COLUMNS}) VALUES('prep-2','msg-2','i','t',7,0,2,0,1,0)")).unwrap();
     schema::initialize(&db, || UtcMillis(0)).unwrap();
-    assert_eq!(scalar(&db, "PRAGMA user_version"), 47);
+    assert_eq!(scalar(&db, "PRAGMA user_version"), schema::LATEST_VERSION);
     let pair = |sql: &str| -> Vec<(String, i64)> {
         db.prepare(sql)
             .unwrap()
@@ -594,7 +594,7 @@ fn priority_schema_upgrade46_backfills_priority_threshold_and_publication() {
     let before = catalog();
     schema::initialize(&db, || UtcMillis(0)).unwrap();
     assert_eq!(catalog(), before);
-    assert_eq!(scalar(&db, "PRAGMA user_version"), 47);
+    assert_eq!(scalar(&db, "PRAGMA user_version"), schema::LATEST_VERSION);
     assert_eq!(
         pair("SELECT id,priority FROM messages ORDER BY id"),
         [("msg-1".into(), 0), ("msg-2".into(), 1)]

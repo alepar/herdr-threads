@@ -3269,6 +3269,36 @@ mod continuity_gate {
     }
 
     #[test]
+    fn same_session_continuity_transient_keeps_intent_for_next_event_without_retry_loop() {
+        for kind in [EventKind::Startup, EventKind::Tool] {
+            let pane = Pane::new();
+            let daemon = Daemon::new(vec![
+                Ok(Err(rejection(ErrorCode::StaleHostObservation))),
+                reattached("saved", 2),
+            ])
+            .with_lookups(vec![vec!["saved"]]);
+            let ev = event(Harness::Claude, kind, Role::TopLevel, Some("S-1"));
+            assert!(matches!(
+                pane.call(&daemon).reattach_by_continuity(&ev, false),
+                Reattach::Pending
+            ));
+            let reference = pane.pending().unwrap();
+            assert_eq!(daemon.continuity_requests().len(), 1);
+            assert!(
+                pane.call(&daemon)
+                    .reattach_by_continuity(&ev, false)
+                    .done()
+                    .is_some()
+            );
+            let requests = daemon.continuity_requests();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0].operation, reference.operation);
+            assert_eq!(requests[1].operation, reference.operation);
+            assert!(pane.pending().is_none());
+        }
+    }
+
+    #[test]
     fn same_session_continuity_quiet_turn_does_not_repeat_standing_instructions() {
         let pane = Pane::new();
         let daemon = Daemon::new(vec![reattached("saved", 3)]);
@@ -8202,6 +8232,68 @@ mod registered_resume {
     }
 
     #[test]
+    fn same_session_continuity_no_match_keeps_ordinary_held_and_unowned_behavior() {
+        for event in ["SyntheticStart", "SyntheticResume", "SyntheticTool"] {
+            for unowned in [false, true] {
+                let f = Fixture::new(false);
+                write_fixture_json(&f.root.join("enrollment-no-match.json"), &true).unwrap();
+                if unowned {
+                    write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
+                }
+                let outcome = f.run(
+                    registration(),
+                    &input(event, "top_level", Some("fourth-resume-session")),
+                );
+                assert_eq!(f.service.requests().len(), 1);
+                assert!(
+                    !outcome
+                        .diagnostic
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("continuity"),
+                    "{event}, unowned={unowned}: {:?}",
+                    outcome.diagnostic
+                );
+                if event != "SyntheticTool" {
+                    // No candidate is not a refusal of ordinary enrollment:
+                    // its canonical resolver either enrolls or explains the hold.
+                    assert_eq!(enrollment_counts(&f), (1, usize::from(unowned)));
+                    if !unowned {
+                        assert!(outcome.diagnostic.unwrap().contains("seat enrollment"));
+                    }
+                } else {
+                    // A plain tool may recover C1 but may never allocate a seat.
+                    assert_eq!(enrollment_counts(&f), (0, 0));
+                    assert!(f.saved().is_none());
+                    if unowned {
+                        assert!(outcome.stdout.is_empty());
+                    }
+                }
+                assert_no_enrollment_intents(&f);
+            }
+        }
+    }
+
+    #[test]
+    fn same_session_continuity_resume_no_match_rechecks_a_resolved_listing() {
+        let f = Fixture::new(true);
+        write_fixture_json(&f.root.join("enrollment-no-match.json"), &true).unwrap();
+        let outcome = f.run(
+            registration(),
+            &input(
+                "SyntheticResume",
+                "top_level",
+                Some("fourth-resume-session"),
+            ),
+        );
+        assert_eq!(outcome.diagnostic, None);
+        assert_eq!(enrollment_counts(&f), (1, 1));
+        assert_eq!(f.saved().unwrap().seat, "registered-seat");
+        assert_eq!(f.service.requests().len(), 1);
+        assert_no_enrollment_intents(&f);
+    }
+
+    #[test]
     fn same_session_continuity_registered_running_turn_recovers_after_daemon_upgrade() {
         let f = Fixture::new(false);
         write_fixture_json(&f.root.join("same-session-match.json"), &true).unwrap();
@@ -8397,7 +8489,13 @@ mod registered_resume {
                 f.service.seen.lock().unwrap()
             );
             assert!(f.saved().is_none());
-            assert!(f.service.requests().is_empty());
+            // C1 recovery and enrollment are separate decisions: a qualified
+            // top-level native session may look for its old seat even when an
+            // older bridge supplies no witness permitting new-seat enrollment.
+            assert_eq!(
+                f.service.requests().len(),
+                usize::from(callback == "pre_llm_call")
+            );
             assert!(outcome.attention.is_none());
             assert_no_enrollment_intents(&f);
         }
@@ -8846,7 +8944,12 @@ mod registered_resume {
                 .unwrap();
             let outcome = f.run(r, &i);
             assert!(f.service.requests().is_empty(), "{event}");
-            assert!(f.saved().is_none());
+            // Ordinary resolved check-in may install its context. A planted
+            // continuity intent must not affect that ordinary behavior.
+            let ordinary = Fixture::new(true);
+            let ordinary_outcome = ordinary.run(r, &i);
+            assert_eq!(outcome.diagnostic, ordinary_outcome.diagnostic);
+            assert_eq!(f.saved().map(|c| c.seat), ordinary.saved().map(|c| c.seat));
             assert_eq!(outcome.diagnostic, None);
             assert_eq!(
                 journal
@@ -10064,12 +10167,13 @@ mod registered_resume {
         assert_eq!(enrollment_counts(&f).0, 0);
         assert_eq!(continuity_commands(&f), 0);
         assert_eq!(f.saved().unwrap().seat, "registered-seat");
-        // Unseated pane: enrolls only through the fallback.
+        // Unseated pane: C1 finds no same-session candidate, then the
+        // witnessed Unowned-turn fallback performs ordinary enrollment.
         let f = unowned_fixture();
         let turn = hermes_cli_turn("resumed-session", "t1", 1);
         turn_output(&f.run(r, &turn), "startup", &turn);
         assert_eq!(enrollment_counts(&f), (1, 1));
-        assert_eq!(continuity_commands(&f), 0);
+        assert_eq!(continuity_commands(&f), 1);
     }
     #[test]
     fn startup_enrollment_hermes_side_agent_reuses_seat() {

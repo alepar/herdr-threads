@@ -215,11 +215,11 @@ fn channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane()
         // and the seat_archival insertion kicks the existing archival lane.
         w.ok(None, &["seat", "resolve", "--pane", "w1:p1"]);
         let db = w.db();
-        // The initializer upgrades each historical input to the composed schema46.
+        // The initializer upgrades each historical input to the latest schema.
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            47
+            herdr_threads::store::schema::LATEST_VERSION
         );
         wait("archival worker initialization", || {
             db.query_row(

@@ -6588,33 +6588,59 @@ mod continuity {
     }
 
     #[test]
-    fn startup_clear_and_new_never_reattach() {
+    fn startup_clear_and_compact_reattach_only_the_same_native_session() {
         for (harness, sources) in [
             ("claude", &["startup", "clear"][..]),
             ("codex", &["startup", "clear", "compact"][..]),
         ] {
-            let fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
             for source in sources {
-                let hook = fx.hook(harness, PANE, &session_start(harness, "S-1", source));
-                assert_eq!(hook.code, Some(0), "{harness} {source}: {}", hook.stderr);
-                assert_eq!(
-                    fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='unresolved'"),
-                    1,
-                    "{harness} {source}"
-                );
-                assert_eq!(
-                    fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
-                    1
-                );
-                assert_eq!(
-                    fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"),
-                    0
-                );
-                assert_eq!(
-                    fx.intents(),
-                    0,
-                    "{harness} {source}: no continuity intent is recorded"
-                );
+                // Each source must recover independently; a preceding callback
+                // must not leave an already-resolved seat for the next one.
+                for session in ["S-1", "NEW"] {
+                    let fx = reattaching_fixture(harness, Agent::Session(session.into()));
+                    let hook = fx.hook(harness, PANE, &session_start(harness, session, source));
+                    assert_eq!(
+                        hook.code,
+                        Some(0),
+                        "{harness} {source} {session}: {}",
+                        hook.stderr
+                    );
+                    let recovered = i64::from(session == "S-1");
+                    assert_eq!(fx.count("SELECT count(*) FROM seats"), 1);
+                    assert_eq!(
+                        fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='resolved' AND target_id='w1:p1'"),
+                        recovered,
+                        "{harness} {source} {session}"
+                    );
+                    assert_eq!(
+                        fx.count(
+                            "SELECT count(*) FROM seats WHERE id='saved' AND state='unresolved'"
+                        ),
+                        1 - recovered
+                    );
+                    assert_eq!(
+                        fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                        1 - recovered
+                    );
+                    assert_eq!(
+                        fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"),
+                        recovered
+                    );
+                    assert_eq!(fx.count(ORDINARY_ALLOCATIONS), 0);
+                    assert_eq!(
+                        fx.count("SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL"),
+                        recovered
+                    );
+                    assert_eq!(
+                        fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL AND observation_provenance='cooperative_top_level' AND native_session='S-1' AND harness='{harness}'")),
+                        recovered
+                    );
+                    assert_eq!(
+                        fx.intents(),
+                        0,
+                        "{harness} {source} {session}: definitive recovery or refusal finishes its intent"
+                    );
+                }
             }
         }
     }
@@ -7000,12 +7026,43 @@ mod continuity {
                 .unwrap();
         }
         assert_eq!(fx.intents(), 1);
-        // A tool event never reads the journal: the stale intent stays.
+        // The unresolved pane allows same-session C1 on this top-level tool
+        // event. S-9 supersedes the stale S-1 intent without replaying it.
         let tool = fx.hook("claude", PANE, &tool_event("claude", "S-9"));
         assert_eq!(tool.code, Some(0), "{}", tool.stderr);
-        assert_eq!(fx.intents(), 1);
-        // A top-level resume of another session supersedes it: the S-1 intent
-        // is completed unreplayed and only S-9 reattaches.
+        assert_eq!(fx.intents(), 0);
+        assert_eq!(
+            fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='unresolved'"),
+            1
+        );
+        assert_eq!(
+            fx.count("SELECT count(*) FROM seats WHERE id='fresh' AND state='resolved' AND target_id='w1:p1'"),
+            1
+        );
+        assert_eq!(
+            fx.count(
+                "SELECT count(*) FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL"
+            ),
+            0
+        );
+        assert_eq!(
+            fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='fresh' AND ended_at IS NULL AND native_session='S-9' AND observation_provenance='cooperative_top_level'"),
+            1
+        );
+        assert_eq!(fx.count("SELECT count(*) FROM seats"), 2);
+        assert_eq!(
+            fx.count("SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL"),
+            1
+        );
+        assert_eq!(fx.count(ORDINARY_ALLOCATIONS), 0);
+        assert_eq!(
+            fx.count(
+                "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"
+            ),
+            1
+        );
+        // The subsequent resume follows the normal resolved-seat path and
+        // cannot add another continuity decision or replay the old intent.
         let other = fx.hook("claude", PANE, &session_start("claude", "S-9", "resume"));
         assert_eq!(other.code, Some(0), "{}", other.stderr);
         assert_eq!(fx.intents(), 0);

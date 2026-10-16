@@ -85,7 +85,8 @@ const V45: &str = include_str!("../../migrations/0045_invitation_presentation.sq
 const V46: &str = include_str!("../../migrations/0046_presentation_relevance.sql");
 const V47: &str = include_str!("../../migrations/0047_message_priority.sql");
 const V48: &str = include_str!("../../migrations/0048_recovery_hold_health.sql");
-pub(crate) const LATEST_VERSION: i64 = 48;
+/// Current schema version installed for fresh stores and upgrade targets.
+pub const LATEST_VERSION: i64 = 48;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context

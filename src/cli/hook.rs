@@ -1856,7 +1856,14 @@ fn check_in(
         PaneSeat::Resolved(seat, generation) => match call.reattach_by_continuity(event, true) {
             Reattach::Done(done) => return Ok(stamp(*done)),
             Reattach::Declined => Some((seat, generation)),
-            Reattach::Refused(error) if error.code == ErrorCode::TargetAlreadyOwned => {
+            Reattach::Refused(error)
+                if matches!(
+                    error.code,
+                    ErrorCode::TargetAlreadyOwned | ErrorCode::NotFound
+                ) =>
+            {
+                // A no-match (including a disappeared pane) does not decide
+                // ordinary check-in. Its fresh canonical guards still apply.
                 Some((seat, generation))
             }
             Reattach::Refused(error) => return Err(api_failure("continuity", &error)),
@@ -1879,15 +1886,25 @@ fn check_in(
                 // The daemon alone decides whether this target is genuinely new.
                 None
             }
-            Reattach::Refused(error)
-                if error.code == ErrorCode::NotFound
-                    && enroll != Enroll::No
-                    && matches!(absent, PaneSeat::Unowned) =>
-            {
-                None
+            Reattach::Refused(error) if error.code == ErrorCode::NotFound => {
+                // No C1 candidate means use the ordinary path. A lifecycle
+                // resolver must explain held targets itself; a witnessed turn
+                // may enroll only an unowned pane, and a plain turn never does.
+                if enroll == Enroll::Lifecycle
+                    || (enroll == Enroll::IfUnowned && matches!(absent, PaneSeat::Unowned))
+                {
+                    None
+                } else {
+                    return Err(absent.refusal(pane));
+                }
             }
             Reattach::Refused(error) => return Err(api_failure("continuity", &error)),
-            Reattach::Declined | Reattach::Pending => return Err(absent.refusal(pane)),
+            Reattach::Declined => return Err(absent.refusal(pane)),
+            Reattach::Pending => {
+                return Err(Failure::Unavailable(
+                    "native-session continuity pending; retry; no new seat allocated".into(),
+                ));
+            }
         },
     };
     // A lifecycle event always runs the ordinary resolver; a witnessed turn only
@@ -2059,12 +2076,15 @@ impl PaneCall<'_> {
     /// hook's, never the journaled one), so the daemon's idempotent replay
     /// returns the recorded seat and generation. A definitive refusal completes the intent; busy,
     /// stale-observation (a Herdr restart the daemon has not yet caught up
-    /// with), transport and uncertain outcomes retry with backoff.
+    /// with), transport and uncertain outcomes retry with backoff on resume.
+    /// Non-resume hooks leave a transient attempt for the next event instead
+    /// of consuming every turn's budget and starving advisory evidence.
     fn submit_continuity(
         &self,
         journal: &super::journal::Journal,
         reference: &super::journal::IntentRef,
         liveness: crate::protocol::authority::LivenessFingerprint,
+        retry_transient: bool,
     ) -> ContinuityOutcome {
         let Ok(pending) = journal.load(reference) else {
             return ContinuityOutcome::Kept;
@@ -2098,7 +2118,7 @@ impl PaneCall<'_> {
                 Ok(Ok(_)) => return ContinuityOutcome::Kept,
                 _ => {}
             }
-            if !self.retry.wait(backoff) {
+            if !retry_transient || !self.retry.wait(backoff) {
                 return ContinuityOutcome::Kept;
             }
             backoff = (backoff * 2).min(CONTINUITY_BACKOFF_CAP);
@@ -2252,11 +2272,13 @@ impl PaneCall<'_> {
         else {
             return Reattach::Pending;
         };
-        let mut reattached = match self.submit_continuity(&journal, &reference, liveness) {
-            ContinuityOutcome::Reattached(reattached) => reattached,
-            ContinuityOutcome::Refused(code) => return Reattach::Refused(code),
-            ContinuityOutcome::Kept => return Reattach::Pending,
-        };
+        let retry_transient = event.kind == EventKind::Resume;
+        let mut reattached =
+            match self.submit_continuity(&journal, &reference, liveness, retry_transient) {
+                ContinuityOutcome::Reattached(reattached) => reattached,
+                ContinuityOutcome::Refused(code) => return Reattach::Refused(code),
+                ContinuityOutcome::Kept => return Reattach::Pending,
+            };
         if reused {
             match self.replay_is_current(&reattached.seat) {
                 Some(true) => {}
@@ -2271,7 +2293,12 @@ impl PaneCall<'_> {
                         return Reattach::Pending;
                     };
                     reference = fresh;
-                    reattached = match self.submit_continuity(&journal, &reference, liveness) {
+                    reattached = match self.submit_continuity(
+                        &journal,
+                        &reference,
+                        liveness,
+                        retry_transient,
+                    ) {
                         ContinuityOutcome::Reattached(reattached) => reattached,
                         ContinuityOutcome::Refused(code) => return Reattach::Refused(code),
                         ContinuityOutcome::Kept => return Reattach::Pending,

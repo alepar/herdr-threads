@@ -104,7 +104,7 @@ fn setup(iso: &TestIsolation, members: &[(&str, Kind)]) -> (StoreContext, Connec
 /// thread's and host's current revisions, `delivery_mode` as recorded. `staged` (a prefix of the
 /// audience in membership order) is already staged as receipts the way v46 code staged a
 /// nudge-class send's whole audience, with the cursor and count advanced past them. Reopened
-/// through `open_writer`, which upgrades it to v47.
+/// through `open_writer`, which upgrades it to the latest schema.
 fn v46_setup(
     iso: &TestIsolation,
     members: &[(&str, Kind)],
@@ -590,7 +590,10 @@ fn v46_prepared_send_retries_under_v47_in_its_recorded_shape() {
         let v46_digest =
             crate::store::schema::canonical_digest(&messages::send_payload(&old)).unwrap();
         let (context, mut conn) = v46_setup(&iso, GROUP, &old, &[]);
-        assert_eq!(count(&conn, "PRAGMA user_version"), 47);
+        assert_eq!(
+            count(&conn, "PRAGMA user_version"),
+            crate::store::schema::LATEST_VERSION
+        );
         let stored: (i64, Vec<u8>) = conn
             .query_row("SELECT priority,digest FROM send_preparations", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))
@@ -649,7 +652,10 @@ fn v46_prepared_mid_build_send_resumes_in_its_recorded_audience_shape() {
     let mut old = request();
     old.invited_recipients = vec![SeatId::new("c")];
     let (context, mut conn) = v46_setup(&iso, AGENTS, &old, &["b"]);
-    assert_eq!(count(&conn, "PRAGMA user_version"), 47);
+    assert_eq!(
+        count(&conn, "PRAGMA user_version"),
+        crate::store::schema::LATEST_VERSION
+    );
     assert_eq!(
         count(&conn, "SELECT count(*) FROM prepared_recipients"),
         1,

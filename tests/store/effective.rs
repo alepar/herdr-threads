@@ -1421,6 +1421,18 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
                 None => presentation_objects.push(row),
             }
         }
+        // V48 adds one health lookup index; preserve the independent DDL oracle and
+        // normalize only the new index's unconstrained page allocation.
+        expected
+            .execute_batch(include_str!(
+                "../../migrations/0048_recovery_hold_health.sql"
+            ))
+            .unwrap();
+        let recovery_index = catalog(&expected)
+            .into_iter()
+            .find(|row| row.1 == "recovery_holds_current_open")
+            .unwrap();
+        presentation_objects.push(recovery_index);
         let new_names: std::collections::HashSet<_> = presentation_objects
             .iter()
             .map(|row| row.1.clone())

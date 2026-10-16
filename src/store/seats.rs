@@ -2807,6 +2807,21 @@ fn validate_resolution_allocation(
     instance: &str,
     proof: &DurableStructuralProof,
 ) -> Result<(), ApiError> {
+    // A target appearing after the restore baseline is not a new pane when
+    // an unresolved seat still references it. Decide this canonically rather
+    // than relying on a client's earlier seat listing to refuse allocation.
+    let unresolved: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='unresolved')",
+        params![instance, proof.target().as_str()], |row| row.get(0),
+    ).map_err(store_error)?;
+    if unresolved {
+        return Err(resolution_recovery_refusal(
+            tx,
+            instance,
+            proof.target().as_str(),
+            "target has unresolved seat mapping",
+        )?);
+    }
     let recovery: Option<(Option<String>, Option<i64>)> = tx
         .query_row(
             "SELECT recovery_boot,recovery_epoch FROM host_instances WHERE id=?1",

@@ -6695,11 +6695,15 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
         "held-baseline",
         "released",
         "created-after",
+        "unresolved-target-after",
     ] {
         let (context, conn, path, store, mut observation, budget) = ordinary_resolution_fixture();
-        if state == "created-after" {
+        if matches!(state, "created-after" | "unresolved-target-after") {
             observation.target = HostTargetId::new("created-after");
             observation.terminal = Some(TerminalId::new("terminal-created-after"));
+        }
+        if state == "unresolved-target-after" {
+            conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at) VALUES ('prior-seat','i','unresolved','native','created-after',1,0)", []).unwrap();
         }
         let request = ResolveSeat {
             target: observation.target.clone(),
@@ -6738,11 +6742,26 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
         if state == "created-after" {
             assert!(matches!(result.unwrap(), Outcome::Resolved(_)));
         } else {
-            assert!(result.is_err(), "{state}");
+            let error = result.unwrap_err();
+            assert_eq!(error.code, ErrorCode::TargetUnresolved, "{state}");
+            if state == "unresolved-target-after" {
+                assert!(
+                    error.detail.contains("unresolved seat mapping"),
+                    "{}",
+                    error.detail
+                );
+                assert!(
+                    error
+                        .detail
+                        .contains("herdr-threads seat inspect prior-seat"),
+                    "{}",
+                    error.detail
+                );
+            }
             assert_eq!(
                 conn.query_row("SELECT count(*) FROM seats", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                0
+                i64::from(state == "unresolved-target-after")
             );
             assert_eq!(
                 conn.query_row("SELECT count(*) FROM operations", [], |r| r
