@@ -5,6 +5,7 @@
 ## v1.0.1
 
 - **`handoff --new-tab` works again on the default automatic channel.** Since v0.10.0 a new-tab handoff without `--new-thread` or `--thread` failed on every Herdr version with `unknown outcome: response family mismatch` before creating the tab, leaving a `possible_creation` attempt for `retry`. The client now accepts the daemon's submission-check and seat-resolution replies for those steps. `handoff --pane`, `--existing`, `--new-thread` and `launch` were not affected. If an earlier attempt was left in `possible_creation`, check it with its printed `retry_argv` before running the handoff again.
+- **No Codex startup warning about the SessionEnd hook.** Codex 0.162 clamps a SessionEnd hook's timeout to 3 s and warned at every start ("clamping SessionEnd hook timeout to 3s"); setup now declares 3 s for it. Re-running setup (or the installer) rewrites that one group, so Codex asks once to re-trust the changed hook (`/hooks`, or the next interactive start).
 - **Verified with Herdr 0.9.5.** Launch, handoff and wake were checked against official Herdr 0.9.5. The release smoke now runs `launch` and the automatic `handoff --new-tab` against every listed Herdr release, and `scripts/wake-e2e-herdr VERSION` runs the wake e2e in a private server of one listed release.
 
 ## v1.0.0

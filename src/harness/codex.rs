@@ -1203,7 +1203,8 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
 
 /// Codex's declared hook groups (SessionStart, SubagentStart, Bash PreToolUse, UserPromptSubmit,
 /// SubagentStop, SessionEnd) in the `hooks.json` form. The 10 s timeout bounds Codex's wait (its default is 600 s); the hook's own
-/// watchdog ends it far earlier.
+/// watchdog ends it far earlier. SessionEnd declares 3 s: Codex clamps a SessionEnd timeout to 3 s
+/// and warns about a longer one at every start.
 pub fn declared_hook_groups(command: &str) -> Vec<(&'static str, Value)> {
     use super::setup::event_command;
     DECLARATION
@@ -1211,7 +1212,9 @@ pub fn declared_hook_groups(command: &str) -> Vec<(&'static str, Value)> {
         .iter()
         .map(|hook| {
             let command = event_command(command, hook.event);
-            let mut group = json!({"hooks":[{"type":"command","command":command,"timeout":10}]});
+            let timeout = if hook.event == "SessionEnd" { 3 } else { 10 };
+            let mut group =
+                json!({"hooks":[{"type":"command","command":command,"timeout":timeout}]});
             if let Some(matcher) = hook.matcher {
                 group["matcher"] = json!(matcher);
             }
