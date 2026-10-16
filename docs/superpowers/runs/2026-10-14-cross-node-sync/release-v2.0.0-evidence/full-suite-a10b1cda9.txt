@@ -1,0 +1,9 @@
+sha=a10b1cda9
+nextest rc=0 wall=315s
+     Summary [ 314.054s] 7445 tests run: 7445 passed (1 slow), 47 skipped
+no leaked test temp files
+no leaked test processes
+default-features rc=0
+clippy rc=0
+neutral rc=0
+fmt rc=0

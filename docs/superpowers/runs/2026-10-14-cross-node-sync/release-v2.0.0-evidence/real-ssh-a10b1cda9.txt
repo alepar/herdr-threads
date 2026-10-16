@@ -1,0 +1,12 @@
+real-ssh rc=0
+  PASS local-bin/no-key-backoff
+  PASS local-bin/default-command
+  PASS local-bin/converge
+  PASS local-bin/send-ack
+  PASS local-bin/daemon-stop-reaps-ssh
+  PASS local-bin/no-leaks
+  PASS on-path/default-command
+  PASS on-path/converge
+  PASS on-path/explicit-remote-command
+  PASS on-path/no-leaks
+  PASS cleanup/containers

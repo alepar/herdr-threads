@@ -370,8 +370,9 @@ class Driver:
         else:
             b.put("/usr/local/bin/herdr-threads", binary, user="root")
         for n in (a, b):
-            # The state dir an installed plugin leaves behind: the CLI's default (and peer --stdio
-            # on B over ssh) uses it only when it exists.
+            # The state dir an installed plugin leaves behind: the local CLI's default uses it only
+            # when it exists (peer --stdio would create it on a fresh node; the plugin case is
+            # the one this run models).
             rc, _, err = n.sh(f"mkdir -p {HOME}/.local/state/herdr/plugins/herdr-threads")
             if rc != 0:
                 raise RuntimeError(f"{n.name}: state dir: {err.strip()[:200]}")
