@@ -38,8 +38,8 @@ use crate::daemon::paths::RuntimeContext;
 use serde_json::{Map, Value, json};
 use std::{
     ffi::OsString,
-    io,
-    os::unix::fs::FileTypeExt,
+    fs, io,
+    os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -186,16 +186,51 @@ pub fn default_state_dir(inputs: &InstanceInputs) -> Result<Option<(PathBuf, Str
     }))
 }
 
-/// Where the default state dir would be, whether or not it exists yet: the place a node that
-/// was never used locally creates its state when an inbound peer link starts its daemon
-/// (`peer --stdio`). `None` for a named Herdr session or no usable HOME/XDG root;
-/// `Err` when both roots already hold a store (ambiguous, as for [`default_state_dir`]).
-pub fn default_state_dir_to_create(inputs: &InstanceInputs) -> Result<Option<PathBuf>, String> {
+/// Where the default state dir would be, whether or not it exists yet. `None` for a named
+/// Herdr session or no usable HOME/XDG root; `Err` when both roots already hold a store
+/// (ambiguous, as for [`default_state_dir`]).
+fn default_state_dir_to_create(inputs: &InstanceInputs) -> Result<Option<PathBuf>, String> {
     if inputs.non_default_server {
         return Ok(None);
     }
     let (xdg, home) = state_candidates(absolute(&inputs.home), absolute(&inputs.xdg_state_home));
     Ok(choose_state_dir(xdg, home)?.map(|(dir, _, _)| dir))
+}
+
+/// The context for `peer --stdio`, the ssh-side pump. Like [`resolve_context`], except that a
+/// node never used locally (no `--state-dir`, no `HERDR_PLUGIN_STATE_DIR`, no default state dir
+/// yet) creates the default state dir, owner-only, so the inbound link starts its daemon there
+/// as a first local use would. An explicit state dir is never replaced: its error is returned.
+pub fn resolve_peer_context(inputs: &InstanceInputs) -> io::Result<RuntimeContext> {
+    let first = match resolve_context(inputs) {
+        Ok((context, _)) => return Ok(context),
+        Err(error) => error,
+    };
+    if inputs.state_flag.is_some() || inputs.env_state.is_some() {
+        return Err(first);
+    }
+    let Some(dir) = default_state_dir_to_create(inputs).ok().flatten() else {
+        return Err(first);
+    };
+    if dir.exists() {
+        return Err(first);
+    }
+    if let Some(parent) = dir.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // The daemon refuses a group/other-writable state root, so the leaf is created 0700
+    // whatever the umask (an ssh session may run with 002).
+    match fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    let created = InstanceInputs {
+        state_flag: Some(dir),
+        ..inputs.clone()
+    };
+    resolve_context(&created).map(|(context, _)| context)
 }
 
 /// What Herdr's plugin registry says about this plugin, read from a file only.
@@ -382,6 +417,46 @@ pub(crate) fn resolve_context_with_selected_paths(
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::PermissionsExt, os::unix::net::UnixListener};
+
+    fn fresh_inputs(home: &Path) -> InstanceInputs {
+        InstanceInputs {
+            home: Some(home.to_path_buf()),
+            ..InstanceInputs::default()
+        }
+    }
+
+    #[test]
+    fn peer_context_on_a_fresh_node_creates_an_owner_only_default_state_dir() {
+        let root = scratch();
+        let context = resolve_peer_context(&fresh_inputs(&root)).unwrap();
+        let state = root.join(".local/state/herdr/plugins/herdr-threads");
+        assert_eq!(context.state_dir, state.canonicalize().unwrap());
+        let mode = fs::metadata(&state).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "owner-only whatever the umask");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn peer_context_never_replaces_an_explicit_state_dir() {
+        let root = scratch();
+        for inputs in [
+            InstanceInputs {
+                state_flag: Some(PathBuf::from("rel/state")),
+                ..fresh_inputs(&root)
+            },
+            InstanceInputs {
+                env_state: Some(PathBuf::from("rel/state")),
+                ..fresh_inputs(&root)
+            },
+        ] {
+            assert!(resolve_peer_context(&inputs).is_err());
+            assert!(
+                !root.join(".local").exists(),
+                "no default state dir is created"
+            );
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     fn scratch() -> PathBuf {
         // Short, so socket paths stay under the sun_path limit.

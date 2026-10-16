@@ -115,26 +115,11 @@ fn main() {
     // `peer --stdio`: the stateless ssh-side pump, kept off the clap path.
     if let Some(peer) = cli::peer::parse_peer_stdio_argv(&args) {
         // The shared node-scoped resolver: flag, `HERDR_PLUGIN_STATE_DIR`, then the
-        // default state dir; the host stays an optional attach hint. A node never used
-        // locally has no state dir yet: the inbound link creates the default one and starts
-        // the daemon there, as a first local use would.
-        let inputs = cli::instance::InstanceInputs::from_process(
-            peer.state_dir.clone(),
-            peer.host_endpoint.clone(),
+        // default state dir, created on a node never used locally; the host stays an
+        // optional attach hint.
+        let resolved = cli::instance::resolve_peer_context(
+            &cli::instance::InstanceInputs::from_process(peer.state_dir, peer.host_endpoint),
         );
-        let resolved = cli::instance::resolve_context(&inputs)
-            .or_else(|first| {
-                let dir = cli::instance::default_state_dir_to_create(&inputs)
-                    .ok()
-                    .flatten()
-                    .ok_or(first)?;
-                std::fs::create_dir_all(&dir)?;
-                cli::instance::resolve_context(&cli::instance::InstanceInputs::from_process(
-                    Some(dir),
-                    peer.host_endpoint,
-                ))
-            })
-            .map(|(context, _)| context);
         let code = match resolved {
             Ok(context) => cli::peer::run_stdio(&context),
             Err(error) => {
