@@ -3100,6 +3100,16 @@ mod scoped_runtime {
             })
             .collect()
     }
+    /// Seat allocation runs after the caller derivation (ht-u3ym.11): a located caller (the
+    /// recipient's lifecycle context in `w1:p2`) plus the direct-send capabilities.
+    fn located_caller(runtime: &Runtime) {
+        runtime.capabilities.lock().unwrap().extend([
+            crate::protocol::capabilities::DIRECT_THREADS_V1.to_owned(),
+            crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1.to_owned(),
+            crate::protocol::capabilities::LAZY_SEND.to_owned(),
+        ]);
+        runtime.install_context("w1:p2");
+    }
     fn no_resolve_seat_journal(runtime: &Runtime) {
         assert!(
             !runtime
@@ -3116,8 +3126,9 @@ mod scoped_runtime {
     fn seat_name_direct_send_allocates_and_prints_resolved_line() {
         let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
         let runtime = Runtime::new(seat_snapshot());
+        located_caller(&runtime);
         let (result, stdout) =
-            runtime.run_capture(&["send", "--seat", "dave", "--body", "hi"], false);
+            runtime.run_with_host(&["send", "--seat", "dave", "--body", "hi"], false, "w1:p2");
         let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].starts_with("resolved: project/"), "{lines:?}");
@@ -3396,9 +3407,14 @@ mod scoped_runtime {
     fn direct_send_seat_name_with_space_narrows() {
         let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
         let runtime = Runtime::new(seat_snapshot());
-        let result = runtime.run(&[
-            "send", "--seat", "alice", "--space", "other", "--body", "hi",
-        ]);
+        located_caller(&runtime);
+        let result = runtime.run_mode_in_pane(
+            &[
+                "send", "--seat", "alice", "--space", "other", "--body", "hi",
+            ],
+            true,
+            "w1:p2",
+        );
         let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
         assert_eq!(lines.len(), 1, "{lines:?}\n{result:?}");
         assert!(lines[0].contains("other/"), "{lines:?}");
@@ -3429,9 +3445,14 @@ mod scoped_runtime {
         }
         assert!(resolve_seat_calls(&runtime).is_empty());
         no_resolve_seat_journal(&runtime);
-        // (b) a p0 send is refused for the missing receipts capability before allocation.
-        let error =
-            api_error(runtime.run(&["send", "t123", "--body", "x", "--require-ack", "dave"]));
+        // (b) a p0 send is refused for the missing receipts capability before allocation (a
+        // located caller, so the refusal comes from the gate and not from the caller derivation).
+        runtime.install_context("w1:p2");
+        let error = api_error(runtime.run_mode_in_pane(
+            &["send", "t123", "--body", "x", "--require-ack", "dave"],
+            true,
+            "w1:p2",
+        ));
         assert_eq!(error.code, ErrorCode::Unsupported, "{error:?}");
         assert!(error.detail.contains("send_time_receipts"), "{error:?}");
         assert!(resolve_seat_calls(&runtime).is_empty());
@@ -3469,19 +3490,24 @@ mod scoped_runtime {
     fn name_and_id_for_same_seat_dedupe_in_direct_ack() {
         let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
         let runtime = Runtime::new(seat_snapshot());
+        located_caller(&runtime);
         runtime.capabilities.lock().unwrap().extend([
             crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned(),
             crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.to_owned(),
         ]);
-        let result = runtime.run(&[
-            "send",
-            "--seat",
-            "alice",
-            "--require-ack",
-            "recipient",
-            "--body",
-            "x",
-        ]);
+        let result = runtime.run_mode_in_pane(
+            &[
+                "send",
+                "--seat",
+                "alice",
+                "--require-ack",
+                "recipient",
+                "--body",
+                "x",
+            ],
+            true,
+            "w1:p2",
+        );
         // Past the stage: the name allocated recipient's own pane, and no direct-ACK refusal.
         assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p2".to_owned()]);
         if let Err(crate::cli::RunError::Api(error)) = result {
@@ -3494,20 +3520,25 @@ mod scoped_runtime {
     fn repeated_name_resolves_and_prints_once() {
         let _ = crate::cli::seat_resolution::take_resolved_lines_for_test();
         let runtime = Runtime::new(seat_snapshot());
+        located_caller(&runtime);
         runtime.capabilities.lock().unwrap().extend([
             crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.to_owned(),
             crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.to_owned(),
         ]);
-        let _ = runtime.run(&[
-            "send",
-            "t123",
-            "--body",
-            "x",
-            "--require-ack",
-            "dave",
-            "--require-ack",
-            "dave",
-        ]);
+        let _ = runtime.run_mode_in_pane(
+            &[
+                "send",
+                "t123",
+                "--body",
+                "x",
+                "--require-ack",
+                "dave",
+                "--require-ack",
+                "dave",
+            ],
+            true,
+            "w1:p2",
+        );
         assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p3".to_owned()]);
         let lines = crate::cli::seat_resolution::take_resolved_lines_for_test();
         assert_eq!(lines.len(), 1, "{lines:?}");
@@ -4467,6 +4498,113 @@ mod scoped_runtime {
                 vec!["w1:p3".to_owned()],
                 "only the original send allocated"
             );
+        }
+
+        // ---- the allocation point (ht-u3ym.11): pass 2 runs last ----------------------------
+
+        #[test]
+        fn derive_caller_refusal_allocates_nothing() {
+            for args in [
+                &["invite", "t123", "--seat", "dave"][..],
+                &["send", "--seat", "dave", "--body", "hi"][..],
+            ] {
+                let runtime = caller_runtime();
+                // A pane with no mapped seat and no context: the caller is not located.
+                let result = runtime.run_mode_in_pane(args, true, "w1:p99");
+                let error = api_error(result);
+                assert_eq!(error.code, ErrorCode::InvalidRequest, "{args:?}: {error:?}");
+                assert!(resolve_seat_calls(&runtime).is_empty(), "{args:?}");
+                no_resolve_seat_journal(&runtime);
+                assert!(
+                    lines().is_empty(),
+                    "{args:?}: a refused command printed {:?}",
+                    lines()
+                );
+            }
+        }
+
+        #[test]
+        fn operator_actor_refusal_allocates_nothing() {
+            // `--operator` without `human` is refused before the allocation point.
+            let runtime = caller_runtime();
+            let result = as_caller(
+                &runtime,
+                &["invite", "t123", "--seat", "dave", "--operator"],
+            );
+            let error = api_error(result);
+            assert!(
+                error.detail.contains("operator actions require"),
+                "{error:?}"
+            );
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            no_resolve_seat_journal(&runtime);
+        }
+
+        #[test]
+        fn direct_send_without_direct_threads_capability_allocates_nothing() {
+            let runtime = caller_runtime();
+            runtime.capabilities.lock().unwrap().retain(|capability| {
+                capability != crate::protocol::capabilities::DIRECT_THREADS_V1
+            });
+            let error = api_error(as_caller(
+                &runtime,
+                &["send", "--seat", "dave", "--body", "hi"],
+            ));
+            assert_eq!(error.code, ErrorCode::Unsupported, "{error:?}");
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            no_resolve_seat_journal(&runtime);
+            assert!(
+                lines().is_empty(),
+                "a refused command printed {:?}",
+                lines()
+            );
+        }
+
+        #[test]
+        fn failing_later_ack_slot_allocates_nothing() {
+            let runtime = caller_runtime();
+            let error = api_error(as_caller(
+                &runtime,
+                &[
+                    "send",
+                    "t123",
+                    "--body",
+                    "x",
+                    "--require-ack",
+                    "bob",
+                    "--require-ack",
+                    "typo",
+                ],
+            ));
+            assert_eq!(error.code, ErrorCode::NotFound, "{error:?}");
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            no_resolve_seat_journal(&runtime);
+        }
+
+        #[test]
+        fn direct_ack_mismatch_refused_before_allocation() {
+            let runtime = caller_runtime();
+            let error = api_error(as_caller(
+                &runtime,
+                &[
+                    "send",
+                    "--seat",
+                    "dave",
+                    "--require-ack",
+                    "bob",
+                    "--body",
+                    "x",
+                ],
+            ));
+            assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+            assert!(
+                error
+                    .detail
+                    .contains("direct ACK requests may name only the target seat"),
+                "{error:?}"
+            );
+            assert!(resolve_seat_calls(&runtime).is_empty());
+            no_resolve_seat_journal(&runtime);
         }
     }
 }

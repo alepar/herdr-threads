@@ -7,6 +7,13 @@
 //! allocation), freezing through `SeatSlot`, the post-freeze ID checks and the `resolved:` stderr
 //! lines.
 //!
+//! Two passes. Pass 1 (`resolve_cli_seats`) resolves every slot to an exact seat or a pane and
+//! writes no journal intent: lookups and exact IDs freeze there, an `Allocate` slot that resolved
+//! to a pane waits in the returned `DeferredSeats`. Pass 2 (`allocate_deferred_seats`) runs the
+//! journaled `ResolveSeat` for those panes, and the caller runs it only after every slot has
+//! resolved and after the refusals that can follow (the caller derivation, the `--operator`
+//! actor refusal), behind one gate point (`run_gates`), so a refused command leaves no allocation.
+//!
 //! Must not: match names (`seat_selector` does), know command kinds (`SeatSlot` does), write any
 //! journal intent other than the shared allocation, or run on `retry` (a retry carries no slots).
 //! A new seat-argument form goes into the classification in `resolve_one`.
@@ -15,7 +22,7 @@ use super::{
     LazyConnection, RunError,
     commands::{
         CliAction, MutationSpec, ParsedCli, SEAT_SELECTOR_PLACEHOLDER, SeatMapping, SeatNarrowing,
-        SeatSlot, check_direct_ack, check_unique_recipients,
+        SeatSelectorArg, SeatSlot, check_direct_ack, check_unique_recipients,
     },
     panes::{looks_like_pane_id, resolve_parents},
     seat_selector::{self, Narrowing},
@@ -126,7 +133,6 @@ where
     T: FnOnce() -> Result<HostTopology, ApiError>,
     L: FnOnce() -> Result<Option<HostTargetId>, ApiError>,
 {
-    paths: &'a InstancePaths,
     connection: &'a LazyConnection<C, F>,
     clock: &'a Arc<dyn Clock>,
     stderr: &'a mut W,
@@ -134,34 +140,74 @@ where
     caller: Once<Option<HostTargetId>, L>,
     raw_narrowing: Option<SeatNarrowing>,
     narrowing: OnceCell<Narrowing>,
-    gates_done: bool,
 }
 
-/// Freeze every seat argument of `parsed` to a canonical seat ID (spec D2), or fail the command.
+/// One slot's pass-1 outcome: a frozen seat, or a pane whose seat is allocated in pass 2.
+#[derive(Clone)]
+enum Resolved {
+    Seat(SeatId),
+    Pane {
+        pane: HostTargetId,
+        /// `Some((path, tier))` for a name (D2 step 4): pass 2 prints its `resolved:` line after
+        /// allocating; `None` for a direct pane ID (D6: no line).
+        line: Option<(String, String)>,
+    },
+}
+
+/// Allocate slots whose pane is known but whose journaled `ResolveSeat` waits for pass 2.
+#[must_use = "pass 2 (allocate_deferred_seats) must run before dispatch"]
+pub(crate) struct DeferredSeats {
+    entries: Vec<Deferred>,
+    /// Every original slot, for pass 2's end-of-stage placeholder check.
+    slots: Vec<SeatSelectorArg>,
+}
+
+struct Deferred {
+    slot: SeatSlot,
+    pane: HostTargetId,
+    /// Set on the first slot of a distinct raw name only, so a repeated name prints once.
+    line: Option<(String, String)>,
+}
+
+impl DeferredSeats {
+    /// No deferred allocation (a command with no allocate slot).
+    pub(crate) fn none() -> Self {
+        Self {
+            entries: Vec::new(),
+            slots: Vec::new(),
+        }
+    }
+}
+
+/// Pass 1: resolve every seat argument of `parsed` to a canonical seat or a pane (spec D2), or
+/// fail the command. No journal intent is written here.
 ///
 /// Per slot, in order: (1) an exact seat ID known to the daemon (retired included) is used as is,
 /// reading nothing from Herdr unless `--space`/`--tab` narrow it; (2) `PREFIX/SEAT_ID` whose last
 /// part is a known seat is verified against the seat's live location; (3) a pane ID with no
 /// narrowing is the pane itself; (4) anything else is a `SPACE/TAB/PANE` name matched by
 /// `seat_selector` against the live topology. Steps 3 and 4 map the pane to a seat by the slot's
-/// `SeatMapping`: a lookup never allocates; an allocation is the shared journaled `ResolveSeat`,
-/// run only after the gates that precede allocation today.
+/// `SeatMapping`: a lookup never allocates and freezes here; an allocation is deferred. The
+/// returned `DeferredSeats` holds each such pane, to be allocated by `allocate_deferred_seats`
+/// (pass 2) once the caller derivation and the command's capability refusals have run. Before
+/// returning, a direct send's ACK recipients are compared with its target by seat or pane ID, so a
+/// mismatch is refused before anything is allocated.
 ///
 /// The topology and the live caller are read lazily, once. A failed read for a nickname, name or
 /// narrowed slot is `host_unavailable`. A caller read that fails for any other reason is a stale
 /// `HERDR_PANE_ID` (root D3): no caller, every candidate in tier `any`. Exact IDs without
-/// narrowing never read Herdr. Each distinct name argument writes one `resolved:` line to
-/// `stderr` before any command output. The stage ends by checking that no slot still holds the
-/// placeholder: the production guarantee that no raw seat string reaches a journal or dispatch.
+/// narrowing never read Herdr. Each distinct lookup name argument writes one `resolved:` line to
+/// `stderr` before any command output (allocate names write theirs in pass 2). The frozen slots
+/// are checked for the placeholder: the production guarantee that no raw seat string reaches a
+/// journal or dispatch.
 pub(crate) fn resolve_cli_seats<C, F, W>(
     parsed: &mut ParsedCli,
-    paths: &InstancePaths,
     connection: &LazyConnection<C, F>,
     clock: &Arc<dyn Clock>,
     topology: impl FnOnce() -> Result<HostTopology, ApiError>,
     live_caller: impl FnOnce() -> Result<Option<HostTargetId>, ApiError>,
     stderr: &mut W,
-) -> Result<(), RunError>
+) -> Result<DeferredSeats, RunError>
 where
     C: LocalClient,
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
@@ -169,11 +215,10 @@ where
 {
     if parsed.seat_selectors.is_empty() {
         parsed.seat_narrowing = None;
-        return Ok(());
+        return Ok(DeferredSeats::none());
     }
     let slots = std::mem::take(&mut parsed.seat_selectors);
     let mut stage = Stage {
-        paths,
         connection,
         clock,
         stderr,
@@ -181,26 +226,167 @@ where
         caller: Once::new(live_caller),
         raw_narrowing: parsed.seat_narrowing.take(),
         narrowing: OnceCell::new(),
-        gates_done: false,
     };
-    let mut memo: HashMap<(String, SeatMapping), SeatId> = HashMap::new();
-    for arg in &slots {
+    let mut memo: HashMap<(String, SeatMapping), Resolved> = HashMap::new();
+    let mut resolutions: Vec<(SeatSlot, Resolved)> = Vec::new();
+    let mut entries: Vec<Deferred> = Vec::new();
+    let mut deferred_slot = vec![false; slots.len()];
+    for (index, arg) in slots.iter().enumerate() {
         let key = (arg.raw.clone(), arg.slot.mapping());
-        let seat = match memo.get(&key) {
-            Some(seat) => seat.clone(),
+        let (resolved, first) = match memo.get(&key) {
+            Some(resolved) => (resolved.clone(), false),
             None => {
-                let seat = stage.resolve_one(parsed, arg.slot, &arg.raw)?;
-                memo.insert(key, seat.clone());
-                seat
+                let resolved = stage.resolve_one(parsed, arg.slot, &arg.raw)?;
+                memo.insert(key, resolved.clone());
+                (resolved, true)
             }
         };
+        resolutions.push((arg.slot, resolved.clone()));
         #[cfg(test)]
         if SKIP_FIRST_FREEZE.with(|flag| flag.replace(false)) {
             continue;
         }
-        arg.slot.set(&mut parsed.action, seat).map_err(run_error)?;
+        match resolved {
+            Resolved::Seat(seat) => arg.slot.set(&mut parsed.action, seat).map_err(run_error)?,
+            Resolved::Pane { pane, line } => {
+                deferred_slot[index] = true;
+                entries.push(Deferred {
+                    slot: arg.slot,
+                    pane,
+                    line: line.filter(|_| first),
+                });
+            }
+        }
     }
-    for arg in &slots {
+    check_unfrozen(&slots, &deferred_slot, &parsed.action)?;
+    if entries.is_empty() {
+        return post_freeze_checks(&mut parsed.action)
+            .map(|()| DeferredSeats::none())
+            .map_err(run_error);
+    }
+    check_direct_ack_before_allocation(parsed, &resolutions, connection, clock)?;
+    Ok(DeferredSeats { entries, slots })
+}
+
+/// The placeholder check over the slots pass 1 froze (every slot not deferred).
+fn check_unfrozen(
+    slots: &[SeatSelectorArg],
+    deferred_slot: &[bool],
+    action: &CliAction,
+) -> Result<(), RunError> {
+    for (arg, deferred) in slots.iter().zip(deferred_slot) {
+        if *deferred {
+            continue;
+        }
+        match arg.slot.current(action) {
+            Some(value) if value != SEAT_SELECTOR_PLACEHOLDER => {}
+            _ => {
+                return Err(run_error(ApiError::invalid_request(
+                    "seat selector was not resolved before dispatch",
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A direct ACK may name only the target (spec D7). Before pass 2 allocates, compare each ACK
+/// recipient with the target by seat ID or pane ID; a mixed pair looks up the pane's existing
+/// seat (read-only: an unseated pane would get a new seat, so it differs from any ID).
+fn check_direct_ack_before_allocation<C, F>(
+    parsed: &ParsedCli,
+    resolutions: &[(SeatSlot, Resolved)],
+    connection: &LazyConnection<C, F>,
+    clock: &Arc<dyn Clock>,
+) -> Result<(), RunError>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+{
+    if !matches!(
+        &parsed.action,
+        CliAction::Mutation(MutationSpec::DirectSend(_))
+    ) {
+        return Ok(());
+    }
+    let Some((_, target)) = resolutions
+        .iter()
+        .find(|(slot, _)| *slot == SeatSlot::DirectSendTarget)
+    else {
+        return Ok(());
+    };
+    for (slot, recipient) in resolutions {
+        if !matches!(slot, SeatSlot::RequireAck(_)) {
+            continue;
+        }
+        let same = match (target, recipient) {
+            (Resolved::Seat(a), Resolved::Seat(b)) => a == b,
+            (Resolved::Pane { pane: a, .. }, Resolved::Pane { pane: b, .. }) => a == b,
+            (Resolved::Seat(seat), Resolved::Pane { pane, .. })
+            | (Resolved::Pane { pane, .. }, Resolved::Seat(seat)) => {
+                let (_, client) = connection.get()?;
+                super::pane_seat(client, &parsed.output, pane, clock.as_ref())?
+                    .is_some_and(|existing| existing == *seat)
+            }
+        };
+        if !same {
+            // `check_direct_ack` owns the refusal text; two distinct IDs trip it.
+            let refusal = check_direct_ack(&SeatId::new("target"), &mut vec![SeatId::new("other")])
+                .expect_err("distinct seats are refused");
+            return Err(run_error(refusal));
+        }
+    }
+    Ok(())
+}
+
+/// Pass 2: run the journaled `ResolveSeat` for each deferred Allocate slot, freeze the result and
+/// write the name slots' `resolved:` lines. The caller runs this only after every slot resolved
+/// and after the caller derivation (or, for `--operator`, the non-Human refusal); it is the one
+/// place `run_gates` runs, so a refused command journals no `ResolveSeat`.
+pub(crate) fn allocate_deferred_seats<C, F, W>(
+    deferred: DeferredSeats,
+    parsed: &mut ParsedCli,
+    paths: &InstancePaths,
+    connection: &LazyConnection<C, F>,
+    clock: &Arc<dyn Clock>,
+    stderr: &mut W,
+) -> Result<(), RunError>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    W: Write,
+{
+    if deferred.entries.is_empty() {
+        return Ok(());
+    }
+    let (instance, client) = connection.get()?;
+    run_gates(parsed, client, clock.as_ref())?;
+    let mut allocated: HashMap<HostTargetId, SeatId> = HashMap::new();
+    for entry in &deferred.entries {
+        let seat = match allocated.get(&entry.pane) {
+            Some(seat) => seat.clone(),
+            None => {
+                let seat = super::allocate_recipient_seat(
+                    paths,
+                    instance,
+                    client,
+                    clock.as_ref(),
+                    &parsed.output,
+                    entry.pane.clone(),
+                )?;
+                allocated.insert(entry.pane.clone(), seat.clone());
+                seat
+            }
+        };
+        entry
+            .slot
+            .set(&mut parsed.action, seat.clone())
+            .map_err(run_error)?;
+        if let Some((path, tier)) = &entry.line {
+            write_resolved_line(stderr, path, &entry.pane, &seat, tier)?;
+        }
+    }
+    for arg in &deferred.slots {
         match arg.slot.current(&parsed.action) {
             Some(value) if value != SEAT_SELECTOR_PLACEHOLDER => {}
             _ => {
@@ -211,6 +397,23 @@ where
         }
     }
     post_freeze_checks(&mut parsed.action).map_err(run_error)
+}
+
+fn write_resolved_line<W: Write>(
+    stderr: &mut W,
+    path: &str,
+    pane: &HostTargetId,
+    seat: &SeatId,
+    tier: &str,
+) -> std::io::Result<()> {
+    let line = format!(
+        "resolved: {path} {} seat={} (tier: {tier})\n",
+        pane.as_str(),
+        seat.as_str()
+    );
+    #[cfg(test)]
+    RESOLVED_LINES.with(|lines| lines.borrow_mut().push(line.clone()));
+    stderr.write_all(line.as_bytes())
 }
 
 impl<C, F, W, T, L> Stage<'_, C, F, W, T, L>
@@ -318,13 +521,13 @@ where
         parsed: &ParsedCli,
         slot: SeatSlot,
         raw: &str,
-    ) -> Result<SeatId, RunError> {
+    ) -> Result<Resolved, RunError> {
         // 1. Exact seat ID: only an existing seat takes this step.
         if let Ok(seat) = SeatId::parse(raw)
             && let Some(inspection) = self.inspect(&seat)?
         {
             self.verify_narrowed(raw, &seat, &inspection)?;
-            return Ok(seat);
+            return Ok(Resolved::Seat(seat));
         }
         // 2. Nickname PREFIX/SEAT_ID: the last part is an existing seat; the prefix must name
         // the seat's live location.
@@ -337,7 +540,7 @@ where
                 .into_result(raw, &seat)
                 .map_err(run_error)?;
             self.verify_narrowed(raw, &seat, &inspection)?;
-            return Ok(seat);
+            return Ok(Resolved::Seat(seat));
         }
         // 3. A direct pane ID needs no topology unless narrowing applies.
         if looks_like_pane_id(raw) && self.raw_narrowing.is_none() {
@@ -367,68 +570,49 @@ where
                 }
             })
             .map_err(run_error)?;
-        let seat = self.map_pane(parsed, slot, candidate.pane.clone())?;
-        let line = format!(
-            "resolved: {} {} seat={} (tier: {})\n",
-            candidate.path,
-            candidate.pane.as_str(),
-            seat.as_str(),
-            candidate.tier.as_str()
-        );
-        #[cfg(test)]
-        RESOLVED_LINES.with(|lines| lines.borrow_mut().push(line.clone()));
-        self.stderr.write_all(line.as_bytes())?;
-        Ok(seat)
+        let path = candidate.path.clone();
+        let tier = candidate.tier.as_str().to_owned();
+        match self.map_pane(parsed, slot, candidate.pane.clone())? {
+            Resolved::Seat(seat) => {
+                write_resolved_line(self.stderr, &path, &candidate.pane, &seat, &tier)?;
+                Ok(Resolved::Seat(seat))
+            }
+            Resolved::Pane { pane, .. } => Ok(Resolved::Pane {
+                pane,
+                line: Some((path, tier)),
+            }),
+        }
     }
 
-    /// Steps 3 and 4: the pane's seat by the slot's D4 class.
+    /// Steps 3 and 4: the pane's seat by the slot's D4 class. A lookup resolves now; an
+    /// allocation is deferred to pass 2 (no journal write here).
     fn map_pane(
         &mut self,
         parsed: &ParsedCli,
         slot: SeatSlot,
         pane: HostTargetId,
-    ) -> Result<SeatId, RunError> {
-        let (instance, client) = self.connection.get()?;
-        let clock = self.clock.as_ref();
+    ) -> Result<Resolved, RunError> {
         match slot.mapping() {
-            SeatMapping::Lookup => super::pane_seat(client, &parsed.output, &pane, clock)?
-                .ok_or_else(|| super::no_seat_for_pane(&pane)),
-            SeatMapping::Allocate => {
-                if !self.gates_done {
-                    run_gates(parsed, client, clock)?;
-                    self.gates_done = true;
-                }
-                super::allocate_recipient_seat(
-                    self.paths,
-                    instance,
-                    client,
-                    clock,
-                    &parsed.output,
-                    pane,
-                )
+            SeatMapping::Lookup => {
+                let (_, client) = self.connection.get()?;
+                super::pane_seat(client, &parsed.output, &pane, self.clock.as_ref())?
+                    .map(Resolved::Seat)
+                    .ok_or_else(|| super::no_seat_for_pane(&pane))
             }
+            SeatMapping::Allocate => Ok(Resolved::Pane { pane, line: None }),
         }
     }
 }
 
-/// The gates that precede recipient allocation today, under the same conditions (allocation is
-/// journaled, so a refused command must not leave a `ResolveSeat` intent).
+/// The one gate point before the first journaled allocation (pass 2 runs it once): p0 sends
+/// need the send-time receipts capability, confirmed non-operator invites the invitation
+/// confirmation capability, and a direct send the direct-thread capabilities `start` demands.
+/// The caller derivation and the agent-without-session refusal have already run by then.
 fn run_gates<C: LocalClient + ?Sized>(
     parsed: &ParsedCli,
     client: &C,
     clock: &dyn Clock,
 ) -> Result<(), RunError> {
-    use crate::cli::actor_route::InvocationActor;
-    // The agent-without-session refusal, only where `run_caller_scoped` applies it.
-    let operator_branch = matches!(&parsed.action,
-        CliAction::Mutation(mutation) if super::operator_semantic(mutation).is_some());
-    if !operator_branch
-        && parsed.actor != InvocationActor::Human
-        && super::caller_needs_identity(&parsed.action)
-        && let Some(super::caller::CallerOrigin::Refused(refusal)) = super::caller::derive(parsed)
-    {
-        return Err(super::caller::refusal_error(&refusal));
-    }
     let p0 = match &parsed.action {
         CliAction::Mutation(MutationSpec::Send { priority, .. }) => priority.get() == 0,
         CliAction::Mutation(MutationSpec::DirectSend(request)) => {
@@ -438,6 +622,9 @@ fn run_gates<C: LocalClient + ?Sized>(
     };
     if p0 {
         super::require_send_time_receipts_capability(client, clock)?;
+    }
+    if let CliAction::Mutation(MutationSpec::DirectSend(request)) = &parsed.action {
+        super::direct_send::require_capabilities(request, client, clock)?;
     }
     if matches!(
         &parsed.action,

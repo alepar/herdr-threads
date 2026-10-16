@@ -401,12 +401,11 @@ reasoned exclusion list, so a future seat argument cannot bypass resolution.
 - Owns: the D4 decision as a value.
 - Hides: which reads, operator commands and handoff paths never allocate (TRUST-POLICY C4/A1).
 - Must not: carry behaviour. The stage maps `Lookup` to the existing `pane_seat` (with `no_seat_for_pane`/`mapping_error` unchanged) and `Allocate` to the existing journaled `ResolveSeat` allocation under the `ServiceAllocation` scope.
-- Relationships: the allocation is extracted once from `resolve_recipient_seats`'s `allocate` closure into a helper in `mod.rs`, shared by the `--pane`/`--require-ack-pane` path and this stage, so two callers exist now. The extraction is move-only: the closure body, nothing else. Refuse-before-allocate order is kept by `resolve_cli_seats`, not by the helper. Before its first `Allocate` mapping, the stage runs the same gates that today precede the closure, under the same conditions:
-  - the agent-without-session refusal: only when `run_caller_scoped` would apply it (actor not `Human`, not the `--operator` branch, and `caller_needs_identity`);
-  - `require_send_time_receipts_capability` for p0 sends;
-  - the `INVITATION_CONFIRMATION_V1` capability for confirmed non-operator invites.
+- Relationships: the allocation is extracted once from `resolve_recipient_seats`'s `allocate` closure into a helper in `mod.rs`, shared by the `--pane`/`--require-ack-pane` path and this stage, so two callers exist now. The extraction is move-only: the closure body, nothing else. Refuse-before-allocate order is kept by the stage's two passes, not by the helper. Pass 1 (`resolve_cli_seats`) resolves every slot to an exact seat or a pane and writes no journal intent; it freezes `Lookup` slots and exact IDs, and holds each `Allocate` pane for pass 2. Pass 2 (`allocate_deferred_seats`) runs the journaled `ResolveSeat` only after every slot has resolved and after the refusals that can follow:
+  - `derive_caller` (the agent-without-session refusal, the agent-evidence and actor-harness guards, `caller_not_located`), or for `--operator` the non-Human actor refusal;
+  - one gate point, `run_gates`: `require_send_time_receipts_capability` for p0 sends, the `INVITATION_CONFIRMATION_V1` capability for confirmed non-operator invites, and the direct-send capabilities (`DIRECT_THREADS_V1`, `LAZY_SEND`) for direct send.
 
-  A refused command therefore never leaves a journaled `ResolveSeat`, and operator orphan invites keep working from any pane.
+  The direct-ACK comparison runs at the end of pass 1 on seat or pane IDs, before anything is allocated. A refused command therefore never leaves a journaled `ResolveSeat`, and operator orphan invites keep working from any pane.
 
 **`resolve_cli_seats`** — new runtime stage in `src/cli/mod.rs` (spec D1), the only code that turns a `SeatSlot` raw string into a frozen `SeatId`.
 - Owns:
