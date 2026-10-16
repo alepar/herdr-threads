@@ -9,3 +9,5 @@ branch: super-auto/unified-seat-selector
 base: main
 spec: 2026-10-15-unified-seat-selector-design.md
 epic: ht-u3ym
+approvals:
+- top-split · auto · ht-u3ym.1 LEAF, ht-u3ym.2 LEAF, ht-u3ym.3 PROMOTE, ht-u3ym.4 LEAF, ht-u3ym.5 LEAF
