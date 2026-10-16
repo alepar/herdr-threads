@@ -191,6 +191,8 @@ fn configuration(threshold: i64) {
         },
         "T={threshold}"
     );
+    // The receipt row is materialized asynchronously (the wake flag can come first).
+    eventually("ack receipt materialized", || receipts_for(&w, &ack) >= 1);
     assert_eq!(
         receipts_for(&w, &ack),
         1,

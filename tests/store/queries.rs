@@ -5916,6 +5916,77 @@ fn seat_list_reports_the_same() {
     assert!(json.get("availability").is_some());
 }
 
+/// A Claude subagent stop disconnects its binding but never ends it, so a long-lived seat piles
+/// up open disconnected subagent bindings (one seat had 397, ~38 KB of presence). Kills an
+/// unbounded presence list: `seat inspect` (its fixed summary) and the seat/participant rows
+/// must fit the default 16 KiB page, keeping every connected and top-level binding and only the
+/// most recent disconnected subagents, in ordinal order.
+#[test]
+fn presence_bounds_disconnected_subagent_bindings() {
+    let (store, db) = presence_fixture();
+    for n in 0..400 {
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,agent_id,role,liveness,disconnected_at,disconnect_reason,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'w:p1','host',1,'claude','sess-1',?1,'subagent','disconnected',1,'liveness_end_event','exec','cooperative_top_level',0,0,'term','inc')", [format!("dead-{n:03}")]).unwrap();
+    }
+    let default_page = PageRequest {
+        cursor: None,
+        limit: 20,
+        max_bytes: 16_384,
+    };
+    let mut want = expected_presence().remove(0).2;
+    want.extend(
+        ["dead-396", "dead-397", "dead-398", "dead-399"]
+            .map(|agent| ("claude", "subagent", false, Some(agent))),
+    );
+    let CommandResult::SeatInspect(inspection) = query(
+        &store,
+        "i",
+        &Command::SeatInspect(SeatInspectQuery {
+            seat: SeatId::new("s"),
+            page: default_page.clone(),
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!("wrong result")
+    };
+    assert!(inspection.summary.active);
+    assert_eq!(shape(&inspection.summary.bindings), want);
+    let CommandResult::Seats(seats) = query(
+        &store,
+        "i",
+        &Command::Seats(SeatsQuery {
+            page: default_page.clone(),
+            target: None,
+            include_retired: false,
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let item = seats.items.iter().find(|i| i.seat.as_str() == "s").unwrap();
+    assert_eq!(shape(&item.bindings), want);
+    let CommandResult::Participants(participants) = query(
+        &store,
+        "i",
+        &Command::Participants(ParticipantsQuery {
+            thread: ThreadId::new("t"),
+            page: default_page,
+            caller: None,
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let item = participants
+        .items
+        .iter()
+        .find(|p| p.seat.as_str() == "s")
+        .unwrap();
+    assert_eq!(shape(&item.bindings), want);
+}
+
 // presence_adds_one_query_per_page_not_per_member: skipped. The store has no query-count
 // harness, and participants/seat rows are produced one candidate at a time (two small indexed
 // reads per member, bounded by the page limit and CANDIDATE_LIMIT), so the page-fit accounting

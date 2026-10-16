@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v1.1.0
+
+- **`seat inspect`, `send --seat` and `seat list` work on seats with many stopped subagents.** A subagent stop disconnects its binding without ending it, so a long-lived seat collected hundreds of open disconnected subagent bindings, and the seat summary no longer fit a page (`seat history item cannot fit (invalid_budget)`). Presence now lists every connected or top-level binding plus only the 4 most recent disconnected subagents; `seat inspect` history still pages through all of them. The JSON shape is unchanged.
 - **The Herdr release matrix covers every user-facing feature.** `scripts/herdr-release-smoke` now runs four tests against each listed Herdr release (core features, launch and every handoff target, wake and nudge threshold, busy agent) on a stand-in Codex that runs the installed hooks as Codex does, alongside Herdr's own Codex integration; a release's tests run in parallel and `--jobs` releases at once (about two minutes for 0.9.1 to 0.9.5). Coverage and deliberate exclusions: `docs/validation/herdr-release-matrix.md`.
 
 ## v1.0.1

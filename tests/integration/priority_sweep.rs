@@ -116,14 +116,20 @@ fn priority_sweep_require_ack_is_p0_with_deadline_and_overdue_warning() {
     );
     assert_eq!(row_priority(&w, &id), 0);
     eventually("receipt pending", || wake(&w).receipt);
-    let deadline: Option<i64> = w
-        .db()
-        .query_row(
-            "SELECT deadline_at FROM (SELECT message_id,seat_id,deadline_at FROM receipts UNION SELECT message_id,seat_id,deadline_at FROM receipt_state) WHERE message_id=?1 AND seat_id=?2",
-            [&id, &w.seats[1]],
-            |r| r.get(0),
-        )
-        .unwrap();
+    // The receipt row is materialized asynchronously (the wake flag can come first).
+    let receipt_deadline = || -> Option<Option<i64>> {
+        use rusqlite::OptionalExtension;
+        w.db()
+            .query_row(
+                "SELECT deadline_at FROM (SELECT message_id,seat_id,deadline_at FROM receipts UNION SELECT message_id,seat_id,deadline_at FROM receipt_state) WHERE message_id=?1 AND seat_id=?2",
+                [&id, &w.seats[1]],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap()
+    };
+    eventually("receipt materialized", || receipt_deadline().is_some());
+    let deadline: Option<i64> = receipt_deadline().unwrap();
     assert!(deadline.is_some(), "the receipt carries a deadline");
     // The recipient misses it: the scheduler raises the overdue condition (real clock, 1 s).
     let subject = format!("overdue_receipt:{id}:{}", w.seats[1]);

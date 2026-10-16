@@ -255,3 +255,101 @@ fn subagent_full_body_read_advances_only_its_own_cursor() {
         .unwrap();
     assert_eq!(state, "pending", "a subagent body read settles nothing");
 }
+
+// The real binary and daemon over a seat carrying many stopped subagents (a subagent stop
+// disconnects its binding and never ends it). Kills an unbounded presence list: `seat inspect`,
+// `send --seat` (which inspects the recipient seat) and `seat list` refused with
+// `invalid_budget` (`seat history item cannot fit`) at the default 16 KiB page.
+#[test]
+fn many_stopped_subagents_keep_seat_inspect_and_direct_send_working() {
+    let world = World::new(true);
+    let seat = world.seat("w1:p1");
+    world.seat("w1:p2");
+    for (session, pane, event) in [
+        ("sess-main", "w1:p1", "ev-main"),
+        ("sess-peer", "w1:p2", "ev-peer"),
+    ] {
+        let out = world.agent(
+            "claude",
+            Some(session),
+            pane,
+            &["check-in", "--lifecycle-event", event],
+        );
+        assert!(out.status.success(), "{out:?} {}", stderr(&out));
+    }
+    let thread = World::data(&world.agent(
+        "claude",
+        Some("sess-peer"),
+        "w1:p2",
+        &["thread", "create", "--topic", "stopped subagents"],
+    ))
+    .as_str()
+    .unwrap()
+    .to_owned();
+    World::data(&world.agent(
+        "claude",
+        Some("sess-peer"),
+        "w1:p2",
+        &["invite", &thread, "--seat", &seat],
+    ));
+    World::data(&world.agent("claude", Some("sess-main"), "w1:p1", &["accept", &thread]));
+    let enroll = world.agent_text("sess-main", "w1:p1", &["--agent-id=agent-0", "inbox"]);
+    assert!(enroll.status.success(), "{enroll:?} {}", stderr(&enroll));
+    // Stop the enrolled subagent as SubagentStop does, then clone it into 300 stopped siblings
+    // (~27 KB of presence before the bound).
+    let db = world.db();
+    let stopped = db
+        .execute(
+            "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=1,\
+             disconnect_reason='liveness_end_event' WHERE seat_id=?1 AND agent_id='agent-0' \
+             AND ended_at IS NULL",
+            [&seat],
+        )
+        .unwrap();
+    assert_eq!(stopped, 1, "the subagent binding was enrolled");
+    for n in 1..300 {
+        db.execute(
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,\
+             terminal_id,incarnation,host_boot,host_epoch,harness,native_session,execution_id,\
+             observation_provenance,observed_at,registered_at,role,parent_binding,agent_id,\
+             liveness,disconnected_at,disconnect_reason) \
+             SELECT seat_id,generation,target_generation,target_id,terminal_id,incarnation,\
+             host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,\
+             observed_at,registered_at,role,parent_binding,?2,liveness,disconnected_at,\
+             disconnect_reason FROM occupant_bindings WHERE seat_id=?1 AND agent_id='agent-0' \
+             AND ended_at IS NULL",
+            [seat.clone(), format!("agent-{n}")],
+        )
+        .unwrap();
+    }
+    drop(db);
+
+    let inspect = World::data(&world.human(&["seat", "inspect", &seat]));
+    let agents: Vec<_> = inspect["summary"]["bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["agent_id"].as_str().unwrap_or("").to_owned())
+        .collect();
+    assert_eq!(
+        agents,
+        ["", "agent-296", "agent-297", "agent-298", "agent-299"],
+        "the top-level binding and the most recent stopped subagents"
+    );
+    let sent = world.agent(
+        "claude",
+        Some("sess-peer"),
+        "w1:p2",
+        &["send", "--seat", &seat, "--body", "hi"],
+    );
+    assert!(sent.status.success(), "{sent:?} {}", stderr(&sent));
+    let seats = World::data(&world.human(&["seat", "list"]));
+    assert!(
+        seats["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["seat"] == seat.as_str()),
+        "{seats}"
+    );
+}

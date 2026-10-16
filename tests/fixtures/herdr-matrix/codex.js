@@ -36,6 +36,9 @@ os.makedirs(LOG_DIR, exist_ok=True)
 LOG = os.path.join(LOG_DIR, f"{SESSION}.jsonl")
 transcript = [">_ OpenAI Codex (fake)", f"   session {SESSION}"]
 buffer = ""
+turn_started = None  # monotonic start of the running turn, for Codex's live working timer
+queued = ""  # terminal input that arrived during a turn, processed after it (Codex queues it)
+TTY = None
 
 
 def log(kind, **fields):
@@ -47,7 +50,9 @@ def log(kind, **fields):
 def draw(working=False):
     rows = transcript[-30:] + [""]
     if working:
-        rows += ["• Working (0s • esc to interrupt)", ""]
+        # Codex's live timer ticks every second while a turn runs; Herdr's working rule needs it.
+        elapsed = int(time.monotonic() - turn_started) if turn_started else 0
+        rows += [f"• Working ({elapsed}s • esc to interrupt)", ""]
     rows.append("› " + (buffer if buffer else "Ask Codex to do anything"))
     # Codex's footer under the composer: Herdr's screen detection reads it.
     rows += ["", "  fake-model default · " + os.getcwd(), "  ? for shortcuts"]
@@ -89,7 +94,29 @@ def run_hooks(event, **payload):
     return contexts
 
 
+def run_tool(command):
+    """One Bash tool call: the screen keeps ticking and the terminal keeps being read while it runs.
+    Input arriving now is logged (`input`, during_turn) and queued for after the turn."""
+    global queued
+    child = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             env=dict(os.environ, CODEX_SESSION_ID=SESSION))
+    deadline = time.monotonic() + 60
+    while child.poll() is None and time.monotonic() < deadline:
+        draw(working=True)
+        ready, _, _ = select.select([TTY], [], [], 1.0)
+        if ready:
+            data = os.read(TTY, 1024).decode("utf-8", "replace")
+            log("input", data=data, during_turn=True)
+            queued += data
+    if child.poll() is None:
+        child.kill()
+    stdout, stderr = child.communicate()
+    return child.returncode, stdout, stderr
+
+
 def turn(line):
+    global turn_started
+    turn_started = time.monotonic()
     transcript.append("› " + line)
     draw(working=True)
     log("prompt", text=line)
@@ -101,16 +128,15 @@ def turn(line):
             tool_id = "call_" + uuid.uuid4().hex[:12]
             run_hooks("PreToolUse", tool_name="Bash", tool_use_id=tool_id, tool_input={"command": command},
                       turn_id=turn_id)
-            done = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=60,
-                                  env=dict(os.environ, CODEX_SESSION_ID=SESSION))
-            log("tool", command=command, rc=done.returncode, stdout=done.stdout[-4000:],
-                stderr=done.stderr[-2000:])
-            transcript.append(f"• Ran {command[:60]} (rc={done.returncode})")
+            rc, stdout, stderr = run_tool(command)
+            log("tool", command=command, rc=rc, stdout=stdout[-4000:], stderr=stderr[-2000:])
+            transcript.append(f"• Ran {command[:60]} (rc={rc})")
             draw(working=True)
     transcript.append("• done")
     # Codex's end-of-turn summary: older Herdr releases read a finished turn from it.
     transcript.extend(["", "  Worked for 1s • " + time.strftime("%H:%M"), ""])
     run_hooks("Stop", stop_hook_active=False, last_assistant_message="done", turn_id=turn_id)
+    turn_started = None
     log("turn_end", text=line)
 
 
@@ -121,18 +147,23 @@ def main():
         return
     log("start", argv=sys.argv[1:], cwd=os.getcwd())
     run_hooks("SessionStart", source="startup")
-    fd = sys.stdin.fileno()
+    global TTY, queued
+    fd = TTY = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
     tty.setraw(fd)
     try:
         draw()
         while True:
-            ready, _, _ = select.select([fd], [], [], 0.5)
-            if not ready:
-                continue
-            data = os.read(fd, 1024).decode("utf-8", "replace")
-            if not data:
-                break
+            if queued:
+                data, queued = queued, ""
+            else:
+                ready, _, _ = select.select([fd], [], [], 0.5)
+                if not ready:
+                    continue
+                data = os.read(fd, 1024).decode("utf-8", "replace")
+                if not data:
+                    break
+                log("input", data=data, during_turn=False)
             i = 0
             while i < len(data):
                 ch = data[i]
