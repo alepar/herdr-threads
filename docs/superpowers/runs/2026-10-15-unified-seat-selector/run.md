@@ -25,12 +25,12 @@ parked:
 - graph-pass · graph-change · "narrow ht-u3ym.5 <- ht-u3ym.3.3 to ht-u3ym.5 <- ht-u3ym.3.2 (safe no; docs could overlap 3.3)"
 - graph-pass · graph-change · "fold move-only ht-u3ym.3.1 into ht-u3ym.3.2 as its first commit (depth 5→4; proposal, never safe)"
 codeBuckets:
-  completed: ht-u3ym.3.1, ht-u3ym.2, ht-u3ym.1, ht-u3ym.3.2, ht-u3ym.3.3, ht-u3ym.5, ht-u3ym.4, ht-u3ym.6, ht-u3ym.11
+  completed: ht-u3ym.3.1, ht-u3ym.2, ht-u3ym.1, ht-u3ym.3.2, ht-u3ym.3.3, ht-u3ym.5, ht-u3ym.4, ht-u3ym.6, ht-u3ym.11, ht-u3ym.12
   escalated: 
   pendingRetry: 
   parked: 
   stalled: false
-  review: not ready (M1: seat stage pass 1 runs before the agent-without-session refusal; full suite unrun under deferSweep) — final-review-reentry-1.md
+  review: not ready (only blocker: full suite unmeasured under deferSweep; clippy/check-default-features/fmt/harness-neutral clean @ a73a58234) — final-review-reentry-2.md
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: round 1: graph-bound — 8 open beads, depth 5, achievable width 2 vs cap 8; edge audit armed now (no changes)
   worktreesKept: 
