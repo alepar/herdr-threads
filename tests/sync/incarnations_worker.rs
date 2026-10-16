@@ -204,6 +204,7 @@ impl Node {
             status: self.status.clone(),
             own_history: self.hold.clone(),
             signals: self.signals.clone(),
+            sync_pacer: None,
             clock: self.clock.clone(),
             log: Arc::new(move |line| lines.lock().unwrap().push(line.to_owned())),
             cancel: self.cancel.clone(),
@@ -914,6 +915,129 @@ fn reissue_runs_after_pull_commits() {
     assert_eq!(
         w.a.count("SELECT COUNT(*) FROM sync_branches WHERE state='complete' AND tip_counter=4"),
         1
+    );
+}
+
+// Kills: a worker that commits a rotation and re-issues under its `Lane::Sync`
+// origin without telling the coordinator: that origin keeps a commit from kicking
+// its own lane, so peers would not hear of the new incarnation's entries until
+// some other commit happened.
+#[test]
+fn quanta_kick_the_sync_pacer() {
+    let w = world();
+    let pacer = Arc::new(crate::service::pacer::Pacer::new(
+        "sync",
+        w.a.clock.clone(),
+        Cancellation::default(),
+    ));
+    let mut deps = w.a.deps();
+    deps.sync_pacer = Some(pacer.clone());
+    let mut core = Core::new(deps);
+    w.a.sink.enqueue(w.owner_fork(peer(11)));
+    core.work();
+    assert!(w.a.reissues() > 0, "the owner rotated and re-issued");
+    // The kick is latched: the wait ends at once. (Without it the manual clock
+    // never reaches the pacer's deadline, so the real-time bound ends the wait.)
+    let wake = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), pacer.wait(Duration::from_secs(60))).await
+        });
+    assert_eq!(wake.ok(), Some(crate::service::pacer::Wake::Kicked));
+}
+
+// Kills: a daemon that never installs the own-history hold's release kick on
+// the Apply lane: the entries the hold held would then wait for the lane's 60 s
+// safety tick (after a restore, a minute of redelivery-free but unapplied history).
+#[test]
+fn own_history_release_kicks_the_apply_lane() {
+    let node = Node::new(SEED_A, 600, ManualClock::new(T0));
+    let stop = Cancellation::default();
+    let kicks = crate::service::kicks::CommitKicks::default();
+    let lane = crate::app::start_apply_lane(
+        &kicks,
+        node.clock.clone(),
+        stop.clone(),
+        node.store.clone(),
+        Box::new(|_| {}),
+        node.writer.clone(),
+        Arc::new(WorkerStatus::default()),
+    )
+    .expect("start the apply lane");
+    let sync = node.store.context().sync().expect("journal open");
+    let hold = sync.own_history_hold();
+    // Let the lane finish its startup replay and wait; its tick never elapses on
+    // the manual clock, so only a kick can wake it from here.
+    std::thread::sleep(Duration::from_millis(500));
+    hold.set(HoldSource::Links, true, node.clock.monotonic_now());
+    hold.set(HoldSource::Links, false, node.clock.monotonic_now());
+    // The release asks for a pass; the lane takes the hint.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while sync.apply_hint.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let taken = !sync.apply_hint.load(Ordering::Acquire);
+    stop.cancel();
+    kicks.kick(crate::service::kicks::LaneSet::EMPTY.with(Lane::Apply));
+    lane.join().expect("the apply lane stops");
+    assert!(taken, "the lane ran a pass after the hold lifted");
+}
+
+// Kills: a reply to a request the branch row has moved past judged against the
+// row's new position: the 1 s timer asks again for the same `from` while the
+// first reply still waits in the queue, the first reply moves the row on, and
+// the second then read as corrupt and penalized the only source.
+#[test]
+fn stale_branch_reply_is_dropped_not_penalized() {
+    let w = world();
+    let mut core = w.a.core();
+    let s = peer(11);
+    w.a.sink.enqueue(w.owner_fork(s));
+    core.work();
+    w.a.sink.on_have(s, true, &w.have(4, &w.b4.hash), &[]);
+    core.work();
+    let (_, want) =
+        w.a.sink
+            .outbox()
+            .sends
+            .last()
+            .cloned()
+            .expect("the longer branch was requested");
+    assert_eq!((want.tip.counter, want.from), (4, 3));
+    // The first part of the branch, with more to come.
+    let reply = || BranchReply::Entries {
+        node: w.log.node,
+        inc: w.log.incarnation,
+        tip_hash: hex(&w.b4.hash),
+        entries: vec![WireEnvelope::from(&w.b3)],
+        more: true,
+    };
+    w.a.sink.on_branch(s, reply());
+    // The answered request now holds the branch, so the sink refuses the
+    // timer's second ask; a duplicate reply is queued directly (the stale
+    // path stays a defence against one that still arrives).
+    w.a.sink.note_tip_source(w.log, &hex(&w.b4.hash), s);
+    assert_eq!(w.a.sink.request_branch(want.clone()), None);
+    w.a.sink.enqueue(Job::Branch {
+        source: s,
+        want: want.clone(),
+        reply: reply(),
+    });
+    core.work();
+
+    assert!(
+        w.a.lines().iter().all(|l| !l.contains("rejected")),
+        "{:?}",
+        w.a.lines()
+    );
+    let asked = w.a.sink.outbox().sends;
+    assert!(
+        asked
+            .iter()
+            .any(|(source, ask)| *source == s && ask.from == 4),
+        "the rest is asked of the same source: {asked:?}"
     );
 }
 

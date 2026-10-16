@@ -15,16 +15,16 @@ use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
-const WAIT: Duration = Duration::from_secs(90);
+pub(crate) const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
+pub(crate) const WAIT: Duration = Duration::from_secs(90);
 
 /// A kind of a "newer" software version: registered only where it is authored.
 #[derive(Serialize, Deserialize)]
-struct FutureNote {
+pub(crate) struct FutureNote {
     text: String,
 }
 
-struct FutureKind;
+pub(crate) struct FutureKind;
 
 impl FactKind for FutureKind {
     const NAME: &'static str = "future.note";
@@ -45,7 +45,7 @@ impl FactKind for FutureKind {
     }
 }
 
-fn note(text: &str) -> FutureNote {
+pub(crate) fn note(text: &str) -> FutureNote {
     FutureNote { text: text.into() }
 }
 
@@ -168,3 +168,39 @@ fn unknown_kind_authored_and_relayed_unchanged() {
         );
     }
 }
+
+#[path = "multinode/support.rs"]
+mod support;
+
+#[path = "multinode/config_direct.rs"]
+mod config_direct;
+
+#[path = "multinode/config_relay.rs"]
+mod config_relay;
+
+#[path = "multinode/config_store_only.rs"]
+mod config_store_only;
+
+#[path = "multinode/config_partition.rs"]
+mod config_partition;
+
+#[path = "multinode/config_mixed_versions.rs"]
+mod config_mixed_versions;
+
+#[path = "multinode/config_two_hosts.rs"]
+mod config_two_hosts;
+
+#[path = "multinode/config_discovery.rs"]
+mod config_discovery;
+
+#[path = "multinode/config_delivery.rs"]
+mod config_delivery;
+
+#[path = "multinode/config_restore.rs"]
+mod config_restore;
+
+#[path = "multinode/config_wipe.rs"]
+mod config_wipe;
+
+#[path = "multinode/config_clone.rs"]
+mod config_clone;

@@ -967,6 +967,7 @@ fn sync_clone_cleared_single_restored_store_clears_and_rotation_runs() {
                 .own_history_hold()
                 .clone(),
             signals: rig.admin.sync.signals(),
+            sync_pacer: None,
             clock: restored_clock,
             log: Arc::new(move |line: &str| lines.lock().unwrap().push(line.to_owned())),
             cancel: worker_stop.clone(),

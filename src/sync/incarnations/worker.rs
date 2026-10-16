@@ -46,6 +46,7 @@ use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis};
 use crate::service::fair_writer::{FairWriter, WriterGuard};
 use crate::service::kicks::{Lane, LaneOrigin, enter_lane};
+use crate::service::pacer::Pacer;
 use crate::service::workers::WorkerStatus;
 use crate::store::SqliteStore;
 use crate::store::connection::{HoldSource, OwnHistoryHold};
@@ -97,6 +98,12 @@ pub struct WorkerDeps {
     /// `SyncHandle::signals()`: the worker asks for a round after a clone
     /// clearance.
     pub signals: Arc<SyncSignals>,
+    /// The `Lane::Sync` pacer. The worker commits under a `Lane::Sync` origin,
+    /// which keeps a commit from kicking its own lane, so after each quantum it
+    /// kicks the coordinator itself: a rotation or a re-issued entry is a local
+    /// vector change that peers must hear about. `None` where no coordinator
+    /// runs (tests of the worker alone).
+    pub sync_pacer: Option<Arc<Pacer>>,
     pub clock: Arc<dyn Clock>,
     pub log: LogFn,
     pub cancel: Cancellation,
@@ -204,7 +211,9 @@ struct Core {
 macro_rules! quantum {
     ($self:expr, $body:expr) => {{
         let (_origin, _turn, budget) = $self.turn()?;
-        $self.d.store.incarnations_quantum(&budget, $body)?
+        let done = $self.d.store.incarnations_quantum(&budget, $body)?;
+        $self.kick_sync();
+        done
     }};
 }
 
@@ -261,6 +270,15 @@ impl Core {
         let node = self.d.store.context().sync()?.identity.uuid();
         self.own = Some(node);
         Ok(node)
+    }
+
+    /// Tells the coordinator the journal may have moved (see
+    /// [`WorkerDeps::sync_pacer`]); a kick on a quantum that wrote nothing
+    /// costs one vector read.
+    fn kick_sync(&self) {
+        if let Some(pacer) = &self.d.sync_pacer {
+            pacer.kick();
+        }
     }
 
     /// The lane origin, a writer turn and the budget of one quantum.
@@ -1126,7 +1144,7 @@ impl Core {
                 self.d.sink.clear_request(&key);
                 Ok(())
             }
-            None => self.on_pull_reply(source, &key, &entries, more),
+            None => self.on_pull_reply(source, &key, want.from, &entries, more),
         }
     }
 
@@ -1199,13 +1217,24 @@ impl Core {
         &mut self,
         source: NodeUuid,
         key: &BranchKey,
+        asked_from: u64,
         entries: &[Envelope],
         more: bool,
     ) -> Result<(), ApiError> {
-        let Some(branch_ix) = self.find_branch(key)? else {
+        let Some((branch_ix, next_from)) = self.find_branch(key)? else {
             self.d.sink.clear_request(key);
             return Ok(());
         };
+        if asked_from != next_from {
+            // A reply to a request the row has moved past: the 1 s timer can
+            // ask again for the same `from` while the first reply still waits
+            // in the queue, and its verdict (an earlier `next_from`) then
+            // makes the second reply look like a bad one. Neither the source
+            // nor the row is at fault: drop it; the next pull asks from
+            // `next_from`.
+            self.d.sink.clear_request(key);
+            return self.schedule_pulls();
+        }
         let verdict = quantum!(self, |tx, _ctx, _decision| store::branch_progress(
             tx, branch_ix, source, entries, more
         ));
@@ -1236,12 +1265,12 @@ impl Core {
     }
 
     /// The `pulling` branch row of `key`, if any.
-    fn find_branch(&self, key: &BranchKey) -> Result<Option<i64>, ApiError> {
+    fn find_branch(&self, key: &BranchKey) -> Result<Option<(i64, u64)>, ApiError> {
         let db = self.d.store.context().open_query(self.read_budget())?;
         Ok(store::due_branches(&db, UtcMillis(i64::MAX))?
             .into_iter()
             .find(|b| b.log == key.log && hex_encode(&b.tip.1) == key.tip_hash)
-            .map(|b| b.branch_ix))
+            .map(|b| (b.branch_ix, b.next_from)))
     }
 
     // ---- Pulls and the Branches flag ---------------------------------------

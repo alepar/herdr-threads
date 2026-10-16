@@ -731,6 +731,13 @@ pub(crate) fn start_apply_lane(
 ) -> io::Result<std::thread::JoinHandle<()>> {
     let pacer = Arc::new(Pacer::new(Lane::Apply.name(), clock, stop.clone()));
     kicks.register(Lane::Apply, Arc::clone(&pacer));
+    // When the own-history hold lifts, the entries it held apply at once, not at
+    // the lane's 60 s safety tick.
+    if let Ok(sync) = store.context().sync() {
+        let kick = Arc::clone(&pacer);
+        sync.own_history_hold()
+            .set_release_kick(Arc::new(move || kick.kick()));
+    }
     start_apply_worker(store, post_commit, writer, pacer, stop, status)
 }
 
@@ -968,7 +975,15 @@ impl LaneProbe {
     fn discovery(&self) -> (Option<std::path::PathBuf>, Duration) {
         match self.state().discovery.clone() {
             Some((program, period)) => (Some(program), period),
-            None => (None, crate::sync::discovery::POLL_PERIOD),
+            // A spawned daemon of a cluster test (ht-5fr.11) cannot be handed a
+            // probe: its environment shortens the cadence instead.
+            None => (
+                None,
+                std::env::var("HT_TEST_DISCOVERY_PERIOD_MS")
+                    .ok()
+                    .and_then(|ms| ms.parse::<u64>().ok())
+                    .map_or(crate::sync::discovery::POLL_PERIOD, Duration::from_millis),
+            ),
         }
     }
     /// Runs peer discovery with `herdr` at `program` every `period`, and without
@@ -2115,7 +2130,7 @@ where
                     boot,
                     writer: Arc::clone(&writer),
                     clock: Arc::clone(&factory_clock),
-                    pacer: sync_pacer,
+                    pacer: Arc::clone(&sync_pacer),
                     status: Arc::clone(&factory_sync_status),
                     log: sync_log.clone(),
                     fork_sink: incarnations_sink.clone(),
@@ -2150,6 +2165,7 @@ where
                     status: Arc::clone(&factory_sync_status),
                     own_history,
                     signals: sync_handle.signals(),
+                    sync_pacer: Some(sync_pacer),
                     clock: Arc::clone(&factory_clock),
                     log: sync_log.clone(),
                     cancel: incarnations_stop.clone(),

@@ -23,6 +23,20 @@ pub const TICK_MILLIS: u64 = 5_000;
 /// How long a sync hold lasts at most (peer-link spec §12): an unreachable
 /// peer delays overdue emission by this much, never longer.
 pub const SYNC_HOLD_MILLIS: u64 = 60_000;
+
+/// The longest sync hold in force: [`SYNC_HOLD_MILLIS`], except that a
+/// `test-support` build lets `HT_TEST_SYNC_HOLD_MS` shorten it, because a
+/// spawned daemon of a cluster test has no injected clock (ht-5fr.11).
+fn sync_hold_millis() -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(ms) = std::env::var("HT_TEST_SYNC_HOLD_MS")
+        .ok()
+        .and_then(|ms| ms.parse::<u64>().ok())
+    {
+        return ms;
+    }
+    SYNC_HOLD_MILLIS
+}
 const RETIREMENT_RETRY_MILLIS: u64 = 5_000;
 const DUE_PHASE_RETRY_MILLIS: u64 = 5_000;
 // Retry bookkeeping is bounded independently of the durable work queue.
@@ -145,7 +159,7 @@ impl SyncHoldGate {
             sync.request_round(now);
             self.since = Some(now);
         }
-        let expired = now.0.saturating_sub(self.armed_at.0) >= SYNC_HOLD_MILLIS;
+        let expired = now.0.saturating_sub(self.armed_at.0) >= sync_hold_millis();
         let held = !expired
             && match (self.since, ready) {
                 (Some(since), Some(sync)) => match sync.round_state(since) {
