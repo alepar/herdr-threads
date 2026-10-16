@@ -80,3 +80,9 @@ feedback: evidence-only-fix pipeline defect sent via herdr agent prompt to super
 - sweepFix: pass 1 filed ht-5fr.62 (StoreCorrupt no creating fact ×4), ht-5fr.63 (agy pending invitations ×2), ht-5fr.64 (peer --stdio EOF exit), ht-5fr.65 (token_diet budget vs 11-char IDs)
 - sweepFix: coordinator wf_9e0da6c2-dec merged ht-5fr.63, .64, .65; ht-5fr.62 escalated (blocker ht-sjmt) — handoff half done on task-ht-5fr.62 (5b8721587), summary_flow half needed a call
 - decision · ht-5fr.62 / ht-sjmt (autonomous) · "summary_flow useful-page tests seeded legacy receipts rows that cannot exist under the clean start: rewrite with real sends (history too); a p1 mail shown 'empty' behind real history is a reader bug to fix, not an assertion to relax"
+- codeBuckets.sweep: 7438 run, 7438 passed, 47 skipped · wall 188 s · leaks: none · check-default-features: pass @ 7e558f43a
+- sweepFix: pass 1 (ht-5fr.62–.65) all merged; re-run green @ 7e558f43a (sweep-2-7e558f43a.log)
+- post-loop changes: 15112f108..7e558f43a touched tests only (peer_stdio, topology_handoff, agy_delivery, summary_flow, token_diet) — no behaviour change, so no post-cap audit roast; listed in report Remaining as not roast-reviewed
+- baseAbsorbed: not absorbed — main 3ff902c77 (v1.1.0, 7 commits) merge refused by the permission layer; left to the human; the sweep did not judge the combined tree
+- codeBuckets.review: not ready — main v1.1.0 not merged; landing order vs ht-794l undecided; release tooling (about.toml BSD-3-Clause, 8-char ID regexes in wake-e2e/validate-package/real-ssh-e2e) breaks on main; punch-list robustness items open (wf_933c0649-482)
+friction: 31 events
