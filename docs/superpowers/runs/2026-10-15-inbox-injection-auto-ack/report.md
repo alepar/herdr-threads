@@ -1,5 +1,5 @@
 status: clean
-metrics: pending (upstream-feedback not yet run)
+metrics: upstream-feedback-draft.md
 
 ## Implemented
 
