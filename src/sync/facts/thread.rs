@@ -94,6 +94,11 @@ pub struct ThreadRegisterPayload {
     pub field: RegisterField,
     #[serde(default)]
     pub value: Option<String>,
+    /// The seat whose command wrote the register, for the derived event's
+    /// `actor_seat`. Absent for a lane decision (automatic archival). Optional
+    /// and unchecked: informational, like `thread.direct`'s `creator`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<SeatId>,
 }
 
 impl ReferencedSeats for ThreadRegisterPayload {

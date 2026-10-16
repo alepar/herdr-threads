@@ -161,6 +161,8 @@ fn store_field(field: RegisterField) -> thread_registers::RegisterField {
 /// bumps the local command made before, and a derived event keyed by the
 /// entry (`register:<thread>:<field>:<uuid8>:<counter>`) is appended.
 ///
+/// The derived event carries `actor_seat` when the payload names an actor.
+///
 /// A local-only input (a node-local thread) has no journal row and no
 /// register: the value is applied directly.
 pub fn materialize_register(
@@ -267,6 +269,10 @@ pub fn materialize_register(
             )
         }
     };
+    let mut event_payload = event_payload;
+    if let Some(actor) = &payload.actor {
+        event_payload["actor_seat"] = serde_json::json!(actor.as_str());
+    }
     let origin = m.origin_node.to_string();
     let counter = if m.ingest_seq.is_some() {
         m.origin_counter
@@ -517,6 +523,7 @@ fn set_archived(
                         thread: command.thread.clone(),
                         field: RegisterField::Archived,
                         value: Some(if archived { "1" } else { "0" }.to_owned()),
+                        actor: Some(caller.clone()),
                     },
                 )?;
             }
@@ -614,6 +621,7 @@ pub fn set_topic(
                         thread: command.thread.clone(),
                         field: RegisterField::Topic,
                         value: Some(command.topic.clone()),
+                        actor: Some(caller.clone()),
                     },
                 )?;
             }
@@ -688,6 +696,7 @@ pub fn set_thread_name(
                         thread: command.thread.clone(),
                         field: RegisterField::Name,
                         value: command.name.clone(),
+                        actor: Some(caller.clone()),
                     },
                 )?;
             }

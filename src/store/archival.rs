@@ -536,6 +536,7 @@ fn advance_channel(
                     thread: id.clone(),
                     field: RegisterField::Archived,
                     value: Some("1".to_owned()),
+                    actor: None,
                 },
             )?;
             archived.push(thread.into());

@@ -583,19 +583,47 @@ fn system_text(summary: &MessageSummary, lookup: &mut dyn Lookup) -> String {
                 format!("{} joined", seat_nick(&event, "seat", lookup))
             }
             "leave" => format!("{} left", seat_nick(&event, "seat", lookup)),
-            "archive" => format!(
-                "{} archived the thread",
-                seat_nick(&event, "actor_seat", lookup)
-            ),
-            "reopen" => format!(
-                "{} reopened the thread",
-                seat_nick(&event, "actor_seat", lookup)
-            ),
-            "set_topic" => format!(
-                "{} changed the topic to: {}",
-                seat_nick(&event, "actor_seat", lookup),
-                field(&event, "topic").unwrap_or("")
-            ),
+            "archive" | "reopen" => {
+                let verb = if action == "archive" {
+                    "archived"
+                } else {
+                    "reopened"
+                };
+                if field(&event, "actor_seat").is_some() {
+                    format!(
+                        "{} {verb} the thread",
+                        seat_nick(&event, "actor_seat", lookup)
+                    )
+                } else {
+                    format!("the thread was {verb}")
+                }
+            }
+            "set_topic" => {
+                let topic = field(&event, "topic").unwrap_or("");
+                if field(&event, "actor_seat").is_some() {
+                    format!(
+                        "{} changed the topic to: {topic}",
+                        seat_nick(&event, "actor_seat", lookup)
+                    )
+                } else {
+                    format!("the topic was changed to: {topic}")
+                }
+            }
+            "set_thread_name" => {
+                let name = field(&event, "name");
+                if field(&event, "actor_seat").is_some() {
+                    let who = seat_nick(&event, "actor_seat", lookup);
+                    match name {
+                        Some(name) => format!("{who} renamed the thread to: {name}"),
+                        None => format!("{who} cleared the thread name"),
+                    }
+                } else {
+                    match name {
+                        Some(name) => format!("the thread was renamed to: {name}"),
+                        None => "the thread name was cleared".to_owned(),
+                    }
+                }
+            }
             "release_requirement" => format!(
                 "{} released the required membership of {}",
                 actor(lookup),
