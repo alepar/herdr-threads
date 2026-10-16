@@ -200,6 +200,10 @@ impl Actor {
     /// Return `len` bytes of credit to the sender on `link_id`.
     pub(super) fn grant(&self, link_id: u64, len: u32) {
         if let Some(entry) = self.links.get(&link_id) {
+            // A grant is never dropped while the link lives (it accumulates in
+            // the link's pending counter, whatever the control queue holds).
+            // The only error is `LinkGone`: the link's `Ended` event follows
+            // and drops the entry, so there is nothing to do.
             let _ = entry.handle.grant(len);
         }
     }

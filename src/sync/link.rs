@@ -4,8 +4,8 @@
 //! halves, the byte credit window for `entries` frames, ping/pong liveness and
 //! the single end-of-link report. It handles `ping`, `pong`, `credit` and
 //! `unknown` itself and forwards every other frame upward as a
-//! [`LinkEvent::Frame`]. Hides: the control/data queues, the credit counter
-//! and the timers. Must not: route frames, decide what a frame means, dial or
+//! [`LinkEvent::Frame`]. Hides: the control/data queues, both credit counters
+//! (sending window and pending grants) and the timers. Must not: route frames, decide what a frame means, dial or
 //! accept connections, or touch the store (known peer keys come in through
 //! [`LocalHello::known_pubkey`]). Where new behaviour goes: a new frame is a
 //! new `PeerFrame` variant behind a capability; this runtime forwards it to
@@ -510,6 +510,10 @@ struct Shared {
     credit: u64,
     outstanding: AtomicU64,
     credit_freed: Notify,
+    /// Credit granted to the peer and not yet written. The writer drains it
+    /// into `credit` frames, so a grant never depends on queue room.
+    pending_credit: AtomicU64,
+    credit_due: Notify,
     unknown_frames: AtomicU64,
     /// Frames decoded from the peer, of any kind (the coordinator's clone
     /// probe reads it: any growth means the peer is alive).
@@ -532,7 +536,8 @@ impl Shared {
 /// the link.
 ///
 /// Owns: the two bounded queues into the writer task, control first, then
-/// byte-credited `entries`. Must not: route or interpret frames; that is the
+/// byte-credited `entries`, and the pending-credit counter the writer drains
+/// ahead of control frames. Must not: route or interpret frames; that is the
 /// coordinator's. See the module documentation for the full responsibility.
 pub struct LinkHandle {
     link_id: u64,
@@ -553,7 +558,7 @@ impl LinkHandle {
 
     /// Queue a control frame (anything but `entries` and `branch_entries`;
     /// use [`Self::try_send_entries`] for those). `branch_want` and
-    /// `branch_none` are control frames.
+    /// `branch_none` are control frames. Credit goes through [`Self::grant`].
     pub fn send(&self, frame: PeerFrame) -> Result<(), SendError> {
         map_try(self.control.try_send(Control::Frame(frame)))
     }
@@ -569,9 +574,22 @@ impl LinkHandle {
         map_try(self.data.try_send(body))
     }
 
-    /// Return `bytes` of credit to the peer (queues a `credit` frame).
+    /// Return `bytes` of credit to the peer. Never dropped: grants add to a
+    /// pending counter the writer sends as `credit` frames ahead of queued
+    /// control frames; `Full` is never returned.
     pub fn grant(&self, bytes: u32) -> Result<(), SendError> {
-        self.send(PeerFrame::Credit { bytes })
+        // The writer owns the receiver: a closed sender means it is over.
+        if self.control.is_closed() {
+            return Err(SendError::LinkGone);
+        }
+        if bytes == 0 {
+            return Ok(());
+        }
+        self.shared
+            .pending_credit
+            .fetch_add(u64::from(bytes), Ordering::AcqRel);
+        self.shared.credit_due.notify_one();
+        Ok(())
     }
 
     /// Write `close` (within one second) and end the link.
@@ -620,6 +638,8 @@ where
         credit: u64::from(peer.limits.credit),
         outstanding: AtomicU64::new(0),
         credit_freed: Notify::new(),
+        pending_credit: AtomicU64::new(0),
+        credit_due: Notify::new(),
         unknown_frames: AtomicU64::new(0),
         inbound_frames: AtomicU64::new(0),
     });
@@ -753,8 +773,15 @@ async fn run_writer<W: AsyncWrite + Unpin>(
     let mut held: Option<Vec<u8>> = None;
     let mut freed_pending = false;
     loop {
-        // Control frames always go first.
+        // Granted credit goes out before any queued control frame.
+        if let Some(end) = write_due_credit(&mut writer, &shared).await {
+            return end;
+        }
+        // Control frames go before data.
         while let Ok(item) = control.try_recv() {
+            if let Some(end) = write_due_credit(&mut writer, &shared).await {
+                return end;
+            }
             if let Some(end) = write_control(&mut writer, item).await {
                 return end;
             }
@@ -775,12 +802,16 @@ async fn run_writer<W: AsyncWrite + Unpin>(
             biased;
             item = control.recv() => match item {
                 Some(item) => {
+                    if let Some(end) = write_due_credit(&mut writer, &shared).await {
+                        return end;
+                    }
                     if let Some(end) = write_control(&mut writer, item).await {
                         return end;
                     }
                 }
                 None => return LinkError::Shutdown,
             },
+            () = shared.credit_due.notified() => {}
             permit = events.reserve(), if freed_pending => {
                 if let Ok(permit) = permit {
                     permit.send(LinkEvent::CreditFreed { link_id });
@@ -802,6 +833,22 @@ async fn run_writer<W: AsyncWrite + Unpin>(
             () = shared.credit_freed.notified(), if held.is_some() => {}
         }
     }
+}
+
+/// Write the pending grants as `credit` frames. `Some` ends the writer.
+async fn write_due_credit<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    shared: &Shared,
+) -> Option<LinkError> {
+    let mut due = shared.pending_credit.swap(0, Ordering::AcqRel);
+    while due > 0 {
+        let bytes = u32::try_from(due).unwrap_or(u32::MAX);
+        if let Err(e) = write_frame_flushed(writer, &PeerFrame::Credit { bytes }).await {
+            return Some(e.into());
+        }
+        due -= u64::from(bytes);
+    }
+    None
 }
 
 /// Write one control item. `Some` ends the writer: a write failure, or a
@@ -1409,6 +1456,7 @@ mod tests {
         assert_eq!(up_for, DEAD_AFTER);
         assert_eq!(handle.send(PeerFrame::Accept), Err(SendError::LinkGone));
         assert_eq!(handle.try_send_entries(vec![1]), Err(SendError::LinkGone));
+        assert_eq!(handle.grant(1), Err(SendError::LinkGone));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1569,5 +1617,85 @@ mod tests {
         assert_eq!(seen[0].1, len);
         assert!(matches!(seen[1].0, PeerFrame::BranchWant { .. }));
         assert!(matches!(seen[2].0, PeerFrame::BranchNone { .. }));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn grant_is_never_dropped_on_a_full_control_queue() {
+        let (handle, _events, mut peer, _cancel) = running().await;
+        for n in 0..CONTROL_QUEUE as u64 {
+            handle.send(PeerFrame::Pong { n }).unwrap();
+        }
+        assert_eq!(
+            handle.send(PeerFrame::Pong { n: 999 }),
+            Err(SendError::Full)
+        );
+        assert_eq!(handle.grant(1000), Ok(()));
+        assert_eq!(handle.grant(234), Ok(()));
+        let (mut pongs, mut credit) = (0, 0u64);
+        while pongs < CONTROL_QUEUE || credit < 1234 {
+            match read_next_frame(&mut peer).await {
+                PeerFrame::Pong { .. } => pongs += 1,
+                PeerFrame::Credit { bytes } => credit += u64::from(bytes),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(credit, 1234);
+        assert!(nothing_within(&mut peer, 5).await, "no extra credit");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn grant_zero_sends_nothing() {
+        let (handle, _events, mut peer, _cancel) = running().await;
+        assert_eq!(handle.grant(0), Ok(()));
+        assert!(nothing_within(&mut peer, 5).await);
+    }
+
+    async fn next_frame_event(rx: &mut mpsc::Receiver<LinkEvent>) -> (PeerFrame, usize) {
+        loop {
+            match rx.recv().await.expect("events open") {
+                LinkEvent::Frame {
+                    frame, wire_len, ..
+                } => return (frame, wire_len),
+                LinkEvent::CreditFreed { .. } => {}
+                LinkEvent::Ended { why, .. } => panic!("link ended: {why:?}"),
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_writer_resumes_after_a_grant_on_a_full_control_queue() {
+        let (d, e) = pair(&local(1, 10), &local(2, 20)).await;
+        let (tx_a, mut events_a) = mpsc::channel(64);
+        let (tx_b, _events_b) = mpsc::channel(64);
+        let (cancel_a, cancel_b) = (Cancellation::default(), Cancellation::default());
+        let a = spawn(d.unwrap(), 1, tx_a, clock(), cancel_a.clone());
+        let b = spawn(e.unwrap(), 2, tx_b, clock(), cancel_b.clone());
+        let body = branch_entries_body(400 * 1024);
+        for _ in 0..3 {
+            b.try_send_entries(body.clone()).unwrap();
+        }
+        let mut wire_len = 0;
+        for _ in 0..2 {
+            let (frame, len) = next_frame_event(&mut events_a).await;
+            assert!(matches!(frame, PeerFrame::BranchEntries { .. }));
+            wire_len = len;
+        }
+        assert!(
+            timeout(Duration::from_secs(5), next_frame_event(&mut events_a))
+                .await
+                .is_err(),
+            "third frame needs credit"
+        );
+        for n in 0..CONTROL_QUEUE as u64 {
+            a.send(PeerFrame::Pong { n }).unwrap();
+        }
+        assert_eq!(a.send(PeerFrame::Pong { n: 999 }), Err(SendError::Full));
+        assert_eq!(a.grant(wire_len as u32), Ok(()));
+        let (third, _) = timeout(Duration::from_secs(10), next_frame_event(&mut events_a))
+            .await
+            .expect("peer writer resumed without a reconnect");
+        assert!(matches!(third, PeerFrame::BranchEntries { .. }));
+        cancel_a.cancel();
+        cancel_b.cancel();
     }
 }
