@@ -612,3 +612,123 @@ fn cleanup_and_abandon_leave_replicated_prep() {
     );
     w.check_no_remote_delivery();
 }
+
+// ---- accepted limit: no membership re-check at apply (ht-5fr.43) ---------------------
+
+#[test]
+fn non_member_author_message_applies_as_signed() {
+    let w = world(150);
+    // A second local seat of A that never joined the thread.
+    let outsider = w.a.local_seat();
+    w.a.enroll(&outsider, "codex", "a-outsider").unwrap();
+    w.a.publish(&outsider).unwrap();
+    assert!(w.a.membership(&w.thread, &outsider).is_none());
+    let message = w.a.stage_prep(&w.thread, "lazy", &[], &[]);
+    let payload = sent(
+        &message,
+        &w.thread,
+        &outsider,
+        DeliveryMode::Lazy,
+        0,
+        vec![spec(&w.human, ReceiptObligation::None, None)],
+    );
+    w.a.author_sent(&payload).unwrap();
+    sync_all(&[&w.a, &w.b]);
+
+    assert!(
+        w.b.journal().iter().all(|(_, state, _)| state == "applied"),
+        "{:?}",
+        w.b.journal()
+    );
+    assert!(w.b.membership(&w.thread, &outsider).is_none());
+    assert_eq!(
+        w.b.query(
+            &format!(
+                "SELECT actor_seat_id FROM messages WHERE id='{}'",
+                message.as_str()
+            ),
+            |r| r.get::<_, String>(0)
+        ),
+        vec![outsider.as_str().to_owned()],
+        "the non-member author's message applies, attributed to that author"
+    );
+    assert_eq!(
+        w.b.count(&format!(
+            "SELECT count(*) FROM lazy_recipients WHERE message_id='{}' AND seat_id='{}'",
+            message.as_str(),
+            w.human.as_str()
+        )),
+        1,
+        "the recipient's delivery row is as authored"
+    );
+    w.check_no_remote_delivery();
+}
+
+#[test]
+fn attacker_chosen_recipient_is_delivered_as_signed() {
+    let w = world(152);
+    // B's third seat is published but never joined the thread.
+    let outsider = w.b.local_seat();
+    w.b.enroll(&outsider, "human", "b-outsider").unwrap();
+    w.b.publish(&outsider).unwrap();
+    sync_all(&[&w.a, &w.b]);
+    assert!(w.b.membership(&w.thread, &outsider).is_none());
+    let message = w.a.stage_prep(&w.thread, "lazy", &[], &[]);
+    let payload = sent(
+        &message,
+        &w.thread,
+        &w.author,
+        DeliveryMode::Lazy,
+        0,
+        vec![spec(&outsider, ReceiptObligation::None, None)],
+    );
+    w.a.author_sent(&payload).unwrap();
+    sync_all(&[&w.a, &w.b]);
+
+    assert!(w.b.journal().iter().all(|(_, state, _)| state == "applied"));
+    assert_eq!(
+        w.b.query(
+            &format!(
+                "SELECT priority FROM lazy_recipients WHERE message_id='{}' AND seat_id='{}'",
+                message.as_str(),
+                outsider.as_str()
+            ),
+            |r| r.get::<_, i64>(0)
+        ),
+        vec![i64::from(payload.priority)],
+        "the non-member recipient gets a delivery row at the payload priority"
+    );
+    assert_eq!(
+        w.b.query(
+            &format!(
+                "SELECT actor_seat_id FROM messages WHERE id='{}'",
+                message.as_str()
+            ),
+            |r| r.get::<_, String>(0)
+        ),
+        vec![w.author.as_str().to_owned()],
+        "the delivery names the true author"
+    );
+    w.check_no_remote_delivery();
+}
+
+#[test]
+fn remote_message_carries_no_local_binding() {
+    let w = world(154);
+    let message = w.send_ordinary();
+    sync_all(&[&w.a, &w.b]);
+    let rows = w.b.query(
+        &format!(
+            "SELECT sender_binding_id,native_observation FROM messages WHERE id='{}'",
+            message.as_str()
+        ),
+        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)),
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, None, "no local binding from a remote payload");
+    assert!(
+        rows[0].1.contains(&format!("replicated_from:{}", w.a.id)),
+        "{}",
+        rows[0].1
+    );
+}

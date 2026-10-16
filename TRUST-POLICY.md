@@ -33,6 +33,8 @@ Amended 2026-10-15 for the main v1 reconcile of cross-node sync
 `invitation.created` authority by issuer kind (a service or operator invitation names no inviter seat and is
 authorized by its signing origin node), the 1:1 pair auto-join authored by each seat's own home node, the
 `direct_auto_join` provenance value, and the node-local nudge threshold (N4, N5, A3).
+Amended 2026-10-15 for `message.sent` apply (ht-5fr.43): author and recipient membership are not re-checked at
+apply, an accepted limit in N4.
 
 ## Abstract
 
@@ -1196,7 +1198,13 @@ section 17):
   ignored for authority) and takes its authority from the signing origin node, which also owns its deadline and
   overdue decision (`invitations.origin_node`). `invitations.inviter_seat_id` is set exactly for `seat`
   invitations (amended 2026-10-15, main v1 reconcile §4);
-- the author seat's home node for `message.sent`;
+- the author seat's home node for `message.sent`. Accepted limit (ht-5fr.43): a replicated `message.sent` is applied
+  with its author's audience as signed. The applying node checks that the origin is the author's home node and does
+  not re-check the author's membership or the recipients' membership against its own view, because membership
+  converges asynchronously and apply is order-independent (root §3, §6). A misbehaving home node can therefore
+  deliver its seat's message to any seat of another node, including a non-member; the delivery carries the true
+  author and `replicated_from:<origin>` provenance and never a local binding. Accepted limit (cooperative same-user
+  nodes);
 - the creator's home node for `thread.created`;
 - the home node of either pair seat for `thread.direct`;
 - for `seat.created`, the node whose tag the seat ID carries: the ID's tag is one the origin has held (from its
