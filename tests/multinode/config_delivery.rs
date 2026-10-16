@@ -6,19 +6,26 @@ use crate::support::{self, P1, P2, P3};
 use std::time::Duration;
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 22"]
 fn wakes_follow_the_delivery_contract_across_daemons() {
     // One recipient seat per case: a seat is woken at most once per 30 s.
-    let cluster = support::cluster("mn-delivery", 2, &[(0, 1)], &[0, 1]);
+    let panes = [P1, P2, P3, "w1:p4", "w1:p5", "w1:p6", "w1:p7"];
+    let cluster = support::cluster_with_panes("mn-delivery", 2, &[(0, 1)], &[0, 1], &panes);
     let a = cluster.seat(0, P1);
     let nudged_seat = cluster.seat(1, P1);
-    let lazy_seat = cluster.seat(1, P2);
-    let ack_seat = cluster.seat(1, P3);
+    let p0_seat = cluster.seat(1, P2);
+    let p1_seat = cluster.seat(1, P3);
+    let p3_wakes = cluster.seat(1, "w1:p4");
+    let p3_quiet = cluster.seat(1, "w1:p5");
+    let all_seat = cluster.seat(1, "w1:p6");
+    let ack_seat = cluster.seat(1, "w1:p7");
     for node in [0, 1] {
-        support::wait_seats(&cluster, node, 4);
+        support::wait_seats(&cluster, node, 8);
     }
+    // The threshold is node-local: each seat sets its own on B.
+    support::set_threshold(&cluster, &p3_wakes, 3);
+    support::set_threshold(&cluster, &all_seat, -1);
 
-    // `--nudge`: one wake marker through B's host, in the seat's own pane.
+    // `--nudge` is `-p 0`: one wake marker through B's host, in the seat's pane.
     let (_, nudged) = support::send(
         &cluster,
         &a,
@@ -27,24 +34,57 @@ fn wakes_follow_the_delivery_contract_across_daemons() {
     support::wait_wakes(&cluster, 1, P1, 1);
     assert!(support::inbox_ids(&cluster, &nudged_seat).contains(&nudged));
 
-    // Lazy: the idle seat is not woken; the item waits for its next turn.
-    let (_, lazy) = support::send(&cluster, &a, &["--seat", &lazy_seat.id, "--body", "lazy"]);
-    cluster.wait_until("the lazy message to reach B", crate::WAIT, || {
-        cluster.scalar(1, "SELECT id FROM messages WHERE id = ?1", &[&lazy])
-    });
-    std::thread::sleep(Duration::from_millis(1500));
-    assert_eq!(
-        cluster.host(1).prompts_for(P2),
-        0,
-        "a lazy send wakes nothing: {:?}",
-        cluster.host(1).prompts()
+    // `-p 0` wakes a T = 0 seat once.
+    let (_, p0) = support::send(
+        &cluster,
+        &a,
+        &["--seat", &p0_seat.id, "--body", "urgent", "-p", "0"],
     );
-    assert!(
-        support::inbox_ids(&cluster, &lazy_seat).contains(&lazy),
-        "the lazy item is pending for the seat's next turn"
-    );
+    support::wait_wakes(&cluster, 1, P2, 1);
+    assert!(support::inbox_ids(&cluster, &p0_seat).contains(&p0));
 
-    // `--require-ack` is nudge-class: it wakes.
+    // `-p 3` wakes a T = 3 seat, and a T = -1 seat wakes on a default p1.
+    let (_, p3) = support::send(
+        &cluster,
+        &a,
+        &["--seat", &p3_wakes.id, "--body", "p3", "-p", "3"],
+    );
+    support::wait_wakes(&cluster, 1, "w1:p4", 1);
+    assert!(support::inbox_ids(&cluster, &p3_wakes).contains(&p3));
+    let (_, p1_all) = support::send(
+        &cluster,
+        &a,
+        &["--seat", &all_seat.id, "--body", "p1 for T -1"],
+    );
+    support::wait_wakes(&cluster, 1, "w1:p6", 1);
+    assert!(support::inbox_ids(&cluster, &all_seat).contains(&p1_all));
+
+    // Silent: a default p1 to a T = 0 seat, and a p3 to a T = 0 seat, wake
+    // nothing; both wait for the seat's next turn.
+    let (_, p1) = support::send(&cluster, &a, &["--seat", &p1_seat.id, "--body", "p1"]);
+    let (_, quiet3) = support::send(
+        &cluster,
+        &a,
+        &["--seat", &p3_quiet.id, "--body", "p3 quiet", "-p", "3"],
+    );
+    for message in [&p1, &quiet3] {
+        cluster.wait_until("the silent message to reach B", crate::WAIT, || {
+            cluster.scalar(1, "SELECT id FROM messages WHERE id = ?1", &[message])
+        });
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    for pane in [P3, "w1:p5"] {
+        assert_eq!(
+            cluster.host(1).prompts_for(pane),
+            0,
+            "{pane}: a send above the threshold wakes nothing: {:?}",
+            cluster.host(1).prompts()
+        );
+    }
+    assert!(support::inbox_ids(&cluster, &p1_seat).contains(&p1));
+    assert!(support::inbox_ids(&cluster, &p3_quiet).contains(&quiet3));
+
+    // `--require-ack` is p0: it wakes, the ACK settles, and A shows `acked`.
     let (_, acked) = support::send(
         &cluster,
         &a,
@@ -57,20 +97,54 @@ fn wakes_follow_the_delivery_contract_across_daemons() {
             &ack_seat.id,
         ],
     );
-    support::wait_wakes(&cluster, 1, P3, 1);
+    support::wait_wakes(&cluster, 1, "w1:p7", 1);
     support::ack(&cluster, &ack_seat, &acked);
     support::wait_receipt(&cluster, 0, &acked, &ack_seat, "acked");
     cluster.wait_converged(crate::WAIT);
+
+    // The priority is a replicated fact: both nodes hold the same one.
+    for (message, priority) in [
+        (&nudged, "0"),
+        (&p0, "0"),
+        (&p3, "3"),
+        (&p1_all, "1"),
+        (&p1, "1"),
+        (&quiet3, "3"),
+        (&acked, "0"),
+    ] {
+        for node in [0, 1] {
+            assert_eq!(
+                cluster
+                    .scalar(
+                        node,
+                        "SELECT priority FROM messages WHERE id = ?1",
+                        &[message]
+                    )
+                    .as_deref(),
+                Some(priority),
+                "node {node}: priority of {message}"
+            );
+        }
+    }
+    assert_eq!(
+        cluster
+            .scalar(
+                1,
+                "SELECT priority FROM lazy_recipients WHERE message_id = ?1 AND seat_id = ?2",
+                &[&quiet3, &p3_quiet.id],
+            )
+            .as_deref(),
+        Some("3"),
+        "B stages the delivery row at the message priority"
+    );
     assert_eq!(
         cluster.host(0).prompts_for(P1),
         0,
         "the sender is never woken"
     );
-    assert_eq!(
-        cluster.host(1).prompts_for(P1),
-        1,
-        "one marker for the nudge"
-    );
+    for (pane, wakes) in [(P1, 1), (P2, 1), ("w1:p4", 1), ("w1:p6", 1), ("w1:p7", 1)] {
+        assert_eq!(cluster.host(1).prompts_for(pane), wakes, "{pane}");
+    }
 }
 
 #[test]
@@ -118,21 +192,21 @@ fn settled_history_pulled_at_first_sync_wakes_nobody() {
 }
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 22"]
 fn a_seat_no_fact_references_is_opened_as_a_pair_by_id() {
     let cluster = support::cluster("mn-by-id", 2, &[(0, 1)], &[0, 1]);
     let a = cluster.seat(0, P1);
     let b = cluster.seat(1, P1);
-    support::wait_seats(&cluster, 0, 2);
-    support::wait_seats(&cluster, 1, 2);
+    let b2 = cluster.seat(1, P2);
     for node in [0, 1] {
+        support::wait_seats(&cluster, node, 3);
         assert_eq!(
             cluster.scalar(node, "SELECT count(*) FROM threads", &[]),
             Some("0".into()),
-            "nothing references either seat yet"
+            "nothing references any seat yet"
         );
     }
 
+    // A p1 opener opens the pair: both seats joined, no invitation, no wake.
     let (thread, message) = support::send(&cluster, &a, &["--seat", &b.id, "--body", "hello"]);
     assert!(thread.starts_with('d'), "a direct pair thread: {thread}");
     cluster.wait_converged(crate::WAIT);
@@ -145,19 +219,50 @@ fn a_seat_no_fact_references_is_opened_as_a_pair_by_id() {
             )
         };
         assert_eq!(state(&a.id).as_deref(), Some("joined"), "node {node}");
-        assert_eq!(state(&b.id).as_deref(), Some("invited"), "node {node}");
+        assert_eq!(state(&b.id).as_deref(), Some("joined"), "node {node}");
+        assert_eq!(
+            cluster.scalar(node, "SELECT count(*) FROM invitations", &[]),
+            Some("0".into()),
+            "node {node}: a new pair creates no invitation"
+        );
+    }
+    // B is offered the opening message and no invitation; nobody is woken.
+    let ids = support::inbox_ids(&cluster, &b);
+    assert!(ids.contains(&message), "{ids:?}");
+    assert!(!ids.iter().any(|id| id.starts_with('i')), "{ids:?}");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        cluster.host(1).prompts_for(P1),
+        0,
+        "a p1 opener wakes nobody: {:?}",
+        cluster.host(1).prompts()
+    );
+
+    // A `-p 0` opener of a second pair wakes its recipient once.
+    let (thread2, urgent) = support::send(
+        &cluster,
+        &a,
+        &["--seat", &b2.id, "--body", "urgent hello", "-p", "0"],
+    );
+    assert_ne!(thread, thread2);
+    support::wait_wakes(&cluster, 1, P2, 1);
+    assert!(support::inbox_ids(&cluster, &b2).contains(&urgent));
+    cluster.wait_converged(crate::WAIT);
+    for node in [0, 1] {
         assert_eq!(
             cluster.scalar(
                 node,
-                "SELECT state FROM invitations WHERE thread_id = ?1 AND seat_id = ?2",
-                &[&thread, &b.id],
+                "SELECT count(*) FROM memberships WHERE thread_id = ?1 AND state = 'joined'",
+                &[&thread2],
             ),
-            Some("pending".into()),
-            "node {node} holds B's pending invitation"
+            Some("2".into()),
+            "node {node}: the second pair is joined too"
+        );
+        assert_eq!(
+            cluster.scalar(node, "SELECT count(*) FROM invitations", &[]),
+            Some("0".into()),
+            "node {node}"
         );
     }
-    // B is offered the invitation and the opening message.
-    let ids = support::inbox_ids(&cluster, &b);
-    assert!(ids.contains(&message), "{ids:?}");
-    assert!(ids.iter().any(|id| id.starts_with('i')), "{ids:?}");
+    assert_eq!(cluster.host(1).prompts_for(P1), 0);
 }

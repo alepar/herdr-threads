@@ -178,6 +178,12 @@ mod config_direct;
 #[path = "multinode/config_relay.rs"]
 mod config_relay;
 
+#[path = "multinode/config_pair.rs"]
+mod config_pair;
+
+#[path = "multinode/config_invite.rs"]
+mod config_invite;
+
 #[path = "multinode/config_store_only.rs"]
 mod config_store_only;
 

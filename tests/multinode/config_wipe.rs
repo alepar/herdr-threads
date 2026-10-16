@@ -20,10 +20,9 @@ fn warnings(cluster: &Cluster, node: usize, seat: &Seat) -> usize {
 /// store-only and pulls A's log and its own old log back: its own seat waits for
 /// a host (`parked_dep` on `wait:host`) and is restored when one attaches, with
 /// no `sync unapplied replay`. The settled message wakes nothing and is not
-/// offered, and an unsettled `--nudge` sent while B was down wakes the repaired
+/// offered, and an unsettled `-p 0` sent while B was down wakes the repaired
 /// seat once.
 #[test]
-#[ignore = "pending ht-5fr reconcile item 22"]
 fn wipe_with_the_key_intact_suppresses_settled_history() {
     let mut cluster = support::cluster("mn-wipe", 2, &[(0, 1)], &[0, 1]);
     let a = cluster.seat(0, P1);
@@ -42,12 +41,12 @@ fn wipe_with_the_key_intact_suppresses_settled_history() {
     support::wait_receipt(&cluster, 0, &settled, &b, "acked");
     cluster.wait_converged(crate::WAIT);
 
-    // B is down; an unsettled `--nudge` is sent meanwhile; B's store is wiped.
+    // B is down; an unsettled `-p 0` is sent meanwhile; B's store is wiped.
     cluster.stop_node(1);
     let (_, unsettled) = support::send(
         &cluster,
         &a,
-        &["--seat", &b.id, "--body", "while down", "--nudge"],
+        &["--seat", &b.id, "--body", "while down", "-p", "0"],
     );
     cluster.wipe_store(1);
     cluster.wait_until("B's own seat to wait for a host", crate::WAIT, || {
@@ -127,9 +126,35 @@ fn wipe_with_the_key_intact_suppresses_settled_history() {
     }
     // The unsettled message wakes the seat once; the settled one is not offered.
     support::wait_wakes(&cluster, 1, P1, 2);
-    let offered = support::inbox_ids(&cluster, &b);
-    assert!(offered.contains(&unsettled), "{offered:?}");
-    assert!(!offered.contains(&settled), "{offered:?}");
+    // The unsettled message is a pending delivery. The settled one has none:
+    // the pair's read floor is its first local position (an auto-joined pair
+    // seat sees the opener), so a wiped seat's inbox walk still lists it as
+    // history, but it is already acknowledged and never a delivery to wake for.
+    let inbox = cluster.ok_as(Some(&b), 1, &["inbox"]);
+    let item = |id: &str| {
+        inbox["items"]
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["message"] == id))
+            .cloned()
+    };
+    let pending = item(&unsettled).unwrap_or_else(|| panic!("{unsettled} offered: {inbox}"));
+    assert_eq!(pending["wakes"], true, "{pending}");
+    if let Some(history) = item(&settled) {
+        assert_eq!(history["kind"], "message", "no delivery row: {history}");
+        assert!(history["ack_candidate"].is_null(), "{history}");
+    }
+    assert_eq!(
+        cluster.rows(
+            1,
+            "SELECT message_id FROM lazy_recipients WHERE state = 'pending'"
+        ),
+        vec![vec![unsettled.clone()]],
+        "only the unsettled message is a pending delivery"
+    );
+    assert_eq!(
+        support::receipt(&cluster, 1, &settled, &b).as_deref(),
+        Some("acked")
+    );
     cluster.wait_converged(crate::WAIT);
 }
 
@@ -139,7 +164,6 @@ fn wipe_with_the_key_intact_suppresses_settled_history() {
 /// and the settlement applies. With B unreachable it warns only once the hold's
 /// cap passes (shortened by `HT_TEST_SYNC_HOLD_MS`; the constant is 60 s).
 #[test]
-#[ignore = "pending ht-5fr reconcile item 22"]
 fn cold_start_after_the_deadline_holds_overdue_until_a_round_completes() {
     const HOLD_MS: u64 = 12_000;
     let mut cluster = Cluster::start(
