@@ -253,7 +253,7 @@ Handlers build it from `ApplyContext`, using `decision_seq`, `origin.node`, `ori
   - It then calls `thread_registers::upsert` for `topic` and, when present, `name`, with the entry's `(hlc, origin.node, ingest_seq)`, and copies the winners. A register can never be ahead of its thread's creation because `thread.register` needs the thread.
   - It appends the derived `create` info event (`append_event_once_with_decision_seq`, key `create:<thread>`) and bumps the directory filter.
   - The creator's membership is the next fact (§2).
-- **`thread.register` v1** `{thread, field: "topic"|"name"|"archived", value: Option<String>}`. `archived` values are `"1"`/`"0"`, and a `null` name clears it.
+- **`thread.register` v1** `{thread, field: "topic"|"name"|"archived", value: Option<String>, actor: Option<SeatId>}`. `archived` values are `"1"`/`"0"`, and a `null` name clears it. `actor` is the acting seat; the handler writes it as the derived event's `actor_seat`. It is absent for automatic archival, and omitted from the bytes when absent. The field is additive (unknown fields are ignored), so v1 is unchanged.
   - **Authoring:** `author_above::<ThreadRegister>` with `thread_registers::current` as the floor. The command's existing checks stay as A2 on the local view: the topic CAS on `topic_revision`, archived/joined/owner checks, and name validation.
   - **`materialize_register`:**
     - `upsert` returns `Won` or `Lost`. On `Lost` it does nothing more (no event).
@@ -442,7 +442,7 @@ impl DeliveryTail {
 | join / leave | `join:<thread>:<seat>:<n>` / `leave:<thread>:<seat>:<n>` | membership |
 | invite | `invite:<invitation>` | `invitation.created` (not for `already_joined`) |
 | accept / reject | `accept:<invitation>` / `reject:<invitation>` | `invitation.answered` |
-| topic / name / archive / reopen | `register:<thread>:<field>:<uuid8>:<counter>` | `thread.register` on `Won` and changed |
+| topic / name / archive / reopen | `register:<thread>:<field>:<uuid8>:<counter>` (event carries `actor_seat` when the payload names an actor) | `thread.register` on `Won` and changed |
 | ack | §9 key | `receipt.settled` `last_in_thread` |
 | retire_seat audit | existing `retirement_audit_key` | retirement job (local and replicated) |
 

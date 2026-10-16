@@ -319,6 +319,52 @@ fn system_events_are_notice_lines_with_nicks() {
 }
 
 #[test]
+fn register_events_name_their_actor_and_never_say_someone() {
+    let mut lookup = party();
+    let cases = [
+        (
+            r#"{"action":"archive","actor_seat":"s001"}"#,
+            "w/alice/s001 archived the thread",
+        ),
+        (r#"{"action":"archive"}"#, "the thread was archived"),
+        (
+            r#"{"action":"reopen","actor_seat":"s001"}"#,
+            "w/alice/s001 reopened the thread",
+        ),
+        (r#"{"action":"reopen"}"#, "the thread was reopened"),
+        (
+            r#"{"action":"set_topic","actor_seat":"s001","topic":"riddles"}"#,
+            "w/alice/s001 changed the topic to: riddles",
+        ),
+        (
+            r#"{"action":"set_topic","topic":"riddles"}"#,
+            "the topic was changed to: riddles",
+        ),
+        (
+            r#"{"action":"set_thread_name","actor_seat":"s001","name":"tea"}"#,
+            "w/alice/s001 renamed the thread to: tea",
+        ),
+        (
+            r#"{"action":"set_thread_name","actor_seat":"s001","name":null}"#,
+            "w/alice/s001 cleared the thread name",
+        ),
+        (
+            r#"{"action":"set_thread_name","name":"tea"}"#,
+            "the thread was renamed to: tea",
+        ),
+        (
+            r#"{"action":"set_thread_name","name":null}"#,
+            "the thread name was cleared",
+        ),
+    ];
+    for (json, expected) in cases {
+        let text = system_text(&event(1, MessageKind::Info, json), &mut lookup);
+        assert_eq!(text, expected, "{json}");
+        assert!(!text.contains("someone"), "{json}");
+    }
+}
+
+#[test]
 fn peer_text_cannot_drive_the_terminal() {
     let hostile = Fixed(vec![(
         "seat-Evil0001",

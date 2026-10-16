@@ -22,7 +22,7 @@ use herdr_threads::protocol::authority::{
 };
 use herdr_threads::protocol::commands::{
     Accept, CheckIn, CheckInMode, CreateThread, DeliveryMode, EnsureDirectThread, Invite, Join,
-    Leave, Reject, SendMessage, SetTopic, ThreadMutation,
+    Leave, Reject, SendMessage, SetThreadName, SetTopic, ThreadMutation,
 };
 use herdr_threads::protocol::ids::{
     ExecutionId, HostTargetId, InvitationId, MessageId, NativeSessionId, OperationId,
@@ -283,6 +283,31 @@ impl Node {
             None,
         )?;
         self.with_writer(|conn| control::set_topic(self.ctx(), conn, &budget(), &command, permit))
+    }
+
+    pub fn cmd_set_thread_name(
+        &self,
+        seat: &SeatId,
+        thread: &ThreadId,
+        name: Option<&str>,
+        operation: &str,
+    ) -> Result<CommandResult, ApiError> {
+        let command = SetThreadName {
+            thread: thread.clone(),
+            name: name.map(str::to_owned),
+            operation: OperationId::new(operation),
+            claim: self.claim_of(seat),
+        };
+        let permit = self.permit_for(
+            &command.claim,
+            operation,
+            ObligationRef::Control(thread.clone()),
+            control::cooperative_payload_hash("set_thread_name", &command)?,
+            None,
+        )?;
+        self.with_writer(|conn| {
+            control::set_thread_name(self.ctx(), conn, &budget(), &command, permit)
+        })
     }
 
     fn thread_mutation(
@@ -1081,6 +1106,39 @@ pub fn run_workers(store: &herdr_threads::store::SqliteStore) {
             .unwrap();
             if progress.complete {
                 break;
+            }
+        }
+    }
+}
+
+#[test]
+fn register_events_carry_the_actor_on_both_nodes() {
+    let w = world(90);
+    w.a.cmd_set_topic(&w.author, &w.thread, "riddles", "op-topic")
+        .unwrap();
+    w.a.cmd_set_thread_name(&w.author, &w.thread, Some("tea"), "op-name")
+        .unwrap();
+    w.a.cmd_archive(&w.author, &w.thread, "op-archive").unwrap();
+    w.a.cmd_reopen(&w.author, &w.thread, "op-reopen").unwrap();
+    sync_all(&[&w.a, &w.b]);
+    for (label, node) in [("A (local)", &w.a), ("B (replicated)", &w.b)] {
+        for (field, actions) in [
+            ("topic", vec!["set_topic"]),
+            ("name", vec!["set_thread_name"]),
+            ("archived", vec!["archive", "reopen"]),
+        ] {
+            let events = node.register_event_json(&w.thread, field);
+            let seen: Vec<_> = events
+                .iter()
+                .map(|e| e["action"].as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(seen, actions, "{label} {field}");
+            for event in &events {
+                assert_eq!(
+                    event["actor_seat"].as_str(),
+                    Some(w.author.as_str()),
+                    "{label} {field}: {event}"
+                );
             }
         }
     }

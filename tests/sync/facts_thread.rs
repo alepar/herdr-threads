@@ -73,10 +73,22 @@ impl Node {
         field: RegisterField,
         value: Option<&str>,
     ) -> Result<(), ApiError> {
+        self.write_register_as(None, thread, field, value)
+    }
+
+    /// `write_register` naming the acting seat in the payload.
+    pub fn write_register_as(
+        &self,
+        actor: Option<&SeatId>,
+        thread: &ThreadId,
+        field: RegisterField,
+        value: Option<&str>,
+    ) -> Result<(), ApiError> {
         let payload = ThreadRegisterPayload {
             thread: thread.clone(),
             field,
             value: value.map(str::to_owned),
+            actor: actor.cloned(),
         };
         self.run(|tx, d| {
             let floor = thread_registers::current(tx, thread, store_field(field))
@@ -121,6 +133,22 @@ impl Node {
         )
         .into_iter()
         .next()
+    }
+
+    /// The parsed `event_json` of every `register:<thread>:<field>:` event,
+    /// oldest first.
+    pub fn register_event_json(&self, thread: &ThreadId, field: &str) -> Vec<serde_json::Value> {
+        self.query(
+            &format!(
+                "SELECT event_json FROM messages WHERE thread_id='{}' AND event_key LIKE 'register:{}:{field}:%' ORDER BY sequence",
+                thread.as_str(),
+                thread.as_str()
+            ),
+            |r| r.get::<_, String>(0),
+        )
+        .into_iter()
+        .map(|json| serde_json::from_str(&json).expect("event json"))
+        .collect()
     }
 
     /// The event keys of a thread's timeline, oldest first.
@@ -251,12 +279,13 @@ fn payload_round_trips_creates_needs() {
         ThreadCreated::needs(&created),
         vec![EntityKey::new("sAbc12345678").unwrap()]
     );
-    assert_eq!(created.referenced_seats(), vec![creator]);
+    assert_eq!(created.referenced_seats(), vec![creator.clone()]);
 
     let register = ThreadRegisterPayload {
         thread: thread.clone(),
         field: RegisterField::Archived,
         value: Some("1".into()),
+        actor: None,
     };
     let json = serde_json::to_string(&register).unwrap();
     assert_eq!(
@@ -267,6 +296,25 @@ fn payload_round_trips_creates_needs() {
         serde_json::from_str::<ThreadRegisterPayload>(&json).unwrap(),
         register
     );
+    // An actor round-trips; an unknown extra field still decodes (additive rule).
+    let acted = ThreadRegisterPayload {
+        actor: Some(creator.clone()),
+        ..register.clone()
+    };
+    let acted_json = serde_json::to_string(&acted).unwrap();
+    assert!(
+        acted_json.contains(r#""actor":"sAbc12345678""#),
+        "{acted_json}"
+    );
+    assert_eq!(
+        serde_json::from_str::<ThreadRegisterPayload>(&acted_json).unwrap(),
+        acted
+    );
+    let extra: ThreadRegisterPayload = serde_json::from_str(
+        r#"{"thread":"tAbc12345678","field":"archived","value":"1","future":7}"#,
+    )
+    .unwrap();
+    assert_eq!(extra, register);
     let cleared: ThreadRegisterPayload =
         serde_json::from_str(r#"{"thread":"tAbc12345678","field":"name","value":null}"#).unwrap();
     assert_eq!(cleared.value, None);
@@ -501,6 +549,7 @@ fn reissued_register_loses_and_appends_nothing() {
                         thread: thread.clone(),
                         field: RegisterField::Topic,
                         value: Some(value.into()),
+                        actor: None,
                     },
                 )
             })

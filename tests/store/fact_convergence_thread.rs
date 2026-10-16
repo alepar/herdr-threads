@@ -181,6 +181,21 @@ fn automatic_archive_replicates_as_register() {
     );
     assert_eq!(register_events(&b, &thread, "archived").len(), 1);
     assert_eq!(a.thread_projection(), b.thread_projection());
+    // Automatic archival names no actor: not in the fact, not in either event.
+    let payload: Vec<u8> = a
+        .query(
+            "SELECT payload FROM journal WHERE kind='thread.register' ORDER BY ingest_seq",
+            |r| r.get(0),
+        )
+        .remove(0);
+    let payload: serde_json::Value = serde_json::from_slice(&payload).expect("payload json");
+    assert!(payload.get("actor").is_none(), "{payload}");
+    for node in [&a, &b] {
+        let events = node.register_event_json(&thread, "archived");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["action"], "archive");
+        assert!(events[0].get("actor_seat").is_none(), "{}", events[0]);
+    }
 }
 
 #[test]
