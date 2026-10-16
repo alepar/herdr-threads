@@ -43,6 +43,19 @@ code-run-5: coordinator wf_b06245f4-b3c · stopReason closure-unconfirmed (stale
 
 fix-round-1: coordinator wf_014f01df-1a7 · ht-5fr.60, ht-5fr.61 merged · final review: not ready — main v1.1.0 merge, license allowlist (release blocker; punch-listed r1), tag_k walk and JoinError (punch-listed r1), landing order vs ht-794l, no full suite
 
+codeBuckets:
+  completed: all ht-5fr beads (148 landed across 8 coordinator invocations; last wf_933c0649-482)
+  escalated:
+  pendingRetry:
+  parked: ht-5fr.31, ht-5fr.62
+  stalled: false
+  review: not ready (main v1.1.0 not merged; landing order vs ht-794l undecided; release tooling breaks on main — about.toml lacks BSD-3-Clause, 8-char ID regexes in wake-e2e/validate-package/real-ssh-e2e; punch-list robustness items open)
+  sweep: 7e558f4 — 7438 passed, 0 failed, 0 errors, 47 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (wall 188 s; leaks none; check-default-features pass) @ 7e558f43a
+  slowness: run 1 merge queue peaks; run 4 round 1 merge queue peak 4
+  worktreesKept:
+  processSweep: stopped 0 · survived 0
+sweepFix: 8 failing → ht-5fr.62, ht-5fr.63, ht-5fr.64, ht-5fr.65 · re-run 7e558f4 — 7438 passed, 0 failed, 0 errors, 47 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features @ 7e558f43a
+
 approvals:
 - top-split · auto · ht-5fr.1 PROMOTE, ht-5fr.2 PROMOTE, ht-5fr.3 PROMOTE, ht-5fr.4 PROMOTE, ht-5fr.5 PROMOTE, ht-5fr.6 PROMOTE, ht-5fr.7 LEAF, ht-5fr.8 LEAF, ht-5fr.9 LEAF, ht-5fr.10 LEAF, ht-5fr.11 LEAF, ht-5fr.12 LEAF, ht-5fr.13 LEAF
 - coverage-round-1 · canonical R-list: R1–R16 (coverage-round-1-requirements.md), R-new appended as R17–R20 · requirements: 16 · mapped: 16 · unmapped: 0 · auto GAP R17 → ht-5fr.4.5 amended + 4.18 case; auto GAP R18 → ht-5fr.5.2 amended; auto GAP R19 → leaf ht-5fr.1.12; auto GAP R20 → leaf ht-5fr.1.13; auto GAP real-ssh → leaf ht-5fr.14; auto GAP ht-5fr.7/.11/.12 → edges + scope; auto UNOWNED-SEAM status reads → ht-5fr.8 owns; auto UNOWNED-SEAM marker rendering → ht-5fr.4.14/ht-5fr.13; auto reject wake-e2e (spec follow-on); auto reject leaf decomposition (promotion verdict); NEEDS-SPEC (ht-5fr.7/.8/.13, leaves under root spec) not re-run — the findings already named the gaps and were fixed
@@ -76,13 +89,7 @@ feedback: evidence-only-fix pipeline defect sent via herdr agent prompt to super
 - stepBackCode-round-1: patch — Round 1: the findings are mostly independent defects; three of them are clusters where one rule was applied unevenly (node-scoped context resolution, sweeping consumers of the old instances/ layout, JoinError handling in the coordinator loop). Sweep each cluster with its rule. No redesign is needed.
 - scopeFilter-round-1: 4 in-scope ([Blocking] src/main.rs:117, [Should-fix] src/cli/mod.rs:616, [Should-fix] src/sync/coordinator/ingest.rs:203, [Should-fix] scripts/install.sh:383) · 11 punch-listed (see 2026-10-16-cross-node-sync-roast-pr-1-punch-list.txt; validate-native-demo.py and paths.rs by clusterOverride) · cluster dropped: join-error · fix beads ht-5fr.60 (node-context cluster), ht-5fr.61 (credit drop)
 - roast-code round 2 · Should-fix (2 confirmed) [converged] · 0 Blocking, 4 resolved, 11 punch-listed (open) · new: [Should-fix] scripts/wake-e2e.py:874 (11-char tagged IDs vs 8-char regexes in wake-e2e, validate-package.sh, real-ssh-e2e.py), [Nit] src/sync/coordinator/ingest.rs:294 (shared WorkerStatus slot) → punch list
-- codeBuckets.sweep: cae40a906 · nice cargo nextest run --locked --all-targets --all-features · 7438 run, 7430 passed, 8 failed, 47 skipped · wall 339 s (over the 300 s budget) · leaks: none · check-default-features: pass @ cae40a906
-- sweepFix: pass 1 filed ht-5fr.62 (StoreCorrupt no creating fact ×4), ht-5fr.63 (agy pending invitations ×2), ht-5fr.64 (peer --stdio EOF exit), ht-5fr.65 (token_diet budget vs 11-char IDs)
-- sweepFix: coordinator wf_9e0da6c2-dec merged ht-5fr.63, .64, .65; ht-5fr.62 escalated (blocker ht-sjmt) — handoff half done on task-ht-5fr.62 (5b8721587), summary_flow half needed a call
 - decision · ht-5fr.62 / ht-sjmt (autonomous) · "summary_flow useful-page tests seeded legacy receipts rows that cannot exist under the clean start: rewrite with real sends (history too); a p1 mail shown 'empty' behind real history is a reader bug to fix, not an assertion to relax"
-- codeBuckets.sweep: 7438 run, 7438 passed, 47 skipped · wall 188 s · leaks: none · check-default-features: pass @ 7e558f43a
-- sweepFix: pass 1 (ht-5fr.62–.65) all merged; re-run green @ 7e558f43a (sweep-2-7e558f43a.log)
 - post-loop changes: 15112f108..7e558f43a touched tests only (peer_stdio, topology_handoff, agy_delivery, summary_flow, token_diet) — no behaviour change, so no post-cap audit roast; listed in report Remaining as not roast-reviewed
 - baseAbsorbed: not absorbed — main 3ff902c77 (v1.1.0, 7 commits) merge refused by the permission layer; left to the human; the sweep did not judge the combined tree
-- codeBuckets.review: not ready — main v1.1.0 not merged; landing order vs ht-794l undecided; release tooling (about.toml BSD-3-Clause, 8-char ID regexes in wake-e2e/validate-package/real-ssh-e2e) breaks on main; punch-list robustness items open (wf_933c0649-482)
 friction: 31 events
