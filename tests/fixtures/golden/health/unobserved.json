@@ -15,7 +15,7 @@
     "harness synthetic_fourth not installed: synthetic fourth: no explicit fixture binary directory",
     "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes, agy or synthetic_fourth agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
   ],
-  "protocol_version": 8,
+  "protocol_version": 9,
   "schema": {
     "detail": null,
     "state": "ready"
