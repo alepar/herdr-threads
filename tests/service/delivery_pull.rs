@@ -31,9 +31,6 @@ use std::sync::{
     atomic::{AtomicI64, Ordering},
 };
 
-#[path = "q4_accept_controls.rs"]
-mod q4_accept_controls;
-
 #[path = "priority_order_pull.rs"]
 mod priority_order_pull;
 

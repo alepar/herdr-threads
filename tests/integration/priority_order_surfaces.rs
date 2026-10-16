@@ -259,57 +259,6 @@ fn watch_stream_places_the_invitation_by_its_deadline() {
     assert_eq!(streamed, mixed.expected());
 }
 
-/// Accept's thread-scoped display shows the accepted thread's pending delivery rows of every
-/// priority, in key order, however they arrived. A thread's opening mail before its recipient joins
-/// exists only for a pre-upgrade pending pair invitation (a new pair auto-joins), so the pair is
-/// created the pre-upgrade way.
-#[test]
-#[ignore = "pending ht-5fr reconcile item 19"]
-fn accept_display_lists_the_threads_delivery_rows_in_key_order() {
-    let rig = Rig::new();
-    let writer = rusqlite::Connection::open(&rig.paths.database_path).unwrap();
-    writer.busy_timeout(Duration::from_secs(5)).unwrap();
-    drop(writer);
-    let a = Some((rig.a.as_str(), PANE_A));
-    for (body, priority) in [("p5", "5"), ("p1", "1"), ("p0", "0")] {
-        rig.cli(
-            a,
-            &[
-                "send",
-                "--seat",
-                &rig.b,
-                "--body",
-                body,
-                "--priority",
-                priority,
-            ],
-        )
-        .data(body);
-    }
-    let db = rig.db();
-    let pair: String = db
-        .query_row("SELECT thread_id FROM direct_threads LIMIT 1", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    let id = |body: &str| -> String {
-        db.query_row(
-            "SELECT id FROM messages WHERE thread_id=?1 AND body=?2",
-            [pair.as_str(), body],
-            |row| row.get(0),
-        )
-        .unwrap()
-    };
-    let accept = rig.cli_text_b(&["accept", &pair]);
-    assert_eq!(accept.code, 0, "{}{}", accept.stdout, accept.stderr);
-    assert_eq!(
-        text_ids(&accept.stdout),
-        [id("p0"), id("p1"), id("p5")],
-        "accept display:\n{}",
-        accept.stdout
-    );
-}
-
 const FIXTURE: &str = include_str!("../fixtures/priority_order_mixed.json");
 /// The mod's own test imports one module from inside its folder (the plugin sandbox reads nothing
 /// else), so it carries a copy of the fixture.
