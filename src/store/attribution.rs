@@ -17,10 +17,6 @@
 //!   returned binding columns and observation. A new attributed kind adds a
 //!   staging-key builder here.
 
-// Nothing calls these until the attributed kinds land (membership, invitation, message and
-// receipt leaves of ht-5fr.4); each of those removes its part of this allowance by using it.
-#![allow(dead_code)]
-
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::protocol::results::ApiError;

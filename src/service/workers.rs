@@ -997,6 +997,9 @@ pub fn start_deadline_worker(
     )
 }
 
+/// How soon the deadline lane re-checks while it holds overdue emission for sync.
+const SYNC_HOLD_RECHECK: Duration = Duration::from_millis(250);
+
 /// [`start_deadline_worker`] on safety tick `tick` (production: `TICK_MILLIS`;
 /// see `ServiceConfig::lane_tick`), which is also the driver's tick gate.
 pub fn start_deadline_worker_ticking(
@@ -1022,17 +1025,29 @@ pub fn start_deadline_worker_ticking(
             }
             // The first pass runs at boot, before the first wait.
             let mut waited = false;
+            // The last pass held overdue emission for sync: look again soon
+            // instead of after a whole safety tick, so a node with nothing to
+            // wait for (no peers, or the sync runtime composed a moment after
+            // the first pass) is not silent for `tick` after boot.
+            let mut held = false;
             while !cancellation.is_cancelled() {
                 if waited {
-                    match pacer.wait_blocking(tick) {
+                    let wait = if held {
+                        tick.min(SYNC_HOLD_RECHECK)
+                    } else {
+                        tick
+                    };
+                    match pacer.wait_blocking(wait) {
                         Wake::Cancelled => break,
                         // A kick means committed work; a due retry must not be
                         // skipped by the tick gate a failed pass left closed.
                         Wake::Kicked | Wake::RetryDue => driver.after_committed_change(),
+                        Wake::Tick if held => driver.after_committed_change(),
                         Wake::Tick => {}
                     }
                 }
                 waited = true;
+                held = false;
                 loop {
                     let budget = CallBudget {
                         deadline: crate::protocol::time::MonoInstant(
@@ -1050,6 +1065,7 @@ pub fn start_deadline_worker_ticking(
                         }
                         Ok(outcome) => {
                             pacer.on_success();
+                            held |= outcome.due_held;
                             // A skipped (gated) call is not a completed tick.
                             if outcome.ticked {
                                 status.record_success(port.store.clock().utc_now());

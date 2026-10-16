@@ -363,7 +363,10 @@ impl Actor {
     /// A store error: report it on the sync lane and ask again after the
     /// pacer's backoff (see [`Actor::on_retry_due`]).
     fn on_ingest_error(&mut self, log: LogKey, error: &ApiError) {
-        self.deps.status.record_failure(Lane::Sync, error);
+        // A call that shutdown cancelled is not a lane fault.
+        if !self.deps.cancel.is_cancelled() {
+            self.deps.status.record_failure(Lane::Sync, error);
+        }
         self.retry_logs.insert(log);
         if self.deps.pacer.attempts() == 0 {
             self.deps.pacer.on_failure();

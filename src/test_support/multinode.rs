@@ -1049,8 +1049,12 @@ impl Cluster {
             .iter()
             .enumerate()
             .map(|(index, n)| {
-                let text =
-                    fs::read_to_string(n.state.join("node").join("daemon.log")).unwrap_or_default();
+                let text = fs::read_to_string(
+                    n.state
+                        .join("node")
+                        .join(crate::daemon::logs::DAEMON_LOG_FILE),
+                )
+                .unwrap_or_default();
                 let status = if n.up {
                     let out = self.cli(index, &["sync", "status"]);
                     String::from_utf8_lossy(&out.stdout).into_owned()

@@ -1,5 +1,5 @@
 //! Configuration 8 (spec §13): discovery end to end. Node A has `sync.discover`
-//! on and a fake `herdr` first on PATH whose `machine list --json` names node
+//! on and a fake `herdr` named by `HT_TEST_MACHINE_LIST_PROGRAM` whose `machine list --json` names node
 //! B's target; A discovers it, links and converges with no `peer add`.
 
 use crate::support::P1;
@@ -29,11 +29,6 @@ fn discovery_links_a_node_with_no_peer_add() {
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!(
-        "{}:{}",
-        dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
 
     let mut cluster = Cluster::start(
         "mn-discovery",
@@ -42,7 +37,11 @@ fn discovery_links_a_node_with_no_peer_add() {
         ClusterOptions {
             discover: vec![0],
             env: vec![
-                (0, "PATH".into(), path),
+                (
+                    0,
+                    "HT_TEST_MACHINE_LIST_PROGRAM".into(),
+                    script.to_str().unwrap().into(),
+                ),
                 // Passes run while a Herdr host is attached; the first one finds
                 // none, so the cadence is short.
                 (0, "HT_TEST_DISCOVERY_PERIOD_MS".into(), "200".into()),

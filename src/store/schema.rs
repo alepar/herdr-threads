@@ -540,11 +540,23 @@ fn verify_at(
 }
 
 fn verify_identity_marker(conn: &Connection) -> Result<(), ApiError> {
+    // Only an absent table or row is a missing marker; an interrupt or a busy
+    // database says nothing about the schema and keeps its own class.
     let marker: String = conn
         .query_row("SELECT marker FROM schema_identity LIMIT 1", [], |r| {
             r.get(0)
         })
-        .map_err(|_| api_error(ErrorCode::IncompatibleSchema, "missing node schema marker"))?;
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => {
+                api_error(ErrorCode::IncompatibleSchema, "missing node schema marker")
+            }
+            rusqlite::Error::SqliteFailure(_, Some(ref text))
+                if text.starts_with("no such table") =>
+            {
+                api_error(ErrorCode::IncompatibleSchema, "missing node schema marker")
+            }
+            other => store_error(other),
+        })?;
     if marker != NODE_SCHEMA_MARKER {
         return Err(api_error(
             ErrorCode::IncompatibleSchema,

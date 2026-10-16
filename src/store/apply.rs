@@ -1021,7 +1021,7 @@ fn replay_candidates(
     let mut statement = tx
         .prepare(&format!(
             "SELECT p.ingest_seq,p.apply_state,p.kind,p.kind_version,\
-             {PARKED_READY} \
+             COALESCE({PARKED_READY}, 0) \
              FROM journal p WHERE p.apply_state IN ({states}) ORDER BY p.ingest_seq"
         ))
         .map_err(store_error)?;
