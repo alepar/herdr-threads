@@ -1413,6 +1413,8 @@ struct FakeSync {
     state: Mutex<RoundState>,
     target: std::sync::atomic::AtomicBool,
     requests: Mutex<Vec<u64>>,
+    /// (ingested, drained) apply epochs; `(0, 0)` is caught up.
+    epochs: Mutex<(u64, u64)>,
 }
 impl FakeSync {
     fn new(state: RoundState, target: bool) -> Arc<Self> {
@@ -1420,10 +1422,14 @@ impl FakeSync {
             state: Mutex::new(state),
             target: std::sync::atomic::AtomicBool::new(target),
             requests: Mutex::new(Vec::new()),
+            epochs: Mutex::new((0, 0)),
         })
     }
     fn set(&self, state: RoundState) {
         *self.state.lock().unwrap() = state;
+    }
+    fn set_epochs(&self, ingested: u64, drained: u64) {
+        *self.epochs.lock().unwrap() = (ingested, drained);
     }
 }
 impl SyncReadiness for FakeSync {
@@ -1435,6 +1441,9 @@ impl SyncReadiness for FakeSync {
     }
     fn has_enabled_target(&self) -> bool {
         self.target.load(Ordering::SeqCst)
+    }
+    fn apply_epochs(&self) -> (u64, u64) {
+        *self.epochs.lock().unwrap()
     }
 }
 
@@ -1562,4 +1571,80 @@ fn no_links_no_targets_emits_at_once() {
     let mut driver = held_driver(&port, &sync);
     let out = driver.drive(&budget()).unwrap();
     assert!(out.due_held && out.due_warnings_added == 0);
+}
+
+// Kills: a gate that releases on `Complete` alone (the Apply lane may still
+// hold the ingested settlement), and one that chases the moving ingested count
+// instead of the count seen at completion.
+#[test]
+fn complete_round_with_an_unapplied_settlement_holds_until_the_drain() {
+    let port = FakePort::default();
+    port.deadline.store(0, Ordering::SeqCst);
+    let sync = FakeSync::new(RoundState::Pending { links: 1 }, true);
+    sync.set_epochs(1, 0);
+    let mut driver = held_driver(&port, &sync);
+    assert!(driver.drive(&budget()).unwrap().due_held);
+    advance(&port, 1_000);
+    sync.set(RoundState::Complete);
+    sync.set_epochs(3, 1);
+    let out = driver.drive(&budget()).unwrap();
+    assert!(out.due_held && out.due_warnings_added == 0);
+    advance(&port, 1_000);
+    sync.set_epochs(4, 2);
+    let out = driver.drive(&budget()).unwrap();
+    assert!(
+        out.due_held,
+        "target is the ingested count seen at completion"
+    );
+    advance(&port, 1_000);
+    port.deadline.store(i64::MAX, Ordering::SeqCst); // the settlement applied
+    sync.set_epochs(4, 3);
+    let out = driver.drive(&budget()).unwrap();
+    assert!(!out.due_held);
+    assert_eq!(out.due_warnings_added, 0);
+    assert_eq!(port.warnings.load(Ordering::SeqCst), 0);
+}
+
+// Kills: an apply wait with no bound (a stuck lane would silence warnings).
+#[test]
+fn an_apply_lane_that_never_drains_still_releases_at_the_cap() {
+    let port = FakePort::default();
+    port.deadline.store(0, Ordering::SeqCst);
+    let sync = FakeSync::new(RoundState::Complete, true);
+    sync.set_epochs(5, 0);
+    let mut driver = held_driver(&port, &sync);
+    let mut elapsed = 0;
+    while elapsed < 59_000 {
+        assert!(
+            driver.drive(&budget()).unwrap().due_held,
+            "held at {elapsed}"
+        );
+        advance(&port, 1_000);
+        elapsed += 1_000;
+    }
+    assert_eq!(port.warnings.load(Ordering::SeqCst), 0);
+    advance(&port, 1_000);
+    let out = driver.drive(&budget()).unwrap();
+    assert!(!out.due_held);
+    assert_eq!(out.due_warnings_added, 1, "warned once the 60 s passed");
+}
+
+// Kills: an apply target that survives a re-arm and releases a new hold early.
+#[test]
+fn a_wall_jump_re_arms_the_apply_target() {
+    let port = FakePort::default();
+    port.deadline.store(i64::MAX, Ordering::SeqCst);
+    let sync = FakeSync::new(RoundState::Complete, true);
+    sync.set_epochs(2, 2);
+    let mut driver = held_driver(&port, &sync);
+    assert!(!driver.drive(&budget()).unwrap().due_held, "caught up");
+    advance(&port, 1_000);
+    port.clock.utc.fetch_add(3_600_000, Ordering::SeqCst);
+    port.clock.mono.fetch_add(1_000, Ordering::SeqCst);
+    sync.set_epochs(9, 8);
+    let out = driver.drive(&budget()).unwrap();
+    assert!(out.due_held, "complete but not drained");
+    advance(&port, 1_000);
+    sync.set_epochs(9, 9);
+    assert!(!driver.drive(&budget()).unwrap().due_held);
 }

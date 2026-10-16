@@ -1190,6 +1190,11 @@ pub fn start_apply_worker(
         .sync()
         .ok()
         .map(|sync| Arc::clone(sync.own_history_hold()));
+    let epochs = store
+        .context()
+        .sync()
+        .ok()
+        .map(|sync| Arc::clone(sync.apply_epochs()));
     thread::Builder::new()
         .name("herdr-apply".into())
         .spawn(move || {
@@ -1231,8 +1236,24 @@ pub fn start_apply_worker(
                 if hinted || !replayed {
                     let mut drained = true;
                     while !cancellation.is_cancelled() {
-                        match pass(!replayed) {
+                        // Read before the pass: it then covers every ingest
+                        // that committed before this value was read.
+                        let epoch = epochs.as_ref().map(|e| e.ingested());
+                        let replaying = !replayed;
+                        match pass(replaying) {
                             Ok(progress) => {
+                                // A full drain outside the startup replay, with
+                                // the own-history hold off (under it, foreign
+                                // heads stay pending and `has_more` is false).
+                                if let (Some(epochs), Some(epoch)) = (&epochs, epoch)
+                                    && !progress.has_more
+                                    && !replaying
+                                    && hold.as_ref().is_none_or(|h| {
+                                        !h.active(StorePort::clock(store.as_ref()).monotonic_now())
+                                    })
+                                {
+                                    epochs.note_drained(epoch);
+                                }
                                 pacer.on_success();
                                 status.record_success(StorePort::clock(store.as_ref()).utc_now());
                                 post_commit(&progress);

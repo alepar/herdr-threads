@@ -526,6 +526,50 @@ fn held_foreign_entries_apply_at_the_hold_cap_without_new_ingest() {
     assert_eq!(fx.hold().expiry_logs(), 1);
 }
 
+fn epochs_of(fx: &LaneFx) -> (u64, u64) {
+    let epochs = fx.store.context().sync().unwrap().apply_epochs().clone();
+    (epochs.ingested(), epochs.drained())
+}
+
+// Kills: an ingest that does not move the epoch, and a drain that records
+// before the rows are applied.
+#[test]
+fn ingest_then_drain_advances_the_drained_epoch() {
+    let mut fx = LaneFx::new("apply-epochs", 1);
+    assert_eq!(epochs_of(&fx), (1, 0), "startup epoch, nothing drained");
+    let mut source = fx.source("src", 2);
+    source.put_all(0, 3);
+    fx.ship(&source);
+    assert_eq!(epochs_of(&fx), (2, 0), "stored rows moved ingested only");
+    fx.ship(&source);
+    assert_eq!(epochs_of(&fx), (2, 0), "duplicates store nothing");
+    fx.start();
+    wait_until("the lane to record the drain", || epochs_of(&fx) == (2, 2));
+    assert_eq!(
+        fx.count("SELECT COUNT(*) FROM journal WHERE apply_state<>'applied'"),
+        0,
+        "the drain was recorded with nothing pending"
+    );
+}
+
+// Kills: a drain recorded by a pass that left foreign heads pending under the
+// own-history hold.
+#[test]
+fn a_pass_under_the_own_history_hold_is_not_a_drain() {
+    let fx = held_fx("apply-epochs-hold");
+    let (ingested, drained) = epochs_of(&fx);
+    assert!(
+        drained < ingested,
+        "held pass is not a drain: {ingested} {drained}"
+    );
+    fx.advance(OWN_HISTORY_HOLD_MAX);
+    wait_until("the cap to lift the hold", || fx.applied_puts() == 2);
+    wait_until("the drain to be recorded", || {
+        let (i, d) = epochs_of(&fx);
+        d == i
+    });
+}
+
 #[test]
 fn hold_wait_is_bounded_by_the_remaining_cap() {
     let hold = OwnHistoryHold::new(Arc::default());

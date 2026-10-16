@@ -213,7 +213,8 @@ fn cold_start_after_the_deadline_holds_overdue_until_a_round_completes() {
     assert_eq!(
         warnings(&cluster, 0, &a),
         0,
-        "no overdue warning for a deadline B met"
+        "no overdue warning for a deadline B met: {}",
+        cluster.ok_as(None, 0, &["warnings", "--seat", &a.id, "--limit", "100"])
     );
 
     // With B unreachable A cannot learn that, and warns only after the cap.
@@ -240,8 +241,11 @@ fn cold_start_after_the_deadline_holds_overdue_until_a_round_completes() {
     while sent.elapsed() < Duration::from_secs(5) {
         std::thread::sleep(Duration::from_millis(100));
     }
-    cluster.start_node(0);
+    // Taken before the start: the hold arms inside the daemon, after the
+    // process starts and before `start_node` returns, so a clock started
+    // after it would run late and see the cap's warning "early".
     let started = Instant::now();
+    cluster.start_node(0);
     while started.elapsed() < Duration::from_millis(HOLD_MS - 5_000) {
         assert_eq!(
             warnings(&cluster, 0, &a),

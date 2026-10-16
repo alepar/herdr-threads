@@ -318,6 +318,7 @@ pub fn open(
     let wall = ctx.clock().utc_now();
     let apply_hint = Arc::new(AtomicBool::new(true));
     let state = SyncState {
+        apply_epochs: Arc::new(super::connection::ApplyEpochs::new()),
         identity,
         hlc: std::sync::Mutex::new(Hlc::resume(
             wall,
@@ -1485,7 +1486,9 @@ fn ingest_batch(
     tx.commit().map_err(store_error)?;
     if stored > 0 {
         // After the commit, before the writer turn drops and kicks the Apply
-        // lane, so the kicked pass sees it.
+        // lane, so the kicked pass sees it. The epoch moves first: a pass that
+        // reads the new epoch also sees the committed rows.
+        sync.apply_epochs().note_ingested();
         sync.set_apply_hint();
     }
     if let Some(ahead_ms) = max_ahead {

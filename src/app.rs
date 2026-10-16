@@ -2142,7 +2142,17 @@ where
                 },
             );
             factory_peers.set_intake(peer_intake);
-            let _ = deadline_sync_hold.set(Arc::new(sync_handle.clone()));
+            let apply_epochs = Arc::clone(
+                incarnations_store
+                    .context()
+                    .sync()
+                    .map_err(|e| std::io::Error::other(format!("{e:?}")))?
+                    .apply_epochs(),
+            );
+            let _ = deadline_sync_hold.set(Arc::new(crate::scheduler::deadlines::SyncHoldReadiness {
+                sync: sync_handle.clone(),
+                epochs: apply_epochs,
+            }));
             let incarnations_stop = Cancellation::default();
             let discovery_status = Arc::new(crate::sync::discovery::DiscoveryStatus::default());
             let sync_admin = Arc::new(crate::service::sync_admin::SyncAdmin {
