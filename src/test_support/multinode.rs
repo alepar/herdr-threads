@@ -433,9 +433,8 @@ impl Cluster {
 
     /// Starts `node`'s daemon. A node with a fake Herdr server starts it as a
     /// user's command does (`daemon ensure` naming the server, so it attaches at
-    /// startup and a fresh store can restore its own seats); any other node
-    /// the way a peer does: a pump ensures it, prints the preamble and is let
-    /// go.
+    /// startup); any other node the way a peer does (store-only). A wiped store
+    /// restarts store-only either way, see [`Cluster::wipe_store`].
     pub fn start_node(&mut self, node: usize) {
         if self.nodes[node].up {
             return;
@@ -460,6 +459,13 @@ impl Cluster {
             let _ = fs::remove_file(self.down_flag(node));
             return;
         }
+        self.start_store_only(node);
+    }
+
+    /// Starts `node`'s daemon the way a peer does: a `peer --stdio` pump
+    /// ensures it (store-only, no Herdr server attached), prints the preamble
+    /// and is let go.
+    fn start_store_only(&mut self, node: usize) {
         let mut command = self.iso.command(&self.bin);
         command.envs(self.nodes[node].env.iter().map(|(k, v)| (k, v)));
         let mut pump = command
@@ -819,8 +825,10 @@ impl Cluster {
     }
 
     /// Stops `node` and moves its store aside, key kept: a wiped store under the
-    /// same node identity. The daemon is started again; the old store stays in
-    /// the cluster's root.
+    /// same node identity. The daemon is started again store-only, as a peer
+    /// brings a wiped node back, even when the node has a fake Herdr server:
+    /// its own seats wait for a host ([`Cluster::attach_host`]). The old store
+    /// stays in the cluster's root.
     pub fn wipe_store(&mut self, node: usize) {
         self.stop_node(node);
         let aside = self.iso.path(format!("wiped-{}", self.nodes[node].name));
@@ -833,7 +841,26 @@ impl Cluster {
                 fs::rename(entry.path(), aside.join(&name)).expect("move the store aside");
             }
         }
-        self.start_node(node);
+        self.start_store_only(node);
+    }
+
+    /// Attaches `seat`'s node to its fake Herdr server, then waits until its
+    /// `herdr_hosts` holds a row. The attach is what any call naming a server
+    /// causes in the daemon (here the ordinary `seat resolve` of a pane the
+    /// server does not have, which fails after the attach); a claimed command
+    /// of `seat` cannot do it, because the node does not know the seat until
+    /// it is restored. No operator command.
+    pub fn attach_host(&self, seat: &Seat) {
+        let _ = self.run_as(None, seat.node, &["seat", "resolve", "--pane", "w1:p9"]);
+        let node = seat.node;
+        self.wait_until(
+            &format!("node {} to attach its host", self.nodes[node].name),
+            Duration::from_secs(60),
+            || {
+                self.scalar(node, "SELECT count(*) FROM herdr_hosts", &[])
+                    .filter(|n| n != "0")
+            },
+        );
     }
 
     /// `human sync resync --from <from>` on `node`: the command stops its

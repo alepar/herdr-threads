@@ -77,11 +77,35 @@ pub use node_retag::{NodeRetag, RetagPayload, publish_committed_tag};
 ///
 /// `Rejected` is a fact-level rejection: the entry is recorded `failed` and
 /// counted as processed. `Store` is a store error: the savepoint and the
-/// quantum abort and are retried. Callers keep the two apart.
+/// quantum abort and are retried. `Wait` parks the entry `parked_dep` on
+/// [`WaitFor::parked_on`]; it is re-attempted once the wait holds. Callers
+/// keep the three apart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FactError {
     Rejected(ApiError),
     Store(ApiError),
+    /// The fact is valid but cannot materialize until `on` holds; the entry
+    /// is parked and re-attempted once it does (never `failed`).
+    Wait {
+        on: WaitFor,
+        error: ApiError,
+    },
+}
+
+/// What a waiting fact waits for. Closed set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitFor {
+    /// An attached Herdr server (`herdr_hosts` holds a row).
+    Host,
+}
+
+impl WaitFor {
+    /// The `journal.parked_on` value of an entry that waits for this.
+    pub const fn parked_on(self) -> &'static str {
+        match self {
+            WaitFor::Host => "wait:host",
+        }
+    }
 }
 
 impl FactError {

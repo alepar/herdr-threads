@@ -1825,6 +1825,7 @@ where
             let sync_identity = Arc::clone(&identity);
             let sync_store = sqlite.clone();
             let discovery_store = sqlite.clone();
+            let first_attach_store = sqlite.clone();
             let apply_node_json = identity_paths.node_json_path.clone();
             let store: Arc<dyn StorePort> = sqlite;
             // The manifest policy, logged after election (stderr is the daemon
@@ -2330,8 +2331,11 @@ where
             // attach or sweep attach of a store-only daemon. The wake and
             // observation lanes are per-host session workers (started by every
             // attach), so archival is the only lane gated on an attached host.
+            // The same hook lets the Apply lane re-attempt own seats that
+            // waited for a host.
             {
                 let store = Arc::clone(&store);
+                let apply_hint_store = first_attach_store;
                 let writer = Arc::clone(&writer);
                 let kicks = Arc::clone(&kicks);
                 let clock = Arc::clone(&factory_clock);
@@ -2349,6 +2353,9 @@ where
                     if stop.is_cancelled() {
                         return;
                     }
+                    // Own seats that waited for a host apply now.
+                    apply_hint_store.set_apply_hint();
+                    kicks.kick(crate::service::kicks::LaneSet::EMPTY.with(Lane::Apply));
                     let Some(sessions) = sessions.upgrade() else {
                         return;
                     };

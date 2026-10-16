@@ -3,11 +3,12 @@
 //! after a wipe.
 
 use herdr_threads::ports::{ClosureEvidence, RetirementJob, WorkAdmission};
-use herdr_threads::protocol::ids::{HostBootId, HostTargetId, RetirementJobId, SeatId};
+use herdr_threads::protocol::ids::{HostBootId, HostTargetId, RetirementJobId, SeatId, ThreadId};
 use herdr_threads::protocol::results::{ApiError, ErrorCode};
 use herdr_threads::store::control;
 use herdr_threads::sync::facts::seat::SeatRetiredPayload;
 use herdr_threads::sync::hlc::HlcStamp;
+use herdr_threads::sync::journal_port::JournalPort;
 use herdr_threads::test_support::{fact_exchange, write_guard};
 
 use crate::facts_seat::{Node, budget, hold_off, hold_on, registry, retirement_rows};
@@ -138,15 +139,17 @@ fn own_seat_restore_unresolved_on_latest_host() {
     );
 }
 
-#[test]
-fn own_seat_restore_without_host_failed() {
+/// A wiped `fresh` store without a host that pulled its old self's log: the
+/// own `seat.created` waits for a host and the `thread.created` behind it
+/// parks on the seat. Returns `(old, fresh, seat, thread)`.
+fn wiped_without_host(seed: u8) -> (Node, Node, SeatId, ThreadId) {
     let reg = registry();
-    let old = Node::with(46, reg);
+    let old = Node::with(seed, reg);
     let seat = old.mint_seat(0);
     old.add_local_seat(&seat);
-    old.enroll(&seat, "codex", "session-1").unwrap();
+    let thread = old.create_thread(&seat, "t", None).unwrap();
 
-    let fresh = wiped(46, false);
+    let fresh = wiped(seed, false);
     assert!(
         fresh
             .query("SELECT 1 FROM herdr_hosts", |r| r.get::<_, i64>(0))
@@ -155,23 +158,97 @@ fn own_seat_restore_without_host_failed() {
     );
     fact_exchange::sync(&old.store, &fresh.store);
 
-    let created: Vec<_> = fresh
-        .journal()
-        .into_iter()
-        .filter(|(k, _, _)| k == "seat.created")
-        .collect();
-    assert_eq!(created.len(), 1);
-    assert_eq!(created[0].1, "failed");
+    let rows = fresh.query(
+        "SELECT kind,apply_state,parked_on,apply_error FROM journal \
+         WHERE kind IN ('seat.created','thread.created')",
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        },
+    );
+    let seat_row = rows.iter().find(|r| r.0 == "seat.created").unwrap();
+    assert_eq!(seat_row.1, "parked_dep");
+    assert_eq!(seat_row.2.as_deref(), Some("wait:host"));
     assert!(
-        created[0]
-            .2
+        seat_row
+            .3
             .as_deref()
             .unwrap()
             .contains("own seat restore needs an attached host"),
-        "{:?}",
-        created[0].2
+        "{seat_row:?}"
     );
+    let thread_row = rows.iter().find(|r| r.0 == "thread.created").unwrap();
+    assert_eq!(thread_row.1, "parked_dep");
+    assert_eq!(thread_row.2.as_deref(), Some(seat.as_str()));
     assert!(fresh.seat(&seat).is_none(), "no row inserted");
+    (old, fresh, seat, thread)
+}
+
+/// The restored seat is an unresolved local published seat on the host, the
+/// dependent applied, and nothing is left parked or failed.
+fn assert_restored(fresh: &Node, seat: &SeatId, thread: &ThreadId) {
+    let host: i64 = fresh.query("SELECT host_id FROM herdr_hosts", |r| r.get(0))[0];
+    let rows = fresh.query(
+        &format!(
+            "SELECT state,is_local,published,host_id FROM seats WHERE id='{}'",
+            seat.as_str()
+        ),
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, bool>(1)?,
+                r.get::<_, bool>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        },
+    );
+    assert_eq!(rows, vec![("unresolved".to_owned(), true, true, host)]);
+    assert!(fresh.thread_row(thread).is_some(), "the dependent applied");
+    assert!(
+        fresh
+            .journal()
+            .iter()
+            .all(|(_, state, _)| state != "parked_dep" && state != "failed"),
+        "{:?}",
+        fresh.journal()
+    );
+}
+
+#[test]
+fn own_seat_restore_without_host_waits_and_applies_on_attach() {
+    let (_old, fresh, seat, thread) = wiped_without_host(46);
+    // Still no host: a further pass changes nothing and does not loop.
+    let progress = fresh.store.apply_pending(&budget()).unwrap();
+    assert!(!progress.has_more, "{progress:?}");
+    assert!(fresh.seat(&seat).is_none());
+
+    fresh.ctx().attach_host("h-1").unwrap();
+    loop {
+        if !fresh.store.apply_pending(&budget()).unwrap().has_more {
+            break;
+        }
+    }
+    assert_restored(&fresh, &seat, &thread);
+}
+
+#[test]
+fn own_seat_restore_waits_until_startup_replay_with_a_host() {
+    let (_old, fresh, seat, thread) = wiped_without_host(47);
+    let progress = fresh.store.replay_startup(&budget()).unwrap();
+    assert_eq!(progress.applied, 0, "no host: startup leaves it waiting");
+    assert!(fresh.seat(&seat).is_none());
+
+    fresh.ctx().attach_host("h-1").unwrap();
+    loop {
+        if !fresh.store.replay_startup(&budget()).unwrap().has_more {
+            break;
+        }
+    }
+    assert_restored(&fresh, &seat, &thread);
 }
 
 // ---- seat.retired ------------------------------------------------------------

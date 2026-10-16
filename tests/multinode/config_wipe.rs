@@ -16,8 +16,10 @@ fn warnings(cluster: &Cluster, node: usize, seat: &Seat) -> usize {
     data["items"].as_array().map_or(0, Vec::len)
 }
 
-/// 11: B's seat ACKs A's message; B's store is moved aside (key kept). B pulls A's
-/// log and its own old log back: the settled message wakes nothing and is not
+/// 11: B's seat ACKs A's message; B's store is moved aside (key kept). B restarts
+/// store-only and pulls A's log and its own old log back: its own seat waits for
+/// a host (`parked_dep` on `wait:host`) and is restored when one attaches, with
+/// no `sync unapplied replay`. The settled message wakes nothing and is not
 /// offered, and an unsettled `--nudge` sent while B was down wakes the repaired
 /// seat once.
 #[test]
@@ -47,6 +49,33 @@ fn wipe_with_the_key_intact_suppresses_settled_history() {
         &["--seat", &b.id, "--body", "while down", "--nudge"],
     );
     cluster.wipe_store(1);
+    cluster.wait_until("B's own seat to wait for a host", crate::WAIT, || {
+        (cluster
+            .scalar(
+                1,
+                "SELECT apply_state||' '||coalesce(parked_on,'') FROM journal \
+                 WHERE kind='seat.created' AND creates=?1",
+                &[&b.id],
+            )
+            .as_deref()
+            == Some("parked_dep wait:host"))
+        .then_some(())
+    });
+    assert_eq!(
+        cluster
+            .scalar(1, "SELECT count(*) FROM herdr_hosts", &[])
+            .as_deref(),
+        Some("0"),
+        "B restarted store-only"
+    );
+    assert_eq!(
+        cluster
+            .scalar(1, "SELECT count(*) FROM seats WHERE id = ?1", &[&b.id])
+            .as_deref(),
+        Some("0"),
+        "B's seat is absent until a host attaches"
+    );
+    cluster.attach_host(&b);
     cluster.wait_until("B to pull A's log and its own old log", crate::WAIT, || {
         (support::receipt(&cluster, 1, &settled, &b).as_deref() == Some("acked")
             && cluster
