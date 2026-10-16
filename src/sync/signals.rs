@@ -26,6 +26,7 @@ use super::frame::{MAX_SEEN_AGES, SeenAge};
 use crate::node::NodeUuid;
 use crate::protocol::time::MonoInstant;
 use crate::store::sync_contacts::{ContactVia, NodeContact, UNREACHABLE_AFTER_MS};
+use crate::store::sync_dial_targets::TargetId;
 
 /// A row is rewritten once its contact advanced this far past the stored one.
 pub const FLUSH_ADVANCE_MS: u64 = 30_000;
@@ -209,17 +210,20 @@ impl ContactBook {
 /// answers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoundState {
-    /// No link is active (yet).
+    /// No link is active and no dial target is enabled.
     NoLinks,
-    /// Every active link completed a round that started at or after `since`.
+    /// Every active link completed a round that started at or after `since`,
+    /// and every enabled dial target's node is among those links.
     Complete,
-    /// This many active links have not.
+    /// This many active links or enabled dial targets are not caught up.
     Pending { links: u32 },
 }
 
 /// One active link's round, as the actor publishes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinkRound {
+    /// The peer node of the link, whatever its origin.
+    pub node: NodeUuid,
     /// When the round started (the coordinator's monotonic clock).
     pub started: MonoInstant,
     pub complete: bool,
@@ -228,20 +232,26 @@ pub struct LinkRound {
 #[derive(Default)]
 struct Inner {
     links: BTreeMap<u64, LinkRound>,
+    /// Enabled dial targets with their learned node (None until it links).
+    targets: BTreeMap<TargetId, Option<NodeUuid>>,
     requested: Option<MonoInstant>,
 }
 
 /// The in-memory "first sync round complete" signal.
 ///
 /// Responsibility (SyncSignals)
-/// - Owns: per active link the round start and completion, `request_round(at)`
-///   and `round_state(since) -> RoundState::{NoLinks, Complete, Pending{links}}`.
+/// - Owns: per active link the round start, completion and node, the enabled
+///   dial targets with their learned node, `request_round(at)` and
+///   `round_state(since) -> RoundState::{NoLinks, Complete, Pending{links}}`.
+///   The completion rule: every active link completed a round since `since`,
+///   and every enabled dial target's node is among those links (root spec §7).
 /// - Hides: the completion rule (a full `Have` after the start, and every
 ///   advertised-ahead log caught up or unwantable), which the actor applies
 ///   before it publishes.
 /// - Must not: persist anything or block; it is a lock-protected snapshot the
 ///   actor writes and the deadline lane reads.
-/// - Relationships: written only by the SyncCoordinator actor;
+/// - Relationships: rounds are written by the SyncCoordinator actor, targets
+///   by the actor's Dialer;
 ///   `SyncHandle::signals()` hands the `Arc` to the deadline-lane composition
 ///   in `app.rs` (ht-5fr.13). `request_round` records the request and wakes the
 ///   actor, which sends `Have{full, ask: true}` on every active link.
@@ -277,18 +287,24 @@ impl SyncSignals {
     }
 
     /// `Complete` when every active link completed a round that started at or
-    /// after `since`.
+    /// after `since` and every enabled dial target's learned node has an
+    /// active link. A linked target with an incomplete round counts once.
     pub fn round_state(&self, since: MonoInstant) -> RoundState {
         let inner = self.lock();
-        if inner.links.is_empty() {
+        if inner.links.is_empty() && inner.targets.is_empty() {
             return RoundState::NoLinks;
         }
-        let pending = inner
+        let pending_links = inner
             .links
             .values()
             .filter(|round| !(round.complete && round.started >= since))
             .count();
-        match u32::try_from(pending) {
+        let unlinked = inner
+            .targets
+            .values()
+            .filter(|node| node.is_none_or(|n| !inner.links.values().any(|round| round.node == n)))
+            .count();
+        match u32::try_from(pending_links.saturating_add(unlinked)) {
             Ok(0) => RoundState::Complete,
             Ok(links) => RoundState::Pending { links },
             Err(_) => RoundState::Pending { links: u32::MAX },
@@ -310,6 +326,44 @@ impl SyncSignals {
     /// Replaces the published rounds with the actor's current ones.
     pub(super) fn publish(&self, rounds: BTreeMap<u64, LinkRound>) {
         self.lock().links = rounds;
+    }
+
+    /// Replaces the set of enabled dial targets. A held id keeps its held
+    /// node when that is `Some` (the in-memory `Established` can be newer than
+    /// the row the reload read); ids not given are dropped.
+    pub(super) fn publish_targets(
+        &self,
+        targets: impl IntoIterator<Item = (TargetId, Option<NodeUuid>)>,
+    ) {
+        let mut inner = self.lock();
+        let held = std::mem::take(&mut inner.targets);
+        inner.targets = targets
+            .into_iter()
+            .map(|(id, node)| {
+                let kept = held.get(&id).copied().flatten();
+                (id, kept.or(node))
+            })
+            .collect();
+    }
+
+    /// Records the node a held target's dial established with. An unknown id
+    /// is ignored (a cancelled task can still report).
+    pub(super) fn target_linked(&self, id: TargetId, node: NodeUuid) {
+        if let Some(slot) = self.lock().targets.get_mut(&id) {
+            *slot = Some(node);
+        }
+    }
+
+    /// Test-only: sets both published views as given.
+    #[cfg(test)]
+    pub(crate) fn publish_for_test(
+        &self,
+        rounds: BTreeMap<u64, LinkRound>,
+        targets: BTreeMap<TargetId, Option<NodeUuid>>,
+    ) {
+        let mut inner = self.lock();
+        inner.links = rounds;
+        inner.targets = targets;
     }
 }
 
@@ -519,8 +573,9 @@ mod tests {
         );
     }
 
-    fn round(started: u64, complete: bool) -> LinkRound {
+    fn round(node: NodeUuid, started: u64, complete: bool) -> LinkRound {
         LinkRound {
+            node,
             started: MonoInstant(started),
             complete,
         }
@@ -534,12 +589,21 @@ mod tests {
     fn round_state_no_links_pending_complete() {
         let signals = SyncSignals::new();
         assert_eq!(signals.round_state(MonoInstant(0)), RoundState::NoLinks);
-        publish(&signals, &[(1, round(10, false)), (2, round(10, true))]);
+        publish(
+            &signals,
+            &[
+                (1, round(node(1), 10, false)),
+                (2, round(node(2), 10, true)),
+            ],
+        );
         assert_eq!(
             signals.round_state(MonoInstant(0)),
             RoundState::Pending { links: 1 }
         );
-        publish(&signals, &[(1, round(10, true)), (2, round(10, true))]);
+        publish(
+            &signals,
+            &[(1, round(node(1), 10, true)), (2, round(node(2), 10, true))],
+        );
         assert_eq!(signals.round_state(MonoInstant(10)), RoundState::Complete);
         publish(&signals, &[]);
         assert_eq!(signals.round_state(MonoInstant(0)), RoundState::NoLinks);
@@ -548,13 +612,114 @@ mod tests {
     #[test]
     fn round_started_before_since_is_pending_even_when_complete() {
         let signals = SyncSignals::new();
-        publish(&signals, &[(1, round(10, true)), (2, round(30, true))]);
+        publish(
+            &signals,
+            &[(1, round(node(1), 10, true)), (2, round(node(2), 30, true))],
+        );
         assert_eq!(
             signals.round_state(MonoInstant(11)),
             RoundState::Pending { links: 1 },
             "link 1 completed a round older than `since`"
         );
         assert_eq!(signals.round_state(MonoInstant(10)), RoundState::Complete);
+    }
+
+    const T1: TargetId = TargetId(1);
+    const T2: TargetId = TargetId(2);
+
+    #[test]
+    fn two_targets_one_unlinked_keeps_the_round_pending() {
+        let (a, b) = (node(0xa), node(0xb));
+        let signals = SyncSignals::new();
+        signals.publish_targets([(T1, Some(a)), (T2, None)]);
+        publish(&signals, &[(1, round(a, 10, true))]);
+        assert_eq!(
+            signals.round_state(MonoInstant(10)),
+            RoundState::Pending { links: 1 },
+            "the unlinked target holds the round"
+        );
+        signals.target_linked(T2, b);
+        assert_eq!(
+            signals.round_state(MonoInstant(10)),
+            RoundState::Pending { links: 1 },
+            "a learned node without a published link is still unlinked"
+        );
+        publish(
+            &signals,
+            &[(1, round(a, 10, true)), (2, round(b, 20, false))],
+        );
+        assert_eq!(
+            signals.round_state(MonoInstant(10)),
+            RoundState::Pending { links: 1 },
+            "linked but incomplete counts once, through the link"
+        );
+        publish(
+            &signals,
+            &[(1, round(a, 10, true)), (2, round(b, 20, true))],
+        );
+        assert_eq!(signals.round_state(MonoInstant(10)), RoundState::Complete);
+        publish(
+            &signals,
+            &[(1, round(a, 10, true)), (2, round(b, 12, true))],
+        );
+        assert_eq!(
+            signals.round_state(MonoInstant(15)),
+            RoundState::Pending { links: 2 },
+            "both rounds started before `since`"
+        );
+        publish(
+            &signals,
+            &[(1, round(a, 20, true)), (2, round(b, 12, true))],
+        );
+        assert_eq!(
+            signals.round_state(MonoInstant(15)),
+            RoundState::Pending { links: 1 }
+        );
+    }
+
+    #[test]
+    fn targets_alone_are_pending_and_no_targets_no_links_is_no_links() {
+        let signals = SyncSignals::new();
+        signals.publish_targets([(T1, None)]);
+        assert_eq!(
+            signals.round_state(MonoInstant(0)),
+            RoundState::Pending { links: 1 }
+        );
+        signals.publish_targets([]);
+        assert_eq!(signals.round_state(MonoInstant(0)), RoundState::NoLinks);
+    }
+
+    #[test]
+    fn a_target_linked_through_an_inbound_link_counts() {
+        let a = node(0xa);
+        let signals = SyncSignals::new();
+        signals.publish_targets([(T1, Some(a))]);
+        publish(&signals, &[(7, round(a, 5, true))]);
+        assert_eq!(signals.round_state(MonoInstant(5)), RoundState::Complete);
+    }
+
+    #[test]
+    fn publish_targets_keeps_a_newer_learned_node() {
+        let (a, b, c) = (node(0xa), node(0xb), node(0xc));
+        let signals = SyncSignals::new();
+        signals.publish_targets([(T1, None)]);
+        signals.target_linked(T1, b);
+        signals.publish_targets([(T1, Some(a))]);
+        publish(&signals, &[(1, round(b, 1, true))]);
+        assert_eq!(
+            signals.round_state(MonoInstant(1)),
+            RoundState::Complete,
+            "the in-memory B outlives the row's older A"
+        );
+        signals.publish_targets([]);
+        publish(&signals, &[]);
+        assert_eq!(signals.round_state(MonoInstant(1)), RoundState::NoLinks);
+        signals.target_linked(TargetId(9), c);
+        assert_eq!(
+            signals.round_state(MonoInstant(1)),
+            RoundState::NoLinks,
+            "an unknown id adds nothing"
+        );
     }
 
     #[test]

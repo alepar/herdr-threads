@@ -594,3 +594,5 @@ Digest:
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+- 2026-10-16 (ht-5fr.54): §12's round_state counted only active links. Root spec §7 (and its Deadline-lane line) requires every linked peer and every enabled dial target, and wins. round_state is now Complete only when every active link completed a round since `since` and every enabled dial target's learned node is among those links; an unlinked target counts in Pending.links. The Dialer publishes its enabled targets and learned nodes into SyncSignals. A target that never links holds overdue emission until the 60 s cap.

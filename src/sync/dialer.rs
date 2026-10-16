@@ -16,6 +16,8 @@
 //! - [`TransportCommand::build`] is the one place a transport argv is built:
 //!   the ssh default, or `/bin/sh -c` over a [`DialTemplate`]
 //!   (`sync.dial_command`) with every `{dest}` single-quoted for sh.
+//! - Publishes the enabled targets and their learned nodes to `SyncSignals`
+//!   (reload, `Established`, stop) and nothing else there.
 //! - Hides: the child, its pipes and process group, the stderr ring, backoff
 //!   arithmetic and the reload rate limit (a kick-driven reload runs at most
 //!   once a second; an explicit [`DialShared::request_reload`] runs at once).
@@ -51,6 +53,7 @@ use tokio::time::{Instant, sleep, sleep_until, timeout};
 
 use super::coordinator::{DIAL_REPORT_SLOTS, DialReport, DialedStream, LogFn, uuid8};
 use super::link::{LinkError, read_preamble};
+use super::signals::SyncSignals;
 use super::sync_store::SyncStorePort;
 use crate::node::NodeUuid;
 use crate::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant};
@@ -433,6 +436,7 @@ struct TaskCtx {
     clock: Arc<dyn Clock>,
     log: LogFn,
     dialed: mpsc::Sender<DialedStream>,
+    signals: Arc<SyncSignals>,
     template: Option<DialTemplate>,
 }
 
@@ -614,6 +618,7 @@ async fn session(
                     ));
                 }
                 state.learned = Some(node_uuid);
+                ctx.signals.target_linked(target.target_id, node_uuid);
                 state.last_write_ms = record(
                     ctx,
                     target.target_id,
@@ -768,6 +773,8 @@ pub struct DialerDeps {
     pub log: LogFn,
     /// The coordinator actor's `DialedStream` input.
     pub dialed: mpsc::Sender<DialedStream>,
+    /// Where the enabled targets and learned nodes are published.
+    pub signals: Arc<SyncSignals>,
 }
 
 /// The Dialer's cloneable surface: the reload nudge and the enabled-target
@@ -828,6 +835,7 @@ impl Dialer {
                 clock: deps.clock,
                 log: deps.log,
                 dialed: deps.dialed,
+                signals: deps.signals,
                 template: config.template,
             }),
             seed: config.jitter_seed,
@@ -940,6 +948,10 @@ impl Supervisor {
         let Some(targets) = self.enabled().await else {
             return;
         };
+        let published: Vec<(TargetId, Option<NodeUuid>)> = targets
+            .iter()
+            .map(|t| (t.target_id, t.learned_node))
+            .collect();
         let gone: Vec<TargetId> = self
             .tasks
             .keys()
@@ -977,6 +989,7 @@ impl Supervisor {
             }
         }
         self.shared.count.store(self.tasks.len(), Ordering::Release);
+        self.ctx.signals.publish_targets(published);
         self.shared.loaded.store(true, Ordering::Release);
     }
 
@@ -1015,6 +1028,7 @@ impl Supervisor {
             let _ = entry.join.await;
         }
         self.shared.count.store(0, Ordering::Release);
+        self.ctx.signals.publish_targets([]);
     }
 }
 
@@ -1296,18 +1310,21 @@ mod tests {
         dialer: Dialer,
         dialed: mpsc::Receiver<DialedStream>,
         clock: Arc<TestClock>,
+        signals: Arc<SyncSignals>,
     }
 
     fn rig(command: &str) -> Rig {
         let store = Arc::new(MemorySyncStore::new());
         let clock = Arc::new(TestClock(Instant::now()));
         let (tx, dialed) = mpsc::channel(4);
+        let signals = Arc::new(SyncSignals::new());
         let dialer = Dialer::start(
             DialerDeps {
                 store: store.clone(),
                 clock: clock.clone(),
                 log: Arc::new(|_| {}),
                 dialed: tx,
+                signals: signals.clone(),
             },
             DialConfig {
                 template: Some(template(command)),
@@ -1319,6 +1336,7 @@ mod tests {
             dialer,
             dialed,
             clock,
+            signals,
         }
     }
 
@@ -1349,6 +1367,55 @@ mod tests {
             .await
             .expect("a dial arrives")
             .expect("the dialer is running")
+    }
+
+    #[tokio::test]
+    async fn enabled_targets_and_learned_nodes_reach_the_signals() {
+        use crate::sync::signals::{LinkRound, RoundState};
+        let mut rig = rig(PREAMBLE_THEN_SLEEP);
+        let one = rig.store.add_target("one");
+        rig.store.add_target("two");
+        rig.dialer.shared().request_reload();
+        let at = MonoInstant(0);
+        until("both targets published", || {
+            rig.signals.round_state(at) == RoundState::Pending { links: 2 }
+        })
+        .await;
+        let first = next_dial(&mut rig).await;
+        let second = next_dial(&mut rig).await;
+        let on_one = if first.target_id == one {
+            first
+        } else {
+            second
+        };
+        on_one
+            .report
+            .send(DialReport::Established { node_uuid: node(9) })
+            .await
+            .unwrap();
+        until("one linked", || row(&rig, one).state == DialState::Linked).await;
+        rig.signals.publish(BTreeMap::from([(
+            1,
+            LinkRound {
+                node: node(9),
+                started: at,
+                complete: true,
+            },
+        )]));
+        assert_eq!(
+            rig.signals.round_state(at),
+            RoundState::Pending { links: 1 },
+            "target two is still unlinked"
+        );
+        rig.store.disable("two");
+        rig.dialer.shared().request_reload();
+        until("disabled target dropped", || {
+            rig.signals.round_state(at) == RoundState::Complete
+        })
+        .await;
+        rig.dialer.shutdown().await;
+        rig.signals.publish(BTreeMap::new());
+        assert_eq!(rig.signals.round_state(at), RoundState::NoLinks);
     }
 
     #[tokio::test]

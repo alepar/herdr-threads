@@ -644,6 +644,7 @@ impl SyncCoordinator {
                 clock: deps.clock.clone(),
                 log: deps.log.clone(),
                 dialed: dialed_tx.clone(),
+                signals: signals.clone(),
             },
             deps.dial.clone(),
         );
@@ -2251,6 +2252,7 @@ impl Actor {
                     (
                         *id,
                         LinkRound {
+                            node: l.handle.peer().node,
                             started: r.started,
                             complete: r.complete,
                         },
