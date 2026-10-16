@@ -106,6 +106,9 @@ pub struct ApplyContext<'a> {
     self_tag_k: Option<u32>,
     own_old_incarnation: bool,
     reissue_of: Option<LogKey>,
+    /// The entry's signed `creates` and `needs` keys, set by the engine for a
+    /// stored entry; `None` for a context built outside the engine.
+    pub(crate) entry_keys: Option<(Option<String>, Vec<String>)>,
     _entry: PhantomData<&'a ()>,
 }
 
@@ -132,8 +135,17 @@ impl ApplyContext<'_> {
             self_tag_k: None,
             own_old_incarnation: false,
             reissue_of: None,
+            entry_keys: None,
             _entry: PhantomData,
         }
+    }
+
+    /// Records the entry's signed keys, which `erased_apply` checks against
+    /// the typed payload.
+    #[must_use]
+    pub(crate) fn with_entry_keys(mut self, creates: Option<String>, needs: Vec<String>) -> Self {
+        self.entry_keys = Some((creates, needs));
+        self
     }
 
     /// The origin's "sent at", in Unix ms.
@@ -332,10 +344,12 @@ struct EntryRow {
     hlc: u64,
     kind: String,
     major: u32,
+    creates: Option<String>,
     needs: String,
     payload: Vec<u8>,
 }
 
+#[allow(clippy::type_complexity)]
 fn load_entry(tx: &Transaction<'_>, ingest_seq: i64) -> Result<EntryRow, ApiError> {
     let corrupt = |what: &str| {
         api_error(
@@ -343,7 +357,7 @@ fn load_entry(tx: &Transaction<'_>, ingest_seq: i64) -> Result<EntryRow, ApiErro
             format!("journal row {ingest_seq}: {what}"),
         )
     };
-    let (log_ix, node, incarnation, counter, hlc, kind, major, needs, payload): (
+    let (log_ix, node, incarnation, counter, hlc, kind, major, creates, needs, payload): (
         i64,
         String,
         i64,
@@ -351,11 +365,12 @@ fn load_entry(tx: &Transaction<'_>, ingest_seq: i64) -> Result<EntryRow, ApiErro
         i64,
         String,
         i64,
+        Option<String>,
         String,
         Vec<u8>,
     ) = tx
         .query_row(
-            "SELECT j.log_ix,l.node_uuid,l.incarnation,j.counter,j.hlc,j.kind,j.kind_version,j.needs,j.payload \
+            "SELECT j.log_ix,l.node_uuid,l.incarnation,j.counter,j.hlc,j.kind,j.kind_version,j.creates,j.needs,j.payload \
              FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix WHERE j.ingest_seq=?1",
             [ingest_seq],
             |r| {
@@ -369,6 +384,7 @@ fn load_entry(tx: &Transaction<'_>, ingest_seq: i64) -> Result<EntryRow, ApiErro
                     r.get(6)?,
                     r.get(7)?,
                     r.get(8)?,
+                    r.get(9)?,
                 ))
             },
         )
@@ -385,6 +401,7 @@ fn load_entry(tx: &Transaction<'_>, ingest_seq: i64) -> Result<EntryRow, ApiErro
         hlc: u64::try_from(hlc).map_err(|_| corrupt("hlc"))?,
         kind,
         major: u32::try_from(major).map_err(|_| corrupt("kind_version"))?,
+        creates,
         needs,
         payload,
     })
@@ -502,6 +519,14 @@ fn run_handler(
         decision,
         decision_seq,
         local_node,
+    )
+    .with_entry_keys(
+        row.creates.clone(),
+        row.needs
+            .split('\n')
+            .filter(|key| !key.is_empty())
+            .map(str::to_owned)
+            .collect(),
     )
     .with_own_old_incarnation(row.origin.node == local_node && Some(row.log_ix) != active_log_ix)
     .with_reissue_of(match mode {
