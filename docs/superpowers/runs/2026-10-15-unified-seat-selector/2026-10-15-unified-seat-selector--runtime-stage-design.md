@@ -99,7 +99,7 @@ The full command matrix stays in `ht-u3ym.4`.
 
 ## Key abstractions
 
-No new abstractions; extends resolve_cli_seats, SeatSlot, PaneSelector/panes.rs, handoff_delivery existing-peer path.
+No new abstractions; extends resolve_cli_seats (placed in the sibling `src/cli/seat_resolution.rs`, which the frame allows, with one call site in `run_parsed_in_pane` after `resolve_cli_threads`, so it runs before both the `--operator` branch's `resolve_recipient_seats` at mod.rs ~797 and `run_caller_scoped`), SeatSlot, ParsedCli (dispatch guard), PaneSelector/panes.rs (the parent-narrowing helper extracted from `resolve_selector`), the shared allocation helper (extracted from the `allocate` closure in `resolve_recipient_seats`), direct_send::pre_executor_error, and the handoff_delivery existing-peer path.
 
 ## Post-Implementation Notes
 
