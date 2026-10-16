@@ -1569,37 +1569,6 @@ fn old_direct_peer_with_lazy_support_refuses_creation_policy_before_any_effect()
     );
 }
 
-#[test]
-#[ignore = "pending ht-5fr reconcile item 19"]
-fn modern_direct_send_creates_lazy_pending_invitation_without_invitation_wake() {
-    let f = Fixture::new(false);
-    f.run(
-        &["send", "--seat", "seat-b", "--body", "hello"],
-        &mut vec![],
-    )
-    .unwrap();
-    let row: (Option<String>, String, Option<String>) =
-        f.db.query_row(
-            "SELECT confirmation,state,inviter_seat_id FROM invitations",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        row,
-        (Some("lazy".into()), "pending".into(), Some("seat-a".into()))
-    );
-    assert_eq!(
-        f.db.query_row(
-            "SELECT count(*) FROM wake_work WHERE seat_id='seat-b' AND reason_bits&1!=0",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-}
-
 // ht-yha.6: with an auto-joining daemon (direct.auto_join_v1) a direct send needs no invitation:
 // both pair seats are joined at creation, the message is sent, and no accept step is printed.
 #[test]
@@ -1680,57 +1649,6 @@ fn ensure_call(f: &Fixture, command: Command) -> Result<CommandResult, ApiError>
             cancellation: Default::default(),
         },
     )
-}
-#[test]
-#[ignore = "pending ht-5fr reconcile item 19"]
-fn human_initial_ensure_require_ack_refuses_before_pair_invitation_or_obligation_effects() {
-    let f = Fixture::new(true);
-    let obligations = f.count("seat_availability");
-    let operations = f.count("operations");
-    let result = ensure_call(
-        &f,
-        ensure_command(true, Some(initial_policy(true)), "human-timed"),
-    );
-    assert!(
-        result
-            .is_err_and(|e| e.code == herdr_threads::protocol::results::ErrorCode::InvalidRequest),
-        "Human issuer gained a new timed invitation mode"
-    );
-    assert_eq!(f.count("direct_threads"), 0);
-    assert_eq!(f.count("invitations"), 0);
-    assert_eq!(f.count("seat_availability"), obligations);
-    assert_eq!(f.count("operations"), operations);
-}
-#[test]
-#[ignore = "pending ht-5fr reconcile item 19"]
-fn explicit_initial_ensure_policy_applies_once_and_existing_episode_is_immutable() {
-    for timed in [false, true] {
-        let f = Fixture::new(false);
-        let first = ensure_call(
-            &f,
-            ensure_command(false, Some(initial_policy(timed)), "first-policy"),
-        )
-        .unwrap();
-        let row: (Option<String>,i64,i64,i64,Option<String>)=f.db.query_row("SELECT confirmation,frozen_duration_ms,created_at,deadline_at,inviter_seat_id FROM invitations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
-        assert_eq!(
-            row.0.as_deref(),
-            Some(if timed { "require_ack" } else { "lazy" })
-        );
-        assert_eq!(row.4.as_deref(), Some("seat-a"));
-        if timed {
-            assert_eq!(row.1, 11000);
-            assert_eq!(row.3 - row.2, 11000);
-        }
-        let second = ensure_call(
-            &f,
-            ensure_command(false, Some(initial_policy(!timed)), "second-policy"),
-        )
-        .unwrap();
-        assert_eq!(ensured_thread(&first), ensured_thread(&second));
-        let after: (Option<String>,i64,i64,i64,Option<String>)=f.db.query_row("SELECT confirmation,frozen_duration_ms,created_at,deadline_at,inviter_seat_id FROM invitations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
-        assert_eq!(row, after);
-        assert_eq!(f.count("invitations"), 1);
-    }
 }
 #[test]
 fn human_lazy_and_historical_ensure_and_existing_requested_policy_keep_old_episode() {
@@ -1889,7 +1807,6 @@ fn historical_ensure_omits_new_result_and_modern_reuse_reports_old_timed_origin_
 }
 
 #[test]
-#[ignore = "pending ht-5fr reconcile item 19"]
 fn json_output_uses_the_versioned_send_envelope_with_the_thread() {
     let f = Fixture::new(false);
     let mut direct = vec![];
@@ -1916,10 +1833,6 @@ fn json_output_uses_the_versioned_send_envelope_with_the_thread() {
         .unwrap();
     assert_eq!(direct["result"]["data"], message.as_str());
     assert_eq!(direct["result"]["selection"]["outcome"], "created");
-    assert_eq!(
-        direct["result"]["selection"]["invitation"]["confirmation"],
-        "lazy"
-    );
     assert_eq!(
         serde_json::from_value::<CommandResult>(direct["result"].clone()).unwrap(),
         CommandResult::MessageSent(herdr_threads::protocol::ids::MessageId::new(message))

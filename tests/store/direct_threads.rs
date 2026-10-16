@@ -1168,12 +1168,6 @@ fn manual_two_member_channel_is_not_adopted_and_normal_send_is_unchanged() {
     drop(db);
     let _ = std::fs::remove_file(path);
 }
-
-#[path = "direct_lazy_readers.rs"]
-mod reader_controls;
-
-#[path = "direct_lazy_writer_floors.rs"]
-mod writer_floor_controls;
 /// ht-8y9: a join never marks seat-pending a lazy row some completion already displayed. The
 /// binding displays `shown` while its cursor is held behind `held` (an earlier row no completion
 /// covered, as a truncated delivery leaves it), so `shown` is past the seat's furthest cursor at

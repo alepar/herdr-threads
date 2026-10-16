@@ -861,8 +861,6 @@ struct Fixture {
     host: PathBuf,
     db: PathBuf,
     node_dir: PathBuf,
-    /// The elected daemon's endpoint, for raw protocol calls ([`Fixture::call`]).
-    descriptor: herdr_threads::daemon::ownership::EndpointDescriptor,
     stop: Cancellation,
     worker: Option<std::thread::JoinHandle<()>>,
     check_ins: Arc<AtomicU64>,
@@ -1072,7 +1070,6 @@ impl Fixture {
             host,
             db,
             node_dir: paths.node_dir.clone(),
-            descriptor,
             stop,
             worker: Some(worker),
             check_ins,
@@ -1087,29 +1084,6 @@ impl Fixture {
             codex,
             _gate: gate,
         }
-    }
-    /// One raw protocol command to the elected daemon (for shapes the CLI can no longer produce).
-    fn call(
-        &self,
-        command: Command,
-    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
-        use herdr_threads::ports::LocalClient;
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-        let client = herdr_threads::client::local::LocalSocketClient::new(
-            self.descriptor.endpoint.clone(),
-            Arc::clone(&clock),
-            self.descriptor.node_uuid,
-            Some(self.descriptor.boot_id),
-        );
-        client.call(
-            command,
-            &CallBudget {
-                deadline: herdr_threads::protocol::time::MonoInstant(
-                    clock.monotonic_now().0 + 5_000,
-                ),
-                cancellation: Cancellation::default(),
-            },
-        )
     }
     fn hook(&self, pane: &str, stdin: &[u8]) -> Hook {
         run_hook_traced(
