@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::{
     fs,
     io::Read,
-    os::unix::fs::PermissionsExt,
+    os::{fd::AsFd, unix::fs::PermissionsExt},
     path::Path,
     process::Stdio,
     time::{Duration, Instant},
@@ -164,15 +164,26 @@ fn daemon_node(state: &Path) -> herdr_threads::node::NodeUuid {
 
 /// Runs a dialer-role handshake over the pump's stdio with a test identity and
 /// returns the peer it met; the link is dropped (stdin EOF) before it returns.
-fn dial_through(child: &mut OwnedChild) -> herdr_threads::sync::link::PeerInfo {
+/// The returned file keeps the pump's stdout open: dropping it is a dead
+/// channel (EPIPE, exit 1 by design), not a stdin EOF.
+fn dial_through(child: &mut OwnedChild) -> (herdr_threads::sync::link::PeerInfo, std::fs::File) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     let _guard = runtime.enter();
+    let keep = std::fs::File::from(
+        child
+            .stdout
+            .as_ref()
+            .unwrap()
+            .as_fd()
+            .try_clone_to_owned()
+            .unwrap(),
+    );
     let stdout = tokio::process::ChildStdout::from_std(child.stdout.take().unwrap()).unwrap();
     let stdin = tokio::process::ChildStdin::from_std(child.stdin.take().unwrap()).unwrap();
-    runtime.block_on(async {
+    let peer = runtime.block_on(async {
         let mut io = tokio::io::join(stdout, stdin);
         let deadline = tokio::time::Instant::now() + WAIT;
         let noise = await_preamble(&mut io, deadline).await.unwrap();
@@ -185,7 +196,26 @@ fn dial_through(child: &mut OwnedChild) -> herdr_threads::sync::link::PeerInfo {
             .await
             .unwrap();
         established.peer
-    })
+    });
+    (peer, keep)
+}
+
+/// Reads `file` to EOF. Tokio put the shared pipe description in
+/// non-blocking mode, so `WouldBlock` is polled through, bounded by `WAIT`.
+fn drain_to_eof(file: &mut std::fs::File) {
+    let deadline = Instant::now() + WAIT;
+    let mut buf = [0u8; 4096];
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline, "pump stdout never reached EOF");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("reading the pump's stdout: {error}"),
+        }
+    }
 }
 
 fn daemon_log(state: &Path) -> String {
@@ -213,7 +243,7 @@ fn dialer_role_link_over_pump_completes_handshake() {
     let state = iso.path("state");
     let _stop = StopDaemon(&iso, &state);
     let mut child = pump(&iso, &state);
-    let peer = dial_through(&mut child);
+    let (peer, _stdout) = dial_through(&mut child);
     assert_eq!(
         peer.role,
         Role::Dialed,
@@ -230,8 +260,9 @@ fn stdin_eof_logs_link_down() {
     let _stop = StopDaemon(&iso, &state);
     let mut child = pump(&iso, &state);
     // `dial_through` drops the pump's stdin when it returns: the pump shuts
-    // the socket's write side and the daemon's link ends.
-    let peer = dial_through(&mut child);
+    // the socket's write side and the daemon's link ends. Its stdout stays
+    // open (`stdout`), so this is a clean stdin EOF, not a dead channel.
+    let (peer, mut stdout) = dial_through(&mut child);
     let node = peer.node.to_string();
     let log = wait_for_log(&state, "sync: link down ");
     // The link is the test identity's, not the daemon's own.
@@ -241,6 +272,9 @@ fn stdin_eof_logs_link_down() {
         "{log}"
     );
     assert_ne!(node, ours);
+    // Drain to EOF before waiting: the pump closes fd 1 on exit, and it can
+    // never block on a full pipe.
+    drain_to_eof(&mut stdout);
     assert_eq!(wait_exit(&mut child).code(), Some(0));
 }
 
@@ -253,7 +287,7 @@ fn pump_with_env_state_dir_and_no_host_links() {
         .env("HERDR_PLUGIN_STATE_DIR", &state)
         .spawn_owned()
         .unwrap();
-    let peer = dial_through(&mut child);
+    let (peer, _stdout) = dial_through(&mut child);
     assert_eq!(peer.node, daemon_node(&state));
     wait_for_log(&state, "sync: link up ");
 }
@@ -267,7 +301,7 @@ fn pump_with_no_state_flag_or_env_uses_the_default_state_dir() {
     fs::create_dir_all(&state).unwrap();
     let _stop = StopDaemon(&iso, &state);
     let mut child = pump_cmd(&iso).spawn_owned().unwrap();
-    let peer = dial_through(&mut child);
+    let (peer, _stdout) = dial_through(&mut child);
     assert_eq!(peer.node, daemon_node(&state));
     wait_for_log(&state, "sync: link up ");
     assert!(state.join("node/node.key").exists());
