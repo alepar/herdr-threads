@@ -669,6 +669,33 @@ impl Cluster {
         command
     }
 
+    /// A `--json` command of `seat`'s node as the seat's pane shell: the
+    /// caller flags of [`Cluster::run_as`] plus the pane route (`HERDR_ENV`,
+    /// `HERDR_PANE_ID`, `HERDR_SOCKET_PATH`) that the mod's `watch` child
+    /// runs with. The caller appends the subcommand and spawns it through
+    /// `test_support::spawn`.
+    pub fn pane_command(&self, seat: &Seat) -> std::process::Command {
+        let mut command = self.seat_command(Some(seat), seat.host, seat.node, true);
+        let socket = self.nodes[seat.node].hosts[seat.host]
+            .socket()
+            .to_path_buf();
+        command
+            .env("HERDR_ENV", "1")
+            .env("HERDR_PANE_ID", &seat.pane)
+            .env("HERDR_SOCKET_PATH", socket);
+        command
+    }
+
+    /// The session id of `seat`'s stand-in agent (what `watch --session` takes).
+    pub fn session_of(&self, seat: &Seat) -> String {
+        seat.session.clone()
+    }
+
+    /// A read-only view of `node`'s store; `None` while it is missing or busy.
+    pub fn open_store(&self, node: usize) -> Option<Connection> {
+        open_db(&self.nodes[node].state)
+    }
+
     /// Success of `args` as `seat`; returns `result.data`.
     pub fn ok_as(&self, seat: Option<&Seat>, node: usize, args: &[&str]) -> serde_json::Value {
         let (code, value, stderr) = self.run_as(seat, node, args);

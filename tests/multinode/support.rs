@@ -3,8 +3,14 @@
 //! observations every configuration asserts.
 
 use crate::WAIT;
+use herdr_threads::store::effective::{EffectiveReceiptState, effective_receipt};
 use herdr_threads::test_support::multinode::{Cluster, ClusterOptions, Seat};
-use std::time::Duration;
+use herdr_threads::test_support::spawn::{OwnedChild, SpawnOwned};
+use serde_json::Value;
+use std::io::{BufRead, BufReader};
+use std::process::Stdio;
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 
 /// The pane every node's fake Herdr server offers first.
 pub const P1: &str = "w1:p1";
@@ -151,4 +157,187 @@ pub fn ack(cluster: &Cluster, seat: &Seat, message: &str) {
         "ack of {message} as {}: {data}",
         seat.id
     );
+}
+
+/// The logical receipt `node` holds for `(message, seat)`. A pending
+/// obligation need not have a physical `receipt_state` row, so this reads the
+/// canonical effective view.
+pub fn effective_receipt_of(
+    cluster: &Cluster,
+    node: usize,
+    message: &str,
+    seat: &Seat,
+) -> Option<EffectiveReceiptState> {
+    let conn = cluster.open_store(node)?;
+    effective_receipt(&conn, message, &seat.id)
+        .ok()
+        .flatten()
+        .map(|receipt| receipt.state)
+}
+
+/// Whether `node`'s effective view of `(message, seat)` is pending.
+pub fn is_pending(cluster: &Cluster, node: usize, message: &str, seat: &Seat) -> bool {
+    effective_receipt_of(cluster, node, message, seat) == Some(EffectiveReceiptState::Pending)
+}
+
+/// Waits until `node`'s effective view of `(message, seat)` is pending.
+pub fn wait_pending(cluster: &Cluster, node: usize, message: &str, seat: &Seat) {
+    cluster.wait_until(
+        &format!("node {node} to hold {message} pending for {}", seat.id),
+        crate::WAIT,
+        || is_pending(cluster, node, message, seat).then_some(()),
+    );
+}
+
+/// The sender-node due-tracking rows (`receipt_due_sparse`) of `(message, seat)`.
+pub fn due_rows(cluster: &Cluster, node: usize, message: &str, seat: &Seat) -> i64 {
+    cluster
+        .scalar(
+            node,
+            "SELECT count(*) FROM receipt_due_sparse WHERE message_id = ?1 AND seat_id = ?2",
+            &[&message, &seat.id],
+        )
+        .and_then(|n| n.parse().ok())
+        .expect("a due-row count")
+}
+
+/// How many derived `ack` info events `node` holds in `thread`, split by the
+/// settlement path that authored them: `ack:` for a displayed/explicit
+/// settlement and `ack_mod:` for a mod or policy completion.
+pub fn ack_events(cluster: &Cluster, node: usize, thread: &str) -> (i64, i64) {
+    let count = |prefix: &str| {
+        cluster
+            .scalar(
+                node,
+                "SELECT count(*) FROM messages WHERE kind = 'info' AND thread_id = ?1 \
+                 AND substr(event_key, 1, length(?2)) = ?2",
+                &[&thread, &prefix],
+            )
+            .and_then(|n| n.parse().ok())
+            .expect("an event count")
+    };
+    (count("ack:"), count("ack_mod:"))
+}
+
+/// A `watch` child (the mod's channel) with its stdout lines forwarded by a
+/// reader thread; dropping it kills the child.
+pub struct Watch {
+    _child: OwnedChild,
+    lines: Receiver<Value>,
+    seen: Vec<Value>,
+    first: Option<Value>,
+}
+
+impl Watch {
+    fn spawn(cluster: &Cluster, seat: &Seat) -> Self {
+        let mut command = cluster.pane_command(seat);
+        command
+            .args(["watch", "--harness", "claude", "--session"])
+            .arg(cluster.session_of(seat))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = command.spawn_owned().expect("spawn the watch child");
+        let stdout = child.stdout.take().expect("a piped stdout");
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Ok(value) = serde_json::from_str::<Value>(&line)
+                    && tx.send(value).is_err()
+                {
+                    return;
+                }
+            }
+        });
+        Self {
+            _child: child,
+            lines,
+            seen: Vec::new(),
+            first: None,
+        }
+    }
+
+    /// Waits for the next line satisfying `pred`; every line read is kept.
+    pub fn wait_line(
+        &mut self,
+        what: &str,
+        timeout: Duration,
+        pred: impl Fn(&Value) -> bool,
+    ) -> Value {
+        let until = Instant::now() + timeout;
+        loop {
+            let next = match self.first.take() {
+                Some(line) => Ok(line),
+                None => self
+                    .lines
+                    .recv_timeout(until.saturating_duration_since(Instant::now())),
+            };
+            match next {
+                Ok(line) => {
+                    self.seen.push(line.clone());
+                    if pred(&line) {
+                        return line;
+                    }
+                }
+                Err(_) => panic!("timed out waiting for {what}; saw {:#?}", self.seen),
+            }
+        }
+    }
+
+    pub fn wait_connected(&mut self) {
+        self.wait_line("the connected status", crate::WAIT, |line| {
+            line["kind"] == "status" && line["state"] == "connected"
+        });
+    }
+
+    /// The `message` / `lazy` line carrying `id`.
+    pub fn wait_item(&mut self, id: &str) -> Value {
+        self.wait_line(&format!("item {id}"), crate::WAIT, |line| {
+            line["id"] == id && matches!(line["kind"].as_str(), Some("message" | "lazy"))
+        })
+    }
+}
+
+/// The mod's `watch` child for `seat`. Like the mod, a first `no_binding`
+/// status (the seat's check-in has not committed yet) is retried with a short
+/// backoff; every other first answer is returned for the test to judge.
+pub fn watch(cluster: &Cluster, seat: &Seat) -> Watch {
+    for _ in 0..80 {
+        let mut watch = Watch::spawn(cluster, seat);
+        watch.first = watch.lines.recv_timeout(Duration::from_secs(10)).ok();
+        let retry = watch
+            .first
+            .as_ref()
+            .is_some_and(|line| line["kind"] == "status" && line["reason"] == "no_binding");
+        if !retry {
+            return watch;
+        }
+        drop(watch);
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    panic!("the check-in of {} never committed", seat.id);
+}
+
+/// `watch ack` as the mod runs it; returns the exit code and one value per
+/// output line.
+pub fn watch_ack(cluster: &Cluster, seat: &Seat, via: &str, ids: &[&str]) -> (i32, Vec<Value>) {
+    let mut command = cluster.pane_command(seat);
+    command
+        .args(["watch", "ack", "--session"])
+        .arg(cluster.session_of(seat))
+        .args(["--via", via])
+        .args(ids)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = command
+        .spawn_owned()
+        .expect("spawn watch ack")
+        .wait_with_output()
+        .expect("watch ack output");
+    let lines = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    (output.status.code().unwrap_or(-1), lines)
 }

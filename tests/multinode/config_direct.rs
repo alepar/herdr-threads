@@ -152,3 +152,48 @@ fn two_nodes_direct_send_and_ack() {
     );
     drop(cluster);
 }
+
+// A JSON read must not settle a receipt; a fully flushed text inbox must
+// settle through the real CLI and replicate to the remote sender.
+#[test]
+fn text_inbox_auto_ack_reaches_remote_sender_json_read_is_passive() {
+    let cluster = support::cluster("mn-inbox-ack", 2, &[(0, 1)], &[0, 1]);
+    let a = cluster.seat(0, P1);
+    let b = cluster.seat(1, P1);
+    support::wait_seats(&cluster, 0, 2);
+    support::wait_seats(&cluster, 1, 2);
+    let (_, message) = support::send(
+        &cluster,
+        &a,
+        &[
+            "--seat",
+            &b.id,
+            "--body",
+            "remote receipt body",
+            "--require-ack",
+            &b.id,
+        ],
+    );
+    support::wait_receipt(&cluster, 1, &message, &b, "pending");
+    assert!(support::inbox_ids(&cluster, &b).contains(&message));
+    for node in [0, 1] {
+        assert_eq!(
+            support::receipt(&cluster, node, &message, &b).as_deref(),
+            Some("pending")
+        );
+        assert!(!cluster.kinds(node).contains_key("receipt.settled"));
+    }
+    let (code, stdout, stderr) = cluster.text_as(Some(&b), 1, &["inbox"]);
+    assert_eq!(code, 0, "text inbox failed: {stderr}\n{stdout}");
+    assert!(stdout.contains(&message), "{stdout}");
+    assert!(stdout.contains("remote receipt body"), "{stdout}");
+    for node in [0, 1] {
+        support::wait_receipt(&cluster, node, &message, &b, "acked");
+    }
+    let (code, _, stderr) = cluster.text_as(Some(&b), 1, &["inbox"]);
+    assert_eq!(code, 0, "second text inbox failed: {stderr}");
+    cluster.wait_converged(crate::WAIT);
+    for node in [0, 1] {
+        assert_eq!(cluster.kinds(node).get("receipt.settled"), Some(&1));
+    }
+}

@@ -129,6 +129,10 @@ impl Node {
     /// Gives `seat` the cooperative binding a real command resolves (the node
     /// must come from [`Node::open_commands`]).
     pub fn bind_commands(&self, seat: &SeatId) {
+        self.bind_commands_as(seat, Harness::Codex);
+    }
+
+    pub fn bind_commands_as(&self, seat: &SeatId, harness: Harness) {
         let db = self.raw();
         db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
             .unwrap();
@@ -140,10 +144,27 @@ impl Node {
         .unwrap();
         db.execute(
             "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,registered_at) \
-             VALUES (?1,1,1,'p-'||?1,'b',1,'codex',?2,?3,'cooperative_top_level',0,'term-'||?1,'inc',0)",
-            rusqlite::params![seat.as_str(), session_of(seat), execution_of(seat)],
+             VALUES (?1,1,1,'p-'||?1,'b',1,?4,?2,?3,'cooperative_top_level',0,'term-'||?1,'inc',0)",
+            rusqlite::params![seat.as_str(), session_of(seat), execution_of(seat), harness.as_str()],
         )
         .unwrap();
+    }
+
+    /// The canonical claim for a binding installed by `bind_commands_as`.
+    pub fn completion_claim(&self, seat: &SeatId, harness: Harness) -> CallerClaim {
+        CallerClaim {
+            host: herdr_threads::test_support::test_host_locator(),
+            instance: self.id.to_string(),
+            seat: seat.clone(),
+            binding_generation: 1,
+            role: CallerRole::TopLevel,
+            harness,
+            native_session: NativeSessionId::new(session_of(seat)),
+            execution: ExecutionId::new(execution_of(seat)),
+            target: HostTargetId::new(format!("p-{}", seat.as_str())),
+            agent_id: None,
+            liveness: Some(LivenessFingerprint::TEST),
+        }
     }
 
     /// The real `ack` (or `ack_displayed`) command of `seat` over `messages`,
@@ -158,19 +179,7 @@ impl Node {
         let request = Ack {
             messages: messages.iter().map(|m| (*m).clone()).collect(),
             operation: OperationId::new(operation),
-            claim: CallerClaim {
-                host: herdr_threads::test_support::test_host_locator(),
-                instance: self.id.to_string(),
-                seat: seat.clone(),
-                binding_generation: 1,
-                role: CallerRole::TopLevel,
-                harness: Harness::Codex,
-                native_session: NativeSessionId::new(session_of(seat)),
-                execution: ExecutionId::new(execution_of(seat)),
-                target: HostTargetId::new(format!("p-{}", seat.as_str())),
-                agent_id: None,
-                liveness: Some(LivenessFingerprint::TEST),
-            },
+            claim: self.completion_claim(seat, Harness::Codex),
         };
         let payload = if displayed {
             receipts::ack_displayed_payload(&request)
@@ -224,6 +233,11 @@ pub struct RWorld {
 
 /// Node seeds `seed` (A) and `seed + 1` (B).
 pub fn rworld(seed: u8) -> RWorld {
+    rworld_as(seed, Harness::Codex)
+}
+
+/// The receipt world with canonical bindings for the requested delivery policy.
+pub fn rworld_as(seed: u8, harness: Harness) -> RWorld {
     let reg = registry();
     let a = Node::with(seed, reg);
     let b = Node::open_commands(seed + 1, u64::from(seed + 1), reg);
@@ -231,7 +245,7 @@ pub fn rworld(seed: u8) -> RWorld {
     a.joined(&thread, &author, 1).unwrap();
     let (agent, peer) = (b.local_seat(), b.local_seat());
     for seat in [&agent, &peer] {
-        b.bind_commands(seat);
+        b.bind_commands_as(seat, harness);
         b.publish(seat).unwrap();
     }
     sync_all(&[&a, &b]);
