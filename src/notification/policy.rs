@@ -12,9 +12,11 @@ use crate::protocol::{
 };
 
 pub const MARKER: &str = "herdr-threads: attention pending; run herdr-threads inbox";
-/// The content-free wake prompt of a harness whose turn-start hook or channel injects the pending
-/// items itself (R18): no message content and no instruction.
+/// The content-free native wake prompt when a turn-start hook injects pending items
+/// itself (R18): no message content and no instruction.
 pub const WAKE_UP: &str = "herdr-threads: wake up";
+/// Content-free channel wake; the harness supplies the plugin attribution.
+pub const CHANNEL_WAKE_UP: &str = "wake up";
 /// Every text a wake may type; submission verification reads either one held in the composer as unsubmitted.
 pub const WAKE_TEXTS: [&str; 2] = [MARKER, WAKE_UP];
 /// A durable UTC deadline gets one monotonic projection per process. A clock

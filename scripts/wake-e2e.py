@@ -126,8 +126,10 @@ BUSY_AFTER_S = 40.0
 BUSY_DONE_LINE = re.compile(r"^[^\w\n]*BUSY-DONE[^\w\n]*$", re.M)
 BUSY_PROMPT_END = "BUSY-DONE."
 BUSY_END_GRACE_S = 10.0  # idle this long with no BUSY-DONE line: the turn is over without one
+# Channel literal pinned to policy::CHANNEL_WAKE_UP by tests/harness/claude_mod.rs.
+CHANNEL_WAKE_UP = "wake up"
 # Keep the native and pre-upgrade channel forms ahead of their short suffix.
-WAKE_MARKERS = ("herdr-threads: wake up", "herdr-threads: attention pending", "wake up")
+WAKE_MARKERS = ("herdr-threads: wake up", "herdr-threads: attention pending", CHANNEL_WAKE_UP)
 WAKE_PATTERN = re.compile("|".join(map(re.escape, WAKE_MARKERS)))
 WAKE_WINDOW_S = 6.0     # a woken agent leaves idle well inside this (observed 0.3-1.1 s)
 SPACING_S = 35.0        # the per-seat wake retry guard is 30 s after each reservation (src/notification/policy.rs)
@@ -159,7 +161,7 @@ def received_in_wake_turn(screen, mid):
         if text.startswith(("›", "❯")):
             prompt = text
         elif prompt is not None and "The herdr-threads plugin sent a message:" in prompt:
-            if text in ("wake up", "herdr-threads: wake up"):
+            if text in (CHANNEL_WAKE_UP, "herdr-threads: wake up"):
                 prompt = text
             elif "RECEIVED" in text and mid in text:
                 hit = False
@@ -921,7 +923,7 @@ def busy_turn_split(text, anchor):
 
 def is_wake_line(text):
     text = text.strip().lstrip("›❯ ")
-    return text in ("herdr-threads: wake up", "wake up") or text.startswith("herdr-threads: attention pending")
+    return text in ("herdr-threads: wake up", CHANNEL_WAKE_UP) or text.startswith("herdr-threads: attention pending")
 
 
 def wake_count(text):

@@ -8,7 +8,7 @@
 const LAUNCH = null // herdr-threads:launch (setup claude writes the hooks' invocation here)
 
 const HEADER = '[herdr-threads] new messages:'
-// The content-free wake prompt (R18); pinned to src/notification/policy.rs WAKE_UP by tests/harness/claude_mod.rs.
+// The content-free wake prompt (R18); pinned to src/notification/policy.rs CHANNEL_WAKE_UP by tests/harness/claude_mod.rs.
 const WAKE_PROMPT = 'wake up'
 const BACKOFF_S = [1, 2, 5, 10, 30]
 const ASSUMED_BUSY_IDLE_MS = 5000

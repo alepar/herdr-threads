@@ -541,6 +541,31 @@ fn prefix(exe: &str) -> Vec<String> {
     ])
 }
 
+/// Pins the separately bundled channel prompt and the upgrade oracle to the core
+/// channel contract, without coupling either to the native composer prompt.
+#[test]
+fn mod_and_wake_driver_pin_the_core_channel_wake_text() {
+    let (_, content) = MOD_FILES
+        .iter()
+        .find(|(path, _)| *path == REGISTER_JS)
+        .unwrap();
+    let channel = crate::notification::policy::CHANNEL_WAKE_UP;
+    let mod_literal = format!("const WAKE_PROMPT = '{channel}'");
+    assert_eq!(
+        content.lines().filter(|line| *line == mod_literal).count(),
+        1
+    );
+    let driver_literal = format!("CHANNEL_WAKE_UP = \"{channel}\"");
+    let driver = include_str!("../../scripts/wake-e2e.py");
+    assert_eq!(
+        driver
+            .lines()
+            .filter(|line| *line == driver_literal)
+            .count(),
+        1
+    );
+}
+
 #[test]
 fn embedded_register_js_has_exactly_one_launch_marker() {
     let (_, content) = MOD_FILES
