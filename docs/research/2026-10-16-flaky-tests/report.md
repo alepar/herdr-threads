@@ -76,8 +76,9 @@ Retrieval stopped at the bounded search budget (`budget-exhausted`), not coverag
 
 ## Cold-host startup follow-up
 
-The multi-host hook flake exposes another distinction: published capture versus completed reconciliation. A temporary service-side diagnostic reproduced3/20 failures and captured `ServiceBusy: recovery reconciliation of the current host epoch has not finished; retry`. [10] The test now handles the precise policy-defined pending outcome and verifies recovery through an eligible resumed lifecycle event. This does not remove the real usability limitation: ordinary tool callbacks cannot allocate a fresh seat after pending startup. See [reproduction and contract analysis](reproductions.md#follow-up-cold-host-capture-is-not-reconciliation-completion-ht-dc68).
+The multi-host hook flake exposes another distinction: published capture versus completed reconciliation. A temporary service-side diagnostic reproduced3/20 failures and captured `ServiceBusy: recovery reconciliation of the current host epoch has not finished; retry`. [10] The initial test-only correction followed the existing policy but left a real fresh-startup enrollment gap. The user blocked2.0.0 on fixing that gap. The product correction now completes a genuinely empty saved-seat pass atomically with coherent publication; hosts with saved seats still require worker reconciliation, and C1 retry/enrollment guards remain intact.
 
+Worker-free regression `cold_empty_host_continuity_is_decidable_before_the_worker_pass` failed deterministically before the product fix: expected confirmed NotFound but received ServiceBusy with the exact historical reconciliation refusal. [10] It passes after the fix, and the cold integration test again requires enrollment on the first callback. See [contract and reproduction analysis](reproductions.md#product-correction-atomic-empty-recovery-pass-ht-bryo) and [qualification results](validation.md).
 ## Bibliography
 
 [1] [Google: flakiness triage and remedies](https://testing.googleblog.com/2021/03/test-flakiness-one-of-main-challenges.html) — primary source, retrieved 2026-10-17.

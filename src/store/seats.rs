@@ -1088,9 +1088,15 @@ pub fn publish_snapshot_stage(
                     |r| r.get::<_, bool>(0),
                 )
                 .map_err(store_error)?;
-            Ok((instance, host_id, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, new_recovery, baseline, hold, !unchanged))
+            // A new recovery with no live saved seats and no hold has an
+            // empty reconciliation pass. Complete it at publication, before
+            // a cold host's first C1 request can observe a lagging marker.
+            // Nonempty passes still belong to the reconciliation worker.
+            // New recovery already forces the eligibility bump below.
+            let empty_recovery_complete = new_recovery && !nonretired && !hold;
+            Ok((instance, host_id, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, empty_recovery_complete, baseline, hold, !unchanged))
         },
-        |tx, _, (instance, host_id, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, _new_recovery, baseline, hold, eligibility_may_change)| {
+        |tx, _, (instance, host_id, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, empty_recovery_complete, baseline, hold, eligibility_may_change)| {
             let changed = tx
                 .execute(
                     "UPDATE snapshot_generations SET status='published',published_invalidation_revision=?1 WHERE id=?2 AND status='sealed' AND staged_targets=expected_targets",
@@ -1101,8 +1107,8 @@ pub fn publish_snapshot_stage(
                 return Err(api_error(ErrorCode::StaleHostObservation, "snapshot stage changed"));
             }
             tx.execute(
-                "UPDATE herdr_hosts SET host_boot=?1,host_epoch=?2,observation_sequence=?3,recovery_boot=?1,recovery_epoch=?2,active_snapshot_id=?4,recovery_baseline_generation_id=?5,baseline_hold_unclaimed=?6,observation_decided_sequence=?7 WHERE host_id=?8",
-                params![boot,epoch,sequence,stage.as_str(),baseline,hold,admission_sequence,host_id],
+                "UPDATE herdr_hosts SET host_boot=?1,host_epoch=?2,observation_sequence=?3,recovery_boot=?1,recovery_epoch=?2,active_snapshot_id=?4,recovery_baseline_generation_id=?5,baseline_hold_unclaimed=?6,observation_decided_sequence=?7,reconciled_boot=CASE WHEN ?9 THEN ?1 ELSE reconciled_boot END,reconciled_epoch=CASE WHEN ?9 THEN ?2 ELSE reconciled_epoch END WHERE host_id=?8",
+                params![boot,epoch,sequence,stage.as_str(),baseline,hold,admission_sequence,host_id,empty_recovery_complete],
             )
             .map_err(store_error)?;
             schema::apply_eligibility_transition(tx, &instance, |_| Ok(eligibility_may_change))?;

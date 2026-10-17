@@ -40,6 +40,9 @@ terminal; the structural path already follows the seat, a stale caller pane id i
 of that exact id only when it maps to no seat, and ordinary allocation is refused while a resolved seat's terminal
 shows at another target (no seat, binding or receipt rule changes).
 
+Amended 2026-10-16 for cold-host startup (C2): an empty saved-seat recovery pass completes atomically with
+coherent publication; nonempty reconciliation and C1 pending/retry/enrollment guards remain unchanged.
+
 ## Abstract
 
 herdr-threads gives coding agents in Herdr panes a durable mailbox: threads, invitations, messages that an
@@ -178,6 +181,12 @@ when no unresolved nonretired seats of that server remain (implemented, nothing 
 baseline and observed targets are keyed by the Herdr server (`host_id`), because target ids are unique only
 within one server: a coherent snapshot of one server resolves, unresolves or retires only the local seats whose
 `host_id` is that server, and never touches another server's seats, holds or baseline.
+
+For a new recovery boot/epoch with no nonretired local seats on that server and no baseline hold,
+the saved-seat reconciliation pass is empty. Its marker is committed in the coherent publication's
+transaction, so a cold host's first continuity decision can establish a no-match without waiting for
+a worker iteration. Hosts with saved seats or a hold still require their ordinary reconciliation pass;
+this grants no enrollment around pending recovery and adds no non-resume hook retry.
 
 **Pane-close retirement (ht-54r.14).** A pane absent from a coherent snapshot of the *same* Herdr
 incarnation retires its seat, however many session bindings the seat holds. The retirement fence disconnects

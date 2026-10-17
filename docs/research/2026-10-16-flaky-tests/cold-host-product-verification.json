@@ -1,0 +1,55 @@
+{
+  "run_id": "3d86fe2d-4d66-41b6-8db8-a54d369d5e1e",
+  "stages": [
+    {
+      "name": "focused",
+      "code": 0,
+      "seconds": 26.2
+    },
+    {
+      "name": "focused-leaks",
+      "code": 0,
+      "seconds": 0.26
+    },
+    {
+      "name": "full",
+      "code": 0,
+      "seconds": 220.81
+    },
+    {
+      "name": "full-leaks",
+      "code": 0,
+      "seconds": 0.53
+    },
+    {
+      "name": "clippy-all",
+      "code": 0,
+      "seconds": 26.93
+    },
+    {
+      "name": "clippy-default",
+      "code": 0,
+      "seconds": 26.41
+    },
+    {
+      "name": "default",
+      "code": 0,
+      "seconds": 12.7
+    },
+    {
+      "name": "neutral",
+      "code": 0,
+      "seconds": 1.77
+    },
+    {
+      "name": "fmt",
+      "code": 0,
+      "seconds": 5.37
+    },
+    {
+      "name": "release-smoke",
+      "code": 0,
+      "seconds": 398.27
+    }
+  ]
+}

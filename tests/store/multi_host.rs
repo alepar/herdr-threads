@@ -333,6 +333,81 @@ fn snapshot_of_h1_unresolves_only_h1_seat() {
 }
 
 #[test]
+fn cold_publication_completes_only_its_empty_saved_seat_pass() {
+    for state in [None, Some("retired"), Some("resolved"), Some("unresolved")] {
+        let f = two_hosts();
+        let (a, b) = (host_row(&f.db, SOCKET_A), host_row(&f.db, SOCKET_B));
+        // Other-host saved seats must neither block B nor be reconciled by it.
+        insert_resolved(&f.db, "s-a", a, "old-a");
+        if let Some(state) = state {
+            insert_resolved(&f.db, "s-b", b, "old-b");
+            f.db.execute("UPDATE seats SET state=?1,retired_at=CASE WHEN ?1='retired' THEN 100 ELSE NULL END,target_id=CASE WHEN ?1='resolved' THEN target_id ELSE NULL END WHERE id='s-b'", [state])
+                .unwrap();
+        }
+        let before_a = untouched_by_other_host(&f.db, a);
+        let admission = f
+            .store
+            .begin_host_observation(NODE, f.h2, &budget())
+            .unwrap();
+        let snapshot = HostSnapshot {
+            boot: HostBootId::new("b"),
+            epoch: 1,
+            observation_sequence: 1,
+            complete: true,
+            enumeration: EnumerationEvidence::CoherentVerified,
+            incarnation: IncarnationEvidence::Verified {
+                identity: "inc".into(),
+                evidence_kind: EvidenceKind::CoherentEnumeration,
+            },
+            targets: Vec::new(),
+        };
+        let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
+        let stage = f.store.begin_snapshot_stage(header, &budget()).unwrap();
+        f.store.seal_snapshot_stage(&stage.id, &budget()).unwrap();
+        let published = f
+            .store
+            .publish_snapshot_stage(&stage.id, &budget())
+            .unwrap();
+        let (recovery_boot, recovery_epoch, marker_boot, marker_epoch, hold):
+            (String, i64, Option<String>, Option<i64>, bool) = f.db.query_row(
+                "SELECT recovery_boot,recovery_epoch,reconciled_boot,reconciled_epoch,baseline_hold_unclaimed \
+                 FROM herdr_hosts WHERE host_id=?1", [b],
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+            ).unwrap();
+        assert_eq!(recovery_boot, published.boot.as_str());
+        assert_eq!(recovery_epoch, published.epoch as i64);
+        if matches!(state, None | Some("retired")) {
+            assert_eq!(
+                (marker_boot, marker_epoch),
+                (Some(recovery_boot), Some(recovery_epoch)),
+                "{state:?}"
+            );
+            assert!(!hold);
+        } else {
+            assert_eq!(
+                (marker_boot, marker_epoch),
+                (None, None),
+                "saved {state:?} seat requires a real worker pass"
+            );
+            assert!(
+                hold,
+                "an empty target enumeration cannot skip saved-seat recovery"
+            );
+        }
+        assert_eq!(untouched_by_other_host(&f.db, a), before_a);
+        if let Some(state) = state {
+            let after: String =
+                f.db.query_row("SELECT state FROM seats WHERE id='s-b'", [], |r| r.get(0))
+                    .unwrap();
+            assert_eq!(
+                after, state,
+                "publication never substitutes for a nonempty seat pass"
+            );
+        }
+    }
+}
+
+#[test]
 fn local_seat_with_null_host_aborts() {
     let f = two_hosts();
     let error = f

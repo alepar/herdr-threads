@@ -338,18 +338,27 @@ fn new_host_epoch_bumps_once() {
 fn reconciliation_marker_bumps_once_when_it_moves_and_repeats_stay_quiet() {
     let iso = TestIsolation::new("snapshot-eligibility-marker");
     let (context, mut conn) = host_store(&iso);
-    let base = capture(&["p0", "p1"]);
+    let initial = capture(&["p0", "p1"]);
+    // The cold empty pass now completes atomically with publication. Give
+    // the next recovery real saved-seat work, without an incarnation change
+    // or a restore hold, to exercise a separately moving worker marker.
+    publish(&context, &mut conn, &initial, 1);
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('marker-seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','p0',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+    let base = Capture {
+        epoch: 2,
+        ..initial
+    };
     let mark = |conn: &mut Connection, published: &crate::ports::PublishedSnapshot| {
         assert!(seats::record_reconciliation_pass(&context, conn, published, &budget()).unwrap());
     };
-    let published = publish(&context, &mut conn, &base, 1);
+    let published = publish(&context, &mut conn, &base, 2);
     let unmarked = revision(&conn);
     mark(&mut conn, &published);
     assert_eq!(revision(&conn), unmarked + 1, "the marker moved: one bump");
     let marked = revision(&conn);
     mark(&mut conn, &published);
     assert_eq!(revision(&conn), marked, "a repeated marker stays quiet");
-    for sequence in 2..5 {
+    for sequence in 3..6 {
         let steady = publish(&context, &mut conn, &base, sequence);
         mark(&mut conn, &steady);
         assert_eq!(
@@ -359,10 +368,10 @@ fn reconciliation_marker_bumps_once_when_it_moves_and_repeats_stay_quiet() {
         );
     }
     let next = Capture {
-        epoch: 2,
+        epoch: 3,
         ..base.clone()
     };
-    let published = publish(&context, &mut conn, &next, 5);
+    let published = publish(&context, &mut conn, &next, 6);
     assert_eq!(
         revision(&conn),
         marked + 1,

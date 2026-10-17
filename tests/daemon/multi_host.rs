@@ -1272,7 +1272,7 @@ fn multi_host_hook_claim_attaches_b() {
     let rig = Rig::start("mh-hook", true);
     assert!(rig.attached(&rig.loc_a));
     assert!(!rig.attached(&rig.loc_b));
-    let mut ran = run_hook(&rig, &rig.loc_a, &rig.loc_b, "pane-2", "startup");
+    let ran = run_hook(&rig, &rig.loc_a, &rig.loc_b, "pane-2", "startup");
     assert_eq!(ran.code, Some(0), "{}", ran.stderr);
     assert!(
         !ran.stdout.is_empty(),
@@ -1290,43 +1290,11 @@ fn multi_host_hook_claim_attaches_b() {
     let context = output["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .expect("SessionStart context");
-    if context.starts_with("herdr-threads: check-in unavailable (") {
-        assert!(context.starts_with(
-            "herdr-threads: check-in unavailable (native-session continuity pending; retry; no new seat allocated)"
-        ), "unexpected startup refusal: {context}");
-        let seats: i64 = rig
-            .db()
-            .query_row("SELECT count(*) FROM seats", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(
-            seats, 0,
-            "pending recovery must not allocate on either host"
-        );
-        // A cold attach publishes its first capture before the reconciliation
-        // pass commits. C1 deliberately leaves a non-resume callback pending
-        // in that window; it cannot declare no-match or ordinary-enroll yet.
-        let host = rig.host_id_of(&rig.loc_b);
-        rig.wait("B's first reconciliation pass", || {
-            rig.db()
-                .query_row(
-                    "SELECT recovery_boot IS NOT NULL AND recovery_boot IS reconciled_boot \
-                 AND recovery_epoch IS reconciled_epoch FROM herdr_hosts WHERE host_id=?1",
-                    [host],
-                    |r| r.get::<_, bool>(0),
-                )
-                .unwrap()
-        });
-        // Resume is an eligible lifecycle event. Ordinary tool events cannot
-        // allocate a new seat, so they are not a substitute for this recovery.
-        ran = run_hook(&rig, &rig.loc_a, &rig.loc_b, "pane-2", "resume");
-        assert_eq!(ran.code, Some(0), "{}", ran.stderr);
-        assert!(
-            !ran.stdout.contains("check-in unavailable"),
-            "{}; {}",
-            ran.stdout,
-            ran.stderr
-        );
-    }
+    assert!(
+        !context.starts_with("herdr-threads: check-in unavailable ("),
+        "cold startup must enroll in its first callback: {context}; {}",
+        ran.stderr
+    );
     let (host, binding_session): (i64, String) = rig
         .db()
         .query_row(

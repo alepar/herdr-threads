@@ -9475,6 +9475,45 @@ fn continuity_opens_successor_cooperative_binding_in_the_deciding_transaction() 
 }
 
 #[test]
+fn cold_empty_host_continuity_is_decidable_before_the_worker_pass() {
+    use crate::{protocol::results::ErrorCode, store::seats};
+    let (context, mut conn, path, _) = fixture(100);
+    // Historical retired seats have no saved-seat work and must not make a
+    // newly attached host wait for a background reconciliation iteration.
+    conn.execute("UPDATE seats SET state='retired',retired_at=1", [])
+        .unwrap();
+    let budget = b5_budget();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
+    let snapshot = snapshot_for_test(1, &["new-pane"]);
+    let stage = staged_test_snapshot(&context, &mut conn, admission, &snapshot, &budget);
+    seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
+    // Deliberately no saved_seats_page / record_reconciliation_pass call:
+    // this is the interval between publication and the worker's next step.
+    c1_observe(&conn, "new-pane");
+    let result = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("new-pane", "fresh-session", "cold-c1"),
+        "absent",
+    )
+    .unwrap_err();
+    assert_eq!(
+        result.code,
+        ErrorCode::NotFound,
+        "a confirmed no-match permits guarded startup enrollment: {result:?}"
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn continuity_without_match_is_retryable_until_reconciled() {
     use crate::protocol::results::ErrorCode;
     let (context, mut conn, path) = c1_fixture();
