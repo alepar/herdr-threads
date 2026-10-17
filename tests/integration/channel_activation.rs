@@ -96,6 +96,26 @@ impl World {
             _scratch: Scratch(root),
         };
         world.ok(None, &["daemon", "ensure"]);
+        // Endpoint publication precedes the observation lane's first snapshot
+        // and reconciliation marker. Finish that startup work before creating
+        // seats or staging the historical send this fixture is recovering.
+        let db = world.db();
+        wait("initial host reconciliation", || {
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM host_instances h
+                 JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.instance_id=h.id
+                 WHERE g.status='published' AND g.staged_targets=g.expected_targets
+                   AND g.host_boot=h.host_boot AND g.epoch=h.host_epoch
+                   AND g.published_invalidation_revision=h.invalidation_revision
+                   AND h.recovery_boot=h.host_boot AND h.recovery_epoch=h.host_epoch
+                   AND h.reconciled_boot=h.recovery_boot AND h.reconciled_epoch=h.recovery_epoch
+                   AND h.baseline_hold_unclaimed=0
+                   AND NOT EXISTS(SELECT 1 FROM recovery_holds r WHERE r.instance_id=h.id AND r.released_at IS NULL))",
+                [],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap()
+        });
         world
     }
     fn command(&self, claim: Option<&CallerClaim>, args: &[&str]) -> std::process::Command {
@@ -196,6 +216,12 @@ impl Drop for World {
             .unwrap()
             .to_path_buf();
         let _ = self.command(None, &["daemon", "stop"]).output();
+        if std::thread::panicking() {
+            let path = self.paths.instance_dir.join("daemon.log");
+            if let Ok(log) = fs::read_to_string(&path) {
+                eprintln!("{}: {log}", path.display());
+            }
+        }
     }
 }
 fn wait(what: &str, mut check: impl FnMut() -> bool) {

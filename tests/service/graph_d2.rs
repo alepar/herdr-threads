@@ -9,7 +9,7 @@ use herdr_threads::{
         paths::{InstancePaths, RuntimeContext},
         transport::{read_frame, write_frame},
     },
-    ports::{HostPort, LocalClient},
+    ports::{HostPort, LocalClient, StorePort},
     protocol::{
         authority::{CallerClaim, CallerRole, Harness},
         commands::{
@@ -29,7 +29,8 @@ use herdr_threads::{
         wire::PROTOCOL_VERSION,
     },
     service::config::ServiceConfig,
-    store::connection::StoreContext,
+    store::{SqliteStore, StoreSettings, connection::StoreContext},
+    test_support::failpoints::Failpoint,
 };
 use std::{
     fs,
@@ -318,7 +319,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
             role: CallerRole::TopLevel, harness: Harness::Codex,
             native_session: NativeSessionId::new("session-pending"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000111"),
-            target: HostTargetId::new("pane-pending"), agent_id: None, liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST), };
+            target: HostTargetId::new("pane-pending"), agent_id: None, liveness: Some(herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "session-pending")), };
         let checked = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn {
             lineage_parent: None,
             mode: CheckInMode::Lifecycle { expected_binding_generation: 0 },
@@ -399,19 +400,35 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
             role: CallerRole::TopLevel, harness: Harness::Codex,
             native_session: NativeSessionId::new("session-member-1"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000112"),
-            target: HostTargetId::new("pane-member-1"), agent_id: None, liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST), };
+            target: HostTargetId::new("pane-member-1"), agent_id: None, liveness: Some(herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "session-member-1")), };
         let checked_recipient = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn {
             lineage_parent: None,
             mode: CheckInMode::Lifecycle { expected_binding_generation: 1 },
             claim: recipient_claim, operation: OperationId::new("recipient-check-in"),
         }), &budget())).join().unwrap()).unwrap();
         let CommandResult::CheckedIn(checked_recipient) = checked_recipient else { panic!("missing recipient check-in") };
-        let sent = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::SendMessage(SendMessage { priority: None,
+        // Exercise the wake lane's real process check between preparation quanta,
+        // rather than depending on its scheduling relative to this send.
+        let liveness_store = SqliteStore::new(StoreContext::new(paths.database_path.clone(), Arc::clone(&clock)), instance.to_string(), StoreSettings::default()).unwrap();
+        let pause = Failpoint::pause("send.between_preparation_steps", instance.to_string());
+        let sent = std::thread::scope(|scope| {
+            let sending = scope.spawn(|| ordinary.call(Command::SendMessage(SendMessage { priority: None,
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
             direct_recipient: None,
             thread: thread.clone(), body: "native system mail".into(), invited_recipients: (0..20).map(|index| SeatId::new(format!("member-{index}"))).collect(),
             deadline_millis: None, operation: OperationId::new("native-system-send"), claim: native.clone(), relays_user: false, user_intent: None,
-        }), &budget())).join().unwrap()).unwrap();
+            }), &budget()));
+            let paused = pause.wait_fired(1, Duration::from_secs(3));
+            let checked = liveness_store.liveness_candidates(None, &budget()).and_then(|candidates| {
+                let decisions = herdr_threads::service::liveness::classify(&candidates, &herdr_threads::host::process_table::HostProcessTable);
+                liveness_store.apply_liveness(&decisions, &budget()).map(|disconnected| (candidates.len(), disconnected))
+            });
+            pause.release();
+            let sent = sending.join().unwrap();
+            assert!(paused, "send never yielded between preparation quanta");
+            assert_eq!(checked.unwrap(), (2, 0), "successful-flow fixture participants must stay alive");
+            sent
+        }).unwrap();
         let CommandResult::MessageSent(sent) = sent else { panic!("missing system message") };
         let (kind, actor, author_kind, author_service): (String, Option<String>, Option<String>, Option<String>) = db.query_row("SELECT kind,actor_seat_id,author_kind,author_service_id FROM messages WHERE id=?1", [sent.as_str()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).unwrap();
         assert_eq!((kind.as_str(), actor.as_deref(), author_kind.as_deref(), author_service.as_deref()), ("ordinary", Some("pending"), None, None));
