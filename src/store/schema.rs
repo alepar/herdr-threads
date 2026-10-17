@@ -60,7 +60,13 @@ pub(crate) struct NodeDelta {
 /// are audited against the baseline plus the deltas in this list, so an edited
 /// delta makes them `IncompatibleSchema`. An entry that is out of order or
 /// misnumbered is refused on open.
-pub(crate) const NODE_DELTAS: &[NodeDelta] = &[];
+pub(crate) const NODE_DELTAS: &[NodeDelta] = &[NodeDelta {
+    version: 2,
+    sql: include_str!("../../migrations/node/0002_replayed_message_roles.sql"),
+}];
+
+/// Latest `PRAGMA user_version` supported by this binary's production schema.
+pub const NODE_LATEST_SCHEMA_VERSION: i64 = NODE_SCHEMA_VERSION + NODE_DELTAS.len() as i64;
 
 /// The `user_version` of a store that has every delta of `deltas` applied.
 fn latest_version(deltas: &[NodeDelta]) -> i64 {
@@ -453,7 +459,7 @@ fn expected_objects(
 pub fn verify_baseline(conn: &Connection) -> Result<(), ApiError> {
     let version = schema_version(conn)?;
     verify_at(conn, NODE_DELTAS, version, true)?;
-    let newest = latest_version(NODE_DELTAS);
+    let newest = NODE_LATEST_SCHEMA_VERSION;
     if version != newest {
         return Err(api_error(
             ErrorCode::IncompatibleSchema,

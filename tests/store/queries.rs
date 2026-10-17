@@ -6969,6 +6969,8 @@ fn presentation_publication_observes_old_staging_only_after_late_manifest() {
             seat: &seat,
             binding: Some(binding.as_str()),
             observation: "cooperative_top_level",
+            author_role: None,
+            author_role_backfilled: false,
             relays_user: false,
             user_intent: None,
             decision_at: 200,

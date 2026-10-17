@@ -219,3 +219,6 @@ mod config_clone;
 
 #[path = "multinode/sweep.rs"]
 mod sweep;
+
+#[path = "multinode/config_user_intent.rs"]
+mod config_user_intent;

@@ -508,7 +508,7 @@ fn priority_schema_fresh_node_baseline_has_the_audited_v47_shape() {
     let db = fixture();
     assert_eq!(
         scalar(&db, "PRAGMA user_version"),
-        schema::NODE_SCHEMA_VERSION
+        schema::NODE_LATEST_SCHEMA_VERSION
     );
     for (table, column, not_null, default) in [
         ("messages", "priority", 1, Some("0")),

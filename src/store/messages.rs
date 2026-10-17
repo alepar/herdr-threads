@@ -836,6 +836,8 @@ pub(super) enum PublicationAuthor<'a> {
         /// The acting binding, recorded as `messages.sender_binding_id` (spec
         /// §2); `None` when no local binding made the row (a remote author).
         binding: Option<&'a str>,
+        author_role: Option<crate::protocol::summary::AuthorRole>,
+        author_role_backfilled: bool,
         relays_user: bool,
         user_intent: Option<crate::protocol::summary::UserIntent>,
         decision_at: i64,
@@ -899,26 +901,8 @@ pub(super) fn insert_publication_suppressing(
 ) -> Result<Publication, ApiError> {
     let utc = author.decision_at();
     let author_role = match &author {
-        PublicationAuthor::Native {
-            seat,
-            relays_user,
-            user_intent,
-            ..
-        } => {
-            let author_role = schema::open_binding_role(tx, seat)?;
-            // A fact is never rejected from this node's view of its author
-            // (fact-kinds review rule 4): the intent check is the sending
-            // node's, made against its own binding.
-            if m.local_origin
-                && user_intent.is_some()
-                && !(author_role == Some("human") || (author_role == Some("agent") && *relays_user))
-            {
-                return Err(api_error(
-                    ErrorCode::InvalidRequest,
-                    "human input intent requires a human sender or an agent relaying user input",
-                ));
-            }
-            author_role
+        PublicationAuthor::Native { author_role, .. } => {
+            author_role.map(crate::protocol::summary::AuthorRole::as_str)
         }
         PublicationAuthor::Programmatic { .. } => None,
     };
@@ -967,9 +951,10 @@ pub(super) fn insert_publication_suppressing(
             binding,
             relays_user,
             user_intent,
+            author_role_backfilled,
             ..
         } => {
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode,sender_binding_id,origin_node,priority) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode,binding,origin_node,priority]).map_err(store_error)?;
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode,sender_binding_id,origin_node,priority,author_role_backfilled) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode,binding,origin_node,priority,author_role_backfilled]).map_err(store_error)?;
         }
         PublicationAuthor::Programmatic { author, .. } => {
             tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role,origin_node,delivery_mode,priority) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service',?9,?10,?11)",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq,author.as_str(),origin_node,mode,priority]).map_err(store_error)?;
@@ -1157,11 +1142,23 @@ pub(super) fn build_message_sent(
         );
     }
     audience.remove(author.as_str());
+    // Eligibility is a send-time decision on the author's canonical binding,
+    // never a receiving or own-history replay node's view of that binding.
+    let author_role = schema::open_binding_role(tx, author)?;
+    if request.user_intent.is_some()
+        && !(author_role == Some("human") || (author_role == Some("agent") && request.relays_user))
+    {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "human input intent requires a human sender or an agent relaying user input",
+        ));
+    }
     Ok(MessageSentPayload {
         message,
         thread: request.thread.clone(),
         author: author.clone(),
         body: request.body.clone(),
+        author_role: author_role.and_then(crate::protocol::summary::AuthorRole::from_column),
         // The sealed preparation's priority (main's `resolved_priority`,
         // frozen in the intent digest) and main's recorded-mode rule.
         priority,
@@ -1463,6 +1460,27 @@ pub fn materialize_message(
         suppressed = synthesize_preparation(tx, m, &prep_id, payload)?;
     }
     let attribution = attribution::take(tx, m, &attribution::send_key(payload.message.as_str()))?;
+    // Bindings never replicate. Old facts omitted the role: retain a live
+    // local author's claim when staged, otherwise backfill only what the
+    // relay/intent fields imply (TRUST-POLICY: legacy message claims).
+    let (author_role, author_role_backfilled) = match payload.author_role {
+        Some(role) => (Some(role), false),
+        None if attribution.binding_id.is_some() => (
+            schema::open_binding_role(tx, &payload.author)?
+                .and_then(crate::protocol::summary::AuthorRole::from_column),
+            false,
+        ),
+        None => (
+            if payload.relays_user {
+                Some(crate::protocol::summary::AuthorRole::Agent)
+            } else if payload.user_intent.is_some() {
+                Some(crate::protocol::summary::AuthorRole::Human)
+            } else {
+                None
+            },
+            true,
+        ),
+    };
     insert_publication_suppressing(
         tx,
         m,
@@ -1473,6 +1491,8 @@ pub fn materialize_message(
             seat: &payload.author,
             observation: &attribution.observation,
             binding: attribution.binding_id.as_deref(),
+            author_role,
+            author_role_backfilled,
             relays_user: payload.relays_user,
             user_intent: payload.user_intent,
             decision_at: payload.sent_at,

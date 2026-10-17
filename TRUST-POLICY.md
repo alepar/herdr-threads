@@ -324,6 +324,21 @@ set by `send --relays-user`; like everything an agent sends it is a cooperative 
 record 0 and pre-migration rows are 0. Neither field authorizes anything; together they only rank a message as
 *priority* for summaries and for the catch-up hold bypass.
 
+**Replicated message claims.** New `message.sent` facts carry the frozen send-time
+`author_role`; receivers use it, including an explicit human role on a relay, without
+consulting node-local bindings. Binding IDs remain local and remote observations retain
+`replicated_from:<node_uuid>` (own-history uses `local_journal`); this adds no provenance.
+Legacy v2.0.0 facts omitted the role. Without staged local attribution, apply/replay marks
+`author_role_backfilled = 1`: a relay is backfilled as agent; classified intent without
+relay implies human under the original send eligibility rule; otherwise the role stays
+unknown. Accepted limit: a legacy human relay loses its human marker, since its role
+cannot be proved from that fact. No ambiguous relay gains a human marker. Existing failed
+entries can be applied with `sync unapplied replay`; their signed facts are unchanged.
+Schema 2 permits a newly inserted backfilled row only for an ordinary native-seat
+message with no sender binding or service author and an existing `replicated_from`
+observation matching its origin, or `local_journal`. Current local sends still cannot
+claim backfill; programmatic senders still cannot relay user input.
+
 **Recorded human intent.** Optional `messages.user_intent` (`query`, `request`, `rule`) is a
 cooperative send-time claim under the existing caller provenance, independently of author role and
 `relays_user`. The daemon decides eligibility against the canonical send-time binding: ordinary Human

@@ -17,7 +17,7 @@ use super::{ApplyContext, FactError, FactKind, with_input};
 use crate::protocol::ids::{MessageId, SeatId, ThreadId};
 use crate::protocol::priority::DeliveryPriority;
 use crate::protocol::results::{ApiError, ErrorCode};
-use crate::protocol::summary::UserIntent;
+use crate::protocol::summary::{AuthorRole, UserIntent};
 use crate::store::materialize::{AuthorRule, require_author};
 use crate::store::messages;
 use crate::sync::EntityKey;
@@ -51,6 +51,9 @@ pub struct MessageSentPayload {
     pub thread: ThreadId,
     pub author: SeatId,
     pub body: String,
+    /// Send-time claim, frozen on the authoring node. Absent on v2.0.0 facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_role: Option<AuthorRole>,
     /// 0..=9, 0 most urgent; checked by [`MessageSentPayload::check`].
     pub priority: u8,
     #[serde(default)]

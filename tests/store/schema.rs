@@ -285,7 +285,7 @@ fn fresh_db() -> Connection {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        schema::NODE_SCHEMA_VERSION
+        schema::NODE_LATEST_SCHEMA_VERSION
     );
     db
 }
@@ -752,7 +752,7 @@ fn startup_rejects_missing_or_weakened_acceptance_guard_without_history_changes(
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            schema::NODE_SCHEMA_VERSION
+            schema::NODE_LATEST_SCHEMA_VERSION
         );
         assert_eq!(
             db.query_row(
@@ -918,7 +918,7 @@ fn startup_rejects_missing_or_weakened_actor_presence_checks() {
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            schema::NODE_SCHEMA_VERSION
+            schema::NODE_LATEST_SCHEMA_VERSION
         );
         assert_eq!(
             db.query_row(
@@ -1286,7 +1286,7 @@ fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        schema::NODE_SCHEMA_VERSION
+        schema::NODE_LATEST_SCHEMA_VERSION
     );
     assert!(db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at,home_node,is_local,host_id) VALUES ('s', 'missing', 'resolved', 'native', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).is_err());
     db.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, created_at,home_node,is_local,host_id) VALUES ('s1', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 'pane', 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
@@ -3504,7 +3504,7 @@ fn fresh_store_lands_at_latest_with_the_evidence_tables() {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, schema::NODE_SCHEMA_VERSION);
+    assert_eq!(version, schema::NODE_LATEST_SCHEMA_VERSION);
     for table in ["harness_version_evidence", "harness_unattributed"] {
         let present: bool = db
             .query_row(
@@ -3889,7 +3889,7 @@ fn fresh_database_has_thread_summary_schema() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        schema::NODE_SCHEMA_VERSION
+        schema::NODE_LATEST_SCHEMA_VERSION
     );
     for table in [
         "summary_blocks",
@@ -4265,7 +4265,10 @@ fn user_intent_schema22_checks_and_eligibility() {
                         "{kind}/{role:?}/{relay}/{intent:?}: {result:?}"
                     );
                     if let Err(error) = result {
-                        if !eligible && intent.is_some() {
+                        // A service relay also violates the independent summary
+                        // authorship guard; either guard may reject that row first.
+                        if !eligible && intent.is_some() && !(role == Some("service") && relay == 1)
+                        {
                             assert!(
                                 error
                                     .to_string()
@@ -4604,7 +4607,11 @@ fn fresh_initialize_sets_node_application_id_and_version() {
         .unwrap();
     assert_eq!(
         (application_id, version, marker.as_str()),
-        (0x4854_4E44, 1, "herdr-threads-node-v1")
+        (
+            0x4854_4E44,
+            schema::NODE_LATEST_SCHEMA_VERSION,
+            "herdr-threads-node-v1"
+        )
     );
     assert_eq!(application_id, i64::from(schema::NODE_APPLICATION_ID));
 }
@@ -4682,7 +4689,8 @@ fn wrong_application_id_refused() {
 #[test]
 fn newer_schema_version_refused() {
     let db = fresh_db();
-    db.pragma_update(None, "user_version", 2).unwrap();
+    db.pragma_update(None, "user_version", schema::NODE_LATEST_SCHEMA_VERSION + 1)
+        .unwrap();
     let detail = incompatible_detail(reinitialize(&db));
     assert!(detail.contains("newer than this binary"), "{detail}");
 }
@@ -5872,8 +5880,21 @@ fn table_exists(db: &Connection, name: &str) -> bool {
 }
 
 #[test]
-fn production_delta_list_is_empty_and_numbered_from_two() {
-    assert!(schema::NODE_DELTAS.is_empty());
+fn production_deltas_upgrade_baseline_and_reopen_without_losing_data() {
+    let db = Connection::open_in_memory().unwrap();
+    open_with(&db, &[]).unwrap();
+    db.execute("UPDATE local_node SET created_at=123", [])
+        .unwrap();
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    schema::verify_baseline(&db).unwrap();
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    assert_eq!(
+        db.query_row("SELECT created_at FROM local_node", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        123
+    );
+    assert_eq!(user_version(&db), schema::NODE_LATEST_SCHEMA_VERSION);
 }
 
 #[test]
@@ -5975,4 +5996,46 @@ fn misnumbered_delta_list_refused() {
     };
     let detail = incompatible_detail(open_with(&db, &[skip]));
     assert!(detail.contains("misnumbered"), "{detail}");
+}
+
+#[test]
+fn replayed_message_backfill_requires_unbound_journal_attribution() {
+    let (_context, db, _clock) = seeded_db(0);
+    let origin = "34750f98bd59fcfc946da45aaabe933b";
+    for (n, observation, binding, allowed) in [
+        (
+            1,
+            r#"{"provenance":"local_journal"}"#.to_owned(),
+            None,
+            true,
+        ),
+        (
+            2,
+            format!(r#"{{"provenance":"replicated_from:{origin}"}}"#),
+            None,
+            true,
+        ),
+        (
+            3,
+            r#"{"provenance":"cooperative_cli"}"#.to_owned(),
+            None,
+            false,
+        ),
+        (
+            4,
+            r#"{"provenance":"local_journal"}"#.to_owned(),
+            Some("b"),
+            false,
+        ),
+        (5, "not json".to_owned(), None, false),
+        (
+            6,
+            r#"{"provenance":"replicated_from:other"}"#.to_owned(),
+            None,
+            false,
+        ),
+    ] {
+        let inserted = db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,decision_seq,body,decision_at,author_kind,author_role,author_role_backfilled,native_observation,origin_node,sender_binding_id) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'t',?2,'ordinary','s',?2,'b',1,'native','agent',1,?3,?4,?5)",params![format!("backfill{n}"),n,observation,origin,binding]);
+        assert_eq!(inserted.is_ok(), allowed, "case {n}: {inserted:?}");
+    }
 }

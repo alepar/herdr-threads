@@ -782,6 +782,19 @@ impl Cluster {
             .unwrap()
     }
 
+    /// CLI in a person's isolated pane, without agent caller claims.
+    pub fn human_pane_command(&self, seat: &Seat) -> std::process::Command {
+        let mut command = self.iso.command(&self.bin);
+        command
+            .arg("human")
+            .arg("--state-dir")
+            .arg(&self.nodes[seat.node].state)
+            .arg("--host-endpoint")
+            .arg(self.nodes[seat.node].hosts[seat.host].socket())
+            .env("HERDR_PANE_ID", &seat.pane);
+        command
+    }
+
     /// Records `pane` of `node`'s first fake server as a person's seat
     /// (`human me init --operator` with that pane as the caller's context)
     /// and returns it. The pane must not also host an agent seat of the

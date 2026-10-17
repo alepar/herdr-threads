@@ -67,6 +67,7 @@ pub fn sent(
         thread: thread.clone(),
         author: author.clone(),
         body: "hello".into(),
+        author_role: None,
         // The fixtures' two shapes under main's model: an ACK send (p0, explicit
         // ACK recipients, recorded `ordinary`) and a default send (p1, recorded `lazy`).
         priority: if mode.is_ordinary() { 0 } else { 1 },
@@ -280,6 +281,7 @@ fn round_trip() {
         thread: ThreadId::new("tAbc12345678"),
         author: SeatId::new("sAAAA12345678"),
         body: "hi".into(),
+        author_role: None,
         priority: 0,
         require_ack: true,
         relays_user: true,
@@ -1396,4 +1398,90 @@ fn lazy_send_lists_remote_members_but_stages_no_row_for_them() {
         "only the two local members hold a lazy row"
     );
     assert_no_local_delivery_for_remote(&s.db());
+}
+
+// A v2.0.0 fact has no frozen author role. Failed entries must be usable
+// after upgrade without resending or rewriting their signed envelope.
+#[test]
+fn legacy_user_intent_failed_entry_replays_with_backfilled_role() {
+    let f = Fixture::new(180);
+    f.node.enroll(&f.author, "codex", "legacy-author").unwrap();
+    let b = Node::with(181, registry());
+    sync_all(&[&f.node, &b]);
+    let mut payload = f.ordinary();
+    payload.relays_user = true;
+    payload.user_intent = Some(herdr_threads::protocol::summary::UserIntent::Rule);
+    f.node.author_sent(&payload).unwrap();
+    // Stand in for the pre-upgrade materializer rejecting the remote row.
+    b.raw().execute_batch("CREATE TRIGGER ht_test_fault_old_remote_attribution BEFORE INSERT ON messages WHEN NEW.user_intent IS NOT NULL BEGIN SELECT RAISE(ABORT, 'invalid user intent attribution'); END;").unwrap();
+    fact_exchange::sync(&f.node.store, &b.store);
+    assert!(b.journal().iter().any(|(kind, state, error)| {
+        kind == "message.sent"
+            && state == "failed"
+            && error
+                .as_deref()
+                .is_some_and(|e| e.contains("invalid user intent attribution"))
+    }));
+    b.raw()
+        .execute_batch("DROP TRIGGER ht_test_fault_old_remote_attribution")
+        .unwrap();
+    let progress = b
+        .store
+        .replay_unapplied(&crate::facts_seat::budget())
+        .unwrap();
+    assert_eq!(progress.applied, 1, "{progress:?}");
+    let rows: Vec<(String, bool, String)> = b.query("SELECT author_role,author_role_backfilled,native_observation FROM messages WHERE user_intent='rule'", |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)));
+    assert_eq!(rows.len(), 1);
+    assert_eq!((&*rows[0].0, rows[0].1), ("agent", true));
+    assert!(
+        rows[0]
+            .2
+            .contains(&format!("replicated_from:{}", f.node.id))
+    );
+    assert_eq!(
+        b.store
+            .replay_unapplied(&crate::facts_seat::budget())
+            .unwrap()
+            .applied,
+        0
+    );
+}
+
+#[test]
+fn legacy_message_roles_use_only_frozen_relay_and_intent_claims() {
+    use herdr_threads::protocol::summary::UserIntent;
+    for (index, (relay, intent, expected)) in [
+        (true, Some(UserIntent::Rule), Some("agent")),
+        (true, None, Some("agent")),
+        (false, Some(UserIntent::Query), Some("human")),
+        (false, None, None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let f = Fixture::new(182 + index as u8 * 2);
+        // The sender's local binding cannot be the receiver's evidence.
+        f.node.enroll(&f.author, "human", "legacy-human").unwrap();
+        let b = Node::with(183 + index as u8 * 2, registry());
+        sync_all(&[&f.node, &b]);
+        let mut payload = f.ordinary();
+        payload.relays_user = relay;
+        payload.user_intent = intent;
+        assert!(
+            serde_json::to_value(&payload)
+                .unwrap()
+                .get("author_role")
+                .is_none()
+        );
+        f.node.author_sent(&payload).unwrap();
+        fact_exchange::sync(&f.node.store, &b.store);
+        let rows: Vec<(Option<String>, bool)> = b.query(
+            &format!(
+                "SELECT author_role,author_role_backfilled FROM messages WHERE id='{}'",
+                payload.message.as_str()
+            ),
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        );
+        assert_eq!(rows, vec![(expected.map(str::to_owned), true)]);
+    }
 }
