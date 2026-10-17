@@ -441,8 +441,13 @@ class Run:
         self.run_id = time.strftime("%H%M%S") + "-" + uuid.uuid4().hex[:4]
         self.root = Path(tempfile.mkdtemp(prefix="ht-wake-e2e.", dir=short_tmp_root()))
         os.chmod(self.root, 0o700)
-        self.ev = Path(args.evidence_dir) if args.evidence_dir else self.root / "evidence"
-        self.ev.mkdir(parents=True, exist_ok=True)
+        self.ev = (Path(args.evidence_dir) if args.evidence_dir else
+                   self.root.parent / f"ht-wake-evidence.{self.run_id}")
+        self.ev = self.ev.resolve()
+        if self.ev.is_relative_to(self.root.resolve()) or self.root.resolve().is_relative_to(self.ev):
+            shutil.rmtree(self.root)
+            raise Refused("evidence directory must be separate from the scratch root and its parents")
+        self.ev.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.state = self.root / "state"
         self.home = self.root / "home"
         self.claude_cfg = self.root / "claude-config"
@@ -758,6 +763,15 @@ class Run:
             problems.append(f"owned processes still running {self.process_grace_s:.0f}s after cleanup: {leftover}")
         if self.auth_digest is not None:
             steps.append(self.retire_auth_copy())
+        if not problems:
+            try:
+                if self.root.exists():
+                    shutil.rmtree(self.root)
+                if self.root.exists():
+                    raise OSError("root still exists after removal")
+                steps.append({"root_removed": str(self.root)})
+            except Exception as e:
+                problems.append(f"scratch root removal failed: {clip(e, 200, getattr(self, 'secrets', None))}")
         self.cleanup_report = {"steps": steps, "problems": problems}
         return problems
 
@@ -823,10 +837,16 @@ class Run:
         if not self.auth_refreshed:
             copy.unlink()
             return {"codex_auth_copy": "deleted (unchanged)"}
-        print(f"wake-e2e: Codex refreshed its tokens during the run; the refreshed credentials are kept at {copy} "
+        # Preserve the potentially sole valid refresh token outside the scratch profile.
+        saved_dir = self.root.parent / f"ht-wake-auth.{self.run_id}"
+        saved_dir.mkdir(mode=0o700)
+        saved = saved_dir / "auth.json"
+        shutil.move(copy, saved)
+        os.chmod(saved, 0o600)
+        print(f"wake-e2e: Codex refreshed its tokens during the run; the refreshed credentials are kept at {saved} "
               f"(mode 0600). The source profile's refresh token may have been rotated: copy this file back or log in "
               f"again, then delete it.", file=sys.stderr)
-        return {"codex_auth_copy": f"kept (refreshed): {copy}"}
+        return {"codex_auth_copy": f"kept (refreshed): {saved}"}
 
     def workspace_alive(self):
         rc, out, _err = self.run(["herdr", "workspace", "list"], tag="cleanup:verify-workspace", timeout=30,
@@ -1727,7 +1747,7 @@ def main(argv=None):
     ap.add_argument("--harness", default="claude,codex", help="comma-separated: claude,codex")
     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
                     + "; opt-in, Codex only: " + ", ".join(SIDE_CASES))
-    ap.add_argument("--evidence-dir", help="default: <run root>/evidence")
+    ap.add_argument("--evidence-dir", help="default: sibling ht-wake-evidence.<run id>")
     ap.add_argument("--keep", action="store_true", help="leave the workspace and daemon running for inspection")
     ap.add_argument("--claude-model", help="passed as --model (default: the account default)")
     ap.add_argument("--claude-permission-mode", default="auto")
@@ -1765,9 +1785,13 @@ def main(argv=None):
         ap.error(f"unknown case/harness: {unknown}")
     def terminate(signum, _frame):
         raise KeyboardInterrupt(f"signal {signum}")
+    try:
+        run = Run(args)
+    except Refused as e:
+        print(f"wake-e2e: refused: {e}", file=sys.stderr)
+        return EXIT_REFUSED
     saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
     signal.signal(signal.SIGTERM, terminate)  # SIGTERM takes the same cleanup path as Ctrl-C
-    run = Run(args)
     run.side_cases = any(c in SIDE_CASES for c in cases)
     rc = EXIT_FAIL
     try:

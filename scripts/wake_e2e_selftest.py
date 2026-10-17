@@ -75,6 +75,9 @@ class FakeRun:
         r = self.r
         r.args = SimpleNamespace(keep=keep)
         r.root = tmp / "root"
+        r.root.mkdir()
+        r.ev = tmp / "evidence"
+        r.ev.mkdir()
         r.workspace = workspace
         r.daemon_attempted = daemon_attempted
         r.stop_deadline_s = 0.3
@@ -83,7 +86,7 @@ class FakeRun:
         r.run_id = "000000-test"
         r.auth_digest = None
         r.auth_refreshed = None
-        r.codex_home = tmp / "codex-home"
+        r.codex_home = r.root / "codex-home"
         r.cleanup_report = None
         r.lock = threading.Lock()
         r.stopping = threading.Event()
@@ -111,6 +114,33 @@ class FakeRun:
 
 
 class Cleanup(TempDir):
+    def test_verified_cleanup_removes_root_and_keeps_evidence(self):
+        f = FakeRun(self.tmp)
+        (f.r.root / "scratch").write_text("owned")
+        (f.r.ev / "report.md").write_text("evidence")
+        self.assertEqual(f.r.cleanup(), [])
+        self.assertFalse(f.r.root.exists())
+        self.assertEqual((f.r.ev / "report.md").read_text(), "evidence")
+
+    def test_failed_cleanup_retains_root(self):
+        f = FakeRun(self.tmp)
+        f.script["pgrep"] = lambda: (0, "424242\n", "")
+        self.assertTrue(f.r.cleanup())
+        self.assertTrue(f.r.root.exists())
+
+    def test_root_removal_failure_fails_cleanup(self):
+        f = FakeRun(self.tmp)
+        with mock.patch.object(W.shutil, "rmtree", side_effect=PermissionError("refused")):
+            problems = f.r.cleanup()
+        self.assertTrue(any("root" in p and "refused" in p for p in problems), problems)
+        self.assertTrue(f.r.root.exists())
+
+    def test_root_still_present_after_removal_fails_cleanup(self):
+        f = FakeRun(self.tmp)
+        with mock.patch.object(W.shutil, "rmtree", return_value=None):
+            problems = f.r.cleanup()
+        self.assertTrue(any("root still exists" in p for p in problems), problems)
+
     def test_clean_run_has_no_problems(self):
         f = FakeRun(self.tmp)
         self.assertEqual(f.r.cleanup(), [])
@@ -193,8 +223,13 @@ class Cleanup(TempDir):
         f.r.auth_digest = W.provision_codex_auth(self.tmp / "src.json", f.r.codex_home / "auth.json")
         (f.r.codex_home / "auth.json").write_bytes(b"refreshed")
         f.r.cleanup()
-        self.assertTrue((f.r.codex_home / "auth.json").exists())
+        self.assertFalse(f.r.root.exists())
+        self.assertEqual((f.r.root.parent / f"ht-wake-auth.{f.r.run_id}" / "auth.json").read_bytes(), b"refreshed")
+        self.assertEqual(stat.S_IMODE((f.r.root.parent / f"ht-wake-auth.{f.r.run_id}" / "auth.json").stat().st_mode), 0o600)
         self.assertTrue(f.r.auth_refreshed)
+        saved_dir = f.r.root.parent / f"ht-wake-auth.{f.r.run_id}"
+        self.assertEqual(stat.S_IMODE(saved_dir.stat().st_mode), 0o700)
+        self.assertFalse(saved_dir.is_relative_to(f.r.ev))
         self.assertEqual((self.tmp / "src.json").read_bytes(), FAKE_AUTH)
 
     def test_failed_process_scan_is_unknown_not_clean(self):
@@ -212,6 +247,7 @@ class Cleanup(TempDir):
         self.assertEqual(f.r.cleanup(), [])
         self.assertEqual(f.calls, [])
         self.assertEqual(f.r.cleanup_report["skipped"], "--keep")
+        self.assertTrue(f.r.root.exists())
 
 
 def real_run(tmp):
@@ -1176,6 +1212,28 @@ class CaseSpacing(unittest.TestCase):
 class RunRoot(TempDir):
     """The run root lives under a short, existing temp dir on every platform (Linux has no /private/tmp)."""
 
+    def test_evidence_overlapping_scratch_is_refused_without_leaking_root(self):
+        for evidence in [self.tmp, self.tmp / "root" / "evidence"]:
+            with self.subTest(evidence=evidence):
+                root = self.tmp / "root"
+                root.mkdir(exist_ok=True)
+                with mock.patch.object(W.tempfile, "mkdtemp", return_value=str(root)):
+                    with self.assertRaises(W.Refused):
+                        run = W.Run(SimpleNamespace(evidence_dir=str(evidence), bin="/bin/sh"))
+                        run.cmdlog.close()
+                self.assertFalse(root.exists())
+
+    def test_main_refuses_overlap_without_changing_signal_handler(self):
+        root = self.tmp / "root"
+        root.mkdir()
+        before = signal.getsignal(signal.SIGTERM)
+        self.addCleanup(signal.signal, signal.SIGTERM, before)
+        with mock.patch.object(W.tempfile, "mkdtemp", return_value=str(root)):
+            rc = W.main(["--harness", "claude", "--evidence-dir", str(self.tmp)])
+        self.assertEqual(rc, W.EXIT_REFUSED)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), before)
+        self.assertFalse(root.exists())
+
     def test_platform_roots(self):
         self.assertEqual(W.short_tmp_root("darwin"), Path("/private/tmp"))
         self.assertEqual(W.short_tmp_root("linux"), Path("/tmp"))
@@ -1196,6 +1254,8 @@ class RunRoot(TempDir):
         self.addCleanup(lambda: [shutil.rmtree(p, True) for p in made])
         r = W.Run(SimpleNamespace(evidence_dir=None, bin="/bin/sh"))
         self.assertEqual([str(r.root)], made)
+        self.addCleanup(shutil.rmtree, r.ev, True)
+        self.assertFalse(r.ev.is_relative_to(r.root))
         self.addCleanup(r.cmdlog.close)
         self.assertEqual(r.root.parent, W.short_tmp_root())
         self.assertTrue(r.root.name.startswith("ht-wake-e2e."))

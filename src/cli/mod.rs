@@ -3331,8 +3331,9 @@ fn caller_not_located(detail: &str) -> RunError {
 
 fn no_seat_for_pane(pane: &crate::protocol::ids::HostTargetId) -> RunError {
     caller_not_located(&format!(
-        "no resolved seat is mapped to pane {}; use `seat list`, `seat resolve --pane {0}` or \
-         operator repair, then check in (a person in their own pane: `herdr-threads human me init`); \
+        "no resolved seat is mapped to pane {}; run `herdr-threads seat resolve --pane {0}`, \
+         then `herdr-threads check-in`; if resolution reports a hold or unresolved mapping, follow \
+         its repair guidance (a person in their own pane: `herdr-threads human me init`); \
          reads may pass --seat SEAT",
         pane.as_str()
     ))

@@ -3353,6 +3353,16 @@ mod scoped_runtime {
                 .detail
                 .contains("no resolved seat is mapped to pane w1:p3")
         );
+        assert!(
+            error
+                .detail
+                .contains("`herdr-threads seat resolve --pane w1:p3`"),
+            "{error:?}"
+        );
+        assert!(
+            error.detail.contains("`herdr-threads check-in`"),
+            "{error:?}"
+        );
         assert!(crate::cli::seat_resolution::take_resolved_lines_for_test().is_empty());
         assert!(resolve_seat_calls(&runtime).is_empty());
     }

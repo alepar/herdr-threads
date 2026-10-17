@@ -2702,6 +2702,41 @@ pub(super) fn pull(
     }
     let fresh_output = !outputs.is_empty();
     presentation::order_deliveries(&mut outputs);
+    if normal_mode && !control_only {
+        messages.drain(..processed_message_count);
+        carry.items = messages.clone();
+        state.ordinary_pending = ordinary_carry_json(&carry)?;
+    }
+    if !carried_notices.is_empty() {
+        work.notice_validations = carried_notices.len();
+        super::attention::settle_carried_notices(
+            db,
+            claim.seat.as_str(),
+            &binding,
+            &carried_notices,
+        )?;
+    }
+    // Carrying notices can invalidate the witness that opened this episode.
+    // Recheck only that cached witness, never start a second discovery sweep.
+    // Additive bound: <=1 coverage row/seek and <=64 witness probes beyond advance.
+    // Unknown withholds the hint while the retained pending control keeps more=true.
+    let pending_control = if !carried_notices.is_empty()
+        && matches!(
+            pending_control,
+            Some(crate::protocol::delivery::PresentationControlStampV2::Attention { .. })
+        ) {
+        let frontier = super::attention::binding_notice_frontier(db, binding.as_str())?;
+        let current =
+            super::presentation_relevance::revalidate(db, claim, consumer, frontier, budget)?;
+        work.relevance_fallback += usize::from(current.work.fallback);
+        work.relevance_point_probes += usize::from(current.work.point_probes);
+        work.relevance_seeks += usize::from(current.work.highwater_seeks);
+        work.relevance_witness_probes += usize::from(current.work.witness_probes);
+        pending_control
+            .filter(|_| current.relevance == super::presentation_relevance::Relevance::Open)
+    } else {
+        pending_control
+    };
     if let Some(stamp) = pending_control {
         use crate::protocol::delivery::PresentationControlStampV2 as Stamp;
         let output = match &stamp {
@@ -2729,20 +2764,6 @@ pub(super) fn pull(
         }
     }
     state.control_state = encode(&controls)?;
-    if normal_mode && !control_only {
-        messages.drain(..processed_message_count);
-        carry.items = messages.clone();
-        state.ordinary_pending = ordinary_carry_json(&carry)?;
-    }
-    if !carried_notices.is_empty() {
-        work.notice_validations = carried_notices.len();
-        super::attention::settle_carried_notices(
-            db,
-            claim.seat.as_str(),
-            &binding,
-            &carried_notices,
-        )?;
-    }
     if !descriptors.is_empty() {
         let frozen_items = descriptors
             .iter()

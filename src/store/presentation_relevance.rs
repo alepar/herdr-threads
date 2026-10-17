@@ -1182,8 +1182,9 @@ fn result(relevance: Relevance, work: RelevanceWork) -> RelevanceProof {
     }
 }
 /// The caller holds its deciding transaction and owns complete A2 admission.
-/// Every successful V2 pull calls this exactly once, including replay/control/no-output.
-/// The caller reuses the coherent proof/work for every same-transaction decision.
+/// Every successful V2 pull advances exactly once, including replay/control/no-output.
+/// Carrying notices may then invalidate its witness; the caller revalidates that
+/// cached witness before appending Attention without a second discovery sweep.
 pub(super) fn advance(
     db: &Connection,
     claim: &CallerClaim,
@@ -1269,10 +1270,10 @@ pub(super) fn advance(
     save(db, consumer, &state)?;
     Ok(result(relevance, work))
 }
-/// Diagnostic witness/cache inspection, never an ExplicitConfirm authority.
-/// At most one indexed coverage successor; no source discovery or fallback walk.
-/// V2Pull uses only its single advance. ExplicitConfirm never calls this.
-#[cfg(test)]
+/// Cached witness inspection, never an ExplicitConfirm authority.
+/// At most one indexed coverage successor and 64 witness probes; no source
+/// discovery or fallback walk. A V2 pull may use this after notice settlement,
+/// in addition to its one advance. ExplicitConfirm never calls this.
 pub(super) fn revalidate(
     db: &Connection,
     claim: &CallerClaim,

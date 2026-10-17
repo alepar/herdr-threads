@@ -8349,13 +8349,13 @@ fn presentation_registered_channel_materializes_each_published_warn_before_drain
             panic!("drained page")
         };
         assert!(page.items.iter().any(|item|matches!(item,crate::protocol::delivery::PresentationItemV2::Notice{warning,..} if warning==&notification.summary.message)),"each published Warn delivers its distinct Notice");
-        if n == 0 {
-            assert!(
-                page.emitted_controls
-                    .iter()
-                    .any(|v| matches!(v, PresentationControlStampV2::Attention { .. }))
-            );
-        }
+        assert!(
+            !page
+                .emitted_controls
+                .iter()
+                .any(|v| matches!(v, PresentationControlStampV2::Attention { .. })),
+            "the delivered notice needs no inbox hint, including after an earlier batch"
+        );
         if let Some(token) = page.presentation_token {
             f.service
                 .handle(
@@ -8598,16 +8598,15 @@ fn presentation_notice_settles_current_execution(watch: bool, remaining_conditio
         "notice settlement preserves the distinct pending invitation"
     );
     use crate::protocol::delivery::PresentationControlStampV2;
-    let attention = page
-        .emitted_controls
-        .iter()
-        .find_map(|stamp| match stamp {
-            PresentationControlStampV2::Attention { epoch, version } => {
-                Some((epoch.clone(), *version))
-            }
-            _ => None,
-        })
-        .expect("notice's actual Attention episode");
+    let attention = page.emitted_controls.iter().find_map(|stamp| match stamp {
+        PresentationControlStampV2::Attention { epoch, version } => Some((epoch.clone(), *version)),
+        _ => None,
+    });
+    assert_eq!(
+        attention.is_some(),
+        remaining_condition,
+        "carried notices need no inbox hint; an independent pending invitation still does"
+    );
     assert!(
         page.more,
         "settling the carried witness must advertise continuation"
@@ -8721,7 +8720,10 @@ fn presentation_notice_settles_current_execution(watch: bool, remaining_conditio
                     PresentationItemV2::Notice { warning, .. } if warning == &first || warning == &second)));
                 for stamp in &page.emitted_controls {
                     if let PresentationControlStampV2::Cleared { epoch, version } = stamp {
-                        assert_eq!((epoch, version), (&attention.0, &attention.1));
+                        assert_eq!(
+                            Some((epoch, version)),
+                            attention.as_ref().map(|(e, v)| (e, v))
+                        );
                         cleared = true;
                     }
                 }
@@ -8734,9 +8736,9 @@ fn presentation_notice_settles_current_execution(watch: bool, remaining_conditio
         }
     }
     assert!(!more, "advertised continuation terminates");
-    assert_eq!(
-        cleared, !remaining_condition,
-        "only canonical absence clears the actual episode"
+    assert!(
+        !cleared,
+        "a withheld attention needs no clear; the independent invitation stays open"
     );
     assert!(
         window.offers().is_empty(),

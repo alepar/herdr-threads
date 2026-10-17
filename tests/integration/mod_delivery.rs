@@ -4434,8 +4434,8 @@ fn fresh_watch_after_accept_prints_no_attention() {
     watch.assert_no_line("attention", QUIET, |l| l["kind"] == "attention");
 }
 
-/// ht-j16.33: accepting a confirming invitation or carrying a notice on V2
-/// Watch clears the matching attention epoch. Keep the historical selector.
+/// Accepting a confirming invitation clears its attention epoch. A notice
+/// carried by V2 Watch needs no new attention hint (ht-y8us). Keep the selector.
 #[test]
 fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     use herdr_threads::{
@@ -4564,23 +4564,9 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     });
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
-    let attention = watch.wait_attention_marker();
-    assert!(
-        attention["presentation_epoch"].as_str().is_some(),
-        "{attention}"
-    );
-    // Notice can precede Attention in the same flushed page. Retain that
-    // actual stdout witness instead of waiting for a second offer.
-    let notice = watch
-        .seen
-        .iter()
-        .find(|line| line["kind"] == "notice" && line["thread"] == managed.as_str())
-        .cloned()
-        .unwrap_or_else(|| {
-            watch.wait_line("the stale Watch notice", STEP, |line| {
-                line["kind"] == "notice" && line["thread"] == managed.as_str()
-            })
-        });
+    let notice = watch.wait_line("the stale Watch notice", STEP, |line| {
+        line["kind"] == "notice" && line["thread"] == managed.as_str()
+    });
     let warning = notice["warning"]
         .as_str()
         .filter(|id| !id.is_empty())
@@ -4611,22 +4597,11 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     assert_eq!(offered_execution, expected_execution);
     assert_ne!(execution, SESSION_B);
     assert!(ordinal > 0 && frontier >= ordinal);
-    // The replacement may replay the earlier invitation's clear as well.
-    // Retraction of this notice must name its own emitted Attention epoch.
-    let is_notice_clear = |line: &Value| {
-        line["kind"] == "attention_cleared"
-            && line["presentation_epoch"] == attention["presentation_epoch"]
-    };
-    let cleared = watch
-        .seen
-        .iter()
-        .find(|line| is_notice_clear(line))
-        .cloned()
-        .unwrap_or_else(|| watch.wait_line("the scoped notice retraction", STEP, is_notice_clear));
-    assert_eq!(
-        cleared["presentation_epoch"],
-        attention["presentation_epoch"]
-    );
+    // The replacement may replay the earlier invitation's clear, but the
+    // notice's complete presentation must not prompt an empty inbox call.
+    watch.assert_no_line("redundant notice attention", QUIET, |line| {
+        line["kind"] == "attention"
+    });
     let hook = rig.hook(PANE_B, &pre_tool_use(SESSION_B));
     assert_eq!(hook.code, 0, "{}{}", hook.stdout, hook.stderr);
     assert!(

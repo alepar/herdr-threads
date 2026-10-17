@@ -309,6 +309,14 @@ mod binding_presentation {
             self.db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES('notice','34750f98bd59fcfc946da45aaabe933b','t',50,'warn','{}',0,50,1);
                 INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES('s','notice','t',50,1);").unwrap();
         }
+        fn notification(&self) {
+            self.db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES('service','34750f98bd59fcfc946da45aaabe933b',0);
+                INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset,author_kind,author_service_id) VALUES('notice','34750f98bd59fcfc946da45aaabe933b','t',50,'warn','{}',0,50,1,'programmatic','service');
+                INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES('s','notice','t',50,1);
+                INSERT INTO service_notification_preparations(id,instance_id,author_id,operation_key,digest,thread_id,membership_revision,lifecycle_revision,interval_high_water,requirement_high_water,status) VALUES('notify','34750f98bd59fcfc946da45aaabe933b','service','notify',zeroblob(32),'t',0,0,0,0,'published');
+                INSERT INTO service_notification_publications(preparation_id,message_id,decision_seq,recipient_count) VALUES('notify','notice',50,1);
+                INSERT INTO service_notification_recipients(preparation_id,seat_id) VALUES('notify','s');").unwrap();
+        }
         fn confirm(&self, name: &str, page: &DeliveryPageV2) -> DeliveryPresentationConfirmationV2 {
             self.store
                 .presentation_confirm(
@@ -339,6 +347,70 @@ mod binding_presentation {
                 UPDATE binding_cursors SET seq=1 WHERE binding_id='a';").unwrap();
         }
     }
+    // A notice's complete body makes an inbox hint redundant in this and later pages.
+    #[test]
+    fn notice_only_presentation_has_no_redundant_attention() {
+        let f = Fixture::new();
+        f.notification();
+        let first = f.pull("a");
+        assert!(
+            first
+                .items
+                .iter()
+                .any(|v| matches!(v, PresentationItemV2::Notice { .. }))
+        );
+        assert!(
+            !first
+                .items
+                .iter()
+                .any(|v| matches!(v, PresentationItemV2::Attention { .. })),
+            "{first:?}"
+        );
+        f.confirm("a", &first);
+        for _ in 0..4 {
+            match f
+                .store
+                .presentation_pull(f.input("a"), &budget())
+                .unwrap()
+                .reply
+            {
+                DeliveryPullReplyV2::Page(page) => {
+                    assert!(
+                        !page
+                            .items
+                            .iter()
+                            .any(|v| matches!(v, PresentationItemV2::Attention { .. })),
+                        "{page:?}"
+                    );
+                    if page.presentation_token.is_some() {
+                        f.confirm("a", &page);
+                    }
+                }
+                DeliveryPullReplyV2::Unchanged { .. } => break,
+                other => panic!("unexpected reply: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn message_only_presentation_has_no_redundant_attention() {
+        let f = Fixture::new();
+        f.ordinary();
+        let page = f.pull("b");
+        assert!(
+            page.items
+                .iter()
+                .any(|v| matches!(v, PresentationItemV2::Message { .. }))
+        );
+        assert!(
+            !page
+                .items
+                .iter()
+                .any(|v| matches!(v, PresentationItemV2::Attention { .. })),
+            "{page:?}"
+        );
+    }
+
     #[test]
     fn same_generation_binding_outboxes_and_notice_frontiers_are_independent() {
         let f = Fixture::new();

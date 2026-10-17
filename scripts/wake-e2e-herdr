@@ -135,7 +135,7 @@ def main() -> int:
                     os.kill(int(pid), signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-        subprocess.run(["rm", "-rf", str(root)], check=False)
+        subprocess.run(["rm", "-rf", str(root)], check=True)
 
 
 if __name__ == "__main__":
