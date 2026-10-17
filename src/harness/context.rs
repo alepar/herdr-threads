@@ -1516,6 +1516,24 @@ impl ContextJournal {
         self.save(&state)?;
         Ok(abandoned)
     }
+    /// TRUST-POLICY C1, moved panes: the daemon followed this seat's pane to a
+    /// new id (a move to another workspace; same terminal, same Herdr
+    /// incarnation). A current context recorded at the pane's old id `from`
+    /// now names `to`; any other context, and a pending request (its recorded
+    /// request stays exact), is left as it is. Returns whether it changed.
+    pub fn follow_moved_target(&self, from: &str, to: &str) -> Result<bool, ContextError> {
+        if self.agent.is_some() || !valid_text(to) {
+            return Ok(false);
+        }
+        let _lock = self.lock()?;
+        let mut state = self.load()?;
+        let Some(current) = state.current.as_mut().filter(|c| c.target == from) else {
+            return Ok(false);
+        };
+        current.target = to.to_owned();
+        self.save(&state)?;
+        Ok(true)
+    }
     /// Move the pending request, if any, to `abandoned` and return it. A continuity reattachment
     /// of an agent session installs no context (its identity is its environment); the request
     /// pending for the replaced one is dead all the same.

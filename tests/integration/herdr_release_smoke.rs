@@ -25,6 +25,14 @@
 //! - `herdr_release_wake`: nudge threshold, wake typed by Herdr into an idle
 //!   agent's composer (and no wake below the threshold), in-turn delivery,
 //!   ACK from the agent, and an overdue required ACK.
+//! - `herdr_release_busy`: a p0 sent to a working agent is delivered inside
+//!   its turn and never typed as a wake.
+//! - `herdr_release_move`: renames, a move inside the workspace, and moves to
+//!   other workspaces (a new pane id, the same terminal) with a live seated
+//!   agent and person whose processes keep their old `HERDR_PANE_ID`: the
+//!   daemon follows both seats, in-turn delivery, the agent's own `inbox` and
+//!   `send`, the person's inbox and the p0 wake keep working, labels follow
+//!   renames, and resolving a just-moved pane never allocates a second seat.
 use herdr_threads::test_support::isolated_herdr::IsolatedHerdr;
 use serde_json::Value;
 use std::{
@@ -958,4 +966,262 @@ fn herdr_release_busy() {
         timeline(&m.log_of(&agent_pane)).join("\n")
     );
     println!("herdr {}: busy matrix passed", m.version);
+}
+
+#[test]
+#[ignore = "run per release by scripts/herdr-release-smoke (official binary on PATH)"]
+fn herdr_release_move() {
+    let m = Matrix::new("herdr-matrix-move");
+    m.setup("codex");
+    let (sender_pane, _sender) = m.person_seat("move-sender");
+    let (person_pane, person) = m.person_seat("move-person");
+    let agent_pane = m.workspace("move-agent");
+    let agent = m.launch_codex(&agent_pane);
+    // The agent's process and the person's shell keep these HERDR_PANE_IDs for good: Herdr
+    // gives a pane moved to another workspace a new id but never updates a running process.
+    let (agent_env, person_env) = (agent_pane.clone(), person_pane.clone());
+    let wakes = || {
+        m.log_of(&agent_env)
+            .iter()
+            .filter(|e| e["kind"] == "prompt" && WAKE_TEXTS.iter().any(|t| e["text"] == *t))
+            .count()
+    };
+    let current = |pane: &str| -> String {
+        m.herdr(&["pane", "get", pane])["result"]["pane"]["pane_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let mapped = |seat: &str| -> String {
+        let list = m.ht(&["seat", "list"]);
+        let row = data(&list)["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["seat"] == seat)
+            .cloned()
+            .unwrap_or_else(|| panic!("seat {seat} missing: {list}"));
+        assert_eq!(row["continuity"], "resolved", "{row}");
+        row["target"].as_str().unwrap().to_owned()
+    };
+    // The client heal's premise, pinned per release: Herdr answers an old pane id with the
+    // pane's current record (following a chain of moves) and an unknown id with pane_not_found.
+    let alias_holds = |old: &str, pane: &str, terminal: &str| {
+        let degraded = format!(
+            "Herdr old-pane-id alias dropped: client heal in ht {} degrades (herdr {})",
+            env!("CARGO_PKG_VERSION"),
+            m.version
+        );
+        let record = m.herdr(&["pane", "get", old]);
+        let record = &record["result"]["pane"];
+        assert_eq!(
+            (record["pane_id"].as_str(), record["terminal_id"].as_str()),
+            (Some(pane), Some(terminal)),
+            "{degraded}: pane get {old}: {record}"
+        );
+        let out = m
+            .host
+            .command("herdr")
+            .args(["pane", "get", "w999:p999"])
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !out.status.success() && text.contains("pane_not_found"),
+            "{degraded}: an unknown pane id answered {}: {text}",
+            out.status
+        );
+    };
+    let moved_to = |reply: &Value| -> (String, String) {
+        let pane = &reply["result"]["move_result"]["pane"];
+        (
+            pane["pane_id"].as_str().unwrap().to_owned(),
+            pane["terminal_id"].as_str().unwrap().to_owned(),
+        )
+    };
+    // Everything a seated agent and person do still works, through the stale ids.
+    let works =
+        |step: &str, n: usize, wake: bool| {
+            let pane = current(&agent_env);
+            wait_for(
+                &format!("{step}: daemon follows the agent"),
+                Duration::from_secs(30),
+                || {
+                    let target = mapped(&agent);
+                    if target == pane {
+                        Ok(())
+                    } else {
+                        Err(format!("{target} != {pane}"))
+                    }
+                },
+            );
+            let person_now = current(&person_env);
+            wait_for(
+                &format!("{step}: daemon follows the person"),
+                Duration::from_secs(30),
+                || {
+                    let target = mapped(&person);
+                    if target == person_now {
+                        Ok(())
+                    } else {
+                        Err(format!("{target} != {person_now}"))
+                    }
+                },
+            );
+            // A p1 send arrives through the agent's own turn hook (UserPromptSubmit).
+            let body = format!("move-p1-{n}");
+            m.person(&sender_pane, &["send", "--seat", &agent, "--body", &body]);
+            let events = m.turn(&agent_env, &format!("turn-{n}"));
+            assert!(
+                events.iter().any(|e| e["kind"] == "hook"
+                    && e["context"].as_str().is_some_and(|c| c.contains(&body))),
+                "{step}: p1 not delivered in-turn: {events:?}"
+            );
+            assert!(
+                events
+                    .iter()
+                    .all(|e| e["kind"] != "hook" || e["stderr"].as_str().unwrap_or("").is_empty()),
+                "{step}: a hook complained: {events:?}"
+            );
+            // The agent's own seat-acting and seat-defaulting calls.
+            let inbox = m.agent_ht(&agent_env, "inbox");
+            assert_eq!(inbox["result"]["kind"], "inbox_batch_v2", "{step}: {inbox}");
+            let reply = format!("from-agent-{n}");
+            m.agent_ht(&agent_env, &format!("send --seat {person} --body {reply}"));
+            // The person, from their own (possibly moved) shell, reads it.
+            let mine = m.person(&person_env, &["inbox", "--machine"]);
+            assert!(mine.to_string().contains(&reply), "{step}: {mine}");
+            if wake {
+                let before = wakes();
+                m.person(
+                    &sender_pane,
+                    &[
+                        "send",
+                        "--seat",
+                        &agent,
+                        "--nudge",
+                        "--body",
+                        &format!("move-p0-{n}"),
+                    ],
+                );
+                wait_for(&format!("{step}: p0 wake"), Duration::from_secs(30), || {
+                    if wakes() > before {
+                        Ok(())
+                    } else {
+                        Err(format!("{:?}", m.log_of(&agent_env)))
+                    }
+                });
+                // The per-seat wake spacing before the next step's wake.
+                thread::sleep(Duration::from_secs(32));
+            }
+        };
+    works("baseline", 0, false);
+
+    // Renames change labels only: identity, delivery and wake are untouched.
+    let tab = m.herdr(&["pane", "get", &agent_pane])["result"]["pane"]["tab_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let workspace = agent_pane.split(':').next().unwrap().to_owned();
+    m.herdr(&["tab", "rename", &tab, "moved-tab"]);
+    m.herdr(&["pane", "rename", &agent_pane, "moved-pane"]);
+    m.herdr(&["workspace", "rename", &workspace, "moved-space"]);
+    works("renamed", 1, true);
+    let mut list = m.cli();
+    list.arg("--state-dir")
+        .arg(m.host.root().join("st/herdr/plugins").join(PLUGIN))
+        .arg("--host-endpoint")
+        .arg(m.host.socket_path())
+        .args(["--human", "seat", "list"]);
+    let labels = list.output().unwrap();
+    let labels = format!(
+        "{}{}",
+        String::from_utf8_lossy(&labels.stdout),
+        String::from_utf8_lossy(&labels.stderr)
+    );
+    assert!(
+        labels.contains("moved-pane") || labels.contains("moved-tab"),
+        "{labels}"
+    );
+
+    // A move inside the workspace keeps the pane id.
+    m.herdr(&[
+        "pane",
+        "split",
+        &agent_pane,
+        "--direction",
+        "right",
+        "--no-focus",
+    ]);
+    m.herdr(&["pane", "move", &agent_pane, "--new-tab", "--no-focus"]);
+    assert_eq!(current(&agent_env), agent_pane);
+    works("moved-tab", 2, false);
+
+    // A move to another workspace gives the pane a new id (same terminal). Resolving the new id
+    // at once never allocates a second seat: it is refused as transient until the daemon has
+    // followed the move, then it is the agent's own seat.
+    let target_space = sender_pane.split(':').next().unwrap();
+    let terminal = m.herdr(&["pane", "get", &agent_pane])["result"]["pane"]["terminal_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let reply = m.herdr(&[
+        "pane",
+        "move",
+        &agent_pane,
+        "--workspace",
+        target_space,
+        "--new-tab",
+        "--no-focus",
+    ]);
+    let (moved, moved_terminal) = moved_to(&reply);
+    assert_ne!(
+        moved, agent_pane,
+        "Herdr kept the pane id across workspaces"
+    );
+    assert_eq!(
+        moved_terminal, terminal,
+        "Herdr changed the terminal on a move"
+    );
+    alias_holds(&agent_pane, &moved, &terminal);
+    let resolved = wait_for("resolve the moved pane", Duration::from_secs(30), || {
+        let out = m.ht_out(&["seat", "resolve", "--pane", &moved]);
+        if out.status.success() {
+            Ok(id(&serde_json::from_slice(&out.stdout).unwrap()))
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).into_owned())
+        }
+    });
+    assert_eq!(resolved, agent, "the moved pane resolved to another seat");
+    m.herdr(&[
+        "pane",
+        "move",
+        &person_pane,
+        "--new-workspace",
+        "--no-focus",
+    ]);
+    assert_ne!(current(&person_env), person_pane);
+    works("moved-space", 3, true);
+
+    // Again: the stale id still reaches the pane after a chain of moves.
+    let reply = m.herdr(&["pane", "move", &moved, "--new-workspace", "--no-focus"]);
+    let (twice, twice_terminal) = moved_to(&reply);
+    assert_eq!(
+        twice_terminal, terminal,
+        "Herdr changed the terminal on a move"
+    );
+    alias_holds(&agent_pane, &twice, &terminal);
+    alias_holds(&moved, &twice, &terminal);
+    works("moved-twice", 4, true);
+    let seats = m.ht(&["seat", "list"]);
+    assert_eq!(
+        data(&seats)["items"].as_array().unwrap().len(),
+        3,
+        "{seats}"
+    );
+    println!("herdr {}: move matrix passed", m.version);
 }

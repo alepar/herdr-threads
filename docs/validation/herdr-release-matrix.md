@@ -4,11 +4,13 @@
 
 There is no provider, model or credential. The Codex agent is a stand-in, `tests/fixtures/herdr-matrix/codex.js` (Python, started in npm Codex's `<interpreter> .../codex.js` shape so Herdr and herdr-threads both recognize it). It draws Codex's composer, footer and terminal title, and it runs the installed `hooks.json` the way Codex does: SessionStart, UserPromptSubmit and PreToolUse with the turn's `turn_id`, Stop and Interrupt, SessionEnd. Every server also has Herdr's own Codex integration installed, as a Herdr user has it. So every binding, delivery and wake in the matrix goes through the real hooks, the real daemon and the release under test. The Claude stand-in only draws Claude's idle screen.
 
-Wall time: about 130 s for the five listed releases at `--jobs 3` on an M-series Mac (one release is about 65 s, dominated by the wake test's per-seat wake spacing).
+Wall time: one release is about 130 s, dominated by the per-seat wake spacing of the move test (about 65 s for the others, which run alongside it); the five listed releases take about 4 minutes at `--jobs 3` on an M-series Mac.
+
+Herdr behaviour the move test pins, identical on 0.9.1 through 0.9.5: renames never change ids; a move inside a workspace keeps the pane id; a move to another workspace gives a new pane id with the same terminal id, the running processes keep the old `HERDR_PANE_ID`, and `pane.get`/`pane.current` answer the old id (through any chain of moves) with the pane's current record; ids are never reused within a server. There is no tab-move command.
 
 ## Coverage
 
-The 1.0.1 column is the single smoke test that version shipped. The 1.0.2 column names the matrix test that covers the row: core (`herdr_release_smoke`), handoff (`herdr_release_launch_and_handoff`), wake (`herdr_release_wake`), busy (`herdr_release_busy`).
+The 1.0.1 column is the single smoke test that version shipped. The 1.0.2 column names the matrix test that covers the row: core (`herdr_release_smoke`), handoff (`herdr_release_launch_and_handoff`), wake (`herdr_release_wake`), busy (`herdr_release_busy`), move (`herdr_release_move`).
 
 | Feature | Commands | 1.0.1 | 1.0.2 |
 | --- | --- | --- | --- |
@@ -32,6 +34,9 @@ The 1.0.1 column is the single smoke test that version shipped. The 1.0.2 column
 | Handoff, every target | automatic `--new-tab`, `--new-tab --new-thread`, `--new-tab --thread`, `--pane`, `--existing --seat`, each recipient receiving its work through its own hooks | automatic `--new-tab` only | handoff |
 | Doctor | `doctor` | no | core |
 | Setup and removal | `setup codex` / `setup claude`, `setup-status`, `unsetup` | setup | core, handoff |
+| Pane and tab renames, workspace rename | `herdr tab/pane/workspace rename` with live seats: labels follow, identity, delivery and wake unchanged | no | move |
+| Moves with a live seated agent and person | `herdr pane move --new-tab` (same id), `--workspace`, `--new-workspace` and a chain of moves (new id, same terminal; the processes keep their old `HERDR_PANE_ID`): seats follow, in-turn delivery, the agent's `inbox`/`send`, the person's inbox and the p0 wake keep working, and `seat resolve` of a just-moved pane never allocates a second seat | no | move |
+| Herdr old-pane-id alias (the client heal's premise) | after a cross-workspace move and after a double move, `herdr pane get <old id>` returns the current record (same terminal id, new pane id, through the chain) and an unknown id returns `pane_not_found`; a failure reads `Herdr old-pane-id alias dropped: client heal in ht <version> degrades` | no | move |
 | Herdr's own Codex integration alongside the owned hooks | `herdr integration install codex` | no | every test |
 | Local recovery and warnings listings | `pending-ops`, `warnings` | no | core |
 

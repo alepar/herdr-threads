@@ -1589,6 +1589,39 @@ fn find_seat_for(
     Ok(PaneSeat::Unowned)
 }
 
+/// [`find_seat_for`] for the hook's own pane, following a pane Herdr moved
+/// (TRUST-POLICY C1, moved panes): the harness process keeps its
+/// `HERDR_PANE_ID` across a move to another workspace, which gives the pane a
+/// new id, while the daemon follows the pane's terminal to that id. Only when
+/// `target` has no nonretired seat, one Herdr read asks for the current id of
+/// that exact pane (`moved_pane`); `target` becomes it and the lookup is
+/// repeated. A held or unresolved seat at `target` is never looked past.
+fn locate_seat_for(
+    harness: Harness,
+    client: &dyn LocalClient,
+    context: &RuntimeContext,
+    target: &mut HostTargetId,
+    deadline: Instant,
+    clock: &Arc<dyn Clock>,
+) -> Result<PaneSeat, Failure> {
+    let seat = find_seat_for(harness, client, target, deadline, clock.as_ref())?;
+    if !matches!(seat, PaneSeat::Unowned) {
+        return Ok(seat);
+    }
+    // The pane's own Herdr host (the claim host); a moved pane stays on it.
+    let Ok(endpoint) = context.require_host() else {
+        return Ok(seat);
+    };
+    let host = crate::host::native::NativeCli::new(endpoint.to_path_buf(), Arc::clone(clock));
+    let Some(now) = super::moved_pane(target, |stale| {
+        host.current_pane(stale, &budget(deadline, clock.as_ref()))
+    }) else {
+        return Ok(seat);
+    };
+    *target = now;
+    find_seat_for(harness, client, target, deadline, clock.as_ref())
+}
+
 fn pending_event(pending: &PendingCheckIn) -> LifecycleEvent {
     LifecycleEvent {
         harness: pending.context.harness,
@@ -1795,16 +1828,21 @@ fn enroll_pane(
         context,
         paths,
         instance,
-        target,
+        mut target,
         client,
         ..
     } = connect_pane(args, env, deadline, &clock, ensure_executable)?;
     let host = context
         .claim_host()
         .map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
-    if let PaneSeat::HeldOrUnresolved(detail) =
-        find_seat_for(args.harness, &client, &target, deadline, clock.as_ref())?
-    {
+    if let PaneSeat::HeldOrUnresolved(detail) = locate_seat_for(
+        args.harness,
+        &client,
+        &context,
+        &mut target,
+        deadline,
+        &clock,
+    )? {
         return Err(Failure::Unavailable(detail));
     }
     let journal = super::journal::Journal::open(paths.node_dir.join("intents"))
@@ -1854,10 +1892,18 @@ fn check_in(
         context,
         paths,
         instance,
-        target,
+        mut target,
         client,
         link,
     } = connect_pane(args, env, deadline, &clock, ensure)?;
+    let located = locate_seat_for(
+        event.harness,
+        &client,
+        &context,
+        &mut target,
+        deadline,
+        &clock,
+    )?;
     let pane = env
         .pane
         .as_ref()
@@ -1897,7 +1943,7 @@ fn check_in(
     // The reattachment is one complete check-in (the
     // daemon rebinds the seat and opens its successor binding), so nothing
     // follows it.
-    let existing = match find_seat_for(event.harness, &client, &target, deadline, clock.as_ref())? {
+    let existing = match located {
         // A resume in a pane that still looks resolved may be running in a
         // restored Herdr (the same pane id, a new incarnation) the daemon has
         // not reconciled yet (ht-p63). The continuity request makes the daemon
@@ -3609,7 +3655,7 @@ fn report_binding_event(
     let Connected {
         context: runtime,
         instance,
-        target,
+        mut target,
         client,
         ..
     } = connect_pane(args, env, deadline, clock, None)?;
@@ -3617,11 +3663,17 @@ fn report_binding_event(
         .pane
         .as_ref()
         .ok_or_else(|| Failure::Quiet("HERDR_PANE_ID missing".into()))?;
-    let (seat, generation) =
-        match find_seat_for(args.harness, &client, &target, deadline, clock.as_ref())? {
-            PaneSeat::Resolved(seat, generation) => (seat, generation),
-            other => return Err(other.refusal(pane)),
-        };
+    let (seat, generation) = match locate_seat_for(
+        args.harness,
+        &client,
+        &runtime,
+        &mut target,
+        deadline,
+        clock,
+    )? {
+        PaneSeat::Resolved(seat, generation) => (seat, generation),
+        other => return Err(other.refusal(pane)),
+    };
     let invalid = |what: &str| Failure::Quiet(format!("binding event: invalid {what}"));
     let session = event
         .claim_session

@@ -35,6 +35,10 @@ authorized by its signing origin node), the 1:1 pair auto-join authored by each 
 `direct_auto_join` provenance value, and the node-local nudge threshold (N4, N5, A3).
 Amended 2026-10-15 for `message.sent` apply (ht-5fr.43): author and recipient membership are not re-checked at
 apply, an accepted limit in N4.
+Amended 2026-10-16 for moved panes (C1): a pane Herdr moves to another workspace gets a new pane id with the same
+terminal; the structural path already follows the seat, a stale caller pane id is refreshed through Herdr's resolution
+of that exact id only when it maps to no seat, and ordinary allocation is refused while a resolved seat's terminal
+shows at another target (no seat, binding or receipt rule changes).
 
 ## Abstract
 
@@ -143,6 +147,26 @@ never allocation) when the name matches exactly one pane anywhere in the topolog
 and a name matching more than one pane is refused with the candidate list, requiring the seat ID. The chosen seat is
 shown on the `resolved:` line, with the operator still deciding via `--operator`; the name is
 not heuristic continuity evidence and moves no seat by itself.
+
+**Moved panes.** Herdr renames never change a pane id, and moving a pane inside its workspace keeps it. Moving a
+pane to another workspace (`herdr pane move --workspace`/`--new-workspace`) gives it a new pane id with the same
+terminal id in the same Herdr incarnation, and the processes already running in it keep the old `HERDR_PANE_ID`
+(observed on every listed Herdr release, 0.9.1 through 0.9.5). Three rules keep such a pane's role:
+- The structural path follows it: a coherent publication that shows the seat's terminal at another target moves the
+  seat's mapping there (reconciliation `Move`; same terminal, boot and incarnation). This is the existing
+  structural evidence, not a new kind.
+- A caller whose pane id maps to no seat (CLI caller derivation, hook seat lookup) asks Herdr once for the current id
+  of that exact pane (`pane.current` with the caller id; Herdr answers an earlier id of a moved pane with its current
+  record and `pane_not_found` for an id it never issued, and never substitutes the focused pane), then repeats the
+  lookup there. The refreshed id is a locator, like `HERDR_PANE_ID` itself; the daemon's mapping still decides the
+  seat. A held or unresolved seat at the caller's id is never looked past, a failed or unchanged answer keeps
+  today's lookup, and a saved person context recorded at the old id is re-pointed to the seat's current target.
+- Ordinary allocation (`ResolveSeat`) is refused as transient while the observed terminal belongs to a resolved
+  seat at another target in the same boot and incarnation: the pane moved and reconciliation has not followed it
+  yet. The retry after that pass resolves the existing seat; one terminal never gets a second seat this way.
+A new Herdr incarnation is unchanged: C2 holds apply, and old ids prove nothing there.
+On a node every rule is per Herdr host: the current-id read goes to the caller's own claim host, and the moved-terminal
+refusal considers only this node's local seats on that host (a remote seat has no target here and is never moved).
 
 **C2. Restore holds.** After a new or unknown Herdr incarnation while nonretired seats exist, every saved
 seat whose continuity is not structurally proven becomes unresolved, and the daemon takes a coherent baseline

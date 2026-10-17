@@ -2658,6 +2658,180 @@ mod pane_seat_selection {
         assert!(cli_pick(seats).is_empty());
         assert!(hook_pick(vec![]).unwrap().is_none());
     }
+
+    /// A fake Herdr whose `pane.current` answers `answer` (`None`: `pane_not_found`), recording
+    /// every request's caller id until dropped.
+    struct MovedHerdr {
+        context: RuntimeContext,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+    impl MovedHerdr {
+        fn new(answer: Option<&'static str>) -> Self {
+            use std::io::{BufRead, Write};
+            use std::sync::atomic::Ordering;
+            let root = crate::test_support::scratch::temp_path(format!(
+                "hm-{}",
+                &uuid::Uuid::new_v4().simple().to_string()[..8]
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let socket = root.join("h.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let context = RuntimeContext::explicit(root.join("state"), socket, None).unwrap();
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (worker_seen, worker_stop) = (seen.clone(), stop.clone());
+            let worker = std::thread::spawn(move || {
+                while !worker_stop.load(Ordering::SeqCst) {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    stream.set_nonblocking(false).unwrap();
+                    let mut line = String::new();
+                    std::io::BufReader::new(&mut stream)
+                        .read_line(&mut line)
+                        .unwrap();
+                    let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    let reply = match request["method"].as_str().unwrap() {
+                        "pane.current" => {
+                            worker_seen.lock().unwrap().push(
+                                request["params"]["caller_pane_id"]
+                                    .as_str()
+                                    .unwrap()
+                                    .to_owned(),
+                            );
+                            match answer {
+                                Some(pane) => serde_json::json!({"id":request["id"],"result":{
+                                    "type":"pane_current","pane":{"pane_id":pane,"focused":false}}}),
+                                None => serde_json::json!({"id":request["id"],"error":{
+                                    "code":"pane_not_found","message":"pane not found"}}),
+                            }
+                        }
+                        "ping" => serde_json::json!({"id":request["id"],"result":{
+                            "type":"pong","version":"0.9.1","protocol":22}}),
+                        other => panic!("unexpected host method {other}"),
+                    };
+                    writeln!(stream, "{reply}").unwrap();
+                }
+            });
+            Self {
+                context,
+                seen,
+                stop,
+                worker: Some(worker),
+            }
+        }
+        fn seen(&self) -> Vec<String> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+    impl Drop for MovedHerdr {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+
+    fn shown(located: &Result<PaneSeat, Failure>) -> String {
+        match located {
+            Ok(PaneSeat::Resolved(seat, generation)) => {
+                format!("resolved {} {generation}", seat.as_str())
+            }
+            Ok(PaneSeat::HeldOrUnresolved(detail)) => format!("held {detail}"),
+            Ok(PaneSeat::Unowned) => "unowned".into(),
+            Err(_) => "failure".into(),
+        }
+    }
+
+    fn hook_locate(
+        seats: Vec<SeatSummary>,
+        herdr: &MovedHerdr,
+        pane: &str,
+    ) -> (Result<PaneSeat, Failure>, HostTargetId) {
+        let mut target = HostTargetId::new(pane);
+        let located = locate_seat_for(
+            Harness::Codex,
+            &Seats(seats),
+            &herdr.context,
+            &mut target,
+            Instant::now() + Duration::from_secs(5),
+            &clock(),
+        );
+        (located, target)
+    }
+
+    // Kills: a hook whose harness kept HERDR_PANE_ID across a move to another workspace (Herdr
+    // gave the pane a new id; the daemon followed the seat there) never finding its seat again.
+    #[test]
+    fn hook_follows_a_moved_pane_to_its_seat_through_herdr() {
+        let herdr = MovedHerdr::new(Some("w1:p2"));
+        let seats = vec![seat("S", ContinuityStatus::Resolved, "w1:p2")];
+        let (located, target) = hook_locate(seats, &herdr, "w3:p7");
+        assert!(
+            matches!(located, Ok(PaneSeat::Resolved(ref seat, 3)) if seat.as_str() == "S"),
+            "{}",
+            shown(&located)
+        );
+        assert_eq!(target.as_str(), "w1:p2");
+        assert_eq!(herdr.seen(), ["w3:p7"]);
+    }
+
+    // Kills: a Herdr read on every steady turn, or looking past a held/unresolved seat.
+    #[test]
+    fn hook_reads_herdr_only_when_its_pane_has_no_seat() {
+        let herdr = MovedHerdr::new(Some("w1:p2"));
+        let (located, target) = hook_locate(
+            vec![seat("S", ContinuityStatus::Resolved, "w3:p7")],
+            &herdr,
+            "w3:p7",
+        );
+        assert!(
+            matches!(located, Ok(PaneSeat::Resolved(..))),
+            "{}",
+            shown(&located)
+        );
+        assert_eq!(target.as_str(), "w3:p7");
+        let (located, target) = hook_locate(
+            vec![
+                seat("U", ContinuityStatus::Unresolved, "w3:p7"),
+                seat("S", ContinuityStatus::Resolved, "w1:p2"),
+            ],
+            &herdr,
+            "w3:p7",
+        );
+        assert!(
+            matches!(located, Ok(PaneSeat::HeldOrUnresolved(_))),
+            "{}",
+            shown(&located)
+        );
+        assert_eq!(target.as_str(), "w3:p7");
+        assert!(herdr.seen().is_empty(), "{:?}", herdr.seen());
+    }
+
+    // Kills: retargeting when Herdr does not know the id, or reports the same one.
+    #[test]
+    fn hook_keeps_its_pane_when_herdr_reports_no_move() {
+        for answer in [None, Some("w3:p7")] {
+            let herdr = MovedHerdr::new(answer);
+            let (located, target) = hook_locate(
+                vec![seat("S", ContinuityStatus::Resolved, "w1:p2")],
+                &herdr,
+                "w3:p7",
+            );
+            assert!(
+                matches!(located, Ok(PaneSeat::Unowned)),
+                "{answer:?}: {}",
+                shown(&located)
+            );
+            assert_eq!(target.as_str(), "w3:p7");
+            assert_eq!(herdr.seen(), ["w3:p7"]);
+        }
+    }
 }
 
 // -- operational parse-failure reports (ht-p03.23) --------

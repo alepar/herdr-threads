@@ -5013,6 +5013,127 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
     let _ = std::fs::remove_file(path);
 }
 
+/// TRUST-POLICY C1, moved panes: a pane moved to another workspace gets a new id with the same
+/// terminal. Before reconciliation follows the seat there, ordinary resolution of the new id is
+/// refused as transient (no second seat for one terminal); once the seat follows, it resolves.
+#[test]
+fn ordinary_allocation_refuses_a_moved_terminal_until_its_seat_follows() {
+    use crate::{
+        ports::{
+            EvidenceKind, ExecutionEvidence, HostObservation, HostUiState, IncarnationEvidence,
+            ObservationProvenance, OrdinaryResolutionAttempt as Attempt, OrdinaryResolutionGuard,
+            OrdinaryResolutionOutcome as Outcome, StructuralOccupancy,
+        },
+        protocol::commands::ResolveSeat,
+        protocol::time::{CallBudget, Cancellation},
+        store::seats,
+    };
+    let (context, mut conn, path, _) = fixture(100);
+    conn.execute("DELETE FROM seat_archival", []).unwrap();
+    conn.execute("DELETE FROM seats", []).unwrap();
+    let observed = |target: &str, terminal: &str, sequence: u64| HostObservation {
+        focused: false,
+        target: HostTargetId::new(target),
+        host_boot: HostBootId::new("b"),
+        epoch: 1,
+        generation: 1,
+        observed_at_utc: UtcMillis(100),
+        observed_at_mono: MonoInstant(100),
+        provenance: ObservationProvenance::FreshCurrentTarget,
+        occupant: None,
+        ui: HostUiState::Idle,
+        terminal: Some(TerminalId::new(terminal)),
+        occupancy: StructuralOccupancy::EmptyShell,
+        incarnation: IncarnationEvidence::Verified {
+            identity: "test-incarnation".into(),
+            evidence_kind: EvidenceKind::NativeCurrentTarget,
+        },
+        execution: ExecutionEvidence::Unknown,
+        call_id: HostCallId::new(format!("call-{target}")),
+        connection_epoch: 1,
+        observation_sequence: sequence,
+        started_at_mono: MonoInstant(100),
+        completed_at_mono: MonoInstant(100),
+    };
+    let budget = CallBudget {
+        deadline: MonoInstant(1_000),
+        cancellation: Cancellation::default(),
+    };
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
+    let captured = snapshot_for_test(1, &["p3", "p9"]);
+    let stage = staged_test_snapshot(&context, &mut conn, admission, &captured, &budget);
+    seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
+    let resolve = |conn: &mut Connection, target: &str, sequence: u64, operation: &str| {
+        let admission = seats::begin_host_observation(
+            &context,
+            conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &budget,
+        )
+        .unwrap();
+        let observation = observed(target, "terminal-moved", sequence);
+        assert!(
+            seats::publish_current_target_observation(
+                &context,
+                conn,
+                &admission,
+                &observation,
+                &budget
+            )
+            .unwrap()
+        );
+        let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
+            target: HostTargetId::new(target),
+            operation: OperationId::new(operation),
+        };
+        let guard = OrdinaryResolutionGuard::try_new(&request, observation, &admission).unwrap();
+        seats::resolve_seat(
+            &context,
+            conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            request,
+            Attempt::Observed(guard),
+            &budget,
+        )
+    };
+    let first = resolve(&mut conn, "p3", 2, "resolve-p3");
+    let Outcome::Resolved(seat) = first.unwrap() else {
+        panic!("seat missing")
+    };
+    // The terminal now shows at p9; the seat still maps p3.
+    let refused = resolve(&mut conn, "p9", 3, "resolve-p9");
+    let error = refused.unwrap_err();
+    assert_eq!(error.code, ErrorCode::StaleHostObservation, "{error:?}");
+    assert!(error.detail.contains(seat.as_str()), "{error:?}");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM seats", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1, "a second seat was allocated for one terminal");
+    // Reconciliation's Move follows the seat to p9: the retry resolves it, allocating nothing.
+    conn.execute(
+        "UPDATE seats SET target_id='p9' WHERE id=?1",
+        [seat.as_str()],
+    )
+    .unwrap();
+    let retried = resolve(&mut conn, "p9", 4, "resolve-p9-again");
+    assert_eq!(retried.unwrap(), Outcome::Resolved(seat));
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM seats", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn ordinary_empty_allocation_retains_structural_identity_without_occupant_binding() {
     use crate::{

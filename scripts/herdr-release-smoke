@@ -40,9 +40,10 @@ FLOOR = (0, 9, 1)
 ASSETS = ("herdr-linux-aarch64", "herdr-linux-x86_64", "herdr-macos-aarch64", "herdr-macos-x86_64")
 # Every test of the matrix module (tests/integration/herdr_release_smoke.rs), its tests in parallel.
 FILTER = ["herdr_release_smoke::", "--ignored", "--nocapture"]
-MATRIX = ("herdr_release_smoke", "herdr_release_launch_and_handoff", "herdr_release_wake", "herdr_release_busy")
+MATRIX = ("herdr_release_smoke", "herdr_release_launch_and_handoff", "herdr_release_wake", "herdr_release_busy",
+          "herdr_release_move")
 COLUMNS = {"herdr_release_smoke": "core", "herdr_release_launch_and_handoff": "launch/handoff",
-           "herdr_release_wake": "wake", "herdr_release_busy": "busy"}
+           "herdr_release_wake": "wake", "herdr_release_busy": "busy", "herdr_release_move": "move"}
 
 
 def vkey(v: str) -> tuple[int, ...]:
