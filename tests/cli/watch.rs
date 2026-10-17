@@ -3002,3 +3002,58 @@ fn watch_drain_reads_the_seat_without_the_binding_cursors_capability() {
     }
     server.finish();
 }
+
+/// Rebinding can invalidate a Pull/Confirm before the watch socket's terminal
+/// frame is consumed. The authoritative close still names the lifecycle event.
+#[test]
+fn presentation_watch_lifecycle_close_wins_over_inflight_refusal() {
+    use crate::protocol::delivery::{
+        DeliveryPresentationConfirmationReplyV2 as Reply,
+        DeliveryPresentationConfirmationV2 as Status, DeliveryPullReplyV2, DeliveryRefusalReason,
+    };
+    for refuse_pull in [false, true] {
+        for reason in [WatchCloseReason::BindingChanged, WatchCloseReason::Replaced] {
+            let client = FakeClient::new(move |command| match command {
+                Command::DeliveryPullV2(_) => Ok(CommandResult::DeliveryPulledV2(if refuse_pull {
+                    DeliveryPullReplyV2::Refused {
+                        reason: DeliveryRefusalReason::SessionMismatch,
+                    }
+                } else {
+                    DeliveryPullReplyV2::Page(presentation_notice_page(false))
+                })),
+                Command::DeliveryPresentationConfirmV2(_) => {
+                    Ok(CommandResult::DeliveryPresentationConfirmedV2(
+                        Reply::empty(Status::StaleBinding),
+                    ))
+                }
+                other => panic!("{other:?}"),
+            });
+            let mut conn = PresentationTestConn(
+                [
+                    WatchFrame::Attention { version: 2 },
+                    WatchFrame::Close { reason },
+                ]
+                .into(),
+            );
+            let mut state = EmitState::default();
+            let mut out = Vec::new();
+            assert_eq!(
+                watch_presentation_loop(
+                    &mut conn,
+                    &client,
+                    &clock(),
+                    &claim(),
+                    "0123456789abcdef0123456789abcdef",
+                    &mut state,
+                    &mut out,
+                    &mut || true,
+                ),
+                reason.exit_code()
+            );
+            assert_eq!(
+                status_of(lines(&out).last().unwrap()).reason,
+                Some(reason.into())
+            );
+        }
+    }
+}

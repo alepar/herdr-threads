@@ -432,8 +432,9 @@ impl Cluster {
     }
 
     /// Starts `node`'s daemon. A node with a fake Herdr server starts it as a
-    /// user's command does (`daemon ensure` naming the server, so it attaches at
-    /// startup); any other node the way a peer does (store-only). A wiped store
+    /// user's command does (`daemon ensure`, then a host-scoped request that
+    /// also attaches to an already-running daemon); any other node the way a
+    /// peer does (store-only). A wiped store
     /// restarts store-only either way, see [`Cluster::wipe_store`].
     pub fn start_node(&mut self, node: usize) {
         if self.nodes[node].up {
@@ -456,6 +457,10 @@ impl Cluster {
                 self.nodes[node].name
             );
             self.nodes[node].up = true;
+            // A pump already past the shutdown gate may have won the
+            // election store-only. Ensure only checks that daemon's health;
+            // attach through a host-scoped request before allowing new dials.
+            self.attach_node_host(node);
             let _ = fs::remove_file(self.down_flag(node));
             return;
         }
@@ -916,8 +921,11 @@ impl Cluster {
     /// of `seat` cannot do it, because the node does not know the seat until
     /// it is restored. No operator command.
     pub fn attach_host(&self, seat: &Seat) {
-        let _ = self.run_as(None, seat.node, &["seat", "resolve", "--pane", "w1:p9"]);
-        let node = seat.node;
+        self.attach_node_host(seat.node);
+    }
+
+    fn attach_node_host(&self, node: usize) {
+        let _ = self.run_as(None, node, &["seat", "resolve", "--pane", "w1:p9"]);
         self.wait_until(
             &format!("node {} to attach its host", self.nodes[node].name),
             Duration::from_secs(60),
@@ -932,8 +940,9 @@ impl Cluster {
     /// daemon, and the next start (here, at once) backs the store up and pulls
     /// from `from`. Returns the command's output.
     pub fn resync(&mut self, node: usize, from: &str) -> Output {
-        // The command stops the daemon; no peer's dial may start it again
-        // (store-only, racing the start below) before this call does.
+        // Refuse new peer dials while the command stops and restarts the
+        // daemon. A pump already past this gate can still win the election;
+        // start_node attaches the host to that store-only winner too.
         let _ = fs::write(self.down_flag(node), b"");
         let out = self.human(node, &["sync", "resync", "--from", from]);
         if out.status.success() {

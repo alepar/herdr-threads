@@ -4801,10 +4801,45 @@ fn clear_new_binding_digests_and_wakes_for_its_unread_mail_without_grace() {
     let rig = Rig::new();
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
+    // A complete hook display ACKs short mail before a wake need run. Keep
+    // this body beyond the hook envelope so the native wake remains required.
+    let body = "only the watch saw this".repeat(512);
+    let id = rig.send_ordinary(&body);
+    watch.wait_item(&id);
+    let mark = rig.host.mark();
+    rig.set_session_b("SB2");
+    let started = rig.session_start_hook_in_process_of(PANE_B, "SB2", "clear", SESSION_B);
+    assert!(
+        started.stdout.contains(DIGEST_MARK),
+        "no digest for mail unread by the new binding: {}",
+        started.stdout
+    );
+    assert!(
+        started.stdout.contains("receipts=1 ["),
+        "the digest does not list the unread mail's pending receipt: {}",
+        started.stdout
+    );
+    assert!(
+        started.stdout.contains("More inbox content may remain"),
+        "the unread body needs continuation: {}",
+        started.stdout
+    );
+    rig.wait_prompt(mark, PANE_B);
+    assert_eq!(rig.receipt_state(&id), "pending");
+}
+
+/// Complete in-turn delivery settles the pending receipt, so idle needs no wake.
+#[test]
+fn clear_new_binding_hook_display_acks_unread_mail_without_a_later_wake() {
+    let rig = Rig::new();
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
     let id = rig.send_ordinary("only the watch saw this");
     watch.wait_item(&id);
     let mark = rig.host.mark();
     rig.set_session_b("SB2");
+    // Force the legal ordering: in-turn delivery finishes before idle wake.
+    rig.host.panes.lock().unwrap()[1]["agent_status"] = json!("working");
     let started = rig.session_start_hook_in_process_of(PANE_B, "SB2", "clear", SESSION_B);
     assert!(
         started.stdout.contains(DIGEST_MARK),
@@ -4831,7 +4866,8 @@ fn clear_new_binding_digests_and_wakes_for_its_unread_mail_without_grace() {
         "{}",
         started.stdout
     );
-    rig.wait_prompt(mark, PANE_B);
+    rig.set_session_b("SB2");
+    rig.assert_no_prompt(mark, QUIET);
     assert_eq!(rig.receipt_state(&id), "acked");
     assert_eq!(
         rig.ack_observation(&id)["action_provenance"],

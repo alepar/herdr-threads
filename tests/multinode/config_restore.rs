@@ -29,6 +29,45 @@ fn incarnations(
         .unwrap_or(0)
 }
 
+/// A peer pump can pass the shutdown gate before a resync and win the next
+/// daemon election store-only. Starting the node must attach its host even
+/// when `daemon ensure` finds that winner already running.
+#[test]
+fn starting_node_after_store_only_peer_attaches_its_host() {
+    let mut cluster = Cluster::start(
+        "mn-restore-start-host",
+        crate::BIN,
+        1,
+        ClusterOptions::default(),
+    );
+    cluster.add_host(0, &[P1]);
+    cluster.stop_node(0);
+
+    // Give the store-only contender the election deterministically, while
+    // leaving the fixture's node stopped so start_node takes its ensure path.
+    let out = cluster
+        .isolation()
+        .command(crate::BIN)
+        .arg("--state-dir")
+        .arg(cluster.state_dir(0))
+        .args(["daemon", "ensure"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        cluster.scalar(0, "SELECT count(*) FROM herdr_hosts", &[]),
+        Some("0".into()),
+        "the election winner has no remembered host"
+    );
+
+    cluster.start_node(0);
+    assert_eq!(
+        cluster.scalar(0, "SELECT count(*) FROM herdr_hosts", &[]),
+        Some("1".into()),
+        "start_node attaches its host to an already-running store-only daemon"
+    );
+}
+
 #[test]
 fn restore_from_backup_forks_is_reissued_and_resync_converges() {
     // Targets both ways: B needs a target for A for `sync resync --from A`.

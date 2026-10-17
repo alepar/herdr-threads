@@ -553,6 +553,24 @@ fn watch_loop(
     }
 }
 
+/// A lifecycle transition may reject the in-flight RPC before this consumer
+/// reads its terminal stream frame. Preserve that frame's canonical reason;
+/// never turn a refused page into successful presentation bookkeeping.
+fn lifecycle_close(conn: &mut dyn WatchConn) -> Option<crate::protocol::watch::WatchCloseReason> {
+    let deadline = std::time::Instant::now() + STREAM_READ_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match conn.next_frame(remaining) {
+            Ok(Some(WatchFrame::Close { reason })) => return Some(reason),
+            Ok(Some(WatchFrame::Attention { .. })) => {}
+            _ => return None,
+        }
+    }
+}
+
 /// Capability-and-owner admitted V2 stream. Canonical outbox state owns retry;
 /// only a successfully flushed captured page may be explicitly confirmed.
 #[allow(clippy::too_many_arguments)]
@@ -709,6 +727,14 @@ fn watch_presentation_loop(
                                     DeliveryPresentationConfirmationV2::Confirmed
                                         | DeliveryPresentationConfirmationV2::AlreadyConfirmed
                                 ) => {}
+                        Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))
+                            if reply.status == DeliveryPresentationConfirmationV2::StaleBinding =>
+                        {
+                            if let Some(reason) = lifecycle_close(conn) {
+                                return closing(state, out, reason.into(), reason.exit_code());
+                            }
+                            return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                        }
                         _ => {
                             return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
                         }
@@ -720,6 +746,12 @@ fn watch_presentation_loop(
                     record_truncated(state, id.as_str());
                 }
                 page.more
+            }
+            Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { .. })) => {
+                if let Some(reason) = lifecycle_close(conn) {
+                    return closing(state, out, reason.into(), reason.exit_code());
+                }
+                return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
             }
             _ => return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR),
         };

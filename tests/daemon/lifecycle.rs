@@ -307,21 +307,18 @@ async fn crashed_incompatible_protocol_owner_recovers_to_new_healthy_boot() {
     drop(listener);
     drop(lock);
     assert!(stale.endpoint.exists());
-    let recovered = ensure_running_with_timeout(
-        &context,
-        &launcher,
-        Arc::new(TestClock),
-        Duration::from_secs(5),
-    )
-    .await
-    .unwrap();
+    // Recovery proves eventual readiness, not a five-second startup contract.
+    // Use the same liveness bound as the other subprocess convergence tests.
+    let recovered = ensure_running_with_timeout(&context, &launcher, Arc::new(TestClock), LIVENESS)
+        .await
+        .unwrap();
     assert_eq!(recovered.node_uuid, instance);
     assert_ne!(recovered.boot_id, stale.boot_id);
     // The stale boot's socket was replaced at the same stable pathname.
     assert_eq!(recovered.endpoint, stale.endpoint);
     assert_eq!(recovered.protocol_version, PROTOCOL_VERSION);
     std::fs::write(root.join("stop"), b"stop").unwrap();
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(LIVENESS, async {
         while recovered.endpoint.exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -356,14 +353,9 @@ async fn crashed_endpoint_is_retired_before_replacement_election() {
     }
     let cleanup = ReleaseReplacement(root.clone());
     let (recovered, before_cleanup) = tokio::join!(
-        ensure_running_with_timeout(
-            &context,
-            &launcher,
-            Arc::new(TestClock),
-            Duration::from_secs(5)
-        ),
+        ensure_running_with_timeout(&context, &launcher, Arc::new(TestClock), LIVENESS),
         async {
-            let elected = tokio::time::timeout(Duration::from_secs(5), async {
+            let elected = tokio::time::timeout(LIVENESS, async {
                 while !root.join("replacement-election-held").exists() {
                     tokio::time::sleep(Duration::from_millis(1)).await;
                 }
@@ -381,7 +373,7 @@ async fn crashed_endpoint_is_retired_before_replacement_election() {
         },
     );
     drop(cleanup);
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(LIVENESS, async {
         while !root.join("replacement-exited").exists() {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -995,7 +987,7 @@ fn subprocess_owner_fixture() {
     if held_replacement {
         let election = OwnerLock::acquire_with_test_hint(&paths).unwrap();
         std::fs::write(root.join("replacement-election-held"), b"").unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + LIVENESS;
         while !root.join("release-replacement-election").exists() {
             assert!(
                 std::time::Instant::now() < deadline,
