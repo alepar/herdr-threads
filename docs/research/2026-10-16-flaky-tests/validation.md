@@ -18,6 +18,20 @@ Leak run ID: `1bda9736-c1df-478e-9097-874a32bf96ec`. The full run stayed inside 
 
 Controlled failing-first evidence is preserved in [reproductions](reproductions.md). The current V2 product watch defect is ht-x0b9. Historical ht-7ykh remains open because its older v1.2.0 path/schedule was not reconstructed. Broader static candidates remain tracked under ht-fmww.
 
-Research checks: coverage structural validator passed (three rounds, explicit budget-exhausted stop); claim-support checker passed all thirteen factual ledger entries; report surface and package validators passed; external citation URL validator confirmed all nine external URLs accessible. Local execution evidence was checked by reading the retained record and local link validation, not counted as an independent external document. Retrieval saturation and dynamic confirmation of the broader audit candidates are not claimed.
+Research checks: coverage structural validator passed (three rounds, explicit budget-exhausted stop); claim-support checker passed all fourteen factual ledger entries; report surface and package validators passed; external citation URL validator confirmed all nine external URLs accessible. Local execution evidence was checked by reading the retained record and local link validation, not counted as an independent external document. Retrieval saturation and dynamic confirmation of the broader audit candidates are not claimed.
 
 All suite fixtures and helpers completed; run-scoped cleanup found no leaks. Compiler/lint helpers exited when their commands completed. No authenticated release wake gate was run for this non-release patch task.
+
+## ht-41yy follow-up after the original batch
+
+The test-only `tests/multinode/sweep.rs` follow-up was verified separately after the original batch; the earlier 7,602-test full run does not cover this later test edit. Per the project instruction to avoid routine full reruns, this narrow change used its focused regression plus required checks.
+
+- Controlled partition RED: exact hosted inbox assertion failed (3.41s).
+- Reconnect with recipient-side wait GREEN: passed (7.38s).
+- Final code, temporary partition/heal removed: 20/20 nextest stress iterations passed (83.788s runner; 84.96s command).
+- Unique leak run `7460272b-3fbb-4bd2-8fc1-3d4209b2ff67`: no leaked test processes or temp files (0.25s).
+- All-target/all-feature clippy passed (0.34s cached incremental check); default-feature gate passed (0.12s).
+- Format, harness-neutral and diff checks passed; independent review found no must-fix issues and verified atomic message/delivery materialization.
+- Production code, timeouts, delivery/wake assertions and convergence oracles remain unchanged.
+
+Structured results: sweep-followup-verification.json. The coordinator receives the new commit for the 2.0.1 batch; this is non-blocking for 2.0.0.

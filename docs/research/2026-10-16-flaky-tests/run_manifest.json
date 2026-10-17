@@ -49,5 +49,12 @@
     "body": "feedback.md",
     "authorization": "User explicitly requested feedback to Superpowers space main tab"
   },
-  "tested_code_commit": "97755c280c089eda3b7e43249efabcf7c21ce31e"
+  "tested_code_commit": "97755c280c089eda3b7e43249efabcf7c21ce31e",
+  "followup": {
+    "bead": "ht-41yy",
+    "base_commit": "52d92580c",
+    "changed_test": "tests/multinode/sweep.rs",
+    "verification": "sweep-followup-verification.json",
+    "review": "No must-fix findings; recipient applied-message and receipt prerequisites sufficient"
+  }
 }

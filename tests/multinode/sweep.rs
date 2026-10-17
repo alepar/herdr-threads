@@ -122,6 +122,10 @@ fn created_thread_invites_unseen_seats_and_delivery_follows_the_contract() {
     // fresh seats; a second wake of one seat is spaced out by the wake
     // backoff, so only delivery is judged here.
     let n = send_in(&cluster, &a, &t_nudge, &["--body", "urgent", "-p", "0"]);
+    // Send completion is local to A; B's inbox needs the applied message.
+    cluster.wait_until("the p0 message to reach B", crate::WAIT, || {
+        cluster.scalar(1, "SELECT id FROM messages WHERE id = ?1", &[&n])
+    });
     assert!(support::inbox_ids(&cluster, &nudged).contains(&n));
 
     // A p1 waits for the seat's next turn.
@@ -146,6 +150,8 @@ fn created_thread_invites_unseen_seats_and_delivery_follows_the_contract() {
         &["--body", "ack me", "--require-ack", &acker.id],
     );
     support::wait_receipt(&cluster, 0, &r, &acker, "pending");
+    // A's receipt exists at send commit; the ACK on B needs its replica too.
+    support::wait_receipt(&cluster, 1, &r, &acker, "pending");
     support::ack(&cluster, &acker, &r);
     support::wait_receipt(&cluster, 0, &r, &acker, "acked");
     assert_eq!(
