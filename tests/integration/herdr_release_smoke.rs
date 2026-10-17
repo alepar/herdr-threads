@@ -1004,6 +1004,45 @@ fn herdr_release_move() {
         assert_eq!(row["continuity"], "resolved", "{row}");
         row["target"].as_str().unwrap().to_owned()
     };
+    // The client heal's premise, pinned per release: Herdr answers an old pane id with the
+    // pane's current record (following a chain of moves) and an unknown id with pane_not_found.
+    let alias_holds = |old: &str, pane: &str, terminal: &str| {
+        let degraded = format!(
+            "Herdr old-pane-id alias dropped: client heal in ht {} degrades (herdr {})",
+            env!("CARGO_PKG_VERSION"),
+            m.version
+        );
+        let record = m.herdr(&["pane", "get", old]);
+        let record = &record["result"]["pane"];
+        assert_eq!(
+            (record["pane_id"].as_str(), record["terminal_id"].as_str()),
+            (Some(pane), Some(terminal)),
+            "{degraded}: pane get {old}: {record}"
+        );
+        let out = m
+            .host
+            .command("herdr")
+            .args(["pane", "get", "w999:p999"])
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !out.status.success() && text.contains("pane_not_found"),
+            "{degraded}: an unknown pane id answered {}: {text}",
+            out.status
+        );
+    };
+    let moved_to = |reply: &Value| -> (String, String) {
+        let pane = &reply["result"]["move_result"]["pane"];
+        (
+            pane["pane_id"].as_str().unwrap().to_owned(),
+            pane["terminal_id"].as_str().unwrap().to_owned(),
+        )
+    };
     // Everything a seated agent and person do still works, through the stale ids.
     let works =
         |step: &str, n: usize, wake: bool| {
@@ -1126,7 +1165,11 @@ fn herdr_release_move() {
     // at once never allocates a second seat: it is refused as transient until the daemon has
     // followed the move, then it is the agent's own seat.
     let target_space = sender_pane.split(':').next().unwrap();
-    m.herdr(&[
+    let terminal = m.herdr(&["pane", "get", &agent_pane])["result"]["pane"]["terminal_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let reply = m.herdr(&[
         "pane",
         "move",
         &agent_pane,
@@ -1135,11 +1178,16 @@ fn herdr_release_move() {
         "--new-tab",
         "--no-focus",
     ]);
-    let moved = current(&agent_env);
+    let (moved, moved_terminal) = moved_to(&reply);
     assert_ne!(
         moved, agent_pane,
         "Herdr kept the pane id across workspaces"
     );
+    assert_eq!(
+        moved_terminal, terminal,
+        "Herdr changed the terminal on a move"
+    );
+    alias_holds(&agent_pane, &moved, &terminal);
     let resolved = wait_for("resolve the moved pane", Duration::from_secs(30), || {
         let out = m.ht_out(&["seat", "resolve", "--pane", &moved]);
         if out.status.success() {
@@ -1160,7 +1208,14 @@ fn herdr_release_move() {
     works("moved-space", 3, true);
 
     // Again: the stale id still reaches the pane after a chain of moves.
-    m.herdr(&["pane", "move", &moved, "--new-workspace", "--no-focus"]);
+    let reply = m.herdr(&["pane", "move", &moved, "--new-workspace", "--no-focus"]);
+    let (twice, twice_terminal) = moved_to(&reply);
+    assert_eq!(
+        twice_terminal, terminal,
+        "Herdr changed the terminal on a move"
+    );
+    alias_holds(&agent_pane, &twice, &terminal);
+    alias_holds(&moved, &twice, &terminal);
     works("moved-twice", 4, true);
     let seats = m.ht(&["seat", "list"]);
     assert_eq!(

@@ -36,6 +36,7 @@ The 1.0.1 column is the single smoke test that version shipped. The 1.0.2 column
 | Setup and removal | `setup codex` / `setup claude`, `setup-status`, `unsetup` | setup | core, handoff |
 | Pane and tab renames, workspace rename | `herdr tab/pane/workspace rename` with live seats: labels follow, identity, delivery and wake unchanged | no | move |
 | Moves with a live seated agent and person | `herdr pane move --new-tab` (same id), `--workspace`, `--new-workspace` and a chain of moves (new id, same terminal; the processes keep their old `HERDR_PANE_ID`): seats follow, in-turn delivery, the agent's `inbox`/`send`, the person's inbox and the p0 wake keep working, and `seat resolve` of a just-moved pane never allocates a second seat | no | move |
+| Herdr old-pane-id alias (the client heal's premise) | after a cross-workspace move and after a double move, `herdr pane get <old id>` returns the current record (same terminal id, new pane id, through the chain) and an unknown id returns `pane_not_found`; a failure reads `Herdr old-pane-id alias dropped: client heal in ht <version> degrades` | no | move |
 | Herdr's own Codex integration alongside the owned hooks | `herdr integration install codex` | no | every test |
 | Local recovery and warnings listings | `pending-ops`, `warnings` | no | core |
 
