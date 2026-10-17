@@ -2136,6 +2136,9 @@ pub enum ReservedWakeAuthority {
 /// One connected top-level binding a wake or poke may reach (spec §3 Wake).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WakeTarget {
+    /// Canonical binding observation provenance; a wake-text hint only.
+    #[serde(skip)]
+    pub provenance: String,
     pub binding: crate::protocol::ids::BindingId,
     pub harness: String,
     /// Pid of the fingerprint the binding was enrolled with; the composer wake matches it
@@ -3655,6 +3658,15 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         reservation: &WakeReservation,
         budget: &CallBudget,
     ) -> Result<bool, ApiError>;
+    /// Whether the reservation's binding evidence still matches the canonical target set.
+    /// A false result only restores conservative wake text; it never cancels a wake.
+    fn wake_text_evidence_current(
+        &self,
+        _reservation: &WakeReservation,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
     /// Whether the reserved wake still owes the binding its prompt reaches (ht-705): `binding` is
     /// the composer's choice, `None` the seat-level binding. Checked immediately before
     /// submission, after `validate_wake_reservation`; a binding served in its turn is not woken.

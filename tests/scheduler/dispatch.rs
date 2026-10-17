@@ -5235,6 +5235,7 @@ fn cooperative_reservation_without_harness_is_not_prompted() {
 
 fn binding_target(id: &str, harness: &str, pid: Option<u32>) -> crate::ports::WakeTarget {
     crate::ports::WakeTarget {
+        provenance: String::new(),
         binding: crate::protocol::ids::BindingId::new(id),
         harness: harness.into(),
         fingerprint_pid: pid,

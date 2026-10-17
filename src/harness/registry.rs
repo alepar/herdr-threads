@@ -292,6 +292,7 @@ trait ErasedAdapter: Send + Sync {
     fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec>;
     fn hook_step(&self) -> Option<&dyn HookStep>;
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy>;
+    fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str;
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy>;
     fn text(&self) -> &'static AdapterText;
     fn default_config_root(&self, environment: &SetupEnvironment) -> Option<std::path::PathBuf>;
@@ -515,6 +516,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
         self.0.delivery_policy()
+    }
+    fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str {
+        self.0.binding_wake_text(provenance)
     }
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         self.0.canary_strategy()
@@ -1415,8 +1419,16 @@ impl Registry {
     /// The prompt a native idle wake types for a harness id: the marker unless its delivery
     /// policy injects the pending items at turn start.
     pub fn wake_text(&self, harness_id: &str) -> &'static str {
-        self.delivery_policy(harness_id)
-            .map_or(crate::notification::policy::MARKER, |p| p.wake_text())
+        self.binding_wake_text(harness_id, None)
+    }
+    /// Wake text with the canonical observation provenance of the reached binding.
+    pub fn binding_wake_text(&self, harness_id: &str, provenance: Option<&str>) -> &'static str {
+        self.registrations
+            .iter()
+            .find(|r| r.metadata().id == harness_id)
+            .map_or(crate::notification::policy::MARKER, |r| {
+                r.adapter.binding_wake_text(provenance)
+            })
     }
     /// Ids of harnesses that deliver through a push channel (for the clap parser).
     pub fn push_channel_ids(&self) -> Vec<&'static str> {

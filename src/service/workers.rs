@@ -1565,6 +1565,13 @@ impl crate::notification::dispatch::ReservationCheck for ScheduledStore {
     ) -> Result<bool, ApiError> {
         self.store.validate_wake_reservation(reservation, budget)
     }
+    fn wake_text_evidence_current(
+        &self,
+        reservation: &WakeReservation,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        self.store.wake_text_evidence_current(reservation, budget)
+    }
     fn owes_wake(
         &self,
         reservation: &WakeReservation,

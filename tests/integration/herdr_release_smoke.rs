@@ -48,7 +48,7 @@ use std::{
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 const PLUGIN: &str = "herdr-threads";
 /// The wake texts the daemon types into an idle composer (`notification::policy::WAKE_TEXTS`):
-/// Codex gets the inbox marker, a content-free harness gets the bare wake-up line.
+/// Hook-registered Codex gets the bare wake-up line; hookless/recovery paths keep the inbox hint.
 const WAKE_TEXTS: [&str; 2] = [
     "herdr-threads: attention pending; run herdr-threads inbox",
     "herdr-threads: wake up",
@@ -815,6 +815,12 @@ fn herdr_release_wake() {
                 Err("not delivered".into())
             }
         },
+    );
+    assert!(
+        m.log_of(&agent_pane)
+            .iter()
+            .any(|e| e["kind"] == "prompt" && e["text"] == "herdr-threads: wake up"),
+        "hook-registered Codex must receive a content-free wake"
     );
     // Complete wake-turn display ACKs without a separate command.
     wait_for("wake display ACK", Duration::from_secs(15), || {

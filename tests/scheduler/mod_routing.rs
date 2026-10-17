@@ -362,6 +362,7 @@ fn deadlines_still_scan_while_live() {
 
 fn target(id: &str, pid: u32) -> crate::ports::WakeTarget {
     crate::ports::WakeTarget {
+        provenance: String::new(),
         binding: crate::protocol::ids::BindingId::new(id),
         harness: "claude".into(),
         fingerprint_pid: Some(pid),

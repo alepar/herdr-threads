@@ -377,7 +377,7 @@ fn wake_target_rows(
 ) -> Result<Vec<TargetRow>, ApiError> {
     let mut statement = db
         .prepare_cached(
-            "SELECT binding_id,harness,liveness_pid,generation,target_generation,target_id,terminal_id,incarnation,registered_at IS NOT NULL \
+            "SELECT binding_id,harness,liveness_pid,generation,target_generation,target_id,terminal_id,incarnation,registered_at IS NOT NULL,observation_provenance \
              FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND liveness='connected' \
              AND role='top_level' AND harness<>'human' ORDER BY ordinal",
         )
@@ -394,6 +394,7 @@ fn wake_target_rows(
                 r.get::<_, Option<String>>(6)?,
                 r.get::<_, Option<String>>(7)?,
                 r.get::<_, bool>(8)?,
+                r.get::<_, String>(9)?,
             ))
         })
         .map_err(store_error)?
@@ -411,6 +412,7 @@ fn wake_target_rows(
         terminal,
         incarnation,
         registered,
+        provenance,
     ) in rows
     {
         let binding = BindingId::parse(binding).map_err(corrupt)?;
@@ -419,6 +421,7 @@ fn wake_target_rows(
         }
         targets.push(TargetRow {
             target: WakeTarget {
+                provenance,
                 binding,
                 harness,
                 fingerprint_pid: pid.and_then(|pid| u32::try_from(pid).ok()),
@@ -649,6 +652,24 @@ pub(crate) const LAZY_FRONTIER_UNREAD_SQL: &str = concat!(
     crate::store::lazy_delivery::binding_lazy_unread_sql!(),
     ")"
 );
+
+/// Text evidence has a stricter freshness requirement than the wake's scope fence:
+/// a new plain sibling must restore the inbox hint without invalidating the wake.
+pub fn wake_text_evidence_current(
+    db: &Connection,
+    reservation: &WakeReservation,
+) -> Result<bool, ApiError> {
+    let targets = reservation.authority.targets();
+    if targets.is_empty() {
+        return Ok(false);
+    }
+    let current: Vec<_> =
+        wake_target_rows(db, &reservation.seat, reservation.for_seat_attention())?
+            .into_iter()
+            .map(|row| row.target)
+            .collect();
+    Ok(current == targets)
+}
 
 /// `all_offered` for each of `bindings`; no binding, nothing was served.
 fn served_by_all(

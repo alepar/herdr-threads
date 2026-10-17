@@ -1049,6 +1049,20 @@ def turn_block(mid, case):
 COMPOSER = "\u2500" * 40 + "\n\u276f \n" + "\u2500" * 40 + "\n  \u23f5\u23f5 auto mode on\n"
 
 
+class ChannelWakeMarkers(unittest.TestCase):
+    def test_old_and_new_channel_wakes_count_once_each(self):
+        old = turn_block("mOLD", "send-ack/group")
+        new = turn_block("mNEW", "send-ack/group").replace("herdr-threads: wake up", "wake up")
+        self.assertEqual(W.wake_count(old + new), 2)
+        self.assertTrue(W.received_in_wake_turn(old, "mOLD"))
+        self.assertTrue(W.received_in_wake_turn(new, "mNEW"))
+
+    def test_a_prompt_mentioning_wake_up_is_not_a_channel_wake(self):
+        screen = "❯ Explain how to wake up the agent\n⏺ RECEIVED mOTHER: example\n"
+        self.assertEqual(W.wake_count(screen), 0)
+        self.assertFalse(W.received_in_wake_turn(screen, "mOTHER"))
+
+
 class DeliveredScreenSources(unittest.TestCase):
     """`delivered` (and every on_screen/shows content check) reads the live viewport and the deep transcript, and
     holds when either shows the line. v0.11.0 cl-all send-ack/1:1: 15 recent-unwrapped reads (04:53:46-04:54:01Z)

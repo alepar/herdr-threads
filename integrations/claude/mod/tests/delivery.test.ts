@@ -8,7 +8,7 @@ import priorityOrderMixed from './fixtures/priority-order-mixed.js'
 
 type Any = any
 
-const WAKE = 'herdr-threads: wake up'
+const WAKE = 'wake up'
 
 const flush = async () => {
   for (let i = 0; i < 60; i++) await Promise.resolve()

@@ -35,6 +35,13 @@ impl Clock for FixedClock {
 }
 struct CurrentReservation;
 impl ReservationCheck for CurrentReservation {
+    fn wake_text_evidence_current(
+        &self,
+        _: &WakeReservation,
+        _: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(true)
+    }
     fn is_current(&self, _: &WakeReservation, _: &CallBudget) -> Result<bool, ApiError> {
         Ok(true)
     }
@@ -402,6 +409,7 @@ fn the_inbox_marker_follows_the_composer_bindings_parking() {
         targets: [(&a, 111), (&b, 222)]
             .into_iter()
             .map(|(binding, pid)| crate::ports::WakeTarget {
+                provenance: String::new(),
                 binding: binding.clone(),
                 harness: "agy".to_owned(),
                 fingerprint_pid: Some(pid),
@@ -432,5 +440,44 @@ fn the_inbox_marker_follows_the_composer_bindings_parking() {
         typed(&b),
         vec!["herdr-threads: wake up".to_owned()],
         "only the other binding B holds parked ids: the woken one has none"
+    );
+}
+
+/// Kills: hook evidence overriding recovery or parked-item inbox fallbacks.
+#[test]
+fn codex_hook_evidence_keeps_recovery_and_parked_inbox_hints() {
+    let authority = || ReservedWakeAuthority::Cooperative {
+        terminal: TerminalId::new("terminal"),
+        incarnation: "incarnation".into(),
+        binding_generation: Some(1),
+        harness: Some("codex".into()),
+        targets: vec![crate::ports::WakeTarget {
+            binding: BindingId::new("binding"),
+            harness: "codex".into(),
+            provenance: "cooperative_top_level".into(),
+            fingerprint_pid: Some(111),
+        }],
+    };
+    for (parked, expected) in [(false, WAKE_UP), (true, MARKER)] {
+        assert_eq!(
+            typed_through(
+                authority(),
+                observation(false),
+                None,
+                FakeOutlook { parked, only: None },
+                vec![111]
+            ),
+            [expected]
+        );
+    }
+    assert_eq!(
+        typed_for(
+            ReservedWakeAuthority::RecoveryHint {
+                execution: ExecutionId::new("execution"),
+            },
+            true,
+            Some("codex")
+        ),
+        [MARKER]
     );
 }

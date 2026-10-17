@@ -46,6 +46,14 @@ pub trait ReservationCheck: Send + Sync {
         reservation: &WakeReservation,
         budget: &CallBudget,
     ) -> Result<bool, ApiError>;
+    /// Conservative text-only freshness check, independent of the reservation scope fence.
+    fn wake_text_evidence_current(
+        &self,
+        _reservation: &WakeReservation,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
     /// Whether the wake is still owed to the process the prompt reaches (`reached`: the
     /// composer's bindings, or `[None]` for the seat-level binding): receipts and invitations a
     /// reached binding was served in its turn are owed no wake (ht-705), and the delivery-row
@@ -433,6 +441,7 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             expected_boot: Some(reservation.host_boot.clone()),
             expected_epoch: Some(reservation.host_epoch),
         };
+        let mut default_text = MARKER;
         let text = match (&poke, using_poke) {
             (Some(request), true) => request.plan.text.as_str(),
             // The hook path is what failed for a recovery hint: it must name `inbox`.
@@ -472,9 +481,31 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 {
                     MARKER
                 } else {
-                    crate::harness::registry::builtins().wake_text(id)
+                    let registry = crate::harness::registry::builtins();
+                    default_text = registry.wake_text(id);
+                    // Every possible recipient of this composer turn must support the same
+                    // text. An unobserved sibling keeps the inbox hint for the process.
+                    reservation
+                        .authority
+                        .targets()
+                        .iter()
+                        .filter(|t| targets.contains(&t.binding))
+                        .map(|t| registry.binding_wake_text(id, Some(&t.provenance)))
+                        .reduce(|a, b| if a == b { a } else { MARKER })
+                        .unwrap_or_else(|| registry.wake_text(id))
                 }
             }),
+        };
+        let text = if !using_poke
+            && text != default_text
+            && !self
+                .check
+                .wake_text_evidence_current(&reservation, &context.budget)
+                .unwrap_or(false)
+        {
+            default_text
+        } else {
+            text
         };
         // Unsolicited attention never queues into an active turn.
         let submitted = self.host.submit_prompt(&target, text, &prompt_context);

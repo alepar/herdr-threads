@@ -106,7 +106,7 @@ builds `io` from `$`. Rules (spec D5, D6):
   `context`, only when that result is the answered variant (a deny, an error or a subagent call
   leaves them queued). While idle (R18) they are appended as one batched `$.session.append` (hidden
   rows, no turn), settled by that append (`watch ack --via append`), and then the content-free wake prompt
-  `herdr-threads: wake up` is submitted with `$.prompt.submit`; the turn it starts sees the rows. The
+  `wake up` is submitted (Claude Code labels it as a message from the herdr-threads plugin) with `$.prompt.submit`; the turn it starts sees the rows. The
   append is awaited before the submit, so the order is append, then submit. A denied append submits no wake
   (items stay queued, ledger `refused` via `append`, 30 s backoff). The submit is never awaited in a hook and
   never issued while a main turn is open (re-checked right before the call). Rows the daemon

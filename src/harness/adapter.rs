@@ -229,6 +229,13 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
         None
     }
+    /// Native wake text selected from canonical evidence for the reached binding.
+    /// Missing evidence keeps the policy's conservative default. This selects text only,
+    /// never delivery eligibility or receipt authority.
+    fn binding_wake_text(&self, _provenance: Option<&str>) -> &'static str {
+        self.delivery_policy()
+            .map_or(crate::notification::policy::MARKER, |p| p.wake_text())
+    }
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         None
     }

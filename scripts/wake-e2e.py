@@ -114,7 +114,7 @@ SIBLING_SIDE_DONE = re.compile(r"^[^\w\n]*SIDE-SIB-DONE", re.M)
 # Codex runs with its shell snapshot off (launch_line, ht-l16), so the candidate's bin dir stays first on PATH; a plain
 # recipient is still given the shim's exact path, since it has no hook context naming the run's --state-dir.
 PLAIN_HINT = (" Your herdr-threads hooks are off: always run herdr-threads by the exact path `{shim}` (never a bare "
-              "`herdr-threads`), and whenever a turn starts with `herdr-threads: wake up`, run `{shim} inbox` once, "
+              "`herdr-threads`), and whenever a turn starts with `herdr-threads: wake up` or `herdr-threads: attention pending`, run `{shim} inbox` once, "
               "then handle what it shows as above.")
 # Busy cases send while the recipient is mid-turn (between two tool calls): no wake may be typed or submitted, during
 # the turn or after it, and the item must arrive in that turn at the next tool boundary (Delivery contract rules 3-4).
@@ -126,7 +126,9 @@ BUSY_AFTER_S = 40.0
 BUSY_DONE_LINE = re.compile(r"^[^\w\n]*BUSY-DONE[^\w\n]*$", re.M)
 BUSY_PROMPT_END = "BUSY-DONE."
 BUSY_END_GRACE_S = 10.0  # idle this long with no BUSY-DONE line: the turn is over without one
-WAKE_MARKERS = ("herdr-threads: wake up", "herdr-threads: attention pending")
+# Keep the native and pre-upgrade channel forms ahead of their short suffix.
+WAKE_MARKERS = ("herdr-threads: wake up", "herdr-threads: attention pending", "wake up")
+WAKE_PATTERN = re.compile("|".join(map(re.escape, WAKE_MARKERS)))
 WAKE_WINDOW_S = 6.0     # a woken agent leaves idle well inside this (observed 0.3-1.1 s)
 SPACING_S = 35.0        # the per-seat wake retry guard is 30 s after each reservation (src/notification/policy.rs)
 TURN_TIMEOUT_MS = 240_000
@@ -147,7 +149,8 @@ def side_nudge_passed(setup_ok, woke, checks):
 
 def received_in_wake_turn(screen, mid):
     """Whether the last `RECEIVED` line for `mid` belongs to a turn whose prompt was a wake marker: the nearest
-    composer prompt line (`›` or `❯`) above it is `herdr-threads: wake up` or `attention pending`. A `/side` turn's
+    composer prompt line (`›` or `❯`) above it is a native wake, or Claude's plugin label is followed
+    by `wake up` (the pre-upgrade prefixed form also counts). A `/side` turn's
     own display of the message is not a wake of the main session, and its prompt is the side instruction."""
     prompt = None
     hit = False
@@ -155,8 +158,13 @@ def received_in_wake_turn(screen, mid):
         text = line.lstrip()
         if text.startswith(("›", "❯")):
             prompt = text
+        elif prompt is not None and "The herdr-threads plugin sent a message:" in prompt:
+            if text in ("wake up", "herdr-threads: wake up"):
+                prompt = text
+            elif "RECEIVED" in text and mid in text:
+                hit = False
         elif "RECEIVED" in text and mid in text:
-            hit = prompt is not None and any(m in prompt for m in WAKE_MARKERS)
+            hit = prompt is not None and is_wake_line(prompt)
     return hit
 # Session variables and agent env markers (every `AgentEnvMarker` the built-in adapters declare; the self-test
 # checks this list against src/harness) of whatever runs this script: never inherited by the commands it runs.
@@ -265,7 +273,7 @@ def paged_order(screen, ids):
     """The ids in order of first appearance, one list per wake (split at each WAKE_MARKERS line): each wake pulls
     its own page, so presentation order is judged within a page, never across two wakes."""
     pages, seen = [], set()
-    for chunk in re.split("|".join(map(re.escape, WAKE_MARKERS)), screen):
+    for chunk in WAKE_PATTERN.split(screen):
         page = [i for i in screen_order(chunk, ids) if i not in seen]
         seen.update(page)
         if page:
@@ -911,8 +919,14 @@ def busy_turn_split(text, anchor):
     return rest[:end.end()], rest[end.end():], True
 
 
+def is_wake_line(text):
+    text = text.strip().lstrip("›❯ ")
+    return text in ("herdr-threads: wake up", "wake up") or text.startswith("herdr-threads: attention pending")
+
+
 def wake_count(text):
-    return sum(text.count(m) for m in WAKE_MARKERS)
+    # Match whole prompt/body lines; an explanation mentioning "wake up" is not a wake.
+    return sum(is_wake_line(line) for line in text.splitlines())
 
 
 class Recipient:

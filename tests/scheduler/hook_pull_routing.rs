@@ -175,6 +175,7 @@ fn the_outlook_is_asked_about_the_candidates_target_bindings() {
     candidate.targets = ["binding-a", "binding-b"]
         .into_iter()
         .map(|id| WakeTarget {
+            provenance: String::new(),
             binding: BindingId::new(id),
             harness: "agy".to_owned(),
             fingerprint_pid: None,

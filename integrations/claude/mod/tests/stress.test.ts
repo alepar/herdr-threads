@@ -10,7 +10,7 @@ import { createCore } from '../hooks/register.js'
 type Any = any
 
 // R18: an idle delivery appends its frames, then submits only this content-free prompt (no ids).
-const WAKE = 'herdr-threads: wake up'
+const WAKE = 'wake up'
 
 const BASE_SEED = 20261009
 const SCHEDULES = 800

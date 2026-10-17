@@ -2560,6 +2560,16 @@ fn sole_target(store: &SqliteStore, harness: &str) -> crate::ports::WakeTarget {
         )
         .unwrap();
     crate::ports::WakeTarget {
+        provenance: store
+            .context
+            .open_writer()
+            .unwrap()
+            .query_row(
+                "SELECT observation_provenance FROM occupant_bindings",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap(),
         binding: crate::protocol::ids::BindingId::new(id),
         harness: harness.into(),
         fingerprint_pid: pid.map(|pid| u32::try_from(pid).unwrap()),
@@ -3053,6 +3063,13 @@ impl crate::notification::dispatch::ReservationCheck for StoreFence<'_> {
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
         StorePort::validate_wake_reservation(self.0, reservation, budget)
+    }
+    fn wake_text_evidence_current(
+        &self,
+        reservation: &crate::ports::WakeReservation,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        StorePort::wake_text_evidence_current(self.0, reservation, budget)
     }
     fn owes_wake(
         &self,
@@ -3725,6 +3742,107 @@ fn a_recovery_hint_wake_to_a_served_binding_is_refused() {
     assert!(
         StorePort::wake_owed_to_binding(&store, &reservation, None, &budget()).unwrap(),
         "control: unserved, the hint is owed"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills the legacy marker for hook-registered bindings, and an unconditional
+/// short wake that strands plain CLI / managed-launch bindings without inbox context.
+#[test]
+fn codex_wake_text_uses_the_reached_bindings_hook_provenance() {
+    for (provenance, expected) in [
+        ("cooperative_top_level", "herdr-threads: wake up"),
+        (
+            "cooperative_env_session",
+            "herdr-threads: attention pending; run herdr-threads inbox",
+        ),
+        (
+            "managed_launch",
+            "herdr-threads: attention pending; run herdr-threads inbox",
+        ),
+    ] {
+        let (store, path) = multi_store(&[row("a", "codex", 10), row("b", "codex", 20)]);
+        store
+            .context
+            .open_writer()
+            .unwrap()
+            .execute(
+                "UPDATE occupant_bindings SET observation_provenance=?1 WHERE binding_id='a'",
+                [provenance],
+            )
+            .unwrap();
+        let reservation = StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &owed_candidate(&store).unwrap(),
+            &budget(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            dispatch_to(&store, &reservation, 10).1,
+            [expected],
+            "{provenance}"
+        );
+        assert_eq!(
+            dispatch_to(&store, &reservation, 20).1,
+            ["herdr-threads: wake up"],
+            "a different process must not affect the reached binding"
+        );
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Kills: using just one sibling's hook evidence for a shared process composer.
+#[test]
+fn codex_shared_composer_keeps_inbox_hint_if_any_binding_is_plain() {
+    for plain in [false, true] {
+        let (store, path) = multi_store(&[row("a", "codex", 10), row("b", "codex", 10)]);
+        if plain {
+            store.context.open_writer().unwrap().execute(
+                "UPDATE occupant_bindings SET observation_provenance='cooperative_env_session' WHERE binding_id='b'", [],
+            ).unwrap();
+        }
+        let reservation = StorePort::reserve_wake(
+            &store,
+            crate::test_support::test_host_id(),
+            &owed_candidate(&store).unwrap(),
+            &budget(),
+        )
+        .unwrap()
+        .unwrap();
+        let expected = if plain {
+            "herdr-threads: attention pending; run herdr-threads inbox"
+        } else {
+            "herdr-threads: wake up"
+        };
+        assert_eq!(dispatch_to(&store, &reservation, 10).1, [expected]);
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Kills: treating a frozen target list as current hook evidence after a plain
+/// sibling joins the same process between reservation and dispatch.
+#[test]
+fn codex_new_plain_sibling_after_reservation_keeps_the_inbox_hint() {
+    let (store, path) = multi_store(&[row("a", "codex", 10)]);
+    let reservation = StorePort::reserve_wake(
+        &store,
+        crate::test_support::test_host_id(),
+        &owed_candidate(&store).unwrap(),
+        &budget(),
+    )
+    .unwrap()
+    .unwrap();
+    store.context.open_writer().unwrap().execute_batch(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,binding_id,role,liveness,liveness_pid,liveness_start) VALUES ('s',1,1,'pane','host',0,'codex','new-plain','self-reported','cooperative_env_session',0,'term-pane','inc','b','top_level','connected',10,1)"
+    ).unwrap();
+    assert_eq!(
+        dispatch_to(&store, &reservation, 10).1,
+        ["herdr-threads: attention pending; run herdr-threads inbox"]
     );
     drop(store);
     let _ = std::fs::remove_file(path);
