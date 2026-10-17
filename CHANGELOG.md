@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v2.0.3
+
+- **Sends and handoffs no longer fail with `send preparation snapshot changed`.** A send gave up the store's write lane between its final preparation and publication, so a queued background pass (for example, seat liveness) could change the state in between and the send or handoff failed with `send preparation snapshot changed (conflict)`. The final preparation now keeps the lane through permit issuance and publication, for ordinary sends and both handoff paths; earlier preparation steps still yield and every revision, budget and authority check stays. No schema, protocol or model-visible text change.
+
 ## v2.0.2
 
 - **No redundant attention line.** When a delivery page already carried every notice that made an item pending, Claude's mod still added `herdr-threads: attention pending; run herdr-threads inbox`, and the following `inbox` printed `empty`. The daemon now settles a page's notices before deciding on the attention line and drops the line when nothing else is pending (saves one line and one tool call per such wake). No schema or protocol change.
