@@ -1,0 +1,30 @@
+{
+  "run_id": "1bda9736-c1df-478e-9097-874a32bf96ec",
+  "stages": [
+    {
+      "name": "suite",
+      "code": 0,
+      "seconds": 289.45
+    },
+    {
+      "name": "leaks",
+      "code": 0,
+      "seconds": 0.76
+    },
+    {
+      "name": "clippy-all",
+      "code": 0,
+      "seconds": 58.65
+    },
+    {
+      "name": "clippy-default",
+      "code": 0,
+      "seconds": 54.72
+    },
+    {
+      "name": "default-features",
+      "code": 0,
+      "seconds": 40.93
+    }
+  ]
+}

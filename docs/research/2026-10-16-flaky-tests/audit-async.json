@@ -1,0 +1,131 @@
+{
+  "role": "read-only asynchronous test audit",
+  "checkout": "/Users/alepar/AleCode/herdr-threads/.worktrees/fix-v2-flakes",
+  "coverage": {
+    "lexical_scan_files": 841,
+    "lexical_scan_lines": 530616,
+    "test_files": 734,
+    "src_cli_harness_files": 107,
+    "candidate_sites": 2096,
+    "manifest": "/tmp/ht-audit-async-scanned.txt",
+    "context_extract": "/tmp/ht-audit-async-contexts.txt",
+    "method": "Read all files as text and scan async, time, subprocess, shared-state and negative-observation constructs. Manually inspect candidate windows and their helper/production semantics. This is broad lexical coverage plus targeted causal review, not a claim of full semantic review of every line.",
+    "deferred": [
+      "tests/daemon/lifecycle.rs (parent actively investigating)",
+      "tests/multinode/config_restore.rs (parent actively investigating)"
+    ],
+    "commands_run": "Read-only file searches and Python text extraction; no cargo, test execution, processes or thread mutations."
+  },
+  "findings": [
+    {
+      "id": "ASYNC-1",
+      "path": "tests/integration/agy_sweep.rs",
+      "line": 364,
+      "test": "wake_on_all_wakes_a_native_hook_pull_seat_for_a_lazy_row_and_nudge_never",
+      "severity": "P2",
+      "confidence": "high",
+      "kind": "event observed after action / lost observation",
+      "causal_interleaving": "wake_on(all) commits the threshold and kicks a wake while its CLI is still returning. Wake worker records agent.prompt. Parent next captures host.mark(), now after the only expected prompt. wait_prompt(mark_all) ignores that prompt and eventually times out; spacing/frontier rules intentionally prevent another wake.",
+      "minimal_repro": "In a diagnostic copy, insert a wait for prompts_for(PANE_G) to increase between wake_on(all) and let mark_all. Existing test then times out waiting for a second wake. No production change is required.",
+      "fix": "Capture mark_all before agy.wake_on(all), matching the send/invitation setup patterns already used in this module."
+    },
+    {
+      "id": "ASYNC-2",
+      "path": "tests/host_adapter.rs",
+      "line": 777,
+      "test": "stalled_request_write_is_cancellable_and_never_reports_submission",
+      "severity": "P2",
+      "confidence": "high",
+      "kind": "sleep mistaken for partial-write precondition",
+      "causal_interleaving": "Server accepts operation socket, sleeps 40ms, cancels. Acceptance precedes client request encoding/writes. If client thread is descheduled or encoding the 900KB text during that interval, cancellation is observed before any byte is written. Server reads EOF and fails !bytes.is_empty(), although cancellation behavior is correct. A scheduling delay can also make the 30ms post-cancel read begin before cancellation closes the socket.",
+      "minimal_repro": "Pause the client immediately after operation connect and before request serialization/write for >40ms; server cancels and asserts empty bytes. CPU contention at this point is sufficient.",
+      "fix": "Have the fake server poll MSG_PEEK for at least one byte without draining the buffer, then cancel once a partial write is causally established; keep payload larger than socket capacity and a bounded fallback cleanup. Preserve actual cancellation behavior assertions."
+    },
+    {
+      "id": "ASYNC-3",
+      "path": "tests/store/sync_contacts.rs",
+      "line": 390,
+      "test": "sqlite_writes_wait_for_a_background_turn",
+      "severity": "P2",
+      "confidence": "high",
+      "kind": "timer origin after concurrent timer started",
+      "causal_interleaving": "Canceller thread starts its 100ms sleep immediately on spawn. Parent records started only after spawning it. If parent is delayed >=10ms the measured wait is <90ms; if >=100ms the budget is already cancelled and a correct write returns immediately. The >=90ms assertion fails independently of admission correctness.",
+      "minimal_repro": "Insert a diagnostic 120ms pause in parent between spawning canceller and recording started. The held FairWriter turn remains held, mutation correctly errors, elapsed assertion fails.",
+      "fix": "Replace elapsed lower bound with an admission waiting precondition (FairWriter waiting count or a test hook), then cancel while the guard remains held and assert error plus unchanged store. Starting Instant before spawn removes the immediate origin bug but still would not prove actual wait."
+    },
+    {
+      "id": "ASYNC-4",
+      "path": "tests/sync/incarnations_worker.rs",
+      "line": 995,
+      "test": "own_history_release_kicks_the_apply_lane",
+      "severity": "P2",
+      "confidence": "high for false positive; not a demonstrated false failure",
+      "kind": "startup pass mistaken for release-triggered pass",
+      "causal_interleaving": "Test starts apply worker then sleeps 500ms assuming startup replay reached idle. Under load worker need not run before hold.set(true), hold.set(false). Delayed startup pass later consumes apply_hint even if release failed to kick the pacer; test passes while the claimed release-wake behavior is broken.",
+      "minimal_repro": "In a diagnostic copy hold worker startup behind a gate until after the two hold transitions, and suppress the hold-release kick. Startup consumes apply_hint and test still passes.",
+      "fix": "Observe the apply lane entering its first idle wait before setting/releasing the hold, record pass/idle generation, then require a later pass and hint consumption. Manual clock already prevents incidental safety tick progress."
+    },
+    {
+      "id": "ASYNC-5",
+      "path": "src/harness/hermes/assets.rs",
+      "line": 1436,
+      "test": "process_death_releases_physical_lock_without_replacing_inode / lock_child",
+      "severity": "P2",
+      "confidence": "medium",
+      "kind": "fixture holder self-expires while parent requires ownership",
+      "causal_interleaving": "Child acquires lock and writes ready, but drops the lock/exits automatically after ten seconds. Parent treats ready existence as proof child still holds lock, then asserts install Conflict before intentionally stopping child. A long parent pause after readiness lets child exit and install succeeds, failing the intended contention assertion; the 2s readiness ceiling separately measures child startup liveness.",
+      "minimal_repro": "Pause parent >10s after seeing lock-ready and before f.install(); held-lock assertion fails with unchanged production code.",
+      "fix": "Keep child blocked on an explicit parent release channel/stdin until OwnedChild.stop performs the tested process death. Use readiness marker causally and owner cleanup to end it; no fixed sleep lifetime. Do not raise production lock budgets."
+    },
+    {
+      "id": "ASYNC-6",
+      "path": "src/harness/hermes/runtime.rs",
+      "line": 682,
+      "test": "capture_kills_and_reaps_owned_hung_child",
+      "severity": "P2",
+      "confidence": "medium",
+      "kind": "cancellation watcher lifetime shorter than expected operation",
+      "causal_interleaving": "Watcher gives itself three real seconds to observe pidfile and then exits silently. Parent expects exact ProbeFailure::Cancelled. If probe spawn/body is delayed >3s, watcher disappears before pidfile exists and capture later returns Deadline instead. Warm-up removes one macOS assessment source but does not establish scheduling/startup completion.",
+      "minimal_repro": "Delay launch body/pidfile creation for >3s but less than capture deadline, or delay capture start while watcher timer runs. Exact Cancelled assertion fails.",
+      "fix": "Watch until either pidfile is observed or capture signals done, with an owned lifecycle guard and an independent generous failure bound for cleanup. To test cancel-and-reap, establish child startup causally before triggering cancellation rather than timing a watcher against launch."
+    }
+  ],
+  "additional_negative_observation_gap": {
+    "path": "tests/integration/agy_sweep.rs",
+    "line": 409,
+    "description": "The live-channel companion test captures mark_all after wake_on(all), so an erroneous native wake caused immediately by that change would be excluded from the no-native-wake assertion. Move the mark before the change too. It is the negative counterpart of ASYNC-1, not a separate root cause."
+  },
+  "positive_controls": [
+    {
+      "path": "tests/sync/incarnations_worker.rs",
+      "line": 597,
+      "description": "timer_fails_over_unanswered_request_after_30s uses #[tokio::test(start_paused = true)] and a compatible PausedClock. The 29s+2s sleeps advance virtual time and assert real policy boundaries; do not replace with larger wall-clock timeouts."
+    },
+    {
+      "path": "tests/scheduler/poke_flow.rs",
+      "line": 972,
+      "description": "Frozen-lane quiet assertion first waits pacer.idle_events() >=1 before beginning its quiet observation, then explicitly marks host up and causally polls resulting state."
+    },
+    {
+      "path": "tests/integration/mod_delivery.rs",
+      "line": 483,
+      "description": "Invitation setup captures host.mark() before triggering invite and waits native prompt, the correct pattern for ASYNC-1."
+    },
+    {
+      "path": "tests/cli/topology_handoff.rs",
+      "line": 7279,
+      "description": "Permit-expiry check computes target after permit issuance and observes live permit clock until the target; avoids assuming one nominal sleep reaches the exact timestamp."
+    },
+    {
+      "path": "tests/harness/manifest.rs",
+      "line": 773,
+      "description": "10ms ensure_manifest checks are explicit production nonblocking latency contracts, gated fetchers are released/drained before asserting, and minimum of three samples reduces scheduler outliers. Not treated as arbitrary liveness timeouts."
+    },
+    {
+      "path": "tests/host/witness_transport.rs",
+      "line": 325,
+      "description": "Late-writer regression first establishes accepted connection before intentionally delaying request. Sleep is controlled stimulus to expose accepted-O_NONBLOCK bug, not readiness wait."
+    }
+  ],
+  "limitations": "Findings are source-derived causal candidates. No empirical reproduction claimed. Most negative real-time assertions in multinode suite at least establish message replication/convergence first; they still do not prove wake lane evaluated item before observation ends, but no false-failure mechanism was established and these are not promoted as standalone findings. Existing hook latency and real permit expiry tests retain their production contracts."
+}

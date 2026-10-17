@@ -1,0 +1,53 @@
+{
+  "mode": "standard",
+  "search_preflight": {
+    "status": "fallback",
+    "reason": "search CLI present; first scoped query failed across all six providers due network restriction",
+    "selected_tool": "web.run"
+  },
+  "provider_config": {
+    "primary": "web.run"
+  },
+  "retrieval_stop": {
+    "reason": "budget-exhausted",
+    "at": "2026-10-17T05:05:45.607753+00:00",
+    "round": 3,
+    "unresolved_high_priority_facet_ids": [
+      "F1",
+      "F2",
+      "F3",
+      "F4"
+    ],
+    "remaining_gaps": [
+      "No saturation claim; fuller language-specific and historical taxonomy remains for Superpowers scout research.",
+      "Per-query result-entry counters unavailable from merged web responses.",
+      "Static candidates need deterministic dynamic confirmation."
+    ],
+    "basis": "Bounded standard research: twelve search attempts and primary-document retrieval; enough to guide this audit, not exhaustive scout design."
+  },
+  "query": "After establishing herdr-threads flake root causes, research patterns and effective remedies, audit the entire codebase for applicability, and brief Superpowers main on an independently researched super-roast flaky-test scout lane.",
+  "artifact_paths": {
+    "queries": "queries.jsonl",
+    "sources": "sources.jsonl",
+    "evidence": "evidence.jsonl",
+    "claims": "claims.jsonl",
+    "retrievals": "retrievals.jsonl",
+    "coverage": "coverage.json"
+  },
+  "reporting": {
+    "output_mode": "markdown",
+    "requested_formats": [],
+    "final_report_path": "report.md",
+    "dossiers": [],
+    "layout_reason": "One compact synthesis with linked audit findings; no facet dossier needed."
+  },
+  "feedback_delivery": {
+    "recipient": "sveEUb5xA",
+    "pane": "wB:p8",
+    "thread": "tpW0uVN5m",
+    "message": "m1g04D5Gh",
+    "body": "feedback.md",
+    "authorization": "User explicitly requested feedback to Superpowers space main tab"
+  },
+  "tested_code_commit": "97755c280c089eda3b7e43249efabcf7c21ce31e"
+}

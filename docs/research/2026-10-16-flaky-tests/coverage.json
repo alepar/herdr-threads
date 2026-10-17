@@ -1,0 +1,292 @@
+{
+  "question": "After establishing herdr-threads flake root causes, research patterns and effective remedies, audit the entire codebase for applicability, and brief Superpowers main on an independently researched super-roast flaky-test scout lane.",
+  "initial_facets": [
+    {
+      "id": "F1",
+      "priority": "high",
+      "status": "open",
+      "question": "Asynchronous ordering, observation versus completion, and contradictory delivery assertions",
+      "query_ids": [],
+      "evidence_ids": [],
+      "counterevidence": [],
+      "gap_note": "Initial retrieval pending"
+    },
+    {
+      "id": "F2",
+      "priority": "high",
+      "status": "open",
+      "question": "Timeouts, CPU load, test process isolation and fixture cleanup",
+      "query_ids": [],
+      "evidence_ids": [],
+      "counterevidence": [],
+      "gap_note": "Initial retrieval pending"
+    },
+    {
+      "id": "F3",
+      "priority": "high",
+      "status": "open",
+      "question": "Replay/startup races and external environment dependencies",
+      "query_ids": [],
+      "evidence_ids": [],
+      "counterevidence": [],
+      "gap_note": "Initial retrieval pending"
+    },
+    {
+      "id": "F4",
+      "priority": "high",
+      "status": "open",
+      "question": "Effective detection and prevention: deterministic schedules, stress, repetition, review scouts",
+      "query_ids": [],
+      "evidence_ids": [],
+      "counterevidence": [],
+      "gap_note": "Initial retrieval pending"
+    }
+  ],
+  "facets": [
+    {
+      "id": "F1",
+      "priority": "high",
+      "status": "searched",
+      "question": "Asynchronous ordering, observation versus completion, and contradictory delivery assertions",
+      "query_ids": [
+        "Q0",
+        "Q1",
+        "Q3",
+        "Q5",
+        "Q6",
+        "Q10",
+        "Q11"
+      ],
+      "evidence_ids": [
+        "E1",
+        "E2",
+        "E4",
+        "E6",
+        "E9"
+      ],
+      "counterevidence": "found",
+      "gap_note": "Direct mechanism evidence available; exhaustive taxonomy and saturation not established. Counterchecks: time advancement is not completion; Loom does not model system calls; isolation precedes serialization.",
+      "source_types": [
+        "primary documentation",
+        "empirical research"
+      ],
+      "active": true,
+      "contested_positions": [],
+      "scope_change": null
+    },
+    {
+      "id": "F2",
+      "priority": "high",
+      "status": "searched",
+      "question": "Timeouts, CPU load, test process isolation and fixture cleanup",
+      "query_ids": [
+        "Q0",
+        "Q1",
+        "Q2",
+        "Q7",
+        "Q8",
+        "Q11"
+      ],
+      "evidence_ids": [
+        "E1",
+        "E3",
+        "E7",
+        "E8"
+      ],
+      "counterevidence": "found",
+      "gap_note": "Direct mechanism evidence available; exhaustive taxonomy and saturation not established. Counterchecks: time advancement is not completion; Loom does not model system calls; isolation precedes serialization.",
+      "source_types": [
+        "primary documentation",
+        "empirical research"
+      ],
+      "active": true,
+      "contested_positions": [],
+      "scope_change": null
+    },
+    {
+      "id": "F3",
+      "priority": "high",
+      "status": "searched",
+      "question": "Replay/startup races and external environment dependencies",
+      "query_ids": [
+        "Q3",
+        "Q6",
+        "Q7",
+        "Q8",
+        "Q11"
+      ],
+      "evidence_ids": [
+        "E1",
+        "E7",
+        "E8"
+      ],
+      "counterevidence": "found",
+      "gap_note": "Direct mechanism evidence available; exhaustive taxonomy and saturation not established. Counterchecks: time advancement is not completion; Loom does not model system calls; isolation precedes serialization.",
+      "source_types": [
+        "primary documentation",
+        "empirical research"
+      ],
+      "active": true,
+      "contested_positions": [],
+      "scope_change": null
+    },
+    {
+      "id": "F4",
+      "priority": "high",
+      "status": "searched",
+      "question": "Effective detection and prevention: deterministic schedules, stress, repetition, review scouts",
+      "query_ids": [
+        "Q2",
+        "Q3",
+        "Q4",
+        "Q5",
+        "Q6",
+        "Q9",
+        "Q10",
+        "Q11"
+      ],
+      "evidence_ids": [
+        "E2",
+        "E3",
+        "E4",
+        "E5",
+        "E6",
+        "E9"
+      ],
+      "counterevidence": "found",
+      "gap_note": "Direct mechanism evidence available; exhaustive taxonomy and saturation not established. Counterchecks: time advancement is not completion; Loom does not model system calls; isolation precedes serialization.",
+      "source_types": [
+        "primary documentation",
+        "empirical research"
+      ],
+      "active": true,
+      "contested_positions": [],
+      "scope_change": null
+    }
+  ],
+  "completed_rounds": [
+    {
+      "round": 1,
+      "query_ids": [
+        "Q0",
+        "Q1",
+        "Q2",
+        "Q3"
+      ],
+      "families": [
+        "literal",
+        "source-specific",
+        "disciplinary"
+      ],
+      "target_high_priority_facet_ids": [
+        "F1",
+        "F2",
+        "F4",
+        "F3"
+      ],
+      "new_relevant_source_ids": [
+        "1626c48233dd42da",
+        "e35fbdf5811f18b2",
+        "aab84b97ea319f46",
+        "8211494f77dc2266"
+      ],
+      "material_changes": [],
+      "coverage_ready_after": false
+    },
+    {
+      "round": 2,
+      "query_ids": [
+        "Q4",
+        "Q5",
+        "Q6",
+        "Q7"
+      ],
+      "families": [
+        "source-specific",
+        "counterevidence"
+      ],
+      "target_high_priority_facet_ids": [
+        "F4",
+        "F1",
+        "F3",
+        "F2"
+      ],
+      "new_relevant_source_ids": [
+        "fd58a9c3e08205e9",
+        "9e79859003e88a06",
+        "470b7498ae3c3bbd"
+      ],
+      "material_changes": [],
+      "coverage_ready_after": false
+    },
+    {
+      "round": 3,
+      "query_ids": [
+        "Q8",
+        "Q9",
+        "Q10",
+        "Q11"
+      ],
+      "families": [
+        "citation-neighborhood",
+        "source-specific",
+        "counterevidence"
+      ],
+      "target_high_priority_facet_ids": [
+        "F2",
+        "F3",
+        "F4",
+        "F1"
+      ],
+      "new_relevant_source_ids": [
+        "3cfb4d08c0020d9f",
+        "ded2e96ab2b0fb87"
+      ],
+      "material_changes": [
+        {
+          "facet_id": "F1",
+          "kind": "counterevidence",
+          "before": "unchecked",
+          "after": "found"
+        },
+        {
+          "facet_id": "F2",
+          "kind": "counterevidence",
+          "before": "unchecked",
+          "after": "found"
+        },
+        {
+          "facet_id": "F3",
+          "kind": "counterevidence",
+          "before": "unchecked",
+          "after": "found"
+        },
+        {
+          "facet_id": "F4",
+          "kind": "counterevidence",
+          "before": "unchecked",
+          "after": "found"
+        }
+      ],
+      "coverage_ready_after": false
+    }
+  ],
+  "stop": {
+    "reason": "budget-exhausted",
+    "at": "2026-10-17T05:05:45.607753+00:00",
+    "round": 3,
+    "unresolved_high_priority_facet_ids": [
+      "F1",
+      "F2",
+      "F3",
+      "F4"
+    ],
+    "remaining_gaps": [
+      "No saturation claim; fuller language-specific and historical taxonomy remains for Superpowers scout research.",
+      "Per-query result-entry counters unavailable from merged web responses.",
+      "Static candidates need deterministic dynamic confirmation."
+    ],
+    "basis": "Bounded standard research: twelve search attempts and primary-document retrieval; enough to guide this audit, not exhaustive scout design."
+  },
+  "schema_version": 1
+}

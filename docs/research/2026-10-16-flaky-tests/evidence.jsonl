@@ -1,0 +1,13 @@
+{"evidence_id": "E1", "source_id": "1626c48233dd42da", "quote": "Add synchronization elements to the tests so that they wait for specific application states.", "locator": "Table 1, lines 33-35", "facet_ids": ["F1", "F2", "F3"]}
+{"evidence_id": "E2", "source_id": "aab84b97ea319f46", "quote": "asynchronous calls are the leading cause of flaky tests in these Microsoft projects.", "locator": "Abstract", "facet_ids": ["F1", "F4"]}
+{"evidence_id": "E3", "source_id": "e35fbdf5811f18b2", "quote": "Because nextest\u2019s execution model is process-per-test, it does not support them directly.", "locator": "No support for in-process mutexes", "facet_ids": ["F2", "F4"]}
+{"evidence_id": "E4", "source_id": "8211494f77dc2266", "quote": "FlakeRepro combines static and dynamic analysis to quickly identify an interleaving that makes a flaky test fail", "locator": "Abstract", "facet_ids": ["F1", "F4"]}
+{"evidence_id": "E5", "source_id": "fd58a9c3e08205e9", "quote": "Other sources of non-determinism like random number generation or system calls cannot be modeled directly by loom", "locator": "Writing tests", "facet_ids": ["F4"]}
+{"evidence_id": "E6", "source_id": "9e79859003e88a06", "quote": "this method will not wait for the sleep calls it advanced past to complete.", "locator": "Function description", "facet_ids": ["F1", "F4"]}
+{"evidence_id": "E7", "source_id": "470b7498ae3c3bbd", "quote": "Make sure to eventually wait on any spawned threads", "locator": "Thread safety", "facet_ids": ["F2", "F3"]}
+{"evidence_id": "E8", "source_id": "3cfb4d08c0020d9f", "quote": "It\u2019s better for the test to use a unique resource.", "locator": "File-resource example", "facet_ids": ["F2", "F3"]}
+{"evidence_id": "E9", "source_id": "ded2e96ab2b0fb87", "quote": "This only affects the Instant type in Tokio, and the Instant in std continues to work as normal.", "locator": "Function description", "facet_ids": ["F1", "F4"]}
+{"evidence_id": "E10", "source_id": "0d90132a87177648", "quote": "Original test still required native prompt after the mark and failed after 21.67s", "locator": "Hook wake", "facet_ids": ["F1", "F2", "F3"]}
+{"evidence_id": "E11", "source_id": "0d90132a87177648", "quote": "Before fix: assertion failed `left: 1`, `right: 0`.", "locator": "Watch close", "facet_ids": ["F1", "F2", "F3"]}
+{"evidence_id": "E12", "source_id": "0d90132a87177648", "quote": "After using the already-existing LIVENESS guard in those convergence waits and fixture gate, both passed under the same delay in 6.68s.", "locator": "Lifecycle startup", "facet_ids": ["F1", "F2", "F3"]}
+{"evidence_id": "E13", "source_id": "0d90132a87177648", "quote": "Before fix: herdr_hosts count Some(\"0\") vs expected Some(\"1\")", "locator": "Restore host", "facet_ids": ["F1", "F2", "F3"]}
