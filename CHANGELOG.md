@@ -2,12 +2,20 @@
 
 ## Unreleased
 
+## v2.0.2
+
+- **No redundant attention line.** When a delivery page already carried every notice that made an item pending, Claude's mod still added `herdr-threads: attention pending; run herdr-threads inbox`, and the following `inbox` printed `empty`. The daemon now settles a page's notices before deciding on the attention line and drops the line when nothing else is pending (saves one line and one tool call per such wake). No schema or protocol change.
+- **Clearer re-enrollment after the 2.0 fresh store.** A plain `check-in` from a session that has no seat yet still never allocates one, but its error now prints the complete `seat resolve --pane <pane>` and `check-in` commands to run. `docs/operations.md` gains a re-enrollment section.
+- **Wake e2e cleans up after itself.** `scripts/wake-e2e.py` removes its scratch root after a verified cleanup and fails the run if removal fails. Evidence is kept outside the root, and a refreshed Codex credential is preserved in a private directory of its own (mode 0700, file 0600), never written back to the source profile.
+- **Test reliability.** Fixes for several intermittent test failures (hook completion bounds under a slow daemon, snapshot fixture staging, and fixture races in the agy, host adapter, sync, Hermes and wake-e2e driver tests), plus retained diagnostics for the multinode sweep and lane latency tests. No product behaviour change.
+
 ## v2.0.1
 
 - **One-way store upgrade to node schema 2.** The first daemon start of 2.0.1 adds `migrations/node/0002_replayed_message_roles.sql`; v2.0.0 then refuses the upgraded store. Back up the state directory first if you might go back to 2.0.0. The wire protocol stays 9, and a 2.0.0 peer still applies 2.0.1's facts.
 - **Relayed and classified human input crosses nodes.** A message sent with `--relays-user` or `--user-intent` was refused by every other node (`invalid user intent attribution`), so it was missing there. Messages now carry the author role frozen at send time. A message from a 2.0.0 node has no role: a relay is recorded as agent-authored and an intent without a relay as human, flagged as backfilled (TRUST-POLICY "Replicated message claims"). A legacy human relay loses its human marker; nothing gains one it can't prove. To apply a message a node already refused, run `herdr-threads sync unapplied replay` there after upgrading.
 - **Shorter, consistent wake prompts.** A Codex session whose turn-start hook has registered gets the content-free `herdr-threads: wake up` instead of `herdr-threads: attention pending; run herdr-threads inbox`, since its hook already injects the mail (saves 35 bytes and a redundant `inbox` call per wake). Sessions without observed hooks, recovery hints and parked items keep the `inbox` hint. Claude's mod wake is now `wake up`, because Claude Code already shows it as sent by the herdr-threads plugin (saves 15 bytes).
 - **Tests no longer reach real machines.** Test-started daemons ran real peer discovery over the user's saved Herdr machines and process table, and could link throwaway test nodes to a real node. Every test daemon and test script now uses a fixture source with discovery off; production discovery is unchanged.
+
 ## v2.0.0
 
 - **Cross-node sync.** herdr-threads daemons on machines linked by your own `ssh` share one thread space: an agent on any node can create and join threads, invite, send, receive and ACK with seats on any other node, through partitions of any length, and no Herdr client or server has to be up for replication. Each daemon is a node (one per machine, OS user and state dir) with its own Ed25519 identity; nodes exchange signed facts and converge once any path between them returns. Link nodes with `peer add <ssh-dest>`; inspect with `sync status`, `peer list` and `sync verify`. A daemon keeps running with no Herdr server attached (store-only) while it has a peer link or dial target, and one daemon serves every Herdr server of its state dir.
