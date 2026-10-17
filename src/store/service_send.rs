@@ -468,23 +468,24 @@ pub(crate) fn publish_service_send(
     let now = context.clock().utc_now();
     // Managed threads are never journaled (fact-kinds design section 2): the
     // local-adopt branch runs under a local-only input.
-    let input = materialize::local_only(
-        tx,
-        DecisionInstant {
-            utc: now,
-            monotonic: context.clock().monotonic_now(),
-        },
-    )?;
-    let published = messages::adopt_service_preparation(
-        tx,
-        &input,
-        &prep_id,
-        &request.thread,
-        &request.body,
-        &author,
-        now.0,
-    )?;
-    drop(input);
+    let published = {
+        let input = materialize::local_only(
+            tx,
+            DecisionInstant {
+                utc: now,
+                monotonic: context.clock().monotonic_now(),
+            },
+        )?;
+        messages::adopt_service_preparation(
+            tx,
+            &input,
+            &prep_id,
+            &request.thread,
+            &request.body,
+            &author,
+            now.0,
+        )?
+    };
     let recipient_count = u64::try_from(published.recipient_count)
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative recipient count"))?;
     let receipt_duration_millis = u64::try_from(published.duration_ms)
