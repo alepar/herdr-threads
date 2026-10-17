@@ -84,6 +84,8 @@ const WITHHOLD_CAPABILITIES: u8 = 4;
 const FAIL_COMPLETION: u8 = 5;
 const LOSE_COMPLETION_RESPONSE: u8 = 6;
 const FAIL_CURSOR: u8 = 7;
+/// Hold the post-flush receipt call beyond its production 300 ms cap.
+const SLOW_COMPLETION: u8 = 8;
 
 /// Where a scripted arrival lands relative to the hook's calls.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -330,6 +332,9 @@ impl Counting {
     ) -> Result<(), herdr_threads::protocol::results::ApiError> {
         if let Command::CompleteInboxDelivery(request) = command {
             self.completions.lock().unwrap().push(request.clone());
+            if self.mode.load(Ordering::SeqCst) == SLOW_COMPLETION {
+                std::thread::sleep(Duration::from_millis(500));
+            }
         }
         if (matches!(command, Command::CompleteInboxDelivery(_))
             && self.mode.load(Ordering::SeqCst) == FAIL_COMPLETION)
@@ -2500,6 +2505,67 @@ fn native_hook_auto_ack_preserves_sibling_unread_and_delivery_wake() {
     }
     assert_eq!(terminal_events(), 1);
     assert_eq!(receipt(), observation);
+}
+
+// Kills: a fixed production completion cap inside otherwise scaled test hooks.
+// Output is synchronous, but a post-flush timeout can leave its receipt pending.
+#[test]
+fn native_hook_scaled_completion_settles_receipt_after_delayed_daemon() {
+    let fx = Fixture::start();
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "slow-completion"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    fx.hook("w9:p1", &tool("sess-1"));
+    let message = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &[
+            "send",
+            &thread,
+            "--body",
+            "delayed receipt",
+            "--require-ack",
+            "seat",
+        ],
+    ));
+    let acked = || {
+        fx.count(&format!(
+            "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+        ))
+    };
+    fx.mode.store(SLOW_COMPLETION, Ordering::SeqCst);
+    // Positive control: a hook with production bounds fails open on the same
+    // delay. Waiting for the hook process alone cannot guarantee an ACK.
+    let production = run_hook_with(
+        &fx.command,
+        "w9:p1",
+        &fx.host,
+        &Payload::session_start("sess-1", "resume").bytes(),
+        false,
+    );
+    assert!(context_of(&production).contains("delayed receipt"));
+    assert!(
+        production.stderr.contains("delivery completion uncertain"),
+        "{}",
+        production.stderr
+    );
+    assert_eq!(acked(), 0);
+    // The suite's standard scale must cover the completion IPC too. No manual
+    // inbox/ACK, new arrival, or retry loop hides a failed completion here.
+    let scaled = fx.hook("w9:p1", &tool("sess-1"));
+    assert!(context_of(&scaled).contains("delayed receipt"));
+    assert!(scaled.stderr.is_empty(), "{}", scaled.stderr);
+    assert_eq!(
+        acked(),
+        1,
+        "fully injected receipt must settle before hook exit"
+    );
 }
 
 // Actual eligible hooks retry after completion uncertainty without an arrival,

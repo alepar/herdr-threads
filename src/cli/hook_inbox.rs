@@ -355,9 +355,9 @@ impl LazyCommit {
 
     pub fn submit<C: LocalClient + ?Sized>(self, client: &C) -> Result<(), ApiError> {
         // Its own small cap: the hook (and a PreToolUse's tool) waits on it.
-        let deadline = self
-            .deadline
-            .min(self.link.clock.instant_now() + COMMIT_BUDGET);
+        let deadline = self.deadline.min(
+            self.link.clock.instant_now() + crate::protocol::time::external_bound(COMMIT_BUDGET),
+        );
         let budget = super::hook::budget(deadline, self.link.clock.as_ref());
         // Completion comes first: failed settlement must not hide an ordinary
         // receipt row behind this binding's cursor. A later cursor failure is

@@ -1515,6 +1515,9 @@ fn config5_resume_within_a_page_and_past_it() {
     let resume_frontier = smoke.head(&thread);
     let out = smoke.hook(&codex, &codex_start("codex-r", "resume"));
     assert_eq!(out.code, 0, "{}", out.text());
+    // Hook exit 0 is fail-open: surface post-flush completion failures before
+    // asserting receipt state, rather than reporting a misleading inbox race.
+    assert!(out.stderr.is_empty(), "{}", out.text());
     assert!(
         out.stdout.contains("resumed past ") && out.stdout.contains(" messages:"),
         "{}",
