@@ -94,6 +94,8 @@ enum RaceAt {
     CurrentCheckIn,
     /// After the service answered a Lifecycle CheckIn.
     LifecycleCheckIn,
+    /// After the service answered the inbox page query (beyond its snapshot).
+    InboxPage,
 }
 type Race = Arc<std::sync::Mutex<Option<(RaceAt, Box<dyn FnOnce() + Send>)>>>;
 
@@ -365,6 +367,7 @@ impl Counting {
             Command::AttentionDigest(_) | Command::AttentionDigestDelivery(_) => RaceAt::Digest,
             Command::CheckIn(ci) if ci.mode == CheckInMode::Current => RaceAt::CurrentCheckIn,
             Command::CheckIn(_) => RaceAt::LifecycleCheckIn,
+            Command::InboxBatchV2(_) => RaceAt::InboxPage,
             _ => return,
         };
         let action = {
@@ -2064,8 +2067,8 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
     let second = send("second");
     offered("second message");
     quiet("after second");
-    // ACK one message and receive another in the same thread between two tool
-    // calls: the pending count is unchanged, but the new message is emitted.
+    // Acceptance stays explicit; replaying ACKs of the displayed messages is
+    // harmless, and a later arrival still moves the attention frontier.
     fx.cooperative("seat", "w9:p1", &["accept", &thread]);
     fx.cooperative("seat", "w9:p1", &["ack", &first]);
     quiet("after ack");
@@ -2088,10 +2091,11 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
     let _fourth = send("fourth");
     let hook = fx.hook("w9:p1", &tool("sess-2"));
     assert!(context_of(&hook).contains("peer_data"));
-    // Nothing here ACKs on the model's behalf.
+    // All four messages were fully displayed by hooks, including before the
+    // invitation was accepted. Every complete display settles its receipt once.
     assert_eq!(
         fx.count("SELECT count(*) FROM receipt_state WHERE state='acked'"),
-        2
+        4
     );
 }
 
@@ -3140,12 +3144,12 @@ fn ack_then_arrival_between_tool_calls_is_emitted_once() {
 // 1. B arrives right after the Current CheckIn answered the offer of A;
 // 2. C arrives right after a digest query answered and before its CheckIn;
 // 3. D arrives right after a SessionStart (clear) lifecycle CheckIn answered.
-// Each late arrival is emitted on the next tool call with its exact ID and
-// then quiet. Kills: "digest read after the tool offer" (1: B would be in the
-// mark), "mark taken after the CheckIn" (2), and "lifecycle seed read after
-// the lifecycle CheckIn" (3: D would be in the seed).
+// Those arrivals ride the later inbox page in the same hook. A fourth
+// arrival after that page's snapshot must remain pending until the next
+// hook. Kills: a receipt settled without display, a missed page-snapshot
+// race, or a completed body re-offered merely because its digest was older.
 #[test]
-fn arrivals_racing_the_offer_are_emitted_on_the_next_call() {
+fn arrivals_racing_the_offer_or_inbox_are_displayed_without_loss() {
     let fx = Fixture::start();
     fx.register("w9:p1", "sess-1");
     fx.register("w9:p2", "peer-sess");
@@ -3166,10 +3170,13 @@ fn arrivals_racing_the_offer_are_emitted_on_the_next_call() {
     // 1. After the tool offer.
     let (action, sent) = peer_sends(&fx, &thread, "B");
     fx.race(RaceAt::CurrentCheckIn, action);
-    calls.offered("A", &[&a]);
+    let (_, _, shown) = calls.offered_hook("A", &[&a]);
     assert!(!fx.armed(), "race 1 did not run");
     let b = sent.recv_timeout(Duration::from_secs(5)).unwrap();
-    calls.offered("B after the tool offer", &["receipts=2 [", &b]);
+    assert!(
+        context_of(&shown).contains(&format!("message {b} ")),
+        "B rides the later inbox page"
+    );
     calls.quiet("after B");
 
     // 2. Between the digest query and its CheckIn.
@@ -3181,10 +3188,13 @@ fn arrivals_racing_the_offer_are_emitted_on_the_next_call() {
         "w9:p2",
         &["send", &thread, "--body", "E", "--require-ack", "seat"],
     ));
-    calls.offered("E", &[&e]);
+    let (_, _, shown) = calls.offered_hook("E", &[&e]);
     assert!(!fx.armed(), "race 2 did not run");
     let c = sent.recv_timeout(Duration::from_secs(5)).unwrap();
-    calls.offered("C between digest and offer", &[&c]);
+    assert!(
+        context_of(&shown).contains(&format!("message {c} ")),
+        "C rides the later inbox page"
+    );
     calls.quiet("after C");
 
     // 3. After a lifecycle offer.
@@ -3203,12 +3213,38 @@ fn arrivals_racing_the_offer_are_emitted_on_the_next_call() {
         fx: &fx,
         session: "sess-2",
     };
-    after_clear.offered("D after the lifecycle offer", &[&d]);
+    assert!(
+        context_of(&cleared).contains(&format!("message {d} ")),
+        "D rides the lifecycle inbox page"
+    );
     after_clear.quiet("after D");
-    // Nothing here ACKs on the model's behalf: only the explicit ACK of A.
+
+    // 4. An arrival after the inbox snapshot is not displayed or ACKed by
+    // that hook. The next ordinary hook must deliver it.
+    let f = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "F", "--require-ack", "seat"],
+    ));
+    let (action, sent) = peer_sends(&fx, &thread, "G");
+    fx.race(RaceAt::InboxPage, action);
+    let (_, _, shown) = after_clear.offered_hook("F", &[&f]);
+    assert!(!fx.armed(), "race 4 did not run");
+    let g = sent.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(!context_of(&shown).contains(&g));
+    // The receipt projection is asynchronous; the public pending query also
+    // covers the published manifest before that projection catches up.
+    let pending = fx.cooperative("seat", "w9:p1", &["pending-receipts"]);
+    assert!(
+        pending.to_string().contains(&g),
+        "undisplayed G stays pending: {pending}"
+    );
+    after_clear.offered("G after the inbox snapshot", &[&g]);
+    after_clear.quiet("after G");
+    // A through G (including E) were completely displayed and ACKed once.
     assert_eq!(
         fx.count("SELECT count(*) FROM receipt_state WHERE state='acked'"),
-        1
+        7
     );
 }
 
@@ -4317,13 +4353,11 @@ fn peer_data(context: &str) -> String {
     serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap()
 }
 
-// Demo-1 P1/P5, built binary end to end: a seat invited and sent a
-// require-ACK message before launch gets one ready inbox command and a
-// separate invitation-accept command. Running inbox in the pane displays the
-// complete message and ACKs it; accepting remains explicit. The digest form is
-// refused as invalid arguments naming the bare ID, and the accept and inbox
-// ACK observations share one JSON shape. A later PreToolUse inbox command
-// handles a new message the same way.
+// Demo-1 P1/P5, built binary end to end: startup displays and ACKs a complete
+// require-ACK message without accepting its invitation. The emitted
+// accept/reply commands run verbatim. The digest form is refused as invalid
+// arguments naming the bare ID, and accept and hook ACK observations share
+// their identity fields. A later tool hook displays and ACKs new mail.
 // Kills: a fixed section without the CLI or runnable argv, argv that does not
 // run in the pane (wrong subcommand or flags, missing --state-dir, a --seat
 // the pane does not need, the digest form as an argument), missing display
@@ -4352,6 +4386,21 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     assert_eq!(started.code, Some(0), "{}", started.stderr);
     let context = context_of(&started);
     assert!(context.len() <= herdr_threads::cli::hook::MAX_CONTEXT);
+    assert!(context.contains(&format!("message {message} ")) && context.contains("handoff"));
+    assert_eq!(
+        fx.count(&format!(
+            "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+        )),
+        1,
+        "startup display settles the receipt before acceptance"
+    );
+    assert_eq!(
+        fx.count(&format!(
+            "SELECT count(*) FROM invitations WHERE id='{invitation}' AND state='pending'"
+        )),
+        1,
+        "receipt display never accepts an invitation"
+    );
     let fixed = fixed_section(&context);
     assert!(fixed.contains("herdr-threads"), "{fixed}");
     assert!(!fixed.contains("Mail data (JSON)"), "{fixed}");
@@ -4391,8 +4440,7 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     );
     assert!(!stderr.contains("not_found"), "{stderr}");
 
-    // One complete text inbox display settles the receipt; there is no
-    // separate history read or manual ACK command.
+    // Startup already displayed opening mail. Acceptance is still explicit.
     {
         let command = &accept;
         let out = run_in_pane(&fx, "w9:p1", command);
@@ -4403,15 +4451,10 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    // Acceptance remains explicit; the following normal hook carries the
-    // newly accessible body and automatically settles its receipt.
+    // Startup already displayed the body, so the normal hook stays quiet.
     let delivered = fx.hook("w9:p1", &tool("sess-1"));
-    let delivered_context = context_of(&delivered);
-    assert!(delivered_context.contains("handoff"), "{delivered_context}");
-    assert!(
-        !delivered_context.contains("- pending mail"),
-        "{delivered_context}"
-    );
+    assert_eq!(delivered.code, Some(0), "{}", delivered.stderr);
+    assert!(delivered.stdout.is_empty(), "{}", context_of(&delivered));
     assert_eq!(
         fx.count(&format!("SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND seat_id='seat' AND state='acked' AND ack_actor_seat_id='seat'")),
         1,
@@ -4508,8 +4551,9 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
 // and a require-ACK message, reach the seat before launch. Its SessionStart
 // context stays within MAX_CONTEXT and carries both the startup directory
 // overview (every thread, with topic, creation time, signed age, message and
-// participant counts) and one ready inbox command plus each explicit accept;
-// they run verbatim in the pane. One inbox display ACKs all complete messages.
+// participant counts) and each explicit accept; they run verbatim in the
+// pane. Startup display ACKs complete messages, leaving invitations pending;
+// any bounded overflow is read through the hook's exact inbox continuation.
 // Kills: dropping the overview whole in the oversize fallback, command lines
 // that do not run, or a budget that forces commands out for a typical startup.
 #[test]
@@ -4597,6 +4641,22 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
             "{thread}: {row}"
         );
     }
+    for (_, invitation, message, _) in &threads {
+        let shown = context.contains(&format!("message {message} "));
+        assert_eq!(
+            fx.count(&format!(
+                "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+            )),
+            i64::from(shown),
+            "only startup-displayed bodies are ACKed: {context}"
+        );
+        assert_eq!(
+            fx.count(&format!(
+                "SELECT count(*) FROM invitations WHERE id='{invitation}' AND state='pending'"
+            )),
+            1
+        );
+    }
     for label in ["\"age_millis_signed\":", "\"created_at", "\"joined_"] {
         assert!(peer.contains(label), "{label}: {peer}");
     }
@@ -4614,6 +4674,20 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
         !fixed_section(&context).contains("- ACK after reading:"),
         "{context}"
     );
+    let mut displayed = context.clone();
+    if let Some(inbox) = context.lines().find_map(|line| {
+        line.strip_prefix("More inbox content may remain: run ")
+            .and_then(|line| line.strip_suffix("; follow its next: commands."))
+    }) {
+        let out = run_in_pane(&fx, "w9:p1", inbox);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        displayed.push_str(&String::from_utf8_lossy(&out.stdout));
+    }
     for command in &commands {
         let out = run_in_pane(&fx, "w9:p1", command);
         assert_eq!(
@@ -4622,10 +4696,16 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
             "{command}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+        displayed.push_str(&String::from_utf8_lossy(&out.stdout));
     }
     let delivered = fx.hook("w9:p1", &tool("sess-1"));
-    assert!(context_of(&delivered).contains("handoff"));
+    assert_eq!(delivered.code, Some(0), "{}", delivered.stderr);
+    assert!(delivered.stdout.is_empty(), "{}", context_of(&delivered));
     for (_, invitation, message, _) in &threads {
+        assert!(
+            displayed.contains(&format!("message {message} ")),
+            "{displayed}"
+        );
         assert_eq!(
             fx.count(&format!(
                 "SELECT count(*) FROM invitations WHERE id='{invitation}' AND state='accepted'"

@@ -6781,7 +6781,7 @@ fn presentation_hydrate_exact_query_is_driven_by_bounded_wanted_ids() {
 }
 
 #[test]
-fn presentation_generated_marker_inverse_refuses_wrong_variant_or_body() {
+fn presentation_generated_marker_inverse_uses_inbox_for_both_variants() {
     let id = crate::protocol::ids::MessageId::parse("marker-source").unwrap();
     let prefix = vec!["ht".into(), "--state-dir".into(), "old prefix".into()];
     for marker_lazy in [false, true] {
@@ -6798,17 +6798,18 @@ fn presentation_generated_marker_inverse_refuses_wrong_variant_or_body() {
             .unwrap(),
             canonical_body
         );
-        let forged = crate::store::invitation_content::remove_generated_marker(
+        // Both variants now continue through text inbox, which owns full
+        // display and automatic receipts. The marker carries no ID or kind.
+        let other_id = crate::protocol::ids::MessageId::parse("other-source").unwrap();
+        let recovered = crate::store::invitation_content::remove_generated_marker(
             &assembled,
             &prefix,
-            &id,
+            &other_id,
             !marker_lazy,
         )
-        .unwrap_err();
-        assert_eq!(
-            forged.code,
-            crate::protocol::results::ErrorCode::StoreCorrupt
-        );
+        .unwrap();
+        assert_eq!(recovered, canonical_body);
+        assert!(generated.ends_with(" inbox"), "{generated}");
         let changed = vec!["different-prefix".into()];
         assert!(
             crate::store::invitation_content::remove_generated_marker(

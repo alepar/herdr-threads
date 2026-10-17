@@ -905,6 +905,19 @@ impl Fixture {
         assert_eq!(hook.code, 0, "{}", hook.stderr);
         hook.stdout
     }
+    /// The boundary's read-only digest query, without displaying inbox bodies.
+    /// Deadline/poke tests need receipts to remain pending until display.
+    fn attention_b(&self) -> String {
+        use herdr_threads::protocol::commands::{AttentionDigestQuery, Command};
+        self.world
+            .daemon_call(Command::AttentionDigest(AttentionDigestQuery {
+                seat: herdr_threads::protocol::ids::SeatId::new(&self.b),
+                lazy: true,
+                claim: Some(self.world.seat_claim(&self.b)),
+            }))
+            .unwrap()
+            .to_string()
+    }
 }
 
 // ---- the scripted worker ----
@@ -1373,7 +1386,13 @@ fn held_items_are_pushed_after_ready() {
     let fx = Fixture::build();
     let first = fx.boundary_b();
     assert!(first.contains(&fx.ack), "{first}");
+    assert!(
+        fx.world.pending(&fx.b).is_empty(),
+        "display ACKs the initial request"
+    );
     let work = fx.summary(fx.caller_b());
+    let frontier = work["data"]["frontier"].as_u64().unwrap();
+    assert_eq!(frontier, HEAD + 1, "the initial ACK added a timeline event");
     let jobs = tickets(&work);
     let held = fx.send_as_a("an ordinary request", &["--require-ack", &fx.b]);
     assert!(!fx.boundary_b().contains(&held), "held while catching up");
@@ -1384,12 +1403,17 @@ fn held_items_are_pushed_after_ready() {
     let ready = fx.summary(fx.caller_b());
     assert_eq!(ready["status"], "ready", "{ready}");
     assert_eq!(
-        ready["data"]["frontier"], HEAD,
+        ready["data"]["frontier"], frontier,
         "Ready stops at F, not at the head"
     );
     assert_eq!(
-        ready["data"]["tail"].as_array().unwrap().len(),
-        1,
+        ready["data"]["tail"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["sequence"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        [HEAD, frontier],
         "the held message is not in Ready: {ready}"
     );
     let row = fx.world.catch_up(&fx.b, &fx.thread).unwrap();
@@ -1619,10 +1643,12 @@ fn stall_lapses_and_the_warning_fires_on_the_effective_deadline() {
             )
             .text("kick send");
     };
-    assert!(fx.boundary_b().contains(&fx.ack));
+    // Inspect pending attention without displaying/ACKing the receipt whose
+    // effective deadline and warning this test exercises.
+    assert!(fx.attention_b().contains(&fx.ack));
     assert_eq!(fx.summary(fx.caller_b())["status"], "work");
     let held = fx.send_as_a("an ordinary request", &["--require-ack", &fx.b]);
-    assert!(!fx.boundary_b().contains(&held));
+    assert!(!fx.attention_b().contains(&held));
     let pending = fx.world.pending_for(&fx.b, &fx.ack);
     let frozen = pending["deadline"].as_u64().unwrap();
     let effective = pending["effective_deadline"].as_u64().unwrap();
@@ -1679,11 +1705,6 @@ fn stall_lapses_and_the_warning_fires_on_the_effective_deadline() {
         effective,
         "no progress, no extension"
     );
-    // The release is a push.
-    assert!(
-        fx.boundary_b().contains(&held),
-        "held items are pushed when the row stalls"
-    );
     // The warning follows the effective deadline.
     wait_until("the overdue warning", Duration::from_secs(60), || {
         warned(&fx)
@@ -1693,6 +1714,15 @@ fn stall_lapses_and_the_warning_fires_on_the_effective_deadline() {
         "the warning fired after the effective deadline"
     );
     assert_eq!(fx.world.pending_for(&fx.b, &fx.ack)["overdue"], true);
+    // The release is a push. Only now display it, settling both receipts.
+    assert!(
+        fx.boundary_b().contains(&held),
+        "held items are pushed when the row stalls"
+    );
+    assert!(
+        fx.world.pending(&fx.b).is_empty(),
+        "complete hook display ACKs receipts"
+    );
 }
 
 /// Case 9: catch-up rows belong to the binding (ht-54r.22). A `clear` in B's

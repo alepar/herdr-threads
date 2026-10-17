@@ -1080,8 +1080,7 @@ fn config3_hermes_interactive_and_a_one_shot_in_a_claude_pane() {
         "Claude's tool hook still carries the notice: {}",
         notice.stdout
     );
-    let acked = smoke.cli(&claude, &["ack", &message]).data();
-    assert_eq!(acked["acknowledged"][0], message.as_str(), "{acked}");
+    // Complete hook display settles the receipt without a separate ACK call.
     let acker: Option<String> = smoke
         .db()
         .query_row(
@@ -1091,6 +1090,16 @@ fn config3_hermes_interactive_and_a_one_shot_in_a_claude_pane() {
         )
         .unwrap();
     assert_eq!(acker.as_deref(), Some(claude_binding.id.as_str()));
+    let observation: String = smoke
+        .db()
+        .query_row(
+            "SELECT ack_observation FROM receipt_state WHERE message_id=?1 AND seat_id=?2",
+            [&message, &seat],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let observation: serde_json::Value = serde_json::from_str(&observation).unwrap();
+    assert_eq!(observation["action_provenance"], "cooperative_hook_context");
 
     // Sends are attributed per binding (the one-shot's was sent above).
     for (who, binding) in [(&claude, &claude_binding), (&hermes, &hermes_binding)] {
@@ -1410,8 +1419,7 @@ fn config5_resume_within_a_page_and_past_it() {
         smoke.binding(&seat, "codex", "codex-r", "").liveness,
         "disconnected"
     );
-    // Ordinary (nudge) sends: lazy ones would be presented in full by the resume's own hook
-    // (in-turn delivery), which this case does not exercise.
+    // All priorities are presented in full by the resume's own hook.
     for n in 1..=3 {
         smoke
             .cli(
@@ -1436,9 +1444,20 @@ fn config5_resume_within_a_page_and_past_it() {
     );
     assert_eq!(
         smoke.cursor(&binding.id, &thread),
-        Some(behind),
-        "nothing was skipped"
+        Some(smoke.count(
+            "SELECT MAX(sequence) FROM messages WHERE thread_id=?1 AND kind='ordinary'",
+            &[&thread]
+        )),
+        "complete resume display advances the cursor"
     );
+    assert!(smoke.cursor(&binding.id, &thread).unwrap() > behind);
+    for n in 1..=3 {
+        assert!(
+            out.stdout.contains(&format!("within-page-{n}")),
+            "{}",
+            out.stdout
+        );
+    }
     let inbox = smoke.cli(&codex, &["inbox"]).data();
     let bodies: Vec<&str> = inbox["items"]
         .as_array()
@@ -1448,12 +1467,13 @@ fn config5_resume_within_a_page_and_past_it() {
         .collect();
     assert_eq!(
         bodies,
-        ["within-page-1", "within-page-2", "within-page-3"],
-        "the resumed binding still has every message to read: {inbox}"
+        Vec::<&str>::new(),
+        "the resume already displayed every body: {inbox}"
     );
-    // Read them (the default text route records the display and moves this cursor only).
+    // An explicit text inbox has no duplicate bodies to display.
     let shown = smoke.text(&codex, &["inbox"]);
     assert_eq!(shown.code, 0, "{}", shown.text());
+    assert!(!shown.stdout.contains("within-page-"), "{}", shown.stdout);
     // The cursor covers every displayed message (the display ACK of the nudged messages appends
     // its own info event after them).
     assert_eq!(
@@ -1464,8 +1484,8 @@ fn config5_resume_within_a_page_and_past_it() {
         ))
     );
 
-    // Past one page: the resume fast-forwards to the head, reports the gap, and a pending ACK
-    // obligation stays listed.
+    // Past one page: the resume reports the history gap. A retained receipt
+    // obligation is still injected and ACKed when its complete body fits.
     assert_eq!(smoke.hook(&codex, &codex_end("codex-r")).code, 0);
     let big = "x".repeat(9_000);
     for n in 1..=2 {
@@ -1492,6 +1512,7 @@ fn config5_resume_within_a_page_and_past_it() {
         assert!(out.text().contains("store_busy"), "{}", out.text());
         std::thread::sleep(Duration::from_millis(100));
     };
+    let resume_frontier = smoke.head(&thread);
     let out = smoke.hook(&codex, &codex_start("codex-r", "resume"));
     assert_eq!(out.code, 0, "{}", out.text());
     assert!(
@@ -1504,19 +1525,30 @@ fn config5_resume_within_a_page_and_past_it() {
         "{}",
         out.stdout
     );
-    assert_eq!(
-        smoke.cursor(&binding.id, &thread),
-        Some(smoke.head(&thread)),
-        "the cursor jumped to the head"
+    // Reconnection can append unavailability-clear events before the page
+    // read. The display must cover at least the entire pre-resume head.
+    assert!(smoke.cursor(&binding.id, &thread).unwrap() >= resume_frontier);
+    assert!(
+        out.stdout.contains("owed"),
+        "the owed body was injected: {}",
+        out.stdout
     );
     let inbox = smoke.cli(&codex, &["inbox"]).data();
     assert!(
-        inbox["items"]
+        !inbox["items"]
             .as_array()
             .unwrap()
             .iter()
             .any(|item| item["message"] == owed.as_str()),
-        "the pending obligation is still listed: {inbox}"
+        "the fully injected obligation was settled: {inbox}"
+    );
+    let ack_binding: String = smoke.db().query_row(
+        "SELECT ack_binding_id FROM receipt_state WHERE message_id=?1 AND seat_id=?2 AND state='acked'",
+        [&owed, &seat], |r| r.get(0),
+    ).unwrap();
+    assert_eq!(
+        ack_binding, binding.id,
+        "the resumed binding completed the receipt"
     );
 }
 
