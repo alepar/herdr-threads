@@ -74,6 +74,10 @@ Standard research used the installed search CLI for preflight, then web.run sear
 
 Retrieval stopped at the bounded search budget (`budget-exhausted`), not coverage saturation. Each facet has relevant direct evidence, but exhaustive taxonomy, cross-language empirical breadth and two post-readiness saturation probes remain incomplete. The Superpowers owner must perform that broader research for its independent scout design. Static audit candidates remain unexecuted. Authenticated live wake/agy gates were inspected as source only.
 
+## Cold-host startup follow-up
+
+The multi-host hook flake exposes another distinction: published capture versus completed reconciliation. A temporary service-side diagnostic reproduced3/20 failures and captured `ServiceBusy: recovery reconciliation of the current host epoch has not finished; retry`. [10] The test now handles the precise policy-defined pending outcome and verifies recovery through an eligible resumed lifecycle event. This does not remove the real usability limitation: ordinary tool callbacks cannot allocate a fresh seat after pending startup. See [reproduction and contract analysis](reproductions.md#follow-up-cold-host-capture-is-not-reconciliation-completion-ht-dc68).
+
 ## Bibliography
 
 [1] [Google: flakiness triage and remedies](https://testing.googleblog.com/2021/03/test-flakiness-one-of-main-challenges.html) — primary source, retrieved 2026-10-17.

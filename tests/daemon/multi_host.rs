@@ -1152,9 +1152,9 @@ fn claim_naming_b_seat_with_host_a_refused() {
 }
 
 /// The Claude SessionStart payload of a fresh session.
-fn session_start(session: &str) -> Vec<u8> {
+fn session_start(session: &str, source: &str) -> Vec<u8> {
     format!(
-        r#"{{"session_id":"{session}","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"startup"}}"#
+        r#"{{"session_id":"{session}","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"{source}"}}"#
     )
     .into_bytes()
 }
@@ -1168,7 +1168,13 @@ struct HookRun {
 /// The installed hook command, `herdr-threads --state-dir S --host-endpoint
 /// <baked> hook claude`, run under a synthetic `claude` parent in a pane of the
 /// server at `pane_host`.
-fn run_hook(rig: &Rig, baked: &HostLocator, pane_host: &HostLocator, pane: &str) -> HookRun {
+fn run_hook(
+    rig: &Rig,
+    baked: &HostLocator,
+    pane_host: &HostLocator,
+    pane: &str,
+    source: &str,
+) -> HookRun {
     use std::io::Write;
     let state = state_dir(&rig.isolation).to_string_lossy().into_owned();
     let mut command = herdr_threads::test_support::harness_shim::under_harness(
@@ -1198,7 +1204,7 @@ fn run_hook(rig: &Rig, baked: &HostLocator, pane_host: &HostLocator, pane: &str)
         .stdin
         .take()
         .unwrap()
-        .write_all(&session_start("hook-session"))
+        .write_all(&session_start("hook-session", source))
         .unwrap();
     let output = child.wait_with_output().expect("hook output");
     HookRun {
@@ -1266,7 +1272,7 @@ fn multi_host_hook_claim_attaches_b() {
     let rig = Rig::start("mh-hook", true);
     assert!(rig.attached(&rig.loc_a));
     assert!(!rig.attached(&rig.loc_b));
-    let ran = run_hook(&rig, &rig.loc_a, &rig.loc_b, "pane-2");
+    let mut ran = run_hook(&rig, &rig.loc_a, &rig.loc_b, "pane-2", "startup");
     assert_eq!(ran.code, Some(0), "{}", ran.stderr);
     assert!(
         !ran.stdout.is_empty(),
@@ -1280,6 +1286,47 @@ fn multi_host_hook_claim_attaches_b() {
         ran.stderr,
         rig.wake_state()
     );
+    let output: serde_json::Value = serde_json::from_str(&ran.stdout).expect("SessionStart JSON");
+    let context = output["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .expect("SessionStart context");
+    if context.starts_with("herdr-threads: check-in unavailable (") {
+        assert!(context.starts_with(
+            "herdr-threads: check-in unavailable (native-session continuity pending; retry; no new seat allocated)"
+        ), "unexpected startup refusal: {context}");
+        let seats: i64 = rig
+            .db()
+            .query_row("SELECT count(*) FROM seats", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            seats, 0,
+            "pending recovery must not allocate on either host"
+        );
+        // A cold attach publishes its first capture before the reconciliation
+        // pass commits. C1 deliberately leaves a non-resume callback pending
+        // in that window; it cannot declare no-match or ordinary-enroll yet.
+        let host = rig.host_id_of(&rig.loc_b);
+        rig.wait("B's first reconciliation pass", || {
+            rig.db()
+                .query_row(
+                    "SELECT recovery_boot IS NOT NULL AND recovery_boot IS reconciled_boot \
+                 AND recovery_epoch IS reconciled_epoch FROM herdr_hosts WHERE host_id=?1",
+                    [host],
+                    |r| r.get::<_, bool>(0),
+                )
+                .unwrap()
+        });
+        // Resume is an eligible lifecycle event. Ordinary tool events cannot
+        // allocate a new seat, so they are not a substitute for this recovery.
+        ran = run_hook(&rig, &rig.loc_a, &rig.loc_b, "pane-2", "resume");
+        assert_eq!(ran.code, Some(0), "{}", ran.stderr);
+        assert!(
+            !ran.stdout.contains("check-in unavailable"),
+            "{}; {}",
+            ran.stdout,
+            ran.stderr
+        );
+    }
     let (host, binding_session): (i64, String) = rig
         .db()
         .query_row(
@@ -1288,7 +1335,14 @@ fn multi_host_hook_claim_attaches_b() {
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .expect("a binding on the seat of B's pane");
+        .unwrap_or_else(|error| {
+            panic!(
+                "a binding on the seat of B's pane: {error}; stdout: {}; stderr: {}; {}",
+                ran.stdout,
+                ran.stderr,
+                rig.wake_state()
+            )
+        });
     assert_eq!(host, rig.host_id_of(&rig.loc_b), "the seat sits on B");
     assert_eq!(binding_session, "hook-session");
     let on_a: i64 = rig
