@@ -425,3 +425,26 @@ fn clear_stale_stops_by_version() {
         "rows are reset, never deleted"
     );
 }
+
+/// A re-add that races a link coming up (the dialer linked between two `peer add`s)
+/// must not report the live link as `idle`; a changed command still resets it.
+#[test]
+fn readding_a_linked_target_keeps_it_linked_unless_its_command_changes() {
+    let mut db = db();
+    let id = add(&mut db, "alice@box", 1);
+    transition(&mut db, id, DialTransition::Linked { node: node(7) }, 2);
+    assert_eq!(add(&mut db, "alice@box", 3), id);
+    assert_eq!(
+        row(&db, id).state,
+        DialState::Linked,
+        "same command: still linked"
+    );
+    let tx = db.transaction().unwrap();
+    targets::add_explicit(&tx, "alice@box", Some("herdr-threads peer --stdio"), 4).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        row(&db, id).state,
+        DialState::Idle,
+        "a new command re-dials"
+    );
+}

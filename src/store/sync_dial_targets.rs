@@ -327,6 +327,8 @@ fn enabled_row(tx: &Connection, dest: &str) -> Result<Option<(i64, bool)>, ApiEr
 /// The operator adds (or re-adds) `dest`: the row becomes `explicit`, enabled
 /// and `idle` with attempts, stop and retry time cleared, and `remote_command`
 /// replaced (`None` clears an override). Re-adding is the operator's "changed".
+/// A target whose link is up and whose command is unchanged stays `linked`: the
+/// live link is not re-dialed, so nothing would record `linked` again.
 ///
 /// `InvalidRequest` for a bad destination or command, and "too many dial
 /// targets (64)" when the add would make more than [`MAX_DIAL_TARGETS`]
@@ -350,7 +352,9 @@ pub fn add_explicit(
             "INSERT INTO sync_dial_targets(ssh_dest,source,enabled,remote_command,created_at,updated_at) \
              VALUES (?1,'explicit',1,?2,?3,?3) \
              ON CONFLICT(ssh_dest) DO UPDATE SET source='explicit', enabled=1, \
-               remote_command=excluded.remote_command, state='idle', attempts=0, \
+               state=CASE WHEN state='linked' AND remote_command IS excluded.remote_command \
+                 THEN 'linked' ELSE 'idle' END, \
+               remote_command=excluded.remote_command, attempts=0, \
                stopped_reason=NULL, stopped_version=NULL, next_attempt_at=NULL, \
                updated_at=excluded.updated_at \
              RETURNING target_id",
