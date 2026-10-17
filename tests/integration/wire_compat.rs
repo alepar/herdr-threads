@@ -8,7 +8,7 @@
 //! (`Command::Capabilities`, `Command::HookParseFailure`, or a `full_bodies`
 //! field under its deny_unknown_fields) and forwards the rest unchanged.
 //! "Old CLI" frames are frozen under `tests/fixtures/old_wire/`; they are
-//! protocol 1, seven protocols behind this protocol-8 build (B5 moved to 2, thread
+//! protocol 1, eight protocols behind this protocol-9 build (B5 moved to 2, thread
 //! summaries to 3, thread names to 4, recorded intent to 5, handoff fences to 6, session-keyed
 //! binding claims to 7, and message delivery priority to 8), so they exercise the decodable skew reply.
 
@@ -17,8 +17,8 @@ use herdr_threads::test_support::spawn::SpawnOwned;
 use herdr_threads::{
     daemon::{
         logs::daemon_log_path,
-        ownership::{read_descriptor, read_existing_namespace},
-        paths::{InstancePaths, RuntimeContext},
+        ownership::{read_descriptor, read_node_uuid_hint},
+        paths::{NodePaths, RuntimeContext},
         remedy::{RemedyContext, remedy},
     },
     protocol::{results::ErrorClass, wire::PROTOCOL_VERSION},
@@ -87,8 +87,8 @@ struct Proxy {
     original_descriptor: Vec<u8>,
 }
 impl Proxy {
-    fn interpose(paths: &InstancePaths, root: &Path) -> Self {
-        let instance = read_existing_namespace(paths).unwrap().unwrap();
+    fn interpose(paths: &NodePaths, root: &Path) -> Self {
+        let instance = read_node_uuid_hint(paths).unwrap().unwrap();
         read_descriptor(paths, instance).expect("a published daemon");
         let socket = paths.socket_path.clone();
         let real = root.join("real.sock");
@@ -267,10 +267,10 @@ impl Plugin {
         );
         serde_json::from_str::<Value>(&stdout).unwrap()["result"].clone()
     }
-    fn paths(&self) -> InstancePaths {
+    fn paths(&self) -> NodePaths {
         let context =
             RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap();
-        InstancePaths::resolve(&context).unwrap()
+        NodePaths::resolve(&context.state_dir).unwrap()
     }
 }
 impl Drop for Plugin {
@@ -480,9 +480,9 @@ fn skewed_protocol_version_still_yields_the_stop_then_ensure_report() {
     let software = "0.2.4";
     let mut skewed = published.clone();
     skewed["software_version"] = json!(software);
-    // Immediate previous wire contract (v0.11.0, protocol 7) against this protocol-8 CLI.
-    const OLD_PROTOCOL: u16 = 7;
-    assert_eq!(PROTOCOL_VERSION, 8);
+    // Immediate previous wire contract (v1.0.x, protocol 8) against this protocol-9 CLI.
+    const OLD_PROTOCOL: u16 = 8;
+    assert_eq!(PROTOCOL_VERSION, 9);
     assert_eq!(OLD_PROTOCOL, PROTOCOL_VERSION - 1);
     skewed["protocol_version"] = json!(OLD_PROTOCOL);
     write_private(
@@ -541,7 +541,7 @@ fn skewed_protocol_version_still_yields_the_stop_then_ensure_report() {
 }
 
 /// Kills: a protocol-1 CLI (the frozen pre-B5 frames, four protocols behind
-/// this protocol-8 daemon) that gets a closed socket or a reply
+/// this protocol-9 daemon) that gets a closed socket or a reply
 /// it cannot decode (a key outside its deny_unknown_fields types) instead of
 /// the decodable skew error naming the stop-then-ensure remedy; and a skewed
 /// request that reaches the service.
@@ -549,7 +549,7 @@ fn skewed_protocol_version_still_yields_the_stop_then_ensure_report() {
 fn old_protocol1_cli_gets_decodable_skew_replies() {
     let world = World::new();
     let paths = world.plugin.paths();
-    let instance = read_existing_namespace(&paths).unwrap().unwrap();
+    let instance = read_node_uuid_hint(&paths).unwrap().unwrap();
     let descriptor = read_descriptor(&paths, instance).unwrap();
     assert_eq!(descriptor.protocol_version, PROTOCOL_VERSION);
     assert_ne!(
@@ -567,7 +567,7 @@ fn old_protocol1_cli_gets_decodable_skew_replies() {
     };
     let exchange = |frame: &str| -> Value {
         let body = frame
-            .replace("__INSTANCE__", &descriptor.instance_uuid.to_string())
+            .replace("__INSTANCE__", &descriptor.node_uuid.to_string())
             .replace("__THREAD__", &world.thread);
         let mut stream = UnixStream::connect(&descriptor.endpoint).unwrap();
         stream
@@ -597,7 +597,7 @@ fn old_protocol1_cli_gets_decodable_skew_replies() {
         only_known(&reply, "response");
         assert_eq!(reply["version"], 1, "echoes the sender's version: {reply}");
         assert_eq!(reply["request_id"], request_id);
-        assert_eq!(reply["instance"], descriptor.instance_uuid.to_string());
+        assert_eq!(reply["instance"], descriptor.node_uuid.to_string());
         let error = &reply["result"]["Err"];
         for key in error.as_object().expect("a skew error").keys() {
             assert!(error_keys.contains(&key.as_str()), "error key {key:?}");
@@ -706,7 +706,7 @@ fn hook_parse_failure_under_optimistic_sends_no_report_to_an_old_daemon() {
 fn fixture_drop_stops_daemon_before_removing_state() {
     let world = World::new();
     let paths = world.plugin.paths();
-    let instance = read_existing_namespace(&paths).unwrap().unwrap();
+    let instance = read_node_uuid_hint(&paths).unwrap().unwrap();
     let pid = read_descriptor(&paths, instance).unwrap().pid as libc::pid_t;
     let root = world.plugin.root.clone();
     drop(world);

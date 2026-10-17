@@ -291,14 +291,14 @@ impl World {
             _scratch: scratch,
         };
         if let Some(delay) = wake_batch_delay_ms {
-            use herdr_threads::daemon::paths::{InstancePaths, RuntimeContext};
+            use herdr_threads::daemon::paths::{NodePaths, RuntimeContext};
             use std::os::unix::fs::PermissionsExt;
             let context =
                 RuntimeContext::explicit(world.state.clone(), world.herdr.socket.clone(), None)
                     .unwrap();
-            let paths = InstancePaths::resolve(&context).unwrap();
-            paths.prepare_instance_dir().unwrap();
-            let settings_path = paths.instance_dir.join("settings.json");
+            let paths = NodePaths::resolve(&context.state_dir).unwrap();
+            paths.prepare_node_dir().unwrap();
+            let settings_path = paths.node_dir.join("settings.json");
             fs::write(
                 &settings_path,
                 serde_json::to_vec(&json!({"wake_batch_delay_ms": delay})).unwrap(),
@@ -492,7 +492,7 @@ impl World {
         walk(&self.state, name)
     }
     fn database(&self) -> rusqlite::Connection {
-        let path = self.find("threads.sqlite3").expect("daemon database");
+        let path = self.find("herdr-threads.db").expect("daemon database");
         let db = rusqlite::Connection::open_with_flags(
             &path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -515,7 +515,7 @@ impl World {
     fn marker(&self) -> Option<(String, i64)> {
         self.database()
             .query_row(
-                "SELECT reconciled_boot,reconciled_epoch FROM host_instances WHERE reconciled_boot IS NOT NULL",
+                "SELECT reconciled_boot,reconciled_epoch FROM herdr_hosts WHERE reconciled_boot IS NOT NULL",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -527,7 +527,7 @@ impl World {
     fn wait_reconciled(&self) {
         self.wait_for("the reconciliation marker", |world| {
             world.count(
-                "SELECT count(*) FROM host_instances WHERE active_snapshot_id IS NOT NULL \
+                "SELECT count(*) FROM herdr_hosts WHERE active_snapshot_id IS NOT NULL \
                  AND reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot \
                  AND reconciled_epoch=recovery_epoch",
             ) == 1
@@ -535,7 +535,7 @@ impl World {
         });
     }
     fn hold_unclaimed(&self) -> i64 {
-        self.count("SELECT baseline_hold_unclaimed FROM host_instances")
+        self.count("SELECT baseline_hold_unclaimed FROM herdr_hosts")
     }
     fn seat_state(&self, seat: &str) -> String {
         self.database()

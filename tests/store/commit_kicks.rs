@@ -62,8 +62,8 @@ impl Fixture {
         let path = iso.state_root().join("store.db");
         let kicks = Arc::new(CommitKicks::default());
         let store = SqliteStore::new(
-            StoreContext::new(path.clone(), Arc::new(Fixed)),
-            "i",
+            StoreContext::new(path.clone(), Arc::new(Fixed)).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap()
@@ -130,24 +130,40 @@ fn set(lanes: &[Lane]) -> LaneSet {
 /// the other rows isolate update hooks with foreign keys and triggers off.
 const INSERTS: &[(&str, &str)] = &[
     (
+        "journal",
+        "INSERT INTO sync_logs(node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) VALUES (printf('%032d',1),1,0,zeroblob(32),zeroblob(32),1,zeroblob(32),0); INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state) VALUES (last_insert_rowid(),1,zeroblob(32),zeroblob(32),0,'k',1,x'',x'',zeroblob(64),0,'pending')",
+    ),
+    (
+        "sync_logs",
+        "INSERT INTO sync_logs(node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) VALUES (printf('%032d',1),1,0,zeroblob(32),zeroblob(32),1,zeroblob(32),0)",
+    ),
+    (
+        "sync_dial_targets",
+        "INSERT INTO sync_dial_targets(ssh_dest,source,created_at,updated_at) VALUES ('host','explicit',0,0)",
+    ),
+    (
         "bootstrap_handoffs",
-        "INSERT INTO bootstrap_handoffs(instance_id,state_dir,host_endpoint,actor_scope,compound,digest,identity_json,create_key,state,current_attempt,created_at) VALUES ('i','/state','/host','seat:s1','c',printf('%064d',0),x'7b7d','create','prepared',1,0)",
+        "INSERT INTO bootstrap_handoffs(instance_id,state_dir,host_endpoint,actor_scope,compound,digest,identity_json,create_key,state,current_attempt,created_at) VALUES ('34750f98bd59fcfc946da45aaabe933b','/state','/host','seat:s1','c',printf('%064d',0),x'7b7d','create','prepared',1,0)",
     ),
     (
         "archival_instances",
-        "INSERT INTO archival_instances(instance_id,runtime_boot) VALUES ('i','b')",
+        "INSERT INTO archival_instances(instance_id,runtime_boot) VALUES ('34750f98bd59fcfc946da45aaabe933b','b')",
+    ),
+    (
+        "archival_hosts",
+        "INSERT INTO archival_hosts(host_id) VALUES ((SELECT min(host_id) FROM herdr_hosts))",
     ),
     (
         "channel_archival",
-        "INSERT INTO channel_archival(thread_id,instance_id) VALUES ('t','i')",
+        "INSERT INTO channel_archival(thread_id,instance_id) VALUES ('t','34750f98bd59fcfc946da45aaabe933b')",
     ),
     (
         "seat_archival",
-        "INSERT INTO seat_archival(seat_id,instance_id) VALUES ('s1','i')",
+        "INSERT INTO seat_archival(seat_id,instance_id,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b',(SELECT min(host_id) FROM herdr_hosts))",
     ),
     (
         "channel_handoff_fences",
-        "INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,origin,state,created_at) VALUES ('i','seat:s1','c',printf('%064d',0),'{}','s2','create','invite','send','cooperative_pending_claim','live',0)",
+        "INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,origin,state,created_at) VALUES ('34750f98bd59fcfc946da45aaabe933b','seat:s1','c',printf('%064d',0),'{}','s2','create','invite','send','cooperative_pending_claim','live',0)",
     ),
     ("wake_work", "INSERT INTO wake_work(seat_id) VALUES ('s1')"),
     (
@@ -156,7 +172,7 @@ const INSERTS: &[(&str, &str)] = &[
     ),
     (
         "seats",
-        "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s1','i','unresolved','native',0,0)",
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
     ),
     (
         "occupant_bindings",
@@ -192,7 +208,7 @@ const INSERTS: &[(&str, &str)] = &[
     ),
     (
         "invitations",
-        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv','t','s1',1,'pending',1,0,1,0)",
+        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv','t','s1',1,'pending',1,0,1,0,(SELECT id FROM local_node))",
     ),
     (
         "invitation_cancellations",
@@ -212,7 +228,7 @@ const INSERTS: &[(&str, &str)] = &[
     ),
     (
         "receipt_warning_origins",
-        "INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id) VALUES ('i','s1','w','m')",
+        "INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id) VALUES ('34750f98bd59fcfc946da45aaabe933b','s1','w','m')",
     ),
     (
         "receipt_due_sparse",
@@ -233,10 +249,10 @@ const INSERTS: &[(&str, &str)] = &[
 ];
 
 const WAKE_INSERT: &str = "INSERT INTO wake_work(seat_id) VALUES ('s1')";
-const SEAT_INSERT: &str = "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s1','i','unresolved','native',0,0)";
+const SEAT_INSERT: &str = "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))";
 const JOB_INSERT: &str =
     "INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES ('j','send_attention','sub',0)";
-const GENERATION_INSERT: &str = "INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g','i','b',1,1,'x',0,'building',0,0,0)";
+const GENERATION_INSERT: &str = "INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,status,captured_lifecycle_revision,captured_invalidation_revision,created_at) VALUES ('g',(SELECT min(host_id) FROM herdr_hosts),'b',1,1,'x',0,'building',0,0,0)";
 const TARGET_INSERT: &str = "INSERT INTO snapshot_targets(generation_id,target_id,generation,observation_sequence,occupancy,ui_state,observed_at) VALUES ('g','t',0,1,'unknown','unknown',0)";
 const OPERATION_INSERT: &str = "INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES ('a',hex(randomblob(8)),zeroblob(32),'{}',0)";
 
@@ -273,7 +289,7 @@ fn every_table_is_classified() {
     for table in [
         "snapshot_generations",
         "snapshot_targets",
-        "host_instances",
+        "herdr_hosts",
         "direct_threads",
     ] {
         assert_eq!(lanes_for_table(table), LaneSet::EMPTY, "{table}");
@@ -362,6 +378,10 @@ fn each_table_kicks_exactly_its_lanes() {
         "every mapped table has an insert fixture"
     );
     for (table, insert) in INSERTS {
+        if *table == "journal" {
+            journal_kicks_apply_except_from_apply(insert);
+            continue;
+        }
         if *table == "invitation_rejections" {
             rejection_kicks_with_guards(insert);
             continue;
@@ -401,6 +421,28 @@ fn each_table_kicks_exactly_its_lanes() {
     assert_eq!(fixture.count("request"), before + 1);
 }
 
+/// Journal rows are append-only (the guard triggers refuse UPDATE and DELETE),
+/// so only the insert is exercised: it kicks Apply and Sync from a request
+/// thread and only Sync from the Apply lane itself.
+fn journal_kicks_apply_except_from_apply(insert: &str) {
+    assert_eq!(lanes_for_table("journal"), set(&[Lane::Apply, Lane::Sync]));
+    let fixture = Fixture::new("kicks-journal");
+    fixture.run(&format!("BEGIN; {insert}; COMMIT;"));
+    assert_eq!(
+        fixture.flushed(),
+        vec![(set(&[Lane::Apply, Lane::Sync]), None)]
+    );
+    let fixture = Fixture::new("kicks-journal-apply");
+    let _apply = enter_lane(Lane::Apply);
+    fixture.run(&format!("BEGIN; {insert}; COMMIT;"));
+    assert_eq!(
+        fixture.flushed(),
+        vec![(set(&[Lane::Sync]), Some(Lane::Apply))],
+        "an Apply commit never kicks Apply but keeps Sync"
+    );
+    assert_eq!(fixture.count("apply"), 1);
+}
+
 /// Rejections are retained facts, not mutable rows. Exercise the insert with
 /// its real parents and projection triggers, including the wake-batch cascade.
 fn rejection_kicks_with_guards(insert: &str) {
@@ -411,10 +453,9 @@ fn rejection_kicks_with_guards(insert: &str) {
     for batched in [false, true] {
         let fixture = Fixture::with_guards("kicks-rejection", true);
         fixture.run("BEGIN;
-            INSERT INTO host_instances(id,created_at) VALUES ('i',0);
-            INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s1','i','unresolved','native',0,0);
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);
-            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv','t','s1',1,'pending',1,0,30000,30000);
+            INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);
+            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv','t','s1',1,'pending',1,0,30000,30000,(SELECT id FROM local_node));
             INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('w',2,'t',0,'s1','invitation','inv');
             INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('w','s1',1);
             COMMIT;");
@@ -553,6 +594,8 @@ fn per_origin_counter_counts_commits() {
         "retention",
         "admission-observer",
         "archival",
+        "apply",
+        "sync",
         "request",
     ];
     assert!(keys.iter().all(|key| fixture.count(key) == 0));

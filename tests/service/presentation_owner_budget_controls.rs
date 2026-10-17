@@ -143,28 +143,38 @@ impl Fixture {
             .create(&root)
             .unwrap();
         let clock = Arc::new(TestClock(AtomicU64::new(100)));
-        let context = StoreContext::new(root.join("store.db"), clock.clone());
+        let context = StoreContext::new(root.join("store.db"), clock.clone()).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,3);
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',1,0,0);
-            INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-p','inc','coherent_enumeration',1);
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,1);
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('x','i','resolved','native','px',1,0,0);
-            INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','px','b',1,0,1,'fresh','unknown','unknown',0,0,'term-px','inc','coherent_enumeration',1);
+        db.execute_batch("UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=3;
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
+            INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-p','inc','coherent_enumeration',1);
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1,0);
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('x','34750f98bd59fcfc946da45aaabe933b','resolved','native','px',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
+            INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'px','b',1,0,1,'fresh','unknown','unknown',0,0,'term-px','inc','coherent_enumeration',1);
             INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','x','joined');
             INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','x',1,1);").unwrap();
-        let store: Arc<dyn StorePort> =
-            Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
+        let store: Arc<dyn StorePort> = Arc::new(
+            SqliteStore::new(
+                context,
+                "34750f98bd59fcfc946da45aaabe933b",
+                StoreSettings::default(),
+            )
+            .unwrap(),
+        );
         let registry = Arc::new(ModChannelRegistry::new(
             clock.clone(),
             store.clone(),
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             Arc::new(|| {}),
             ModDeliverySetting::On,
         ));
-        let service = DomainService::new("i".into(), store.clone(), clock.clone())
-            .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-            .with_mod_channels(registry.clone());
+        let service = DomainService::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            store.clone(),
+            clock.clone(),
+        )
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+        .with_mod_channels(registry.clone());
         let harness = match consumer {
             PresentationConsumer::Hook => Harness::Agent(
                 herdr_threads::harness::registry::builtins()
@@ -174,7 +184,8 @@ impl Fixture {
             PresentationConsumer::Watch => Harness::Claude,
         };
         let claim = CallerClaim {
-            instance: "i".into(),
+            host: herdr_threads::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),
             binding_generation: 1,
             role: CallerRole::TopLevel,
@@ -320,7 +331,7 @@ impl Fixture {
             "wake_work",
             "warning_offer",
             "digest_notice_offer",
-            "host_instances",
+            "herdr_hosts",
         ]
         .into_iter()
         .map(|table| {

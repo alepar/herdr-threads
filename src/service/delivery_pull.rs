@@ -870,6 +870,7 @@ impl DomainService {
             let effective = DeliveryConfirm {
                 claim: CallerClaim {
                     instance: self.instance.clone(),
+                    host: confirm.claim.host.clone(),
                     seat: seat.clone(),
                     binding_generation: binding.generation,
                     role: CallerRole::TopLevel,

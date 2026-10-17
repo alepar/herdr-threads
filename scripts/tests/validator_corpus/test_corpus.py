@@ -12,7 +12,7 @@ Codex child rollouts). The string `{tmp}` in an expected `reason` stands for the
 
 Run from the repository root:  python3 -m unittest discover -s scripts/tests/validator_corpus
 
-Each test builds a real-schema SQLite database from migrations/ in a temp dir; no daemon, Herdr or model is involved.
+Each test builds a real-schema SQLite database from migrations/node/0001_node_baseline.sql in a temp dir; no daemon, Herdr or model is involved.
 """
 
 import argparse
@@ -112,19 +112,24 @@ class Case:
         instance = self.driver.state / "instances" / "i"
         instance.mkdir(parents=True)
         self.db = sqlite3.connect(instance / "threads.sqlite3")
-        for migration in sorted((REPO / "migrations").glob("*.sql")):
-            self.db.executescript(migration.read_text())
+        self.db.executescript((REPO / "migrations" / "node" / "0001_node_baseline.sql").read_text())
+        # What `schema::initialize` stamps next to the baseline.
+        self.db.execute("PRAGMA application_id = 0x48544E44")
+        self.db.execute("PRAGMA user_version = 1")
+        # The creating transaction's node rows (`schema::insert_node_rows`) and the local Herdr host row.
+        self.db.execute("INSERT INTO local_node(id,created_at,tag,tag_k) VALUES ('0123456789abcdef0123456789abcdef',0,'abc',0)")
+        self.db.execute("INSERT INTO herdr_hosts(node_id,endpoint,created_at) VALUES ('0123456789abcdef0123456789abcdef','local',0)")
         # The integrity triggers guard the production writers; the fixture seeds only the rows the read-only verifier
         # joins, so drop them rather than fabricate a whole send pipeline.
         for (name,) in self.db.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall():
             self.db.execute(f'DROP TRIGGER "{name}"')
         for seat in (SEAT, COORD):
-            self.db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?,?,?,?,?,?)",
+            self.db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?,?,?,?,?,?,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
                             (seat, "i", "resolved", "operator_fresh", 1, 0))
         observation = json.dumps({"harness": self.case.get("harness", "claude"), "session": SESSION,
                                   "provenance": "cooperative_top_level", "execution": "exec-root"})
         for message in spec.get("messages", []):
-            self.db.execute("INSERT INTO send_manifests VALUES (?,?, 'i', ?, ?, 0, 3, 1, 1, 0)",
+            self.db.execute("INSERT INTO send_manifests VALUES (?,?, 'i', ?, ?, 0, 3, 1, 1, 0, NULL)",
                             (f"prep-{message['id']}", message["id"], THREAD, message["seq"]))
             self.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,"
                             "eligible_at_snapshot) VALUES (?, ?, ?, 1, 900000, 0)", (f"prep-{message['id']}", THREAD, SEAT))
@@ -134,8 +139,8 @@ class Case:
         for invitation in spec.get("invitations", []):
             accepted = invitation["state"] == "accepted"
             self.db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,"
-                            "deadline_at,accepted_at,accepted_actor_seat_id,accepted_generation,accepted_observation) "
-                            "VALUES (?,?,?,1,?,?,0,900000,1,?,?,?,?)",
+                            "deadline_at,accepted_at,accepted_actor_seat_id,accepted_generation,accepted_observation,origin_node) "
+                            "VALUES (?,?,?,1,?,?,0,900000,1,?,?,?,?,(SELECT id FROM local_node))",
                             (invitation["id"], THREAD, SEAT, invitation["state"], invitation["seq"], 1 if accepted else None,
                              SEAT if accepted else None, 1 if accepted else None, observation if accepted else None))
         if "wake_work" in spec:

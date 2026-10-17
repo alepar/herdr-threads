@@ -58,10 +58,8 @@ fn fixture() -> Fixture {
     ))));
     std::fs::create_dir(&directory.0).unwrap();
     let clock = Arc::new(TestClock(AtomicU64::new(100)));
-    let context = Arc::new(StoreContext::new(
-        directory.0.join("store.db"),
-        clock.clone(),
-    ));
+    let context =
+        Arc::new(StoreContext::new(directory.0.join("store.db"), clock.clone()).with_test_host());
     let connection = context.open_writer().unwrap();
     Fixture {
         connection,
@@ -187,9 +185,14 @@ impl Input {
         let context = &f.context;
         let conn = &mut f.connection;
         match self {
-            Self::Begin => {
-                seats::begin_host_observation(context, conn, "i", b).map(|r| format!("{r:?}"))
-            }
+            Self::Begin => seats::begin_host_observation(
+                context,
+                conn,
+                "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
+                b,
+            )
+            .map(|r| format!("{r:?}")),
             Self::Target(a, o) => seats::publish_current_target_observation(context, conn, a, o, b)
                 .map(|r| format!("{r:?}")),
             Self::Invalidate(a) => seats::invalidate_host_observation(
@@ -224,7 +227,8 @@ impl Input {
 }
 fn header(a: HostObservationAdmission, sequence: u64) -> SnapshotHeader {
     SnapshotHeader {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+        host_id: crate::test_support::test_host_id(),
         boot: HostBootId::new("b"),
         epoch: 1,
         observation_sequence: sequence,
@@ -234,7 +238,14 @@ fn header(a: HostObservationAdmission, sequence: u64) -> SnapshotHeader {
     }
 }
 fn stage(f: &mut Fixture, sequence: u64) -> SnapshotGenerationId {
-    let a = seats::begin_host_observation(&f.context, &mut f.connection, "i", &budget()).unwrap();
+    let a = seats::begin_host_observation(
+        &f.context,
+        &mut f.connection,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget(),
+    )
+    .unwrap();
     let staged = seats::begin_snapshot_stage(
         &f.context,
         &mut f.connection,
@@ -258,11 +269,17 @@ fn prepare(kind: &str) -> (Fixture, Input) {
     let initial = stage(&mut f, 1);
     let publication =
         seats::publish_snapshot_stage(&f.context, &mut f.connection, &initial, &budget()).unwrap();
-    f.connection.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',1,1,0)",[]).unwrap();
+    f.connection.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
     let input = match kind {
         "target" => {
-            let a = seats::begin_host_observation(&f.context, &mut f.connection, "i", &budget())
-                .unwrap();
+            let a = seats::begin_host_observation(
+                &f.context,
+                &mut f.connection,
+                "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
+                &budget(),
+            )
+            .unwrap();
             Input::Target(
                 a,
                 HostObservation {
@@ -289,17 +306,36 @@ fn prepare(kind: &str) -> (Fixture, Input) {
             )
         }
         "invalidate" => Input::Invalidate(
-            seats::begin_host_observation(&f.context, &mut f.connection, "i", &budget()).unwrap(),
+            seats::begin_host_observation(
+                &f.context,
+                &mut f.connection,
+                "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
+                &budget(),
+            )
+            .unwrap(),
         ),
         "stage" => {
-            let a = seats::begin_host_observation(&f.context, &mut f.connection, "i", &budget())
-                .unwrap();
+            let a = seats::begin_host_observation(
+                &f.context,
+                &mut f.connection,
+                "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
+                &budget(),
+            )
+            .unwrap();
             Input::BeginStage(header(a, 2))
         }
         "publish" => Input::Publish(stage(&mut f, 2)),
         "mark" => {
-            let a = seats::begin_host_observation(&f.context, &mut f.connection, "i", &budget())
-                .unwrap();
+            let a = seats::begin_host_observation(
+                &f.context,
+                &mut f.connection,
+                "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
+                &budget(),
+            )
+            .unwrap();
             let fence = seats::invalidate_host_observation(
                 &f.context,
                 &mut f.connection,
@@ -331,7 +367,7 @@ fn prepare(kind: &str) -> (Fixture, Input) {
                 &tx,
                 UtcMillis(50),
                 SeatId::new("s"),
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 "b",
                 1,
                 "p",

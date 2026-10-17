@@ -1,0 +1,7 @@
+# Caller-owned AFTER code roast/fix loop, against exact final SHA.
+# Export fresh HT_LEAK_RUN_ID and isolated TMPDIR before these commands.
+scripts/test-claude-mod
+nice cargo nextest run --locked --all-features --lib --test combined --test integration --test hook_entrypoint -E 'test(hook) | test(handoff) | test(lazy_inbox) | test(receipts) | test(mod_ack) | test(mod_delivery) | test(lazy_config_smoke) | test(lazy_settlement) | test(accept_delivery) | test(lazy_recovery_context) | test(cooperative) | test(delivery::page) | test(protocol::watch) | test(protocol::capabilities) | test(lazy_delivery)'
+scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID"
+# Also current candidate cargo fmt --check; required all-feature clippy/neutral/default-feature checks.
+# This command plan is not an executed result. For individual exact tests see tracked verification-matrix.md.

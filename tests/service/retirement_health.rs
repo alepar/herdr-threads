@@ -3,8 +3,8 @@ use herdr_threads::{
     app::SystemClock,
     client::local::LocalSocketClient,
     daemon::{
-        ownership::{OwnerLock, read_descriptor, read_existing_namespace},
-        paths::{InstancePaths, RuntimeContext},
+        ownership::{OwnerLock, read_descriptor, read_node_uuid_hint},
+        paths::{NodePaths, RuntimeContext},
     },
     ports::LocalClient,
     protocol::{
@@ -42,27 +42,24 @@ fn elected_health_sees_late_retirement_and_keeps_exact_error_on_seat_inspect() {
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
-    let instance = owner.instance_uuid();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = owner.node_uuid().unwrap();
     drop(owner);
-    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
+    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()))
+        .with_test_host()
+        .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
     let db = setup.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-        [instance.to_string()],
-    )
-    .unwrap();
     for n in 0..25 {
         let seat = format!("old-retired-seat-{n}");
         let job = format!("old-retirement-job-{n}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES (?1,?2,'retired','native',1,0,1,1)",rusqlite::params![seat,instance.to_string()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES (?1,?2,'retired','native',1,0,1,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",rusqlite::params![seat,instance.to_string()]).unwrap();
         db.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,status) VALUES (?1,?2,1,'boot',1,'target',1,'complete')",rusqlite::params![job,seat]).unwrap();
     }
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES ('late-retired-seat',?1,'retired','native',1,0,1,1)",[instance.to_string()]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES ('late-retired-seat',?1,'retired','native',1,0,1,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[instance.to_string()]).unwrap();
     db.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation,last_error) VALUES ('late-retirement-job','late-retired-seat',1,'boot',1,'target',1,'private cleanup failure')",[]).unwrap();
     // Keep the worker from settling this row before Health observes it.
-    db.execute_batch("CREATE TRIGGER hold_retirement_health BEFORE UPDATE ON retirements BEGIN SELECT RAISE(IGNORE); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER ht_test_fault_hold_retirement_health BEFORE UPDATE ON retirements BEGIN SELECT RAISE(IGNORE); END;").unwrap();
     drop(db);
 
     let child = TestChild(
@@ -83,7 +80,7 @@ fn elected_health_sees_late_retirement_and_keeps_exact_error_on_seat_inspect() {
     );
     let deadline = Instant::now() + Duration::from_secs(5);
     let descriptor = loop {
-        if let Some(instance) = read_existing_namespace(&paths).unwrap()
+        if let Some(instance) = read_node_uuid_hint(&paths).unwrap()
             && let Ok(descriptor) = read_descriptor(&paths, instance)
         {
             break descriptor;
@@ -95,7 +92,7 @@ fn elected_health_sees_late_retirement_and_keeps_exact_error_on_seat_inspect() {
     let client = LocalSocketClient::new(
         descriptor.endpoint,
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
     );
     let budget = || CallBudget {
@@ -139,7 +136,7 @@ fn elected_health_sees_late_retirement_and_keeps_exact_error_on_seat_inspect() {
         "private cleanup failure"
     );
     let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-    db.execute_batch("DROP TRIGGER hold_retirement_health; UPDATE retirements SET last_error=NULL,status='complete' WHERE id='late-retirement-job';").unwrap();
+    db.execute_batch("DROP TRIGGER ht_test_fault_hold_retirement_health; UPDATE retirements SET last_error=NULL,status='complete' WHERE id='late-retirement-job';").unwrap();
     let CommandResult::Health(cleared) = client.call(Command::Health, &budget()).unwrap() else {
         panic!("missing Health")
     };

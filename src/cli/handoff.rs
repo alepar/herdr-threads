@@ -823,6 +823,7 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(
     };
     let scope = IntentScope::Cooperative {
         instance: claim.instance.clone(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
     };
     let semantic = SemanticMutation::freeze(SemanticMutation::Handoff(Box::new(plan)), claim)?;
@@ -1320,6 +1321,7 @@ pub(crate) fn try_completed_retry<C: LocalClient + ?Sized, W: Write>(
     };
     let scope = IntentScope::Cooperative {
         instance: instance.into(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
     };
     let frozen_routing = super::hook::CommandRouting::from_context(&claim.instance, &plan.context);
@@ -1511,7 +1513,7 @@ fn render_bootstrap<W: Write>(
         &super::hook::CommandRouting::from_context(instance, context),
     )
     .map_err(io::Error::other)?;
-    writer.write_all(" Prefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Open your durable inbox using that matching group. Otherwise use the exact fallback: `".as_bytes())?;
+    writer.write_all(" Prefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Use complete task messages injected by that matching group. If no matching hook is trusted, or delivery reports incomplete or unavailable, use the exact fallback: `".as_bytes())?;
     let mut inbox = super::hook::cli_prefix(context);
     inbox.push("inbox".into());
     for (index, token) in inbox.into_iter().enumerate() {
@@ -1523,7 +1525,7 @@ fn render_bootstrap<W: Write>(
     }
     write!(
         writer,
-        "`. The task for thread {} is stored in inbox; follow its printed next: commands for complete bodies. Do not reread it with read/body. When waiting for replies, finish your turn and let hooks notify you of new mail; do not poll or run follow. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.",
+        "`. The task for thread {} is stored in inbox. Complete delivery, including an empty inbox, needs no inbox call. Follow printed next: commands for incomplete delivery. Do not reread it with read/body. When waiting for replies, finish your turn and let hooks notify you of new mail; do not poll or run follow. Launch does not accept invitations or ACK messages. Accept invitations separately; complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically.",
         thread
     )?;
     #[cfg(any(test, feature = "test-support"))]
@@ -1578,7 +1580,7 @@ pub(crate) mod bootstrap_v1 {
     /// The V1 expected routing object (`instance`, `state_dir`,
     /// `host_endpoint`, in that order).
     pub(crate) struct Routing {
-        instance: uuid::Uuid,
+        instance: crate::node::NodeUuid,
         state_dir: String,
         host_endpoint: String,
     }
@@ -1593,7 +1595,7 @@ pub(crate) mod bootstrap_v1 {
         let host = Path::new(context.host.as_deref()?);
         let endpoint = host.parent()?.canonicalize().ok()?.join(host.file_name()?);
         Some(Routing {
-            instance: uuid::Uuid::parse_str(instance).ok()?,
+            instance: instance.parse::<crate::node::NodeUuid>().ok()?,
             state_dir: state.to_str()?.to_owned(),
             host_endpoint: endpoint.to_str()?.to_owned(),
         })
@@ -1603,7 +1605,7 @@ pub(crate) mod bootstrap_v1 {
     /// verbatim. Validation never repeats today's filesystem lookup.
     fn retained(instance: &str, context: &ContinuationContext) -> Option<Routing> {
         Some(Routing {
-            instance: uuid::Uuid::parse_str(instance).ok()?,
+            instance: instance.parse::<crate::node::NodeUuid>().ok()?,
             state_dir: context.state_dir.clone()?,
             host_endpoint: context.host.clone()?,
         })
@@ -1681,7 +1683,7 @@ pub(crate) mod bootstrap_v1 {
             None => out.push_str("null"),
             Some(routing) => {
                 out.push_str("{\"instance\":\"");
-                out.push_str(&routing.instance.hyphenated().to_string());
+                out.push_str(&routing.instance.to_string());
                 out.push_str("\",\"state_dir\":");
                 json_string(&routing.state_dir, &mut out);
                 out.push_str(",\"host_endpoint\":");
@@ -2150,6 +2152,7 @@ fn retry_automatic_live<C: LocalClient + ?Sized, W: Write>(
     if original.header.scope
         != (IntentScope::Cooperative {
             instance: current_claim.instance.clone(),
+            host: current_claim.host.clone(),
             seat: current_claim.seat.clone(),
         })
         || original.semantic.frozen_claim() != Some(current_claim)
@@ -2177,7 +2180,7 @@ pub(crate) fn run<W: Write>(
     parsed: super::commands::ParsedCli,
     claim: CallerClaim,
     journal: &Journal,
-    paths: &crate::daemon::paths::InstancePaths,
+    paths: &crate::daemon::paths::NodePaths,
     writer: &mut W,
 ) -> Result<(), RunError> {
     use std::sync::Arc;
@@ -2197,6 +2200,7 @@ pub(crate) fn run<W: Write>(
             let reference = original.header.reference;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance.clone(),
+                host: claim.host.clone(),
                 seat: claim.seat.clone(),
             };
             return resume(
@@ -2228,17 +2232,24 @@ pub(crate) fn run<W: Write>(
                 .map(std::path::PathBuf::from),
         ))?;
     env.state_dir = Some(runtime.state_dir.clone());
-    env.host_endpoint = Some(runtime.host_endpoint.clone());
+    let claim_host = runtime.require_host()?.to_path_buf();
+    env.host_endpoint = Some(claim_host.clone());
     let mut output = parsed.output.clone();
     output.context.state_dir = Some(runtime.state_dir.display().to_string());
-    output.context.host = Some(runtime.host_endpoint.display().to_string());
+    output.context.host = Some(claim_host.display().to_string());
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: instance.to_string(),
         state_dir: runtime.state_dir.clone(),
-        host_endpoint: runtime.host_endpoint.clone(),
+        host_endpoint: claim_host.clone(),
     };
-    let host = crate::host::native::NativeCli::new(runtime.host_endpoint, Arc::clone(&clock));
-    let seats = super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
+    let host = crate::host::native::NativeCli::new(claim_host, Arc::clone(&clock));
+    let seats = super::launch::DaemonSeatResolver::new(
+        &client,
+        journal,
+        instance,
+        runtime.claim_host()?,
+        clock.as_ref(),
+    );
     let shell = super::launch::SystemShellProbe::from_process();
     let mut launcher = NativeLauncher {
         registry: crate::harness::registry::builtins(),
@@ -2248,7 +2259,7 @@ pub(crate) fn run<W: Write>(
             seats: &seats,
             handoff: &client,
             clock: clock.as_ref(),
-            record_dir: Some(&paths.instance_dir),
+            record_dir: Some(&paths.node_dir),
             shell_probe: &shell,
         },
     };
@@ -2302,6 +2313,7 @@ pub(crate) fn run<W: Write>(
             let reference = original.header.reference;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance,
+                host: claim.host.clone(),
                 seat: claim.seat,
             };
             resume(

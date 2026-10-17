@@ -1,0 +1,17 @@
+r1 [Blocking] src/main.rs:117
+r1 [Should-fix] Cargo.toml:64
+r1 [Should-fix] src/cli/mod.rs:616
+r1 [Should-fix] src/sync/coordinator/ingest.rs:203
+r1 [Should-fix] src/store/materialize.rs:374
+r1 [Should-fix] src/sync/coordinator.rs:934; src/sync/coordinator.rs:933; src/sync/coordinator.rs:935
+r1 [Should-fix] src/sync/incarnations/sink.rs:443
+r1 [Should-fix] scripts/install.sh:383
+r1 [Should-fix] scripts/validate-native-demo.py:3807
+r1 [Should-fix] src/daemon/paths.rs:190
+r1 [Nit] src/store/journal.rs:500
+r1 [Nit] src/sync/coordinator.rs:950
+r1 [Nit] integrations/skill/SKILL.md:144
+r1 [Nit] CHANGELOG.md:5
+r1 [Nit] AGENTS.md:20
+r1 [Must-fix] untested: full suite on the merged tree (main v1.1.0 + branch)
+r1 [Must-fix] untested: main v1.1.0 merge into the branch (refused by permission layer; human)

@@ -6,6 +6,14 @@ use std::cell::Cell;
 use std::sync::{Arc, Mutex};
 
 /// A daemon lane that can be kicked by a store commit.
+///
+/// Responsibility: the closed lane set. Owns lane identity, bits and names.
+/// Does not own lane workers, or table classification beyond the table map
+/// ([`lanes_for_table`]). A new lane is a variant here plus its table mapping.
+/// Role: the one vocabulary commit kicks, Pacers and health share.
+///
+/// `Sync` is the peer-sync lane: it computes and pushes Have deltas to
+/// subscribers on journal and sync-log commits, and reloads dial targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Lane {
     Deadlines,
@@ -14,22 +22,40 @@ pub enum Lane {
     Retention,
     AdmissionObserver,
     Archival,
+    /// Materializes journal entries into canonical state (ht-5fr.3).
+    Apply,
+    /// Peer sync: Have deltas, push to subscribers, dial-target reload (ht-5fr.5).
+    Sync,
 }
 
 impl Lane {
-    pub const COUNT: usize = 6;
-    pub const INTERNAL_ALL: [Lane; 6] = [
+    pub const COUNT: usize = 8;
+    pub const INTERNAL_ALL: [Lane; Self::COUNT] = [
         Lane::Deadlines,
         Lane::Wakes,
         Lane::Observation,
         Lane::Retention,
         Lane::AdmissionObserver,
         Lane::Archival,
+        Lane::Apply,
+        Lane::Sync,
     ];
     pub const ALL: [Lane; Self::COUNT] = {
         let mut lanes = [Lane::Deadlines; Self::COUNT];
         let mut i = 0;
         while i < Self::COUNT {
+            lanes[i] = Self::INTERNAL_ALL[i];
+            i += 1;
+        }
+        lanes
+    };
+    /// The lanes that run a worker today, in `ALL` order. `Apply` and `Sync`
+    /// are the last lanes and join when their workers register a Pacer
+    /// (ht-5fr.3.15, ht-5fr.5).
+    pub const WORKERS: [Lane; Self::COUNT - 2] = {
+        let mut lanes = [Lane::Deadlines; Self::COUNT - 2];
+        let mut i = 0;
+        while i < Self::COUNT - 2 {
             lanes[i] = Self::INTERNAL_ALL[i];
             i += 1;
         }
@@ -44,17 +70,19 @@ impl Lane {
             Lane::Retention => "retention",
             Lane::AdmissionObserver => "admission-observer",
             Lane::Archival => "archival",
+            Lane::Apply => "apply",
+            Lane::Sync => "sync",
         }
     }
 
-    fn bit(self) -> u8 {
-        1 << (self as u8)
+    fn bit(self) -> u16 {
+        1 << (self as u16)
     }
 }
 
 /// A small set of lanes (bitset over [`Lane::ALL`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct LaneSet(u8);
+pub struct LaneSet(u16);
 
 impl LaneSet {
     pub const EMPTY: LaneSet = LaneSet(0);
@@ -74,11 +102,11 @@ impl LaneSet {
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
-    pub(crate) fn to_bits(self) -> u8 {
+    pub(crate) fn to_bits(self) -> u16 {
         self.0
     }
-    pub(crate) fn from_bits(bits: u8) -> Self {
-        Self(bits & ((1 << Lane::INTERNAL_ALL.len()) - 1))
+    pub(crate) fn from_bits(bits: u16) -> Self {
+        Self(bits & ((1 << Lane::COUNT) - 1))
     }
     pub fn iter(self) -> impl Iterator<Item = Lane> {
         Lane::INTERNAL_ALL
@@ -87,8 +115,15 @@ impl LaneSet {
     }
 }
 
+/// Tables whose commits wake the apply lane: journal rows await materialization.
+const APPLY_TABLES: &[&str] = &["journal"];
+/// Tables whose commits wake the sync lane: new journal rows and sync-log
+/// changes alter the Have deltas pushed to peers, and a dial-target change
+/// makes the Dialer reload its targets.
+const SYNC_TABLES: &[&str] = &["journal", "sync_logs", "sync_dial_targets"];
 const ARCHIVAL_TABLES: &[&str] = &[
     "archival_instances",
+    "archival_hosts",
     "channel_archival",
     "seat_archival",
     "channel_handoff_fences",
@@ -124,14 +159,22 @@ const DEADLINE_TABLES: &[&str] = &[
     // Catch-up rows move effective receipt deadlines (TRUST-POLICY A6).
     "catch_up",
 ];
-/// Tables that explicitly kick no lane. `host_instances`,
-/// `snapshot_generations` and `snapshot_targets` are classified 'none' by
+/// Tables that explicitly kick no lane. `local_node`, `herdr_hosts`,
+/// `node_directory`, `snapshot_generations` and `snapshot_targets` are classified 'none' by
 /// design (observation admission, stage, seal and publish commits kick no
 /// lane). A new table must be added to one list; the exhaustive
 /// classification test fails until it is.
 pub const KNOWN_UNMAPPED: &[&str] = &[
     // Pair identity is passive; its ordinary invitation/membership writes kick their own lanes.
     "direct_threads",
+    // Transient attribution staged and taken inside one writer transaction (ht-5fr.4.15).
+    "fact_attribution_staging",
+    // Fork repair state (ht-5fr.6.4): freezes kick Lane::Sync through the sync_logs mapping.
+    "sync_forks",
+    "sync_branches",
+    "sync_reissues",
+    // Clone evidence (ht-5fr.6.7): read by the repair gate, schedules no lane.
+    "sync_clone_evidence",
     // Immutable automatic identities accompany the archival fence parent.
     "automatic_handoff_companions",
     "automatic_bootstrap_parents",
@@ -187,7 +230,14 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "harness_version_evidence",
     // SQL26 retained rows have no active lane consumer in this composition.
     "lazy_recipients",
-    "host_instances",
+    "herdr_hosts",
+    "local_node",
+    "node_directory",
+    // Journal core (ht-5fr.3.4): `journal` maps to Apply and Sync, `sync_logs` to Sync.
+    "journal_forked",
+    // Reachability is read by queries, never by a lane (ht-5fr.5.4).
+    "sync_node_contact",
+    "thread_registers",
     // Passive inbox progress never schedules attention or deadlines.
     "lazy_recipients",
     "membership_intervals",
@@ -230,7 +280,7 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
 /// runs on its 60 s safety tick and `has_more` re-runs, because pruning
 /// is never urgent and a commit-driven kick would turn every publication
 /// into a retention commit; its own commits kick no lane
-/// ([`origin_discards_kicks`]). A table in neither mapped list nor [`KNOWN_UNMAPPED`] maps to
+/// ([`kicks_for_commit`]). A table in neither mapped list nor [`KNOWN_UNMAPPED`] maps to
 /// `EMPTY` and trips a debug assertion.
 pub fn lanes_for_table(table: &str) -> LaneSet {
     let mut set = LaneSet::EMPTY;
@@ -242,6 +292,12 @@ pub fn lanes_for_table(table: &str) -> LaneSet {
     }
     if DEADLINE_TABLES.contains(&table) {
         set = set.with(Lane::Deadlines);
+    }
+    if APPLY_TABLES.contains(&table) {
+        set = set.with(Lane::Apply);
+    }
+    if SYNC_TABLES.contains(&table) {
+        set = set.with(Lane::Sync);
     }
     debug_assert!(
         set != LaneSet::EMPTY || KNOWN_UNMAPPED.contains(&table),
@@ -256,6 +312,8 @@ pub fn mapped_tables() -> impl Iterator<Item = &'static str> {
         .iter()
         .chain(DEADLINE_TABLES)
         .chain(ARCHIVAL_TABLES)
+        .chain(APPLY_TABLES)
+        .chain(SYNC_TABLES)
         .copied()
 }
 
@@ -296,31 +354,51 @@ pub fn notifies_mod(table: &str) -> bool {
     MOD_NOTIFY_TABLES.contains(&table)
 }
 
-/// Registry of lane Pacers. A kick to an unregistered lane is a no-op.
+/// Registry of lane Pacers.
+///
+/// Responsibility: owns the per-lane lists of Pacers and the fan-out of a lane
+/// kick to every Pacer registered for it (one per attached host where a lane
+/// is per-host). `unregister` exists only for a failed attach. Does not own
+/// lane identity: [`Lane`] stays closed (hosts are dynamic, lanes are not).
+/// A kick to a lane with no Pacer is a no-op.
 #[derive(Default)]
 pub struct CommitKicks {
-    pacers: Mutex<[Option<Arc<Pacer>>; 6]>,
+    pacers: Mutex<[Vec<Arc<Pacer>>; Lane::COUNT]>,
     mod_observer: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl CommitKicks {
-    fn slots(&self) -> std::sync::MutexGuard<'_, [Option<Arc<Pacer>>; 6]> {
+    fn slots(&self) -> std::sync::MutexGuard<'_, [Vec<Arc<Pacer>>; Lane::COUNT]> {
         self.pacers.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Registers `lane`'s Pacer; called once per lane at worker start.
+    /// Appends `pacer` to `lane`'s list; called at worker start. Registering
+    /// the same Pacer twice is a caller bug.
     pub fn register(&self, lane: Lane, pacer: Arc<Pacer>) {
-        self.slots()[lane as usize] = Some(pacer);
+        let mut slots = self.slots();
+        let list = &mut slots[lane as usize];
+        debug_assert!(!list.iter().any(|p| Arc::ptr_eq(p, &pacer)));
+        list.push(pacer);
     }
 
-    /// Kicks the Pacer of every registered lane in `lanes`.
+    /// Removes exactly `pacer` from `lane`'s list. Only a failed attach calls
+    /// it; a Pacer that is not registered is left alone.
+    pub fn unregister(&self, lane: Lane, pacer: &Arc<Pacer>) {
+        let mut slots = self.slots();
+        let list = &mut slots[lane as usize];
+        if let Some(at) = list.iter().position(|p| Arc::ptr_eq(p, pacer)) {
+            list.remove(at);
+        }
+    }
+
+    /// Kicks every Pacer registered for each lane in `lanes`.
     pub fn kick(&self, lanes: LaneSet) {
         // Collect first so no Pacer lock is taken under the registry lock.
         let targets: Vec<Arc<Pacer>> = {
             let slots = self.slots();
             lanes
                 .iter()
-                .filter_map(|lane| slots[lane as usize].clone())
+                .flat_map(|lane| slots[lane as usize].iter().cloned())
                 .collect()
         };
         for pacer in targets {
@@ -347,14 +425,21 @@ impl CommitKicks {
         }
     }
 
+    /// True while at least one Pacer is registered for `lane`.
     pub fn registered(&self, lane: Lane) -> bool {
-        self.slots()[lane as usize].is_some()
+        !self.slots()[lane as usize].is_empty()
     }
 
-    /// The Pacer registered for `lane` (test support).
+    /// How many Pacers are registered for `lane` (test support).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pacer_count(&self, lane: Lane) -> usize {
+        self.slots()[lane as usize].len()
+    }
+
+    /// The first Pacer registered for `lane` (test support).
     #[cfg(any(test, feature = "test-support"))]
     pub fn pacer(&self, lane: Lane) -> Option<Arc<Pacer>> {
-        self.slots()[lane as usize].clone()
+        self.slots()[lane as usize].first().cloned()
     }
 }
 
@@ -387,10 +472,20 @@ pub fn current_origin() -> Option<Lane> {
     ORIGIN.with(Cell::get)
 }
 
-/// Commits sealed under these origins discard their pending kick set: deleting
-/// superseded or settled rows cannot make a seat sendable or a deadline due.
-pub fn origin_discards_kicks(origin: Option<Lane>) -> bool {
-    matches!(origin, Some(Lane::Retention))
+/// Which of the `sealed` lanes a commit under `origin` kicks.
+///
+/// Responsibility: the one commit-kick rule. Owns which sealed lanes a commit
+/// kicks per origin. Does not run or schedule lanes. New origin rules go here.
+/// Role: keeps Apply from kicking itself and Retention from kicking anything:
+/// a Retention commit deletes superseded or settled rows, which cannot make a
+/// seat sendable or a deadline due; an Apply commit is the materialization of
+/// the journal rows that already kicked it.
+pub fn kicks_for_commit(origin: Option<Lane>, sealed: LaneSet) -> LaneSet {
+    match origin {
+        Some(Lane::Retention) => LaneSet::EMPTY,
+        Some(Lane::Apply) => sealed.without(Lane::Apply),
+        _ => sealed,
+    }
 }
 
 #[cfg(test)]

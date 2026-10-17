@@ -306,6 +306,8 @@ pub(crate) fn enroll_with_hooks(
     now: UtcMillis,
     hooks: &[(&str, EnrollHook)],
 ) -> Result<EnrollOutcome, ApiError> {
+    // A remote seat is never occupied on this node; refused before anything is written.
+    super::seats::require_local_seat(tx, &request.key.seat)?;
     if let Some(existing) = match_claim(tx, request.key)? {
         return Ok(EnrollOutcome::Existing(existing));
     }
@@ -351,6 +353,9 @@ pub(crate) fn enroll_with_hooks(
     .map(|_| ((), place.registered_at.is_some()))
     })?;
     let ordinal = tx.last_insert_rowid();
+    // The seat is resolved to an occupant: publish it (`seat.created`) in this
+    // transaction. No journal here, so the write runner drains the queue.
+    super::seats::queue_publication(&request.key.seat);
     let binding = query_rows(
         tx,
         &format!("SELECT {COLUMNS} FROM occupant_bindings WHERE ordinal=?1"),
@@ -557,6 +562,7 @@ pub fn connect(
     let Some(seat) = binding_seat(tx, binding)? else {
         return Ok(false);
     };
+    super::seats::require_local_seat(tx, &SeatId::new(seat.as_str()))?;
     // Every reconnect (check-in or plain call) can restore availability: fence it.
     let connected = super::schema::fence_seat_availability(tx, &seat, || {
         let rows = tx
@@ -695,10 +701,11 @@ pub fn liveness_candidates(
             "SELECT {COLUMNS}, (SELECT instance_id FROM seats WHERE id=occupant_bindings.seat_id), observed_at \
              FROM occupant_bindings WHERE ended_at IS NULL AND liveness='connected' AND harness<>'human' \
              AND (?1 IS NULL OR seat_id=?1) \
-             AND seat_id IN (SELECT s.id FROM seats s JOIN host_instances h ON h.id=s.instance_id \
-                 WHERE s.state='resolved' AND COALESCE(h.baseline_hold_unclaimed,0)=0 \
-                 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=s.instance_id AND rh.released_at IS NULL)) \
-             ORDER BY ordinal"
+             AND seat_id IN (SELECT s.id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id AND h.node_id=s.instance_id \
+                 WHERE s.state='resolved' AND s.{LOCAL_SEAT} AND COALESCE(h.baseline_hold_unclaimed,0)=0 \
+                 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.host_id=s.host_id AND rh.released_at IS NULL)) \
+             ORDER BY ordinal",
+            LOCAL_SEAT = super::seats::LOCAL_SEAT
         ))
         .map_err(store_error)?;
     let rows = statement
@@ -848,6 +855,7 @@ pub fn launch_placeholder_replace(
     now: UtcMillis,
 ) -> Result<(), ApiError> {
     let binding = event.binding;
+    super::seats::require_local_seat(tx, &binding.seat)?;
     if binding.role != BindingRole::TopLevel
         || binding.harness == "human"
         || binding.provenance == crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE
@@ -1087,6 +1095,7 @@ fn attach_subagent_with_hooks(
     if claim.agent_id.is_none() {
         return Err(subagent_shape_error());
     }
+    super::seats::require_local_seat(tx, &claim.seat)?;
     enroll_with_hooks(
         tx,
         &EnrollRequest {
@@ -1769,3 +1778,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "../../tests/store/liveness_apply.rs"]
 mod liveness_apply_tests;
+
+#[cfg(test)]
+#[path = "../../tests/store/multi_host_queries.rs"]
+mod multi_host_queries_tests;

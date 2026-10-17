@@ -12,6 +12,8 @@
 #     them per container (README.md). Bump them with `npm install --package-lock-only` in npm/.
 #   - the base image by its multi-arch index digest (ubuntu:24.04 at the time of pinning).
 # python3, git, procps and lsof serve the e2e scripts (scripts/check-no-leaked-processes needs lsof).
+# openssh-client/-server serve `run real-ssh` (real-ssh-e2e.py starts sshd as root in a container of this image,
+# key-only, as the sshd stage of the two-node check; nothing starts it otherwise).
 # Runs as the non-root user `tester` (no sudo). Containers must run with `docker run --init`.
 #
 # Build context: `git archive <sha> scripts/linux-e2e tests/herdr-releases.tsv` (the run script extracts it).
@@ -32,7 +34,7 @@ LABEL dev.herdr-threads.linux-e2e=1
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential musl-tools file curl ca-certificates git python3 procps lsof \
-      pkg-config less locales xz-utils \
+      pkg-config less locales xz-utils openssh-client openssh-server \
     && rm -rf /var/lib/apt/lists/* && locale-gen en_US.UTF-8
 
 # errexit + nounset + pipefail: every command in a RUN is fatal, so no later command can mask a failure.

@@ -6,12 +6,13 @@ const DECISION: u64 = 1_000;
 
 fn db(bound: bool) -> Connection {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
     db.execute_batch(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1000);\
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('s','i','resolved','native','ps',1,1,0,1);\
-         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','ps','b',1,1,0,'fresh','term-ps','inc','coherent_enumeration',1);\
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,1);\
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1000;\
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','ps',1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+         INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'ps','b',1,1,0,'fresh','term-ps','inc','coherent_enumeration',1);\
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1,0);\
          INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','joined');\
          INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1);",
     )
@@ -41,7 +42,7 @@ fn seat() -> SeatId {
 /// A physical receipt on its own message: `state` pending or acked, due at `deadline`.
 fn receipt(db: &Connection, n: i64, deadline: i64, state: &str) {
     db.execute(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','b',0,?2)",
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','b',0,?2)",
         rusqlite::params![format!("r{n}"), n],
     )
     .unwrap();
@@ -63,7 +64,7 @@ fn invitation(
     deadline: i64,
 ) {
     db.execute(
-        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,confirmation,inviter_seat_id) VALUES (?1,'t','s',?2,'pending',0,5,?3,100,?4,?5)",
+        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,confirmation,inviter_seat_id,origin_node) VALUES (?1,'t','s',?2,'pending',0,5,?3,100,?4,?5,(SELECT id FROM local_node))",
         rusqlite::params![name, episode, deadline, confirmation, confirmation.map(|_| "s")],
     )
     .unwrap();
@@ -232,16 +233,16 @@ fn settled_physical_receipts_cost_no_visit() {
 /// with one prepared recipient; published (manifest row) unless `published` is false; settled
 /// `acked` when `acked`.
 fn manifest_receipt(db: &Connection, n: i64, seq: i64, published: bool, acked: bool) {
-    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,'i','actor',?2,zeroblob(32),'t',0,0,0,0,0,0,1,'sealed')",
+    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','actor',?2,zeroblob(32),'t',0,0,0,0,0,0,1,'sealed')",
         rusqlite::params![format!("p{n}"), format!("op{n}")]).unwrap();
     db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES (?1,'t','s',1,300,0)",
         [format!("p{n}")]).unwrap();
     if !published {
         return;
     }
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','s','b',7000,?2)",
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','s','b',7000,?2)",
         rusqlite::params![format!("u{n}"), seq]).unwrap();
-    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,'i','t',?3,7000,?3,0,1,0)",
+    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,'34750f98bd59fcfc946da45aaabe933b','t',?3,7000,?3,0,1,0)",
         rusqlite::params![format!("p{n}"), format!("u{n}"), seq]).unwrap();
     if acked {
         db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES (?1,'s','acked','s',1,'o',1) ON CONFLICT(message_id,seat_id) DO UPDATE SET state='acked',ack_actor_seat_id='s',ack_generation=1,ack_observation='o',acked_at=1",
@@ -402,10 +403,10 @@ fn deadline_less_legacy_invitation_sorts_after_deadlined_p0_items() {
 fn receipt_unread_dedupe_preserved() {
     let db = db(true);
     db.execute_batch(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');\
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');\
          INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p','t','s',1,300,0);\
-         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('u1','i','t',1,'ordinary','s','b',7000,10);\
-         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('p','u1','i','t',10,7000,1,0,1,0);",
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('u1','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','s','b',7000,10);\
+         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('p','u1','34750f98bd59fcfc946da45aaabe933b','t',10,7000,1,0,1,0);",
     )
     .unwrap();
     receipt(&db, 50, 400, "pending");
@@ -484,8 +485,8 @@ mod page_level {
     fn add_member(conn: &Connection, id: &str) {
         let target = format!("p{id}");
         let execution = format!("00000000-0000-4000-8000-0000000000{:02x}", id.as_bytes()[0]);
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)",rusqlite::params![id,target]).unwrap();
-        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh',?2,'inc','coherent_enumeration',1)",rusqlite::params![target,format!("term-{target}")]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",rusqlite::params![id,target]).unwrap();
+        conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh',?2,'inc','coherent_enumeration',1)",rusqlite::params![target,format!("term-{target}")]).unwrap();
         conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,1,?2,'b',1,1,'codex',?1,?3,'cooperative_top_level',0,0,?4,'inc')",rusqlite::params![id,target,execution,format!("term-{target}")]).unwrap();
         conn.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
@@ -496,10 +497,11 @@ mod page_level {
     }
 
     fn setup(iso: &TestIsolation) -> (StoreContext, Connection) {
-        let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+        let context =
+            StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
         let conn = context.open_writer().unwrap();
-        conn.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)", []).unwrap();
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+        conn.execute_batch("UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1").unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
         add_member(&conn, "a");
         conn.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-0000000000aa',native_session='n' WHERE seat_id='a'",[]).unwrap();
         add_member(&conn, "b");
@@ -521,7 +523,8 @@ mod page_level {
             deadline_millis: None,
             operation: OperationId::new(operation),
             claim: CallerClaim {
-                instance: "i".into(),
+                host: crate::test_support::test_host_locator(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: SeatId::new("a"),
                 binding_generation: 1,
                 role: CallerRole::TopLevel,
@@ -591,7 +594,7 @@ mod page_level {
     fn page(context: &StoreContext, claim: Option<CallerClaim>, pushed: bool) -> Vec<String> {
         let CommandResult::InboxBatchV2(page) = crate::store::queries::query_with_output(
             context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &Command::InboxBatchV2(InboxQuery {
                 pushed,
                 thread: None,

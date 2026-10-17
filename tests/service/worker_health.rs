@@ -73,7 +73,7 @@ fn page<T>(items: Vec<T>) -> Page<T> {
 struct Production {
     _dir: ScratchDir,
     clock: Arc<TestClock>,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     store: Arc<dyn StorePort>,
     health: Box<dyn Fn(&CallBudget) -> HealthInputs>,
 }
@@ -81,10 +81,12 @@ impl Production {
     fn new(workers: [Arc<WorkerStatus>; 3]) -> Self {
         let dir = ScratchDir::new();
         let clock = Arc::new(TestClock(AtomicU64::new(10_000)));
-        let instance = uuid::Uuid::new_v4();
+        let instance = crate::node::NodeUuid::new_v4();
         let store: Arc<dyn StorePort> = Arc::new(
             crate::store::SqliteStore::new(
-                crate::store::connection::StoreContext::new(dir.0.join("db"), clock.clone()),
+                crate::store::connection::StoreContext::new(dir.0.join("db"), clock.clone())
+                    .with_test_host()
+                    .with_node_seed(crate::test_support::node_seed_for(instance)),
                 instance.to_string(),
                 crate::store::StoreSettings::default(),
             )
@@ -509,7 +511,12 @@ impl crate::scheduler::WakePort for FailingWakes {
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<crate::ports::WakeCandidate>, ApiError> {
-        StorePort::wake_candidates(&self.store, page, budget)
+        StorePort::wake_candidates(
+            &self.store,
+            crate::test_support::test_host_id(),
+            page,
+            budget,
+        )
     }
     fn reserve_wake(
         &self,
@@ -517,7 +524,12 @@ impl crate::scheduler::WakePort for FailingWakes {
         budget: &CallBudget,
     ) -> Result<Option<crate::ports::WakeReservation>, ApiError> {
         self.result(FAIL_RESERVE, || {
-            StorePort::reserve_wake(&self.store, candidate, budget)
+            StorePort::reserve_wake(
+                &self.store,
+                crate::test_support::test_host_id(),
+                candidate,
+                budget,
+            )
         })
     }
     fn complete_wake(
@@ -528,7 +540,14 @@ impl crate::scheduler::WakePort for FailingWakes {
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
         self.result(FAIL_COMPLETE, || {
-            StorePort::complete_wake(&self.store, attempt, outcome, refused_restore, budget)
+            StorePort::complete_wake(
+                &self.store,
+                crate::test_support::test_host_id(),
+                attempt,
+                outcome,
+                refused_restore,
+                budget,
+            )
         })
     }
     fn wake_recovery_candidates(
@@ -536,14 +555,24 @@ impl crate::scheduler::WakePort for FailingWakes {
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<crate::ports::WakeRecoveryCandidate>, ApiError> {
-        StorePort::wake_recovery_candidates(&self.store, page, budget)
+        StorePort::wake_recovery_candidates(
+            &self.store,
+            crate::test_support::test_host_id(),
+            page,
+            budget,
+        )
     }
     fn recover_wake_reservation(
         &self,
         request: crate::ports::WakeRecoveryRequest,
         budget: &CallBudget,
     ) -> Result<crate::ports::WakeRecoveryOutcome, ApiError> {
-        StorePort::recover_wake_reservation(&self.store, request, budget)
+        StorePort::recover_wake_reservation(
+            &self.store,
+            crate::test_support::test_host_id(),
+            request,
+            budget,
+        )
     }
 }
 struct SubmittedNotifier;
@@ -559,24 +588,24 @@ impl crate::ports::NotificationPort for SubmittedNotifier {
 const WAKE_SEAT: &str = "seat-private-7f3a";
 
 fn wake_store(path: &std::path::Path, clock: Arc<TestClock>, boot: uuid::Uuid) -> FailingWakes {
-    let context = crate::store::connection::StoreContext::new(path.into(), clock);
+    let context = crate::store::connection::StoreContext::new(path.into(), clock).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);").unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1,1,1,0)", [WAKE_SEAT]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant) VALUES ('i',?1,'host',1,1,0,'fresh','occupied','idle','execution',1)", [WAKE_SEAT]).unwrap();
+    db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);").unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [WAKE_SEAT]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'host',1,1,0,'fresh','occupied','idle','execution',1)", [WAKE_SEAT]).unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,1,1,?1,'host',1,'codex','session','execution','fresh',0,0,'term-'||?1,'inc')", [WAKE_SEAT]).unwrap();
     db.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'invited')",
         [WAKE_SEAT],
     )
     .unwrap();
-    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq) VALUES (?1,'t',?1,1,'pending',0,1000000,1000000,1)", [WAKE_SEAT]).unwrap();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq,origin_node) VALUES (?1,'t',?1,1,'pending',0,1000000,1000000,1,(SELECT id FROM local_node))", [WAKE_SEAT]).unwrap();
     drop(db);
     FailingWakes {
         store: crate::store::SqliteStore::new(
             context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             crate::store::StoreSettings {
                 daemon_boot: Some(boot),
                 ..Default::default()
@@ -609,7 +638,7 @@ fn production_health_redacts_wake_callback_identity_and_detail() {
     let observed = ObservedWakePort::new(&fixture, &wake);
     let deadlines = ScriptedDeadlines::default();
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &deadlines,
         &observed,
         &SubmittedNotifier,
@@ -734,7 +763,8 @@ fn production_health_redacts_observation_capture_invalidation_and_reconciliation
 
     let fence = HostInvalidationFence {
         admission: HostObservationAdmission {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+            host_id: crate::test_support::test_host_id(),
             sequence: 1,
             expected_active: None,
             expected_boot: None,
@@ -917,6 +947,7 @@ impl crate::identity::reconcile::observation_store::ObservationStore
     fn begin_host_observation(
         &self,
         instance: &str,
+        host: crate::ports::HostId,
         budget: &CallBudget,
     ) -> Result<crate::ports::HostObservationAdmission, ApiError> {
         if self.fail_admission.load(Ordering::SeqCst) {
@@ -925,7 +956,7 @@ impl crate::identity::reconcile::observation_store::ObservationStore
                 "SQLite: private admission lock detail",
             ));
         }
-        self.inner.begin_host_observation(instance, budget)
+        self.inner.begin_host_observation(instance, host, budget)
     }
     fn invalidate_host_observation(
         &self,
@@ -1142,6 +1173,7 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
     let identity = Arc::new(
         crate::identity::repair::OrdinaryIdentity::new(
             production.instance.to_string(),
+            crate::test_support::test_host_id(),
             production.store.clone(),
             host.clone(),
             clock.clone(),
@@ -1154,6 +1186,7 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
             store: production.store.clone(),
             writer,
             liveness: None,
+            host: None,
         },
         fail_admission: Default::default(),
         fail_page: Default::default(),
@@ -1549,10 +1582,12 @@ fn transitions_refused_reaches_health() {
     use crate::service::host_evidence::HostEvidenceStatus;
     let dir = ScratchDir::new();
     let clock = Arc::new(TestClock(AtomicU64::new(10_000)));
-    let instance = uuid::Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let store: Arc<dyn StorePort> = Arc::new(
         crate::store::SqliteStore::new(
-            crate::store::connection::StoreContext::new(dir.0.join("db"), clock.clone()),
+            crate::store::connection::StoreContext::new(dir.0.join("db"), clock.clone())
+                .with_test_host()
+                .with_node_seed(crate::test_support::node_seed_for(instance)),
             instance.to_string(),
             crate::store::StoreSettings::default(),
         )
@@ -1721,7 +1756,7 @@ fn drive_wake_log(
     let observed = ObservedWakePort::new(&fixture, &wake);
     let deadlines = ScriptedDeadlines::default();
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &deadlines,
         &observed,
         notifier,
@@ -1842,7 +1877,7 @@ fn three_failed_lanes_fold_in_production_health() {
     use crate::service::kicks::Lane;
     let workers: [Arc<WorkerStatus>; 3] = Default::default();
     let production = Production::new(workers.clone());
-    for (status, lane) in workers.iter().zip(Lane::ALL) {
+    for (status, lane) in workers.iter().zip(Lane::WORKERS) {
         status.record_failure(lane, &api_error(ErrorCode::StoreBusy, "x"));
     }
     let mut inputs = (production.health)(&production.budget());
@@ -1850,7 +1885,7 @@ fn three_failed_lanes_fold_in_production_health() {
         inputs
             .degraded_lanes
             .iter()
-            .map(|lane| lane.lane)
+            .map(|lane| lane.lane.as_str())
             .collect::<Vec<_>>(),
         ["deadline", "wake", "observation"]
     );
@@ -1921,6 +1956,7 @@ fn refusal_free_pass_records_marker_once() {
     let identity = Arc::new(
         crate::identity::repair::OrdinaryIdentity::new(
             production.instance.to_string(),
+            crate::test_support::test_host_id(),
             production.store.clone(),
             host.clone(),
             clock.clone(),
@@ -1933,6 +1969,7 @@ fn refusal_free_pass_records_marker_once() {
             store: production.store.clone(),
             writer,
             liveness: None,
+            host: None,
         },
         fail_admission: Default::default(),
         fail_page: Default::default(),
@@ -1992,6 +2029,7 @@ fn stale_refused_pass_skips_reconciliation_marker() {
     let identity = Arc::new(
         crate::identity::repair::OrdinaryIdentity::new(
             production.instance.to_string(),
+            crate::test_support::test_host_id(),
             production.store.clone(),
             host.clone(),
             clock.clone(),
@@ -2004,6 +2042,7 @@ fn stale_refused_pass_skips_reconciliation_marker() {
             store: production.store.clone(),
             writer,
             liveness: None,
+            host: None,
         },
         fail_admission: Default::default(),
         fail_page: Default::default(),

@@ -116,8 +116,8 @@ impl Drop for Fixture {
 /// A resolved seat with a registered cooperative binding and a confirmed
 /// target observation: available, so receipt timers start at the send.
 fn seed_seat(db: &Connection, seat: &str) {
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1,1,1,0)", [seat]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,registered_at) VALUES (?1,1,1,?1,'b',1,'codex','n',?2,'cooperative_top_level',0,'term-'||?1,'inc',0)", params![seat, history::fixture_execution(seat)]).unwrap();
 }
 
@@ -150,20 +150,27 @@ impl Fixture {
             uuid::Uuid::new_v4()
         ));
         let clock = Arc::new(TestClock(AtomicI64::new(100)));
-        let context = StoreContext::new(path.clone(), clock.clone());
+        let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-            [],
+        db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        let author = service_substrate::ensure_reserved_author(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            UtcMillis(0),
         )
         .unwrap();
-        let tx = db.unchecked_transaction().unwrap();
-        let author = service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(0)).unwrap();
         tx.commit().unwrap();
         drop(db);
-        let store = SqliteStore::new(context, "i", settings).unwrap();
-        let connection =
-            ServiceConnectionAuthority::new("i".into(), "boot".into(), 1, author.clone());
+        let store =
+            SqliteStore::new(context, "34750f98bd59fcfc946da45aaabe933b", settings).unwrap();
+        let connection = ServiceConnectionAuthority::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            "boot".into(),
+            1,
+            author.clone(),
+        );
         let fixture = Self {
             store,
             connection,
@@ -254,7 +261,7 @@ impl Fixture {
 
     fn read(&self, command: Command) -> CommandResult {
         let read = ReadContext {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             // Text selects no `--json` continuation flag, like a service summary.
             output: OutputSpec {
                 format: OutputFormat::Text,
@@ -364,6 +371,96 @@ fn service_send_writes_programmatic_ordinary_row() {
     assert_eq!(explicit.receipt_duration_millis, 777);
     // Only the explicit recipient owes an ACK; joined `s2` gets a p0 delivery row.
     assert_eq!(explicit.recipient_count, 1);
+}
+
+// A service send targets a managed, node-local thread (fact-kinds design
+// section 2): it publishes through the local-only route and the journal gains
+// no entry, no attribution is staged, and no replicated table is written
+// outside that route (the write guard is armed around the publish).
+#[test]
+fn service_send_journals_nothing() {
+    let f = Fixture::with_joined(&["s1", "s2"]);
+    assert!(
+        f.store.context.journal_open(),
+        "the journal is open, so a journaled send would show"
+    );
+    let request = f.request("k-local", "node-local", &["s1"], None);
+    let limits = MessageLimits::default();
+    let mut db = f.db();
+    loop {
+        match prepare_service_send_step(
+            &f.store.context,
+            &mut db,
+            &f.connection,
+            &f.gate,
+            &request,
+            limits,
+            &budget(),
+            16,
+        )
+        .unwrap()
+        {
+            SendPrepare::Step(SendStep::More { .. }) => {}
+            SendPrepare::Step(SendStep::Ready { .. }) => break,
+            _ => panic!("unexpected preparation outcome"),
+        }
+    }
+    let journal_before = count(&db, "SELECT count(*) FROM journal");
+    #[cfg(feature = "test-support")]
+    let guard = crate::test_support::write_guard::arm(&db);
+    let SendPublish::Committed(ServiceResult::MessageSent(sent)) = publish_service_send(
+        &f.store.context,
+        &mut db,
+        &f.connection,
+        &f.gate,
+        &request,
+        limits,
+        &budget(),
+    )
+    .unwrap() else {
+        panic!("not a committed service send")
+    };
+    #[cfg(feature = "test-support")]
+    drop(guard);
+    assert_eq!(
+        count(&db, "SELECT count(*) FROM journal"),
+        journal_before,
+        "nothing journaled"
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM journal WHERE kind='message.sent'"
+        ),
+        0
+    );
+    assert_eq!(
+        count(&db, "SELECT count(*) FROM fact_attribution_staging"),
+        0,
+        "no attribution staged"
+    );
+    let row: (String, i64, Option<String>) = db
+        .query_row(
+            "SELECT origin_node,decision_seq,sender_binding_id FROM messages WHERE id=?1",
+            [sent.summary.message.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row.0,
+        db.query_row("SELECT id FROM local_node", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "this node is the origin"
+    );
+    assert!(row.1 > 0 && row.2.is_none(), "{row:?}");
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM send_manifests WHERE message_id IS NOT NULL"
+        ),
+        1
+    );
+    crate::test_support::assert_no_local_delivery_for_remote(&db);
 }
 
 #[test]
@@ -692,7 +789,8 @@ fn reads_and_notify_create_no_acks() {
     .unwrap();
     // A check-in by a recipient presents the pending item and acknowledges nothing.
     let claim = CallerClaim {
-        instance: "i".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s1"),
         binding_generation: 1,
         role: CallerRole::TopLevel,
@@ -733,7 +831,7 @@ fn reads_and_notify_create_no_acks() {
             RegisterAvailableRequest {
                 command: check_in,
                 read: ReadContext {
-                    instance: "i".into(),
+                    instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                     output: OutputSpec::default(),
                     operation_scope: None,
                 },
@@ -947,9 +1045,9 @@ fn error_cases_map_to_section_2_codes() {
     {
         let db = f.db();
         db.execute_batch(
-            "INSERT INTO host_instances(id,created_at) VALUES ('j',0);
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('other-instance','j','x','x',0,0);
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('plain','i','x','x',0,0);
+            "PRAGMA foreign_keys=OFF;
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('other-instance','j','x','x',0,0,0);
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('plain','34750f98bd59fcfc946da45aaabe933b','x','x',0,0,0);
 ",
         )
         .unwrap();
@@ -1013,8 +1111,12 @@ fn error_cases_map_to_section_2_codes() {
         author: foreign_author.clone(),
         revoked: Arc::new(AtomicBool::new(false)),
     };
-    let foreign_connection =
-        ServiceConnectionAuthority::new("i".into(), "boot".into(), 1, foreign_author);
+    let foreign_connection = ServiceConnectionAuthority::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        "boot".into(),
+        1,
+        foreign_author,
+    );
     assert_refused(
         &f,
         StorePort::service_operation(
@@ -1184,7 +1286,7 @@ fn replay_after_response_loss_returns_stored_result_without_second_message() {
         count(
             &db,
             &format!(
-                "SELECT count(*) FROM operations WHERE actor_scope='service:i:{}'",
+                "SELECT count(*) FROM operations WHERE actor_scope='service:34750f98bd59fcfc946da45aaabe933b:{}'",
                 f.author.as_str()
             )
         ),
@@ -1606,7 +1708,7 @@ fn new_service_sends_anchor_all_unavailable_audiences_to_send_time() {
                         [],
                     )
                     .unwrap();
-                    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('v','t','s1',1,'pending',2,0,300,300)",[]).unwrap();
+                    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES('v','t','s1',1,'pending',2,0,300,300,(SELECT id FROM local_node))",[]).unwrap();
                 }
                 _ => unreachable!(),
             }
@@ -1635,4 +1737,45 @@ fn new_service_sends_anchor_all_unavailable_audiences_to_send_time() {
             .unwrap();
         assert_eq!(deadline, 150, "{state}");
     }
+}
+
+// Kills: narrowing the timeline fence in `messages` leaking into service sends, which keep
+// the full fence: a timeline bump between preparation and publish restarts the audience.
+#[test]
+fn service_send_conflicts_on_timeline_bump() {
+    let f = Fixture::with_joined(&["s1"]);
+    let request = f.request("timeline", "never lands", &[], None);
+    let mut changes = 0;
+    let error = f
+        .store
+        .service_send_with_observer(
+            &request,
+            &f.connection,
+            &f.gate,
+            &budget(),
+            |step, context| {
+                if matches!(step, SendStep::Ready { .. }) {
+                    context
+                        .open_writer()
+                        .unwrap()
+                        .execute(
+                            "UPDATE threads SET timeline_revision=timeline_revision+1 WHERE id='t'",
+                            [],
+                        )
+                        .unwrap();
+                    changes += 1;
+                }
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert!(error.detail.contains("restart allowance"), "{error:?}");
+    assert_eq!(changes, usize::from(MAX_AUDIENCE_RESTARTS) + 1);
+    assert_eq!(
+        count(
+            &f.db(),
+            "SELECT count(*) FROM messages WHERE body='never lands'"
+        ),
+        0
+    );
 }

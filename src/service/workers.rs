@@ -1,13 +1,13 @@
 //! Bounded admission for work that must not occupy the domain writer.
 
 use crate::daemon::logs::{LaneErrorLog, NoopLaneErrorLog};
-use crate::ports::SnapshotGenerationId;
 use crate::ports::{
     GuardedInvalidationTransition, GuardedSeatTransition, HostInvalidationFence,
     HostInvalidationReason, HostObservation, HostObservationAdmission, InvalidationSeatPage,
     PublishedSnapshot, ReconciliationOutcome, SnapshotCleanupProgress, SnapshotHeader,
     SnapshotSeatPage, SnapshotStage, SnapshotStageProgress,
 };
+use crate::ports::{HostId, SnapshotGenerationId};
 use crate::protocol::{
     results::{ApiError, ErrorCode},
     time::{CallBudget, Clock},
@@ -16,6 +16,7 @@ use crate::service::fair_writer::FairWriter;
 use crate::service::host_reachability::HostReachability;
 use crate::service::kicks::{self, Lane};
 use crate::service::pacer::{Pacer, Wake};
+use crate::sync::journal_port::{ApplyProgress, JournalPort};
 use crate::{
     notification::{dispatch::NativeWakeDispatcher, policy::RetryConfig},
     ports::{
@@ -154,6 +155,7 @@ pub(crate) struct ScheduledStore {
     store: Arc<dyn StorePort>,
     writer: Arc<FairWriter>,
     liveness: Option<Arc<crate::service::liveness::LivenessWorker>>,
+    host: Option<HostId>,
 }
 
 impl ScheduledStore {
@@ -162,7 +164,29 @@ impl ScheduledStore {
             store,
             writer,
             liveness: None,
+            host: None,
         }
+    }
+    /// Scopes this store's wake port to one Herdr host.
+    ///
+    /// Owns: the wake host scope. Every seat-selecting wake call (candidates,
+    /// batch seats, the poke scan, recovery pages) returns only seats of this
+    /// host, and every per-seat wake write re-checks the seat's host, so a
+    /// seat rebound to another host mid-pass answers `Conflict` and the
+    /// scheduler skips it.
+    /// Seats of a host with no attached wake worker are selected by no worker.
+    /// A new wake query that selects or writes a seat takes the `HostId` from
+    /// this scope and filters `s.host_id` in `src/store/wake.rs`; it never
+    /// reads the host from the candidate it was handed.
+    /// A store built without a scope has no wake port: wake calls fail with
+    /// `HostUnavailable` instead of serving every host.
+    pub(crate) fn for_host(mut self, host: HostId) -> Self {
+        self.host = Some(host);
+        self
+    }
+    fn wake_host(&self) -> Result<HostId, ApiError> {
+        self.host
+            .ok_or_else(|| error(ErrorCode::HostUnavailable, "wake store has no host scope"))
     }
     /// Re-checks a seat's binding liveness before each wake decision.
     pub(crate) fn with_liveness(
@@ -1078,8 +1102,12 @@ pub fn start_deadline_worker(
         cancellation,
         status,
         Duration::from_millis(TICK_MILLIS),
+        None,
     )
 }
+
+/// How soon the deadline lane re-checks while it holds overdue emission for sync.
+const SYNC_HOLD_RECHECK: Duration = Duration::from_millis(250);
 
 /// [`start_deadline_worker`] on safety tick `tick` (production: `TICK_MILLIS`;
 /// see `ServiceConfig::lane_tick`), which is also the driver's tick gate.
@@ -1090,6 +1118,7 @@ pub fn start_deadline_worker_ticking(
     cancellation: Cancellation,
     status: Arc<WorkerStatus>,
     tick: Duration,
+    sync_hold: Option<Arc<crate::scheduler::deadlines::SyncHoldSlot>>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("herdr-deadlines".into())
@@ -1100,19 +1129,34 @@ pub fn start_deadline_worker_ticking(
             let port = ScheduledStore::new(store, writer);
             let mut driver = DeadlineDriver::new(&port)
                 .with_tick_millis(u64::try_from(tick.as_millis()).unwrap_or(TICK_MILLIS));
+            if let Some(slot) = sync_hold {
+                driver = driver.with_sync_hold(slot);
+            }
             // The first pass runs at boot, before the first wait.
             let mut waited = false;
+            // The last pass held overdue emission for sync: look again soon
+            // instead of after a whole safety tick, so a node with nothing to
+            // wait for (no peers, or the sync runtime composed a moment after
+            // the first pass) is not silent for `tick` after boot.
+            let mut held = false;
             while !cancellation.is_cancelled() {
                 if waited {
-                    match pacer.wait_blocking(tick) {
+                    let wait = if held {
+                        tick.min(SYNC_HOLD_RECHECK)
+                    } else {
+                        tick
+                    };
+                    match pacer.wait_blocking(wait) {
                         Wake::Cancelled => break,
                         // A kick means committed work; a due retry must not be
                         // skipped by the tick gate a failed pass left closed.
                         Wake::Kicked | Wake::RetryDue => driver.after_committed_change(),
+                        Wake::Tick if held => driver.after_committed_change(),
                         Wake::Tick => {}
                     }
                 }
                 waited = true;
+                held = false;
                 loop {
                     let budget = CallBudget {
                         deadline: crate::protocol::time::MonoInstant(
@@ -1130,6 +1174,7 @@ pub fn start_deadline_worker_ticking(
                         }
                         Ok(outcome) => {
                             pacer.on_success();
+                            held |= outcome.due_held;
                             // A skipped (gated) call is not a completed tick.
                             if outcome.ticked {
                                 status.record_success(port.store.clock().utc_now());
@@ -1207,6 +1252,162 @@ pub fn start_retention_worker(
                 if cancellation.is_cancelled()
                     || pacer.wait_blocking(RETENTION_TICK) == crate::service::pacer::Wake::Cancelled
                 {
+                    break;
+                }
+            }
+        })
+}
+
+/// Safety tick of the Apply lane. A tick pass runs only when the apply hint is
+/// set, so an idle daemon takes no writer turn on it.
+const APPLY_TICK: Duration = Duration::from_secs(60);
+/// Entries applied since the last checkpoint that make a drained lane run
+/// `PRAGMA wal_checkpoint(PASSIVE)`.
+const APPLY_CHECKPOINT_ENTRIES: usize = 1024;
+
+/// Called by the Apply lane after each committed pass, outside the writer
+/// turn. The daemon builds it around the node kinds' post-commit helper, so
+/// retag effects stay owned by those kinds.
+pub type ApplyPostCommit = Box<dyn Fn(&ApplyProgress) + Send>;
+
+/// The Apply lane (journal-core spec section 13): runs the ApplyEngine over
+/// ingested entries on a `Pacer` kicked by `journal` commits. The first pass
+/// replays (`ReplayScope::Startup`) and drains; later passes run only when the
+/// store's apply hint is set (a sync ingest stored a pending row, or the
+/// previous pass hit its limit), since local authoring applies inline and its
+/// lane kick would find nothing. Each pass takes one background writer turn
+/// with a 5 s budget; `has_more` continues the drain, and a drain that applied
+/// at least [`APPLY_CHECKPOINT_ENTRIES`] entries since the last checkpoint ends
+/// with a passive WAL checkpoint. `post_commit` runs after each committed pass.
+/// A failed pass re-sets the hint, backs off on the Pacer and is reported
+/// through `WorkerStatus::record_failure` (the existing one-line lane format).
+/// The lane lifts an expired own-history hold on its tick and bounds its wait by
+/// the hold's remaining time, so held entries apply at the cap with no further
+/// ingest (`start_apply_lane` installs the release kick).
+/// It takes the concrete store, not `JournalPort`: that seam serves sync.
+pub fn start_apply_worker(
+    store: Arc<crate::store::SqliteStore>,
+    post_commit: ApplyPostCommit,
+    writer: Arc<FairWriter>,
+    pacer: Arc<Pacer>,
+    cancellation: Cancellation,
+    status: Arc<WorkerStatus>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    status.attach_pacer(Arc::clone(&pacer));
+    let hold = store
+        .context()
+        .sync()
+        .ok()
+        .map(|sync| Arc::clone(sync.own_history_hold()));
+    let epochs = store
+        .context()
+        .sync()
+        .ok()
+        .map(|sync| Arc::clone(sync.apply_epochs()));
+    thread::Builder::new()
+        .name("herdr-apply".into())
+        .spawn(move || {
+            // Commits made on this thread are Apply-origin and never kick Apply.
+            let _origin = kicks::enter_lane(Lane::Apply);
+            let _guard = status.lane_guard(&cancellation);
+            let new_budget = || {
+                let clock = StorePort::clock(store.as_ref());
+                CallBudget {
+                    deadline: crate::protocol::time::MonoInstant(
+                        clock.monotonic_now().0.saturating_add(5_000),
+                    ),
+                    cancellation: cancellation.clone(),
+                }
+            };
+            let pass = |replay: bool| -> Result<ApplyProgress, ApiError> {
+                let budget = new_budget();
+                let _turn = writer.enter_background(&budget, StorePort::clock(store.as_ref()))?;
+                if replay {
+                    store.replay_startup(&budget)
+                } else {
+                    store.apply_pending(&budget)
+                }
+            };
+            let checkpoint = || -> Result<(), ApiError> {
+                let budget = new_budget();
+                let _turn = writer.enter_background(&budget, StorePort::clock(store.as_ref()))?;
+                store.checkpoint_passive(&budget)
+            };
+            let mut replayed = false;
+            let mut since_checkpoint = 0usize;
+            while !cancellation.is_cancelled() {
+                // Expiry sets the hint, so the take below sees it.
+                if let Some(hold) = &hold {
+                    hold.active(StorePort::clock(store.as_ref()).monotonic_now());
+                }
+                // Always taken, so the startup hint does not trigger a second pass.
+                let hinted = store.take_apply_hint();
+                if hinted || !replayed {
+                    let mut drained = true;
+                    while !cancellation.is_cancelled() {
+                        // Read before the pass: it then covers every ingest
+                        // that committed before this value was read.
+                        let epoch = epochs.as_ref().map(|e| e.ingested());
+                        let replaying = !replayed;
+                        match pass(replaying) {
+                            Ok(progress) => {
+                                // A full drain outside the startup replay, with
+                                // the own-history hold off (under it, foreign
+                                // heads stay pending and `has_more` is false).
+                                if let (Some(epochs), Some(epoch)) = (&epochs, epoch)
+                                    && !progress.has_more
+                                    && !replaying
+                                    && hold.as_ref().is_none_or(|h| {
+                                        !h.active(StorePort::clock(store.as_ref()).monotonic_now())
+                                    })
+                                {
+                                    epochs.note_drained(epoch);
+                                }
+                                pacer.on_success();
+                                status.record_success(StorePort::clock(store.as_ref()).utc_now());
+                                post_commit(&progress);
+                                since_checkpoint += progress.applied;
+                                if progress.has_more {
+                                    store.set_apply_hint();
+                                } else if !replayed {
+                                    replayed = true;
+                                } else {
+                                    break;
+                                }
+                            }
+                            Err(_) if cancellation.is_cancelled() => break,
+                            Err(error) => {
+                                pacer.on_failure();
+                                status.record_failure(Lane::Apply, &error);
+                                store.set_apply_hint();
+                                drained = false;
+                                break;
+                            }
+                        }
+                    }
+                    if drained
+                        && since_checkpoint >= APPLY_CHECKPOINT_ENTRIES
+                        && !cancellation.is_cancelled()
+                    {
+                        match checkpoint() {
+                            Ok(()) => since_checkpoint = 0,
+                            Err(_) if cancellation.is_cancelled() => break,
+                            Err(error) => {
+                                pacer.on_failure();
+                                status.record_failure(Lane::Apply, &error);
+                            }
+                        }
+                    }
+                }
+                let tick = hold
+                    .as_ref()
+                    .and_then(|hold| {
+                        hold.remaining(StorePort::clock(store.as_ref()).monotonic_now())
+                    })
+                    .map_or(APPLY_TICK, |left| {
+                        APPLY_TICK.min(left.max(Duration::from_millis(1)))
+                    });
+                if cancellation.is_cancelled() || pacer.wait_blocking(tick) == Wake::Cancelled {
                     break;
                 }
             }
@@ -1384,7 +1585,7 @@ impl WakePort for ScheduledStore {
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeCandidate>, ApiError> {
-        self.store.wake_candidates(page, budget)
+        self.store.wake_candidates(self.wake_host()?, page, budget)
     }
     fn wake_batch_seats(
         &self,
@@ -1392,7 +1593,8 @@ impl WakePort for ScheduledStore {
         limit: u16,
         budget: &CallBudget,
     ) -> Result<Vec<crate::protocol::ids::SeatId>, ApiError> {
-        self.store.wake_batch_seats(after, limit, budget)
+        self.store
+            .wake_batch_seats(self.wake_host()?, after, limit, budget)
     }
     fn clear_wake_batch_if_empty(
         &self,
@@ -1400,7 +1602,8 @@ impl WakePort for ScheduledStore {
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.clear_wake_batch_if_empty(seat, budget)
+        self.store
+            .clear_wake_batch_if_empty(self.wake_host()?, seat, budget)
     }
     fn wake_batch_window(
         &self,
@@ -1408,7 +1611,8 @@ impl WakePort for ScheduledStore {
         budget: &CallBudget,
     ) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.wake_batch_window(candidate, budget)
+        self.store
+            .wake_batch_window(self.wake_host()?, candidate, budget)
     }
     fn before_wake_decision(
         &self,
@@ -1426,7 +1630,8 @@ impl WakePort for ScheduledStore {
         budget: &CallBudget,
     ) -> Result<Option<WakeReservation>, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.reserve_wake(candidate, budget)
+        self.store
+            .reserve_wake(self.wake_host()?, candidate, budget)
     }
     fn complete_wake(
         &self,
@@ -1437,14 +1642,15 @@ impl WakePort for ScheduledStore {
     ) -> Result<bool, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
         self.store
-            .complete_wake(attempt, outcome, refused_restore, budget)
+            .complete_wake(self.wake_host()?, attempt, outcome, refused_restore, budget)
     }
     fn wake_recovery_candidates(
         &self,
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
-        self.store.wake_recovery_candidates(page, budget)
+        self.store
+            .wake_recovery_candidates(self.wake_host()?, page, budget)
     }
     fn recover_wake_reservation(
         &self,
@@ -1452,17 +1658,18 @@ impl WakePort for ScheduledStore {
         budget: &CallBudget,
     ) -> Result<WakeRecoveryOutcome, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.recover_wake_reservation(request, budget)
+        self.store
+            .recover_wake_reservation(self.wake_host()?, request, budget)
     }
     fn poke_candidates(&self, limit: u16, budget: &CallBudget) -> Result<Vec<PokeDue>, ApiError> {
-        self.store.poke_candidates(limit, budget)
+        self.store.poke_candidates(self.wake_host()?, limit, budget)
     }
     fn poke_for_wake(
         &self,
         seat: &SeatId,
         budget: &CallBudget,
     ) -> Result<Option<PokeDue>, ApiError> {
-        self.store.poke_for_wake(seat, budget)
+        self.store.poke_for_wake(self.wake_host()?, seat, budget)
     }
     fn reserve_poke(
         &self,
@@ -1470,7 +1677,7 @@ impl WakePort for ScheduledStore {
         budget: &CallBudget,
     ) -> Result<Option<PokeReservation>, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.reserve_poke(due, budget)
+        self.store.reserve_poke(self.wake_host()?, due, budget)
     }
     fn complete_poke(
         &self,
@@ -1480,7 +1687,8 @@ impl WakePort for ScheduledStore {
         budget: &CallBudget,
     ) -> Result<(), ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.complete_poke(attempt, outcome, receipts, budget)
+        self.store
+            .complete_poke(self.wake_host()?, attempt, outcome, receipts, budget)
     }
 }
 
@@ -1733,6 +1941,7 @@ pub fn start_wake_worker(
     store: Arc<dyn StorePort>,
     writer: Arc<FairWriter>,
     host: Arc<dyn HostPort>,
+    host_id: HostId,
     instance: String,
     boot: uuid::Uuid,
     retry: RetryConfig,
@@ -1748,6 +1957,7 @@ pub fn start_wake_worker(
         store,
         writer,
         host,
+        host_id,
         instance,
         boot,
         retry,
@@ -1772,6 +1982,7 @@ pub fn start_wake_worker_with_liveness(
     store: Arc<dyn StorePort>,
     writer: Arc<FairWriter>,
     host: Arc<dyn HostPort>,
+    host_id: HostId,
     instance: String,
     boot: uuid::Uuid,
     retry: RetryConfig,
@@ -1785,108 +1996,152 @@ pub fn start_wake_worker_with_liveness(
     liveness: Option<Arc<crate::service::liveness::LivenessWorker>>,
     safety_tick: Duration,
 ) -> std::io::Result<thread::JoinHandle<()>> {
-    thread::Builder::new()
-        .name("herdr-wakes".into())
-        .spawn(move || {
-            let _origin = kicks::enter_lane(Lane::Wakes);
-            status.attach_pacer(Arc::clone(&pacer));
-            let _guard = status.lane_guard(&cancellation);
-            let port = ScheduledStore::new(store, writer).with_liveness(liveness);
-            let notifier = NativeWakeDispatcher::new(host.as_ref(), &port, port.store.clock())
-                .with_hook_pull(hook_pull.as_ref());
-            let observed = ObservedWakePort::new(&port, &status);
-            let scheduler = Scheduler::new(instance, &port, &observed, &notifier, retry, boot)
-                .with_poke_capabilities(poke_capabilities.as_ref())
-                .with_mod_channels(mod_channels.as_ref())
-                .with_hook_pull(hook_pull.as_ref());
-            // The first pass runs at boot, before the first wait.
-            let mut next_due_at: Option<crate::protocol::time::MonoInstant> = None;
-            let mut waited = false;
-            let mut recoveries = reachability.recoveries();
-            while !cancellation.is_cancelled() {
-                if waited {
-                    let tick = wake_wait(safety_tick, next_due_at, pacer.now());
-                    if pacer.wait_blocking(tick) == Wake::Cancelled {
-                        break;
-                    }
-                }
-                waited = true;
-                next_due_at = None;
-                let mut wakes_failed = false;
-                // Herdr down (TRUST-POLICY C4): the lane is frozen. No
-                // completion retry, recovery, reservation, refusal record or
-                // Herdr call; it waits for the observation lane's recovery
-                // kick (or a safety tick). A frozen pass is not a failure.
-                if reachability.is_down() {
-                    status.record_success(port.store.clock().utc_now());
-                    continue;
-                }
-                // Back after an outage: refusal backoff from before it says
-                // nothing about the host now, so every due seat goes at once.
-                let seen = reachability.recoveries();
-                if seen != recoveries {
-                    recoveries = seen;
-                    let _ = scheduler.clear_wake_refusals();
-                }
-                loop {
-                    // An outage seen mid-drain stops the drain too.
-                    if reachability.is_down() {
-                        break;
-                    }
-                    let budget = CallBudget {
-                        deadline: crate::protocol::time::MonoInstant(
-                            port.store.clock().monotonic_now().0.saturating_add(5_000),
-                        ),
-                        cancellation: cancellation.clone(),
-                    };
-                    observed.begin_drive(&budget);
-                    let result = scheduler.drive_wakes(&budget);
-                    observed.observe_drive(&result);
-                    match result {
-                        Err(error) => {
-                            // A failure raised inside a store callback is already
-                            // reported per phase and retried on the next wake;
-                            // only an unclassified error backs the lane off.
-                            if !observed.callback_failed() && !cancellation.is_cancelled() {
-                                pacer.on_failure();
-                                status.record_failure(Lane::Wakes, &error);
-                            }
-                            wakes_failed = true;
-                            break;
-                        }
-                        Ok(outcome) => {
-                            pacer.on_success();
-                            status.record_success(port.store.clock().utc_now());
-                            next_due_at = outcome.next_due_at;
-                            if !outcome.has_more || cancellation.is_cancelled() {
-                                break;
-                            }
-                        }
-                    }
-                }
-                if cancellation.is_cancelled() {
+    start_wake_worker_named(
+        "herdr-wakes".into(),
+        store,
+        writer,
+        host,
+        host_id,
+        instance,
+        boot,
+        retry,
+        pacer,
+        cancellation,
+        status,
+        poke_capabilities,
+        reachability,
+        mod_channels,
+        hook_pull,
+        liveness,
+        safety_tick,
+    )
+}
+
+/// [`start_wake_worker_with_liveness`] on a thread called `thread_name`: a
+/// `HostSession` starts one per Herdr server and names it `herdr-wakes-<host_id>`.
+// Allowed: worker start-up wiring: each argument is a distinct dependency.
+#[allow(clippy::too_many_arguments)]
+pub fn start_wake_worker_named(
+    thread_name: String,
+    store: Arc<dyn StorePort>,
+    writer: Arc<FairWriter>,
+    host: Arc<dyn HostPort>,
+    host_id: HostId,
+    instance: String,
+    boot: uuid::Uuid,
+    retry: RetryConfig,
+    pacer: Arc<Pacer>,
+    cancellation: Cancellation,
+    status: Arc<WorkerStatus>,
+    poke_capabilities: Arc<dyn crate::ports::PokeCapabilitySource>,
+    reachability: Arc<HostReachability>,
+    mod_channels: Arc<dyn crate::ports::ModChannels>,
+    hook_pull: Arc<dyn crate::ports::HookPullOutlook>,
+    liveness: Option<Arc<crate::service::liveness::LivenessWorker>>,
+    safety_tick: Duration,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    thread::Builder::new().name(thread_name).spawn(move || {
+        let _origin = kicks::enter_lane(Lane::Wakes);
+        status.attach_pacer(Arc::clone(&pacer));
+        let _guard = status.lane_guard(&cancellation);
+        let port = ScheduledStore::new(store, writer)
+            .for_host(host_id)
+            .with_liveness(liveness);
+        let notifier = NativeWakeDispatcher::new(host.as_ref(), &port, port.store.clock())
+            .with_hook_pull(hook_pull.as_ref());
+        let observed = ObservedWakePort::new(&port, &status);
+        let scheduler = Scheduler::new(instance, &port, &observed, &notifier, retry, boot)
+            .with_poke_capabilities(poke_capabilities.as_ref())
+            .with_mod_channels(mod_channels.as_ref())
+            .with_hook_pull(hook_pull.as_ref());
+        // The first pass runs at boot, before the first wait.
+        let mut next_due_at: Option<crate::protocol::time::MonoInstant> = None;
+        let mut waited = false;
+        let mut recoveries = reachability.recoveries();
+        while !cancellation.is_cancelled() {
+            if waited {
+                let tick = wake_wait(safety_tick, next_due_at, pacer.now());
+                if pacer.wait_blocking(tick) == Wake::Cancelled {
                     break;
                 }
-                // A failed wake pass leaves its retained completion to the
-                // wake path's next tick (no back-off for a store-callback
-                // failure); the poke drive waits for a clean pass.
-                // An outage seen mid-pass freezes the poke drive too (ht-72q).
-                if wakes_failed || reachability.is_down() {
-                    continue;
+            }
+            waited = true;
+            next_due_at = None;
+            let mut wakes_failed = false;
+            // Herdr down (TRUST-POLICY C4): the lane is frozen. No
+            // completion retry, recovery, reservation, refusal record or
+            // Herdr call; it waits for the observation lane's recovery
+            // kick (or a safety tick). A frozen pass is not a failure.
+            if reachability.is_down() {
+                status.record_success(port.store.clock().utc_now());
+                continue;
+            }
+            // Back after an outage: refusal backoff from before it says
+            // nothing about the host now, so every due seat goes at once.
+            let seen = reachability.recoveries();
+            if seen != recoveries {
+                recoveries = seen;
+                let _ = scheduler.clear_wake_refusals();
+            }
+            loop {
+                // An outage seen mid-drain stops the drain too.
+                if reachability.is_down() {
+                    break;
                 }
-                // Spec §10: soft-deadline pokes share the wake dispatcher and
-                // its limits, once per pass (a pass runs at least every
-                // safety tick); store callback failures are observed per
-                // phase and driver errors are recorded in worker health.
-                let poke_budget = CallBudget {
+                let budget = CallBudget {
                     deadline: crate::protocol::time::MonoInstant(
                         port.store.clock().monotonic_now().0.saturating_add(5_000),
                     ),
                     cancellation: cancellation.clone(),
                 };
-                observed.observe_poke_drive(&scheduler.drive_pokes(&poke_budget));
+                observed.begin_drive(&budget);
+                let result = scheduler.drive_wakes(&budget);
+                observed.observe_drive(&result);
+                match result {
+                    Err(error) => {
+                        // A failure raised inside a store callback is already
+                        // reported per phase and retried on the next wake;
+                        // only an unclassified error backs the lane off.
+                        if !observed.callback_failed() && !cancellation.is_cancelled() {
+                            pacer.on_failure();
+                            status.record_failure(Lane::Wakes, &error);
+                        }
+                        wakes_failed = true;
+                        break;
+                    }
+                    Ok(outcome) => {
+                        pacer.on_success();
+                        status.record_success(port.store.clock().utc_now());
+                        next_due_at = outcome.next_due_at;
+                        if !outcome.has_more || cancellation.is_cancelled() {
+                            break;
+                        }
+                    }
+                }
             }
-        })
+            if cancellation.is_cancelled() {
+                break;
+            }
+            // A failed wake pass leaves its retained completion to the
+            // wake path's next tick (no back-off for a store-callback
+            // failure); the poke drive waits for a clean pass.
+            // An outage seen mid-pass freezes the poke drive too (ht-72q).
+            if wakes_failed || reachability.is_down() {
+                continue;
+            }
+            // Spec §10: soft-deadline pokes share the wake dispatcher and
+            // its limits, once per pass (a pass runs at least every
+            // safety tick); store callback failures are observed per
+            // phase and driver errors are recorded in worker health.
+            let poke_budget = CallBudget {
+                deadline: crate::protocol::time::MonoInstant(
+                    port.store.clock().monotonic_now().0.saturating_add(5_000),
+                ),
+                cancellation: cancellation.clone(),
+            };
+            observed.observe_poke_drive(&scheduler.drive_pokes(&poke_budget));
+        }
+    })
 }
 
 /// The wake lane's wait: the safety tick, or less when a seat's retry comes
@@ -1911,10 +2166,11 @@ impl crate::identity::reconcile::observation_store::ObservationStore for Schedul
     fn begin_host_observation(
         &self,
         instance: &str,
+        host: crate::ports::HostId,
         budget: &CallBudget,
     ) -> Result<HostObservationAdmission, ApiError> {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
-        self.store.begin_host_observation(instance, budget)
+        self.store.begin_host_observation(instance, host, budget)
     }
     fn invalidate_host_observation(
         &self,
@@ -2067,7 +2323,38 @@ pub fn start_observation_worker(
     reachability: Arc<HostReachability>,
     cadence: Duration,
 ) -> std::io::Result<thread::JoinHandle<()>> {
-    spawn_observation_loop_every(
+    start_observation_worker_named(
+        "herdr-observations".into(),
+        identity,
+        store,
+        writer,
+        cancellation,
+        status,
+        host_evidence,
+        pacer,
+        reachability,
+        cadence,
+    )
+}
+
+/// [`start_observation_worker`] on a thread called `thread_name`: a `HostSession`
+/// starts one per Herdr server and names it `herdr-observations-<host_id>`.
+// Allowed: worker start-up wiring: each argument is a distinct dependency.
+#[allow(clippy::too_many_arguments)]
+pub fn start_observation_worker_named(
+    thread_name: String,
+    identity: Arc<crate::identity::repair::OrdinaryIdentity>,
+    store: Arc<dyn StorePort>,
+    writer: Arc<FairWriter>,
+    cancellation: Cancellation,
+    status: Arc<WorkerStatus>,
+    host_evidence: Arc<crate::service::host_evidence::HostEvidenceStatus>,
+    pacer: Arc<Pacer>,
+    reachability: Arc<HostReachability>,
+    cadence: Duration,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    spawn_observation_loop_named(
+        thread_name,
         identity,
         ScheduledStore::new(store, writer),
         cancellation,
@@ -2098,7 +2385,8 @@ fn spawn_observation_loop<S>(
 where
     S: crate::identity::reconcile::observation_store::ObservationStore + 'static,
 {
-    spawn_observation_loop_every(
+    spawn_observation_loop_named(
+        "herdr-observations".into(),
         identity,
         port,
         cancellation,
@@ -2110,11 +2398,13 @@ where
     )
 }
 
-/// [`spawn_observation_loop`] on capture cadence `cadence` (production:
-/// [`OBSERVATION_CADENCE`]; see `ServiceConfig::lane_tick`).
+/// [`spawn_observation_loop`] on a thread called `thread_name`, at capture
+/// cadence `cadence` (production: [`OBSERVATION_CADENCE`]; see
+/// `ServiceConfig::lane_tick`).
 // Allowed: worker start-up wiring: each argument is a distinct dependency.
 #[allow(clippy::too_many_arguments)]
-fn spawn_observation_loop_every<S>(
+fn spawn_observation_loop_named<S>(
+    thread_name: String,
     identity: Arc<crate::identity::repair::OrdinaryIdentity>,
     port: S,
     cancellation: Cancellation,
@@ -2128,7 +2418,7 @@ where
     S: crate::identity::reconcile::observation_store::ObservationStore + 'static,
 {
     thread::Builder::new()
-        .name("herdr-observations".into())
+        .name(thread_name)
         .spawn(move || {
             // Its commits count as the observation origin, never as requests.
             let _origin = kicks::enter_lane(Lane::Observation);
@@ -2261,6 +2551,10 @@ mod tests;
 #[cfg(test)]
 #[path = "../../tests/service/retention_lane.rs"]
 mod retention_lane_tests;
+
+#[cfg(test)]
+#[path = "../../tests/service/apply_lane.rs"]
+mod apply_lane_tests;
 
 #[cfg(test)]
 #[path = "../../tests/service/observation_lane.rs"]

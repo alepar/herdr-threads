@@ -1,5 +1,5 @@
 use super::*;
-use crate::daemon::paths::{InstancePaths, RuntimeContext};
+use crate::daemon::paths::{NodePaths, RuntimeContext};
 use crate::test_support::spawn::SpawnOwned;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -34,44 +34,52 @@ fn fixture() -> Fixture {
     Fixture(crate::test_support::isolation::TestIsolation::new("owner"))
 }
 
-fn paths(root: &std::path::Path, endpoint: impl AsRef<std::path::Path>) -> InstancePaths {
+fn paths(root: &std::path::Path, endpoint: impl AsRef<std::path::Path>) -> NodePaths {
     let context =
         RuntimeContext::explicit(root.to_path_buf(), endpoint.as_ref().to_path_buf(), None)
             .unwrap();
-    InstancePaths::resolve(&context).unwrap()
+    NodePaths::resolve(&context.state_dir).unwrap()
 }
 
 #[test]
-fn existing_namespace_read_is_bounded_and_private() {
+fn node_hint_read_treats_missing_and_corrupt_as_unknown() {
     let root = fixture();
     let paths = paths(&root, root.sock("namespace.sock"));
-    assert_eq!(read_existing_namespace(&paths).unwrap(), None);
+    assert_eq!(read_node_uuid_hint(&paths).unwrap(), None);
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    assert_eq!(
+        read_node_uuid_hint(&paths).unwrap(),
+        Some(owner.node_uuid().unwrap())
+    );
+    for bad in [vec![b'a'; 8193], vec![0xff], b"{\"format\":2}".to_vec()] {
+        fs::write(&paths.node_json_path, &bad).unwrap();
+        assert_eq!(read_node_uuid_hint(&paths).unwrap(), None);
+    }
+    fs::remove_file(&paths.node_json_path).unwrap();
+    assert_eq!(read_node_uuid_hint(&paths).unwrap(), None);
+    drop(owner);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_lease_without_a_hint_cannot_publish() {
+    let root = fixture();
+    let paths = paths(&root, root.sock("no-hint.sock"));
     let owner = OwnerLock::acquire(&paths).unwrap();
     assert_eq!(
-        read_existing_namespace(&paths).unwrap(),
-        Some(owner.instance_uuid())
+        owner.node_uuid().unwrap_err().kind(),
+        io::ErrorKind::NotFound
     );
-    fs::write(&paths.namespace_path, vec![b'a'; 8193]).unwrap();
+    let bound = owner.bind_socket().unwrap();
     assert_eq!(
-        read_existing_namespace(&paths).unwrap_err().kind(),
-        io::ErrorKind::InvalidData
+        owner
+            .publish_endpoint(&bound, "test", crate::protocol::wire::PROTOCOL_VERSION)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
     );
-    fs::write(&paths.namespace_path, [0xff]).unwrap();
-    assert_eq!(
-        read_existing_namespace(&paths).unwrap_err().kind(),
-        io::ErrorKind::InvalidData
-    );
-    fs::set_permissions(&paths.namespace_path, fs::Permissions::from_mode(0o644)).unwrap();
-    assert_eq!(
-        read_existing_namespace(&paths).unwrap_err().kind(),
-        io::ErrorKind::PermissionDenied
-    );
-    fs::remove_file(&paths.namespace_path).unwrap();
-    symlink(&paths.lock_path, &paths.namespace_path).unwrap();
-    assert_eq!(
-        read_existing_namespace(&paths).unwrap_err().kind(),
-        io::ErrorKind::PermissionDenied
-    );
+    assert!(!paths.descriptor_path.exists());
+    drop(bound);
     drop(owner);
     fs::remove_dir_all(root).unwrap();
 }
@@ -85,7 +93,7 @@ fn existing_lock_probe_requires_same_validated_inode() {
         io::ErrorKind::NotFound
     );
     assert!(!paths.lock_path.exists());
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let identity = owner_lock_identity(&paths).unwrap();
     assert!(!previous_owner_released(&paths, identity).unwrap());
     fs::remove_file(&paths.lock_path).unwrap();
@@ -111,12 +119,12 @@ fn existing_lock_probe_requires_same_validated_inode() {
 fn existing_lock_probe_observes_release_without_modifying_state() {
     let root = fixture();
     let paths = paths(&root, root.sock("release.sock"));
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let identity = owner_lock_identity(&paths).unwrap();
-    let namespace = fs::read(&paths.namespace_path).unwrap();
+    let hint = fs::read(&paths.node_json_path).unwrap();
     drop(owner);
     assert!(previous_owner_released(&paths, identity).unwrap());
-    assert_eq!(fs::read(&paths.namespace_path).unwrap(), namespace);
+    assert_eq!(fs::read(&paths.node_json_path).unwrap(), hint);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -124,7 +132,7 @@ fn existing_lock_probe_observes_release_without_modifying_state() {
 fn elected_owner_removes_only_its_exact_unpublished_bound_socket() {
     let root = fixture();
     let paths = paths(&root, root.sock("unpublished-cleanup.sock"));
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let listener = owner.bind_socket().unwrap();
     let socket = listener.path().to_path_buf();
     assert!(socket.exists());
@@ -133,7 +141,9 @@ fn elected_owner_removes_only_its_exact_unpublished_bound_socket() {
     assert!(!socket.exists());
     assert!(!paths.descriptor_path.exists());
     assert_eq!(
-        OwnerLock::acquire(&paths).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&paths)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::WouldBlock
     );
     drop(listener);
@@ -145,7 +155,7 @@ fn elected_owner_removes_only_its_exact_unpublished_bound_socket() {
 fn unpublished_cleanup_preserves_substituted_path() {
     let root = fixture();
     let paths = paths(&root, root.sock("unpublished-substitute.sock"));
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let listener = owner.bind_socket().unwrap();
     let socket = listener.path().to_path_buf();
     fs::remove_file(&socket).unwrap();
@@ -164,7 +174,7 @@ fn unpublished_cleanup_preserves_substituted_path() {
 fn failed_publication_cleanup_removes_only_matching_bound_descriptor() {
     let root = fixture();
     let paths = paths(&root, root.sock("failed-publication.sock"));
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let listener = owner.bind_socket().unwrap();
     let socket = listener.path().to_path_buf();
     owner
@@ -179,31 +189,16 @@ fn failed_publication_cleanup_removes_only_matching_bound_descriptor() {
 }
 
 #[test]
-fn host_locator_isolates_instances_and_converges_across_worktrees() {
-    let root = fixture();
-    let first = paths(&root, root.sock("host-a.sock"));
-    let again = paths(&root, root.sock("host-a.sock"));
-    let second = paths(&root, root.sock("host-b.sock"));
-    assert_eq!(first.instance_dir, again.instance_dir);
-    assert_ne!(first.instance_dir, second.instance_dir);
-    let owner = OwnerLock::acquire(&first).unwrap();
-    let uuid = owner.instance_uuid();
-    drop(owner);
-    assert_eq!(OwnerLock::acquire(&again).unwrap().instance_uuid(), uuid);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn absent_explicit_state_directory_is_created_privately() {
     let root = fixture();
     let state = root.join("new-state");
     let instance = paths(&state, root.sock("new-state.sock"));
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     assert_eq!(
         fs::metadata(&state).unwrap().permissions().mode() & 0o777,
         0o700
     );
-    assert!(!owner.instance_uuid().is_nil());
+    assert!(!owner.node_uuid().unwrap().is_nil());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -222,28 +217,25 @@ fn detached_runtime_rejects_relative_host_binary() {
 }
 
 #[test]
-fn corrupt_locator_and_symlink_are_rejected() {
+fn symlinked_node_directory_is_rejected() {
     let root = fixture();
     let instance = paths(&root, root.sock("host-c.sock"));
-    fs::create_dir_all(instance.instance_dir.parent().unwrap()).unwrap();
-    fs::create_dir(&instance.instance_dir).unwrap();
-    fs::set_permissions(&instance.instance_dir, fs::Permissions::from_mode(0o700)).unwrap();
-    fs::write(instance.instance_dir.join("locator"), b"wrong host").unwrap();
-    assert!(OwnerLock::acquire(&instance).is_err());
-    fs::remove_dir_all(&instance.instance_dir).unwrap();
-    symlink(&root, &instance.instance_dir).unwrap();
-    assert!(OwnerLock::acquire(&instance).is_err());
+    symlink(&root, &instance.node_dir).unwrap();
+    assert!(OwnerLock::acquire_with_test_hint(&instance).is_err());
+    fs::remove_file(&instance.node_dir).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn permissive_instance_directory_is_rejected() {
+fn permissive_node_directory_is_rejected() {
     let root = fixture();
     let instance = paths(&root, root.sock("permissions.sock"));
-    fs::create_dir_all(&instance.instance_dir).unwrap();
-    fs::set_permissions(&instance.instance_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::create_dir_all(&instance.node_dir).unwrap();
+    fs::set_permissions(&instance.node_dir, fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(
-        OwnerLock::acquire(&instance).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&instance)
+            .unwrap_err()
+            .kind(),
         std::io::ErrorKind::PermissionDenied
     );
     fs::remove_dir_all(root).unwrap();
@@ -285,11 +277,11 @@ fn isolated_long_state_roots_do_not_share_fallback_socket() {
 fn held_lock_elects_one_owner_and_releases_after_exit() {
     let root = fixture();
     let instance = paths(&root, root.sock("lock.sock"));
-    let owner = OwnerLock::acquire(&instance).unwrap();
-    let error = OwnerLock::acquire(&instance).unwrap_err();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
+    let error = OwnerLock::acquire_with_test_hint(&instance).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
     drop(owner);
-    assert!(OwnerLock::acquire(&instance).is_ok());
+    assert!(OwnerLock::acquire_with_test_hint(&instance).is_ok());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -297,16 +289,18 @@ fn held_lock_elects_one_owner_and_releases_after_exit() {
 fn bound_listener_keeps_owner_lock_until_listener_drops() {
     let root = fixture();
     let instance = paths(&root, root.sock("listener-lock.sock"));
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     drop(owner);
     assert_eq!(
-        OwnerLock::acquire(&instance).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&instance)
+            .unwrap_err()
+            .kind(),
         std::io::ErrorKind::WouldBlock
     );
     let socket = bound.path().to_owned();
     drop(bound);
-    assert!(OwnerLock::acquire(&instance).is_ok());
+    assert!(OwnerLock::acquire_with_test_hint(&instance).is_ok());
     fs::remove_file(socket).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
@@ -315,7 +309,7 @@ fn bound_listener_keeps_owner_lock_until_listener_drops() {
 fn async_accept_listener_keeps_owner_lock_until_server_stops() {
     let root = fixture();
     let instance = paths(&root, root.sock("clone-lock.sock"));
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     let socket = bound.path().to_owned();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -328,7 +322,9 @@ fn async_accept_listener_keeps_owner_lock_until_server_stops() {
         .unwrap();
     drop(owner);
     assert_eq!(
-        OwnerLock::acquire(&instance).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&instance)
+            .unwrap_err()
+            .kind(),
         std::io::ErrorKind::WouldBlock
     );
     runtime.block_on(async {
@@ -339,11 +335,13 @@ fn async_accept_listener_keeps_owner_lock_until_server_stops() {
         drop(server.unwrap());
     });
     assert_eq!(
-        OwnerLock::acquire(&instance).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&instance)
+            .unwrap_err()
+            .kind(),
         std::io::ErrorKind::WouldBlock
     );
     drop(async_bound);
-    let next = OwnerLock::acquire(&instance).unwrap();
+    let next = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     assert_eq!(descriptor.endpoint, socket);
     next.remove_stale_endpoint().unwrap();
     fs::remove_dir_all(root).unwrap();
@@ -353,7 +351,7 @@ fn async_accept_listener_keeps_owner_lock_until_server_stops() {
 fn stale_descriptor_pid_does_not_authorize_unlink_or_signal() {
     let root = fixture();
     let instance = paths(&root, root.sock("stale.sock"));
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     let published = owner.publish_endpoint(&bound, "0.1.0", 1).unwrap();
     let mut unrelated = root
@@ -365,7 +363,7 @@ fn stale_descriptor_pid_does_not_authorize_unlink_or_signal() {
     let descriptor = EndpointDescriptor {
         software_version: "0.1.0".into(),
         protocol_version: 1,
-        instance_uuid: owner.instance_uuid(),
+        node_uuid: owner.node_uuid().unwrap(),
         boot_id: published.boot_id,
         endpoint: published.endpoint.clone(),
         pid: unrelated.id(),
@@ -381,7 +379,7 @@ fn stale_descriptor_pid_does_not_authorize_unlink_or_signal() {
     assert!(owner.remove_owned_endpoint(uuid::Uuid::new_v4()).is_err());
     assert!(instance.descriptor_path.exists());
     assert_eq!(
-        read_descriptor(&instance, owner.instance_uuid())
+        read_descriptor(&instance, owner.node_uuid().unwrap())
             .unwrap()
             .pid,
         unrelated.id()
@@ -404,7 +402,7 @@ fn child_binds_for_crash_case() {
     let mode = std::env::var("HT_OWNER_CRASH_MODE").unwrap();
     let endpoint = std::env::var("HT_OWNER_CRASH_SOCKET").unwrap();
     let instance = paths(std::path::Path::new(&root), endpoint);
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     if mode == "published" {
         owner.publish_endpoint(&bound, "0.1.0", 1).unwrap();
@@ -475,7 +473,7 @@ fn crashed_owner_recovers(mode: &str) {
         "child socket missing before crash or marker incomplete"
     );
     let old_path = old_path.unwrap();
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     owner.remove_stale_endpoint().unwrap();
     assert_eq!(old_path.exists(), mode == "unpublished");
     // The pathname is stable: the next owner reclaims a dead unpublished
@@ -485,7 +483,7 @@ fn crashed_owner_recovers(mode: &str) {
     assert_eq!(next.path(), instance.socket_path);
     let descriptor = owner.publish_endpoint(&next, "0.1.0", 1).unwrap();
     assert_eq!(
-        read_descriptor(&instance, owner.instance_uuid())
+        read_descriptor(&instance, owner.node_uuid().unwrap())
             .unwrap()
             .boot_id,
         descriptor.boot_id
@@ -511,7 +509,7 @@ fn crash_after_publication_cleans_verified_stale_socket() {
 fn stale_cleanup_preserves_unknown_socket_without_descriptor() {
     let root = fixture();
     let instance = paths(&root, root.sock("symlink.sock"));
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     let protected = root.join("protected");
     fs::write(&protected, b"must survive").unwrap();
     symlink(&protected, &instance.socket_path).unwrap();
@@ -540,7 +538,7 @@ fn child_holds_lock() {
     };
     let endpoint = std::env::var("HT_OWNER_TEST_SOCKET").unwrap();
     let instance = paths(std::path::Path::new(&root), endpoint);
-    let _owner = OwnerLock::acquire(&instance).unwrap();
+    let _owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     fs::write(std::path::Path::new(&root).join("ready"), b"held").unwrap();
     std::thread::sleep(Duration::from_secs(30));
 }
@@ -570,12 +568,14 @@ fn crashed_child_releases_kernel_lock() {
     }
     assert!(root.join("ready").exists(), "child did not acquire lock");
     assert_eq!(
-        OwnerLock::acquire(&instance).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&instance)
+            .unwrap_err()
+            .kind(),
         std::io::ErrorKind::WouldBlock
     );
     child.kill().unwrap();
     child.wait().unwrap();
-    assert!(OwnerLock::acquire(&instance).is_ok());
+    assert!(OwnerLock::acquire_with_test_hint(&instance).is_ok());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -583,16 +583,16 @@ fn crashed_child_releases_kernel_lock() {
 fn corrupt_and_wrong_instance_descriptors_are_rejected() {
     let root = fixture();
     let instance = paths(&root, root.sock("descriptor.sock"));
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     fs::write(&instance.descriptor_path, b"{corrupt").unwrap();
     fs::set_permissions(&instance.descriptor_path, fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(read_descriptor(&instance, owner.instance_uuid()).is_err());
+    assert!(read_descriptor(&instance, owner.node_uuid().unwrap()).is_err());
     assert!(owner.remove_stale_endpoint().is_err());
     assert!(instance.descriptor_path.exists());
     let wrong = EndpointDescriptor {
         software_version: "0.1.0".into(),
         protocol_version: 1,
-        instance_uuid: uuid::Uuid::new_v4(),
+        node_uuid: crate::node::NodeUuid::new_v4(),
         boot_id: uuid::Uuid::new_v4(),
         endpoint: instance.socket_path.clone(),
         pid: 1,
@@ -604,7 +604,7 @@ fn corrupt_and_wrong_instance_descriptors_are_rejected() {
         serde_json::to_vec(&wrong).unwrap(),
     )
     .unwrap();
-    assert!(read_descriptor(&instance, owner.instance_uuid()).is_err());
+    assert!(read_descriptor(&instance, owner.node_uuid().unwrap()).is_err());
     assert!(owner.remove_stale_endpoint().is_err());
     fs::remove_dir_all(root).unwrap();
 }
@@ -613,11 +613,11 @@ fn corrupt_and_wrong_instance_descriptors_are_rejected() {
 fn descriptor_is_published_only_for_private_bound_socket() {
     let root = fixture();
     let instance = paths(&root, root.sock("publish.sock"));
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     let descriptor = owner.publish_endpoint(&bound, "0.1.0", 1).unwrap();
     assert_eq!(
-        read_descriptor(&instance, owner.instance_uuid()).unwrap(),
+        read_descriptor(&instance, owner.node_uuid().unwrap()).unwrap(),
         descriptor
     );
     assert_eq!(
@@ -639,7 +639,7 @@ fn descriptor_is_published_only_for_private_bound_socket() {
 fn substituted_listener_cannot_be_published_or_removed() {
     let root = fixture();
     let instance = paths(&root, root.sock("substitution.sock"));
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     let descriptor = owner.publish_endpoint(&bound, "0.1.0", 1).unwrap();
     fs::remove_file(bound.path()).unwrap();
@@ -656,7 +656,7 @@ fn substituted_listener_cannot_be_published_or_removed() {
 fn foreign_listener_cannot_be_advertised() {
     let root = fixture();
     let instance = paths(&root, root.sock("foreign.sock"));
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     fs::remove_file(bound.path()).unwrap();
     let _foreign = std::os::unix::net::UnixListener::bind(bound.path()).unwrap();
@@ -679,9 +679,9 @@ fn socket_pathname_is_stable_across_boots_with_distinct_boot_ids() {
     assert_eq!(instance.socket_path, again.socket_path);
     assert_eq!(
         instance.socket_path,
-        crate::daemon::paths::stable_socket_path(&instance.instance_dir).unwrap()
+        crate::daemon::paths::stable_socket_path(&instance.node_dir).unwrap()
     );
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     let first = owner.bind_socket().unwrap();
     let published = owner.publish_endpoint(&first, "0.1.0", 1).unwrap();
     assert_eq!(published.endpoint, instance.socket_path);
@@ -701,11 +701,11 @@ fn socket_pathname_is_stable_across_boots_with_distinct_boot_ids() {
 fn descriptor_endpoint_must_be_the_stable_pathname() {
     let root = fixture();
     let instance = paths(&root, root.sock("endpoint-name.sock"));
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     let bound = owner.bind_socket().unwrap();
     let mut descriptor = owner.publish_endpoint(&bound, "0.1.0", 1).unwrap();
     descriptor.endpoint = instance
-        .instance_dir
+        .node_dir
         .join(format!("daemon-{}.sock", descriptor.boot_id));
     fs::write(
         &instance.descriptor_path,
@@ -713,7 +713,7 @@ fn descriptor_endpoint_must_be_the_stable_pathname() {
     )
     .unwrap();
     assert_eq!(
-        read_descriptor(&instance, owner.instance_uuid())
+        read_descriptor(&instance, owner.node_uuid().unwrap())
             .unwrap_err()
             .kind(),
         io::ErrorKind::InvalidData
@@ -729,7 +729,7 @@ fn descriptor_endpoint_must_be_the_stable_pathname() {
 fn stable_pathname_reclaims_only_dead_owned_sockets() {
     let root = fixture();
     let instance = paths(&root, root.sock("reclaim.sock"));
-    let owner = OwnerLock::acquire(&instance).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
     // A live foreign listener at the pathname: refused, not unlinked.
     let live = std::os::unix::net::UnixListener::bind(&instance.socket_path).unwrap();
     assert_eq!(
@@ -753,248 +753,77 @@ fn stable_pathname_reclaims_only_dead_owned_sockets() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// Upgrade: a descriptor published by a pre-ht-910 daemon names its per-boot
-/// socket (`<stem>-<boot>.sock`). It is still read (an older running daemon
-/// stays reachable and stoppable), and after a crash the next owner removes
-/// that verified stale socket and binds the stable pathname. Kills: a new
-/// daemon that can never start over an old crash's descriptor.
+/// A descriptor is accepted only for this node's exact socket pathname: the
+/// same file name in another directory, and another name in the same one,
+/// are both a mismatch. Kills: acceptance by file name or by directory.
 #[test]
-fn legacy_per_boot_descriptor_is_read_and_cleaned_up() {
-    let root = fixture();
-    let instance = paths(&root, root.sock("legacy.sock"));
-    let owner = OwnerLock::acquire(&instance).unwrap();
-    let boot = uuid::Uuid::new_v4();
-    let legacy = instance.legacy_boot_socket_path(boot).unwrap();
-    assert_ne!(legacy, instance.socket_path);
-    assert!(
-        legacy
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .ends_with(&format!("-{boot}.sock"))
-    );
-    let old = std::os::unix::net::UnixListener::bind(&legacy).unwrap();
-    fs::set_permissions(&legacy, fs::Permissions::from_mode(0o600)).unwrap();
-    let meta = fs::metadata(&legacy).unwrap();
+fn descriptor_naming_another_socket_is_a_mismatch() {
     use std::os::unix::fs::MetadataExt;
-    let descriptor = EndpointDescriptor {
-        software_version: "0.0.9".into(),
-        protocol_version: 1,
-        instance_uuid: owner.instance_uuid(),
-        boot_id: boot,
-        endpoint: legacy.clone(),
-        pid: 1,
-        socket_device: meta.dev(),
-        socket_inode: meta.ino(),
-    };
-    fs::write(
-        &instance.descriptor_path,
-        serde_json::to_vec(&descriptor).unwrap(),
-    )
-    .unwrap();
-    fs::set_permissions(&instance.descriptor_path, fs::Permissions::from_mode(0o600)).unwrap();
-    assert_eq!(
-        read_descriptor(&instance, owner.instance_uuid()).unwrap(),
-        descriptor
-    );
-    // Any other per-boot name (wrong boot) is still rejected.
-    let mut other = descriptor.clone();
-    other.boot_id = uuid::Uuid::new_v4();
-    fs::write(
-        &instance.descriptor_path,
-        serde_json::to_vec(&other).unwrap(),
-    )
-    .unwrap();
-    assert!(read_descriptor(&instance, owner.instance_uuid()).is_err());
-    fs::write(
-        &instance.descriptor_path,
-        serde_json::to_vec(&descriptor).unwrap(),
-    )
-    .unwrap();
-    drop(old); // the old daemon crashed
-    owner.remove_stale_endpoint().unwrap();
-    assert!(!legacy.exists());
-    assert!(!instance.descriptor_path.exists());
-    let bound = owner.bind_socket().unwrap();
-    assert_eq!(bound.path(), instance.socket_path);
-    drop(bound);
-    fs::remove_file(&instance.socket_path).unwrap();
-    fs::remove_dir_all(root).unwrap();
-}
-
-/// Upgrade (ht-3yi): a running daemon published a socket in a runtime
-/// directory another rule chose (an older build under `/private/tmp` or
-/// `/tmp` on Linux, or a different `XDG_RUNTIME_DIR`). Its descriptor is
-/// still read, so it stays reachable and stoppable, and after it crashes the
-/// next owner removes that verified stale socket and binds its own pathname.
-/// Kills: "endpoint descriptor mismatch" for a live daemon, and a new daemon
-/// that can never start over the old one's descriptor.
-#[test]
-fn relocated_runtime_descriptor_is_read_and_cleaned_up() {
     let root = fixture();
-    let mut instance = paths(&root, root.sock("relocated.sock"));
-    let name = "0123456789abcdef.sock";
-    let new_dir = root.sock("rt-new");
-    let old_dir = root.sock("rt-old");
-    for dir in [&new_dir, &old_dir] {
-        fs::create_dir(dir).unwrap();
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let instance = paths(&root, root.sock("exact.sock"));
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
+    let bound = owner.bind_socket().unwrap();
+    let published = owner
+        .publish_endpoint(&bound, "0.9.0", crate::protocol::wire::PROTOCOL_VERSION)
+        .unwrap();
+    assert_eq!(
+        read_descriptor(&instance, owner.node_uuid().unwrap()).unwrap(),
+        published
+    );
+    let other_dir = root.sock("rt-other");
+    fs::create_dir(&other_dir).unwrap();
+    fs::set_permissions(&other_dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let elsewhere = other_dir.join(instance.socket_path.file_name().unwrap());
+    let sibling = instance.socket_path.with_file_name("other.sock");
+    for endpoint in [elsewhere, sibling] {
+        let live = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
+        fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o600)).unwrap();
+        let meta = fs::metadata(&endpoint).unwrap();
+        let mut moved = published.clone();
+        moved.endpoint = endpoint.clone();
+        moved.socket_device = meta.dev();
+        moved.socket_inode = meta.ino();
+        fs::write(
+            &instance.descriptor_path,
+            serde_json::to_vec(&moved).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            read_descriptor(&instance, owner.node_uuid().unwrap())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData,
+            "{endpoint:?}"
+        );
+        drop(live);
+        fs::remove_file(&endpoint).unwrap();
     }
-    instance.socket_path = new_dir.join(name);
-    let owner = OwnerLock::acquire(&instance).unwrap();
-    let old_path = old_dir.join(name);
-    let old = std::os::unix::net::UnixListener::bind(&old_path).unwrap();
-    fs::set_permissions(&old_path, fs::Permissions::from_mode(0o600)).unwrap();
-    let meta = fs::metadata(&old_path).unwrap();
-    use std::os::unix::fs::MetadataExt;
-    let descriptor = EndpointDescriptor {
-        software_version: "0.9.0".into(),
-        protocol_version: 1,
-        instance_uuid: owner.instance_uuid(),
-        boot_id: uuid::Uuid::new_v4(),
-        endpoint: old_path.clone(),
-        pid: 1,
-        socket_device: meta.dev(),
-        socket_inode: meta.ino(),
-    };
-    fs::write(
-        &instance.descriptor_path,
-        serde_json::to_vec(&descriptor).unwrap(),
-    )
-    .unwrap();
-    fs::set_permissions(&instance.descriptor_path, fs::Permissions::from_mode(0o600)).unwrap();
-    assert_eq!(
-        read_descriptor(&instance, owner.instance_uuid()).unwrap(),
-        descriptor
-    );
-    // Another instance's socket name is still a mismatch.
-    let mut other = descriptor.clone();
-    other.endpoint = old_dir.join("fedcba9876543210.sock");
-    fs::write(
-        &instance.descriptor_path,
-        serde_json::to_vec(&other).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        read_descriptor(&instance, owner.instance_uuid())
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::InvalidData
-    );
-    fs::write(
-        &instance.descriptor_path,
-        serde_json::to_vec(&descriptor).unwrap(),
-    )
-    .unwrap();
-    drop(old); // the old daemon crashed
-    owner.remove_stale_endpoint().unwrap();
-    assert!(!old_path.exists());
-    assert!(!instance.descriptor_path.exists());
-    let bound = owner.bind_socket().unwrap();
-    assert_eq!(bound.path(), instance.socket_path);
-    drop(bound);
-    fs::remove_file(&instance.socket_path).unwrap();
-    fs::remove_dir_all(root).unwrap();
-}
-
-/// Review I1: an older (pre-ht-910) Linux daemon whose per-boot natural
-/// pathname was too long bound `/private/tmp/herdr-threads-<uid>/<digest>-<boot>.sock`
-/// while today's natural `daemon.sock` fits. Its descriptor is read (doctor,
-/// handshake, stop) and, after it crashed, stale cleanup removes the verified
-/// socket so a new owner binds the natural pathname. Kills: "endpoint
-/// descriptor mismatch" blocking doctor, stop and ensure on upgrade.
-#[test]
-fn historical_per_boot_runtime_descriptor_is_read_and_cleaned_up_when_natural_fits() {
-    use sha2::{Digest, Sha256};
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::MetadataExt;
-    let root = fixture();
-    // An instance directory whose natural `daemon.sock` fits (94 bytes)
-    // but whose historical `daemon-<boot>.sock` (131 bytes) did not.
-    let state = root.sock("st");
-    let prefix = state.join("instances");
-    let pad = 82 - prefix.as_os_str().len() - 1;
-    let instance_dir = prefix.join("a".repeat(pad));
-    assert_eq!(instance_dir.as_os_str().len(), 82);
-    let instance = InstancePaths {
-        socket_path: instance_dir.join("daemon.sock"),
-        lock_path: instance_dir.join("owner.lock"),
-        descriptor_path: instance_dir.join("endpoint.json"),
-        locator_path: instance_dir.join("locator"),
-        namespace_path: instance_dir.join("namespace"),
-        database_path: instance_dir.join(crate::daemon::paths::DATABASE_FILE),
-        locator: "historical".into(),
-        instance_dir: instance_dir.clone(),
-    };
-    assert!(instance.socket_path.as_os_str().len() < crate::daemon::paths::SOCKET_PATH_LIMIT);
-    let owner = OwnerLock::acquire(&instance).unwrap();
-    let boot = uuid::Uuid::new_v4();
-    let digest = format!("{:x}", Sha256::digest(instance_dir.as_os_str().as_bytes()));
-    let old_dir = root.sock("rt-hist");
-    fs::create_dir(&old_dir).unwrap();
-    fs::set_permissions(&old_dir, fs::Permissions::from_mode(0o700)).unwrap();
-    let old_path = old_dir.join(format!("{}-{boot}.sock", &digest[..16]));
-    assert!(old_path.as_os_str().len() < crate::daemon::paths::SOCKET_PATH_LIMIT);
-    let old = std::os::unix::net::UnixListener::bind(&old_path).unwrap();
-    fs::set_permissions(&old_path, fs::Permissions::from_mode(0o600)).unwrap();
-    let meta = fs::metadata(&old_path).unwrap();
-    let descriptor = EndpointDescriptor {
-        software_version: "0.0.9".into(),
-        protocol_version: 1,
-        instance_uuid: owner.instance_uuid(),
-        boot_id: boot,
-        endpoint: old_path.clone(),
-        pid: 1,
-        socket_device: meta.dev(),
-        socket_inode: meta.ino(),
-    };
-    fs::write(
-        &instance.descriptor_path,
-        serde_json::to_vec(&descriptor).unwrap(),
-    )
-    .unwrap();
-    fs::set_permissions(&instance.descriptor_path, fs::Permissions::from_mode(0o600)).unwrap();
-    assert_eq!(
-        read_descriptor(&instance, owner.instance_uuid()).unwrap(),
-        descriptor
-    );
-    drop(old); // the old daemon crashed
-    owner.remove_stale_endpoint().unwrap();
-    assert!(!old_path.exists());
-    assert!(!instance.descriptor_path.exists());
-    let bound = owner.bind_socket().unwrap();
-    assert_eq!(bound.path(), instance.socket_path);
     drop(bound);
     drop(owner);
-    fs::remove_dir_all(&state).unwrap();
+    fs::remove_dir_all(root).unwrap();
 }
-
-/// A relocated runtime endpoint is accepted by name only; the socket itself
-/// must still be a real socket owned by this user with mode 0600. A
-/// symlink, a wrong-mode socket or a foreign-owned socket at a relocated
-/// name is refused by read and by stale cleanup, and nothing is removed.
-/// Kills: the descriptor relaxation bypassing `validate_socket`.
+/// The published endpoint must be a real socket owned by this user with
+/// mode 0600. A symlink, a wrong-mode socket or a foreign-owned socket at the
+/// socket pathname is refused by read and by stale cleanup, and nothing is
+/// removed. Kills: descriptor acceptance bypassing `validate_socket`.
 #[test]
-fn relocated_runtime_endpoint_must_be_a_private_owned_socket() {
+fn published_endpoint_must_be_a_private_owned_socket() {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let root = fixture();
-    let mut instance = paths(&root, root.sock("relocated-neg.sock"));
-    let name = "0123456789abcdef.sock";
-    let new_dir = root.sock("rn-new");
-    let old_dir = root.sock("rn-old");
-    for dir in [&new_dir, &old_dir] {
-        fs::create_dir(dir).unwrap();
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
-    }
-    instance.socket_path = new_dir.join(name);
-    let owner = OwnerLock::acquire(&instance).unwrap();
-    let publish = |instance: &InstancePaths, endpoint: &std::path::Path, meta: &fs::Metadata| {
+    let mut instance = paths(&root, root.sock("published-neg.sock"));
+    let dir = root.sock("pn-dir");
+    fs::create_dir(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let at = dir.join("0123456789abcdef.sock");
+    instance.socket_path = at.clone();
+    let owner = OwnerLock::acquire_with_test_hint(&instance).unwrap();
+    let publish = |instance: &NodePaths, meta: &fs::Metadata| {
         let descriptor = EndpointDescriptor {
             software_version: "0.9.0".into(),
             protocol_version: 1,
-            instance_uuid: owner.instance_uuid(),
+            node_uuid: owner.node_uuid().unwrap(),
             boot_id: uuid::Uuid::new_v4(),
-            endpoint: endpoint.to_path_buf(),
+            endpoint: instance.socket_path.clone(),
             pid: 1,
             socket_device: meta.dev(),
             socket_inode: meta.ino(),
@@ -1006,8 +835,8 @@ fn relocated_runtime_endpoint_must_be_a_private_owned_socket() {
         .unwrap();
         fs::set_permissions(&instance.descriptor_path, fs::Permissions::from_mode(0o600)).unwrap();
     };
-    let refused = |instance: &InstancePaths, what: &str| {
-        let error = read_descriptor(instance, owner.instance_uuid()).unwrap_err();
+    let refused = |instance: &NodePaths, what: &str| {
+        let error = read_descriptor(instance, owner.node_uuid().unwrap()).unwrap_err();
         assert_eq!(
             error.kind(),
             io::ErrorKind::PermissionDenied,
@@ -1023,37 +852,29 @@ fn relocated_runtime_endpoint_must_be_a_private_owned_socket() {
     };
 
     // A real owned socket elsewhere, reached through a symlink at the name.
-    let target = root.sock("rn-target.sock");
+    let target = root.sock("pn-target.sock");
     let live = std::os::unix::net::UnixListener::bind(&target).unwrap();
     fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-    let link = old_dir.join(name);
-    symlink(&target, &link).unwrap();
-    publish(&instance, &link, &fs::metadata(&target).unwrap());
+    symlink(&target, &at).unwrap();
+    publish(&instance, &fs::metadata(&target).unwrap());
     refused(&instance, "symlink");
-    assert!(
-        fs::symlink_metadata(&link)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
+    assert!(fs::symlink_metadata(&at).unwrap().file_type().is_symlink());
     assert!(target.exists());
-    fs::remove_file(&link).unwrap();
+    fs::remove_file(&at).unwrap();
     drop(live);
     fs::remove_file(&target).unwrap();
 
     // An owned socket at the name with a group/other-accessible mode.
-    let path = old_dir.join(name);
-    let wrong = std::os::unix::net::UnixListener::bind(&path).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
-    publish(&instance, &path, &fs::metadata(&path).unwrap());
+    let wrong = std::os::unix::net::UnixListener::bind(&at).unwrap();
+    fs::set_permissions(&at, fs::Permissions::from_mode(0o666)).unwrap();
+    publish(&instance, &fs::metadata(&at).unwrap());
     refused(&instance, "wrong mode");
-    assert!(path.exists());
+    assert!(at.exists());
     drop(wrong);
-    fs::remove_file(&path).unwrap();
+    fs::remove_file(&at).unwrap();
 
-    // A socket owned by another user (any system socket not ours), named as
-    // this instance's runtime socket.
-    // Prefer a 0600 one, so only the owner check can refuse it.
+    // A socket owned by another user (any system socket not ours) as the
+    // node's socket. Prefer a 0600 one, so only the owner check can refuse it.
     let sockets: Vec<(std::path::PathBuf, u32)> = ["/var/run", "/run", "/private/var/run"]
         .iter()
         .filter_map(|dir| fs::read_dir(dir).ok())
@@ -1071,10 +892,9 @@ fn relocated_runtime_endpoint_must_be_a_private_owned_socket() {
         .map(|(path, _)| path.clone());
     match foreign {
         Some(foreign) => {
-            instance.socket_path = new_dir.join(foreign.file_name().unwrap());
-            let owner_paths = instance.clone();
-            publish(&owner_paths, &foreign, &fs::metadata(&foreign).unwrap());
-            let error = read_descriptor(&owner_paths, owner.instance_uuid()).unwrap_err();
+            instance.socket_path = foreign.clone();
+            publish(&instance, &fs::metadata(&foreign).unwrap());
+            let error = read_descriptor(&instance, owner.node_uuid().unwrap()).unwrap_err();
             assert_eq!(
                 error.kind(),
                 io::ErrorKind::PermissionDenied,
@@ -1098,12 +918,12 @@ fn dropping_the_lease_releases_it_despite_a_transient_descriptor_copy() {
     use std::os::fd::AsRawFd;
     let root = fixture();
     let paths = paths(&root, root.sock("lease.sock"));
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     // SAFETY: duplicates a descriptor this test owns; closed below.
     let copy = unsafe { libc::dup(owner.lock_file.0.as_raw_fd()) };
     assert!(copy >= 0);
     drop(owner);
-    let next = OwnerLock::acquire(&paths);
+    let next = OwnerLock::acquire_with_test_hint(&paths);
     // SAFETY: closes the duplicate made above.
     unsafe { libc::close(copy) };
     drop(next.expect("the dropped lease was released despite the descriptor copy"));

@@ -18,7 +18,7 @@ fn dir() -> std::path::PathBuf {
     }
     p
 }
-fn context(instance: Uuid, execution: Uuid, generation: u64) -> OccupantContext {
+fn context(instance: crate::node::NodeUuid, execution: Uuid, generation: u64) -> OccupantContext {
     OccupantContext {
         format_version: 1,
         instance,
@@ -31,7 +31,7 @@ fn context(instance: Uuid, execution: Uuid, generation: u64) -> OccupantContext 
         role: Role::TopLevel,
     }
 }
-fn request(instance: Uuid, event: &str, generation: u64) -> PendingCheckIn {
+fn request(instance: crate::node::NodeUuid, event: &str, generation: u64) -> PendingCheckIn {
     PendingCheckIn {
         operation_id: Uuid::new_v4(),
         mode: CheckInMode::Lifecycle,
@@ -42,8 +42,10 @@ fn request(instance: Uuid, event: &str, generation: u64) -> PendingCheckIn {
         payload: b" {\"exact\":true} \n".to_vec(),
     }
 }
-fn journal(path: &std::path::Path, instance: Uuid) -> ContextJournal {
-    ContextJournal::open(path, instance, "seat", Duration::from_millis(300)).unwrap()
+fn journal(path: &std::path::Path, instance: crate::node::NodeUuid) -> ContextJournal {
+    ContextJournal::open(path, instance, "seat", Duration::from_millis(300))
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+        .unwrap()
 }
 fn result(p: &PendingCheckIn, generation: u64) -> CheckInResponse {
     let mut c = p.context.clone();
@@ -58,7 +60,7 @@ fn result(p: &PendingCheckIn, generation: u64) -> CheckInResponse {
 #[test]
 fn response_loss_retries_frozen_bytes_key_and_execution() {
     let path = dir();
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let p = request(instance, "start", 0);
     let j = journal(&path, instance);
     j.prepare(p.clone()).unwrap();
@@ -84,7 +86,7 @@ fn response_loss_retries_frozen_bytes_key_and_execution() {
 #[test]
 fn duplicate_completed_start_returns_result_without_dispatch() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     let p = request(i, "start", 0);
     j.prepare(p.clone()).unwrap();
@@ -102,7 +104,7 @@ fn duplicate_completed_start_returns_result_without_dispatch() {
 }
 #[test]
 fn resume_rotates_even_same_session_tool_and_compact_reuse() {
-    let old = context(Uuid::new_v4(), Uuid::new_v4(), 4);
+    let old = context(crate::node::NodeUuid::new_v4(), Uuid::new_v4(), 4);
     for kind in [
         EventKind::Startup,
         EventKind::Restart,
@@ -129,7 +131,7 @@ fn resume_rotates_even_same_session_tool_and_compact_reuse() {
 #[test]
 fn stale_rejection_keeps_pending_and_cannot_rebase() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     let p = request(i, "start", 0);
     j.prepare(p.clone()).unwrap();
@@ -149,7 +151,7 @@ fn stale_rejection_keeps_pending_and_cannot_rebase() {
 #[test]
 fn historical_completion_cannot_roll_back_current() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     let p = request(i, "start", 0);
     j.prepare(p).unwrap();
@@ -174,7 +176,7 @@ fn historical_completion_cannot_roll_back_current() {
 #[test]
 fn cross_instance_missing_corrupt_child_and_oversize_are_explicit() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     assert_eq!(j.current(), Ok(None));
     let mut p = request(i, "tool", 0);
@@ -190,7 +192,7 @@ fn cross_instance_missing_corrupt_child_and_oversize_are_explicit() {
     let p = request(i, "start", 0);
     j.prepare(p).unwrap();
     assert_eq!(
-        journal(&path, Uuid::new_v4()).pending(),
+        journal(&path, crate::node::NodeUuid::new_v4()).pending(),
         Err(ContextError::WrongInstance)
     );
     fs::write(path.join("context.json"), b"{").unwrap();
@@ -200,7 +202,7 @@ fn cross_instance_missing_corrupt_child_and_oversize_are_explicit() {
 #[test]
 fn concurrent_hooks_publish_once() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     j.prepare(request(i, "start", 0)).unwrap();
     let barrier = Arc::new(Barrier::new(2));
@@ -233,13 +235,14 @@ fn concurrent_hooks_publish_once() {
 fn symlink_state_and_permissive_directory_are_refused() {
     use std::os::unix::fs::{PermissionsExt, symlink};
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     symlink("/dev/null", path.join("context.json")).unwrap();
     assert_eq!(journal(&path, i).current(), Err(ContextError::UnsafePath));
     fs::remove_file(path.join("context.json")).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(matches!(
-        ContextJournal::open(&path, i, "seat", Duration::from_millis(5)),
+        ContextJournal::open(&path, i, "seat", Duration::from_millis(5))
+            .map(|journal| journal.with_host(crate::test_support::test_host_locator())),
         Err(ContextError::UnsafePath)
     ));
     fs::remove_dir_all(path).unwrap();
@@ -252,7 +255,13 @@ fn directory_symlink_is_not_hidden_by_canonicalization() {
     let link = path.with_extension("link");
     symlink(&path, &link).unwrap();
     assert!(matches!(
-        ContextJournal::open(&link, Uuid::new_v4(), "seat", Duration::from_millis(5)),
+        ContextJournal::open(
+            &link,
+            crate::node::NodeUuid::new_v4(),
+            "seat",
+            Duration::from_millis(5)
+        )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator())),
         Err(ContextError::UnsafePath)
     ));
     fs::remove_file(link).unwrap();
@@ -261,7 +270,7 @@ fn directory_symlink_is_not_hidden_by_canonicalization() {
 #[test]
 fn response_validation_failure_preserves_pre_dispatch_checkpoint() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     let p = request(i, "start", 0);
     j.prepare(p.clone()).unwrap();
@@ -280,7 +289,7 @@ fn response_validation_failure_preserves_pre_dispatch_checkpoint() {
 #[test]
 fn lock_wait_is_bounded_and_crashed_lock_owner_releases() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     let _ = j.current().unwrap();
     let file = fs::OpenOptions::new()
@@ -291,6 +300,7 @@ fn lock_wait_is_bounded_and_crashed_lock_owner_releases() {
     file.lock().unwrap();
     assert_eq!(
         ContextJournal::open(&path, i, "seat", Duration::from_millis(5))
+            .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
             .unwrap()
             .current(),
         Err(ContextError::LockTimeout)
@@ -304,7 +314,7 @@ fn lock_wait_is_bounded_and_crashed_lock_owner_releases() {
 fn crash_after_response_before_completion_leaves_retryable_pending() {
     use std::os::unix::fs::PermissionsExt;
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     let p = request(i, "start", 0);
     j.prepare(p.clone()).unwrap();
@@ -326,7 +336,7 @@ fn crash_after_response_before_completion_leaves_retryable_pending() {
 #[test]
 fn current_mode_after_outage_keeps_complete_context() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     j.prepare(request(i, "start", 0)).unwrap();
     let registered = j
@@ -364,7 +374,7 @@ fn current_mode_after_outage_keeps_complete_context() {
 #[test]
 fn prepare_reserves_completion_space_before_dispatch() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     for generation in 0..3 {
         let id = format!("event-{generation}");
@@ -388,7 +398,7 @@ fn prepare_reserves_completion_space_before_dispatch() {
 #[test]
 fn request_lookup_recovers_exact_completed_request_without_rebasing() {
     let path = dir();
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let j = journal(&path, instance);
     assert_eq!(j.request_for_event("start").unwrap(), None);
     let first = request(instance, "start", 0);
@@ -416,7 +426,7 @@ fn request_lookup_recovers_exact_completed_request_without_rebasing() {
 fn atomic_get_or_prepare_runs_one_external_intent_factory_for_concurrent_duplicates() {
     use std::io::Write;
     let path = dir();
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let barrier = Arc::new(Barrier::new(2));
     let handles: Vec<_> = (0..2)
         .map(|_| {
@@ -429,6 +439,7 @@ fn atomic_get_or_prepare_runs_one_external_intent_factory_for_concurrent_duplica
                 // budget made that wait a wall-clock race under IO load; use
                 // the maximum budget so only a real deadlock can time out.
                 ContextJournal::open(&path, instance, "seat", Duration::from_secs(10))
+                    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
                     .unwrap()
                     .get_or_prepare("start", |current| {
                         assert_eq!(current, None);
@@ -464,7 +475,7 @@ fn atomic_get_or_prepare_runs_one_external_intent_factory_for_concurrent_duplica
 #[test]
 fn get_or_prepare_conflict_and_factory_error_do_not_publish_or_rebase() {
     let path = dir();
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let j = journal(&path, instance);
     assert_eq!(
         j.get_or_prepare("start", |_| Err(ContextError::Dispatch(
@@ -491,7 +502,7 @@ fn get_or_prepare_conflict_and_factory_error_do_not_publish_or_rebase() {
 #[test]
 fn fresh_factory_receives_current_context_and_must_return_matching_event() {
     let path = dir();
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let j = journal(&path, instance);
     j.prepare(request(instance, "start", 0)).unwrap();
     let current = j
@@ -513,7 +524,11 @@ fn fresh_factory_receives_current_context_and_must_return_matching_event() {
     fs::remove_dir_all(path).unwrap();
 }
 
-fn lifecycle_cycle(j: &ContextJournal, instance: Uuid, event: &str) -> CheckInResponse {
+fn lifecycle_cycle(
+    j: &ContextJournal,
+    instance: crate::node::NodeUuid,
+    event: &str,
+) -> CheckInResponse {
     let current = j.current().unwrap();
     let generation = current.as_ref().map_or(0, |c| c.binding_generation);
     let mut p = request(instance, event, generation);
@@ -532,7 +547,7 @@ fn lifecycle_cycle(j: &ContextJournal, instance: Uuid, event: &str) -> CheckInRe
 #[test]
 fn completed_history_is_bounded_and_never_wedges() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     // Each cycle fsyncs twice: just past the 128-entry history bound
     // (`MAX_HISTORY`) is the smallest run that would wedge without pruning.
@@ -556,7 +571,7 @@ fn completed_history_is_bounded_and_never_wedges() {
 #[test]
 fn completed_history_is_pruned_by_age() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     for n in 0..3 {
         lifecycle_cycle(&j, i, &format!("old-{n}"));
@@ -579,7 +594,7 @@ fn completed_history_is_pruned_by_age() {
 #[test]
 fn definitive_rejection_abandons_pending_so_a_fresh_event_prepares() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     let dead = request(i, "rejected", 0);
     j.prepare(dead.clone()).unwrap();
@@ -615,7 +630,7 @@ fn definitive_rejection_abandons_pending_so_a_fresh_event_prepares() {
 #[test]
 fn stale_current_is_retired_only_when_unchanged_and_idle() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     lifecycle_cycle(&j, i, "start");
     let saved = j.current().unwrap().unwrap();
@@ -647,7 +662,7 @@ fn private_write(path: &std::path::Path, contents: &str) {
 #[test]
 fn attention_marks_are_kept_per_binding_key() {
     let path = dir();
-    let j = journal(&path, Uuid::new_v4());
+    let j = journal(&path, crate::node::NodeUuid::new_v4());
     let parent = attention_mark_key("claude", "session-1", None);
     let child = attention_mark_key("claude", "session-1", Some("agent-7"));
     let other = attention_mark_key("claude", "session-2", None);
@@ -679,7 +694,7 @@ fn attention_marks_are_kept_per_binding_key() {
     assert_eq!(j.attention_mark(&parent), Some(second));
     assert_eq!(j.attention_mark(&other), Some(second));
     // An OccupantContext names the same key a claim of its session does.
-    let ctx = context(Uuid::new_v4(), Uuid::new_v4(), 1);
+    let ctx = context(crate::node::NodeUuid::new_v4(), Uuid::new_v4(), 1);
     assert_eq!(ctx.mark_key(), "codex:same-session:");
     // The marks are not the journal: pending/current/completed are untouched.
     assert_eq!(j.pending().unwrap(), None);
@@ -693,7 +708,7 @@ fn attention_marks_are_kept_per_binding_key() {
 #[test]
 fn legacy_single_mark_file_is_read_without_error() {
     let path = dir();
-    let j = journal(&path, Uuid::new_v4());
+    let j = journal(&path, crate::node::NodeUuid::new_v4());
     let key = attention_mark_key("codex", "same-session", None);
     let execution = Uuid::new_v4();
     // Version 1 (the retired client-side frontier) and the version-2 single mark both read as
@@ -743,7 +758,7 @@ fn legacy_single_mark_file_is_read_without_error() {
 #[test]
 fn person_lifecycle_request_over_agent_context_keeps_current_until_dispatch() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     j.prepare(request(i, "agent", 0)).unwrap();
     let agent = j
@@ -779,7 +794,7 @@ fn person_lifecycle_request_over_agent_context_keeps_current_until_dispatch() {
 #[test]
 fn lifecycle_harness_change_is_admitted_only_for_a_person_over_an_agent() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     j.prepare(request(i, "agent", 0)).unwrap();
     j.dispatch("agent", &mut |p: &PendingCheckIn| Ok(result(p, 1)))
@@ -800,7 +815,7 @@ fn lifecycle_harness_change_is_admitted_only_for_a_person_over_an_agent() {
 #[test]
 fn operator_mark_round_trips_and_is_execution_scoped() {
     let path = dir();
-    let i = Uuid::new_v4();
+    let i = crate::node::NodeUuid::new_v4();
     let j = journal(&path, i);
     let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
     assert_eq!(j.operator_mark(), None);
@@ -819,7 +834,7 @@ fn operator_mark_round_trips_and_is_execution_scoped() {
 #[test]
 fn install_reattached_replaces_a_context_for_another_pane_and_abandons_pending() {
     let path = dir();
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let j = journal(&path, instance);
     // A saved context for another pane at an older generation, with a request
     // still pending for it.

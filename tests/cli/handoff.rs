@@ -221,7 +221,7 @@ fn automatic_launched_oversized_original_refuses_before_recipient_allocation() {
     let mut launcher = AutomaticLauncher::default();
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     assert!(
@@ -274,7 +274,7 @@ fn automatic_launched_maximum_escaped_body_is_frozen_and_retries_without_relaunc
     };
     let mut presentation = Vec::new();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     let result = start(
@@ -329,7 +329,7 @@ fn automatic_launched_maximum_escaped_body_is_frozen_and_retries_without_relaunc
         &crate::protocol::handoff::HandoffNamespace {
             instance: claim().instance,
             state_dir: "/tmp/automatic-state".into(),
-            host_endpoint: "/tmp/automatic-host.sock".into(),
+            host_endpoint: "/host.sock".into(),
         },
         &client,
         Some(&mut launcher),
@@ -366,7 +366,7 @@ fn automatic_launched_noncompletion_keeps_exact_artifact_and_bounded_progress() 
     };
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     assert!(
@@ -410,7 +410,7 @@ fn automatic_launched_noncompletion_keeps_exact_artifact_and_bounded_progress() 
             &crate::protocol::handoff::HandoffNamespace {
                 instance: claim().instance,
                 state_dir: "/tmp/automatic-state".into(),
-                host_endpoint: "/tmp/automatic-host.sock".into()
+                host_endpoint: "/host.sock".into()
             },
             &client,
             Some(&mut launcher),
@@ -446,7 +446,7 @@ fn automatic_launched_pane_uses_ensure_send_and_one_start() {
     let mut launcher = AutomaticLauncher::default();
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut bytes = vec![];
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
@@ -492,7 +492,7 @@ fn automatic_launched_pane_lost_ensure_then_reject_preserves_original_without_se
     let mut launcher = AutomaticLauncher::default();
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     let mut first_output = vec![];
@@ -525,7 +525,7 @@ fn automatic_launched_pane_lost_ensure_then_reject_preserves_original_without_se
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: original_claim.instance.clone(),
         state_dir: "/tmp/automatic-state".into(),
-        host_endpoint: "/tmp/automatic-host.sock".into(),
+        host_endpoint: "/host.sock".into(),
     };
     *client.rejected.lock().unwrap() = true;
     let mut retry_output = vec![];
@@ -593,7 +593,7 @@ fn automatic_launched_pane_unsupported_refuses_before_journal_and_start() {
     let mut launcher = AutomaticLauncher::default();
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     let result = start(
@@ -640,7 +640,7 @@ fn automatic_launched_pane_lost_start_never_resubmits_on_retry() {
     };
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     let mut first_bytes = vec![];
@@ -671,7 +671,7 @@ fn automatic_launched_pane_lost_start_never_resubmits_on_retry() {
         &crate::protocol::handoff::HandoffNamespace {
             instance: claim().instance,
             state_dir: "/tmp/automatic-state".into(),
-            host_endpoint: "/tmp/automatic-host.sock".into(),
+            host_endpoint: "/host.sock".into(),
         },
         &client,
         Some(&mut launcher),
@@ -708,7 +708,7 @@ fn automatic_launched_pane_lost_complete_retries_terminal_without_relaunch() {
     let mut launcher = AutomaticLauncher::default();
     let mut output = OutputSpec::default();
     output.context.state_dir = Some("/tmp/automatic-state".into());
-    output.context.host = Some("/tmp/automatic-host.sock".into());
+    output.context.host = Some("/host.sock".into());
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
     let first = start(
@@ -736,7 +736,7 @@ fn automatic_launched_pane_lost_complete_retries_terminal_without_relaunch() {
         &crate::protocol::handoff::HandoffNamespace {
             instance: claim().instance,
             state_dir: "/tmp/automatic-state".into(),
-            host_endpoint: "/tmp/automatic-host.sock".into(),
+            host_endpoint: "/host.sock".into(),
         },
         &client,
         None,
@@ -775,16 +775,28 @@ fn automatic_launched_pane_live_retry_requires_original_current_caller() {
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: claim().instance,
         state_dir: selected.state_dir.clone(),
-        host_endpoint: selected.host_endpoint.clone(),
+        host_endpoint: selected.host_endpoint.clone().unwrap(),
     };
     let mut output = OutputSpec::default();
     output.context.state_dir = Some(selected.state_dir.to_string_lossy().into_owned());
-    output.context.host = Some(selected.host_endpoint.to_string_lossy().into_owned());
+    output.context.host = Some(
+        selected
+            .host_endpoint
+            .clone()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+    );
     let client = AutomaticClient::new();
     *client.lose_ensure.lock().unwrap() = true;
     let mut launcher = AutomaticLauncher::default();
     let mut original_claim = claim();
     original_claim.harness = Harness::Codex;
+    // The claim's host is the namespace's: the pane's Herdr server.
+    original_claim.host = crate::protocol::ids::HostLocator::parse(
+        selected.host_endpoint.as_ref().unwrap().to_str().unwrap(),
+    )
+    .unwrap();
     let first = start(
         &journal,
         request,
@@ -878,7 +890,7 @@ fn automatic_launched_pane_live_retry_requires_original_current_caller() {
         crate::cli::topology_runtime::try_completed(
             &parsed_retry,
             &journal,
-            uuid::Uuid::parse_str(&namespace.instance).unwrap(),
+            crate::node::NodeUuid::parse_str(&namespace.instance).unwrap(),
             &selected,
             &client,
             &TestClock,
@@ -1022,7 +1034,8 @@ fn task48_progress_unknown_and_oversized_tails_fail_before_begin() {
 
 fn claim() -> CallerClaim {
     CallerClaim {
-        instance: "00000000-0000-0000-0000-0000000000b1".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "000000000000000000000000000000b1".into(),
         seat: SeatId::new("sender"),
         binding_generation: 1,
         role: CallerRole::TopLevel,
@@ -1271,7 +1284,8 @@ fn reference(journal: &Journal) -> IntentRef {
 }
 fn scope() -> IntentScope {
     IntentScope::Cooperative {
-        instance: "00000000-0000-0000-0000-0000000000b1".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "000000000000000000000000000000b1".into(),
         seat: SeatId::new("sender"),
     }
 }
@@ -1424,7 +1438,8 @@ fn handoff_broken_output_replays_report_without_relaunch_or_wrong_scope() {
     );
     let reference = reference(&journal);
     let wrong = IntentScope::Cooperative {
-        instance: "00000000-0000-0000-0000-0000000000b1".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "000000000000000000000000000000b1".into(),
         seat: SeatId::new("other"),
     };
     assert!(
@@ -1719,10 +1734,7 @@ fn handoff_bootstrap_prefers_recipient_hook_commands_and_replays_exact_fallback(
             .ends_with("null"),
         "unknown paths require exact fallback"
     );
-    let fallback = prompt
-        .split_once("Otherwise use the exact fallback:")
-        .unwrap()
-        .1;
+    let fallback = prompt.split_once("use the exact fallback:").unwrap().1;
     assert!(
         fallback.contains(
             "herdr-threads --state-dir '/tmp/handoff state' --host-endpoint /tmp/handoff.sock inbox"
@@ -1793,7 +1805,7 @@ fn handoff_bootstrap_binds_hook_preference_to_frozen_expected_instance_and_pair(
     let expected: serde_json::Value = serde_json::from_str(record).unwrap();
     assert_eq!(
         expected,
-        serde_json::json!({"instance":"00000000-0000-0000-0000-0000000000b1", "state_dir":state.display().to_string(), "host_endpoint":host.display().to_string()})
+        serde_json::json!({"instance":"000000000000000000000000000000b1", "state_dir":state.display().to_string(), "host_endpoint":host.display().to_string()})
     );
 }
 struct FencedClient {
@@ -2208,7 +2220,7 @@ fn handoff_bootstrap_is_one_native_shell_argument() {
     let prompt = bootstrap(
         &ThreadId::new("tReview01"),
         &crate::protocol::output::ContinuationContext::default(),
-        "00000000-0000-0000-0000-0000000000b1",
+        "000000000000000000000000000000b1",
     );
     assert!(
         !prompt.contains(['\n', '\r']),
@@ -2216,6 +2228,16 @@ fn handoff_bootstrap_is_one_native_shell_argument() {
     );
     assert!(prompt.contains("inbox") && prompt.contains("task for thread tReview01"));
     assert!(prompt.contains("Launch does not accept invitations or ACK messages"));
+}
+
+// Template-free plans retain frozen V1 bytes; newer plans capture today's
+// bootstrap at preparation. Tests must not conflate the two render contracts.
+fn expected_plan_bootstrap(plan: &HandoffPlan) -> String {
+    if plan.startup_input.is_some() {
+        bootstrap(&ThreadId::new("t1"), &plan.context, &claim().instance)
+    } else {
+        bootstrap_v1::prompt("t1", &plan.context, &claim().instance)
+    }
 }
 
 struct RecordingLauncher {
@@ -2231,11 +2253,7 @@ impl RecordingLauncher {
     }
     fn check_frozen(&self, plan: &HandoffPlan) {
         let mut expected = plan.request.launch.clone();
-        expected.argv.push(bootstrap(
-            &ThreadId::new("t1"),
-            &plan.context,
-            &claim().instance,
-        ));
+        expected.argv.push(expected_plan_bootstrap(plan));
         assert!(!self.requests.is_empty());
         for actual in &self.requests {
             assert_eq!(actual, &expected);
@@ -2350,10 +2368,7 @@ fn check_registered_report(
     let suffix = &options[options.iter().position(|v| v == "--").unwrap() + 1..];
     assert_eq!(&suffix[..suffix.len() - 1], plan.request.launch.argv);
     let prompt = suffix.last().unwrap();
-    assert_eq!(
-        prompt,
-        &bootstrap(&ThreadId::new("t1"), &plan.context, &claim().instance)
-    );
+    assert_eq!(prompt, &expected_plan_bootstrap(plan));
     let routing = prompt
         .strip_prefix("Expected handoff command routing (JSON data): ")
         .unwrap()
@@ -2485,7 +2500,7 @@ fn registered_handoff_refusal_preserves_canonical_recovery_and_frozen_launch() {
             assert_eq!(launcher.preflights, 1);
             assert_eq!(
                 launcher.submitted_argv.last().unwrap(),
-                &bootstrap(&ThreadId::new("t1"), &plan.context, &claim().instance)
+                &expected_plan_bootstrap(&plan)
             );
             assert_eq!(client.calls.lock().unwrap().len(), 3);
             assert!(journal.load(&reference).is_err());
@@ -3198,11 +3213,7 @@ fn handoff_manual_recovery_preserves_frozen_options_without_reentry() {
             serde_json::from_value(report["manual_launch_after_confirming_no_start_argv"].clone())
                 .unwrap();
         let mut expected = plan.request.launch.argv.clone();
-        expected.push(bootstrap(
-            &ThreadId::new("t1"),
-            &plan.context,
-            &claim().instance,
-        ));
+        expected.push(expected_plan_bootstrap(&plan));
         for options in [
             if harness == crate::harness::context::Harness::Codex {
                 "--no-daemon --model 'frozen model'"
@@ -3330,11 +3341,7 @@ fn stage_a_manual_recovery_extra_key_lossless_shell_parser_resolver() {
     };
     let reference = frozen(&journal);
     let mut expected = plan.request.launch.argv.clone();
-    expected.push(bootstrap(
-        &ThreadId::new("t1"),
-        &plan.context,
-        &claim().instance,
-    ));
+    expected.push(expected_plan_bootstrap(&plan));
     for key in [
         "HERDR_THREADS_FOURTH_OPTS",
         "HERDR_THREADS_SUCCESSOR_OPTS",
@@ -4659,14 +4666,14 @@ fn frozen_v1_prompt_literals_bind_routing_quoting_and_thread() {
         "/nonexistent-ht-v1/a \"b\" 'c'",
         "/nonexistent-ht-v1/h\u{1}\u{200b}.sock",
     );
-    let instance = "00000000000040008000000000000ABC";
+    let instance = "00000000000040008000000000000abc";
     let prompts = bootstrap_v1::retained_prompts("t9", &context, instance);
     let fallback = r#"herdr-threads --state-dir '/nonexistent-ht-v1/a "b" '\''c'\''' --host-endpoint $'/nonexistent-ht-v1/h\x01\xe2\x80\x8b.sock' inbox"#;
     assert_eq!(
         prompts,
         vec![
             format!(
-                "Expected handoff command routing (JSON data): {{\"instance\":\"00000000-0000-4000-8000-000000000abc\",\"state_dir\":\"/nonexistent-ht-v1/a \\\"b\\\" 'c'\",\"host_endpoint\":\"/nonexistent-ht-v1/h\\u0001\u{200b}.sock\"}}{V1_INSTRUCTION}{fallback}`. The task for thread t9{V1_SUFFIX}"
+                "Expected handoff command routing (JSON data): {{\"instance\":\"00000000000040008000000000000abc\",\"state_dir\":\"/nonexistent-ht-v1/a \\\"b\\\" 'c'\",\"host_endpoint\":\"/nonexistent-ht-v1/h\\u0001\u{200b}.sock\"}}{V1_INSTRUCTION}{fallback}`. The task for thread t9{V1_SUFFIX}"
             ),
             format!(
                 "Expected handoff command routing (JSON data): null{V1_INSTRUCTION}{fallback}`. The task for thread t9{V1_SUFFIX}"
@@ -4677,15 +4684,26 @@ fn frozen_v1_prompt_literals_bind_routing_quoting_and_thread() {
     // Today's renderer repeats the filesystem lookup: for the same retained
     // namespace it now yields null, so recomposition could not have accepted a
     // genuine object-routing report once these paths disappeared.
-    assert_eq!(
-        bootstrap(&ThreadId::new("t9"), &context, instance),
-        prompts[1]
+    let current = bootstrap(&ThreadId::new("t9"), &context, instance);
+    assert!(current.starts_with("Expected handoff command routing (JSON data): null"));
+    assert!(current.contains(fallback));
+    assert!(
+        current.contains(
+            "If no matching hook is trusted, or delivery reports incomplete or unavailable"
+        )
     );
-    assert_eq!(
-        bootstrap_v1::retained_prompts("t9", &context, "not-a-uuid"),
-        prompts[1..].to_vec(),
-        "an invalid UUID admits only the null-routing form"
+    assert!(current.contains("including an empty inbox, needs no inbox call"));
+    assert_ne!(
+        current, prompts[1],
+        "current guidance evolves independently of frozen V1"
     );
+    for invalid in ["not-a-uuid", "00000000000040008000000000000ABC"] {
+        assert_eq!(
+            bootstrap_v1::retained_prompts("t9", &context, invalid),
+            prompts[1..].to_vec(),
+            "{invalid}: a non-canonical node uuid admits only the null-routing form"
+        );
+    }
     // Baseline golden (not a RED): the V1 producer and today's unperturbed
     // renderer agree for an existing canonical pair.
     let (_temp, journal) = journal();
@@ -4695,7 +4713,7 @@ fn frozen_v1_prompt_literals_bind_routing_quoting_and_thread() {
         state.join("h.sock").to_str().unwrap(),
     );
     let produced = bootstrap_v1::prompt("t1", &context, &claim().instance);
-    assert_eq!(
+    assert_ne!(
         produced,
         bootstrap(&ThreadId::new("t1"), &context, &claim().instance)
     );
@@ -4726,10 +4744,11 @@ fn frozen_v1_prompt_and_manual_projection_ignore_current_renderer_drift() {
     };
     let reference = frozen(&journal);
     let v1 = bootstrap_v1::prompt("t1", &plan.context, &claim().instance);
+    let current = bootstrap(&ThreadId::new("t1"), &plan.context, &claim().instance);
     let _drift = crate::harness::launch::current_drift::arm(Some(" DRIFTED"), None);
     assert_eq!(
         bootstrap(&ThreadId::new("t1"), &plan.context, &claim().instance),
-        format!("{v1} DRIFTED"),
+        format!("{current} DRIFTED"),
         "the current renderer observes the simulated drift"
     );
     assert_eq!(
@@ -5303,7 +5322,7 @@ fn automatic_presentation_admission_counts_exact_local_root() {
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: claim().instance,
         state_dir: "/tmp/automatic-state".into(),
-        host_endpoint: "/tmp/automatic-host.sock".into(),
+        host_endpoint: "/host.sock".into(),
     };
     let selection = crate::protocol::results::DirectThreadEnsured::admission_witness(
         ThreadId::new("t"),

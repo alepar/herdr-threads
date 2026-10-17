@@ -28,14 +28,14 @@ fn next_decision() -> i64 {
 }
 
 fn seat(conn: &Connection, id: &str) {
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)", params![id, format!("p{id}")]).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh',?2,'inc','coherent_enumeration',1)", params![format!("p{id}"), format!("term-p{id}")]).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", params![id, format!("p{id}")]).unwrap();
+    conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh',?2,'inc','coherent_enumeration',1)", params![format!("p{id}"), format!("term-p{id}")]).unwrap();
 }
 
 /// A thread (with an optional name) that `members` have joined.
 fn thread(conn: &Connection, id: &str, name: Option<&str>, members: &[&str]) {
     conn.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,name) VALUES (?1,'i','topic','goal',0,0,?2)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,name,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,?2,0)",
         params![id, name],
     )
     .unwrap();
@@ -69,12 +69,12 @@ fn message(conn: &Connection, thread: &str, sequence: i64, by: By, at: i64, body
         By::Relay => ("agent", 1),
     };
     conn.execute(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,relays_user) VALUES (?1,'i',?2,?3,'ordinary','o',?4,?5,?6,?7,?8)",
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,relays_user) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,?3,'ordinary','o',?4,?5,?6,?7,?8)",
         params![id, thread, sequence, body, at, next_decision(), role, relays],
     )
     .unwrap();
     conn.execute(
-        "UPDATE host_instances SET decision_seq=MAX(decision_seq,(SELECT MAX(decision_seq) FROM messages))",
+        "UPDATE local_node SET decision_seq=MAX(decision_seq,(SELECT MAX(decision_seq) FROM messages))",
         [],
     )
     .unwrap();
@@ -91,9 +91,9 @@ fn message(conn: &Connection, thread: &str, sequence: i64, by: By, at: i64, body
 fn deliver(conn: &Connection, thread: &str, sequence: i64, recipient: &str, body: &str) -> String {
     let id = message(conn, thread, sequence, By::Agent, sequence * 10, body);
     conn.execute_batch(&format!(
-        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p-{id}','i','actor','{id}',zeroblob(32),'{thread}',0,0,0,0,0,0,1,'sealed');
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p-{id}','34750f98bd59fcfc946da45aaabe933b','actor','{id}',zeroblob(32),'{thread}',0,0,0,0,0,0,1,'sealed');
          INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p-{id}','{thread}','{recipient}',1,300,1);
-         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p-{id}','{id}','i','{thread}',decision_seq,decision_at,{sequence},0,1,0 FROM messages WHERE id='{id}';"
+         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p-{id}','{id}','34750f98bd59fcfc946da45aaabe933b','{thread}',decision_seq,decision_at,{sequence},0,1,0 FROM messages WHERE id='{id}';"
     ))
     .unwrap();
     id
@@ -109,7 +109,7 @@ fn ledger(
 ) {
     let block = format!("block-{thread}");
     conn.execute(
-        "INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES (?1,'i',?2,'v1',0,0,1,100,'h','n','o','m','p',5)",
+        "INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,'v1',0,0,1,100,'h','n','o','m','p',5)",
         params![block, thread],
     )
     .unwrap();
@@ -161,11 +161,11 @@ fn db(name: &str) -> Db {
     }
     let iso = TestIsolation::new(name);
     let conn = StoreContext::new(iso.path("store.db"), std::sync::Arc::new(Clock))
+        .with_test_host()
         .open_writer()
         .unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
-        [],
+    conn.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
     )
     .unwrap();
     seat(&conn, "s");
@@ -519,7 +519,7 @@ fn many_small_messages_past_a_page_fast_forward_with_gap_counts() {
 fn page_of(store: &crate::store::SqliteStore, claim: &CallerClaim) -> Vec<(String, bool)> {
     let CommandResult::InboxBatchV2(page) = query_with_output(
         &store.context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
             pushed: false,
             thread: None,
@@ -740,7 +740,7 @@ fn v2_items(
 ) -> Vec<InboxBatchV2Item> {
     let CommandResult::InboxBatchV2(page) = query_with_output(
         &store.context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
             pushed: false,
             thread: None,

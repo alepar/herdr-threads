@@ -1,9 +1,9 @@
 //! Actual executable/current-daemon configuration matrix. Legacy means inbox-v1
-//! capabilities on wire protocol 8, never a historical executable or protocol-1 daemon.
+//! capabilities on wire protocol 9, never a historical executable or protocol-1 daemon.
 use herdr_threads::{
     daemon::{
-        ownership::{read_descriptor, read_existing_namespace},
-        paths::{InstancePaths, RuntimeContext},
+        ownership::{read_descriptor, read_node_uuid_hint},
+        paths::{NodePaths, RuntimeContext},
     },
     protocol::wire::PROTOCOL_VERSION,
     test_support::spawn,
@@ -162,8 +162,8 @@ impl Drop for FakeHost {
 
 pub(super) struct World {
     pub(super) root: PathBuf,
-    state: PathBuf,
-    host: PathBuf,
+    pub(super) state: PathBuf,
+    pub(super) host: PathBuf,
     pub(super) seats: Vec<String>,
     pub(super) thread: String,
     _host: FakeHost,
@@ -336,9 +336,11 @@ impl World {
         );
         serde_json::from_slice::<Value>(&o.stdout).unwrap()["result"].clone()
     }
-    pub(super) fn paths(&self) -> InstancePaths {
-        InstancePaths::resolve(
-            &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap(),
+    pub(super) fn paths(&self) -> NodePaths {
+        NodePaths::resolve(
+            &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap()
     }
@@ -493,7 +495,7 @@ fn lazy_config_inbox_v1_client_current_daemon_ordinary_shapes() {
     let lazy = w.send("legacy history gets full passive content", &[]);
     let ordinary = w.send("legacy ordinary item", &["--require-ack", &w.seats[1]]);
     let p = w.paths();
-    let instance = read_existing_namespace(&p).unwrap().unwrap();
+    let instance = read_node_uuid_hint(&p).unwrap().unwrap();
     let d = read_descriptor(&p, instance).unwrap();
     // Frozen pre-lazy envelope/command: no delivery_mode, v2 item or new selectors.
     let q = json!({"version":PROTOCOL_VERSION,"request_id":"legacy-inbox-smoke","expected_instance":instance.to_string(),"expected_boot":d.boot_id.to_string(),"command":{"kind":"inbox_batch","args":{"seat":w.seats[1],"page":{"cursor":null,"limit":20,"max_bytes":16384}}}});

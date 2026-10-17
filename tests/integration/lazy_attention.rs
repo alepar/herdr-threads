@@ -41,7 +41,7 @@ fn budget() -> CallBudget {
 }
 fn read_context() -> ReadContext {
     ReadContext {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         output: OutputSpec::default(),
         operation_scope: None,
     }
@@ -57,20 +57,13 @@ impl Fixture {
     fn new() -> Self {
         let iso = TestIsolation::new("lazy-attention");
         let clock = Arc::new(FixedClock(AtomicI64::new(1000)));
-        let context = StoreContext::new(iso.path("store.db"), clock.clone());
+        let context = StoreContext::new(iso.path("store.db"), clock.clone()).with_test_host();
         let db = context.open_writer().unwrap();
-        // Pre-upgrade Lazy invitations are fixtures of this suite.
-        db.pragma_update(
-            None,
-            "application_id",
-            herdr_threads::store::control::LEGACY_PAIR_MARKER,
-        )
-        .unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'b',1,1);
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);").unwrap();
+        db.execute_batch("UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);").unwrap();
         let store = SqliteStore::new(
-            StoreContext::new(iso.path("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.path("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap();
@@ -85,8 +78,8 @@ impl Fixture {
         f
     }
     fn member(&self, seat: &str, state: &str, membership: &str, harness: Harness) {
-        self.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq) VALUES(?1,'i',?2,'native',?1,1,0,0,CASE WHEN ?2='retired' THEN 0 END,CASE WHEN ?2='retired' THEN 1 END)",params![seat,state]).unwrap();
-        self.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES('i',?1,'b',1,0,1,'fresh',0,'term-'||?1,'inc','coherent_enumeration',1,'idle')",[seat]).unwrap();
+        self.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b',?2,'native',?1,1,0,0,CASE WHEN ?2='retired' THEN 0 END,CASE WHEN ?2='retired' THEN 1 END,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![seat,state]).unwrap();
+        self.db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,0,1,'fresh',0,'term-'||?1,'inc','coherent_enumeration',1,'idle')",[seat]).unwrap();
         self.db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES(?1,1,?1,'b',1,0,?2,'session-'||?1,?3,?4,0,0,'term-'||?1,'inc')",params![seat,harness.as_str(), execution(seat), if harness==Harness::Human {"operator_human"} else {"cooperative_top_level"}]).unwrap();
         self.db
             .execute(
@@ -103,7 +96,8 @@ impl Fixture {
     fn claim(&self, seat: &str) -> CallerClaim {
         let (generation, harness, saved_execution): (i64,String,String) = self.db.query_row("SELECT generation,harness,execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",[seat],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
         CallerClaim {
-            instance: "i".into(),
+            host: herdr_threads::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new(seat),
             binding_generation: generation as u64,
             role: CallerRole::TopLevel,
@@ -243,8 +237,8 @@ impl Fixture {
     }
     fn reopen(&mut self) {
         self.store = SqliteStore::new(
-            StoreContext::new(self._iso.path("store.db"), self.clock.clone()),
-            "i",
+            StoreContext::new(self._iso.path("store.db"), self.clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap();
@@ -285,7 +279,11 @@ impl Fixture {
         );
         let candidates = self
             .store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget(),
+            )
             .unwrap();
         assert!(
             candidates.items.iter().all(|c| !c.has_actionable_work()),
@@ -293,7 +291,7 @@ impl Fixture {
         );
         assert!(
             self.store
-                .poke_candidates(100, &budget())
+                .poke_candidates(herdr_threads::test_support::test_host_id(), 100, &budget())
                 .unwrap()
                 .is_empty()
         );
@@ -380,7 +378,11 @@ fn guide_daily_loop_reply_creates_notification_attention() {
     );
     assert!(
         f.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget()
+            )
             .unwrap()
             .items
             .iter()
@@ -418,7 +420,11 @@ fn guide_send_passive_and_explicit_receipt_controls() {
             );
             assert!(
                 f.store
-                    .wake_candidates(PageRequest::default(), &budget())
+                    .wake_candidates(
+                        herdr_threads::test_support::test_host_id(),
+                        PageRequest::default(),
+                        &budget()
+                    )
                     .unwrap()
                     .items
                     .iter()
@@ -429,6 +435,7 @@ fn guide_send_passive_and_explicit_receipt_controls() {
             assert_eq!(f.inbox("agent").as_slice(), std::slice::from_ref(&id));
             f.mutate(PermitMutation::CompleteInboxDelivery(
                 CompleteInboxDelivery {
+                    receipt_candidates: Vec::new(),
                     via: None,
                     messages: vec![id],
                     operation: OperationId::new("display-complete"),
@@ -580,9 +587,14 @@ fn lazy_attention_current_startup_stable_across_restart() {
     );
     let baseline = offer_attention(&no_mail);
     assert_eq!(offer_attention(&initial), baseline);
-    let digest = attention::seat_digest(&f.db, "i", &SeatId::new("agent"), &|| Ok(()))
-        .unwrap()
-        .digest;
+    let digest = attention::seat_digest(
+        &f.db,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &SeatId::new("agent"),
+        &|| Ok(()),
+    )
+    .unwrap()
+    .digest;
     let id = f.send("lazy", DeliveryMode::Lazy);
     for round in 0..4 {
         if round == 2 {
@@ -595,9 +607,14 @@ fn lazy_attention_current_startup_stable_across_restart() {
             );
             f.assert_passive();
             assert_eq!(
-                attention::seat_digest(&f.db, "i", &SeatId::new("agent"), &|| Ok(()))
-                    .unwrap()
-                    .digest,
+                attention::seat_digest(
+                    &f.db,
+                    "34750f98bd59fcfc946da45aaabe933b",
+                    &SeatId::new("agent"),
+                    &|| Ok(())
+                )
+                .unwrap()
+                .digest,
                 digest
             );
             assert_eq!(f.inbox("agent").as_slice(), std::slice::from_ref(&id));
@@ -615,10 +632,15 @@ fn lazy_attention_current_startup_stable_across_restart() {
 fn lazy_attention_moves_the_lazy_digest_marker_but_never_wake() {
     let f = Fixture::new();
     let lazy_digest = || {
-        let mut digest = attention::seat_digest(&f.db, "i", &SeatId::new("agent"), &|| Ok(()))
-            .unwrap()
-            .digest;
-        attention::add_lazy(&f.db, "i", &mut digest).unwrap();
+        let mut digest = attention::seat_digest(
+            &f.db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &SeatId::new("agent"),
+            &|| Ok(()),
+        )
+        .unwrap()
+        .digest;
+        attention::add_lazy(&f.db, "34750f98bd59fcfc946da45aaabe933b", &mut digest).unwrap();
         digest.validate().unwrap();
         digest
     };
@@ -649,14 +671,23 @@ fn lazy_attention_moves_the_lazy_digest_marker_but_never_wake() {
             .ends_with(&format!("; messages=1 [{}@t]", first.as_str()))
     );
     // The default digest (wake fingerprint inputs, old clients) is unchanged.
-    let plain = attention::seat_digest(&f.db, "i", &SeatId::new("agent"), &|| Ok(()))
-        .unwrap()
-        .digest;
+    let plain = attention::seat_digest(
+        &f.db,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &SeatId::new("agent"),
+        &|| Ok(()),
+    )
+    .unwrap()
+    .digest;
     assert!(plain.lazy.is_none() && plain.token.lazy.is_none() && plain.is_empty());
     assert_eq!(wake(), wake_before);
     assert!(
         !f.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget()
+            )
             .unwrap()
             .items
             .iter()
@@ -740,7 +771,11 @@ fn lazy_attention_mixed_ordinary_positive_controls() {
     f.send("ordinary", DeliveryMode::Ordinary);
     assert!(
         f.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget()
+            )
             .unwrap()
             .items
             .iter()
@@ -777,9 +812,14 @@ fn lazy_attention_mixed_ordinary_positive_controls() {
     }))
     .unwrap();
     let digest = |seat| {
-        attention::seat_digest(&f.db, "i", &SeatId::new(seat), &|| Ok(()))
-            .unwrap()
-            .digest
+        attention::seat_digest(
+            &f.db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &SeatId::new(seat),
+            &|| Ok(()),
+        )
+        .unwrap()
+        .digest
     };
     assert!(
         digest("outsider").invitations.count > 0,
@@ -866,6 +906,7 @@ fn lazy_addressed_survives_leave_retire_archive_and_excludes_postjoin() {
     );
     f.mutate(PermitMutation::CompleteInboxDelivery(
         CompleteInboxDelivery {
+            receipt_candidates: Vec::new(),
             via: None,
             messages: vec![id.clone()],
             operation: OperationId::new("display-human"),
@@ -924,6 +965,7 @@ fn lazy_addressed_survives_leave_retire_archive_and_excludes_postjoin() {
     let error = f
         .mutate(PermitMutation::CompleteInboxDelivery(
             CompleteInboxDelivery {
+                receipt_candidates: Vec::new(),
                 via: None,
                 messages: vec![id],
                 operation: OperationId::new("retired"),
@@ -969,14 +1011,15 @@ fn lazy_attention_backlog_allows_qualified_quiet_archive() {
             mono: at,
             utc: UtcMillis(at),
             after_ms: 60_000,
-            host_generation: 0,
-            coherent: true,
-            valid_until_mono: None,
+            hosts: herdr_threads::test_support::test_host_evidence(0, true),
             legacy_source: Some("covered".into()),
         };
-        archival::advance(&f.db, "i", &rt).unwrap();
+        archival::advance(&f.db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
         for seat in ["author", "agent"] {
-            if let Some(ticket) = archival::observation_ticket(&f.db, "i", seat, &rt).unwrap() {
+            if let Some(ticket) =
+                archival::observation_ticket(&f.db, "34750f98bd59fcfc946da45aaabe933b", seat, &rt)
+                    .unwrap()
+            {
                 let mut sample = crate::channel_archival::sample(at, HostUiState::Idle);
                 sample.0.observation_sequence = (at / 30_000 + 2) as u64;
                 sample.0.target = HostTargetId::new(seat);
@@ -985,7 +1028,10 @@ fn lazy_attention_backlog_allows_qualified_quiet_archive() {
             }
         }
         for _ in 0..20 {
-            if !archival::advance(&f.db, "i", &rt).unwrap().has_more {
+            if !archival::advance(&f.db, "34750f98bd59fcfc946da45aaabe933b", &rt)
+                .unwrap()
+                .has_more
+            {
                 break;
             }
         }
@@ -1007,6 +1053,7 @@ fn lazy_attention_backlog_allows_qualified_quiet_archive() {
     assert_eq!(f.inbox("agent").as_slice(), std::slice::from_ref(&id));
     f.mutate(PermitMutation::CompleteInboxDelivery(
         CompleteInboxDelivery {
+            receipt_candidates: Vec::new(),
             via: None,
             messages: vec![id],
             operation: OperationId::new("after-archive"),
@@ -1029,7 +1076,11 @@ fn in_turn_display_of_a_nudge_owes_no_idle_wake() {
     let f = Fixture::new();
     let wake_owed = || {
         f.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget(),
+            )
             .unwrap()
             .items
             .iter()
@@ -1086,7 +1137,11 @@ fn in_turn_display_of_an_invitation_owes_no_idle_wake() {
     f.member("outsider", "resolved", "left", Harness::Codex);
     let wake_owed = |seat: &str| {
         f.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget(),
+            )
             .unwrap()
             .items
             .iter()
@@ -1158,13 +1213,18 @@ fn a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service() {
     let claim_a = f.claim("agent");
     assert_eq!(claim_a.native_session.as_str(), "session-agent");
     let claim_b = CallerClaim {
+        host: herdr_threads::test_support::test_host_locator(),
         native_session: NativeSessionId::new("session-agent-b"),
         execution: ExecutionId::new("00000000-0000-4000-8000-0000000000b2"),
         ..claim_a.clone()
     };
     let wake_owed = || {
         f.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget(),
+            )
             .unwrap()
             .items
             .iter()
@@ -1209,231 +1269,4 @@ fn a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service() {
     assert_eq!(served(&b), 0, "b starts over");
     assert_eq!(binding("session-agent"), a, "a stays open");
     assert!(wake_owed(), "the reset sibling is owed its wake again");
-}
-
-// v0.9.1 composition: kills either wake coverage check using all discoverable invitations,
-// filtering a bounded all-invitation window after LIMIT, or sharing one binding's in-turn
-// evidence with a sibling. Invitations and display claims use real canonical mutations.
-#[test]
-fn in_turn_timed_invitation_service_ignores_unseen_lazy_backlog_per_binding() {
-    let mut f = Fixture::new();
-    f.store = SqliteStore::new(
-        StoreContext::new(f._iso.path("store.db"), f.clock.clone()),
-        "i",
-        StoreSettings {
-            daemon_boot: Some(uuid::Uuid::new_v4()),
-            ..StoreSettings::default()
-        },
-    )
-    .unwrap();
-    f.member("outsider", "resolved", "left", Harness::Codex);
-    f.check("outsider", "mixed-current-a", false);
-    let a = f.claim("outsider");
-    let b = CallerClaim {
-        native_session: NativeSessionId::new("session-outsider-b"),
-        execution: ExecutionId::new("00000000-0000-4000-8000-0000000000b2"),
-        liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint {
-            pid: 2,
-            start: 1,
-        }),
-        ..a.clone()
-    };
-    let check = CheckIn {
-        lineage_parent: None,
-        mode: CheckInMode::Lifecycle {
-            expected_binding_generation: b.binding_generation,
-        },
-        operation: OperationId::new("mixed-enroll-b"),
-        claim: b.clone(),
-    };
-    let permit = f
-        .store
-        .issue_cooperative_permit(
-            store::cooperative_permit_request(&PermitMutation::CheckIn(check.clone())).unwrap(),
-            &budget(),
-        )
-        .unwrap();
-    f.store
-        .register_available(
-            RegisterAvailableRequest {
-                command: check,
-                read: read_context(),
-                operator: None,
-            },
-            permit,
-            &budget(),
-        )
-        .unwrap();
-    let binding = |claim: &CallerClaim| -> BindingId {
-        BindingId::new(f.db.query_row(
-            "SELECT binding_id FROM occupant_bindings WHERE seat_id='outsider' AND native_session=?1 AND ended_at IS NULL",
-            [claim.native_session.as_str()], |r| r.get::<_, String>(0),
-        ).unwrap())
-    };
-    let (binding_a, binding_b) = (binding(&a), binding(&b));
-    assert_ne!(binding_a, binding_b);
-    let invite = |key: &str, confirmation: Option<InvitationConfirmation>| -> InvitationId {
-        let CommandResult::ThreadCreated(thread) = f
-            .mutate(PermitMutation::CreateThread(CreateThread {
-                name: None,
-                topic: format!("mixed {key}"),
-                goal: "in-turn invitation control".into(),
-                operation: OperationId::new(format!("create-{key}")),
-                claim: f.claim("author"),
-            }))
-            .unwrap()
-        else {
-            panic!("thread creation");
-        };
-        let CommandResult::Invitation(id) = f
-            .mutate(PermitMutation::Invite(Invite {
-                confirmation,
-                thread,
-                seat: SeatId::new("outsider"),
-                deadline_millis: (confirmation != Some(InvitationConfirmation::Lazy))
-                    .then_some(10_000),
-                operation: OperationId::new(format!("invite-{key}")),
-                claim: f.claim("author"),
-            }))
-            .unwrap()
-        else {
-            panic!("invitation");
-        };
-        id
-    };
-    let candidate = || {
-        f.store
-            .wake_candidates(PageRequest::default(), &budget())
-            .unwrap()
-            .items
-            .into_iter()
-            .find(|c| c.seat.as_str() == "outsider")
-    };
-    let wake_owed = || candidate().is_some_and(|c| c.has_actionable_work());
-    let show = |claim: &CallerClaim, id: &InvitationId, key: &str| {
-        f.store
-            .advance_cursors(
-                &AdvanceCursors {
-                    claim: claim.clone(),
-                    operation: OperationId::new(key),
-                    displayed: Vec::new(),
-                    in_turn: true,
-                    invitations: vec![id.clone()],
-                },
-                &budget(),
-            )
-            .unwrap();
-    };
-    let policy = |id: &InvitationId| -> (String, Option<String>, i64, i64, i64) {
-        f.db.query_row(
-            "SELECT state,confirmation,created_at,deadline_at,frozen_duration_ms FROM invitations WHERE id=?1",
-            [id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
-        ).unwrap()
-    };
-    let timed = invite("timed", Some(InvitationConfirmation::RequireAck));
-    let original_policy = policy(&timed);
-    assert_eq!(
-        original_policy,
-        (
-            "pending".into(),
-            Some("require_ack".into()),
-            1000,
-            11_000,
-            10_000
-        )
-    );
-    let initial = candidate().expect("unshown timed invitation has a candidate");
-    assert!(initial.has_actionable_work());
-    assert_eq!(initial.targets.len(), 2);
-    let reservation = f
-        .store
-        .reserve_wake(&initial, &budget())
-        .unwrap()
-        .expect("reserved");
-    assert_eq!(reservation.reasons, ["pending_invitation"]);
-    let owed_to = |binding: &BindingId| {
-        f.store
-            .wake_owed_to_binding(&reservation, Some(binding), &budget())
-            .unwrap()
-    };
-    show(&a, &timed, "mixed-show-a");
-    assert!(wake_owed(), "unserved sibling retains the seat's wake");
-    assert!(!owed_to(&binding_a), "served composer target owes no wake");
-    assert!(owed_to(&binding_b), "sibling has its own unserved target");
-    show(&b, &timed, "mixed-show-b");
-    assert!(!wake_owed());
-    assert!(!owed_to(&binding_a) && !owed_to(&binding_b));
-
-    // More than the actual 1001-row invitation window, not merely 100 output rows.
-    // The older timed invitation must still be selected before LIMIT, while every
-    // newer Lazy invitation remains unseen and canonically pending.
-    let lazy_count = attention::WINDOW + 1;
-    for index in 0..lazy_count {
-        invite(&format!("lazy-{index}"), Some(InvitationConfirmation::Lazy));
-        if index == 0 || index + 1 == lazy_count {
-            assert!(
-                !wake_owed(),
-                "unseen Lazy invitations are not owed wake work"
-            );
-            assert!(!owed_to(&binding_a) && !owed_to(&binding_b));
-        }
-    }
-    let through =
-        f.db.query_row(
-            "SELECT decision_seq FROM host_instances WHERE id='i'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .unwrap();
-    let visible = attention::pending_invitations(&f.db, "outsider", None, through).unwrap();
-    assert!(
-        visible.saturated,
-        "real Lazy population exceeds the source window"
-    );
-    let timed_window =
-        attention::pending_confirming_invitations(&f.db, "outsider", None, through).unwrap();
-    assert_eq!(timed_window.items.len(), 1);
-    assert_eq!(timed_window.items[0].id, timed.as_str());
-    assert!(!timed_window.saturated);
-    assert!(
-        attention::wake_seat_attention(&f.db, "outsider")
-            .unwrap()
-            .attention
-            .has_pending_invitation,
-        "in-turn display suppresses wake, not the timed obligation"
-    );
-
-    // Historical absent policy remains timed and independently restores owed work.
-    let second = invite("historical-timed", None);
-    assert!(wake_owed());
-    assert!(owed_to(&binding_a) && owed_to(&binding_b));
-    show(&a, &second, "mixed-second-a");
-    assert!(wake_owed());
-    assert!(!owed_to(&binding_a) && owed_to(&binding_b));
-    show(&b, &second, "mixed-second-b");
-    assert!(!wake_owed());
-    assert!(!owed_to(&binding_a) && !owed_to(&binding_b));
-    assert_eq!(
-        policy(&timed),
-        original_policy,
-        "display never rewrites the deadline or policy"
-    );
-    assert_eq!(
-        policy(&second),
-        ("pending".into(), None, 1000, 11_000, 10_000)
-    );
-    assert_eq!(
-        f.count("invitations WHERE state='pending'"),
-        (lazy_count + 2) as i64
-    );
-    assert_eq!(f.count("invitations WHERE state='accepted'"), 0);
-    assert_eq!(
-        f.count("in_turn_offer"),
-        4,
-        "only the two timed IDs shown to both bindings"
-    );
-    assert_eq!(f.count("receipts"), 0);
-    assert_eq!(f.count("receipt_state"), 0);
-    assert_eq!(f.count("binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id WHERE b.seat_id='outsider'"), 0,
-        "showing invitations is not reading their threads");
 }

@@ -19,7 +19,7 @@ use crate::protocol::{
     results::{
         AckResult, CheckInContextDisposition, CheckInResult, CommandResult, InboxItem,
         MembershipStatus, MessageContent, MessageDetails, MessageKind, MessageSummary, Participant,
-        PendingReceipt, SearchHit, SeatSummary, ThreadDetails, ThreadSummary,
+        PendingReceipt, PresenceAvailability, SearchHit, SeatSummary, ThreadDetails, ThreadSummary,
     },
     service::EventAuthor,
     time::UtcMillis,
@@ -237,6 +237,7 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
                     crate::protocol::results::ContinuityStatus::Resolved => "resolved",
                     crate::protocol::results::ContinuityStatus::Unresolved => "unresolved",
                     crate::protocol::results::ContinuityStatus::Retired => "retired",
+                    crate::protocol::results::ContinuityStatus::Remote => "remote",
                 };
                 vec![
                     seat.seat.as_str().to_owned(),
@@ -244,7 +245,7 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
                     format!(
                         "{}{}",
                         if seat.active { "active" } else { "inactive" },
-                        availability_suffix(seat.availability.as_deref())
+                        availability_suffix(seat.availability)
                     ),
                     timestamp(seat.created_at),
                     current.map_or_else(
@@ -654,16 +655,13 @@ fn active_first(items: &[Participant]) -> Vec<&Participant> {
 
 /// `, available` or `, unavailable since <time>` for the presence availability slot; empty when
 /// the slot is absent.
-fn availability_suffix(slot: Option<&str>) -> String {
+fn availability_suffix(slot: Option<PresenceAvailability>) -> String {
     match slot {
-        Some("available") => ", available".to_owned(),
-        Some(other) => match other
-            .strip_prefix("unavailable@")
-            .and_then(|ms| ms.parse::<i64>().ok())
-        {
-            Some(ms) => format!(", unavailable since {}", timestamp(UtcMillis(ms))),
-            None => format!(", {}", escape_for_terminal(other, Context::SingleLine)),
-        },
+        Some(PresenceAvailability::Available) => ", available".to_owned(),
+        Some(PresenceAvailability::UnavailableSince(since)) => {
+            format!(", unavailable since {}", timestamp(since))
+        }
+        Some(PresenceAvailability::Remote) => ", remote".to_owned(),
         None => String::new(),
     }
 }
@@ -712,7 +710,7 @@ fn participant_line(participant: &Participant, out: &mut String) {
     {
         out.push_str(&format!(" since {}", timestamp(at)));
     }
-    out.push_str(&availability_suffix(participant.availability.as_deref()));
+    out.push_str(&availability_suffix(participant.availability));
     if participant.requirement.is_some() {
         out.push_str(" (required)");
     }
@@ -1002,9 +1000,12 @@ mod availability_suffix_tests {
     #[test]
     fn renders_available_and_unavailable_since() {
         assert_eq!(availability_suffix(None), "");
-        assert_eq!(availability_suffix(Some("available")), ", available");
         assert_eq!(
-            availability_suffix(Some("unavailable@0")),
+            availability_suffix(Some(PresenceAvailability::Available)),
+            ", available"
+        );
+        assert_eq!(
+            availability_suffix(Some(PresenceAvailability::UnavailableSince(UtcMillis(0)))),
             ", unavailable since 1970-01-01 00:00Z"
         );
     }

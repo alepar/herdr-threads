@@ -2,7 +2,7 @@
 use crate::lazy_config_smoke::{Proxy, World};
 use herdr_threads::{
     cli::journal::{IntentScope, Journal, SemanticMutation},
-    daemon::ownership::read_existing_namespace,
+    daemon::ownership::read_node_uuid_hint,
     protocol::{authority::CallerClaim, ids::MessageId},
     test_support::spawn,
 };
@@ -15,7 +15,7 @@ fn claim(w: &World, who: usize) -> CallerClaim {
         ids::*,
     };
     let paths = w.paths();
-    let instance = read_existing_namespace(&paths).unwrap().unwrap();
+    let instance = read_node_uuid_hint(&paths).unwrap().unwrap();
     #[allow(clippy::type_complexity)]
     let (generation, harness, session, execution, target, pid, start): (
         i64,
@@ -44,6 +44,7 @@ fn claim(w: &World, who: usize) -> CallerClaim {
         )
         .unwrap();
     CallerClaim {
+        host: HostLocator::parse(w.host.to_str().unwrap()).unwrap(),
         instance: instance.to_string(),
         seat: SeatId::new(w.seats[who].clone()),
         binding_generation: generation as u64,
@@ -87,13 +88,9 @@ fn execute(w: &World, ambient: Option<&World>, who: usize, argv: &[String]) -> O
         );
     }
     if let Some(ambient) = ambient {
-        let paths = ambient.paths();
         command
-            .env(
-                "HERDR_PLUGIN_STATE_DIR",
-                paths.instance_dir.parent().unwrap().parent().unwrap(),
-            )
-            .env("HERDR_SOCKET_PATH", paths.locator);
+            .env("HERDR_PLUGIN_STATE_DIR", &ambient.state)
+            .env("HERDR_SOCKET_PATH", &ambient.host);
     } else {
         command
             .env_remove("HERDR_PLUGIN_STATE_DIR")
@@ -164,10 +161,10 @@ fn recovery_case(human: bool, second_record_failure: bool, remove_ambient: bool)
         let ordinary_b = b.send("unrelated ordinary body", &["--require-ack", &b.seats[1]]);
         wait_for_send_projection(&a);
         wait_for_send_projection(&b);
-        let journal_a = Journal::open(a.paths().instance_dir.join("intents")).unwrap();
+        let journal_a = Journal::open(a.paths().node_dir.join("intents")).unwrap();
         if second_record_failure {
             std::fs::write(
-                a.paths().instance_dir.join("intents/next-ordinal"),
+                a.paths().node_dir.join("intents/next-ordinal"),
                 format!("{}\n", u64::MAX - 1),
             )
             .unwrap();
@@ -179,7 +176,7 @@ fn recovery_case(human: bool, second_record_failure: bool, remove_ambient: bool)
         // Explicit A wins over a conflicting ambient B. The other control starts
         // with environment-only A, which production must pin before settlement.
         let paths_a = a.paths();
-        let state_a = paths_a.instance_dir.parent().unwrap().parent().unwrap();
+        let state_a = paths_a.state_dir.as_path();
         let mut inbox = vec!["herdr-threads".to_owned()];
         if human {
             inbox.push("human".into());
@@ -189,7 +186,7 @@ fn recovery_case(human: bool, second_record_failure: bool, remove_ambient: bool)
                 "--state-dir".into(),
                 state_a.to_string_lossy().into_owned(),
                 "--host-endpoint".into(),
-                paths_a.locator.clone(),
+                a.host.to_string_lossy().into_owned(),
             ]);
         }
         inbox.push("inbox".into());
@@ -217,17 +214,19 @@ fn recovery_case(human: bool, second_record_failure: bool, remove_ambient: bool)
         let frozen_a = claim(&a, who);
         let frozen_b = claim(&b, who);
         let scope_a = IntentScope::Cooperative {
+            host: frozen_a.host.clone(),
             instance: frozen_a.instance.clone(),
             seat: frozen_a.seat.clone(),
         };
         let scope_b = IntentScope::Cooperative {
+            host: frozen_b.host.clone(),
             instance: frozen_b.instance.clone(),
             seat: frozen_b.seat.clone(),
         };
         journal_a
             .record_lazy_displayed_chunk(&frozen_a, &MessageId::new("unrelated-proof"), 0, 4, 4)
             .unwrap();
-        let journal_b = Journal::open(b.paths().instance_dir.join("intents")).unwrap();
+        let journal_b = Journal::open(b.paths().node_dir.join("intents")).unwrap();
         let mut original_commands = vec![];
         for argv in &commands {
             let reference = journal_a
@@ -255,7 +254,7 @@ fn recovery_case(human: bool, second_record_failure: bool, remove_ambient: bool)
             };
             original_commands.push(serde_json::to_value(command).unwrap());
             std::fs::write(
-                b.paths().instance_dir.join("intents/next-ordinal"),
+                b.paths().node_dir.join("intents/next-ordinal"),
                 format!("{}\n", reference.ordinal - 1),
             )
             .unwrap();
@@ -330,7 +329,7 @@ fn recovery_case(human: bool, second_record_failure: bool, remove_ambient: bool)
                     "displayed"
                 }
             && (human || receipt(&a, &ordinary_a, who) == "acked");
-        let proof_files: Vec<PathBuf> = std::fs::read_dir(paths_a.instance_dir.join("intents"))
+        let proof_files: Vec<PathBuf> = std::fs::read_dir(paths_a.node_dir.join("intents"))
             .unwrap()
             .map(|e| e.unwrap().path())
             .filter(|p| {

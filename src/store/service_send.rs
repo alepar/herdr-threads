@@ -7,12 +7,9 @@
 //! Staged in bounded quanta and published under the service decision fence.
 //! The service itself never appears in a receipt or delivery-row table.
 use super::{
-    connection::{StoreContext, api_error, store_error},
-    materialization,
-    messages::{
-        self, AudienceWalk, MAX_BODY_BYTES, MessageLimits, PublicationAuthor, RecipientRejection,
-        WalkEnd,
-    },
+    connection::{DecisionInstant, StoreContext, api_error, store_error},
+    materialization, materialize,
+    messages::{self, AudienceWalk, MAX_BODY_BYTES, MessageLimits, RecipientRejection, WalkEnd},
     schema, service_controls,
 };
 use crate::{
@@ -229,7 +226,7 @@ pub(crate) fn prepare_service_send_step(
     let instance = connection.instance().to_owned();
     let op_scope = scope(&instance, &author);
     let (lifecycle_revision, eligibility_revision, config_revision): (i64, i64, i64) = tx.query_row(
-        "SELECT lifecycle_revision,send_eligibility_revision,duration_config_revision FROM host_instances WHERE id=?1",
+        "SELECT (SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=n.id),n.send_eligibility_revision,n.duration_config_revision FROM local_node n WHERE n.id=?1",
         [instance.as_str()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     ).map_err(store_error)?;
     let live = [
@@ -354,8 +351,6 @@ pub(crate) fn prepare_service_send_step(
         // D9: only the explicit `recipients` owe an ACK (receipts, deadline, overdue warning); the
         // joined snapshot, and a human explicit recipient, get priority-0 delivery rows (wake, no receipt).
         ack: &explicit,
-        // A v0.11 preparation resumed mid-build finishes in its whole-audience receipt shape.
-        legacy_receipts: messages::legacy_receipt_audience(tx, &prep_id, count, &explicit)?,
         priority: crate::protocol::priority::DeliveryPriority::p0(),
         exclude: None,
         duration,
@@ -460,7 +455,7 @@ pub(crate) fn publish_service_send(
     }
     let (membership, timeline) = check_thread(tx, connection, request)?;
     let (lifecycle, eligibility, config): (i64, i64, i64) = tx.query_row(
-        "SELECT lifecycle_revision,send_eligibility_revision,duration_config_revision FROM host_instances WHERE id=?1",
+        "SELECT (SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=n.id),n.send_eligibility_revision,n.duration_config_revision FROM local_node n WHERE n.id=?1",
         [instance.as_str()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     ).map_err(store_error)?;
     if captured != [membership, lifecycle, eligibility, timeline, config] {
@@ -471,16 +466,25 @@ pub(crate) fn publish_service_send(
     check_body(request, limits)?;
     live_budget(context, budget)?;
     let now = context.clock().utc_now();
-    let published = messages::insert_publication(
+    // Managed threads are never journaled (fact-kinds design section 2): the
+    // local-adopt branch runs under a local-only input.
+    let input = materialize::local_only(
         tx,
-        now.0,
-        &op_scope,
-        request.operation.as_str(),
-        &digest,
+        DecisionInstant {
+            utc: now,
+            monotonic: context.clock().monotonic_now(),
+        },
+    )?;
+    let published = messages::adopt_service_preparation(
+        tx,
+        &input,
+        &prep_id,
         &request.thread,
         &request.body,
-        PublicationAuthor::Programmatic(&author),
+        &author,
+        now.0,
     )?;
+    drop(input);
     let recipient_count = u64::try_from(published.recipient_count)
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative recipient count"))?;
     let receipt_duration_millis = u64::try_from(published.duration_ms)

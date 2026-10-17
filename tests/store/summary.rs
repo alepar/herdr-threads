@@ -47,14 +47,17 @@ impl Fx {
     fn new() -> Self {
         let path =
             crate::test_support::scratch::temp_path(format!("summary-{}.db", uuid::Uuid::new_v4()));
-        let context = StoreContext::new(path, Arc::new(FixedClock));
+        let context = StoreContext::new(path, Arc::new(FixedClock)).with_test_host();
         let db = context.open_writer().unwrap();
+        // Instance `o` stands for rows of another instance: a store has one
+        // `local_node` row, so they reference no node row.
+        db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
         db.execute_batch(
             "\
-            INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,100000),('o',0,'host',1,100000);\
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('a','i','resolved','native','pane-a',1,1,0),('b','i','resolved','native','pane-b',1,1,0),('x','o','resolved','native','pane-x',1,1,0);\
+            UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=100000;\
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-a',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('b','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-b',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('x','o','resolved','native','pane-x',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
             INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES ('a',1,1,'pane-a','term-a','inc-a','host',1,'codex','na','ea','cooperative_top_level',0,0),('b',1,1,'pane-b','term-b','inc-b','host',1,'codex','nb','eb','cooperative_top_level',0,0);\
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,1);",
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1,0);",
         )
         .unwrap();
         Self {
@@ -86,7 +89,7 @@ impl Fx {
             .execute(
                 "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,\
                  decision_at,decision_seq,author_role,relays_user,user_intent) \
-                 VALUES (?1,'i','t',?2,'ordinary','a',?3,?4,?2,?5,?6,?7)",
+                 VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','a',?3,?4,?2,?5,?6,?7)",
                 params![
                     format!("m{seq}"),
                     seq as i64,
@@ -125,7 +128,8 @@ impl Fx {
 
     fn claim(&self, seat: &str, role: CallerRole) -> CallerClaim {
         CallerClaim {
-            instance: "i".into(),
+            host: crate::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new(seat),
             binding_generation: 1,
             role,
@@ -158,7 +162,15 @@ impl Fx {
             thread: ThreadId::new(T),
             claim,
         };
-        self.run(|tx, settings, now| summary(tx, "i", &request, settings, now))
+        self.run(|tx, settings, now| {
+            summary(
+                tx,
+                "34750f98bd59fcfc946da45aaabe933b",
+                &request,
+                settings,
+                now,
+            )
+        })
     }
 
     fn summary_as(&mut self, seat: &str) -> SummaryOutcome {
@@ -186,7 +198,15 @@ impl Fx {
             lease_token: ticket.lease_token.clone(),
             claim: self.claim(seat, CallerRole::TopLevel),
         };
-        self.run(|tx, settings, now| summary_job(tx, "i", &request, settings, now))
+        self.run(|tx, settings, now| {
+            summary_job(
+                tx,
+                "34750f98bd59fcfc946da45aaabe933b",
+                &request,
+                settings,
+                now,
+            )
+        })
     }
 
     fn bundle(&mut self, seat: &str, ticket: &JobTicket) -> JobBundle {
@@ -208,7 +228,15 @@ impl Fx {
             submission,
             claim,
         };
-        self.run(|tx, settings, now| summary_submit(tx, "i", &request, settings, now))
+        self.run(|tx, settings, now| {
+            summary_submit(
+                tx,
+                "34750f98bd59fcfc946da45aaabe933b",
+                &request,
+                settings,
+                now,
+            )
+        })
     }
 
     fn submit(
@@ -281,12 +309,19 @@ fn seed_durations(fx: &Fx, ms: impl IntoIterator<Item = u64>) {
     fx.db
         .execute(
             "INSERT OR IGNORE INTO summary_jobs(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,created_at) \
-             VALUES ('sj-d','i','t','cv',0,0,1,1,0)",
+             VALUES ('sj-d','34750f98bd59fcfc946da45aaabe933b','t','cv',0,0,1,1,0)",
             [],
         )
         .unwrap();
     for ms in ms {
-        record_duration(&fx.db, "i", "sj-d", ms, UtcMillis(1)).unwrap();
+        record_duration(
+            &fx.db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            "sj-d",
+            ms,
+            UtcMillis(1),
+        )
+        .unwrap();
     }
 }
 
@@ -294,15 +329,27 @@ fn seed_durations(fx: &Fx, ms: impl IntoIterator<Item = u64>) {
 fn p99_is_cold_below_twenty_samples() {
     let fx = Fx::new();
     let mut settings = SummarySettings::default();
-    assert_eq!(p99_job_duration(&fx.db, "i", &settings).unwrap(), 90_000);
+    assert_eq!(
+        p99_job_duration(&fx.db, "34750f98bd59fcfc946da45aaabe933b", &settings).unwrap(),
+        90_000
+    );
     seed_durations(&fx, std::iter::repeat_n(500_000, 19));
-    assert_eq!(p99_job_duration(&fx.db, "i", &settings).unwrap(), 90_000);
+    assert_eq!(
+        p99_job_duration(&fx.db, "34750f98bd59fcfc946da45aaabe933b", &settings).unwrap(),
+        90_000
+    );
     // The cold value is returned as configured, not clamped.
     settings.p99_cold_ms = 5_000;
-    assert_eq!(p99_job_duration(&fx.db, "i", &settings).unwrap(), 5_000);
+    assert_eq!(
+        p99_job_duration(&fx.db, "34750f98bd59fcfc946da45aaabe933b", &settings).unwrap(),
+        5_000
+    );
     // The twentieth sample switches to the measured, clamped value.
     seed_durations(&fx, [500_000]);
-    assert_eq!(p99_job_duration(&fx.db, "i", &settings).unwrap(), 500_000);
+    assert_eq!(
+        p99_job_duration(&fx.db, "34750f98bd59fcfc946da45aaabe933b", &settings).unwrap(),
+        500_000
+    );
 }
 
 #[test]
@@ -310,17 +357,26 @@ fn p99_nearest_rank_and_clamp() {
     let fx = Fx::new();
     let settings = SummarySettings::default();
     seed_durations(&fx, (1..=200).map(|s| s * 1_000));
-    assert_eq!(p99_job_duration(&fx.db, "i", &settings).unwrap(), 198_000);
+    assert_eq!(
+        p99_job_duration(&fx.db, "34750f98bd59fcfc946da45aaabe933b", &settings).unwrap(),
+        198_000
+    );
     fx.db
         .execute("DELETE FROM summary_job_durations", [])
         .unwrap();
     seed_durations(&fx, std::iter::repeat_n(1_000, 200));
-    assert_eq!(p99_job_duration(&fx.db, "i", &settings).unwrap(), 30_000);
+    assert_eq!(
+        p99_job_duration(&fx.db, "34750f98bd59fcfc946da45aaabe933b", &settings).unwrap(),
+        30_000
+    );
     fx.db
         .execute("DELETE FROM summary_job_durations", [])
         .unwrap();
     seed_durations(&fx, std::iter::repeat_n(20 * 60_000, 200));
-    assert_eq!(p99_job_duration(&fx.db, "i", &settings).unwrap(), 600_000);
+    assert_eq!(
+        p99_job_duration(&fx.db, "34750f98bd59fcfc946da45aaabe933b", &settings).unwrap(),
+        600_000
+    );
 }
 
 #[test]
@@ -330,7 +386,10 @@ fn only_latest_200_count() {
     // Fifty old slow samples would put the 99th percentile at the 10 minute cap.
     seed_durations(&fx, std::iter::repeat_n(20 * 60_000, 50));
     seed_durations(&fx, std::iter::repeat_n(40_000, 200));
-    assert_eq!(p99_job_duration(&fx.db, "i", &settings).unwrap(), 40_000);
+    assert_eq!(
+        p99_job_duration(&fx.db, "34750f98bd59fcfc946da45aaabe933b", &settings).unwrap(),
+        40_000
+    );
 }
 
 #[test]
@@ -369,7 +428,15 @@ fn unknown_thread_is_not_found() {
         claim: fx.claim("a", CallerRole::TopLevel),
     };
     let err = fx
-        .run(|tx, settings, now| summary(tx, "i", &request, settings, now))
+        .run(|tx, settings, now| {
+            summary(
+                tx,
+                "34750f98bd59fcfc946da45aaabe933b",
+                &request,
+                settings,
+                now,
+            )
+        })
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::NotFound);
 }
@@ -627,16 +694,22 @@ fn current_binding_is_the_session_key() {
     let fx = Fx::new();
     let thread = ThreadId::new(T);
     let claim = fx.claim("a", CallerRole::TopLevel);
-    let current = check_caller(&fx.db, "i", &claim, &thread).unwrap();
+    let current =
+        check_caller(&fx.db, "34750f98bd59fcfc946da45aaabe933b", &claim, &thread).unwrap();
     assert!(current.current);
     assert!(current.binding.is_some());
     // Another session names no open binding.
     let mut other_session = claim.clone();
     other_session.native_session = NativeSessionId::new("other-session");
     assert!(
-        !check_caller(&fx.db, "i", &other_session, &thread)
-            .unwrap()
-            .current
+        !check_caller(
+            &fx.db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &other_session,
+            &thread
+        )
+        .unwrap()
+        .current
     );
     // A summary worker (a subagent of the session) acts for its session's top-level binding
     // (ht-54r.21): the catch-up row is that binding's.
@@ -644,9 +717,14 @@ fn current_binding_is_the_session_key() {
     subagent.role = CallerRole::Subagent;
     subagent.agent_id = Some(crate::protocol::ids::AgentId::new("agent-1"));
     assert_eq!(
-        check_caller(&fx.db, "i", &subagent, &thread)
-            .unwrap()
-            .binding,
+        check_caller(
+            &fx.db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &subagent,
+            &thread
+        )
+        .unwrap()
+        .binding,
         current.binding
     );
     // The seat's mapping generation and the binding's execution still fence the claim
@@ -654,16 +732,26 @@ fn current_binding_is_the_session_key() {
     let mut other_execution = claim.clone();
     other_execution.execution = ExecutionId::new("other-execution");
     assert!(
-        !check_caller(&fx.db, "i", &other_execution, &thread)
-            .unwrap()
-            .current
+        !check_caller(
+            &fx.db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &other_execution,
+            &thread
+        )
+        .unwrap()
+        .current
     );
     let mut old_generation = claim.clone();
     old_generation.binding_generation = 2;
     assert!(
-        !check_caller(&fx.db, "i", &old_generation, &thread)
-            .unwrap()
-            .current
+        !check_caller(
+            &fx.db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &old_generation,
+            &thread
+        )
+        .unwrap()
+        .current
     );
     // An ended binding is no binding.
     fx.db
@@ -672,7 +760,11 @@ fn current_binding_is_the_session_key() {
             [],
         )
         .unwrap();
-    assert!(!check_caller(&fx.db, "i", &claim, &thread).unwrap().current);
+    assert!(
+        !check_caller(&fx.db, "34750f98bd59fcfc946da45aaabe933b", &claim, &thread)
+            .unwrap()
+            .current
+    );
 }
 
 // ---- Step 3: fetch, lapse, expiry ----
@@ -1148,7 +1240,7 @@ fn human_seat_event_cannot_supersede_an_instruction() {
         .execute(
             "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,event_json,\
              decision_at,decision_seq,author_role,relays_user) \
-             VALUES ('m3','i','t',3,'info','a','{\"action\":\"accept_required\"}',180000,3,'human',0)",
+             VALUES ('m3','34750f98bd59fcfc946da45aaabe933b','t',3,'info','a','{\"action\":\"accept_required\"}',180000,3,'human',0)",
             [],
         )
         .unwrap();
@@ -1402,8 +1494,16 @@ fn subagent_claim_may_fetch_and_submit_the_seats_lease() {
         lease_token: ticket.lease_token.clone(),
         claim: child.clone(),
     };
-    fx.run(|tx, settings, now| summary_job(tx, "i", &request, settings, now))
-        .unwrap();
+    fx.run(|tx, settings, now| {
+        summary_job(
+            tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &request,
+            settings,
+            now,
+        )
+    })
+    .unwrap();
     fx.now += 1_000;
     let stored = fx
         .submit_as(child, &ticket, valid("child wrote".into()))
@@ -1902,7 +2002,7 @@ fn user_intent_partial_and_ack_do_not_complete() {
             "x".repeat(520)
         ),
     );
-    fx.db.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m1','t','b','pending',800); INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane-b','host',1,1,0,'fresh','term-b','inc-b','coherent_enumeration',1);").unwrap();
+    fx.db.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m1','t','b','pending',800); INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane-b','host',1,1,0,'fresh','term-b','inc-b','coherent_enumeration',1);").unwrap();
     let receipt_before: String = fx
         .db
         .query_row(
@@ -2025,7 +2125,7 @@ fn user_intent_old_generation_readable_but_not_mixed() {
         )
         .unwrap();
     let old_id = SummaryBlockId::new("historical-block");
-    fx.db.execute("INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at,job_id) VALUES (?1,'i','t',?2,0,0,1,3,?3,'historical closure','a','old-model','thread-summary-v1',0,?4)", params![old_id.as_str(), old_version, old_hash, jobs[0].job_id.as_str()]).unwrap();
+    fx.db.execute("INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at,job_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,0,0,1,3,?3,'historical closure','a','old-model','thread-summary-v1',0,?4)", params![old_id.as_str(), old_version, old_hash, jobs[0].job_id.as_str()]).unwrap();
     let old_body = format!(
         r#"{{"type":"user_instruction", "author_seat":"a", "author_role":"human", "relays_user":false, "text":{}, "text_ref":null}}"#,
         serde_json::to_string(&old_bundle.messages[0].text).unwrap()
@@ -2291,9 +2391,9 @@ fn user_intent_snapshot_capture_rolls_back() {
     };
     let err=fx.run(|tx,settings,now| {
         let version=render::chunking_version(settings);
-        tx.execute("INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at,job_id) VALUES ('malformed','i','t',?1,0,0,1,3,'hash','bad','a','model','prompt',0,?2)", params![version,ticket.job_id.as_str()]).unwrap();
+        tx.execute("INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at,job_id) VALUES ('malformed','34750f98bd59fcfc946da45aaabe933b','t',?1,0,0,1,3,'hash','bad','a','model','prompt',0,?2)", params![version,ticket.job_id.as_str()]).unwrap();
         tx.execute("INSERT INTO summary_items(block_id,kind,item_id,seq,body_json,thread_id,chunking_version) VALUES ('malformed','open_item','bad',1,'{bad','t',?1)", [&version]).unwrap();
-        summary_job(tx,"i",&request,settings,now)
+        summary_job(tx,"34750f98bd59fcfc946da45aaabe933b",&request,settings,now)
     }).unwrap_err();
     assert_eq!(err.code, ErrorCode::StoreCorrupt);
     assert_eq!(snapshot_state(&fx, &ticket), before);

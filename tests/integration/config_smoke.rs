@@ -169,10 +169,10 @@ impl SyntheticDaemon {
             None,
         )
         .unwrap();
-        let paths = herdr_threads::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
-        paths.prepare_instance_dir().unwrap();
+        let paths = herdr_threads::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
+        paths.prepare_node_dir().unwrap();
         let settings = paths
-            .instance_dir
+            .node_dir
             .join(herdr_threads::daemon::settings::SETTINGS_FILE);
         fs::write(&settings, br#"{"harness_manifest":"off"}"#).unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -252,7 +252,7 @@ impl SyntheticDaemon {
             None,
         )
         .unwrap();
-        let paths = herdr_threads::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+        let paths = herdr_threads::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
         rusqlite::Connection::open(paths.database_path).unwrap()
     }
     fn accountable_snapshot(&self) -> Vec<Vec<String>> {

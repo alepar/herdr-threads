@@ -160,7 +160,7 @@ fn recovery_to_ready_with_hold_and_poke_suppressed() {
         "a request that arrives mid catch-up",
         &["--require-ack", &fx.b, "--deadline", "30"],
     );
-    assert!(!fx.boundary_b().contains(&held), "held while catching up");
+    assert!(!fx.attention_b().contains(&held), "held while catching up");
     wait_projected(&fx, &fx.b, &held);
     wait_projected(&fx, &fx.b, &fx.ack);
     assert_eq!(
@@ -193,8 +193,8 @@ fn recovery_to_ready_with_hold_and_poke_suppressed() {
     let row = fx.world.catch_up(&fx.b, &fx.thread).unwrap();
     assert_eq!(row.end_reason.as_deref(), Some("ready"), "{row:?}");
 
-    // Released: pushed at the boundary, and now a poke candidate.
-    assert!(fx.boundary_b().contains(&held), "pushed after Ready");
+    // Released: now a poke candidate, until a boundary displays and ACKs it.
+    assert!(fx.attention_b().contains(&held), "released after Ready");
     let item = fx.world.pending_for(&fx.b, &held);
     let held_effective = item["effective_deadline"]
         .as_i64()
@@ -229,6 +229,15 @@ fn recovery_to_ready_with_hold_and_poke_suppressed() {
         Vec::<String>::new(),
         "before its soft point it is not"
     );
+    assert!(fx.boundary_b().contains(&held), "pushed after Ready");
+    assert!(
+        fx.world.pending(&fx.b).is_empty(),
+        "complete display settles receipts"
+    );
+    assert!(
+        poke_due_messages(&fx, &fx.b, held_effective - 1).is_empty(),
+        "displayed receipts no longer generate pokes"
+    );
 }
 
 /// A settings change that alters the chunking starts a new generation: the
@@ -258,7 +267,7 @@ fn settings_change_starts_a_new_generation() {
     fx.world.cli(None, None, &["daemon", "stop"]);
     let mut settings: Value = serde_json::from_str(SETTINGS).unwrap();
     settings["summary"]["chunk_bytes"] = json!(2048);
-    let file = fx.world.instance_dir.join("settings.json");
+    let file = fx.world.node_dir.join("settings.json");
     fs::write(&file, settings.to_string()).unwrap();
     fx.world
         .cli(None, None, &["daemon", "ensure"])

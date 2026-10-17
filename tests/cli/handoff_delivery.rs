@@ -261,6 +261,7 @@ fn record(journal: &Journal, plan: DeliveryPlan) -> IntentRef {
     journal
         .record(
             super::super::journal::IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: claim.instance.clone(),
                 seat: claim.seat.clone(),
             },
@@ -540,16 +541,14 @@ impl CanonicalInvites {
         let context = crate::store::connection::StoreContext::new(
             root.join("canonical.db"),
             std::sync::Arc::new(TestClock),
-        );
-        let conn = context.open_writer().unwrap();
-        conn.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-            [],
         )
-        .unwrap();
+        .with_test_host();
+        let conn = context.open_writer().unwrap();
+        conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
         for (seat, target) in [("sender", "w1:p1"), (recipient, target)] {
-            conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?2,1,1,0)",rusqlite::params![seat,target]).unwrap();
-            conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",[target]).unwrap();
+            conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",rusqlite::params![seat,target]).unwrap();
+            conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",[target]).unwrap();
             conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,?2,'b',1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||?2,'inc')",rusqlite::params![seat,target]).unwrap();
         }
         drop(conn);
@@ -557,8 +556,9 @@ impl CanonicalInvites {
             crate::store::connection::StoreContext::new(
                 root.join("canonical.db"),
                 std::sync::Arc::new(TestClock),
-            ),
-            "i",
+            )
+            .with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             Default::default(),
         )
         .unwrap();
@@ -1375,8 +1375,9 @@ fn retry_canonical_completed_after_both_bindings_change_archive_and_store_restar
         crate::store::connection::StoreContext::new(
             tmp.0.join("canonical.db"),
             std::sync::Arc::new(TestClock),
-        ),
-        "i",
+        )
+        .with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap();
@@ -1770,6 +1771,7 @@ fn actor_prerequisite_retained_human_delivery_refuses_before_canonical_or_cleanu
     let reference = journal
         .record(
             super::super::journal::IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: claim.instance.clone(),
                 seat: claim.seat.clone(),
             },
@@ -1993,8 +1995,8 @@ fn actor_prerequisite_public_retained_agent_delivery_requires_elected_daemon_wit
         None,
     )
     .unwrap();
-    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
-    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let paths = crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
+    let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
     let (reference, client) = terminal_fixture(&journal);
     retry_to_writer(
         &journal,
@@ -2027,7 +2029,7 @@ fn actor_prerequisite_public_retained_agent_delivery_requires_elected_daemon_wit
         "--state-dir".into(),
         runtime.state_dir.display().to_string(),
         "--host-endpoint".into(),
-        runtime.host_endpoint.display().to_string(),
+        runtime.host_endpoint.clone().unwrap().display().to_string(),
         "retry".into(),
         reference.recovery_ref(),
     ];
@@ -2047,7 +2049,7 @@ fn actor_prerequisite_public_retained_agent_delivery_requires_elected_daemon_wit
     assert_eq!(snapshot(), before);
     assert!(!paths.descriptor_path.exists());
     assert!(!paths.database_path.exists());
-    assert!(!paths.instance_dir.join("contexts").exists());
+    assert!(!paths.node_dir.join("contexts").exists());
 }
 
 // Real guarded delivery envelopes reach the canonical deciding store APIs. A
@@ -2117,7 +2119,12 @@ impl LocalClient for GuardedCanonical {
             if self.base.fake.joined
                 && matches!(c, Command::Participants(_) | Command::SeatInspect(_))
             {
-                return crate::store::queries::query(&self.base.context, "i", &c, b);
+                return crate::store::queries::query(
+                    &self.base.context,
+                    "34750f98bd59fcfc946da45aaabe933b",
+                    &c,
+                    b,
+                );
             }
             return self.base.fake.call(c, b);
         };
@@ -2125,7 +2132,7 @@ impl LocalClient for GuardedCanonical {
             let wire = crate::protocol::wire::WireRequest {
                 version: crate::protocol::wire::PROTOCOL_VERSION,
                 request_id: "maximum-body".into(),
-                expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+                expected_instance: "00000000000040008000000000000001".into(),
                 expected_boot: None,
                 output: None,
                 command: Command::HandoffDelivery(request.clone()),
@@ -2901,8 +2908,9 @@ fn handoff_policy_default_choice_resolves_at_child_creation_then_replay_preserve
         crate::store::connection::StoreContext::new(
             tmp.0.join("canonical.db"),
             std::sync::Arc::new(TestClock),
-        ),
-        "i",
+        )
+        .with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         settings(13000, 17000),
     )
     .unwrap();
@@ -2917,8 +2925,9 @@ fn handoff_policy_default_choice_resolves_at_child_creation_then_replay_preserve
         crate::store::connection::StoreContext::new(
             tmp.0.join("canonical.db"),
             std::sync::Arc::new(TestClock),
-        ),
-        "i",
+        )
+        .with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         settings(23000, 29000),
     )
     .unwrap();
@@ -2976,7 +2985,8 @@ fn handoff_policy_lazy_invitation_still_warns_sender_for_unregistered_ack_requir
     let context = crate::store::connection::StoreContext::new(
         tmp.0.join("canonical.db"),
         std::sync::Arc::new(Due(receipt.deadline_at.unwrap() + 1)),
-    );
+    )
+    .with_test_host();
     let mut db = context.open_writer().unwrap();
     let registered: Option<i64> = db
         .query_row(
@@ -3137,7 +3147,8 @@ fn handoff_policy_missing_readiness_guarded_launch_stages_unregistered_body_and_
     let context = crate::store::connection::StoreContext::new(
         tmp.0.join("canonical.db"),
         std::sync::Arc::new(Due(receipt.deadline_at.unwrap() + 1)),
-    );
+    )
+    .with_test_host();
     handoff_policy_advance_work(&context, &mut db);
     let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
     for _ in 0..100 {
@@ -3188,8 +3199,9 @@ fn handoff_policy_missing_readiness_guarded_launch_stages_unregistered_body_and_
         crate::store::connection::StoreContext::new(
             tmp.0.join("canonical.db"),
             std::sync::Arc::new(Due(receipt.deadline_at.unwrap() + 2)),
-        ),
-        "i",
+        )
+        .with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap();
@@ -3309,7 +3321,8 @@ fn handoff_policy_already_joined_unavailable_recipient_warns_without_new_invitat
     let context = crate::store::connection::StoreContext::new(
         tmp.0.join("canonical.db"),
         std::sync::Arc::new(Due(receipt.deadline_at.unwrap() + 1)),
-    );
+    )
+    .with_test_host();
     let mut db = context.open_writer().unwrap();
     handoff_policy_advance_work(&context, &mut db);
     let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
@@ -3460,6 +3473,7 @@ fn timed_handoff_acceptance_and_ack_clear_only_their_own_overdue_condition() {
                 tmp.0.join("canonical.db"),
                 std::sync::Arc::new(At(time)),
             )
+            .with_test_host()
         };
         let early = context_at(7001);
         let mut db = early.open_writer().unwrap();
@@ -3514,8 +3528,12 @@ fn timed_handoff_acceptance_and_ack_clear_only_their_own_overdue_condition() {
                 .latest_warning_seq
         };
         assert!(sender_attention().is_some());
-        client.base.store =
-            crate::store::SqliteStore::new(context_at(11002), "i", Default::default()).unwrap();
+        client.base.store = crate::store::SqliteStore::new(
+            context_at(11002),
+            "34750f98bd59fcfc946da45aaabe933b",
+            Default::default(),
+        )
+        .unwrap();
         let mut recipient = canonical_claim();
         recipient.seat = SeatId::new("recipient");
         recipient.target = crate::protocol::ids::HostTargetId::new("w1:p2");

@@ -151,6 +151,7 @@ fn participants_are_a_list_marking_self() {
         active: false,
         bindings: Vec::new(),
         availability: None,
+        home_unreachable: None,
     };
     let out = human(&CommandResult::Participants(page(vec![
         participant("seat-A", MembershipStatus::Joined, true),
@@ -373,7 +374,7 @@ fn human_namespace_init_preserves_provenance() {
         None,
     )
     .unwrap();
-    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+    let paths = crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
     let mut parsed = crate::cli::commands::parse_argv(["ht", "human", "me", "init"]).unwrap();
     parsed.actor = InvocationActor::Agent;
     let clock: std::sync::Arc<dyn crate::protocol::time::Clock> =
@@ -389,7 +390,7 @@ fn human_namespace_init_preserves_provenance() {
         "{error:?}"
     );
     assert!(
-        !paths.instance_dir.exists(),
+        !paths.node_dir.exists(),
         "root refusal creates no person state"
     );
     assert!(output.is_empty());
@@ -399,8 +400,8 @@ fn human_namespace_init_preserves_provenance() {
 
 struct HumanLifecycle {
     root: std::path::PathBuf,
-    paths: crate::daemon::paths::InstancePaths,
-    instance: uuid::Uuid,
+    paths: crate::daemon::paths::NodePaths,
+    instance: crate::node::NodeUuid,
     selection: crate::cli::commands::CooperativeSelection,
     client: HumanClient,
 }
@@ -508,8 +509,8 @@ impl HumanLifecycle {
         .unwrap();
         Self {
             root,
-            paths: crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap(),
-            instance: uuid::Uuid::new_v4(),
+            paths: crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap(),
+            instance: crate::node::NodeUuid::new_v4(),
             selection: crate::cli::commands::CooperativeSelection {
                 seat: SeatId::new("seat-person"),
                 target: crate::protocol::ids::HostTargetId::new("w1:p1"),
@@ -525,7 +526,13 @@ impl HumanLifecycle {
         }
     }
     fn contexts(&self) -> crate::harness::context::ContextJournal {
-        crate::cli::seat_contexts(&self.paths, self.instance, &self.selection.seat).unwrap()
+        crate::cli::seat_contexts(
+            &self.paths,
+            self.instance,
+            &crate::test_support::test_host_locator(),
+            &self.selection.seat,
+        )
+        .unwrap()
     }
     fn run(&self, args: &[&str], operator: bool) -> Result<(), crate::cli::RunError> {
         let mut argv = vec!["ht", "human"];
@@ -545,6 +552,7 @@ impl HumanLifecycle {
             &self.selection,
             &self.paths,
             self.instance,
+            &crate::test_support::test_host_locator(),
             &self.client,
             &crate::app::SystemClock::new(),
             &mut Vec::new(),
@@ -620,10 +628,14 @@ fn human_namespace_communication_preserves_claim() {
         let f = HumanLifecycle::new();
         f.init();
         let context = f.contexts().current().unwrap().unwrap();
-        let expected = crate::harness::bridge::caller_claim(&context).unwrap();
+        let expected = crate::harness::bridge::caller_claim(
+            &context,
+            crate::test_support::test_host_locator(),
+        )
+        .unwrap();
         assert_eq!(expected.harness.cooperative_provenance(), "operator_human");
         assert!(f.run(args, false).is_err());
-        let journal = Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+        let journal = Journal::open(f.paths.node_dir.join("intents")).unwrap();
         let pending = journal
             .page(&crate::protocol::pagination::PageRequest {
                 cursor: None,
@@ -644,6 +656,7 @@ fn human_namespace_communication_preserves_claim() {
         assert_eq!(
             saved.header.scope,
             IntentScope::Cooperative {
+                host: crate::test_support::test_host_locator(),
                 instance: f.instance.to_string(),
                 seat: f.selection.seat.clone()
             }
@@ -690,7 +703,7 @@ fn human_namespace_agent_takeover_requires_operator() {
             .is_err()
     );
     assert_eq!(f.contexts().current().unwrap(), Some(agent));
-    let journal = crate::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+    let journal = crate::cli::journal::Journal::open(f.paths.node_dir.join("intents")).unwrap();
     assert!(
         journal
             .page(&crate::protocol::pagination::PageRequest {
@@ -738,8 +751,7 @@ fn human_namespace_stale_and_hold_guards() {
             1,
             "canonical inspection stops mutation"
         );
-        let journal =
-            crate::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+        let journal = crate::cli::journal::Journal::open(f.paths.node_dir.join("intents")).unwrap();
         assert!(
             journal
                 .page(&crate::protocol::pagination::PageRequest {

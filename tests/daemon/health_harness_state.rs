@@ -264,8 +264,9 @@ impl Fx {
         let clock = Arc::new(TestClock(AtomicI64::new(T0)));
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-                "i",
+                StoreContext::new(iso.state_root().join("store.db"), clock.clone())
+                    .with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings::default(),
             )
             .unwrap(),
@@ -1243,7 +1244,7 @@ fn health_v2_fourth_adapter_is_cached_and_domains_have_no_legacy_projection() {
     let response = WireResponse {
         version: PROTOCOL_VERSION,
         request_id: "fourth".into(),
-        instance: uuid::Uuid::new_v4().to_string(),
+        instance: crate::node::NodeUuid::new_v4().to_string(),
         daemon_boot: uuid::Uuid::new_v4().to_string(),
         result: Ok(CommandResult::HarnessHealthV2(report)),
     };
@@ -1565,8 +1566,9 @@ fn task3_versionless_violation_survives_reopen_and_success_without_version_rows(
     assert!(!fx.recorder.record(&note, &budget()).unwrap());
     let reopened = Arc::new(
         SqliteStore::new(
-            StoreContext::new(fx._iso.state_root().join("store.db"), fx.clock.clone()),
-            "i",
+            StoreContext::new(fx._iso.state_root().join("store.db"), fx.clock.clone())
+                .with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
@@ -1718,7 +1720,7 @@ fn hermes_registry_presence_preserves_healthy_legacy_only_health() {
         crate::harness::adapter::DaemonObservation,
     >| {
         let mut inputs = ready_inputs();
-        inputs.instance = uuid::Uuid::from_u128(1);
+        inputs.instance = crate::node::NodeUuid::from_u128(1);
         inputs.boot = uuid::Uuid::from_u128(2);
         inputs.set_harness("claude", cached["claude"].status.clone());
         inputs.set_harness("codex", cached["codex"].status.clone());

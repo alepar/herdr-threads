@@ -133,7 +133,7 @@ pub(super) fn role_of(role: CallerRole) -> Role {
 /// subagents never check in or write).
 pub(super) fn agent_context(
     env: &EnvClaim,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     seat: &SeatId,
     target: &HostTargetId,
     generation: u64,

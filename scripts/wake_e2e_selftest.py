@@ -533,7 +533,7 @@ class CoordinatorCalls(TempDir):
         r.args = SimpleNamespace(harness=[])
         r.coords, r.layout_attempted, r.workspace = {}, False, None
         panes = iter(["w1:p2", "w1:p3"])
-        seats = iter(["sCCCCCCCC", "sDDDDDDDD"])
+        seats = iter(["sCCCCCCCCCCC", "sDDDDDDDDDDD"])
 
         def run(argv, env=None, timeout=60, tag=None, cleanup=False):
             calls.append((argv, env))
@@ -554,7 +554,7 @@ class CoordinatorCalls(TempDir):
         self.assertEqual([e["HERDR_PANE_ID"] for _, e in ht_calls], ["w1:p1", "w1:p2"])
         self.assertFalse(any("--operator" in a or "check-in" in a or any(x.startswith("--cooperative") for x in a)
                              for a, _ in ht_calls))
-        self.assertEqual({k: v["seat"] for k, v in r.coords.items()}, {"main": "sCCCCCCCC", "fresh": "sDDDDDDDD"})
+        self.assertEqual({k: v["seat"] for k, v in r.coords.items()}, {"main": "sCCCCCCCCCCC", "fresh": "sDDDDDDDDDDD"})
 
 
 class ExpectationTable(unittest.TestCase):
@@ -649,6 +649,11 @@ class MixedOrder(unittest.TestCase):
                   "  RECEIVED [herdr-threads] ack mE1 in tT from sX [p0] [deadline 90s]: body y\n"
                   "• RECEIVED [herdr-threads] message mF1 in tT from sX: body [p9] z\n")
         self.assertEqual(W.header_priorities(echoed), {"mD1": 3, "mE1": 0, "mF1": 1})  # a body's [p9] is not a marker
+        wrapped = ("⏺ RECEIVED [herdr-threads] message mG1 in tT \"a long topic\" from sX\n"
+                   "  [p0]: body\n"
+                   "⏺ RECEIVED [herdr-threads] message mH1 in tT from sX\n"
+                   "  plain body line\n")
+        self.assertEqual(W.header_priorities(wrapped), {"mG1": 0, "mH1": 1})  # markers wrapped onto the next line
 
     def test_markers_check(self):
         self.assertTrue(W.markers_ok({"mA1": 0, "mB1": 1}, {"mA1": 0, "mB1": 1, "mC1": 5}))

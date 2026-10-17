@@ -186,10 +186,12 @@ impl Rig {
     fn new() -> Self {
         let dir = Scratch::new();
         let clock = Arc::new(LaneClock(AtomicU64::new(START)));
-        let instance = uuid::Uuid::new_v4().to_string();
+        let instance = crate::node::NodeUuid::new_v4().to_string();
         let db = dir.0.join("db");
         let store = SqliteStore::new(
-            StoreContext::new(db.clone(), clock.clone()),
+            StoreContext::new(db.clone(), clock.clone())
+                .with_test_host()
+                .with_node_seed(crate::test_support::node_seed_for(&instance)),
             instance.clone(),
             StoreSettings::default(),
         )
@@ -210,8 +212,15 @@ impl Rig {
         });
         let writer = Arc::new(FairWriter::new(32));
         let identity = Arc::new(
-            OrdinaryIdentity::new(instance, store.clone(), host.clone(), clock.clone(), writer)
-                .with_observation_pacer(pacer.clone()),
+            OrdinaryIdentity::new(
+                instance,
+                crate::test_support::test_host_id(),
+                store.clone(),
+                host.clone(),
+                clock.clone(),
+                writer,
+            )
+            .with_observation_pacer(pacer.clone()),
         );
         Self {
             _dir: dir,
@@ -336,6 +345,7 @@ fn explicit_target_read_during_backoff_runs_one_capture() {
     let read = |rig: &Rig, op: &str| {
         let _ = rig.identity.resolve(
             ResolveSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("pane"),
                 operation: OperationId::new(op),
             },
@@ -452,6 +462,7 @@ fn unchanged_host_cycle_commits_touch_no_wakes_mapped_table() {
         .identity
         .resolve(
             ResolveSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("pane"),
                 operation: OperationId::new("op-1"),
             },

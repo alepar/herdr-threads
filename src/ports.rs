@@ -303,6 +303,29 @@ impl Drop for ServiceDecisionTransaction<'_, '_> {
 pub const RETIREMENT_MAX_UNITS: usize = 16;
 pub const RETIREMENT_WORK_MILLIS: u64 = 5;
 
+/// HostId: the node-local key of one attached Herdr server
+/// (`herdr_hosts.host_id`).
+///
+/// Owns: the one key every per-host row, worker scope and session lookup uses.
+/// Must not: be serialized to a client, printed to an agent, or put in a
+/// replicated payload (remote seats have no host); it has no serde impls.
+/// Role: produced only by `StorePort::attach_host` and returned by
+/// `cooperative_claim`. Observation, wake scope, archival evidence and
+/// `HostSessions` are keyed by it. New per-host rows and scopes key on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HostId(i64);
+
+impl HostId {
+    /// Wraps a `herdr_hosts.host_id` read from the store.
+    pub(crate) fn from_row(value: i64) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn get(self) -> i64 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadContext {
     pub instance: String,
@@ -907,6 +930,7 @@ impl HostSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostObservationAdmission {
     pub(crate) instance: String,
+    pub(crate) host_id: HostId,
     pub(crate) sequence: u64,
     pub(crate) expected_active: Option<SnapshotGenerationId>,
     pub(crate) expected_boot: Option<HostBootId>,
@@ -917,6 +941,10 @@ pub struct HostObservationAdmission {
 impl HostObservationAdmission {
     pub fn instance(&self) -> &str {
         &self.instance
+    }
+    /// The Herdr server this admission orders captures of.
+    pub fn host_id(&self) -> HostId {
+        self.host_id
     }
     pub fn sequence(&self) -> u64 {
         self.sequence
@@ -972,6 +1000,7 @@ pub struct GuardedInvalidationTransition {
 pub struct SnapshotHeader {
     pub admission: HostObservationAdmission,
     pub instance: String,
+    pub host_id: HostId,
     pub boot: HostBootId,
     pub epoch: u64,
     pub observation_sequence: u64,
@@ -1004,6 +1033,7 @@ impl SnapshotHeader {
         };
         Ok(Self {
             instance: admission.instance.clone(),
+            host_id: admission.host_id,
             admission,
             boot: snapshot.boot.clone(),
             epoch: snapshot.epoch,
@@ -1062,6 +1092,9 @@ pub struct PruneProgress {
 pub struct PublishedSnapshot {
     pub id: SnapshotGenerationId,
     pub instance: String,
+    /// The Herdr server this publication observed; reconciliation touches only
+    /// that server's seats.
+    pub host_id: HostId,
     pub boot: HostBootId,
     pub epoch: u64,
     pub observation_sequence: u64,
@@ -1434,6 +1467,7 @@ pub struct ResolvedTargetCheck {
 #[derive(Debug)]
 pub struct OperatorTargetGuard {
     instance: String,
+    host_id: HostId,
     target: HostTargetId,
     command: OperatorCommand,
     host_boot: HostBootId,
@@ -1446,6 +1480,7 @@ pub struct OperatorTargetGuard {
 impl OperatorTargetGuard {
     pub(crate) fn try_new(
         instance: &str,
+        host_id: HostId,
         command: &OperatorCommand,
         observation: HostObservation,
     ) -> Result<Self, &'static str> {
@@ -1465,6 +1500,7 @@ impl OperatorTargetGuard {
         Ok(Self {
             structural_proof: observation.verified_structural_proof(),
             instance: instance.into(),
+            host_id,
             target: observation.target,
             command: command.clone(),
             host_boot: observation.host_boot,
@@ -1476,6 +1512,10 @@ impl OperatorTargetGuard {
     }
     pub fn instance(&self) -> &str {
         &self.instance
+    }
+    /// The Herdr server the guarded target was observed on.
+    pub fn host_id(&self) -> HostId {
+        self.host_id
     }
     pub fn target(&self) -> &HostTargetId {
         &self.target
@@ -1560,6 +1600,7 @@ impl OperatorRequest {
 #[derive(Debug)]
 pub struct ContinuityTargetGuard {
     instance: String,
+    host_id: HostId,
     target: HostTargetId,
     command: ContinuityCheckIn,
     host_boot: HostBootId,
@@ -1572,6 +1613,7 @@ pub struct ContinuityTargetGuard {
 impl ContinuityTargetGuard {
     pub(crate) fn try_new(
         instance: &str,
+        host_id: HostId,
         command: &ContinuityCheckIn,
         observation: HostObservation,
     ) -> Result<Self, &'static str> {
@@ -1584,6 +1626,7 @@ impl ContinuityTargetGuard {
         Ok(Self {
             structural_proof: observation.verified_structural_proof(),
             instance: instance.into(),
+            host_id,
             target: observation.target,
             command: command.clone(),
             host_boot: observation.host_boot,
@@ -1595,6 +1638,10 @@ impl ContinuityTargetGuard {
     }
     pub fn instance(&self) -> &str {
         &self.instance
+    }
+    /// The Herdr server the guarded target was observed on.
+    pub fn host_id(&self) -> HostId {
+        self.host_id
     }
     pub fn target(&self) -> &HostTargetId {
         &self.target
@@ -1759,11 +1806,13 @@ pub fn sanitize_agent_name(raw: &str) -> Option<String> {
 }
 
 /// Short readable seat suffix, lowercased and at most eight characters.
-/// Both `sk3Fq9a2B` and persisted `seat-k3Fq9a2B` yield `k3fq9a2b`.
+/// A tagged seat `sQ7ak3Fq9a2B` yields its random suffix `k3fq9a2b` (never the
+/// node tag, so Herdr agent names stay `s<8>`); persisted `seat-k3Fq9a2B`
+/// yields the same.
 pub fn short_seat(seat: &SeatId) -> String {
     let seat_str = seat.as_str();
-    let rest = if crate::protocol::ids::is_short_public_id("s", seat_str) {
-        &seat_str[1..]
+    let rest = if let Some((_, suffix)) = crate::protocol::ids::public_id_parts("s", seat_str) {
+        suffix
     } else {
         seat_str
             .strip_prefix("seat-")
@@ -1790,14 +1839,14 @@ fn seat_digest(seat: &SeatId) -> String {
 
 /// The Herdr agent names one launch of `seat` may submit, in order: the
 /// sanitized `hint` (`launch --name`, else the pane label), else
-/// `s<short seat id>` for a compact ID (or `seat-<short id>` for a persisted
+/// `s<short seat id>` for a tagged ID (or `seat-<short id>` for a persisted
 /// seat); then, used once only after Herdr refuses the first
 /// as `agent_name_taken`, that name cut to fit plus `-<short seat id>` (a
 /// seat digest when the name already ends with that id).
 pub fn launch_agent_names(seat: &SeatId, hint: Option<&str>) -> [String; 2] {
     let short = short_seat(seat);
     let first = hint.and_then(sanitize_agent_name).unwrap_or_else(|| {
-        if crate::protocol::ids::is_short_public_id("s", seat.as_str()) {
+        if crate::protocol::ids::is_public_id("s", seat.as_str()) {
             format!("s{short}")
         } else {
             format!("seat-{short}")
@@ -3215,15 +3264,20 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         permit: MutationPermit,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
-    /// Read-only: the host epoch persisted by the last accepted publication
-    /// for this instance (0 when none). Used only to start a new epoch above
-    /// it at daemon boot; it grants no observation authority.
-    fn persisted_host_epoch(&self, _instance: &str, _budget: &CallBudget) -> Result<u64, ApiError>;
+    /// Upserts the `herdr_hosts` row of `locator`, stamping `last_attached_at`
+    /// to `now`; returns its id and the persisted host epoch (0 for a new row).
+    fn attach_host(
+        &self,
+        locator: &crate::protocol::ids::HostLocator,
+        now: i64,
+        budget: &CallBudget,
+    ) -> Result<(HostId, i64), ApiError>;
     /// Reserve durable ordering before a host capture. This sequence fences
     /// late failed reads; it does not certify coherent enumeration.
     fn begin_host_observation(
         &self,
         instance: &str,
+        host: HostId,
         budget: &CallBudget,
     ) -> Result<HostObservationAdmission, ApiError>;
     /// Admit one trusted explicit-target read after host I/O, under the same
@@ -3488,8 +3542,12 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     ) -> Result<crate::protocol::summary::SubmitOutcome, ApiError> {
         Err(ApiError::unsupported("thread summaries are unavailable"))
     }
+    /// Wake calls take the worker's `host`: seat-selecting calls return only
+    /// that host's seats, per-seat writes answer `Conflict` for a seat on
+    /// another host (see `ScheduledStore::for_host`).
     fn wake_candidates(
         &self,
+        host: HostId,
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeCandidate>, ApiError>;
@@ -3508,6 +3566,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// This also finds windows retained across a daemon restart.
     fn wake_batch_seats(
         &self,
+        _host: HostId,
         _after: Option<&SeatId>,
         _limit: u16,
         _budget: &CallBudget,
@@ -3546,6 +3605,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// Clear a retained window only when canonical ordinary attention is gone.
     fn clear_wake_batch_if_empty(
         &self,
+        _host: HostId,
         _seat: &SeatId,
         _budget: &CallBudget,
     ) -> Result<bool, ApiError> {
@@ -3557,6 +3617,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// Lightweight adapters preserve their immediate-wake behavior by default.
     fn wake_batch_window(
         &self,
+        _host: HostId,
         _candidate: &WakeCandidate,
         _budget: &CallBudget,
     ) -> Result<Option<(UtcMillis, u64)>, ApiError> {
@@ -3565,6 +3626,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
 
     fn reserve_wake(
         &self,
+        host: HostId,
         candidate: &WakeCandidate,
         budget: &CallBudget,
     ) -> Result<Option<WakeReservation>, ApiError>;
@@ -3573,6 +3635,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// never prompt eligibility.
     fn wake_recovery_candidates(
         &self,
+        host: HostId,
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeRecoveryCandidate>, ApiError>;
@@ -3580,6 +3643,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// boot. Record uncertainty while preserving frozen delay and history.
     fn recover_wake_reservation(
         &self,
+        host: HostId,
         request: WakeRecoveryRequest,
         budget: &CallBudget,
     ) -> Result<WakeRecoveryOutcome, ApiError>;
@@ -3620,6 +3684,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// durable step stays advanced by one).
     fn complete_wake(
         &self,
+        host: HostId,
         attempt: WakeAttemptId,
         outcome: WakeOutcome,
         refused_restore: Option<&PriorLadder>,
@@ -3627,13 +3692,19 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     ) -> Result<bool, ApiError>;
     /// Seats with receipts past their soft point (spec §10), at most `limit`
     /// seats, evaluated lazily from each receipt's effective deadline.
-    fn poke_candidates(&self, _limit: u16, _budget: &CallBudget) -> Result<Vec<PokeDue>, ApiError> {
+    fn poke_candidates(
+        &self,
+        _host: HostId,
+        _limit: u16,
+        _budget: &CallBudget,
+    ) -> Result<Vec<PokeDue>, ApiError> {
         Err(unsupported_poke())
     }
     /// Takes the seat's single wake reservation slot for a poke (reason
     /// `soft_deadline`). `None`: the slot is busy or nothing is still due.
     fn reserve_poke(
         &self,
+        _host: HostId,
         _due: &PokeDue,
         _budget: &CallBudget,
     ) -> Result<Option<PokeReservation>, ApiError> {
@@ -3644,6 +3715,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// transaction. Any other outcome marks nothing.
     fn complete_poke(
         &self,
+        _host: HostId,
         _attempt: WakeAttemptId,
         _outcome: WakeOutcome,
         _receipts: &[PokeReceipt],
@@ -3654,6 +3726,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// Seat-scoped due pokes, for an ordinary wake that can carry the poke text.
     fn poke_for_wake(
         &self,
+        _host: HostId,
         _seat: &SeatId,
         _budget: &CallBudget,
     ) -> Result<Option<PokeDue>, ApiError> {
@@ -4347,6 +4420,7 @@ mod allocation_tests {
         };
         let admission = HostObservationAdmission {
             instance: "instance".into(),
+            host_id: crate::test_support::test_host_id(),
             sequence: 1,
             expected_active: None,
             expected_boot: None,
@@ -4527,11 +4601,13 @@ mod allocation_tests {
             completed_at_mono: MonoInstant(1),
         };
         let fresh = OperatorFreshSeat {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("p1"),
             operation: OperationId::new("o1"),
         };
         let guard = OperatorTargetGuard::try_new(
             "i1",
+            crate::test_support::test_host_id(),
             &OperatorCommand::FreshSeat(fresh.clone()),
             observation.clone(),
         )
@@ -4543,6 +4619,7 @@ mod allocation_tests {
             OperatorRequest::FreshSeat(..)
         ));
         let rebind = OperatorRebind {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s1"),
             target: HostTargetId::new("p2"),
             operation: OperationId::new("o2"),
@@ -4550,6 +4627,7 @@ mod allocation_tests {
         assert!(
             OperatorTargetGuard::try_new(
                 "i1",
+                crate::test_support::test_host_id(),
                 &OperatorCommand::Rebind(rebind),
                 observation.clone()
             )
@@ -4558,6 +4636,7 @@ mod allocation_tests {
         assert!(
             OperatorTargetGuard::try_new(
                 "i1",
+                crate::test_support::test_host_id(),
                 &OperatorCommand::FreshSeat(fresh.clone()),
                 HostObservation {
                     provenance: ObservationProvenance::UncharacterizedCache,
@@ -4575,6 +4654,7 @@ mod allocation_tests {
         assert!(
             OperatorTargetGuard::try_new(
                 "i1",
+                crate::test_support::test_host_id(),
                 &OperatorCommand::OrphanInvite(orphan.clone()),
                 operator_observation("p1")
             )
@@ -4598,11 +4678,13 @@ mod allocation_tests {
             evidence_kind: EvidenceKind::NativeCurrentTarget,
         };
         let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("w1:p2"),
             operation: OperationId::new("resolve"),
         };
         let admission = HostObservationAdmission {
             instance: "i".into(),
+            host_id: crate::test_support::test_host_id(),
             sequence: 1,
             expected_active: None,
             expected_boot: Some(HostBootId::new("b1")),
@@ -4709,10 +4791,12 @@ mod allocation_tests {
         let target = HostTargetId::new("p1");
         let command = OperatorFreshSeat {
             target,
+            host: crate::test_support::test_host_locator(),
             operation: OperationId::new("o1"),
         };
         let guard = OperatorTargetGuard::try_new(
             "i1",
+            crate::test_support::test_host_id(),
             &OperatorCommand::FreshSeat(command.clone()),
             operator_observation("p1"),
         )
@@ -4734,18 +4818,21 @@ mod allocation_tests {
     fn operator_request_rejects_wrong_command_target_or_instance_without_consuming() {
         let target = HostTargetId::new("p1");
         let original = OperatorRebind {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s1"),
             target: target.clone(),
             operation: OperationId::new("o1"),
         };
         let guard = OperatorTargetGuard::try_new(
             "i1",
+            crate::test_support::test_host_id(),
             &OperatorCommand::Rebind(original.clone()),
             operator_observation("p1"),
         )
         .unwrap();
         let mut request = OperatorRequest::Rebind(
             OperatorRebind {
+                host: crate::test_support::test_host_locator(),
                 seat: SeatId::new("s1"),
                 target: HostTargetId::new("p2"),
                 operation: OperationId::new("o1"),
@@ -4776,18 +4863,21 @@ mod allocation_tests {
     fn operator_request_rejects_different_command_on_same_target() {
         let target = HostTargetId::new("p1");
         let original = OperatorRebind {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s1"),
             target: target.clone(),
             operation: OperationId::new("o1"),
         };
         let guard = OperatorTargetGuard::try_new(
             "i1",
+            crate::test_support::test_host_id(),
             &OperatorCommand::Rebind(original),
             operator_observation("p1"),
         )
         .unwrap();
         let mut request = OperatorRequest::Rebind(
             OperatorRebind {
+                host: crate::test_support::test_host_locator(),
                 seat: SeatId::new("s1"),
                 target: target.clone(),
                 operation: OperationId::new("o2"),
@@ -4823,10 +4913,12 @@ mod allocation_tests {
         let target = HostTargetId::new("p1");
         let command = OperatorFreshSeat {
             target,
+            host: crate::test_support::test_host_locator(),
             operation: OperationId::new("o1"),
         };
         let guard = OperatorTargetGuard::try_new(
             "i1",
+            crate::test_support::test_host_id(),
             &OperatorCommand::FreshSeat(command.clone()),
             operator_observation("p1"),
         )
@@ -4869,10 +4961,12 @@ mod allocation_tests {
         let target = HostTargetId::new("p1");
         let command = OperatorFreshSeat {
             target,
+            host: crate::test_support::test_host_locator(),
             operation: OperationId::new("o1"),
         };
         let guard = OperatorTargetGuard::try_new(
             "i1",
+            crate::test_support::test_host_id(),
             &OperatorCommand::FreshSeat(command.clone()),
             operator_observation("p1"),
         )
@@ -4888,6 +4982,7 @@ mod allocation_tests {
     #[test]
     fn structural_proof_needs_fresh_ordered_verified_evidence() {
         let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("p1"),
             operation: OperationId::new("op1"),
         };
@@ -5000,7 +5095,7 @@ mod contract_adapter_tests {
     }
     fn health() -> CommandResult {
         let mut health = Health::unknown(
-            "00000000-0000-4000-8000-000000000001".into(),
+            "00000000000040008000000000000001".into(),
             "00000000-0000-4000-8000-000000000002".into(),
             "test".into(),
             1,
@@ -5185,6 +5280,7 @@ mod contract_adapter_tests {
             expected_epoch: Some(4),
         };
         let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("p1"),
             operation: OperationId::new("op1"),
         };
@@ -5415,4 +5511,20 @@ pub struct PresentationOutput {
     pub work: PresentationWork,
     /// Exact terminal delta from this admitted transaction; never a pending-set snapshot.
     pub reclaimed_messages: Vec<MessageId>,
+}
+
+#[cfg(test)]
+mod short_seat_tests {
+    use super::*;
+
+    #[test]
+    fn short_seat_uses_random_suffix() {
+        let seat = SeatId::new("sQ7ak3Fq9a2B");
+        assert_eq!(short_seat(&seat), "k3fq9a2b");
+        assert_eq!(launch_agent_names(&seat, None)[0], "sk3fq9a2b");
+        // Two nodes' seats with the same suffix get the same short name only
+        // when the random suffix matches; the tag is never part of it.
+        assert_eq!(short_seat(&SeatId::new("sZz9k3Fq9a2B")), "k3fq9a2b");
+        assert_eq!(short_seat(&SeatId::new("seat-k3Fq9a2B")), "k3fq9a2b");
+    }
 }

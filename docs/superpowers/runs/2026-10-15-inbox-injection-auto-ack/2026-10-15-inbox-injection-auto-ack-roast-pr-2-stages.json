@@ -1,0 +1,168 @@
+{
+  "stages": {
+    "triage": {
+      "lanes": [
+        "deploy-safety",
+        "api-contract",
+        "observability",
+        "testing",
+        "hygiene-docs"
+      ],
+      "domains": []
+    },
+    "scout:correctness": {
+      "findings": []
+    },
+    "scout:security": {
+      "findings": []
+    },
+    "scout:premortem": {
+      "findings": []
+    },
+    "scout:simplicity-design": {
+      "findings": []
+    },
+    "scout:hot-path-perf": {
+      "findings": []
+    },
+    "scout:concurrency-async": {
+      "findings": []
+    },
+    "scout:regression": {
+      "findings": []
+    },
+    "scout:deploy-safety": {
+      "findings": []
+    },
+    "scout:api-contract": {
+      "findings": []
+    },
+    "scout:observability": {
+      "findings": []
+    },
+    "scout:testing": {
+      "findings": []
+    },
+    "scout:hygiene-docs": {
+      "findings": []
+    },
+    "reporter": {
+      "verdict": "clean (0 nits) [converged]",
+      "reportMarkdown": "---\nsuper-roast verdict: clean (0 nits) [converged]\nmode: pr        iteration: 2 of 3\nprofile (assumed): Production local cooperative messaging plugin. Receipt completion can hide a pending obligation and missed delivery can stall collaboration. Same-user local inputs are cooperative; canonical ownership and output completion determine authority.\ninputs: super-auto/inbox-injection-auto-ack@d51ca79772e9896bd6e4beb6980f0080f4835b81 vs main@3ff902c77c8df3dbcadf02119bacd9e344f7e59b\ndelta vs prior: 0 new confirmed (0 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 1 resolved \u00b7 0 regressed (0 Blocking) \u00b7 2 punch-listed (open)\ncoverage: scouts 12/12 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, regression, deploy-safety, api-contract, observability, testing, hygiene-docs) \u00b7 raw 0 \u2192 deduped 0 \u2192 panel 0 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion n/a (no panels) \u00b7 remainder-capped: 0\nindependence: same-family (GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\n\nAll 12 live scouts returned no material findings. The engine computed no packets and dispatched no judges because there were no candidates. This empty later round supports convergence within this review scope.\nThe run inherited GPT substitutions for unavailable Opus, Sonnet and Fable tiers. The independence line describes same-family seat differentiation, not family independence; there is no current panel evidence.\nThis is a local review only. The final combined cross-node review and final sweep remain caller-owned; this report does not establish readiness.\n\nPrior finding tracking:\n- Resolved: [Should-fix] src/cli/hook_inbox.rs:365 \u2014 Source inspection verifies the required regression now exists at tests/hook_entrypoint.rs:2654, native_hook_auto_ack_preserves_sibling_unread_and_delivery_wake. It asserts nonempty native receipt completion and preservation of the sibling cursor at :2763\u20132783, independent delivery wake selection at :2801\u20132829, busy refusal and idle sibling wake eligibility at :2830\u20132859, and sibling replay with unchanged receipt attribution and cleared delivery wake at :2861\u20132888. This verifies the prior missing-coverage finding from source; it is not a claim that this reporter ran the test.\n- Punch-listed (open): [Nit] TRUST-POLICY.md:1702 \u2014 The caller left the prior normative-policy wording finding unfixed. It is not resolved.\n- Punch-listed (open): [Nit] src/protocol/commands.rs:114; src/protocol/commands.rs:1588 \u2014 The caller left the prior operation-documentation finding unfixed. Its prior evidence was one refute-seat spot check, not full-panel confirmation; it remains punch-listed and is not resolved.\n\n## Confirmed findings\n\n- none\n\n## Not verified (beyond panel cap)\n\n- none\n\n## Not verified (dedupe failed or judge lost)\n\n- none\n\n## Beyond remainder cap (count only)\n\n- none\n\n## Rejected (with reason)\n\n- none\n\n## Unverified nits (spot-checked)\n\n- none newly reviewed; the prior spot-only Nit remains punch-listed (open) above.\n\n## Escalations (need human)\n\n- none\n---\n",
+      "confirmedCount": 0,
+      "escalations": []
+    },
+    "modelSubstitution": "All fresh agents inherited GPT; requested Opus/Sonnet/Fable tiers unavailable. No judge dispatches needed: zero raw findings.",
+    "execution": "manual fan-out; canonical engine replay computes coverage, routes and enforcement from live agent results"
+  },
+  "engineOutput": {
+    "verdict": "clean (0 nits) [converged]",
+    "reportMarkdown": "---\nsuper-roast verdict: clean (0 nits) [converged]\nmode: pr        iteration: 2 of 3\nprofile (assumed): Production local cooperative messaging plugin. Receipt completion can hide a pending obligation and missed delivery can stall collaboration. Same-user local inputs are cooperative; canonical ownership and output completion determine authority.\ninputs: super-auto/inbox-injection-auto-ack@d51ca79772e9896bd6e4beb6980f0080f4835b81 vs main@3ff902c77c8df3dbcadf02119bacd9e344f7e59b\ndelta vs prior: 0 new confirmed (0 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 1 resolved \u00b7 0 regressed (0 Blocking) \u00b7 2 punch-listed (open)\ncoverage: scouts 12/12 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, regression, deploy-safety, api-contract, observability, testing, hygiene-docs) \u00b7 raw 0 \u2192 deduped 0 \u2192 panel 0 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion n/a (no panels) \u00b7 remainder-capped: 0\nindependence: same-family (GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nlane-yield (found/confirmed/unique/refuted): correctness 0/0/0/0 \u00b7 security 0/0/0/0 \u00b7 premortem 0/0/0/0 \u00b7 simplicity-design 0/0/0/0 \u00b7 hot-path-perf 0/0/0/0 \u00b7 concurrency-async 0/0/0/0 \u00b7 regression 0/0/0/0 \u00b7 deploy-safety 0/0/0/0 \u00b7 api-contract 0/0/0/0 \u00b7 observability 0/0/0/0 \u00b7 testing 0/0/0/0 \u00b7 hygiene-docs 0/0/0/0\n\nAll 12 live scouts returned no material findings. The engine computed no packets and dispatched no judges because there were no candidates. This empty later round supports convergence within this review scope.\nThe run inherited GPT substitutions for unavailable Opus, Sonnet and Fable tiers. The independence line describes same-family seat differentiation, not family independence; there is no current panel evidence.\nThis is a local review only. The final combined cross-node review and final sweep remain caller-owned; this report does not establish readiness.\n\nPrior finding tracking:\n- Resolved: [Should-fix] src/cli/hook_inbox.rs:365 \u2014 Source inspection verifies the required regression now exists at tests/hook_entrypoint.rs:2654, native_hook_auto_ack_preserves_sibling_unread_and_delivery_wake. It asserts nonempty native receipt completion and preservation of the sibling cursor at :2763\u20132783, independent delivery wake selection at :2801\u20132829, busy refusal and idle sibling wake eligibility at :2830\u20132859, and sibling replay with unchanged receipt attribution and cleared delivery wake at :2861\u20132888. This verifies the prior missing-coverage finding from source; it is not a claim that this reporter ran the test.\n- Punch-listed (open): [Nit] TRUST-POLICY.md:1702 \u2014 The caller left the prior normative-policy wording finding unfixed. It is not resolved.\n- Punch-listed (open): [Nit] src/protocol/commands.rs:114; src/protocol/commands.rs:1588 \u2014 The caller left the prior operation-documentation finding unfixed. Its prior evidence was one refute-seat spot check, not full-panel confirmation; it remains punch-listed and is not resolved.\n\n## Confirmed findings\n\n- none\n\n## Not verified (beyond panel cap)\n\n- none\n\n## Not verified (dedupe failed or judge lost)\n\n- none\n\n## Beyond remainder cap (count only)\n\n- none\n\n## Rejected (with reason)\n\n- none\n\n## Unverified nits (spot-checked)\n\n- none newly reviewed; the prior spot-only Nit remains punch-listed (open) above.\n\n## Escalations (need human)\n\n- none\n---\n",
+    "confirmedCount": 0,
+    "escalations": [],
+    "reporterFailed": false,
+    "enforcement": [
+      "header: lane-yield inserted"
+    ],
+    "fixRegressions": [],
+    "coverage": {
+      "triageDead": false,
+      "scoutsDispatched": 12,
+      "scoutsDead": 0,
+      "unknownLanes": [],
+      "domainsDropped": [],
+      "rawFindings": 0,
+      "dedupedFindings": 0,
+      "dedupeOrphans": 0,
+      "beyondCap": 0,
+      "beyondPanelCap": 0,
+      "dedupeDead": false,
+      "panelCount": 0,
+      "spotCount": 0,
+      "promotedCount": 0,
+      "judgeLost": 0,
+      "spotLost": 0,
+      "laneYield": {
+        "correctness": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "security": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "premortem": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "simplicity-design": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "hot-path-perf": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "concurrency-async": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "regression": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "deploy-safety": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "api-contract": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "observability": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "testing": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "hygiene-docs": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        }
+      },
+      "judgeCompletionPct": 0,
+      "lowCoverage": false,
+      "panelCappedTag": "",
+      "emptyLateRound": true,
+      "convergenceEligible": true
+    },
+    "routeCounts": {},
+    "seatAgreement": ""
+  }
+}

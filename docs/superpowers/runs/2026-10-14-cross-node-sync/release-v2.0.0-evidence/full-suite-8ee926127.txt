@@ -1,0 +1,11 @@
+run_id=8871D8A2-6909-434F-A96A-4245C4DE65F7 sha=8ee926127
+build rc=0
+nextest rc=0 wall=233s
+no leaked test temp files
+no leaked test processes
+leak rc=0
+default-features rc=0
+clippy rc=0
+neutral rc=0
+fmt rc=0
+     Summary [ 233.681s] 7442 tests run: 7442 passed (1 slow), 47 skipped

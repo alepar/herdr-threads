@@ -223,6 +223,12 @@ fn a_long_chunked_body_is_produced_once_its_first_8_kib_are_assembled() {
     let message = &item_of(&events[0]).message;
     assert!(message.truncated);
     assert_eq!(message.body_len, 10_000);
+    assert!(
+        message
+            .body
+            .ends_with("…truncated; next: herdr-threads inbox")
+    );
+    assert!(!message.body.contains(" ack "));
     assert_eq!(
         message.body,
         format!(
@@ -275,7 +281,7 @@ fn truncation_cuts_at_8_kib_on_a_char_boundary_and_records_the_hint() {
         lazy_item.message.body,
         format!("{}{}", "b".repeat(8192), marker("lazy-over", true))
     );
-    assert_ne!(marker("over", false), marker("over", true));
+    assert_eq!(marker("over", false), marker("over", true));
     assert_eq!(
         std::fs::read_to_string(&hint)
             .unwrap()

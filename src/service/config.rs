@@ -1,8 +1,9 @@
 //! Validated process timing shared by the store and scheduler.
 
 use crate::protocol::summary::SummarySettings;
+use crate::sync::dialer::DialTemplate;
 use crate::{
-    daemon::paths::{InstancePaths, effective_uid},
+    daemon::paths::{NodePaths, effective_uid},
     scheduler::config::SchedulerTiming,
     store::{StoreSettings, messages::MessageLimits},
 };
@@ -25,6 +26,9 @@ pub struct ServiceConfig {
     /// `Some` only in test-support builds ([`Self::with_test_lane_tick`]).
     test_lane_tick: Option<std::time::Duration>,
     summary: SummarySettings,
+    dial_template: Option<DialTemplate>,
+    idle_exit_after: std::time::Duration,
+    sync_discover: bool,
 }
 
 /// The test-support variable (milliseconds) that replaces the lanes' 5 s
@@ -43,11 +47,61 @@ impl Default for ServiceConfig {
             watch_connection_cap: crate::protocol::watch::MAX_WATCH_CONNECTIONS,
             test_lane_tick: None,
             summary: SummarySettings::default(),
+            dial_template: None,
+            idle_exit_after: crate::daemon::idle_exit::IDLE_EXIT_AFTER,
+            sync_discover: true,
+        }
+    }
+}
+
+impl From<&ServiceConfig> for crate::sync::dialer::DialConfig {
+    /// The Dialer's transport template; no fixed jitter seed.
+    fn from(config: &ServiceConfig) -> Self {
+        Self {
+            template: config.dial_template.clone(),
+            jitter_seed: None,
         }
     }
 }
 
 impl ServiceConfig {
+    /// The validated `sync.dial_command`, or `None` for the ssh transport.
+    pub fn dial_template(&self) -> Option<&DialTemplate> {
+        self.dial_template.as_ref()
+    }
+    /// How long a store-only daemon with nothing to serve stays up; zero
+    /// disables idle exit.
+    pub fn idle_exit_after(&self) -> std::time::Duration {
+        self.idle_exit_after
+    }
+    /// Test-support builds: `HT_TEST_IDLE_EXIT_MS` (milliseconds, `0`
+    /// disables) overrides the idle-exit period of a spawned daemon.
+    #[cfg(feature = "test-support")]
+    pub const TEST_IDLE_EXIT_MS_ENV: &'static str = "HT_TEST_IDLE_EXIT_MS";
+
+    /// Apply [`Self::TEST_IDLE_EXIT_MS_ENV`] when set and numeric.
+    #[cfg(feature = "test-support")]
+    pub fn with_test_env(self) -> Self {
+        match std::env::var(Self::TEST_IDLE_EXIT_MS_ENV)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            Some(ms) => self.with_idle_exit_after(std::time::Duration::from_millis(ms)),
+            None => self,
+        }
+    }
+
+    /// Shorten (or, with `Duration::ZERO`, disable) idle exit for a test.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_idle_exit_after(mut self, after: std::time::Duration) -> Self {
+        self.idle_exit_after = after;
+        self
+    }
+
+    /// Whether `sync.discover` lets the daemon add dial targets (default on).
+    pub fn sync_discover(&self) -> bool {
+        self.sync_discover
+    }
     pub fn archive_after_ms(&self) -> u64 {
         self.archive_after_ms
     }
@@ -96,7 +150,7 @@ impl ServiceConfig {
     /// Load optional, private settings for one resolved host instance. A restart
     /// applies edits; the running owner keeps its validated in-memory values.
     /// A test-support build also honours [`TEST_LANE_TICK_ENV`].
-    pub fn load(paths: &InstancePaths) -> io::Result<Self> {
+    pub fn load(paths: &NodePaths) -> io::Result<Self> {
         let config = Self::load_file(paths)?;
         #[cfg(feature = "test-support")]
         if let Some(value) = std::env::var_os(TEST_LANE_TICK_ENV) {
@@ -113,38 +167,27 @@ impl ServiceConfig {
         Ok(config)
     }
 
-    fn load_file(paths: &InstancePaths) -> io::Result<Self> {
-        let instance_dir = &paths.instance_dir;
-        let instance = match fs::symlink_metadata(instance_dir) {
+    fn load_file(paths: &NodePaths) -> io::Result<Self> {
+        let node_dir = &paths.node_dir;
+        let node = match fs::symlink_metadata(node_dir) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(error) => return Err(error),
         };
-        let instances = instance_dir.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "missing instances directory")
-        })?;
-        let state = instances.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "missing state directory")
-        })?;
         // Herdr may supply a 0755 state root; only directories this plugin
         // creates below it must be exactly 0700.
-        crate::daemon::paths::check_owned_state_root(state)?;
-        let directories = [
-            (instances, fs::symlink_metadata(instances)?),
-            (instance_dir.as_path(), instance),
-        ];
-        for (_, metadata) in &directories {
-            if !metadata.file_type().is_dir()
-                || metadata.uid() != effective_uid()
-                || metadata.permissions().mode() & 0o777 != 0o700
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "unsafe instance settings directory",
-                ));
-            }
+        crate::daemon::paths::check_owned_state_root(&paths.state_dir)?;
+        if !node.file_type().is_dir()
+            || node.uid() != effective_uid()
+            || node.permissions().mode() & 0o777 != 0o700
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unsafe node settings directory",
+            ));
         }
-        let path = instance_dir.join("settings.json");
+        let directories = [(node_dir.as_path(), node)];
+        let path = node_dir.join("settings.json");
         let before = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -216,7 +259,7 @@ impl ServiceConfig {
             {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    "instance settings directory changed",
+                    "node settings directory changed",
                 ));
             }
         }
@@ -238,6 +281,8 @@ impl ServiceConfig {
         .and_then(|config| config.with_wake_batch_delay(settings.wake_batch_delay_ms))
         .and_then(|config| config.with_summary(settings.summary.clone()))
         .and_then(|config| config.with_archive_after(settings.archive_after_ms))
+        .and_then(|config| config.with_dial_command(settings.sync.dial_command.as_deref()))
+        .map(|config| config.with_sync_discover(settings.sync.discover))
     }
 
     pub fn new(
@@ -257,7 +302,26 @@ impl ServiceConfig {
             watch_connection_cap: crate::protocol::watch::MAX_WATCH_CONNECTIONS,
             test_lane_tick: None,
             summary: SummarySettings::default(),
+            dial_template: None,
+            idle_exit_after: crate::daemon::idle_exit::IDLE_EXIT_AFTER,
+            sync_discover: true,
         })
+    }
+
+    /// Set `sync.discover`.
+    #[must_use]
+    pub fn with_sync_discover(mut self, discover: bool) -> Self {
+        self.sync_discover = discover;
+        self
+    }
+
+    /// Validate `sync.dial_command` into a `DialTemplate`.
+    pub fn with_dial_command(mut self, command: Option<&str>) -> Result<Self, &'static str> {
+        self.dial_template = match command {
+            None => None,
+            Some(text) => Some(DialTemplate::parse(text).map_err(|_| "invalid sync.dial_command")?),
+        };
+        Ok(self)
     }
 
     pub fn with_wake_batch_delay(mut self, delay_ms: u64) -> Result<Self, &'static str> {

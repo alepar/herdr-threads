@@ -1,0 +1,98 @@
+[
+  {
+    "id": "001",
+    "role": "triage",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "lanes": [],
+      "domains": [
+        "distributed-systems",
+        "messaging-delivery",
+        "auth-provenance"
+      ]
+    }
+  },
+  {
+    "id": "002",
+    "role": "scout:premortem",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "003",
+    "role": "scout:completeness",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "004",
+    "role": "scout:yagni",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "005",
+    "role": "scout:failure-mode",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "006",
+    "role": "scout:feasibility",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "007",
+    "role": "scout:regression",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "008",
+    "role": "scout:domain:distributed-systems",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "009",
+    "role": "scout:domain:messaging-delivery",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "010",
+    "role": "scout:domain:auth-provenance",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "011",
+    "role": "reporter",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "verdict": "clean (0 nits) [converged]",
+      "reportMarkdown": "super-roast verdict: clean (0 nits) [converged]\nmode: design        iteration: 2 of 3\nprofile (assumed): Production local agent coordination tool. False receipt settlement can hide requested receipt obligations; missing delivery or redundant context costs user attention. Cooperative same-user trust model applies; receipt means display, not cognition.\ninputs: docs/superpowers/runs/2026-10-15-inbox-injection-auto-ack/2026-10-15-inbox-injection-auto-ack-design.md\ndelta vs prior: 0 new confirmed (0 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 1 resolved \u00b7 0 regressed (0 Blocking) \u00b7 0 punch-listed (open)\ncoverage: scouts 9/9 (premortem, completeness, yagni, failure-mode, feasibility, regression, domain:distributed-systems, domain:messaging-delivery, domain:auth-provenance) \u00b7 raw 0 \u2192 deduped 0 \u2192 panel 0 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion n/a (no panels) \u00b7 remainder-capped: 0\nindependence: same-family (GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\n\nPrior confirmed finding: **resolved** \u2014 Decision points 1, 3, and Verification and acceptance: quiet-hook retry after failed post-output receipt settlement. No current packet re-surfaces the finding, including the regression lane; all nine scouts returned zero findings. This is design-review convergence, not implementation verification. No dedupe or judge seats ran because there were no findings.\n\n## Confirmed findings\n- none\n\n## Not verified (beyond panel cap)\n- none\n\n## Not verified (dedupe failed or judge lost)\n- none\n\n## Beyond remainder cap (count only)\n- none\n\n## Rejected (with reason)\n- none\n\n## Unverified nits (spot-checked)\n- none\n\n## Escalations (need human)\n- none\n",
+      "confirmedCount": 0,
+      "escalations": []
+    }
+  }
+]

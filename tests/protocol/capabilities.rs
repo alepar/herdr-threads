@@ -1,4 +1,11 @@
 use super::*;
+
+#[test]
+fn hook_context_receipt_capability_is_additive() {
+    assert!(ADVERTISED.contains(&"hook.context_receipts_v1"));
+    assert!(ADVERTISED.contains(&LAZY_HOOK_DELIVERY));
+    assert!(!Capabilities::none().supports("hook.context_receipts_v1"));
+}
 use crate::{
     client::local::LocalSocketClient,
     daemon::{
@@ -92,7 +99,7 @@ fn api_error(code: ErrorCode, detail: &str) -> ApiError {
     ApiError::new(code, detail)
 }
 
-fn daemon_handler(instance: Uuid, boot: Uuid) -> impl LocalService {
+fn daemon_handler(instance: crate::node::NodeUuid, boot: Uuid) -> impl LocalService {
     ControlService::new(
         StopController::new(instance, boot, Cancellation::default()),
         move |_: &CallBudget| HealthInputs::unknown(instance, boot),
@@ -168,7 +175,7 @@ impl Fixture {
         LocalSocketClient::new(
             self.path.clone(),
             Arc::new(FixedClock),
-            Uuid::new_v4(),
+            crate::node::NodeUuid::new_v4(),
             None,
         )
     }
@@ -190,7 +197,7 @@ fn list(names: &[&str]) -> CommandResult {
 /// NotFound), so the field is neither ignored at decode nor refused.
 fn probe_history_full_bodies() {
     use crate::protocol::{commands::HistoryQuery, ids::ThreadId, pagination::PageRequest};
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let command = Command::History(HistoryQuery {
         thread: ThreadId::new("t"),
         page: PageRequest::default(),
@@ -218,7 +225,7 @@ fn probe_seat_managed_launch() {
         commands::RecordManagedLaunch,
         ids::{HostBootId, HostTargetId, SeatId, TerminalId},
     };
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let command = Command::RecordManagedLaunch(RecordManagedLaunch {
         seat: SeatId::new("s"),
         target: HostTargetId::new("w1:p1"),
@@ -244,7 +251,7 @@ fn probe_seat_managed_launch() {
 
 fn probe_inbox_batch() {
     use crate::protocol::commands::InboxQuery;
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let command = Command::InboxBatch(InboxQuery {
         pushed: false,
         thread: None,
@@ -272,6 +279,7 @@ fn capability_constants_are_stable() {
     assert_eq!(SEAT_MANAGED_LAUNCH, "seat.managed_launch");
     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
+    assert_eq!(HOOK_CONTEXT_RECEIPTS_V1, "hook.context_receipts_v1");
     assert_eq!(DELIVERY_PRESENTATION_V2, "delivery.presentation_v2");
     assert_eq!(MOD_WATCH_PRESENTATION_V2, "mod.watch_presentation_v2");
     assert_eq!(BINDING_CURSORS, "inbox.binding_cursors_v1");
@@ -308,6 +316,7 @@ fn capability_constants_are_stable() {
             "seat.wake_on_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
+            "hook.context_receipts_v1",
             "delivery.presentation_v2",
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
@@ -341,6 +350,7 @@ fn every_advertised_capability_has_a_handler() {
                 let command =
                     Command::ContinuityCheckIn(crate::protocol::commands::ContinuityCheckIn {
                         target: crate::protocol::ids::HostTargetId::new("pane"),
+                        host: crate::test_support::test_host_locator(),
                         harness: crate::protocol::authority::Harness::Codex,
                         native_session: crate::protocol::ids::NativeSessionId::new("session"),
                         source: "same_session".into(),
@@ -350,7 +360,7 @@ fn every_advertised_capability_has_a_handler() {
                     });
                 assert!(command.validate().is_ok());
                 assert_eq!(
-                    daemon_handler(Uuid::new_v4(), Uuid::new_v4())
+                    daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4())
                         .handle(command, PeerIdentity::from_kernel(501), &budget())
                         .unwrap_err()
                         .code,
@@ -377,16 +387,21 @@ fn every_advertised_capability_has_a_handler() {
                 let context = crate::store::connection::StoreContext::new(
                     isolation.path("store.db"),
                     Arc::new(FixedClock),
-                );
+                )
+                .with_test_host();
                 context.open_writer().unwrap();
-                let outcome =
-                    crate::store::queries::query(&context, "probe-instance", &command, &budget());
+                let outcome = crate::store::queries::query(
+                    &context,
+                    "34750f98bd59fcfc946da45aaabe933b",
+                    &command,
+                    &budget(),
+                );
                 assert_eq!(outcome.unwrap_err().code, ErrorCode::NotFound);
             }
             LAZY_SEND | SEND_TIME_RECEIPTS_V1 => {
-                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":if *name == LAZY_SEND { "lazy" } else { "ordinary" },"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":if *name == LAZY_SEND { "lazy" } else { "ordinary" },"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","host":"/host.sock","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 assert_eq!(
                     handler
                         .handle(command, PeerIdentity::from_kernel(501), &budget())
@@ -398,11 +413,11 @@ fn every_advertised_capability_has_a_handler() {
             SEND_PRIORITY_V1 => {
                 // The explicit priority is on the wire, validates and routes to the domain; the
                 // store freezes it (`store::messages::priority_send_tests`).
-                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"priority":3,"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"priority":3,"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"host":"/host.sock","instance":"34750f98bd59fcfc946da45aaabe933b","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
                 let wire = serde_json::to_value(&command).unwrap();
                 assert_eq!(wire["args"]["priority"], 3);
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 assert_eq!(
                     handler
                         .handle(command, PeerIdentity::from_kernel(501), &budget())
@@ -428,7 +443,8 @@ fn every_advertised_capability_has_a_handler() {
                         recipient: crate::protocol::ids::SeatId::new("peer"),
                         operation: crate::protocol::ids::OperationId::new("direct-probe"),
                         claim: crate::protocol::authority::CallerClaim {
-                            instance: "i".into(),
+                            host: crate::test_support::test_host_locator(),
+                            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                             seat: crate::protocol::ids::SeatId::new("sender"),
                             binding_generation: 1,
                             role: crate::protocol::authority::CallerRole::TopLevel,
@@ -444,7 +460,7 @@ fn every_advertised_capability_has_a_handler() {
                     });
                 assert!(command.validate().is_ok());
                 assert_eq!(
-                    daemon_handler(Uuid::new_v4(), Uuid::new_v4())
+                    daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4())
                         .handle(command, PeerIdentity::from_kernel(501), &budget())
                         .unwrap_err()
                         .code,
@@ -456,7 +472,7 @@ fn every_advertised_capability_has_a_handler() {
             PICKER_DIRECTORY_V1 => probe_picker_directory(),
             MESSAGE_DELIVERY_MODES => probe_message_delivery_modes(),
             ATTENTION_NOTICE_DELIVERY => {
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 let command = Command::AttentionDigestDelivery(
                     crate::protocol::commands::AttentionDigestQuery {
                         seat: crate::protocol::ids::SeatId::new("s"),
@@ -481,8 +497,8 @@ fn every_advertised_capability_has_a_handler() {
             DELIVERY_PULL => {
                 // The command decodes and routes to the domain service (served by
                 // `service::delivery_pull`, tested there); this daemon has none.
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
-                let command: Command = serde_json::from_value(serde_json::json!({"kind":"delivery_pull","args":{"claim":{"instance":"i","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
+                let command: Command = serde_json::from_value(serde_json::json!({"kind":"delivery_pull","args":{"claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","host":"/host.sock","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
                 assert_eq!(
                     handler
@@ -495,7 +511,7 @@ fn every_advertised_capability_has_a_handler() {
             SEAT_WAKE_ON_V1 => {
                 // The daemon serves the read: an unknown seat is NotFound (a
                 // daemon without the handler would refuse the command itself).
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 let command = Command::WakeOn(crate::protocol::commands::WakeOnQuery {
                     seat: crate::protocol::ids::SeatId::new("nobody"),
                 });
@@ -514,7 +530,7 @@ fn every_advertised_capability_has_a_handler() {
                 // The daemon serves the read and routes the set: both are on the wire and
                 // round-trip; an unknown seat is NotFound (a daemon without the handlers would
                 // refuse the command itself). The store tests cover set-then-read.
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 let command =
                     Command::NudgeThreshold(crate::protocol::commands::NudgeThresholdQuery {
                         seat: crate::protocol::ids::SeatId::new("nobody"),
@@ -529,7 +545,7 @@ fn every_advertised_capability_has_a_handler() {
                         .code,
                     ErrorCode::NotFound
                 );
-                let set: Command = serde_json::from_value(serde_json::json!({"kind":"set_nudge_threshold","args":{"value":3,"operation":"op","claim":{"instance":"i","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                let set: Command = serde_json::from_value(serde_json::json!({"kind":"set_nudge_threshold","args":{"value":3,"operation":"op","claim":{"host":"/host.sock","instance":"34750f98bd59fcfc946da45aaabe933b","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(set.validate().is_ok());
                 assert_eq!(
                     handler
@@ -542,7 +558,7 @@ fn every_advertised_capability_has_a_handler() {
             LAZY_HOOK_DELIVERY => {
                 // The lazy digest request is routed to the store's
                 // seat-scoped read: an unknown seat is NotFound.
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 let command = Command::AttentionDigestDelivery(
                     crate::protocol::commands::AttentionDigestQuery {
                         seat: crate::protocol::ids::SeatId::new("s"),
@@ -561,6 +577,7 @@ fn every_advertised_capability_has_a_handler() {
                     ErrorCode::NotFound
                 );
             }
+            HOOK_CONTEXT_RECEIPTS_V1 => probe_hook_context_receipts(),
             BINDING_CURSORS => probe_binding_cursors(),
             INBOX_THREAD_SCOPE => probe_inbox_thread_scope(),
             INBOX_PUSHED_HOLD => probe_inbox_pushed_hold(),
@@ -571,7 +588,8 @@ fn every_advertised_capability_has_a_handler() {
                 let command = Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
                     in_turn: true,
                     claim: crate::protocol::authority::CallerClaim {
-                        instance: "probe-instance".into(),
+                        host: crate::test_support::test_host_locator(),
+                        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                         seat: crate::protocol::ids::SeatId::new("s"),
                         binding_generation: 1,
                         role: crate::protocol::authority::CallerRole::TopLevel,
@@ -584,7 +602,9 @@ fn every_advertised_capability_has_a_handler() {
                     },
                     operation: crate::protocol::ids::OperationId::new("op"),
                     displayed: vec![crate::protocol::ids::MessageId::new("m")],
-                    invitations: vec![crate::protocol::ids::InvitationId::new("i")],
+                    invitations: vec![crate::protocol::ids::InvitationId::new(
+                        "34750f98bd59fcfc946da45aaabe933b",
+                    )],
                 });
                 assert!(command.validate().is_ok());
                 let json = serde_json::to_value(&command).unwrap();
@@ -594,13 +614,14 @@ fn every_advertised_capability_has_a_handler() {
             BINDING_DIGEST => {
                 // A claimed digest request round-trips and is routed to the store's seat-scoped
                 // read: an unknown seat is NotFound, whoever the claim names.
-                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 let command =
                     Command::AttentionDigest(crate::protocol::commands::AttentionDigestQuery {
                         seat: crate::protocol::ids::SeatId::new("s"),
                         lazy: false,
                         claim: Some(crate::protocol::authority::CallerClaim {
-                            instance: "probe-instance".into(),
+                            host: crate::test_support::test_host_locator(),
+                            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                             seat: crate::protocol::ids::SeatId::new("s"),
                             binding_generation: 1,
                             role: crate::protocol::authority::CallerRole::Subagent,
@@ -629,6 +650,174 @@ fn every_advertised_capability_has_a_handler() {
     }
 }
 
+/// Exercise the advertised native-context source through the actual configured daemon:
+/// a requested receipt must settle canonically, retaining source provenance across replay.
+fn probe_hook_context_receipts() {
+    use crate::{
+        ports::StorePort,
+        protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            commands::{
+                CheckIn, CheckInMode, CompleteInboxDelivery, CreateThread, DeliveryMode, Join,
+                LazyCompletionVia, SendMessage,
+            },
+            ids::{ExecutionId, HostTargetId, NativeSessionId, OperationId, SeatId},
+        },
+        service::{dispatch::DomainService, fair_writer::FairWriter},
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let isolated = TestIsolation::new("hook-context-capability-route");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let instance = crate::node::NodeUuid::new_v4();
+    let context = StoreContext::new(isolated.path("store.db"), clock.clone())
+        .with_test_host()
+        .with_node_seed(crate::test_support::node_seed_for(instance));
+    let db = context.open_writer().unwrap();
+    let boot = Uuid::new_v4();
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
+    for seat in ["origin", "recipient"] {
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?1,0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat, instance.to_string()]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),?2,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc-'||?2,'coherent_enumeration',1)", rusqlite::params![instance.to_string(),seat]).unwrap();
+    }
+    let store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(context, instance.to_string(), StoreSettings::default()).unwrap(),
+    );
+    let domain = DomainService::new(instance.to_string(), store, clock)
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
+    let handler = ControlService::new(
+        StopController::new(instance, boot, Cancellation::default()),
+        move |_: &CallBudget| HealthInputs::unknown(instance, boot),
+        domain,
+    );
+    let call = |command| {
+        handler
+            .handle(command, PeerIdentity::from_kernel(501), &budget())
+            .unwrap()
+    };
+    let CommandResult::Capabilities(caps) = call(Command::Capabilities) else {
+        panic!("capabilities")
+    };
+    assert!(
+        caps.capabilities
+            .iter()
+            .any(|name| name == HOOK_CONTEXT_RECEIPTS_V1),
+        "configured actual capability response must advertise the selected routes"
+    );
+    let check_in = |seat: &str| {
+        let session = format!("session-{seat}");
+        let claim = CallerClaim {
+            host: crate::test_support::test_host_locator(),
+            instance: instance.to_string(),
+            seat: SeatId::new(seat),
+            binding_generation: 0,
+            role: CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new(&session),
+            execution: ExecutionId::new(Uuid::new_v4().to_string()),
+            target: HostTargetId::new(seat),
+            agent_id: None,
+            liveness: Some(crate::test_support::isolation::stand_in_fingerprint(
+                "codex", &session,
+            )),
+        };
+        let CommandResult::CheckedIn(checked) = call(Command::CheckIn(CheckIn {
+            lineage_parent: None,
+            mode: CheckInMode::Lifecycle {
+                expected_binding_generation: 0,
+            },
+            claim,
+            operation: OperationId::new(format!("check-in-{seat}")),
+        })) else {
+            panic!("canonical binding")
+        };
+        checked.context
+    };
+    let origin = check_in("origin");
+    let recipient = check_in("recipient");
+    let CommandResult::ThreadCreated(thread) = call(Command::CreateThread(CreateThread {
+        name: None,
+        topic: "hook receipt capability".into(),
+        goal: "canonical receipt settlement".into(),
+        operation: OperationId::new("receipt-create"),
+        claim: origin.clone(),
+    })) else {
+        panic!("created thread")
+    };
+    call(Command::Join(Join {
+        thread: thread.clone(),
+        operation: OperationId::new("receipt-join"),
+        claim: recipient.clone(),
+    }));
+    let CommandResult::MessageSent(message) = call(Command::SendMessage(SendMessage {
+        priority: None,
+        delivery_mode: DeliveryMode::Ordinary,
+        thread,
+        body: "complete native context".into(),
+        direct_recipient: None,
+        invited_recipients: vec![recipient.seat.clone()],
+        deadline_millis: Some(300_000),
+        operation: OperationId::new("receipt-send"),
+        claim: origin,
+        relays_user: false,
+        user_intent: None,
+    })) else {
+        panic!("published requested receipt")
+    };
+    let receipt = || {
+        db.query_row(
+        "SELECT state,ack_observation FROM receipt_state WHERE message_id=?1 AND seat_id='recipient'",
+        [message.as_str()],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+    ).unwrap()
+    };
+    assert_eq!(
+        crate::store::effective::effective_receipt(&db, message.as_str(), "recipient")
+            .unwrap()
+            .expect("the published send requests a recipient receipt")
+            .state,
+        crate::store::effective::EffectiveReceiptState::Pending
+    );
+    let command = Command::CompleteInboxDelivery(CompleteInboxDelivery {
+        messages: vec![],
+        receipt_candidates: vec![message.clone()],
+        operation: OperationId::new("receipt-complete"),
+        claim: recipient,
+        via: Some(LazyCompletionVia::HookContext),
+    });
+    assert!(command.validate().is_ok());
+    assert_eq!(
+        serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+        command
+    );
+    let completed = call(command.clone());
+    assert_eq!(completed, CommandResult::InboxDeliveryCompleted(vec![]));
+    let (state, observation) = receipt();
+    assert_eq!(state, "acked");
+    let observation: serde_json::Value = serde_json::from_str(&observation.unwrap()).unwrap();
+    assert_eq!(observation["action_provenance"], "cooperative_hook_context");
+    assert_eq!(observation["via"], "hook_context");
+    assert_eq!(observation["session"], "session-recipient");
+    let settled = receipt();
+    assert_eq!(call(command), completed);
+    assert_eq!(
+        receipt(),
+        settled,
+        "exact replay preserves canonical attribution"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM messages WHERE kind='info' AND event_key LIKE 'ack_mod:%'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1,
+        "one terminal receipt event across replay"
+    );
+}
+
 /// The cursor command is served by the store, which decides it against the canonical view: a
 /// claim for a seat it does not know is refused (a store without the handler would answer
 /// `unsupported`).
@@ -646,7 +835,8 @@ fn probe_binding_cursors() {
         in_turn: false,
         invitations: Vec::new(),
         claim: CallerClaim {
-            instance: "probe-instance".into(),
+            host: crate::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("nobody"),
             binding_generation: 1,
             role: CallerRole::Subagent,
@@ -670,8 +860,8 @@ fn probe_binding_cursors() {
     let isolation = crate::test_support::isolation::TestIsolation::new("cursors-capability");
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store = SqliteStore::new(
-        StoreContext::new(isolation.path("store.db"), clock),
-        "probe-instance",
+        StoreContext::new(isolation.path("store.db"), clock).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap();
@@ -705,17 +895,18 @@ fn probe_mod_watch(presentation_v2: bool) {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store: Arc<dyn StorePort> = Arc::new(
         SqliteStore::new(
-            StoreContext::new(isolation.path("store.db"), clock.clone()),
-            "probe-instance",
+            StoreContext::new(isolation.path("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
     );
-    let domain = DomainService::new("probe-instance".into(), store, clock);
+    let domain = DomainService::new("34750f98bd59fcfc946da45aaabe933b".into(), store, clock);
     let request = WatchRequest {
         presentation_v2,
         claim: CallerClaim {
-            instance: "probe-instance".into(),
+            host: crate::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("nobody"),
             binding_generation: 1,
             role: CallerRole::TopLevel,
@@ -740,7 +931,7 @@ fn probe_mod_watch(presentation_v2: bool) {
 
 #[test]
 fn capabilities_reply_round_trips_and_defaults_empty() {
-    let instance = Uuid::new_v4().to_string();
+    let instance = crate::node::NodeUuid::new_v4().to_string();
     let boot = Uuid::new_v4().to_string();
     let response = WireResponse {
         version: PROTOCOL_VERSION,
@@ -769,7 +960,7 @@ fn capabilities_reply_round_trips_and_defaults_empty() {
 
 #[test]
 fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let result = handler
         .handle(
             Command::Capabilities,
@@ -807,6 +998,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "seat.wake_on_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
+            "hook.context_receipts_v1",
             "delivery.presentation_v2",
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
@@ -859,7 +1051,7 @@ fn old_daemon_that_answers_an_error_reads_as_no_capabilities() {
 
 #[test]
 fn pre_change_cli_decodes_this_daemons_hello_and_history() {
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let boot = Uuid::new_v4();
     let handler = daemon_handler(instance, boot);
     let CommandResult::Health(health) = handler
@@ -931,7 +1123,7 @@ fn daemon_counts_a_hook_parse_failure_report() {
 fn probe_hook_parse_failure_report() {
     use crate::daemon::logs::{HookParseFailures, RateLimitedLaneLog};
     use crate::protocol::commands::HookParseFailure;
-    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let (instance, boot) = (crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let failures = std::sync::Arc::new(HookParseFailures::new(std::sync::Arc::new(
         RateLimitedLaneLog::new(
             std::sync::Arc::new(FixedClock),
@@ -1018,19 +1210,23 @@ fn probe_service_send_v1() {
     };
     let dir = crate::test_support::scratch::temp_path(format!("htcap-send-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    let context = StoreContext::new(dir.join("probe.db"), Arc::new(FixedClock));
+    let context = StoreContext::new(dir.join("probe.db"), Arc::new(FixedClock)).with_test_host();
     {
         let conn = context.open_writer().unwrap();
-        conn.execute(
-            "INSERT INTO host_instances(id, created_at, host_boot, host_epoch) VALUES ('i', 0, 'b', 1)",
-            [],
-        )
-        .unwrap();
+        conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
     }
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let author = ServiceAuthorId::new("graph:probe");
     let gate = ProbeGate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
     let operations = [
         ServiceOperation::Send(ServiceSend {
             thread: ThreadId::new("absent"),
@@ -1082,13 +1278,13 @@ fn probe_harness_evidence() {
         store::{SqliteStore, StoreSettings, connection::StoreContext},
         test_support::isolation::TestIsolation,
     };
-    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let (instance, boot) = (crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let iso = TestIsolation::new("cap-harness-evidence");
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
@@ -1142,13 +1338,13 @@ fn probe_harness_states() {
         store::{SqliteStore, StoreSettings, connection::StoreContext},
         test_support::isolation::TestIsolation,
     };
-    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let (instance, boot) = (crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let iso = TestIsolation::new("cap-harness-states");
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
@@ -1257,7 +1453,7 @@ fn harness_states_round_trips_on_the_wire() {
 
 #[test]
 fn control_without_a_recorder_accepts_and_drops_evidence() {
-    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let (instance, boot) = (crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let handler = ControlService::new(
         StopController::new(instance, boot, Cancellation::default()),
         move |_: &CallBudget| HealthInputs::unknown(instance, boot),
@@ -1421,14 +1617,15 @@ fn probe_invitation_reject() {
         commands::Reject,
         ids::*,
     };
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let command = Command::Reject(Reject {
         thread: ThreadId::new("t1"),
         invitation: InvitationId::new("v1"),
         reason: "Outside assigned role".into(),
         operation: OperationId::new("reject-probe"),
         claim: CallerClaim {
-            instance: "i".into(),
+            host: crate::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s1"),
             binding_generation: 1,
             role: CallerRole::TopLevel,
@@ -1456,7 +1653,7 @@ fn probe_invitation_reject() {
 
 fn probe_participant_locations() {
     use crate::protocol::{commands::ParticipantLocationsQuery, ids::*};
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let command = Command::ParticipantLocations(ParticipantLocationsQuery {
         thread: ThreadId::new("t1"),
         seats: vec![SeatId::new("s1")],
@@ -1484,7 +1681,7 @@ fn v2_capability_is_negotiated_only_with_recorder() {
         store::{SqliteStore, StoreSettings, connection::StoreContext},
         test_support::isolation::TestIsolation,
     };
-    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let (instance, boot) = (crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let make = || {
         ControlService::new(
             StopController::new(instance, boot, Cancellation::default()),
@@ -1513,8 +1710,8 @@ fn v2_capability_is_negotiated_only_with_recorder() {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
@@ -1607,7 +1804,7 @@ fn health_v2_capability_is_negotiated_only_with_cached_provider() {
         store::{SqliteStore, StoreSettings, connection::StoreContext},
         test_support::isolation::TestIsolation,
     };
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let boot = Uuid::new_v4();
     let bare = daemon_handler(instance, boot);
     let CommandResult::Capabilities(caps) = bare
@@ -1635,8 +1832,8 @@ fn health_v2_capability_is_negotiated_only_with_cached_provider() {
     let clock = Arc::new(FixedClock);
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
@@ -1744,16 +1941,14 @@ fn probe_picker_directory() {
         test_support::isolation::TestIsolation,
     };
     let iso = TestIsolation::new("cap-picker-directory");
-    let context = StoreContext::new(iso.state_root().join("store.db"), Arc::new(FixedClock));
-    context
-        .open_writer()
-        .unwrap()
-        .execute(
-            "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-            [],
-        )
-        .unwrap();
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let context =
+        StoreContext::new(iso.state_root().join("store.db"), Arc::new(FixedClock)).with_test_host();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let command = Command::PickerDirectory(PickerDirectoryQuery {
         page: PageRequest::default(),
     });
@@ -1765,7 +1960,7 @@ fn probe_picker_directory() {
         .query(
             &command,
             &ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: OutputSpec::default(),
                 operation_scope: None,
             },
@@ -1850,9 +2045,14 @@ fn directory_search_generated_continuation_preserves_literal_scope_order_and_out
         test_support::isolation::TestIsolation,
     };
     let iso = TestIsolation::new("directory-search-continuation");
-    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
-    context.open_writer().unwrap().execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t1','i','雪''s %_.* topic','goal',0,0),('t2','i','雪''s %_.* topic','goal',0,0);").unwrap();
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
+    context.open_writer().unwrap().execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('t1','34750f98bd59fcfc946da45aaabe933b','雪''s %_.* topic','goal',0,0,0),('t2','34750f98bd59fcfc946da45aaabe933b','雪''s %_.* topic','goal',0,0,0);").unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let original = parse_argv([
         "ht",
         "--state-dir",
@@ -1879,7 +2079,7 @@ fn directory_search_generated_continuation_preserves_literal_scope_order_and_out
         .query(
             command,
             &ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: original.output.clone(),
                 operation_scope: None,
             },
@@ -1912,9 +2112,14 @@ fn probe_message_delivery_modes() {
         test_support::isolation::TestIsolation,
     };
     let iso = TestIsolation::new("cap-message-delivery-modes");
-    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
-    context.open_writer().unwrap().execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('m','i','t',1,'ordinary',1,'ordinary body',0,'lazy'); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES('m3','i','t',2,'ordinary',2,'urgent body',0,'ordinary',3);").unwrap();
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
+    context.open_writer().unwrap().execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',1,'ordinary body',0,'lazy'); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES('m3','34750f98bd59fcfc946da45aaabe933b','t',2,'ordinary',2,'urgent body',0,'ordinary',3);").unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let command = Command::MessageDeliveryModes(MessageDeliveryModesQuery {
         with_priority: false,
         messages: vec![MessageId::new("m")],
@@ -1927,7 +2132,7 @@ fn probe_message_delivery_modes() {
         .query(
             &command,
             &ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: OutputSpec::default(),
                 operation_scope: None,
             },
@@ -1954,7 +2159,7 @@ fn probe_message_delivery_modes() {
         .query(
             &asked,
             &ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: OutputSpec::default(),
                 operation_scope: None,
             },
@@ -1975,12 +2180,13 @@ fn probe_message_delivery_modes() {
 }
 
 fn probe_thread_join() {
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let command = Command::Join(crate::protocol::commands::Join {
         thread: crate::protocol::ids::ThreadId::new("t1"),
         operation: crate::protocol::ids::OperationId::new("join-probe"),
         claim: crate::protocol::authority::CallerClaim {
-            instance: "i".into(),
+            host: crate::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: crate::protocol::ids::SeatId::new("s1"),
             binding_generation: 1,
             role: crate::protocol::authority::CallerRole::TopLevel,
@@ -2008,7 +2214,7 @@ fn probe_thread_join() {
 
 #[test]
 fn invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_requests() {
-    let legacy = r#"{"kind":"invite","args":{"thread":"t","seat":"s","deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}}"#;
+    let legacy = r#"{"kind":"invite","args":{"thread":"t","seat":"s","deadline_millis":null,"operation":"op","claim":{"instance":"i","host":"/host.sock","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}}"#;
     let original: serde_json::Value = serde_json::from_str(legacy).unwrap();
     let historical: Command = serde_json::from_str(legacy).unwrap();
     assert_eq!(serde_json::to_string(&historical).unwrap(), legacy);
@@ -2019,7 +2225,7 @@ fn invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_reques
         .collect::<String>();
     assert_eq!(
         digest_hex,
-        "828be585cb68fe75bc8decd1a9d5e23f5f8c5e2da738fb9bb4bb175e8430d3ad"
+        "f0ad00529a4ca051d582980f98d952bf1f8a33ea1b4d85a4b5964a8509a3cae1"
     );
     for mode in ["lazy", "require_ack"] {
         let mut modern = original.clone();
@@ -2060,13 +2266,13 @@ fn public_operation_status_cannot_bypass_send_time_capability_guard() {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
     let store: Arc<dyn StorePort> = Arc::new(
         SqliteStore::new(
-            StoreContext::new(isolation.path("store.db"), clock.clone()),
-            "probe-instance",
+            StoreContext::new(isolation.path("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
     );
-    let domain = DomainService::new("probe-instance".into(), store, clock);
+    let domain = DomainService::new("34750f98bd59fcfc946da45aaabe933b".into(), store, clock);
     let error = domain
         .handle(
             Command::OperationStatus(OperationStatusQuery {
@@ -2082,7 +2288,7 @@ fn public_operation_status_cannot_bypass_send_time_capability_guard() {
 
 #[test]
 fn invitation_confirmation_capability_is_advertised_with_active_lifecycle() {
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let CommandResult::Capabilities(reply) = handler
         .handle(
             Command::Capabilities,
@@ -2103,7 +2309,7 @@ fn invitation_confirmation_capability_is_advertised_with_active_lifecycle() {
 
 #[test]
 fn automatic_contract_declarations_do_not_advertise_an_unimplemented_runtime() {
-    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     let CommandResult::Capabilities(caps) = handler
         .handle(
             Command::Capabilities,
@@ -2146,18 +2352,17 @@ fn presentation_capability_routes_use_configured_domain() {
     };
     let isolated = TestIsolation::new("presentation-capability-route");
     let clock: Arc<dyn Clock> = Arc::new(FixedClock);
-    let context = StoreContext::new(isolated.path("store.db"), clock.clone());
+    let instance = crate::node::NodeUuid::new_v4();
+    let context = StoreContext::new(isolated.path("store.db"), clock.clone())
+        .with_test_host()
+        .with_node_seed(crate::test_support::node_seed_for(instance));
     let db = context.open_writer().unwrap();
-    let instance = Uuid::new_v4();
     let boot = Uuid::new_v4();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
-        [instance.to_string()],
-    )
-    .unwrap();
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
     for seat in ["origin", "recipient"] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?1,0,0,0)", rusqlite::params![seat, instance.to_string()]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc-'||?2,'coherent_enumeration',1)", rusqlite::params![instance.to_string(),seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?1,0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat, instance.to_string()]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),?2,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc-'||?2,'coherent_enumeration',1)", rusqlite::params![instance.to_string(),seat]).unwrap();
     }
     let store: Arc<dyn StorePort> = Arc::new(
         SqliteStore::new(context, instance.to_string(), StoreSettings::default()).unwrap(),
@@ -2186,6 +2391,7 @@ fn presentation_capability_routes_use_configured_domain() {
     let check_in = |seat: &str| {
         let session = format!("session-{seat}");
         let claim = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             instance: instance.to_string(),
             seat: SeatId::new(seat),
             binding_generation: 0,

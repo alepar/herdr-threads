@@ -11,13 +11,19 @@ use crate::{
     protocol::{
         authority::{CallerClaim, CallerRole, Harness, OperatorActor, PeerIdentity},
         commands::{AckModDelivered, Command, OperatorCommand, PermitMutation},
+        handoff::HandoffNamespace,
+        ids::HostLocator,
         output::OutputSpec,
         results::{ApiError, CommandResult, ErrorCode},
         service::{ServiceOperation, ServiceResult},
         time::{CallBudget, Clock},
         watch::{ModAckItem, ModAckOutcome, ModAckReason, ModAckReport},
     },
-    service::{fair_writer::FairWriter, workers::BoundedLane},
+    service::{
+        fair_writer::FairWriter,
+        host_sessions::{HostSession, HostSessions},
+        workers::BoundedLane,
+    },
 };
 use std::sync::Arc;
 
@@ -65,10 +71,26 @@ impl DeliveryRecheckClass {
     }
 }
 
+/// The guarded-bootstrap runtime of the Herdr server a namespace names: that
+/// session's canonical namespace and observer with the node-wide bootstrap
+/// store. Resolved per request, never held.
 struct BootstrapRuntime {
-    canonical: crate::protocol::handoff::HandoffNamespace,
+    canonical: HandoffNamespace,
     observer: Arc<dyn BootstrapObserver>,
     store: Arc<dyn BootstrapStorePort>,
+    identity: Arc<OrdinaryIdentity>,
+}
+
+impl BootstrapRuntime {
+    /// `None` when `session` cannot run guarded bootstrap.
+    fn of(session: &HostSession, store: &Arc<dyn BootstrapStorePort>) -> Option<Self> {
+        session.bootstrap().map(|runtime| Self {
+            canonical: runtime.canonical.clone(),
+            observer: Arc::clone(&runtime.observer),
+            store: Arc::clone(store),
+            identity: Arc::clone(session.identity()),
+        })
+    }
 }
 
 pub struct DomainService {
@@ -76,11 +98,21 @@ pub struct DomainService {
     pub(super) store: Arc<dyn StorePort>,
     pub(super) clock: Arc<dyn Clock>,
     search: BoundedLane,
-    current_target: Option<Arc<OrdinaryIdentity>>,
+    /// The registry of attached Herdr servers: the only service path to a
+    /// host. Every command that names a Herdr server (`Command::host_locator`)
+    /// resolves it here first, attaching a new server lazily within the
+    /// request budget, before any store call; `attached_host` hands out the
+    /// session, and bootstrap selects its session by the namespace's host.
+    /// `None` runs the service over the store alone (fixtures): nothing is
+    /// resolved and host work answers `HostUnavailable`.
+    hosts: Option<Arc<HostSessions>>,
     operator_owner_uid: Option<u32>,
     cooperative_runtime: Option<(u32, Arc<FairWriter>)>,
-    bootstrap: Option<BootstrapRuntime>,
+    /// The node-wide guarded-bootstrap store; each session supplies its own
+    /// namespace and observer.
+    bootstrap_store: Option<Arc<dyn BootstrapStorePort>>,
     mod_channels: Arc<dyn crate::ports::ModChannels>,
+    sync_admin: Option<Arc<super::sync_admin::SyncAdmin>>,
     pub(super) presentation: super::delivery_presentation::PresentationState,
     pub(super) delivery_pull: Arc<super::delivery_pull::DeliveryPullState>,
 }
@@ -92,11 +124,12 @@ impl DomainService {
             store,
             clock,
             search: BoundedLane::new(1, 4),
-            current_target: None,
+            hosts: None,
             operator_owner_uid: None,
             cooperative_runtime: None,
-            bootstrap: None,
+            bootstrap_store: None,
             mod_channels: Arc::new(crate::ports::NoModChannels),
+            sync_admin: None,
             delivery_pull: Default::default(),
             presentation: Default::default(),
         }
@@ -112,6 +145,12 @@ impl DomainService {
     /// The shared registry of live mod delivery channels (spec D2).
     pub fn with_mod_channels(mut self, channels: Arc<dyn crate::ports::ModChannels>) -> Self {
         self.mod_channels = channels;
+        self
+    }
+    /// The operator and status commands for cross-node sync (ht-5fr.8); a
+    /// daemon without a sync runtime answers them `Unsupported`.
+    pub fn with_sync_admin(mut self, admin: Arc<super::sync_admin::SyncAdmin>) -> Self {
+        self.sync_admin = Some(admin);
         self
     }
     pub fn mod_channels(&self) -> &Arc<dyn crate::ports::ModChannels> {
@@ -132,39 +171,172 @@ impl DomainService {
         self
     }
 
-    /// Every input is supplied by the elected runtime, never a command.
-    pub fn with_bootstrap_runtime(
+    /// The registry of attached Herdr servers (the elected daemon's).
+    pub fn with_sessions(mut self, hosts: Arc<HostSessions>) -> Self {
+        self.hosts = Some(hosts);
+        self
+    }
+
+    /// The node-wide guarded-bootstrap store, supplied by the elected runtime,
+    /// never by a command. A session serves guarded bootstrap when it also
+    /// has a bootstrap runtime of its own.
+    pub fn with_bootstrap_store(mut self, store: Arc<dyn BootstrapStorePort>) -> Self {
+        self.bootstrap_store = Some(store);
+        self
+    }
+
+    /// Fixture composition: guarded bootstrap on the prebuilt host of
+    /// [`Self::with_identity`], whose session takes the namespace's host as
+    /// its locator, `observer` and `store`.
+    pub fn with_prebuilt_bootstrap(
         mut self,
-        canonical: crate::protocol::handoff::HandoffNamespace,
+        canonical: HandoffNamespace,
         observer: Arc<dyn BootstrapObserver>,
         store: Arc<dyn BootstrapStorePort>,
     ) -> Result<Self, ApiError> {
         canonical.validate().map_err(ApiError::invalid_request)?;
-        if canonical.instance != self.instance
-            || self.current_target.is_none()
-            || self.operator_owner_uid.is_none()
-            || self.cooperative_runtime.is_none()
-        {
-            return Err(error(
+        // A namespace may spell its endpoint non-canonically (a fixture of a
+        // foreign namespace): the session is then labelled as a plain prebuilt one.
+        let locator = HostLocator::parse(canonical.host_endpoint.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| prebuilt_locator());
+        let identity = match &self.hosts {
+            Some(hosts) if canonical.instance == self.instance => hosts
+                .attached()
+                .into_iter()
+                .next()
+                .map(|session| Arc::clone(session.identity())),
+            _ => None,
+        }
+        .filter(|_| self.operator_owner_uid.is_some() && self.cooperative_runtime.is_some())
+        .ok_or_else(|| {
+            error(
                 ErrorCode::Unsupported,
                 "bootstrap runtime composition incomplete",
-            ));
-        }
-        self.bootstrap = Some(BootstrapRuntime {
-            canonical,
-            observer,
-            store,
-        });
+            )
+        })?;
+        let session = HostSession::prebuilt(
+            locator,
+            identity,
+            Arc::clone(&self.clock),
+            Some(crate::service::host_sessions::BootstrapRuntime {
+                canonical,
+                observer,
+            }),
+        );
+        self.hosts = Some(HostSessions::prebuilt(
+            session,
+            Arc::clone(&self.store),
+            Arc::clone(&self.clock),
+            self.instance.clone(),
+        ));
+        self.bootstrap_store = Some(store);
         Ok(self)
     }
-    pub(crate) fn bootstrap_available(&self) -> bool {
-        self.bootstrap.is_some()
+
+    /// The session of the Herdr server `locator` names.
+    ///
+    /// Owns: the one service answer to "which Herdr server does this call act
+    /// on": `HostSessions::resolve`, which attaches a server not yet attached
+    /// within `budget`, and `HostUnavailable` ("no Herdr server attached")
+    /// when the service has no registry. Does not own: choosing the locator
+    /// (the command's `host` does), or the session. Role: the only service
+    /// path to a host; `ResolveSeat`, the operator actions,
+    /// `ContinuityCheckIn` and the bootstrap paths take the host here, via
+    /// `.identity()`, and never read a registry field directly.
+    pub fn attached_host(
+        &self,
+        locator: &HostLocator,
+        budget: &CallBudget,
+    ) -> Result<Arc<HostSession>, ApiError> {
+        self.hosts
+            .as_ref()
+            .ok_or_else(|| ApiError::host_unavailable("no Herdr server attached"))?
+            .resolve(locator, budget)
     }
 
-    pub(crate) fn automatic_available(&self) -> bool {
-        self.bootstrap
-            .as_ref()
-            .is_some_and(|runtime| runtime.store.automatic_available())
+    /// Whether guarded bootstrap runs on the already attached server at
+    /// `locator` (a bootstrap store, and a session with a bootstrap runtime).
+    pub(crate) fn bootstrap_available(&self, locator: &HostLocator) -> bool {
+        self.bootstrap_store.is_some()
+            && self
+                .hosts
+                .as_ref()
+                .and_then(|hosts| hosts.by_locator(locator))
+                .is_some_and(|session| session.bootstrap().is_some())
+    }
+
+    /// [`Self::bootstrap_available`] and the store's automatic-handoff support.
+    pub(crate) fn automatic_available(&self, locator: &HostLocator) -> bool {
+        self.bootstrap_available(locator)
+            && self
+                .bootstrap_store
+                .as_ref()
+                .is_some_and(|store| store.automatic_available())
+    }
+
+    /// The bootstrap runtime of the server `namespace` names, resolved
+    /// through [`Self::attached_host`] from its `host_endpoint`; `None` when
+    /// the node has no bootstrap store or that server has no bootstrap
+    /// runtime. A namespace of another node is refused.
+    fn bootstrap_runtime(
+        &self,
+        namespace: &HandoffNamespace,
+        budget: &CallBudget,
+    ) -> Result<Option<BootstrapRuntime>, ApiError> {
+        let Some(store) = &self.bootstrap_store else {
+            return Ok(None);
+        };
+        if self.hosts.is_none() {
+            return Ok(None);
+        }
+        if namespace.instance != self.instance {
+            return Err(error(
+                ErrorCode::InstanceMismatch,
+                "bootstrap namespace belongs to another node",
+            ));
+        }
+        // Frozen paths are compared as spelled: an endpoint that is not a
+        // canonical locator equals no session's namespace.
+        let locator = HostLocator::parse(namespace.host_endpoint.to_string_lossy().into_owned())
+            .map_err(|_| {
+                error(
+                    ErrorCode::InstanceMismatch,
+                    "bootstrap namespace host is not a canonical locator",
+                )
+            })?;
+        let session = self.attached_host(&locator, budget)?;
+        Ok(BootstrapRuntime::of(&session, store))
+    }
+
+    /// The session an operator action runs on: the server its command names,
+    /// else (retire and orphan invite name no pane and never touch a server)
+    /// the lowest-id attached one, which only supplies the store and writer.
+    fn operator_host(
+        &self,
+        command: &Command,
+        budget: &CallBudget,
+    ) -> Result<Arc<HostSession>, ApiError> {
+        match command.host_locator() {
+            Some(locator) => self.attached_host(locator, budget),
+            None => self
+                .hosts
+                .as_ref()
+                .and_then(|hosts| hosts.attached().into_iter().next())
+                .ok_or_else(|| ApiError::host_unavailable("no Herdr server attached")),
+        }
+    }
+
+    /// [`Self::bootstrap_runtime`] for the server a claim names.
+    fn claim_bootstrap_runtime(
+        &self,
+        host: &HostLocator,
+        budget: &CallBudget,
+    ) -> Result<Option<BootstrapRuntime>, ApiError> {
+        let (Some(store), Some(_)) = (&self.bootstrap_store, &self.hosts) else {
+            return Ok(None);
+        };
+        let session = self.attached_host(host, budget)?;
+        Ok(BootstrapRuntime::of(&session, store))
     }
 
     fn automatic_bootstrap_command(
@@ -176,8 +348,7 @@ impl DomainService {
         use crate::protocol::handoff::AutomaticBootstrapAction;
         request.validate().map_err(ApiError::invalid_request)?;
         let runtime = self
-            .bootstrap
-            .as_ref()
+            .bootstrap_runtime(&request.identity.plan.payload.handoff.namespace, budget)?
             .ok_or_else(|| ApiError::unsupported("automatic canonical runtime unavailable"))?;
         crate::store::topology_handoff::automatic::namespace(
             &runtime.canonical,
@@ -218,13 +389,14 @@ impl DomainService {
             {
                 let resolving = crate::protocol::commands::ResolveSeat {
                     target: evidence.root_pane.clone(),
+                    host: request.identity.claim.host.clone(),
                     operation: request.identity.plan.payload.keys.resolve.clone(),
                 };
-                return self
-                    .current_target
-                    .as_ref()
-                    .ok_or_else(|| ApiError::unsupported("bootstrap identity unavailable"))?
-                    .with_bootstrap_observation(&*runtime.observer, &resolving, budget, |guard| {
+                return runtime.identity.with_bootstrap_observation(
+                    &*runtime.observer,
+                    &resolving,
+                    budget,
+                    |guard| {
                         runtime.store.automatic_bootstrap_recover(
                             &runtime.canonical,
                             request,
@@ -232,7 +404,8 @@ impl DomainService {
                             Some(guard),
                             budget,
                         )
-                    });
+                    },
+                );
             }
             let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
             return runtime.store.automatic_bootstrap_recover(
@@ -278,13 +451,14 @@ impl DomainService {
                 .ok_or_else(|| error(ErrorCode::Conflict, "automatic creation unavailable"))?;
             let resolving = crate::protocol::commands::ResolveSeat {
                 target: creation.root_pane,
+                host: request.identity.claim.host.clone(),
                 operation: request.identity.plan.payload.keys.resolve.clone(),
             };
-            return self
-                .current_target
-                .as_ref()
-                .ok_or_else(|| ApiError::unsupported("bootstrap identity unavailable"))?
-                .with_bootstrap_observation(&*runtime.observer, &resolving, budget, |guard| {
+            return runtime.identity.with_bootstrap_observation(
+                &*runtime.observer,
+                &resolving,
+                budget,
+                |guard| {
                     if matches!(request.action, AutomaticBootstrapAction::CheckStart) {
                         return runtime.store.automatic_bootstrap_check_start(
                             &runtime.canonical,
@@ -305,7 +479,8 @@ impl DomainService {
                         Some(guard),
                         budget,
                     )
-                });
+                },
+            );
         }
         let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
         if matches!(
@@ -333,8 +508,7 @@ impl DomainService {
     ) -> Result<CommandResult, ApiError> {
         request.validate().map_err(ApiError::invalid_request)?;
         let runtime = self
-            .bootstrap
-            .as_ref()
+            .bootstrap_runtime(&request.plan().payload.namespace, budget)?
             .ok_or_else(|| ApiError::unsupported("automatic canonical runtime unavailable"))?;
         crate::store::handoff::automatic::validate_namespace(&runtime.canonical, request)?;
         let (owner, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
@@ -398,12 +572,14 @@ impl DomainService {
         request
             .validate()
             .map_err(|why| error(ErrorCode::InvalidRequest, why))?;
-        let runtime = self.bootstrap.as_ref().ok_or_else(|| {
-            error(
-                ErrorCode::Unsupported,
-                "delivery guarded runtime unavailable",
-            )
-        })?;
+        let runtime = self
+            .bootstrap_runtime(&request.plan.payload.namespace, budget)?
+            .ok_or_else(|| {
+                error(
+                    ErrorCode::Unsupported,
+                    "delivery guarded runtime unavailable",
+                )
+            })?;
         let canonical = &runtime.canonical;
         let frozen = &request.plan.payload.namespace;
         if canonical.instance != frozen.instance
@@ -478,7 +654,9 @@ impl DomainService {
         command
             .validate()
             .map_err(|why| error(ErrorCode::InvalidRequest, why))?;
-        let runtime = self.bootstrap.as_ref().ok_or_else(|| {
+        let namespace = bootstrap_namespace(&command)
+            .ok_or_else(|| error(ErrorCode::InvalidRequest, "invalid bootstrap mutation"))?;
+        let runtime = self.bootstrap_runtime(namespace, budget)?.ok_or_else(|| {
             error(
                 ErrorCode::Unsupported,
                 "bootstrap guarded runtime unavailable",
@@ -562,13 +740,14 @@ impl DomainService {
             {
                 let resolving = crate::protocol::commands::ResolveSeat {
                     target: evidence.root_pane.clone(),
+                    host: request.identity.claim.host.clone(),
                     operation: request.identity.payload.resolve_key.clone(),
                 };
-                return self
-                    .current_target
-                    .as_ref()
-                    .ok_or_else(|| error(ErrorCode::Unsupported, "bootstrap identity unavailable"))?
-                    .with_bootstrap_observation(&*runtime.observer, &resolving, budget, |guard| {
+                return runtime.identity.with_bootstrap_observation(
+                    &*runtime.observer,
+                    &resolving,
+                    budget,
+                    |guard| {
                         runtime.store.bootstrap_recover(
                             &runtime.canonical,
                             request,
@@ -576,7 +755,8 @@ impl DomainService {
                             Some(guard),
                             budget,
                         )
-                    });
+                    },
+                );
             }
             let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
             return runtime.store.bootstrap_recover(
@@ -633,13 +813,14 @@ impl DomainService {
                 .ok_or_else(|| error(ErrorCode::Conflict, "bootstrap creation unavailable"))?;
             let resolving = crate::protocol::commands::ResolveSeat {
                 target: creation.root_pane,
+                host: identity.claim.host.clone(),
                 operation: identity.payload.resolve_key.clone(),
             };
-            return self
-                .current_target
-                .as_ref()
-                .ok_or_else(|| error(ErrorCode::Unsupported, "bootstrap identity unavailable"))?
-                .with_bootstrap_observation(&*runtime.observer, &resolving, budget, |guard| {
+            return runtime.identity.with_bootstrap_observation(
+                &*runtime.observer,
+                &resolving,
+                budget,
+                |guard| {
                     let permit = self.store.issue_cooperative_permit(
                         crate::store::cooperative_permit_request(&mutation)?,
                         budget,
@@ -651,7 +832,8 @@ impl DomainService {
                         Some(guard),
                         budget,
                     )
-                });
+                },
+            );
         }
         let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
         let permit = if let PermitMutation::BeginBootstrap(command) = &mutation {
@@ -804,13 +986,26 @@ impl DomainService {
                 "declared subagent cannot mutate",
             ));
         }
+        // The guarded runtime of the claim's Herdr server, for the mutations
+        // that carry a bootstrap child.
+        let runtime = if matches!(
+            mutation,
+            PermitMutation::Invite(_)
+                | PermitMutation::SendMessage(_)
+                | PermitMutation::BeginHandoff(_)
+                | PermitMutation::CreateThread(_)
+        ) {
+            self.claim_bootstrap_runtime(&request.claim.host, budget)?
+        } else {
+            None
+        };
         if let PermitMutation::SendMessage(command) = &mutation {
             loop {
                 let progress = {
                     let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
                     let admission = DurableWorkAdmission::new(16)
                         .map_err(|detail| error(ErrorCode::InvalidRequest, detail))?;
-                    if let Some(runtime) = &self.bootstrap {
+                    if let Some(runtime) = &runtime {
                         runtime.store.bootstrap_prepare_send_step(
                             &runtime.canonical,
                             command,
@@ -842,7 +1037,7 @@ impl DomainService {
                 mutation,
                 PermitMutation::Invite(_) | PermitMutation::SendMessage(_)
             ) {
-                if let Some(runtime) = &self.bootstrap {
+                if let Some(runtime) = &runtime {
                     permit.with_bootstrap_child(&runtime.canonical, &mutation)
                 } else {
                     permit
@@ -864,9 +1059,9 @@ impl DomainService {
                     if matches!(
                         mutation,
                         PermitMutation::BeginHandoff(_) | PermitMutation::CreateThread(_)
-                    ) && self.bootstrap.is_some() =>
+                    ) && runtime.is_some() =>
                 {
-                    let runtime = self.bootstrap.as_ref().expect("equipped runtime");
+                    let runtime = runtime.as_ref().expect("equipped runtime");
                     runtime.store.bootstrap_mutate(
                         &runtime.canonical,
                         mutation,
@@ -941,6 +1136,7 @@ impl DomainService {
             AckModDelivered {
                 claim: CallerClaim {
                     instance: self.instance.clone(),
+                    host: request.claim.host.clone(),
                     seat: seat.clone(),
                     binding_generation: binding.generation,
                     role: CallerRole::TopLevel,
@@ -976,34 +1172,48 @@ impl DomainService {
         }
         Ok(result)
     }
+    /// Fixture composition: a service over one prebuilt host whose identity
+    /// is built here. Every locator names that host (`HostSessions::prebuilt`).
     pub fn with_host(
         instance: String,
+        host_id: crate::ports::HostId,
         store: Arc<dyn StorePort>,
         clock: Arc<dyn Clock>,
         host: Arc<dyn HostPort>,
         writer: Arc<FairWriter>,
     ) -> Self {
-        let current_target = OrdinaryIdentity::new(
+        let identity = OrdinaryIdentity::new(
             instance.clone(),
+            host_id,
             Arc::clone(&store),
             host,
             Arc::clone(&clock),
             writer,
         );
-        let mut service = Self::new(instance, store, clock);
-        service.current_target = Some(Arc::new(current_target));
-        service
+        Self::with_identity(instance, store, clock, Arc::new(identity))
     }
+    /// Fixture composition: a service over one prebuilt host with the given
+    /// identity. Every locator names that host (`HostSessions::prebuilt`).
     pub fn with_identity(
         instance: String,
         store: Arc<dyn StorePort>,
         clock: Arc<dyn Clock>,
         identity: Arc<OrdinaryIdentity>,
     ) -> Self {
-        let mut service = Self::new(instance, store, clock);
-        service.current_target = Some(identity);
-        service
+        let session = HostSession::prebuilt(prebuilt_locator(), identity, Arc::clone(&clock), None);
+        let hosts = HostSessions::prebuilt(
+            session,
+            Arc::clone(&store),
+            Arc::clone(&clock),
+            instance.clone(),
+        );
+        Self::new(instance, store, clock).with_sessions(hosts)
     }
+}
+
+/// The locator a prebuilt host answers to before a namespace names its own.
+fn prebuilt_locator() -> HostLocator {
+    HostLocator::parse("/herdr-threads/prebuilt-host.sock").expect("a canonical fixture locator")
 }
 
 impl LocalService for DomainService {
@@ -1030,6 +1240,14 @@ impl LocalService for DomainService {
         };
         if claim.role != CallerRole::TopLevel || claim.is_subagent() {
             return Err(Refusal::NO_PUSH_CHANNEL);
+        }
+        // The claim's Herdr server attaches here, as for every other claim
+        // (`handle_with_output`); a server that cannot attach yet is retryable.
+        if claim.instance == self.instance
+            && let Some(hosts) = &self.hosts
+            && hosts.resolve(&claim.host, budget).is_err()
+        {
+            return Err(Refusal::Busy);
         }
         let mode = if request.presentation_v2 {
             crate::ports::ModChannelMode::PresentationV2
@@ -1172,6 +1390,21 @@ impl LocalService for DomainService {
                 crate::protocol::authority::SUBAGENT_READ_ONLY_DETAIL,
             ));
         }
+        // The Herdr server the command names attaches here, lazily and within
+        // the budget, before any store call. Only the elected owner's peer,
+        // and a claim of this node, can cause an attach; any other is refused
+        // by its route below.
+        if let (Some(hosts), Some(locator)) = (&self.hosts, command.host_locator())
+            && self
+                .cooperative_runtime
+                .as_ref()
+                .is_none_or(|(owner, _)| peer.effective_uid() == *owner)
+            && command
+                .host_claim()
+                .is_none_or(|claim| claim.instance == self.instance)
+        {
+            hosts.resolve(locator, budget)?;
+        }
         if matches!(&command, Command::Search(_)) {
             let _search = self.search.enter(budget, self.clock.as_ref())?;
             return self.store.query(&command, &read, budget);
@@ -1304,13 +1537,9 @@ impl LocalService for DomainService {
                 self.cooperative_mutation(PermitMutation::CheckIn(check), peer, budget, read, true)
             }
             Command::ResolveSeat(request) => {
-                let preparation = self.current_target.as_ref().ok_or_else(|| {
-                    error(
-                        ErrorCode::Unsupported,
-                        "current-target preparation unavailable",
-                    )
-                })?;
+                let preparation = self.attached_host(&request.host, budget)?;
                 preparation
+                    .identity()
                     .resolve(request, budget)
                     .map(CommandResult::SeatResolved)
             }
@@ -1328,19 +1557,14 @@ impl LocalService for DomainService {
                             "operator peer does not match elected owner",
                         )
                     })?;
-                let preparation = self.current_target.as_ref().ok_or_else(|| {
-                    error(
-                        ErrorCode::Unsupported,
-                        "current-target preparation unavailable",
-                    )
-                })?;
+                let preparation = self.operator_host(&command, budget)?;
                 let operator = OperatorCommand::try_from(command).map_err(|_| {
                     error(
                         ErrorCode::InvalidRequest,
                         "command is not an operator action",
                     )
                 })?;
-                preparation.operator(operator, actor, budget)
+                preparation.identity().operator(operator, actor, budget)
             }
             // Daemon lifecycle check order (TRUST-POLICY A4, C1): (1) the A4
             // agent-to-human refusal, (2) this C1 reattachment on a held or
@@ -1363,13 +1587,8 @@ impl LocalService for DomainService {
                         "caller peer does not match elected owner",
                     ));
                 }
-                let identity = self.current_target.as_ref().ok_or_else(|| {
-                    error(
-                        ErrorCode::Unsupported,
-                        "current-target preparation unavailable",
-                    )
-                })?;
-                identity.continuity(continuity, budget)
+                let host = self.attached_host(&continuity.host, budget)?;
+                host.identity().continuity(continuity, budget)
             }
             // Spec §4 summary protocol. The store decides entitlement against the
             // canonical view (A2); here only the elected owner's peer is admitted.
@@ -1425,6 +1644,30 @@ impl LocalService for DomainService {
                 let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
                 self.store.record_managed_launch(launch, budget)
             }
+            Command::Sync(sync) => {
+                let admin = self.sync_admin.as_ref().ok_or_else(|| {
+                    error(ErrorCode::Unsupported, "sync administration unavailable")
+                })?;
+                // Mutating commands are operator actions: only the elected
+                // owner's peer, recorded as `operator:local-user:<uid>`.
+                let actor = if sync.is_mutating() {
+                    Some(
+                        self.operator_owner_uid
+                            .and_then(|uid| OperatorActor::from_peer(peer, uid))
+                            .ok_or_else(|| {
+                                error(
+                                    ErrorCode::Unauthorized,
+                                    "operator peer does not match elected owner",
+                                )
+                            })?,
+                    )
+                } else {
+                    None
+                };
+                admin
+                    .run(sync, actor.as_ref(), budget)
+                    .map(CommandResult::Sync)
+            }
             Command::DeliveryPullV2(pull) => self.presentation_pull(&pull, peer, budget),
             Command::DeliveryPresentationConfirmV2(confirm) => {
                 self.presentation_confirm(&confirm, peer, budget)
@@ -1449,6 +1692,24 @@ impl LocalService for DomainService {
             )),
         }
     }
+}
+
+/// The frozen namespace of a bootstrap command's identity.
+fn bootstrap_namespace(command: &Command) -> Option<&HandoffNamespace> {
+    let identity = match command {
+        Command::BeginBootstrap(v) => &v.identity,
+        Command::ReserveBootstrapAttempt(v) => &v.identity,
+        Command::RecordBootstrapCreated(v) => &v.identity,
+        Command::RecordBootstrapNotSubmitted(v) => &v.identity,
+        Command::ResolveBootstrapSeat(v) => &v.identity,
+        Command::AttachBootstrapHandoff(v) => &v.identity,
+        Command::CompleteLinkedBootstrap(v) => &v.identity,
+        Command::CheckBootstrapSubmission(v) => &v.identity,
+        Command::BootstrapStatus(v) => &v.identity,
+        Command::RecoverBootstrap(v) => &v.identity,
+        _ => return None,
+    };
+    Some(&identity.payload.handoff.namespace)
 }
 
 pub(super) fn error(code: ErrorCode, detail: &str) -> ApiError {
@@ -1476,15 +1737,21 @@ mod operator_tests {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(path.clone(), clock.clone()),
-                "i",
+                StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings::default(),
             )
             .unwrap(),
         );
-        let domain = DomainService::new("i".into(), store, clock.clone()).with_operator_owner(501);
+        let domain = DomainService::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            store,
+            clock.clone(),
+        )
+        .with_operator_owner(501);
         let result = domain.handle(
             Command::OperatorFreshSeat(OperatorFreshSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("p"),
                 operation: OperationId::new("op"),
             }),
@@ -1507,6 +1774,74 @@ mod operator_tests {
     }
 
     #[test]
+    fn attached_host_is_host_unavailable_without_host() {
+        use crate::protocol::{
+            authority::Harness,
+            commands::{ContinuityCheckIn, ResolveSeat},
+            ids::{ExecutionId, NativeSessionId},
+        };
+        let path =
+            crate::test_support::scratch::temp_path(format!("no-host-{}.db", uuid::Uuid::new_v4()));
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let store = Arc::new(
+            SqliteStore::new(
+                StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
+                StoreSettings::default(),
+            )
+            .unwrap(),
+        );
+        // A service composed the way a store-only daemon is: no identity.
+        let domain = DomainService::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            store,
+            clock.clone(),
+        )
+        .with_operator_owner(501)
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(8)));
+        let budget = || CallBudget {
+            deadline: MonoInstant(clock.monotonic_now().0 + 1000),
+            cancellation: Cancellation::default(),
+        };
+        let direct = domain
+            .attached_host(&crate::test_support::test_host_locator(), &budget())
+            .map(|_| ())
+            .unwrap_err();
+        assert_eq!(direct.code, ErrorCode::HostUnavailable);
+        assert_eq!(direct.detail, "no Herdr server attached");
+        for command in [
+            Command::ResolveSeat(ResolveSeat {
+                host: crate::test_support::test_host_locator(),
+                target: HostTargetId::new("p"),
+                operation: OperationId::new("op"),
+            }),
+            Command::OperatorFreshSeat(OperatorFreshSeat {
+                host: crate::test_support::test_host_locator(),
+                target: HostTargetId::new("p"),
+                operation: OperationId::new("op"),
+            }),
+            Command::ContinuityCheckIn(ContinuityCheckIn {
+                host: crate::test_support::test_host_locator(),
+                target: HostTargetId::new("p"),
+                harness: Harness::Codex,
+                native_session: NativeSessionId::new("n"),
+                source: "resume".into(),
+                operation: OperationId::new("op"),
+                execution: ExecutionId::new("e"),
+                liveness: None,
+            }),
+        ] {
+            let error = domain
+                .handle(command.clone(), PeerIdentity::from_kernel(501), &budget())
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::HostUnavailable, "{command:?}");
+            assert_eq!(error.detail, "no Herdr server attached", "{command:?}");
+        }
+        drop(domain);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn summary_commands_reach_the_store() {
         use crate::protocol::{
             authority::{CallerClaim, CallerRole, Harness},
@@ -1520,8 +1855,8 @@ mod operator_tests {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(path.clone(), clock.clone()),
-                "i",
+                StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings::default(),
             )
             .unwrap(),
@@ -1529,16 +1864,20 @@ mod operator_tests {
         {
             let db = rusqlite::Connection::open(&path).unwrap();
             db.execute_batch(
-                "INSERT OR IGNORE INTO host_instances(id,created_at) VALUES ('i',0);\
-                 INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
-                 INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);",
+                "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+                 INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);",
             )
             .unwrap();
         }
-        let domain = DomainService::new("i".into(), store, clock.clone())
-            .with_cooperative_owner(501, Arc::new(FairWriter::new(8)));
+        let domain = DomainService::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            store,
+            clock.clone(),
+        )
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(8)));
         let claim = CallerClaim {
-            instance: "i".into(),
+            host: crate::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),
             binding_generation: 0,
             role: CallerRole::Subagent,
@@ -1608,11 +1947,11 @@ mod operator_tests {
         assert_eq!(err.code, ErrorCode::CallerUnverified);
         // Without an elected runtime the route is closed.
         let bare = DomainService::new(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             Arc::new(
                 SqliteStore::new(
-                    StoreContext::new(path.clone(), clock.clone()),
-                    "i",
+                    StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+                    "34750f98bd59fcfc946da45aaabe933b",
                     StoreSettings::default(),
                 )
                 .unwrap(),
@@ -1624,7 +1963,8 @@ mod operator_tests {
                 Command::Summary(SummaryRequest {
                     thread: ThreadId::new("t"),
                     claim: CallerClaim {
-                        instance: "i".into(),
+                        host: crate::test_support::test_host_locator(),
+                        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                         seat: SeatId::new("s"),
                         binding_generation: 0,
                         role: CallerRole::TopLevel,
@@ -1671,13 +2011,18 @@ mod topology_contract_dispatch_tests {
         let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
         let store = Arc::new(
             crate::store::SqliteStore::new(
-                crate::store::connection::StoreContext::new(path.clone(), clock.clone()),
-                "i",
+                crate::store::connection::StoreContext::new(path.clone(), clock.clone())
+                    .with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 crate::store::StoreSettings::default(),
             )
             .unwrap(),
         );
-        let domain = DomainService::new("i".into(), store, clock.clone());
+        let domain = DomainService::new(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            store,
+            clock.clone(),
+        );
         let db = rusqlite::Connection::open(path).unwrap();
         let before: i64 = db
             .query_row("PRAGMA data_version", [], |row| row.get(0))
@@ -1714,6 +2059,10 @@ mod topology_contract_dispatch_tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/service/host_routing.rs"]
+mod host_routing_tests;
 
 #[cfg(test)]
 #[path = "../../tests/service/mod_ack_dispatch.rs"]

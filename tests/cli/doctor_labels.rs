@@ -327,7 +327,7 @@ fn doctor_text_prints_the_daemon_log_path() {
         "protocol_version": 1,
         "context": {"ok": true, "state_dir": "/s", "source": {}, "host_endpoint": "/h"},
         "state_dir": {"exists": true, "safe": true},
-        "instance_dir": "/s/instances/i",
+        "node_dir": "/s/instances/i",
         "daemon_log": "/s/instances/i/logs/daemon.log",
         "daemon": {"state": "degraded"},
         "hooks": {"claude": {"setup": {}, "installed": {}}, "codex": {"setup": {}, "installed": {}}},
@@ -530,17 +530,32 @@ fn task3_versionless_doctor_metadata_unknown_is_informational_not_repairable() {
 /// reconciliation), or once the startup bound passed.
 fn boot_health(since_start_ms: u64, reconciled: bool) -> crate::protocol::results::Health {
     use crate::daemon::health::{ComponentStatus, HealthInputs};
-    let mut inputs = HealthInputs::unknown(uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    use crate::protocol::results::CapabilityState;
+    let mut inputs = HealthInputs::unknown(crate::node::NodeUuid::new_v4(), uuid::Uuid::new_v4());
     inputs.database = ComponentStatus::Ready;
     inputs.schema = ComponentStatus::Ready;
     inputs.scheduler = ComponentStatus::Ready;
-    inputs.safe_prompt = crate::protocol::results::CapabilityState::Supported;
-    inputs.current_execution = crate::protocol::results::CapabilityState::Unsupported;
     inputs.since_start_ms = Some(since_start_ms);
+    // The one attached server: unobserved until the first reconciliation.
+    inputs.hosts = vec![crate::daemon::health::HostHealthInput {
+        host_id: 1,
+        endpoint: "/s/herdr.sock".into(),
+        status: if reconciled {
+            ComponentStatus::Ready
+        } else {
+            ComponentStatus::Unknown
+        },
+        version: None,
+        current_execution: CapabilityState::Unsupported,
+        coherent_enumeration: if reconciled {
+            CapabilityState::Supported
+        } else {
+            CapabilityState::Unknown
+        },
+        safe_prompt: CapabilityState::Supported,
+        last_reconciliation_at: reconciled.then_some(crate::protocol::time::UtcMillis(9)),
+    }];
     if reconciled {
-        inputs.host = ComponentStatus::Ready;
-        inputs.coherent_enumeration = crate::protocol::results::CapabilityState::Supported;
-        inputs.last_reconciliation_at = Some(crate::protocol::time::UtcMillis(9));
         inputs.set_harness(
             "claude",
             crate::daemon::health::HarnessStatus::Supported("claude: listed".into()),
@@ -620,4 +635,104 @@ fn starting_daemon_text_relabels_pending_observation_lines_only() {
     assert!(!text.contains(DAEMON_STARTING_TEXT), "{text}");
     assert!(!text.contains("pending: "), "{text}");
     assert!(text.contains(&format!("issue: {pending}\n")), "{text}");
+}
+
+/// ht-5fr.1.11, keyed on the entries list by ht-5fr.2.10. Kills: doctor
+/// calling a daemon with no attached Herdr server `healthy`, `degraded` or
+/// `starting` (it serves the store only), calling a daemon with attached
+/// servers `store-only`, and refusing repairs because of the new word.
+#[test]
+fn store_only_keyed_on_empty_hosts() {
+    // Assembled Health carries one entry per attached server.
+    let hosted = boot_health(1_000, true);
+    assert_eq!(hosted.hosts.len(), 1);
+    assert_eq!(daemon_state_label(&hosted), "healthy");
+
+    let mut inputs = crate::daemon::health::HealthInputs::unknown(
+        crate::node::NodeUuid::new_v4(),
+        uuid::Uuid::new_v4(),
+    );
+    inputs.since_start_ms = Some(1_000);
+    let store_only = inputs.assemble();
+    assert!(store_only.hosts.is_empty());
+    assert_eq!(daemon_state_label(&store_only), "store-only");
+    // The aggregate of no entries is unknown, never ready.
+    assert_eq!(
+        store_only.host.reachability,
+        crate::protocol::results::ComponentState::Unknown
+    );
+
+    // Two attached servers: hosted, never store-only.
+    let mut two = boot_health(1_000, true);
+    two.hosts.push(two.hosts[0].clone());
+    assert_eq!(daemon_state_label(&two), "healthy");
+
+    // Whatever else it reports, an unavailable daemon stays unavailable.
+    let mut unavailable = store_only.clone();
+    unavailable.state = crate::protocol::results::HealthState::Unavailable;
+    assert_eq!(daemon_state_label(&unavailable), "unavailable");
+
+    // A store-only daemon serves: the text report and repair gating accept it.
+    let report = json!({
+        "result": "ok", "context": {"ok": true}, "state_dir": {"safe": true},
+        "daemon": {"state": daemon_state_label(&store_only), "version_matches": true},
+    });
+    assert!(render_text(&report).contains("daemon: store-only\n"));
+    assert!(repairs_allowed(&report));
+
+    // Wire: the entries round-trip; an absent list reads as no server.
+    let hosted_json = serde_json::to_value(&hosted).unwrap();
+    assert_eq!(hosted_json["hosts"][0]["host_id"], json!(1));
+    assert_eq!(
+        serde_json::from_value::<crate::protocol::results::Health>(hosted_json)
+            .unwrap()
+            .hosts,
+        hosted.hosts
+    );
+    let mut store_only_json = serde_json::to_value(&store_only).unwrap();
+    store_only_json.as_object_mut().unwrap().remove("hosts");
+    assert!(
+        serde_json::from_value::<crate::protocol::results::Health>(store_only_json)
+            .unwrap()
+            .hosts
+            .is_empty()
+    );
+}
+
+/// Kills: a missing legacy line, a live-owner line without the pid, a
+/// settings line per file collapsed, and legacy lines changing the result.
+#[test]
+fn legacy_lines_in_default_text() {
+    let report = json!({
+        "result": "ok",
+        "context": {"ok": true, "state_dir": "/s"},
+        "state_dir": {"exists": true, "safe": true},
+        "daemon": {"state": "healthy"},
+        "legacy": {
+            "path": "/s/instances", "instances": 3, "bytes": 1536,
+            "settings": ["/s/instances/a/settings.json", "/s/instances/b/settings.json"],
+            "live": [{"instance": "a", "pid": 99}],
+            "remedy": "herdr-threads legacy purge",
+        },
+    });
+    let text = render_text(&report);
+    assert!(text.starts_with("doctor: ok\n"), "{text}");
+    assert!(
+        text.contains(
+            "legacy data: /s/instances (3 instances, 1.5 KiB) not used; remove: herdr-threads legacy purge\n"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("legacy daemon running: pid 99\n"), "{text}");
+    assert!(
+        text.contains("legacy settings not carried over: /s/instances/a/settings.json\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("legacy settings not carried over: /s/instances/b/settings.json\n"),
+        "{text}"
+    );
+    let mut without = report.clone();
+    without.as_object_mut().unwrap().remove("legacy");
+    assert!(!render_text(&without).contains("legacy"), "{text}");
 }

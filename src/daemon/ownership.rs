@@ -1,6 +1,7 @@
 //! Exclusive owner election and endpoint publication. A PID is diagnostic only.
 
-use crate::daemon::paths::{InstancePaths, effective_uid};
+use crate::daemon::paths::{NodePaths, effective_uid};
+use crate::node::{NodeUuid, json::read_hint};
 use crate::store::connection::DurableSync;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -15,7 +16,7 @@ use uuid::Uuid;
 pub struct EndpointDescriptor {
     pub software_version: String,
     pub protocol_version: u16,
-    pub instance_uuid: Uuid,
+    pub node_uuid: NodeUuid,
     pub boot_id: Uuid,
     pub endpoint: std::path::PathBuf,
     pub pid: u32,
@@ -42,8 +43,10 @@ impl Drop for LeaseFile {
 #[derive(Debug)]
 pub struct OwnerLock {
     lock_file: Arc<LeaseFile>,
-    paths: InstancePaths,
-    instance_uuid: Uuid,
+    paths: NodePaths,
+    /// From the `node.json` hint at acquire time; `None` until the daemon has
+    /// written it. Publication refuses without it.
+    node_uuid: Option<NodeUuid>,
     owner_token: Uuid,
 }
 
@@ -130,44 +133,35 @@ impl OwnedAsyncListener {
 }
 
 impl OwnerLock {
-    pub fn acquire(paths: &InstancePaths) -> io::Result<Self> {
-        paths.prepare_instance_dir()?;
+    pub fn acquire(paths: &NodePaths) -> io::Result<Self> {
+        paths.prepare_node_dir()?;
         let file = open_private_file(&paths.lock_path)?;
         file.try_lock()?;
-
-        (|| {
-            let locator = read_or_initialize(&paths.locator_path, paths.locator.as_bytes())?;
-            if locator != paths.locator.as_bytes() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "instance locator mismatch",
-                ));
-            }
-            let namespace = match read_private(&paths.namespace_path) {
-                Ok(bytes) => {
-                    Uuid::parse_str(std::str::from_utf8(&bytes).map_err(invalid_data)?.trim())
-                        .map_err(invalid_data)?
-                }
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    let value = Uuid::new_v4();
-                    atomic_write(&paths.namespace_path, value.to_string().as_bytes())?;
-                    value
-                }
-                Err(err) => return Err(err),
-            };
-            Ok(Self {
-                lock_file: Arc::new(LeaseFile(file)),
-                paths: paths.clone(),
-                instance_uuid: namespace,
-                owner_token: Uuid::new_v4(),
-            })
-        })()
+        Ok(Self {
+            lock_file: Arc::new(LeaseFile(file)),
+            paths: paths.clone(),
+            node_uuid: hint_uuid(paths),
+            owner_token: Uuid::new_v4(),
+        })
     }
 
-    pub fn instance_uuid(&self) -> Uuid {
-        self.instance_uuid
+    /// [`Self::acquire`] for fixtures that stand in for the daemon: the node
+    /// key is loaded (created when absent) and its `node.json` hint written
+    /// first, as the elected daemon does, so a daemon started later on the
+    /// same state directory is the same node.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn acquire_with_test_hint(paths: &NodePaths) -> io::Result<Self> {
+        crate::test_support::seed_node_identity(paths)?;
+        Self::acquire(paths)
     }
-    pub fn paths(&self) -> &InstancePaths {
+
+    /// The node's uuid as the `node.json` hint named it when the lease was
+    /// taken. The elected daemon writes the hint (from its loaded identity)
+    /// before acquiring; a lease taken without one cannot publish.
+    pub fn node_uuid(&self) -> io::Result<NodeUuid> {
+        self.node_uuid.ok_or_else(missing_hint)
+    }
+    pub fn paths(&self) -> &NodePaths {
         &self.paths
     }
 
@@ -272,7 +266,7 @@ impl OwnerLock {
         let descriptor = EndpointDescriptor {
             software_version: software_version.to_owned(),
             protocol_version,
-            instance_uuid: self.instance_uuid,
+            node_uuid: self.node_uuid()?,
             boot_id,
             endpoint: path.to_path_buf(),
             pid: std::process::id(),
@@ -289,7 +283,7 @@ impl OwnerLock {
     /// Remove a prior published socket only if its recorded inode remains at
     /// the recorded pathname. Unpublished sockets are never removed here.
     pub fn remove_stale_endpoint(&self) -> io::Result<()> {
-        let descriptor = match parse_descriptor(&self.paths, self.instance_uuid) {
+        let descriptor = match parse_descriptor(&self.paths, hint_uuid(&self.paths)) {
             Ok(value) => value,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(err) => return Err(err),
@@ -334,7 +328,7 @@ impl OwnerLock {
                 "listener does not belong to elected owner",
             ));
         }
-        match parse_descriptor(&self.paths, self.instance_uuid) {
+        match parse_descriptor(&self.paths, hint_uuid(&self.paths)) {
             Ok(descriptor)
                 if descriptor.boot_id == bound.boot_id
                     && descriptor.endpoint == bound.path
@@ -356,7 +350,7 @@ impl OwnerLock {
 
     /// Graceful shutdown removes only the descriptor for this boot.
     pub fn remove_owned_endpoint(&self, boot_id: Uuid) -> io::Result<()> {
-        let descriptor = parse_descriptor(&self.paths, self.instance_uuid)?;
+        let descriptor = parse_descriptor(&self.paths, hint_uuid(&self.paths))?;
         if descriptor.boot_id != boot_id {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -368,24 +362,24 @@ impl OwnerLock {
     }
 }
 
-pub fn read_descriptor(
-    paths: &InstancePaths,
-    instance_uuid: Uuid,
-) -> io::Result<EndpointDescriptor> {
-    let descriptor = parse_descriptor(paths, instance_uuid)?;
+pub fn read_descriptor(paths: &NodePaths, node_uuid: NodeUuid) -> io::Result<EndpointDescriptor> {
+    let descriptor = parse_descriptor(paths, Some(node_uuid))?;
     validate_descriptor_socket(&descriptor)?;
     Ok(descriptor)
 }
 
-/// Read an existing namespace without initializing owner state.
-pub fn read_existing_namespace(paths: &InstancePaths) -> io::Result<Option<Uuid>> {
-    let bytes = match read_private(&paths.namespace_path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err),
-    };
-    let text = std::str::from_utf8(&bytes).map_err(invalid_data)?;
-    Ok(Some(Uuid::parse_str(text.trim()).map_err(invalid_data)?))
+/// The node uuid named by the `node.json` hint; a missing or corrupt hint is
+/// "unknown" (`Ok(None)`), as a missing namespace file was.
+pub fn read_node_uuid_hint(paths: &NodePaths) -> io::Result<Option<NodeUuid>> {
+    Ok(hint_uuid(paths))
+}
+
+fn hint_uuid(paths: &NodePaths) -> Option<NodeUuid> {
+    read_hint(&paths.node_json_path).map(|json| json.node_uuid)
+}
+
+fn missing_hint() -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, "node identity hint missing")
 }
 
 /// Identity of the lock inode observed while an owner was known to hold it.
@@ -395,7 +389,7 @@ pub struct OwnerLockIdentity {
     inode: u64,
 }
 
-fn open_existing_owner_lock(paths: &InstancePaths) -> io::Result<(File, OwnerLockIdentity)> {
+fn open_existing_owner_lock(paths: &NodePaths) -> io::Result<(File, OwnerLockIdentity)> {
     let before = fs::symlink_metadata(&paths.lock_path)?;
     if !before.file_type().is_file()
         || before.uid() != effective_uid()
@@ -435,16 +429,13 @@ fn open_existing_owner_lock(paths: &InstancePaths) -> io::Result<(File, OwnerLoc
     ))
 }
 
-pub fn owner_lock_identity(paths: &InstancePaths) -> io::Result<OwnerLockIdentity> {
+pub fn owner_lock_identity(paths: &NodePaths) -> io::Result<OwnerLockIdentity> {
     open_existing_owner_lock(paths).map(|(_, identity)| identity)
 }
 
 /// A true result proves the same lock inode can now be exclusively leased.
 /// Missing, unsafe or replaced paths cannot establish release.
-pub fn previous_owner_released(
-    paths: &InstancePaths,
-    expected: OwnerLockIdentity,
-) -> io::Result<bool> {
+pub fn previous_owner_released(paths: &NodePaths, expected: OwnerLockIdentity) -> io::Result<bool> {
     let (file, identity) = open_existing_owner_lock(paths)?;
     if identity != expected {
         return Err(io::Error::new(
@@ -468,11 +459,15 @@ pub fn previous_owner_released(
     }
 }
 
-fn parse_descriptor(paths: &InstancePaths, instance_uuid: Uuid) -> io::Result<EndpointDescriptor> {
+/// `expected` is the hint's uuid; it is compared only when the hint is known.
+fn parse_descriptor(
+    paths: &NodePaths,
+    expected: Option<NodeUuid>,
+) -> io::Result<EndpointDescriptor> {
     let bytes = read_private(&paths.descriptor_path)?;
     let descriptor: EndpointDescriptor = serde_json::from_slice(&bytes).map_err(invalid_data)?;
-    if descriptor.instance_uuid != instance_uuid
-        || !paths.accepts_descriptor_endpoint(&descriptor.endpoint, descriptor.boot_id)
+    if expected.is_some_and(|expected| descriptor.node_uuid != expected)
+        || !paths.accepts_descriptor_endpoint(&descriptor.endpoint)
         || descriptor.software_version.is_empty()
         || descriptor.protocol_version == 0
         || descriptor.boot_id.is_nil()
@@ -540,17 +535,6 @@ fn remove_matching_socket(descriptor: &EndpointDescriptor) -> io::Result<()> {
     match validate_descriptor_socket(descriptor) {
         Ok(()) => fs::remove_file(&descriptor.endpoint),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err),
-    }
-}
-
-fn read_or_initialize(path: &Path, value: &[u8]) -> io::Result<Vec<u8>> {
-    match read_private(path) {
-        Ok(bytes) => Ok(bytes),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            atomic_write(path, value)?;
-            read_private(path)
-        }
         Err(err) => Err(err),
     }
 }

@@ -1,0 +1,108 @@
+{
+  "verdict": "Should-fix (2 confirmed)",
+  "reportMarkdown": "---\nsuper-roast verdict: Should-fix (2 confirmed)\nmode: pr        iteration: 1 of 3\nprofile (assumed): Production local cooperative messaging plugin. False receipt completion can hide a pending obligation and missed delivery can stall collaboration. Same-user local inputs are cooperative; assess canonical ownership and output completion rather than adding adversarial caller verification.\ninputs: super-auto/inbox-injection-auto-ack@aba89049b367c22ddb3330b16ecfa14415b96b7a vs main@3ff902c77c8df3dbcadf02119bacd9e344f7e59b\ncoverage: scouts 11/11 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, deploy-safety, api-contract, observability, testing, hygiene-docs) \u00b7 raw 3 \u2192 deduped 3 \u2192 panel 2 \u00b7 spot 1 \u00b7 promoted 0 \u00b7 judge completion 100% \u00b7 remainder-capped: 0\nindependence: same-family (GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nseat-agreement: panels 2 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=2) \u00b7 reproduce 2/0/0 \u00b7 refute 2/0/0 \u00b7 ground 2/0/0\nlane-yield (found/confirmed/unique/refuted): correctness 0/0/0/0 \u00b7 security 0/0/0/0 \u00b7 premortem 0/0/0/0 \u00b7 simplicity-design 0/0/0/0 \u00b7 hot-path-perf 0/0/0/0 \u00b7 concurrency-async 0/0/0/0 \u00b7 deploy-safety 0/0/0/0 \u00b7 api-contract 0/0/0/0 \u00b7 observability 0/0/0/0 \u00b7 testing 1/1/1/0 \u00b7 hygiene-docs 2/1/1/0\n\nAll 11 scouts returned. Both full panels unanimously confirmed their findings; the spot check confirmed one Nit with lower verification strength. Ordinary manual fan-out used GPT-family seats in place of the skill's fable reporter. This local review does not establish final combined cross-node readiness; the caller has deferred that proof.\n\n## Confirmed findings\n\n- [Should-fix] src/cli/hook_inbox.rs:365 \u2014 The native-hook receipt settlement path lacks the required regression proving that settlement by one binding preserves a sibling binding's unread delivery and independent wake eligibility. [lanes: testing]\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: Design \u00a75 explicitly requires sibling unread delivery and independent delivery-row wake after seat-level receipt settlement; \u00a78 includes same-seat siblings in acceptance coverage.\n  evidence: LazyCommit::submit now sends receipt_candidates through CompleteInboxDelivery before advancing the displaying binding's cursors. Native regressions at tests/hook_entrypoint.rs:2644 and :7617 use one recipient binding.\n  evidence: The refute seat found no test combining nonempty native receipt completion with sibling unread delivery and wake assertions. tests/store/receipts.rs:5324 covers AckDisplayed first-settler attribution; tests/integration/lazy_attention.rs:1222 covers invitation service. Neither exercises this composition.\n  evidence: This is missing required regression coverage, not a proven runtime defect. The new seat-level settlement makes the gap material in this messaging plugin.\n  fix-shape hint: Add a native-hook regression with same-seat sibling bindings that settles the receipt through one binding and verifies the sibling's unread delivery and independent delivery-row wake.\n\n- [Nit] TRUST-POLICY.md:1702 \u2014 The normative policy retains the superseded mod-only auto-ACK exception and body-plus-ack truncation recipe. [lanes: hygiene-docs]\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: TRUST-POLICY.md:1702\u20131706 still restricts delivery auto-ACK to the bundled Claude mod and describes body followed by ack. Updated operative sections at :538 and :927\u2013940 authorize native-hook completion; src/protocol/watch.rs:108\u2013126 now emits only an inbox continuation.\n  evidence: Design \u00a74 explicitly requires updating the old mod-only wording. The paragraph was accurate on base; the new behavior makes it contradictory. Its dated decision-record context and the corrected operative sections limit the impact to Nit.\n  fix-shape hint: Amend or explicitly mark the old decision paragraph as superseded, including its truncation instructions.\n\n## Not verified (beyond panel cap)\n\n- none\n\n## Not verified (dedupe failed or judge lost)\n\n- none\n\n## Beyond remainder cap (count only)\n\n- none\n\n## Rejected (with reason)\n\n- none\n\n## Unverified nits (spot-checked)\n\n- [Nit] src/protocol/commands.rs:114; src/protocol/commands.rs:1588 \u2014 CompleteInboxDelivery documentation still promises presentation bookkeeping only and never an ACK, although receipt_candidates now authorizes receipt settlement.\n  evidence: The refute spot check confirmed that both variant comments retain the old authority description. Field documentation at :948\u2013951 and the trust policy describe the new authority; src/store/control.rs:2807 calls complete_hook_context, which settles pending receipts in src/store/receipts.rs:119.\n  verification: One refute-seat CONFIRM; no full panel. Correct field documentation and canonical validation limit this to Nit.\n  fix-shape hint: Update both operation comments to distinguish presentation bookkeeping from authorized hook-context receipt completion.\n\n## Escalations (need human)\n\n- none\n---",
+  "confirmedCount": 2,
+  "escalations": [],
+  "reporterFailed": false,
+  "enforcement": [
+    "lanes: 2 confirmed entries tagged",
+    "header: lane-yield inserted"
+  ],
+  "fixRegressions": [],
+  "coverage": {
+    "triageDead": false,
+    "scoutsDispatched": 11,
+    "scoutsDead": 0,
+    "unknownLanes": [],
+    "domainsDropped": [],
+    "rawFindings": 3,
+    "dedupedFindings": 3,
+    "dedupeOrphans": 0,
+    "beyondCap": 0,
+    "beyondPanelCap": 0,
+    "dedupeDead": false,
+    "panelCount": 2,
+    "spotCount": 1,
+    "promotedCount": 0,
+    "judgeLost": 0,
+    "spotLost": 0,
+    "laneYield": {
+      "correctness": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "security": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "premortem": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "simplicity-design": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "hot-path-perf": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "concurrency-async": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "deploy-safety": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "api-contract": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "observability": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "testing": {
+        "found": 1,
+        "confirmed": 1,
+        "unique": 1,
+        "refuted": 0
+      },
+      "hygiene-docs": {
+        "found": 2,
+        "confirmed": 1,
+        "unique": 1,
+        "refuted": 0
+      }
+    },
+    "judgeCompletionPct": 100,
+    "lowCoverage": false,
+    "panelCappedTag": "",
+    "emptyLateRound": false,
+    "convergenceEligible": false
+  },
+  "routeCounts": {
+    "confirmed": 2,
+    "unverified-nit": 1
+  },
+  "seatAgreement": "seat-agreement: panels 2 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=2) \u00b7 reproduce 2/0/0 \u00b7 refute 2/0/0 \u00b7 ground 2/0/0"
+}

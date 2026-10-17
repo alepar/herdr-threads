@@ -23,9 +23,18 @@ no delivery or wake decision reads the seat-wide delivery-row state (A8).
 Amended 2026-10-14 for connected-only pending views (ht-yha.57): every disconnect, process exit included, drops
 the binding's view and its next connected transition re-seeds it from its cursors and display marks; a
 disconnected binding costs publication nothing (A8).
+Amended 2026-10-14 for cross-node sync (ht-5fr): node identity and key custody, replicated facts, origin
+authority, peer identity binding, fork and clone repair, remote seats.
 Amended 2026-10-15 for pre-upgrade preparations resumed after the priority upgrade (ht-yha.66): a v0.11
 preparation that already staged a receipt for a non-ACK audience member finishes in that whole-audience receipt
 shape, never a mixed one; the recorded `delivery_mode` also decides whether a read shows a `[pN]` row (A8).
+Amended 2026-10-15 for the main v1 reconcile of cross-node sync
+(`docs/superpowers/runs/2026-10-14-cross-node-sync/2026-10-15-cross-node-sync--main-v1-reconcile-design.md`):
+`invitation.created` authority by issuer kind (a service or operator invitation names no inviter seat and is
+authorized by its signing origin node), the 1:1 pair auto-join authored by each seat's own home node, the
+`direct_auto_join` provenance value, and the node-local nudge threshold (N4, N5, A3).
+Amended 2026-10-15 for `message.sent` apply (ht-5fr.43): author and recipient membership are not re-checked at
+apply, an accepted limit in N4.
 Amended 2026-10-16 for moved panes (C1): a pane Herdr moves to another workspace gets a new pane id with the same
 terminal; the structural path already follows the seat, a stale caller pane id is refreshed through Herdr's resolution
 of that exact id only when it maps to no seat, and ordinary allocation is refused while a resolved seat's terminal
@@ -83,6 +92,19 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 - **Daemon boot**: one herdr-threads daemon process. A daemon restart does not change the Herdr incarnation.
 - **Operator**: a request made with `--operator`, accepted when the kernel peer UID matches the daemon owner.
   This is the local account, not proof of a person.
+- **Node**: one daemon and store per (machine, OS user, state dir). Nodes sync through signed facts (root spec
+  `docs/superpowers/runs/2026-10-14-cross-node-sync/2026-10-14-cross-node-sync-design.md`, "spec" below).
+- **node_uuid**: lowercase hex of the first 16 bytes of SHA-256(the node's Ed25519 public key); the node's
+  replication identity, unchanged while the key exists.
+- **Node tag**: the 3-character base62 prefix part of every public ID the node mints; derived from `node_uuid`
+  and changed only by an applied `node.retag` fact (spec section 2).
+- **Home node**: the node whose daemon created a seat; the only node that may author facts for it.
+- **Remote seat**: a seat row whose home node is another node. It has no host, target or bindings here and is
+  never occupiable on this node.
+- **Fact**: a signed, hash-chained journal entry authored by one node (its origin) and applied by every node
+  through the one ApplyEngine path.
+- **Origin**: the node that authored and signed a fact.
+- **Incarnation**: one generation of a node's log; a fork repair or restore starts a new one under the same key.
 
 ## Continuity invariants
 
@@ -143,14 +165,19 @@ terminal id in the same Herdr incarnation, and the processes already running in 
   seat at another target in the same boot and incarnation: the pane moved and reconciliation has not followed it
   yet. The retry after that pass resolves the existing seat; one terminal never gets a second seat this way.
 A new Herdr incarnation is unchanged: C2 holds apply, and old ids prove nothing there.
+On a node every rule is per Herdr host: the current-id read goes to the caller's own claim host, and the moved-terminal
+refusal considers only this node's local seats on that host (a remote seat has no target here and is never moved).
 
 **C2. Restore holds.** After a new or unknown Herdr incarnation while nonretired seats exist, every saved
 seat whose continuity is not structurally proven becomes unresolved, and the daemon takes a coherent baseline
 of current targets. Every unowned target in that baseline is **held**: ordinary resolution (`seat resolve`,
 `launch`, top-level `SessionStart` enrollment, `ht human me init`) refuses it with inspect / rebind / fresh-seat guidance. Panes authoritatively created
 after the baseline are not held. Holds are durable and survive daemon restart. A hold is released by:
-operator rebind or fresh seat on that target; cooperative continuity on that target (C1); or, instance-wide,
-when no unresolved nonretired seats remain (implemented, nothing left to protect).
+operator rebind or fresh seat on that target; cooperative continuity on that target (C1); or, per Herdr server,
+when no unresolved nonretired seats of that server remain (implemented, nothing left to protect). Holds, the
+baseline and observed targets are keyed by the Herdr server (`host_id`), because target ids are unique only
+within one server: a coherent snapshot of one server resolves, unresolves or retires only the local seats whose
+`host_id` is that server, and never touches another server's seats, holds or baseline.
 
 **Pane-close retirement (ht-54r.14).** A pane absent from a coherent snapshot of the *same* Herdr
 incarnation retires its seat, however many session bindings the seat holds. The retirement fence disconnects
@@ -160,6 +187,10 @@ Memberships retire, receipts settle recipient-retired and invitations close, all
 every `binding_cursors` row persist, for undo and herdr-graph. A new or unknown incarnation never retires: it
 yields unresolved seats under the C2 restore holds above, and each binding ends with reason `seat_unresolved`
 so the same session can reopen it after a rebind.
+
+A retirement of a published seat is also a `seat.retired` fact. Other nodes retire their remote copy of the seat
+only on that fact from the seat's home node (a fact from any other origin is recorded `failed` and retires
+nothing); they never retire a remote seat on their own evidence.
 
 **Startup enrollment.** Installed Claude/Codex top-level `SessionStart` lifecycle hooks enroll
 `HERDR_PANE_ID` through the same journaled ordinary canonical guarded seat resolver as `launch`.
@@ -256,10 +287,13 @@ records there are replay machinery, never its identity.
 | `cooperative_mod_channel` | mod channel registrations only (process-local) | The pane's top-level session of a harness whose adapter declares a push delivery channel (today Claude), through that harness's bundled herdr-threads mod's `watch` child, opened a delivery channel for its own binding. Channels are held per binding: every connected top-level binding of such a harness on a seat may hold one, and its deliveries, closes, grace and stall cooldown are that binding's alone. The daemon decides the registration against A2 (seat resolved and not held; the claim's key of seat, a harness that declares a push delivery channel, native session and no agent id names an open, connected, top-level binding of that harness (whatever its observation provenance); no stall cooldown for that binding; `mod_delivery` on). A subagent claim, an unknown session or a disconnected binding holds no channel, and a binding that disconnects or ends loses its channel. It grants nothing but receiving that binding's deliveries and making `cooperative_mod_delivery` claims through that binding. Never on bindings or receipts. |
 | `cooperative_mod_delivery` | receipt action observation; lazy completion claim | The mod reported that a delivery path's predicate held (spec D6): for an ordinary message, that its full body entered the model's context through the mod (an answered tool result carrying the mod's context, or, while idle, a `$.session.append` of its frame that resolved without `deny` (the mod then submits the content-free wake prompt `herdr-threads: wake up`, which carries no item); the `$.prompt.submit` wording applies only to a predecessor record written by an older mod instance: a submit that resolved without `drop`; or, after a plugin reload disposed the instance whose submit was still in flight, a main turn whose prompt carries the mod's frame naming the id, or the completion of the turn that was open when the successor loaded (the engine does not report the disposed instance's submit outcome)); for a lazy row, that it was appended to the transcript (`$.session.append` resolved without `deny`). The ACK is decided against the channel's own binding (the one the claim's key names) and the receipt records that binding as its ACK binding; the seat's receipt still settles once, so a second binding's ACK of the same id is `already_settled`. A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's observation provenance separately. A truncated item never carries it. |
 | `cooperative_hook_delivery` | receipt action observation; lazy completion claim | The top-level hook of a harness whose adapter declares hook-pull delivery reported that it found the id's frame header at the start of a line of a hook-injected step it decoded from the session's transcript, after a `DeliveryPull` showed the id (spec delivery-policy DP5/DP6). The daemon decides it against A2 and additionally requires that it recorded the id as offered to that binding (the connected top-level binding the claim's key names, at its binding generation) by a `DeliveryPull` (process-local offered ledger). A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's observation provenance separately. A truncated item never carries it. |
-| `cooperative_hook_context` | lazy completion claim | A top-level standard native hook **of a harness whose adapter declares no hook-pull delivery** wrote and flushed output whose context carried the lazy message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`, which is part of the accountable operation's payload digest (as `AckModDelivered` carries the mod claim); no per-row source is stored. Not proof that the harness ingested it or the model read it. A prefix never carries it. The daemon refuses this claim from a hook-pull binding. |
+| `cooperative_hook_context` | receipt action observation and lazy completion claim | A top-level standard native hook **of a harness whose adapter declares no hook-pull delivery** wrote and flushed output whose context carried the message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`; its exact receipt candidates, source and original caller claim are frozen into the accountable payload digest. Receipt observations preserve binding provenance separately. Lazy rows store no per-row source. Not proof that the harness ingested it or the model read it. A prefix never carries it. The daemon refuses this claim from a hook-pull binding. |
 | `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because the same native harness session id matched (C1). Never on receipts. |
-| `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
+| `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. Also covers `sync clone-cleared` and the other mutating sync, peer and legacy commands (`sync resync`, `peer add`, `peer forget`, `legacy purge`). |
+| `replicated_from:<node_uuid>` | receipts, invitation answers (the accept and reject rows) and events applied from another node's fact (bindings never) | Applied as given from a fact authored and signed by node `<node_uuid>`; the authoring node's own provenance travels inside the fact. Never written for a locally authored fact. |
+| `local_journal` | receipts, invitation answers and events materialized from an own old incarnation's entry with no staged local attribution | A wipe or restore pull-back re-applied this node's own earlier fact; the original binding is not known here. Never on bindings. |
+| `direct_auto_join` | join observations and events of a 1:1 pair seat's auto-join only | The seat's home node joined it because its pair was created (main D7): in the creating transaction when the seat is local to the creator, else when its node applied the pair's `thread.direct` (N4). No binding acted; the derived event's `actor_seat` is the pair creator. Never on bindings or receipts; authorizes nothing (amended 2026-10-15, main v1 reconcile §2.2). |
 | `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), on any seat, beside whatever bindings the seat already holds, decided against the effective observation (A2). It carries the liveness fingerprint (pid and start time, from host process info) of the one process Herdr reports in the pane's foreground besides its shell; with none or several observable, nothing is recorded. Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, it keeps the seat generation, and it establishes no availability. Receipt deadlines start at send time independently of this binding. |
 | `cooperative_env_session` | binding claims | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`; and the session variable a registered adapter declares in its caller shape, today agy's `ANTIGRAVITY_CONVERSATION_ID`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
 | `cooperative_hook_agent` | binding claims | herdr-threads' own Claude PreToolUse hook inserted `--agent-id=<agent_id>` into a recognized `herdr-threads`/`ht` command, attributing the call to that subagent. Shapes the hook cannot recognize stay attributed to the parent session. Never on receipts. |
@@ -588,6 +622,7 @@ Delivery and authority gates read the binding's role, liveness and harness, neve
 | ACK, accept, reject an ordinary invitation, send, leave, archive, reopen | a connected top-level binding of the seat (top-level agent or declared human); never a subagent binding |
 | advance one's own binding's read cursors (`AdvanceCursors`, a display of its own stream) | any binding of the seat, subagent bindings included; it moves only the caller's own binding cursors and settles nothing |
 | display ACK after text inbox output | any connected top-level agent binding of the seat, for exact canonical pending agent receipts fully displayed on the page; the daemon decides eligibility again before settlement |
+| native hook context receipt completion | an exact connected registered top-level standard-hook agent binding, for existing addressed ordinary agent receipts (including retained work after leave and explicit invitee receipts), after complete context output was written and flushed; never a subagent or hook-pull claim; no membership acceptance |
 | open a mod delivery channel (`watch`) | the pane's top-level session of a push-channel harness through its mod, for its own connected top-level binding (the claim's native session); several bindings of one seat each hold their own; recorded as `cooperative_mod_channel`; it grants no other row |
 | mod delivery ACK (`watch ack`) | the connected top-level binding of a push-channel harness that holds a live channel (grace included), the one the claim's key names; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |
 | hook-pull delivery (`DeliveryPull`, `DeliveryConfirm`) | the connected top-level binding of a hook-pull harness that the claim's key (seat, harness, native session) names, from any of its top-level hooks (including `Stop`); settlement only for ids the daemon offered to that binding; the daemon decides each id against A2 again; recorded as `cooperative_hook_delivery` |
@@ -674,7 +709,8 @@ policy is validated for shape and otherwise ignored. A pair seat with no cursor 
 thread head as of that join (the auto-joined pair floor), not at its first session's head, so its first
 session is offered the opener and every later send; any seat that already holds a cursor keeps it. Joining
 is never ACK or check-in. A pair created before the upgrade with a pending invitation keeps it: it reports
-`ExistingPending` and still needs `accept`.
+`ExistingPending` and still needs `accept`. Across nodes, each pair seat's join is authored by that seat's own home
+node (N4, the 1:1 pair auto-join rule).
 All ordinary, operator and service enrollment paths preserve the two-seat participant universe;
 services cannot adopt or own these channels. Invited seats remain reserved even before acceptance.
 Explicit leave, rejection and archival require ordinary join/accept/reinvite/reopen repair, never
@@ -979,11 +1015,15 @@ is woken for its own rows its nudge threshold admits (wake eligibility only, abo
 presents (marker advanced, or a lifecycle check-in) and no mod channel is live, it reads one bounded
 read-only v2 inbox page and places only complete items in the bytes its ordinary context leaves under the
 context bound. After its stdout was written and flushed, and the adapter reported that the output carries
-context, it submits exactly the lazy IDs shown whole with `CompleteInboxDelivery` under the registered
+context, it submits exactly the lazy IDs shown whole and, with `hook.context_receipts_v1`, exact
+existing receipt candidates in a separate optional list with `CompleteInboxDelivery` under the registered
 execution's canonical claim and the `cooperative_hook_context` claim (`via: hook_context`). The daemon
 decides it under the same checks as inbox completion (A2). The claim is that the hook emitted the body as
-context, not that the harness ingested it or the model read it. The hook never ACKs: ACK-required
-messages it shows stay pending, with an exact `ack` command for the agent. A hook that ran inside the
+context, not that the harness ingested it or the model read it. Complete receipt candidates settle
+through the common canonical receipt writer with `cooperative_hook_context` action provenance;
+ordinary sends without receipt obligations create none. Receipt-only completion is valid; lazy IDs
+are never synthesized. Empty/omitted receipt lists retain the historical lazy-only behavior. Older
+daemons receive no unsupported extension. A hook that ran inside the
 occupant's turn (a tool boundary, or a turn start that checks in the same way; never a lifecycle check-in,
 after which the session may sit idle) marks its cursor advance `in_turn` (ht-705, only to a daemon
 advertising `inbox.in_turn_offer_v1`) and names the invitations it showed: the daemon then records in
@@ -1033,7 +1073,8 @@ short of the end, or a read from an explicit offset past 0) moves nothing, and n
 explicit `ack` settles or moves anything else: an `ack` carries no display, and a message the binding read
 whole was already passed by that read. The walk also counts as displayed a message whose seat receipt this
 same binding display-ACKed (`ack_binding_id` is the walking binding and the ACK observation carries
-`action_provenance`, which only display settlements write: text-inbox display, mod or hook-pull delivery),
+`action_provenance`, which only display settlements write: text-inbox display, native hook context,
+mod or hook-pull delivery),
 so a later message shown whole while the cursor was held behind a truncated one is passed together with it.
 Another binding's ACK and an explicit (non-display) `ack` are never such evidence. Accepted limit: a
 continuation chain begun at an explicit offset counts as whole (the continuation does not record where the
@@ -1177,6 +1218,147 @@ lazy row. So only undisplayed lazy rows past the furthest cursor are guaranteed 
 seat-pending); an undisplayed lazy row at or below it is passed by every binding. Example: A fast-forwards past
 unshown lazy rows 1..50 while sibling B is at 0; after a leave and rejoin rows 1..50 are not marked and B rises to
 the head, so no binding sees them.
+
+## Cross-node sync (2026-10-14, ht-5fr)
+
+Nodes share one thread space by exchanging signed facts (spec: root design, sections 1, 4-10 and 12; subspecs
+node-identity, fact-kinds, peer-link, incarnations). The model stays cooperative and same-user: the checks below
+are consistency guards against bugs, version skew and accidents, never adversarial caller verification (see the
+Abstract). They add no new way for a caller to prove who it is.
+
+**N1. Node identity and key custody.** A node's identity is an Ed25519 key in `<state_dir>/node/node.key`: exactly
+32 raw bytes, mode 0600, owned by the daemon's user, a regular file. It is created once (no-clobber, never
+rewritten, truncated or regenerated) and `node_uuid` is derived from its public key. The daemon refuses to start
+when the key is missing while a store exists, when the key is unreadable, has wrong permissions or length, or is not
+a regular file, and when the key and the store's `local_node` disagree; it never repairs or recreates a key next to
+an existing store. Losing the key makes a new node (new key and new store); the old node's seats stay remote seats
+of the old node (N5). `node.json` is derived, hint-only data and never authority: client-local files and hints never decide identity (A2).
+
+**N2. Origin signatures are verified by every receiver.** Every journal entry carries its origin's signature over
+its canonical bytes and a hash chain. Every receiver verifies signature and chain before storing or applying an
+entry, whatever link or relay delivered it; a hash or signature failure rejects the batch and counts against that
+source. A relayed entry is trusted exactly as far as its origin signature, never because of the node that relayed it.
+
+**N3. The author's view decides.** A2 applies on the authoring node: the command that authors a fact is decided
+there, in its deciding transaction, against that node's canonical view. Receivers apply signed facts as given:
+no handler rejects a fact because of the receiver's local membership, archive, eligibility or host view (the
+author's view decides, never the receiver's). A receiver-side rejection exists only for the consistency guards of
+N4 and for malformed or constraint-violating facts. Materialized remote facts carry the provenance
+`replicated_from:<node_uuid>` (A3); the authoring node's own provenance travels inside the fact, and attribution
+columns are never replicated.
+
+**N4. Origin authority.** A receiver rejects, as `failed` (counted as processed, visible in `sync unapplied`, and
+replayable with `sync unapplied replay`), a fact whose origin is not the kind's authorized author (fact-kinds
+section 17):
+- the seat's home node for the seat-scoped kinds (`seat.*` retirement via `seat.retired`, `membership.*` i.e.
+  `membership.joined` and `membership.left`, `invitation.answered` for the invitee's seat, and `receipt.settled`
+  for the receipt's seat);
+- for `invitation.created`, by its issuer kind (`inviter_kind`): a `seat` invitation names its inviter seat and
+  is authorized only from that seat's home node; a `service` invitation (a registered service author) or an
+  `operator` invitation (an operator command) names no inviter seat (the inviter is optional and, if present,
+  ignored for authority) and takes its authority from the signing origin node, which also owns its deadline and
+  overdue decision (`invitations.origin_node`). `invitations.inviter_seat_id` is set exactly for `seat`
+  invitations (amended 2026-10-15, main v1 reconcile §4);
+- the author seat's home node for `message.sent`. Accepted limit (ht-5fr.43): a replicated `message.sent` is applied
+  with its author's audience as signed. The applying node checks that the origin is the author's home node and does
+  not re-check the author's membership or the recipients' membership against its own view, because membership
+  converges asynchronously and apply is order-independent (root §3, §6). A misbehaving home node can therefore
+  deliver its seat's message to any seat of another node, including a non-member; the delivery carries the true
+  author and `replicated_from:<origin>` provenance and never a local binding. Accepted limit (cooperative same-user
+  nodes);
+- the creator's home node for `thread.created`;
+- the home node of either pair seat for `thread.direct`;
+- for `seat.created`, the node whose tag the seat ID carries: the ID's tag is one the origin has held (from its
+  initial tag up to its current retag step), so a seat minted under the origin's pre-retag tag still passes.
+
+A 1:1 pair's auto-join keeps this rule (amended 2026-10-15, main v1 reconcile §2): pair creation joins both
+reserved seats (A5 "Automatic pair reservation"), but no node authors another node's seat's join. The creating
+node authors its own seat's `membership.joined` (and its local peer's, when both seats are local); a remote peer's
+home node authors the peer's `membership.joined` when it applies the pair's `thread.direct`, only for a local,
+non-retired pair seat with no membership row in that thread. The join's optional `actor` (the pair creator) only
+fills the derived event's `actor_seat`, kept when it is one of the pair's two seats; it confers no authority and
+never causes a refusal. Until the peer's join arrives, the creator's node addresses the peer in its sends to the
+pair as a member whose auto-join is pending, and lists it as joined only once that join applies there.
+
+`thread.register` and the `node.*` kinds are authored by any node. A `thread.register` may name its acting seat (`actor`, written as the event's `actor_seat`): a node names only one of its local seats, and an applying node keeps a replicated actor only when that seat's home node is the origin, else it materializes the change with no actor; the fact itself is never refused for its actor. A re-issued fact keeps its original origin and
+passes. This is a deterministic consistency guard on replicated identity against buggy or version-skewed nodes: it
+compares the origin with replicated identity that every node holds identically, so every node rejects the same
+facts. It is not adversarial verification (a node holding another node's key is out of scope, see Accepted limits)
+and not a view check (it never rejects a fact the authorized author was entitled to author).
+
+**N5. Remote seats.** A seat is never moved, merged, or retired on heuristic evidence. A seat's home node never
+changes. A remote seat is retired only by its home node's `seat.retired`; observation, reconciliation, liveness
+and retirement-by-observation never touch it, and a forgotten or gone home node never retires its seats. Remote
+seats are not occupiable: a claim, a binding open or connect, a check-in or an operator action naming a seat whose
+home is another node is refused with CallerUnverified "cooperative seat is not local" (enforced by ht-5fr.2.6
+through `seats::is_local_seat`). So no action is ever attributed on this node to a remote seat, and no fact is
+authored for it. Delivery rows, wakes and deadlines are created only for local seats; the sender's node owns the
+deadline and overdue decision for an obligation it authored. A seat's nudge threshold is node-local: only the
+seat's home node stores and reads it, the wake decision for a replicated message is made there against the
+message's replicated priority and the seat's current threshold, and setting the threshold of a remote seat is
+refused like any other action naming it (amended 2026-10-15, main v1 reconcile §1.1). Catch-up extensions exist only for local bindings, so a remote recipient
+mid catch-up can be reported overdue earlier than a local one would be (accepted limit).
+
+**N6. Peer identity binding.** A link handshake is refused with `auth_failed` when SHA-256(hello pubkey)[0..16]
+differs from the node_uuid the peer claims, and also when a genesis pubkey is already recorded for that node_uuid
+and differs from the hello pubkey. The first rule is enforced by the handshake (ht-5fr.5.2), the second by the
+post-handshake check against the held logs' genesis keys (ht-5fr.5.5). A bad `PeerAuth` signature is also
+`auth_failed`. `auth_failed` stops dialing that target until the target is changed. The same node_uuid arriving
+with a different boot id is a clone (N8), not a duplicate link.
+
+**N7. Fork quarantine and re-issue.** Two validly signed different entries at one (origin, incarnation, counter)
+prove the key holder forked its log. Every node holding both freezes that log at the last common counter, keeps
+the conflicting entries in quarantine (`journal_forked`), stops pulling beyond the frozen counter and records fork
+evidence. The owning node (when it holds no clone evidence, N8) starts a new incarnation and re-issues, in original
+order and with the original public fact IDs, every fact past the frozen counter from all branches, re-signed under
+its key. Idempotent apply makes re-issues no-ops where already applied, so every node ends with the union of facts
+and never authors under the frozen incarnation again. These are the only defined repairs for forks; no node merges
+branches by any other rule.
+
+**N8. Clone gate.** One key live in two daemons is detected by the handshake (`node_collision`), a third node's boot
+comparison, a lineage branch (two own genesis entries naming one predecessor) or an `own_unknown_newer` log. A node
+holding clone evidence about itself takes no automatic identity action (no owner rotation, no restore rotation, no
+re-issue); it keeps authoring locally and recording evidence. Clones are never healed automatically. The operator
+repairs them (A5): move one copy's `<state_dir>/node/` directory aside so it starts as a new node, then run
+`sync clone-cleared` on the keeper; a single copy that is a restore these rules cannot tell from a clone runs
+`sync clone-cleared` alone. `sync clone-cleared` and the other mutating sync commands record
+`operator:local-user:<uid>` provenance (A3).
+
+**N9. Derived events are local.** Derived `info`/`warn` events (overdue, retirement and warning notices) are
+decided and materialized on the node whose view caused them and are not replicated; only facts are. Settled
+history never wakes anyone: catch-up of old facts applies under suppression (see Accepted limits).
+
+**N10. Several Herdr servers on one node.** One daemon may serve several Herdr servers, and target ids are unique
+only within one server (see C2). Four rules, enforced in the store by `seats::cooperative_claim` and
+`seats::decide_continuity`:
+- The caller claim's host locator names the Herdr server the caller's pane runs under. It is cooperative context
+  like `target`: a hint the daemon checks, never attestation.
+- The daemon accepts a claim only when the claimed seat is a local seat that currently sits on the attached
+  server the claim names (A2, decided in the deciding transaction). The daemon attaches the named server on
+  the request path, before any store call, when the caller is the elected owner's peer and the server's
+  socket exists; a server that cannot be attached is `HostUnavailable` (retryable once it can be). A seat
+  that is not local, or sits on another server, is CallerUnverified.
+- A rebind under C1 or by an operator may move a local seat between Herdr servers of the same node, and never
+  between nodes. `host_id` changes only in the same transaction that sets the new `target_id`, and the
+  allocation decision records the server. C1 takes the server from the continuity command, not from a claim, and
+  its candidates are local seats only.
+- An unreachable or unattached server freezes wakes only for its own seats; seats on other servers keep waking.
+
+**N11. Resync is an operator repair.** `sync resync --from <node>` rebuilds a damaged store from a peer and records
+`operator:local-user:<uid>` provenance (A3) in its marker, `<state_dir>/node/resync.json`, and in the daemon log line
+that starts the rebuild. The daemon stops, backs the old store up by `VACUUM INTO` and moves the old files aside
+under `backups/<unix_ms>/` (`orig/` holds the moved bytes), and restarts on a fresh store under a new random
+incarnation. Nothing is deleted: the operator removes the backups. The rebuilt store is pulled from `from` (a pin on
+the rx source until a round with `from` completes, or ten minutes), and every verifiable entry of the backup is
+read back through the one ingest path, so facts that never left the damaged node are recovered and corrupt rows are
+never admitted. The rebuild loses node-local state that is not in the journal: bindings, `operations`, wake and
+attention bookkeeping, `herdr_hosts` (rebuilt on attach) and service-managed threads (`journaled = 0`). The node's
+own seats come back from their `seat.created` facts as unresolved seats until C1 continuity or an operator rebinds
+them. It never merges seats and never moves one on heuristic evidence (N5).
+
+**N12. Discovery hints come only from this user's processes.** The process-table scan behind discovered
+`herdr_remote_process` dial targets reads only processes whose real uid is the daemon's; another local user's
+processes are skipped before their argv is read, so they never become dial targets (ht-5fr.18).
 
 ## Accepted limits
 
@@ -1597,6 +1779,13 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **Hook delivery claims are cooperative.** A same-user process could send `DeliveryConfirm` for ids the daemon
   offered and settle them as `cooperative_hook_delivery`; the daemon checks the canonical binding, its
   generation and its offered ledger, not the process.
+- **Native context claims are cooperative.** A same-user process could claim complete emitted context
+  through `CompleteInboxDelivery`; the daemon revalidates the exact connected registered top-level
+  standard-hook binding and existing addressed agent receipts, independently of current membership, not
+  ingestion or cognition. Encoding, write or flush failure and partial bodies confer no claim.
+  Post-output completion failure leaves work eligible for later automatic delivery; uncertain
+  responses can duplicate presentation but not the canonical terminal receipt transition. Receipt
+  settlement is seat-level, while display cursors remain binding-local. Invitations remain separate.
 - **The offered ledger is process-local.** A daemon restart loses it: a later confirm is `not_offered`, the items
   stay pending, and the next pull offers them again (at-least-once): a pull is never answered unchanged before the
   daemon process has read the binding's whole stream (pending plus settled-but-unread), whatever version the hook last saw.
@@ -1677,7 +1866,60 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   transaction, and its first session is offered the opener and every later send. Explicit leave still applies.
   A pair created before the upgrade with a pending invitation keeps it.
 
+### Cross-node sync (ht-5fr)
+
+- **Root can steal a node key.** Whoever can read `node.key` (root, or the same user) can author facts as that
+  node. This is in-contract (A1): the origin signature and N4 are consistency guards, not a defense against a
+  key holder. Clock skew affects last-writer-wins resolution and shown times only; it never gates admission,
+  delivery or any deadline decision.
+- **Node decommission.** A forgotten or gone node's seats stay remote members: it never sends `seat.retired`.
+  Threads with such members are not auto-archived (automatic archival decides only threads whose every
+  non-retired member is local); they are archived explicitly. Only the home node can retire its seats.
+- **Clones.** One key live in two daemons is detected (handshake, third-node boot comparison, lineage branch,
+  `own_unknown_newer`) and holds every automatic identity action on the node holding the evidence; it is never
+  healed automatically. The operator repair is moving one copy's `<state_dir>/node/` aside (it becomes a new node;
+  facts it never sent stay in its moved-aside store; seats it created and sent reappear on the keeper as
+  unresolved seats needing `seat retire` or a rebind) and `sync clone-cleared` on the other, recorded with
+  `operator:local-user:<uid>` provenance. Detection assumes each copy starts a fresh daemon process (a new boot
+  id); memory-preserving clones (a live VM snapshot, a fork of a running daemon) are out of scope.
+- **Restore older than a rotation.** A restored node that authored on its restored log, or rotated, before it
+  learned of a later own incarnation is held as a clone suspect. Its repair is `sync clone-cleared` alone
+  (single copy, no move-aside); no fact is lost while it waits.
+- **Restore-window same-key facts.** Past the own-history hold's 5-minute cap (or for a `seat.created` authored
+  during the hold) a restored node can author a one-shot fact whose different fact sits in its unpulled old tail;
+  it resolves like forked-log same-key facts.
+- **Forked-log same-key facts.** Two branches of one key holder that decided one key differently (a seat's created
+  kind or retire reason, a same-ordinal membership transition, an invitation answer, a receipt settlement) resolve
+  on each node to whichever it applied first; the seat's next membership transition re-converges membership.
+- **Re-issued facts keep their identity.** A re-issued fact keeps its fact ID and HLC (the re-issue never ticks the
+  clock) and is re-signed by the owner, so a receiver attributes it `replicated_from:<owner node_uuid>` (A3): never
+  to a node that merely held the branch it came from, and never as a new act. On the owner itself the re-applied
+  copy is own history and is recorded `local_journal`, because the original binding is not known here.
+- **Unresolved seats after a rebuild.** A `sync resync` rebuild (N11) loses node-local bindings and managed
+  threads and leaves the node's own seats `unresolved`. They are rebound by C1 continuity or by an operator;
+  the rebuild itself rebinds nothing and merges nothing. The operator repair entry is N11, which lists the losses.
+- **Dead fork owner.** When a forked log's owner never returns, the facts on divergent tails stay only on the nodes
+  that hold each branch.
+- **Catch-up suppression reach.** Suppression is settled-only for every origin, own old incarnations included: an
+  unsettled obligation in a pulled-back own tail is offered. During the own-history hold, a settlement held only by
+  unlinked nodes, or ingested after the hold's cap, cannot suppress, so that message is offered again.
+- **Automatic archival on a stale view.** An archive decided before a remote seat's concurrent join applied
+  locally archives the thread on every node until an explicit reopen; posts into it still apply and deliver.
+- **A remote pair peer joins one round trip late.** When a 1:1 pair is created on one node for a seat homed on
+  another, the peer's membership is authored by its own home node (N4), so until that join arrives the creating
+  node does not list the peer as joined. Nothing is lost: the creator's sends address the peer as a member whose
+  auto-join is pending, and the peer's read floor is the pair's start (amended 2026-10-15, main v1 reconcile §2).
+
 ## Decision record
+
+### Cross-node sync trust model (2026-10-14, ht-5fr)
+
+Signatures and origin authority are consistency guards, not adversarial verification: every node runs as the same
+user for the same person, so a node that holds a key is trusted as that node (N1, N4). The guards exist to make
+every node reach the same verdict on the same facts and to catch buggy or version-skewed nodes deterministically,
+which is why they read only replicated identity and never a receiver's local view (N3). Rationale and rejected
+alternatives: the root spec (`docs/superpowers/runs/2026-10-14-cross-node-sync/2026-10-14-cross-node-sync-design.md`,
+section 12) and its roast reports `2026-10-14-cross-node-sync-roast-design-1.md` and `-2.md` in the same directory.
 
 ### Wrapper compatibility and foreground execution (2026-10-06)
 

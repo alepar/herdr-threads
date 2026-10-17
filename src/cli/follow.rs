@@ -30,7 +30,7 @@ use super::{
     output,
 };
 use crate::{
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     harness::context::ContextJournal,
     host::{
         native::NativeCli,
@@ -200,8 +200,8 @@ pub(crate) struct NickCache {
     /// daemon client and the host adapter compare deadlines with.
     clock: Arc<dyn Clock>,
     host: Box<dyn PaneNameSource>,
-    paths: InstancePaths,
-    instance: uuid::Uuid,
+    paths: NodePaths,
+    instance: crate::node::NodeUuid,
     panes: Option<(Instant, Vec<PaneName>)>,
     labels: Option<Vec<SeatHostLabels>>,
     caller: Option<HostTargetId>,
@@ -222,27 +222,28 @@ pub(crate) struct NickCache {
 impl NickCache {
     pub(crate) fn new(
         context: &RuntimeContext,
-        paths: &InstancePaths,
-        instance: uuid::Uuid,
+        paths: &NodePaths,
+        instance: crate::node::NodeUuid,
         clock: &Arc<dyn Clock>,
-    ) -> Self {
-        Self::with_pane_source(
+    ) -> io::Result<Self> {
+        Ok(Self::with_pane_source(
             Box::new(NativeCli::new(
-                context.host_endpoint.clone(),
+                // Pane nicknames come from the claim host's Herdr server.
+                context.require_host()?.to_path_buf(),
                 Arc::clone(clock),
             )),
             paths,
             instance,
             clock,
-        )
+        ))
     }
 
     /// A cache reading pane names from `host`: the production host adapter,
     /// or a counting fixture.
     fn with_pane_source(
         host: Box<dyn PaneNameSource>,
-        paths: &InstancePaths,
-        instance: uuid::Uuid,
+        paths: &NodePaths,
+        instance: crate::node::NodeUuid,
         clock: &Arc<dyn Clock>,
     ) -> Self {
         Self {
@@ -384,7 +385,7 @@ impl NickCache {
     /// The harness of the seat's current binding, from its private local
     /// context (read only when it already exists; nothing is created).
     fn harness(&self, seat: &SeatId, generation: u64) -> Option<&'static str> {
-        read_harness(&self.paths.instance_dir, self.instance, seat, generation)
+        read_harness(&self.paths.node_dir, self.instance, seat, generation)
     }
 
     fn fresh_nick(&self, seat: &SeatId) -> Option<&Nick> {
@@ -577,17 +578,17 @@ impl NickCache {
 }
 
 /// The harness of `seat`'s current binding, from its private local context
-/// under `instance_dir` (read only when it already exists; nothing is
+/// under `node_dir` (read only when it already exists; nothing is
 /// created). This runs while a message is being rendered, so it reads a
 /// lock-free snapshot ([`ContextJournal::registered_snapshot`]): it never waits
 /// on a check-in that holds `context.lock`, and never delays one.
 fn read_harness(
-    instance_dir: &std::path::Path,
-    instance: uuid::Uuid,
+    node_dir: &std::path::Path,
+    instance: crate::node::NodeUuid,
     seat: &SeatId,
     generation: u64,
 ) -> Option<&'static str> {
-    let root = instance_dir.canonicalize().ok()?.join("contexts");
+    let root = node_dir.canonicalize().ok()?.join("contexts");
     let dir: PathBuf = root.join(format!("{:x}", Sha256::digest(seat.as_str().as_bytes())));
     if !dir.join("context.json").is_file() {
         return None;
@@ -1059,7 +1060,7 @@ pub(crate) fn run(
     caller_pane: Option<&str>,
     spec: &OutputSpec,
     context: &RuntimeContext,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: &Arc<dyn Clock>,
     writer: &mut dyn Write,
 ) -> Result<(), RunError> {
@@ -1072,7 +1073,7 @@ pub(crate) fn run(
         Form::Lines
     };
     let (instance, _, mut client) = connect(paths, clock)?;
-    let mut cache = NickCache::new(context, paths, instance, clock)
+    let mut cache = NickCache::new(context, paths, instance, clock)?
         .with_caller(if form == Form::Human {
             caller_pane
         } else {
@@ -1456,18 +1457,23 @@ mod lazy_marker_follow_tests {
     }
     fn cache() -> NickCache {
         let root = PathBuf::from("/nonexistent-lazy-follow-cache");
-        let paths = InstancePaths {
-            instance_dir: root.clone(),
-            socket_path: root.join("s"),
+        let paths = NodePaths {
+            state_dir: root.clone(),
+            node_dir: root.clone(),
+            key_path: root.join("k"),
+            node_json_path: root.join("nj"),
+            database_path: root.join("db"),
             lock_path: root.join("l"),
             descriptor_path: root.join("d"),
-            locator_path: root.join("loc"),
-            namespace_path: root.join("n"),
-            database_path: root.join("db"),
-            locator: "test".into(),
+            socket_path: root.join("s"),
         };
         let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
-        NickCache::with_pane_source(Box::new(NoPanes), &paths, uuid::Uuid::nil(), &clock)
+        NickCache::with_pane_source(
+            Box::new(NoPanes),
+            &paths,
+            crate::node::NodeUuid::nil(),
+            &clock,
+        )
     }
     #[test]
     fn human_history_canonical_lazy_marker_and_old_daemon_bytes() {

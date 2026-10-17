@@ -10,7 +10,7 @@
 //! log and lane Pacer idle counts without changing its behaviour.
 use herdr_threads::{
     app::{KickRecord, LaneProbe, SystemClock, run_elected_probed},
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     host::native::NativeCli,
     ports::HostPort,
     protocol::time::{Cancellation, Clock},
@@ -80,10 +80,12 @@ impl Session {
         let state = herdr.root().join("plugin-state");
         fs::create_dir_all(&state).unwrap();
         let context = RuntimeContext::explicit(state.clone(), herdr.socket_path(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        // The canonical path the CLI claims name, which is also the endpoint the daemon attaches.
+        let endpoint = context.require_host().unwrap().to_path_buf();
         let host: Arc<dyn HostPort> =
-            Arc::new(NativeCli::new(herdr.socket_path(), Arc::clone(&clock)));
+            Arc::new(NativeCli::new(endpoint.clone(), Arc::clone(&clock)));
         let probe = LaneProbe::default();
         // Lane budgets measure the commit chain, not fsync on a disk the
         // rest of the suite shares (production commits stay FULL).
@@ -108,7 +110,7 @@ impl Session {
                     }
                     .with_wake_batch_delay(0)
                     .unwrap(),
-                    host,
+                    herdr_threads::test_support::single_host_plan_at(host, endpoint),
                     daemon_probe,
                     move |descriptor| {
                         ready_tx
@@ -296,8 +298,10 @@ impl Session {
     }
 
     pub(crate) fn db(&self) -> rusqlite::Connection {
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(self.state.clone(), self.herdr.socket_path(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(self.state.clone(), self.herdr.socket_path(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
@@ -341,7 +345,7 @@ impl Drop for Session {
         if std::thread::panicking()
             && let Ok(context) =
                 RuntimeContext::explicit(self.state.clone(), self.herdr.socket_path(), None)
-            && let Ok(paths) = InstancePaths::resolve(&context)
+            && let Ok(paths) = NodePaths::resolve(&context.state_dir)
             && let Ok(bytes) = fs::read(herdr_threads::daemon::logs::daemon_log_path(&paths))
         {
             let tail = &bytes[bytes.len().saturating_sub(16 * 1024)..];
@@ -1118,11 +1122,9 @@ fn herdr_stopped_freezes_wake_lane() {
     let before = s.commits("wake");
     let invalidation_revision = || -> i64 {
         s.db()
-            .query_row(
-                "SELECT invalidation_revision FROM host_instances",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT invalidation_revision FROM herdr_hosts", [], |row| {
+                row.get(0)
+            })
             .unwrap()
     };
     let revision = invalidation_revision();

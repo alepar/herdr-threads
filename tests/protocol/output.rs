@@ -55,7 +55,7 @@ fn invitation_relevance_output_exposes_goal_or_exact_read_only_inspection() {
 #[test]
 fn json_is_versioned_exact_utf8_and_newline_terminated() {
     let mut health = Health::unknown(
-        "00000000-0000-4000-8000-000000000001".into(),
+        "00000000000040008000000000000001".into(),
         "00000000-0000-4000-8000-000000000002".into(),
         "v\"\n雪".into(),
         1,
@@ -1154,7 +1154,7 @@ fn compact_inbox_pending_participants_and_check_in_carry_no_json() {
     );
     let check_in = compact_text(serde_json::json!({"kind":"checked_in","data":{
         "context_disposition":"current",
-        "context":{"instance":"i","seat":"seat-a","binding_generation":2,"role":"top_level","harness":"claude",
+        "context":{"instance":"i","host":"/host.sock","seat":"seat-a","binding_generation":2,"role":"top_level","harness":"claude",
                    "native_session":"plugin_context:e","execution":"00000000-0000-4000-8000-000000000001","target":"w1:p1"},
         "seat":"seat-a","offered_through":"31","warning_count":0,"warning_count_has_more":false,
         "warnings":page(serde_json::json!([])),"inbox":page(inbox_items)
@@ -1567,7 +1567,7 @@ fn human_guidance_check_in_ready_command_preserves_namespace_and_payload() {
     };
     let result: CommandResult = serde_json::from_value(serde_json::json!({"kind":"checked_in","data":{
         "context_disposition":"historical",
-        "context":{"instance":"i","seat":"s","binding_generation":2,"role":"top_level","harness":"human",
+        "context":{"instance":"i","host":"/host.sock","seat":"s","binding_generation":2,"role":"top_level","harness":"human",
         "native_session":"plugin_context:human","execution":"00000000-0000-4000-8000-000000000001","target":"p"},
         "seat":"s","offered_through":"31","warning_count":0,"warning_count_has_more":false,
         "warnings":page(serde_json::json!([])),"inbox":page(serde_json::json!([{
@@ -1807,6 +1807,26 @@ fn human_guidance_machine_and_foreign_seat_selectors_survive_text_budget_boundar
         matches!(parsed.action, crate::cli::commands::CliAction::Wire(crate::protocol::commands::Command::Inbox(q)) if q.seat.as_ref().map(SeatId::as_str) == Some("s") && q.page.cursor.as_deref() == Some(cursor.as_str()))
     );
     assert_eq!(serde_json::to_vec(&result).unwrap(), frozen);
+}
+
+#[test]
+fn tagged_and_direct_ids_render_unchanged_in_text_output() {
+    let result: CommandResult = serde_json::from_value(serde_json::json!({"kind":"inbox_batch","data":{
+        "items":[{"kind":"invitation","thread":"dK3Fq9a2B7x","topic_data":"direct","invitation":"iQ7aAb12Cd34","required_service":null},
+                 {"kind":"invitation","thread":"tQ7aZz99Yy88","topic_data":"group","invitation":"iQ7aEf56Gh78","required_service":null}],
+        "next_cursor":null,"next_argv":null,"high_water_ordinal":2,"scope_revision":null,"has_more":false,
+        "stop_reason":"complete","consistency":"bounded_live"}}))
+    .unwrap();
+    let rendered =
+        String::from_utf8(encode_selected(&result, &OutputSpec::default()).unwrap()).unwrap();
+    for id in [
+        "dK3Fq9a2B7x",
+        "iQ7aAb12Cd34",
+        "tQ7aZz99Yy88",
+        "iQ7aEf56Gh78",
+    ] {
+        assert!(rendered.contains(id), "{id} missing from {rendered}");
+    }
 }
 
 fn v2_message(

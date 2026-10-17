@@ -6,7 +6,7 @@ use herdr_threads::{
     },
     daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
         transport::{read_frame, write_frame},
     },
     ports::{HostPort, LocalClient, StorePort},
@@ -224,20 +224,24 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
     ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let _root_cleanup = TempRoot(root.clone());
-    let paths = InstancePaths::resolve(
-        &RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap(),
+    let paths = NodePaths::resolve(
+        &RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None)
+            .unwrap()
+            .state_dir,
     )
     .unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
-    let instance = owner.instance_uuid();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = owner.node_uuid().unwrap();
     drop(owner);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let db = StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
+        .with_test_host()
+        .with_node_seed(herdr_threads::test_support::node_seed_for(instance))
         .open_writer()
         .unwrap();
     db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'fixture-host',1)",
-        [instance.to_string()],
+        "UPDATE herdr_hosts SET host_boot='fixture-host',host_epoch=1",
+        [],
     )
     .unwrap();
     drop(db);
@@ -258,7 +262,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
                 daemon_clock,
                 thread_stop,
                 ServiceConfig::default(),
-                host,
+                herdr_threads::test_support::single_host_plan(host),
                 move |descriptor| {
                     ready_tx
                         .send(descriptor.clone())
@@ -277,14 +281,14 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
     let client = PersistentServiceClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
         ServiceIntentJournal::open(root.join("intents")).unwrap(),
     );
     let ordinary = LocalSocketClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
     );
     let budget = || CallBudget {
@@ -303,18 +307,19 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
         for index in 0..20 {
             let seat = SeatId::new(format!("member-{index}"));
-            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,?2,'resolved','native',1,0)", rusqlite::params![seat.as_str(), instance.to_string()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat.as_str(), instance.to_string()]).unwrap();
             db.execute("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state) VALUES (?1,?2,'joined','joined')", rusqlite::params![thread.as_str(), seat.as_str()]).unwrap();
             db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,1)", rusqlite::params![thread.as_str(), seat.as_str()]).unwrap();
         }
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('pending',?1,'resolved','native','pane-pending',0,0,0)", [instance.to_string()]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'pane-pending','fixture-host',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'pane-pending','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('pending',?1,'resolved','native','pane-pending',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'pane-pending','fixture-host',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'pane-pending','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
         let (_, invited) = client.submit(ServiceOperation::Invite(ServiceInvite { thread: thread.clone(), seat: SeatId::new("pending"), constraint: InvitationConstraint::Required, deadline_millis: Some(300_000), operation: OperationId::new("require") }), &budget()).await.unwrap();
         let ServiceResult::Invitation(invitation) = invited else { panic!("missing required invitation"); };
         let required = invitation.requirement.expect("required episode");
         assert_eq!(required.revision, 1);
         assert_eq!(required.state, herdr_threads::protocol::service::RequirementState::Pending);
         let native = CallerClaim {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: instance.to_string(), seat: SeatId::new("pending"), binding_generation: 0,
             role: CallerRole::TopLevel, harness: Harness::Codex,
             native_session: NativeSessionId::new("session-pending"),
@@ -394,8 +399,9 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let receipts: i64 = db.query_row("SELECT count(*) FROM receipts WHERE message_id=?1", [notice.summary.message.as_str()], |row| row.get(0)).unwrap();
         assert_eq!(receipts, 0);
         db.execute("UPDATE seats SET target_id='pane-member-1',target_generation=0 WHERE id='member-1'", []).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'pane-member-1','fixture-host',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'pane-member-1','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'pane-member-1','fixture-host',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'pane-member-1','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
         let recipient_claim = CallerClaim {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: instance.to_string(), seat: SeatId::new("member-1"), binding_generation: 1,
             role: CallerRole::TopLevel, harness: Harness::Codex,
             native_session: NativeSessionId::new("session-member-1"),
@@ -445,10 +451,10 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         assert!(ack_observation.is_some());
         let service_receipts: i64 = db.query_row("SELECT count(*) FROM receipt_state WHERE message_id=?1", [notice.summary.message.as_str()], |row| row.get(0)).unwrap();
         assert_eq!(service_receipts, 0);
-        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('ordinary-populated',?1,'ordinary','ordinary',0,0)", [instance.to_string()]).unwrap();
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('ordinary-populated',?1,'ordinary','ordinary',0,0,0)", [instance.to_string()]).unwrap();
         db.execute("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state) VALUES ('ordinary-populated','member-0','joined','joined')", []).unwrap();
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('ordinary-populated','member-0',1,1)", []).unwrap();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('ordinary-target',?1,'resolved','native',1,0)", [instance.to_string()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('ordinary-target',?1,'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
         let ordinary_thread = ThreadId::new("ordinary-populated");
         let (_, ordinary_invited) = client.submit(ServiceOperation::Invite(ServiceInvite { thread: ordinary_thread.clone(), seat: SeatId::new("ordinary-target"), constraint: InvitationConstraint::Ordinary, deadline_millis: Some(300_000), operation: OperationId::new("ordinary-invite") }), &budget()).await.unwrap();
         assert!(matches!(ordinary_invited, ServiceResult::Invitation(_)));
@@ -478,7 +484,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let deadline_clock = Arc::new(JournalDeadlineClock { root: recovery_root.clone(), expire_after_record: AtomicBool::new(true) });
         let recovery_clock: Arc<dyn Clock> = deadline_clock.clone();
         let recovery_client = PersistentServiceClient::new(
-            descriptor.endpoint.clone(), recovery_clock, descriptor.instance_uuid, Some(descriptor.boot_id),
+            descriptor.endpoint.clone(), recovery_clock, descriptor.node_uuid, Some(descriptor.boot_id),
             ServiceIntentJournal::open(&recovery_root).unwrap(),
         );
         let recovery_budget = || CallBudget { deadline: MonoInstant(5_000), cancellation: Cancellation::default() };
@@ -534,7 +540,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let completion_root = root.join("completion-fault-intents");
         let completion_clock = Arc::new(CompletionFaultClock { root: completion_root.clone(), armed: AtomicBool::new(false) });
         let completion_client = PersistentServiceClient::new(
-            descriptor.endpoint.clone(), completion_clock.clone(), descriptor.instance_uuid, Some(descriptor.boot_id),
+            descriptor.endpoint.clone(), completion_clock.clone(), descriptor.node_uuid, Some(descriptor.boot_id),
             ServiceIntentJournal::open(&completion_root).unwrap(),
         );
         let completion_budget = || CallBudget { deadline: MonoInstant(5_000), cancellation: Cancellation::default() };

@@ -21,7 +21,7 @@ pub(super) fn record_context_change(
 ) -> Result<(), ApiError> {
     let sequence = i64::try_from(sequence)
         .map_err(|_| api_error(ErrorCode::SequenceExhausted, "context sequence exhausted"))?;
-    let valid:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM threads t JOIN host_instances h ON h.id=t.instance_id WHERE t.id=?1 AND t.instance_id=?2 AND h.decision_seq>=?3 AND ?3>0)",params![thread.as_str(),instance,sequence],|r|r.get(0)).map_err(store_error)?;
+    let valid:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM threads t JOIN local_node h ON h.id=t.instance_id WHERE t.id=?1 AND t.instance_id=?2 AND h.decision_seq>=?3 AND ?3>0)",params![thread.as_str(),instance,sequence],|r|r.get(0)).map_err(store_error)?;
     if !valid {
         return Err(api_error(
             ErrorCode::StoreCorrupt,
@@ -282,7 +282,7 @@ pub(super) fn binding_scope(
     let Ok(generation) = i64::try_from(claim.binding_generation) else {
         return Ok(None);
     };
-    let valid: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?1 AND s.id=?2 AND s.instance_id=?3 AND s.state='resolved' AND b.generation=?4 AND b.execution_id=?5 AND s.target_id=?6 AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.ended_at IS NULL AND b.role='top_level' AND b.liveness='connected' AND NOT EXISTS(SELECT 1 FROM recovery_holds h WHERE h.instance_id=s.instance_id AND h.target_id=s.target_id AND h.released_at IS NULL))",params![binding.binding_id.as_str(),claim.seat.as_str(),claim.instance,generation,claim.execution.as_str(),claim.target.as_str()],|r|r.get(0)).map_err(store_error)?;
+    let valid: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?1 AND s.id=?2 AND s.instance_id=?3 AND s.state='resolved' AND b.generation=?4 AND b.execution_id=?5 AND s.target_id=?6 AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.ended_at IS NULL AND b.role='top_level' AND b.liveness='connected' AND NOT EXISTS(SELECT 1 FROM recovery_holds h WHERE h.host_id=s.host_id AND h.target_id=s.target_id AND h.released_at IS NULL))",params![binding.binding_id.as_str(),claim.seat.as_str(),claim.instance,generation,claim.execution.as_str(),claim.target.as_str()],|r|r.get(0)).map_err(store_error)?;
     Ok(valid.then_some(binding.binding_id))
 }
 
@@ -2931,6 +2931,7 @@ pub(super) fn refresh(
     };
     let claim = CallerClaim {
         instance: instance.into(),
+        host: super::hosts::seat_claim_host(db, seat.as_str()),
         seat: seat.clone(),
         binding_generation: generation,
         role: CallerRole::TopLevel,

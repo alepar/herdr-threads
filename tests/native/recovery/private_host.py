@@ -229,6 +229,9 @@ class TestDaemon:
         self.killed = []
 
     def instance_dir(self):
+        node = self.state_dir / "node"
+        if node.is_dir():
+            return node
         locators = [path.parent for path in self.state_dir.glob("instances/*/locator")
                     if path.read_text().strip() == str(self.host.socket)]
         if len(locators) != 1:

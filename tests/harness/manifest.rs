@@ -1101,7 +1101,7 @@ fn rfc3339_formatting() {
 #[test]
 fn daemon_start_refuses_an_invalid_settings_file() {
     use crate::app::{LaneProbe, SystemClock, run_elected_probed};
-    use crate::daemon::paths::{InstancePaths, RuntimeContext};
+    use crate::daemon::paths::{NodePaths, RuntimeContext};
     use crate::host::native::NativeCli;
     use crate::protocol::time::Cancellation;
     use crate::service::config::ServiceConfig;
@@ -1111,10 +1111,10 @@ fn daemon_start_refuses_an_invalid_settings_file() {
     std::fs::create_dir_all(&state).unwrap();
     let endpoint = dir.path().join("herdr.sock");
     let context = RuntimeContext::explicit(state, endpoint.clone(), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    std::fs::create_dir_all(&paths.instance_dir).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    paths.prepare_node_dir().unwrap();
     std::fs::write(
-        paths.instance_dir.join("settings.json"),
+        paths.node_dir.join("settings.json"),
         br#"{"harness_manifest": "off", "surprise": true}"#,
     )
     .unwrap();
@@ -1129,7 +1129,7 @@ fn daemon_start_refuses_an_invalid_settings_file() {
             clock,
             Cancellation::default(),
             ServiceConfig::default(),
-            host,
+            crate::test_support::single_host_plan(host),
             LaneProbe::default(),
             |_| Ok(()),
         ))

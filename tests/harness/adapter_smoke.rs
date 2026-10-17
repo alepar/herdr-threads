@@ -388,7 +388,8 @@ fn fourth_author_consumers() {
             herdr_threads::store::connection::StoreContext::new(
                 isolation.path("health.db"),
                 std::sync::Arc::clone(&env.clock),
-            ),
+            )
+            .with_test_host(),
             "synthetic-author",
             Default::default(),
         )

@@ -36,12 +36,18 @@ const NOW: UtcMillis = UtcMillis(500);
 
 fn db() -> Connection {
     let db = Connection::open_in_memory().unwrap();
-    crate::store::schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+    crate::store::schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
     db.execute_batch(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,40);\
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane-s',1,1,0),('p','i','resolved','native','pane-p',1,1,0),('q','i','resolved','native','pane-q',1,1,0);\
+        "UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=40;\
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('p','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-p',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('q','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-q',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
          INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,'pane-s','host',1,'codex','n','exec-s','cooperative_top_level',0,'tm','inc'),('p',1,'pane-p','host',1,'codex','n','exec-p','cooperative_top_level',0,'tm','inc'),('q',1,'pane-q','host',1,'codex','n','exec-q','cooperative_top_level',0,'tm','inc');\
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0),('u','i','other','goal',0,0);",
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0),('u','34750f98bd59fcfc946da45aaabe933b','other','goal',0,0,0);",
     )
     .unwrap();
     db
@@ -146,7 +152,7 @@ fn row_where(db: &Connection, column: &str, key: &str) -> Row {
 }
 
 fn decision_seq(db: &Connection) -> i64 {
-    db.query_row("SELECT decision_seq FROM host_instances", [], |r| r.get(0))
+    db.query_row("SELECT decision_seq FROM local_node", [], |r| r.get(0))
         .unwrap()
 }
 
@@ -406,7 +412,7 @@ fn reentry_after_ready_or_supersession_extends_again() {
 /// A stored summary block on `t` at `created_at`.
 fn store_block(db: &Connection, id: &str, created_at: i64) {
     db.execute(
-        "INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES (?1,'i','t','v1',0,?2,1,2,'h','n','s','m','p',?3)",
+        "INSERT INTO summary_blocks(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,source_hash,narrative,author_seat_id,model,prompt_version,created_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','t','v1',0,?2,1,2,'h','n','s','m','p',?3)",
         rusqlite::params![id, created_at, created_at],
     )
     .unwrap();
@@ -482,7 +488,7 @@ fn stall_scan_is_bounded_per_pass() {
 /// frontier) and 12 (above it), plus the same shape on thread `u`.
 fn with_receipts(db: &Connection) {
     db.execute_batch(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,author_role) VALUES ('m5','i','t',5,'ordinary','b',0,5,'agent'),('m12','i','t',12,'ordinary','b',0,12,'agent'),('u1','i','u',1,'ordinary','b',0,14,'agent');\
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,author_role) VALUES ('m5','34750f98bd59fcfc946da45aaabe933b','t',5,'ordinary','b',0,5,'agent'),('m12','34750f98bd59fcfc946da45aaabe933b','t',12,'ordinary','b',0,12,'agent'),('u1','34750f98bd59fcfc946da45aaabe933b','u',1,'ordinary','b',0,14,'agent');\
          INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m5','t','s','pending',100),('m12','t','s','pending',100),('u1','u','s','pending',100);",
     )
     .unwrap();
@@ -490,7 +496,13 @@ fn with_receipts(db: &Connection) {
 
 fn digest(db: &Connection, seat: &str) -> DigestRun {
     db.execute_batch("BEGIN DEFERRED").unwrap();
-    let run = attention::seat_digest(db, "i", &SeatId::new(seat), &|| Ok(())).unwrap();
+    let run = attention::seat_digest(
+        db,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &SeatId::new(seat),
+        &|| Ok(()),
+    )
+    .unwrap();
     db.execute_batch("COMMIT").unwrap();
     run
 }
@@ -590,13 +602,13 @@ fn bypasses() {
     let mut db = db();
     with_receipts(&db);
     db.execute_batch(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,author_role) VALUES ('hum','i','t',13,'ordinary','b',0,15,'human');\
-         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,author_role,relays_user) VALUES ('rel','i','t',14,'ordinary','b',0,16,'agent',1);\
-         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,author_role) VALUES ('ord','i','t',15,'ordinary','b',0,17,'agent');\
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,author_role) VALUES ('hum','34750f98bd59fcfc946da45aaabe933b','t',13,'ordinary','b',0,15,'human');\
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,author_role,relays_user) VALUES ('rel','34750f98bd59fcfc946da45aaabe933b','t',14,'ordinary','b',0,16,'agent',1);\
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,author_role) VALUES ('ord','34750f98bd59fcfc946da45aaabe933b','t',15,'ordinary','b',0,17,'agent');\
          INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('hum','t','s','pending',100),('rel','t','s','pending',100),('ord','t','s','pending',100);\
-         INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv','t','s',1,'pending',0,3,100,100);\
+         INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv','t','s',1,'pending',0,3,100,100,(SELECT id FROM local_node));\
          INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1);\
-         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('warn1','i','t',16,'warn','{}',0,18,1);\
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('warn1','34750f98bd59fcfc946da45aaabe933b','t',16,'warn','{}',0,18,1);\
          INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('warn1',18,'t',100,'s','invitation','inv');",
     )
     .unwrap();
@@ -700,7 +712,7 @@ fn assert_release_pushes(end: impl FnOnce(&Transaction<'_>), expected_reason: &s
     assert_eq!(receipt_key(&wake_frontier(&db, "s")), Some((release, 0)));
     // A receipt published after the release keeps its own, later key.
     db.execute_batch(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,author_role) VALUES ('late','i','t',20,'ordinary','b',0,900,'agent');\
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,author_role) VALUES ('late','34750f98bd59fcfc946da45aaabe933b','t',20,'ordinary','b',0,900,'agent');\
          INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('late','t','s','pending',100);",
     )
     .unwrap();
@@ -870,18 +882,20 @@ fn store() -> Store {
     )));
     std::fs::create_dir(&directory.0).unwrap();
     let clock = Arc::new(TestClock(AtomicU64::new(100)));
-    let context = StoreContext::new(directory.0.join("store.db"), clock);
+    let context = StoreContext::new(directory.0.join("store.db"), clock).with_test_host();
     let conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-        [],
-    )
-    .unwrap();
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',0,0,0)", []).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'p','inc','coherent_enumeration',1)", []).unwrap();
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+    conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'p','inc','coherent_enumeration',1)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     Store {
-        store: SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
+        store: SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings::default(),
+        )
+        .unwrap(),
         conn,
         _directory: directory,
     }
@@ -889,7 +903,8 @@ fn store() -> Store {
 
 fn claim(execution: &str, generation: u64) -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: seat("s"),
         binding_generation: generation,
         role: CallerRole::TopLevel,
@@ -941,7 +956,7 @@ fn check_in(store: &SqliteStore, execution: &str, expected_generation: u64) -> u
             RegisterAvailableRequest {
                 command,
                 read: ReadContext {
-                    instance: "i".into(),
+                    instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                     output: Default::default(),
                     operation_scope: None,
                 },
@@ -1007,7 +1022,7 @@ fn retirement_supersedes() {
         &tx,
         UtcMillis(200),
         seat("s"),
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         "b",
         1,
         "p",
@@ -1077,7 +1092,7 @@ fn due_phase_continuation_clears_with_many_ended_lapsed_rows() {
     for n in 0..250 {
         let thread = format!("x{n:03}");
         f.conn
-            .execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [&thread])
+            .execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", [&thread])
             .unwrap();
         f.conn
             .execute("INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state,end_reason,ended_at) VALUES (?3,'s',?1,0,0,?2,'ended','ready',10)", rusqlite::params![thread, 1 + n, binding.as_str()])

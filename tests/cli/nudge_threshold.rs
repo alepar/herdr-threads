@@ -27,6 +27,8 @@ struct Client {
     calls: std::sync::Mutex<Vec<Command>>,
     threshold: std::sync::Mutex<NudgeThreshold>,
     generation: std::sync::atomic::AtomicU64,
+    /// When set, the daemon refuses threshold reads with this error.
+    threshold_refusal: std::sync::Mutex<Option<crate::protocol::results::ApiError>>,
 }
 impl LocalClient for Client {
     fn call_with_output(
@@ -85,6 +87,9 @@ impl LocalClient for Client {
                     first_contact: None,
                 }))
             }
+            Command::NudgeThreshold(_) if self.threshold_refusal.lock().unwrap().is_some() => {
+                Err(self.threshold_refusal.lock().unwrap().clone().unwrap())
+            }
             Command::NudgeThreshold(q) => Ok(CommandResult::NudgeThreshold(NudgeThresholdState {
                 seat: q.seat,
                 threshold: *stored,
@@ -106,8 +111,8 @@ impl LocalClient for Client {
 
 struct Fixture {
     root: std::path::PathBuf,
-    paths: InstancePaths,
-    instance: uuid::Uuid,
+    paths: NodePaths,
+    instance: crate::node::NodeUuid,
     selection: CooperativeSelection,
     client: Client,
 }
@@ -122,9 +127,9 @@ impl Fixture {
         )
         .unwrap();
         let fixture = Self {
-            paths: InstancePaths::resolve(&runtime).unwrap(),
+            paths: NodePaths::resolve(&runtime.state_dir).unwrap(),
             root,
-            instance: uuid::Uuid::from_u128(1),
+            instance: crate::node::NodeUuid::from_u128(1),
             selection: CooperativeSelection {
                 seat: SeatId::new("seat"),
                 target: HostTargetId::new("pane"),
@@ -135,6 +140,7 @@ impl Fixture {
                 calls: Default::default(),
                 threshold: std::sync::Mutex::new(NudgeThreshold::new(stored).unwrap()),
                 generation: std::sync::atomic::AtomicU64::new(1),
+                threshold_refusal: Default::default(),
             },
         };
         let parsed = parse_argv([
@@ -149,6 +155,7 @@ impl Fixture {
             &fixture.selection,
             &fixture.paths,
             fixture.instance,
+            &crate::test_support::test_host_locator(),
             &fixture.client,
             &crate::app::SystemClock::new(),
             &mut Vec::new(),
@@ -169,6 +176,7 @@ impl Fixture {
             &self.selection,
             &self.paths,
             self.instance,
+            &crate::test_support::test_host_locator(),
             &self.client,
             &crate::app::SystemClock::new(),
             &mut out,
@@ -328,4 +336,24 @@ fn wake_on_aliases_to_the_threshold() {
     let (result, out) = fixture.run(&["herdr-threads", "wake-on"]);
     result.unwrap();
     assert_eq!(out, "nudge_threshold: 0\n");
+}
+
+#[test]
+fn a_remote_seat_refusal_reaches_the_user() {
+    let fixture = Fixture::new(0);
+    *fixture.client.threshold_refusal.lock().unwrap() =
+        Some(crate::protocol::results::ApiError::new(
+            crate::protocol::results::ErrorCode::CallerUnverified,
+            "seat s is homed on node bx1; its nudge threshold is set there",
+        ));
+    let (result, out) = fixture.run(&["herdr-threads", "nudge-threshold"]);
+    let Err(RunError::Api(error)) = result else {
+        panic!("expected the daemon's refusal, got {result:?}");
+    };
+    assert!(
+        error.detail.contains("homed on node bx1"),
+        "{}",
+        error.detail
+    );
+    assert!(out.is_empty());
 }

@@ -155,9 +155,14 @@ pub fn relative_pane_nick(
     parts.join("/")
 }
 
-/// A seat ID short enough for a nick: compact IDs are kept whole; persisted
-/// UUID-suffixed IDs keep eight suffix characters.
+/// A seat ID short enough for a nick: a tagged public ID `s<tag><8>` becomes
+/// `s<8>` (the random suffix, never the node tag, as `ports::short_seat`);
+/// other compact IDs are kept whole; persisted UUID-suffixed IDs keep eight
+/// suffix characters.
 pub fn short_seat(seat: &str) -> String {
+    if let Some((_, suffix)) = crate::protocol::ids::public_id_parts("s", seat) {
+        return format!("s{suffix}");
+    }
     match seat.split_once('-') {
         Some((prefix, suffix)) if suffix.chars().count() > 8 => {
             format!("{prefix}-{}", suffix.chars().take(8).collect::<String>())
@@ -578,19 +583,47 @@ fn system_text(summary: &MessageSummary, lookup: &mut dyn Lookup) -> String {
                 format!("{} joined", seat_nick(&event, "seat", lookup))
             }
             "leave" => format!("{} left", seat_nick(&event, "seat", lookup)),
-            "archive" => format!(
-                "{} archived the thread",
-                seat_nick(&event, "actor_seat", lookup)
-            ),
-            "reopen" => format!(
-                "{} reopened the thread",
-                seat_nick(&event, "actor_seat", lookup)
-            ),
-            "set_topic" => format!(
-                "{} changed the topic to: {}",
-                seat_nick(&event, "actor_seat", lookup),
-                field(&event, "topic").unwrap_or("")
-            ),
+            "archive" | "reopen" => {
+                let verb = if action == "archive" {
+                    "archived"
+                } else {
+                    "reopened"
+                };
+                if field(&event, "actor_seat").is_some() {
+                    format!(
+                        "{} {verb} the thread",
+                        seat_nick(&event, "actor_seat", lookup)
+                    )
+                } else {
+                    format!("the thread was {verb}")
+                }
+            }
+            "set_topic" => {
+                let topic = field(&event, "topic").unwrap_or("");
+                if field(&event, "actor_seat").is_some() {
+                    format!(
+                        "{} changed the topic to: {topic}",
+                        seat_nick(&event, "actor_seat", lookup)
+                    )
+                } else {
+                    format!("the topic was changed to: {topic}")
+                }
+            }
+            "set_thread_name" => {
+                let name = field(&event, "name");
+                if field(&event, "actor_seat").is_some() {
+                    let who = seat_nick(&event, "actor_seat", lookup);
+                    match name {
+                        Some(name) => format!("{who} renamed the thread to: {name}"),
+                        None => format!("{who} cleared the thread name"),
+                    }
+                } else {
+                    match name {
+                        Some(name) => format!("the thread was renamed to: {name}"),
+                        None => "the thread name was cleared".to_owned(),
+                    }
+                }
+            }
             "release_requirement" => format!(
                 "{} released the required membership of {}",
                 actor(lookup),

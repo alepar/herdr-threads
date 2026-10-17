@@ -37,9 +37,10 @@ use crate::protocol::{
         CommandResult, ContinuityStatus, DeliveryAggregates, DeliveryInspection, Diagnostic,
         ErrorCode, HoldSummary, InboxBatchItem, InboxItem, InvitationAcceptance, MappingStatus,
         MembershipStatus, MessageContent, MessageDetails, MessageKind, MessageSummary,
-        OpenBindingSummary, OperationStatus, Participant, PendingReceipt, ReceiptStatus, Recipient,
-        RepairHistory, RetirementStatus, SearchHit, SearchPage, SeatHistoryItem, SeatInspection,
-        SeatSummary, StructuredEvent, ThreadDetails, ThreadSummary, WarningRecipient, WarningRef,
+        OpenBindingSummary, OperationStatus, Participant, PendingReceipt, PresenceAvailability,
+        ReceiptStatus, Recipient, RepairHistory, RetirementStatus, SearchHit, SearchPage,
+        SeatHistoryItem, SeatInspection, SeatSummary, StructuredEvent, ThreadDetails,
+        ThreadSummary, WarningRecipient, WarningRef,
     },
     service::EventAuthor,
     time::{CallBudget, Clock, MonoInstant, UtcMillis},
@@ -364,7 +365,7 @@ fn query_inner(
         Command::PickerDirectory(q) => {
             picker_directory::directory(&db, instance, q, store.clock().utc_now(), output)
         }
-        Command::Participants(q) => participants(&db, instance, q, output),
+        Command::Participants(q) => participants(&db, instance, q, store.clock().utc_now(), output),
         Command::ParticipantLocations(q) => participant_locations(&db, instance, q),
         Command::Seats(q) => seats(&db, instance, q, output),
         Command::Diagnostics(q) => diagnostics(&db, instance, q, store.clock().utc_now(), output),
@@ -373,7 +374,7 @@ fn query_inner(
         Command::DeliveryInspect(q) => {
             delivery_inspect(&db, instance, q, store.clock().utc_now(), output)
         }
-        Command::Thread(q) => thread_details(&db, instance, q, output),
+        Command::Thread(q) => thread_details(&db, instance, q, store.clock().utc_now(), output),
         Command::RetirementJobs(q) => retirement_jobs(&db, instance, q, output, false),
         Command::Warnings(q) => warnings(&db, instance, q, output),
         Command::ActiveWarnings(q) => {
@@ -593,7 +594,7 @@ pub fn query_operation_status(
         .map_err(|e| db.map_error(e))?;
     let owned: bool = db
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM host_instances WHERE id=?1)",
+            "SELECT EXISTS(SELECT 1 FROM local_node WHERE id=?1)",
             [instance],
             |r| r.get(0),
         )
@@ -867,6 +868,7 @@ fn thread_details(
     db: &QueryConnection,
     instance: &str,
     q: &ThreadQuery,
+    now: UtcMillis,
     output: &OutputSpec,
 ) -> Result<CommandResult, ApiError> {
     type Row = (String, String, i64, i64, i64);
@@ -900,7 +902,8 @@ fn thread_details(
         page: q.page.clone(),
         caller: q.caller.clone(),
     };
-    let CommandResult::Participants(participants) = participants(db, instance, &pq, output)? else {
+    let CommandResult::Participants(participants) = participants(db, instance, &pq, now, output)?
+    else {
         unreachable!()
     };
     let followup = contextual_argv(
@@ -956,7 +959,7 @@ fn thread_details(
     // The embedded participants page overflows the details envelope: cut it
     // back through the page fit, each cut page continuing from its last item.
     let filter = digest(&q.thread.as_str())?;
-    let (member_rev,lifecycle_rev):(i64,i64)=db.query_row("SELECT t.membership_revision,h.lifecycle_revision FROM threads t JOIN host_instances h ON h.id=t.instance_id WHERE t.id=?1",[q.thread.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|db.map_error(e))?;
+    let (member_rev,lifecycle_rev):(i64,i64)=db.query_row("SELECT t.membership_revision,(SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=t.instance_id) FROM threads t WHERE t.id=?1",[q.thread.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|db.map_error(e))?;
     let start_after = q
         .page
         .cursor
@@ -1136,14 +1139,19 @@ fn seat_inspect(
     )?;
     let mut summary = summary;
     (summary.active, summary.bindings) = presence(db, q.seat.as_str())?;
-    summary.availability = Some(availability_label(db, q.seat.as_str())?);
+    // A remote seat's state column already says `remote`; it has no availability.
+    summary.availability = if row.0 == "remote" {
+        None
+    } else {
+        Some(availability_label(db, q.seat.as_str())?)
+    };
     let mapping = MappingStatus {
         state: summary.continuity,
         target: summary.target.clone(),
         detail_argv: None,
     };
     let hold = if let Some(target) = &summary.target {
-        db.query_row("SELECT reason FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND released_at IS NULL",params![instance,target.as_str()],|r|r.get::<_,String>(0)).optional().map_err(|e|db.map_error(e))?.map(|reason|HoldSummary{target:target.clone(),reason_data:reason,detail_argv:vec!["herdr-threads".into(),"seat".into(),"inspect".into(),q.seat.as_str().into()]})
+        db.query_row("SELECT reason FROM recovery_holds WHERE host_id=(SELECT host_id FROM seats WHERE id=?1) AND target_id=?2 AND released_at IS NULL",params![q.seat.as_str(),target.as_str()],|r|r.get::<_,String>(0)).optional().map_err(|e|db.map_error(e))?.map(|reason|HoldSummary{target:target.clone(),reason_data:reason,detail_argv:vec!["herdr-threads".into(),"seat".into(),"inspect".into(),q.seat.as_str().into()]})
     } else {
         None
     };
@@ -1470,7 +1478,7 @@ fn seats(
                 .optional(),
             (None, false) => db
                 .query_row(
-                    "SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND state='resolved' AND ordinal<?2 AND ordinal<=?3 UNION ALL SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND state='unresolved' AND ordinal<?2 AND ordinal<=?3 ORDER BY ordinal DESC LIMIT 1",
+                    "SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND state='resolved' AND ordinal<?2 AND ordinal<=?3 UNION ALL SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND state='unresolved' AND ordinal<?2 AND ordinal<=?3 UNION ALL SELECT ordinal,id,state,target_id,generation,created_at,retired_at FROM seats WHERE instance_id=?1 AND state='remote' AND ordinal<?2 AND ordinal<=?3 ORDER BY ordinal DESC LIMIT 1",
                     params![instance, before, high],
                     map_row,
                 )
@@ -1510,7 +1518,12 @@ fn seats(
             retired_at,
         )?;
         (item.active, item.bindings) = presence(db, &id)?;
-        item.availability = Some(availability_label(db, &id)?);
+        // A remote seat's state column already says `remote`; it has no availability.
+        item.availability = if state == "remote" {
+            None
+        } else {
+            Some(availability_label(db, &id)?)
+        };
         let raw = cursor_for(
             instance,
             CursorScope::Seats,
@@ -1587,6 +1600,7 @@ fn seat_summary(
         "resolved" => ContinuityStatus::Resolved,
         "unresolved" => ContinuityStatus::Unresolved,
         "retired" => ContinuityStatus::Retired,
+        "remote" => ContinuityStatus::Remote,
         _ => return Err(api_error(ErrorCode::StoreCorrupt, "invalid seat state")),
     };
     Ok(SeatSummary {
@@ -1602,14 +1616,14 @@ fn seat_summary(
     })
 }
 
-/// The presence `availability` slot: `available`, or `unavailable@<unix-ms>` (since when); the
+/// The presence `availability` slot of a local seat: available, or unavailable since a time; the
 /// human renderer turns the latter into `unavailable since <time>`.
-fn availability_label(db: &QueryConnection, seat: &str) -> Result<String, ApiError> {
+fn availability_label(db: &QueryConnection, seat: &str) -> Result<PresenceAvailability, ApiError> {
     Ok(
         match super::bindings::seat_availability(db, &SeatId::new(seat))? {
-            super::bindings::SeatAvailability::Available => "available".to_owned(),
+            super::bindings::SeatAvailability::Available => PresenceAvailability::Available,
             super::bindings::SeatAvailability::Unavailable { since } => {
-                format!("unavailable@{}", since.0)
+                PresenceAvailability::UnavailableSince(since)
             }
         },
     )
@@ -1652,13 +1666,55 @@ fn presence(db: &QueryConnection, seat: &str) -> Result<(bool, Vec<BindingPresen
     Ok((active, bindings))
 }
 
+/// `Some` for the first row of a remote seat's unreachable home node; the
+/// reach rule itself stays in `sync_contacts::reach`.
+fn unreachable_home(
+    db: &QueryConnection,
+    seat: &str,
+    now: UtcMillis,
+    seen: &mut std::collections::HashSet<String>,
+) -> Result<Option<crate::protocol::results::UnreachableHome>, ApiError> {
+    let home: Option<String> = db
+        .query_row(
+            "SELECT home_node FROM seats WHERE id=?1 AND is_local=0",
+            [seat],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| db.map_error(e))?;
+    let Some(home) = home else {
+        return Ok(None);
+    };
+    let Ok(node) = home.parse::<crate::node::NodeUuid>() else {
+        return Ok(None);
+    };
+    if seen.contains(&home) {
+        return Ok(None);
+    }
+    let crate::store::sync_contacts::NodeReach::Unreachable { since } =
+        crate::store::sync_contacts::reach(db, &node, u64::try_from(now.0).unwrap_or(0))?
+    else {
+        return Ok(None);
+    };
+    let tag = crate::store::node_directory::get(db, node)
+        .map_err(|e| db.map_error(e))?
+        .map(|row| row.tag.to_string());
+    let tag = crate::store::sync_status::node_label(tag.as_deref(), &home);
+    seen.insert(home);
+    Ok(Some(crate::protocol::results::UnreachableHome {
+        tag,
+        since: since.map(|ms| UtcMillis(i64::try_from(ms).unwrap_or(i64::MAX))),
+    }))
+}
+
 fn participants(
     db: &QueryConnection,
     instance: &str,
     q: &ParticipantsQuery,
+    now: UtcMillis,
     output: &OutputSpec,
 ) -> Result<CommandResult, ApiError> {
-    let scope:(i64,i64)=db.query_row("SELECT t.membership_revision,h.lifecycle_revision FROM threads t JOIN host_instances h ON h.id=t.instance_id WHERE t.id=?1 AND t.instance_id=?2",params![q.thread.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|db.map_error(e))?.ok_or_else(||api_error(ErrorCode::NotFound,"thread not found"))?;
+    let scope:(i64,i64)=db.query_row("SELECT t.membership_revision,(SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=t.instance_id) FROM threads t WHERE t.id=?1 AND t.instance_id=?2",params![q.thread.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|db.map_error(e))?.ok_or_else(||api_error(ErrorCode::NotFound,"thread not found"))?;
     let filter = digest(&q.thread.as_str())?;
     let cursor = decode_cursor(
         &q.page,
@@ -1703,6 +1759,7 @@ fn participants(
     )?;
     let mut last = cursor.as_ref().map_or(0, |c| c.after_ordinal);
     let mut items = Vec::new();
+    let mut unreachable_seen = std::collections::HashSet::new();
     let mut examined = 0usize;
     let mut stop = StopReason::Complete;
     while examined < CANDIDATE_LIMIT {
@@ -1818,7 +1875,13 @@ fn participants(
             accepted_invitation,
             active,
             bindings,
-            availability: Some(availability_label(db, &seat)?),
+            // A remote seat has no bindings here: its state slot reads `remote`.
+            availability: Some(if seat_state == "remote" {
+                PresenceAvailability::Remote
+            } else {
+                availability_label(db, &seat)?
+            }),
+            home_unreachable: unreachable_home(db, &seat, now, &mut unreachable_seen)?,
         };
         let mut next_cursor = cursor_for(
             instance,
@@ -1916,7 +1979,7 @@ fn directory(
     };
     let lifecycle_revision: i64 = if member_relevant {
         db.query_row(
-            "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
+            "SELECT COALESCE(SUM(lifecycle_revision),0) FROM herdr_hosts WHERE node_id=?1",
             [instance],
             |r| r.get(0),
         )
@@ -2232,7 +2295,7 @@ fn search(
             .map_err(|e| db.map_error(e))?;
         let body_high: i64 = db
             .query_row(
-                "SELECT decision_seq FROM host_instances WHERE id=?1",
+                "SELECT decision_seq FROM local_node WHERE id=?1",
                 [instance],
                 |r| r.get(0),
             )
@@ -5500,7 +5563,7 @@ fn inbox_batch(
         None => {
             let decision: i64 = db
                 .query_row(
-                    "SELECT decision_seq FROM host_instances WHERE id=?1",
+                    "SELECT decision_seq FROM local_node WHERE id=?1",
                     [instance],
                     |r| r.get(0),
                 )
@@ -6163,7 +6226,7 @@ fn hot_threads_in(
     let seat = q.seat.as_str();
     let decision_seq: i64 = db
         .query_row(
-            "SELECT h.decision_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+            "SELECT h.decision_seq FROM seats s JOIN local_node h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
             params![seat, instance],
             |r| r.get(0),
         )
@@ -6324,6 +6387,7 @@ fn participant_locations(
             "resolved" => crate::protocol::results::ContinuityStatus::Resolved,
             "unresolved" => crate::protocol::results::ContinuityStatus::Unresolved,
             "retired" => crate::protocol::results::ContinuityStatus::Retired,
+            "remote" => crate::protocol::results::ContinuityStatus::Remote,
             _ => {
                 return Err(api_error(
                     ErrorCode::StoreCorrupt,
@@ -6429,7 +6493,7 @@ pub(super) fn ordinary_due_context(
     work.ordinary_due_key_probes += 3;
     let head = db
         .query_row(
-            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            "SELECT decision_seq FROM local_node WHERE id=?1",
             [instance],
             |r| r.get(0),
         )

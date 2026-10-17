@@ -13,8 +13,7 @@
 //! and every in-flight stage (`building`/`sealed` with `admission_sequence >
 //! observation_decided_sequence`). The current baseline's
 //! `recovery_baseline_releases` ride with the baseline generation: both tables
-//! survived schema v11 (`migrations/0011_cooperative_only.sql`), so both
-//! clauses are present. Prunable: older superseded published generations,
+//! exist in every node store, so both clauses are present. Prunable: older superseded published generations,
 //! discarded generations, and dead stages (`admission_sequence <= decided`,
 //! which publish rejects).
 use super::{SqliteStore, connection::store_error};
@@ -46,7 +45,7 @@ pub const PRUNED_JOB_KINDS: [&str; 3] = [
 const CANDIDATE_SQL: &str = "\
 SELECT g.id, g.status \
 FROM snapshot_generations g {index} \
-JOIN host_instances h ON h.id = g.instance_id \
+JOIN herdr_hosts h ON h.host_id = g.host_id \
 LEFT JOIN snapshot_generations a ON a.id = h.active_snapshot_id \
 WHERE (g.status = 'discarded' \
     OR (g.status IN ('building','sealed') AND g.admission_sequence <= h.observation_decided_sequence) \
@@ -56,13 +55,13 @@ WHERE (g.status = 'discarded' \
   AND NOT EXISTS (SELECT 1 FROM seats s WHERE s.unresolved_from_generation_id = g.id) \
   AND (g.status != 'published' OR g.id IS NOT ( \
         SELECT p.id FROM snapshot_generations p INDEXED BY snapshot_generations_retention \
-        WHERE p.instance_id = g.instance_id AND p.status = 'published' \
+        WHERE p.host_id = g.host_id AND p.status = 'published' \
           AND p.admission_sequence < a.admission_sequence \
         ORDER BY p.admission_sequence DESC, p.rowid DESC LIMIT 1))";
 
 fn scan_sql() -> String {
     format!(
-        "{} ORDER BY g.instance_id, g.admission_sequence LIMIT ?1",
+        "{} ORDER BY g.host_id, g.admission_sequence LIMIT ?1",
         CANDIDATE_SQL.replace("{index}", "INDEXED BY snapshot_generations_retention")
     )
 }
@@ -135,9 +134,9 @@ fn prune_candidates(
             .optional()
             .map_err(store_error)?;
         let Some(status) = current else { continue };
-        let instance: String = tx
+        let host: i64 = tx
             .query_row(
-                "SELECT instance_id FROM snapshot_generations WHERE id = ?1",
+                "SELECT host_id FROM snapshot_generations WHERE id = ?1",
                 [id],
                 |r| r.get(0),
             )
@@ -155,8 +154,8 @@ fn prune_candidates(
             "recovery_baseline_releases",
             "rowid",
             "SELECT rowid FROM recovery_baseline_releases \
-             WHERE instance_id = ?1 AND baseline_generation_id = ?2 LIMIT ?3",
-            &[&instance, id],
+             WHERE host_id = ?1 AND baseline_generation_id = ?2 LIMIT ?3",
+            &[&host, id],
             rows_left.saturating_sub(1),
         )?;
         rows_left -= released;
@@ -175,8 +174,8 @@ fn prune_candidates(
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM snapshot_targets WHERE generation_id = ?1) \
                  OR EXISTS(SELECT 1 FROM recovery_baseline_releases \
-                           WHERE instance_id = ?2 AND baseline_generation_id = ?1)",
-                params![id, instance],
+                           WHERE host_id = ?2 AND baseline_generation_id = ?1)",
+                params![id, host],
                 |r| r.get(0),
             )
             .map_err(store_error)?;
@@ -292,7 +291,7 @@ fn prune_jobs(store: &SqliteStore, budget: &CallBudget) -> Result<(u32, bool), A
 
 /// An unpublished preparation expires after a day without a successful quantum.
 pub const PREPARATION_RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
-const PREPARATION_CANDIDATES_SQL: &str = "SELECT p.id,p.status,p.prepared_at FROM send_preparations p INDEXED BY send_preparations_retention WHERE p.prepared_at IS NOT NULL AND p.status IN ('building','sealed') AND p.prepared_at<=?1 AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=p.id) ORDER BY p.prepared_at,p.id LIMIT ?2";
+const PREPARATION_CANDIDATES_SQL: &str = "SELECT p.id,p.status,p.prepared_at FROM send_preparations p INDEXED BY send_preparations_retention WHERE p.origin='local' AND p.prepared_at IS NOT NULL AND p.status IN ('building','sealed') AND p.prepared_at<=?1 AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=p.id) ORDER BY p.prepared_at,p.id LIMIT ?2";
 
 type PreparationCandidate = (String, String, i64);
 
@@ -340,7 +339,7 @@ fn discard_expired_preparations(
         }
         // The ID fences the generation. Status and progress fence publication,
         // rebuilding and a successful quantum after the read-only scan.
-        let eligible: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM send_preparations p WHERE id=?1 AND status=?2 AND status IN ('building','sealed') AND prepared_at=?3 AND prepared_at<=?4 AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=p.id))",params![id,status,progress,clock.utc_now().0.saturating_sub(PREPARATION_RETENTION_MS)],|r|r.get(0)).map_err(store_error)?;
+        let eligible: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM send_preparations p WHERE id=?1 AND p.origin='local' AND status=?2 AND status IN ('building','sealed') AND prepared_at=?3 AND prepared_at<=?4 AND NOT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=p.id))",params![id,status,progress,clock.utc_now().0.saturating_sub(PREPARATION_RETENTION_MS)],|r|r.get(0)).map_err(store_error)?;
         if eligible {
             super::messages::discard_preparation(tx, id)?;
             discarded += 1;

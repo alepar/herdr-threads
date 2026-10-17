@@ -1,4 +1,4 @@
-//! Per-instance operator settings: `<instance_dir>/settings.json`.
+//! Per-instance operator settings: `<node_dir>/settings.json`.
 //!
 //! Read once at daemon start (and by `doctor`). This is the single schema for
 //! the file: the daemon's hardened read (`ServiceConfig::load`), the elected
@@ -24,6 +24,16 @@
 //! - `"summary"`: thread summary, catch-up and soft-deadline poke settings
 //!   (`crate::protocol::summary::SummarySettings`; every key optional,
 //!   unknown keys rejected, validated by `ServiceConfig::from_settings`).
+//! - `"sync": {"dial_command": "<sh template>", "discover": true | false}`:
+//!   `dial_command` replaces the ssh transport of
+//!   every peer dial target with `/bin/sh -c <template>`, each `{dest}` replaced
+//!   by the target's destination single-quoted for sh (at most 4096 bytes, at
+//!   least one `{dest}`, no NUL or newline). Unset means ssh. Unknown `sync.*`
+//!   keys are rejected. `discover` (default `true`) lets the daemon add dial
+//!   targets from `herdr machine list` and `herdr --remote` clients while a
+//!   Herdr host is attached; `false` adds none and leaves rows already found
+//!   as they are (explicit `peer add` targets are unaffected). Both are read
+//!   once at daemon start.
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -55,6 +65,27 @@ pub struct InstanceSettings {
     pub archive_after_ms: u64,
     pub mod_delivery: crate::protocol::watch::ModDeliverySetting,
     pub summary: crate::protocol::summary::SummarySettings,
+    pub sync: SyncSettings,
+}
+
+/// The `sync` object of `settings.json`. Unknown keys are rejected.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SyncSettings {
+    /// The raw dial template; `ServiceConfig::from_settings` validates it into
+    /// a `DialTemplate`.
+    pub dial_command: Option<String>,
+    /// Peer discovery from Herdr machines and `herdr --remote` clients.
+    pub discover: bool,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            dial_command: None,
+            discover: true,
+        }
+    }
 }
 
 impl Default for InstanceSettings {
@@ -68,6 +99,7 @@ impl Default for InstanceSettings {
             archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
             mod_delivery: crate::protocol::watch::ModDeliverySetting::default(),
             summary: crate::protocol::summary::SummarySettings::default(),
+            sync: SyncSettings::default(),
         }
     }
 }
@@ -96,13 +128,13 @@ impl std::fmt::Display for SettingsError {
 
 impl std::error::Error for SettingsError {}
 
-/// Load `<instance_dir>/settings.json`. A missing file gives the defaults;
+/// Load `<node_dir>/settings.json`. A missing file gives the defaults;
 /// an unreadable file, invalid JSON, an unknown key or a bad value (including
 /// an out-of-range timing value) is an error naming the file and the
 /// complaint. A plain read: the permission checks live in
 /// `ServiceConfig::load`.
-pub fn load(instance_dir: &Path) -> Result<InstanceSettings, SettingsError> {
-    let path = instance_dir.join(SETTINGS_FILE);
+pub fn load(node_dir: &Path) -> Result<InstanceSettings, SettingsError> {
+    let path = node_dir.join(SETTINGS_FILE);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -193,6 +225,50 @@ mod tests {
         let bad = dir_with(Some(r#"{"mod_delivery":"maybe"}"#));
         let error = load(bad.path()).unwrap_err();
         assert!(error.to_string().contains(SETTINGS_FILE), "{error}");
+    }
+
+    #[test]
+    fn unknown_sync_key_refused() {
+        let dir = dir_with(Some(r#"{"sync":{"dial_cmd":"x"}}"#));
+        let error = load(dir.path()).unwrap_err();
+        assert!(error.to_string().contains(SETTINGS_FILE), "{error}");
+        assert!(error.detail.contains("unknown field `dial_cmd`"), "{error}");
+        let ok = dir_with(Some(r#"{"sync":{"dial_command":"exec cat {dest}"}}"#));
+        assert_eq!(
+            load(ok.path()).unwrap().sync.dial_command.as_deref(),
+            Some("exec cat {dest}")
+        );
+        assert_eq!(
+            load(dir_with(Some("{}")).path()).unwrap().sync.dial_command,
+            None
+        );
+    }
+
+    #[test]
+    fn sync_discover_defaults_on_and_parses_off() {
+        let on = load(dir_with(Some("{}")).path()).unwrap();
+        assert!(on.sync.discover);
+        let off = load(dir_with(Some(r#"{"sync":{"discover":false}}"#)).path()).unwrap();
+        assert!(!off.sync.discover);
+        assert_eq!(off.sync.dial_command, None);
+        assert!(load(dir_with(Some(r#"{"sync":{"discover":"no"}}"#)).path()).is_err());
+        let config = crate::service::config::ServiceConfig::from_settings(&off).unwrap();
+        assert!(!config.sync_discover());
+        assert!(crate::service::config::ServiceConfig::default().sync_discover());
+    }
+
+    #[test]
+    fn bad_dial_command_names_the_file() {
+        for bad in [
+            r#"{"sync":{"dial_command":"no placeholder"}}"#,
+            r#"{"sync":{"dial_command":"a {dest}\nb"}}"#,
+            r#"{"sync":{"dial_command":"a {dest}\u0000"}}"#,
+        ] {
+            let dir = dir_with(Some(bad));
+            let error = load(dir.path()).unwrap_err();
+            assert!(error.to_string().contains(SETTINGS_FILE), "{bad}: {error}");
+            assert!(error.detail.contains("sync.dial_command"), "{bad}: {error}");
+        }
     }
 
     #[test]

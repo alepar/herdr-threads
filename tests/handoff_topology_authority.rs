@@ -28,23 +28,28 @@ impl Fixture {
             ));
         std::fs::create_dir(&directory.0).unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-        let context = StoreContext::new(directory.0.join("store.db"), clock.clone());
+        let context =
+            StoreContext::new(directory.0.join("store.db"), clock.clone()).with_test_host();
         let db = rusqlite::Connection::open(directory.0.join("store.db")).unwrap();
-        herdr_threads::store::schema::initialize(&db, || clock.utc_now()).unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
-            .unwrap();
+        herdr_threads::store::schema::initialize(
+            &db,
+            || clock.utc_now(),
+            &herdr_threads::test_support::test_node_seed(),
+        )
+        .unwrap();
+        herdr_threads::test_support::attach_test_host_to_connection(&db);
         super::channel_archival::thread(&db);
         super::channel_archival::joined_agent(&db);
         drop(db);
         let db = context.open_writer().unwrap();
-        // Pre-upgrade pairs (peer invited): these tests exercise reject/leave/reinvite of the invitation.
-        db.pragma_update(
-            None,
-            "application_id",
-            herdr_threads::store::control::LEGACY_PAIR_MARKER,
-        )
-        .unwrap();
-        let concrete = Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
+        let concrete = Arc::new(
+            SqliteStore::new(
+                context,
+                "34750f98bd59fcfc946da45aaabe933b",
+                StoreSettings::default(),
+            )
+            .unwrap(),
+        );
         let store: Arc<dyn StorePort> = concrete.clone();
         let host = Arc::new(herdr_threads::host::native::NativeCli::new(
             "/host.sock".into(),
@@ -52,17 +57,23 @@ impl Fixture {
         ));
         let writer = Arc::new(FairWriter::new(32));
         let identity = Arc::new(herdr_threads::identity::repair::OrdinaryIdentity::new(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            herdr_threads::test_support::test_host_id(),
             store.clone(),
             host.clone(),
             clock.clone(),
             writer.clone(),
         ));
-        let service = DomainService::with_identity("i".into(), store, clock.clone(), identity)
-            .with_operator_owner(501)
-            .with_cooperative_owner(501, writer)
-            .with_bootstrap_runtime(super::topology_handoff::namespace(), host, concrete.clone())
-            .unwrap();
+        let service = DomainService::with_identity(
+            "34750f98bd59fcfc946da45aaabe933b".into(),
+            store,
+            clock.clone(),
+            identity,
+        )
+        .with_operator_owner(501)
+        .with_cooperative_owner(501, writer)
+        .with_prebuilt_bootstrap(super::topology_handoff::namespace(), host, concrete.clone())
+        .unwrap();
         Self {
             service,
             store: concrete,
@@ -218,6 +229,7 @@ fn public_begin_refuses_copied_namespace_and_subagent_before_mutation() {
                 identity.payload.handoff.namespace.instance = "foreign".into();
                 identity.claim.instance = "foreign".into();
                 identity.scope = herdr_threads::cli::journal::IntentScope::Cooperative {
+                    host: herdr_threads::test_support::test_host_locator(),
                     instance: "foreign".into(),
                     seat: identity.claim.seat.clone(),
                 };
@@ -245,7 +257,7 @@ fn actual_guarded_domain_capability_requires_concrete_composition_and_handler() 
     };
     let control = ControlService::new_guarded(
         StopController::new(
-            uuid::Uuid::new_v4(),
+            herdr_threads::node::NodeUuid::new_v4(),
             uuid::Uuid::new_v4(),
             Cancellation::default(),
         ),
@@ -253,6 +265,7 @@ fn actual_guarded_domain_capability_requires_concrete_composition_and_handler() 
             panic!("health outside capability probe")
         },
         f.service,
+        &herdr_threads::protocol::ids::HostLocator::parse("/host.sock").unwrap(),
     )
     .unwrap();
     let CommandResult::Capabilities(caps) = control
@@ -280,7 +293,7 @@ fn actual_guarded_domain_capability_requires_concrete_composition_and_handler() 
     let f = Fixture::new();
     let control = ControlService::new(
         StopController::new(
-            uuid::Uuid::new_v4(),
+            herdr_threads::node::NodeUuid::new_v4(),
             uuid::Uuid::new_v4(),
             Cancellation::default(),
         ),
@@ -322,6 +335,7 @@ fn delivery() -> DeliveryMutation {
         recipient: claim.seat.clone(),
     };
     let scope = IntentScope::Cooperative {
+        host: herdr_threads::test_support::test_host_locator(),
         instance: claim.instance.clone(),
         seat: claim.seat.clone(),
     };
@@ -416,7 +430,7 @@ fn public_delivery_scoped_status_and_prepublication_admission_are_read_only() {
     let live_status = f
         .call(Command::HandoffDelivery(Box::new(request.clone())))
         .unwrap();
-    f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','p','b',1,'pure Status control')", []).unwrap();
+    f.db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,'pure Status control')", []).unwrap();
     assert_eq!(
         f.call(Command::HandoffDelivery(Box::new(request.clone())))
             .unwrap(),
@@ -491,7 +505,7 @@ fn public_delivery_current_recipient_hold_refuses_live_begin_and_send_preparatio
     let mut request = delivery();
     f.call(Command::HandoffDelivery(Box::new(request.clone())))
         .unwrap();
-    f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','p','b',1,'repair')", []).unwrap();
+    f.db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,'repair')", []).unwrap();
     assert!(
         f.call(Command::HandoffDelivery(Box::new(request.clone())))
             .is_err()
@@ -604,7 +618,7 @@ fn live_cached_replay(phase: &str) {
                 .unwrap();
         match change {
             "hold" => {
-                f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','p','b',1,'repair')", []).unwrap();
+                f.db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,'repair')", []).unwrap();
             }
             "binding" => {
                 f.db.execute("UPDATE seats SET generation=generation+1 WHERE id='s'", [])
@@ -815,8 +829,8 @@ fn ordinary_unlinked_direct_ensure_send_reaches_selected_bootstrap_runtime() {
     };
     let f = Fixture::new();
     let caller = super::topology_handoff::identity().claim;
-    f.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('peer','i','resolved','native','peer-pane',1,1,0)",[]).unwrap();
-    f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
+    f.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('peer','34750f98bd59fcfc946da45aaabe933b','resolved','native','peer-pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
+    f.db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
     let ensure = Command::EnsureDirectThread(EnsureDirectThread {
         creation_policy: None,
         recipient: SeatId::new("peer"),
@@ -863,7 +877,7 @@ fn ordinary_unlinked_direct_ensure_send_reaches_selected_bootstrap_runtime() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        1
+        0
     );
 }
 
@@ -871,7 +885,11 @@ fn ordinary_unlinked_direct_ensure_send_reaches_selected_bootstrap_runtime() {
 fn automatic_contract_public_dispatch_refuses_every_phase_without_effects() {
     use herdr_threads::{cli::journal::IntentScope, protocol::ids::*};
     let mut f = Fixture::new();
-    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone());
+    f.service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        f.store.clone(),
+        f.clock.clone(),
+    );
     let claim = super::handoff_fences::identity().claim;
     let payload = AutomaticHandoffPayload::new(
         super::topology_handoff::namespace(),
@@ -882,6 +900,7 @@ fn automatic_contract_public_dispatch_refuses_every_phase_without_effects() {
     let plan = AutomaticDeliveryPlan::new(payload, SeatId::new("peer")).unwrap();
     let request = AutomaticDeliveryMutation::new(
         IntentScope::Cooperative {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: claim.instance.clone(),
             seat: claim.seat.clone(),
         },
@@ -923,11 +942,12 @@ fn automatic_contract_public_dispatch_refuses_every_phase_without_effects() {
 
 fn automatic_request(f: &Fixture) -> AutomaticDeliveryMutation {
     use herdr_threads::{cli::journal::IntentScope, protocol::ids::*};
-    f.db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('peer','i','resolved','native','peer-pane',1,1,0)").unwrap();
-    f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
+    f.db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('peer','34750f98bd59fcfc946da45aaabe933b','resolved','native','peer-pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))").unwrap();
+    f.db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
     let claim = super::handoff_fences::identity().claim;
     AutomaticDeliveryMutation::new(
         IntentScope::Cooperative {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: claim.instance.clone(),
             seat: claim.seat.clone(),
         },
@@ -1002,11 +1022,12 @@ fn automatic_canonical_ensure_attaches_exact_pair_and_replays_without_reinviting
     )
     .unwrap();
     assert_eq!(automatic_call(&f, request.ensure()).unwrap(), result);
+    // Item 17: the pair auto-joins both seats; the replay authors no invitation.
     assert_eq!(
         f.db.query_row("SELECT count(*) FROM invitations", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        1
+        0
     );
     assert_eq!(
         f.db.query_row(
@@ -1056,7 +1077,14 @@ fn automatic_canonical_companion_is_immutable_retained_foreign_keyed_and_audited
     assert!(f.db.execute("INSERT INTO automatic_handoff_companions SELECT instance_id,actor_scope,'missing',state_dir,host_endpoint,original_json,begin_key,ensure_key,send_key,complete_key FROM automatic_handoff_companions",[]).is_err());
     f.db.execute_batch("DROP TRIGGER automatic_handoff_immutable")
         .unwrap();
-    assert!(herdr_threads::store::schema::initialize(&f.db, || f.clock.utc_now()).is_err());
+    assert!(
+        herdr_threads::store::schema::initialize(
+            &f.db,
+            || f.clock.utc_now(),
+            &herdr_threads::test_support::test_node_seed()
+        )
+        .is_err()
+    );
 }
 // The decision window reuses checks of a canonical original already passed on
 // byte-identical rows (store::verified). A row that changes after such a
@@ -1511,7 +1539,7 @@ fn automatic_generic_selected_runtime_defaults_refuse_without_effects() {
     ));
     f.service = f
         .service
-        .with_bootstrap_runtime(
+        .with_prebuilt_bootstrap(
             super::topology_handoff::namespace(),
             host,
             Arc::new(GenericBootstrap),
@@ -1605,7 +1633,7 @@ fn automatic_canonical_historical_ensure_keeps_original_claim_namespace_and_fenc
             f.db.query_row("SELECT count(*) FROM invitations", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            1
+            0
         );
     }
 }
@@ -1674,7 +1702,7 @@ fn automatic_canonical_registration_refuses_cross_role_and_legacy_key_adoption()
 #[test]
 fn automatic_canonical_complete_requires_published_frozen_send() {
     use herdr_threads::protocol::{
-        commands::{OperatorRetire, Reject},
+        commands::{Leave, OperatorRetire},
         ids::*,
     };
     let f = Fixture::new();
@@ -1739,18 +1767,20 @@ fn automatic_canonical_complete_requires_published_frozen_send() {
     assert!(
         matches!(completed, CommandResult::Handoff(ref status) if status.state == HandoffState::Completed)
     );
-    let invitation: String =
+    // Item 17: the pair auto-joined the peer, so there is no invitation to decline;
+    // the peer leaves instead.
+    assert_eq!(
         f.db.query_row(
-            "SELECT id FROM invitations WHERE thread_id=?1",
+            "SELECT count(*) FROM invitations WHERE thread_id=?1",
             [thread.as_str()],
-            |r| r.get(0),
+            |r| r.get::<_, i64>(0)
         )
-        .unwrap();
-    f.call(Command::Reject(Reject {
+        .unwrap(),
+        0
+    );
+    f.call(Command::Leave(Leave {
         thread: thread.clone(),
-        invitation: InvitationId::new(invitation),
-        reason: "declined after publication".into(),
-        operation: OperationId::new("reject-after-complete"),
+        operation: OperationId::new("leave-after-complete"),
         claim: peer,
     }))
     .unwrap();
@@ -2092,15 +2122,17 @@ fn automatic_canonical_parent_blocks_archival_before_child_registration() {
             mono: at,
             utc: herdr_threads::protocol::time::UtcMillis(at),
             after_ms: 60000,
-            host_generation: 0,
-            coherent: true,
-            valid_until_mono: None,
+            hosts: herdr_threads::test_support::test_host_evidence(0, true),
             legacy_source: Some("covered".into()),
         };
         for _ in 0..20 {
-            if !herdr_threads::store::archival::advance(&f.db, "i", &rt)
-                .unwrap()
-                .has_more
+            if !herdr_threads::store::archival::advance(
+                &f.db,
+                "34750f98bd59fcfc946da45aaabe933b",
+                &rt,
+            )
+            .unwrap()
+            .has_more
             {
                 break;
             }
@@ -2152,7 +2184,7 @@ fn automatic_canonical_descriptor_requires_the_concrete_automatic_runtime() {
             ));
             f.service = f
                 .service
-                .with_bootstrap_runtime(
+                .with_prebuilt_bootstrap(
                     super::topology_handoff::namespace(),
                     host,
                     Arc::new(GenericBootstrap),
@@ -2165,12 +2197,13 @@ fn automatic_canonical_descriptor_requires_the_concrete_automatic_runtime() {
         };
         let service = ControlService::new_guarded(
             StopController::new(
-                uuid::Uuid::new_v4(),
+                herdr_threads::node::NodeUuid::new_v4(),
                 uuid::Uuid::new_v4(),
                 Cancellation::default(),
             ),
             |_| -> herdr_threads::daemon::health::HealthInputs { panic!("health") },
             f.service,
+            &herdr_threads::protocol::ids::HostLocator::parse("/host.sock").unwrap(),
         )
         .unwrap();
         let CommandResult::Capabilities(caps) = service
@@ -2206,64 +2239,29 @@ fn automatic_peer_claim(
     claim
 }
 #[test]
-fn automatic_canonical_lost_ensure_then_real_reject_or_leave_cannot_publish_or_reinvite() {
-    use herdr_threads::protocol::{
-        commands::{Accept, Leave, Reject},
-        ids::*,
-    };
-    for phase in ["reject", "leave"] {
+fn automatic_canonical_lost_ensure_then_real_leave_cannot_publish_or_reinvite() {
+    use herdr_threads::protocol::{commands::Leave, ids::*};
+    // Item 17: the pair auto-joins the peer, so the only real lifecycle decision
+    // is leaving; there is no invitation to reject.
+    {
+        let phase = "leave";
         let f = Fixture::new();
         let request = automatic_request(&f);
         let peer = automatic_peer_claim(&f, &request);
         automatic_call(&f, request.begin()).unwrap();
         let ensured = automatic_call(&f, request.ensure()).unwrap();
         let thread = automatic_selected_thread(&ensured).unwrap().clone();
-        if phase == "reject" {
-            let invitation: String =
-                f.db.query_row(
-                    "SELECT id FROM invitations WHERE thread_id=?1",
-                    [thread.as_str()],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            f.call(Command::Reject(Reject {
-                thread: thread.clone(),
-                invitation: InvitationId::new(invitation),
-                reason: "declined".into(),
-                operation: OperationId::new("reject-peer"),
-                claim: peer,
-            }))
-            .unwrap();
-        } else {
-            f.call(Command::Accept(Accept {
-                thread: thread.clone(),
-                operation: OperationId::new("accept-peer"),
-                claim: peer.clone(),
-            }))
-            .unwrap();
-            f.call(Command::Leave(Leave {
-                thread: thread.clone(),
-                operation: OperationId::new("leave-peer"),
-                claim: peer,
-            }))
-            .unwrap();
-        }
-        // Reject itself now appends a warning notice. Freeze the all-kind
-        // baseline after that ordinary decision so retry gets no false credit.
+        f.call(Command::Leave(Leave {
+            thread: thread.clone(),
+            operation: OperationId::new("leave-peer"),
+            claim: peer,
+        }))
+        .unwrap();
+        // Freeze the all-kind baseline after the lifecycle decision so retry
+        // gets no false credit.
         let messages_after_lifecycle: i64 =
             f.db.query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
                 .unwrap();
-        if phase == "reject" {
-            assert_eq!(
-                f.db.query_row(
-                    "SELECT count(*) FROM messages WHERE thread_id=?1 AND kind='warn'",
-                    [thread.as_str()],
-                    |r| r.get::<_, i64>(0)
-                )
-                .unwrap(),
-                1
-            );
-        }
         assert_eq!(automatic_call(&f, request.ensure()).unwrap(), ensured);
         assert!(automatic_call(&f, request.send(thread)).is_err(), "{phase}");
         assert_eq!(
@@ -2276,7 +2274,7 @@ fn automatic_canonical_lost_ensure_then_real_reject_or_leave_cannot_publish_or_r
             f.db.query_row("SELECT count(*) FROM invitations", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            1
+            0
         );
         assert_eq!(
             f.db.query_row(
@@ -2290,11 +2288,11 @@ fn automatic_canonical_lost_ensure_then_real_reject_or_leave_cannot_publish_or_r
     }
 }
 #[test]
-fn automatic_canonical_real_reject_between_preparation_and_publication_refuses() {
+fn automatic_canonical_real_leave_between_preparation_and_publication_refuses() {
     use herdr_threads::{
         ports::{BootstrapStorePort, DurableWorkAdmission, SendPreparationProgress},
         protocol::{
-            commands::{PermitMutation, Reject},
+            commands::{Leave, PermitMutation},
             ids::*,
         },
     };
@@ -2325,18 +2323,10 @@ fn automatic_canonical_real_reject_between_preparation_and_publication_refuses()
             SendPreparationProgress::Committed(_) => panic!("fresh preparation"),
         }
     }
-    let invitation: String =
-        f.db.query_row(
-            "SELECT id FROM invitations WHERE thread_id=?1",
-            [thread.as_str()],
-            |r| r.get(0),
-        )
-        .unwrap();
-    f.call(Command::Reject(Reject {
+    // Item 17: the auto-joined peer has no invitation to reject; it leaves.
+    f.call(Command::Leave(Leave {
         thread,
-        invitation: InvitationId::new(invitation),
-        reason: "declined".into(),
-        operation: OperationId::new("reject-interleave"),
+        operation: OperationId::new("leave-interleave"),
         claim: peer,
     }))
     .unwrap();

@@ -6,7 +6,7 @@ use super::{
     RunError,
     commands::{CooperativeSelection, ParsedCli},
 };
-use crate::daemon::paths::InstancePaths;
+use crate::daemon::paths::NodePaths;
 use crate::ports::LocalClient;
 use crate::{
     harness::context::Role,
@@ -42,8 +42,9 @@ pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
     parsed: &ParsedCli,
     value: Option<NudgeThreshold>,
     selection: &CooperativeSelection,
-    paths: &InstancePaths,
-    instance: uuid::Uuid,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
     client: &C,
     clock: &dyn Clock,
     writer: &mut W,
@@ -56,7 +57,7 @@ pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
     }
     let claim = match value {
         Some(_) => Some(super::wake_on::current_claim(
-            selection, paths, instance, client, parsed, clock,
+            selection, paths, instance, host, client, parsed, clock,
         )?),
         None => None,
     };

@@ -21,7 +21,7 @@ use herdr_threads::{
     app::SystemClock,
     daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     harness::context::{ContextJournal, Harness, OccupantContext, Role, SessionReference},
     host::native::NativeCli,
@@ -1063,8 +1063,8 @@ struct Topology {
     host: Host,
     iso: TestIsolation,
     context: RuntimeContext,
-    paths: InstancePaths,
-    instance: uuid::Uuid,
+    paths: NodePaths,
+    instance: herdr_threads::node::NodeUuid,
 }
 impl Topology {
     fn new() -> Self {
@@ -1083,16 +1083,16 @@ impl Topology {
         let state = iso.path("state");
         fs::create_dir_all(&state).unwrap();
         let context = RuntimeContext::explicit(state, socket, None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        let instance = owner.instance_uuid();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        let instance = owner.node_uuid().unwrap();
         drop(owner);
         Self::seed(&paths, &context, instance);
         let mut cmd = iso.command(BIN);
         cmd.args(["daemon", "run", "--state-dir"])
             .arg(&context.state_dir)
             .arg("--host-endpoint")
-            .arg(&context.host_endpoint)
+            .arg(context.host_endpoint.clone().unwrap())
             .env("CLAUDE_CONFIG_DIR", iso.path("claude-config"))
             .env("CODEX_HOME", iso.path("codex-home"))
             .stdout(fs::File::create(iso.path("daemon.stdout")).unwrap())
@@ -1104,7 +1104,7 @@ impl Topology {
                 return false;
             }
             let db = Connection::open(&paths.database_path).unwrap();
-            db.query_row("SELECT count(*) FROM host_instances WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",[],|r|r.get::<_,i64>(0)).unwrap_or(0)>0
+            db.query_row("SELECT count(*) FROM herdr_hosts WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",[],|r|r.get::<_,i64>(0)).unwrap_or(0)>0
         });
         Self {
             daemon,
@@ -1116,7 +1116,7 @@ impl Topology {
         }
     }
 
-    fn seed(paths: &InstancePaths, context: &RuntimeContext, instance: uuid::Uuid) {
+    fn seed(paths: &NodePaths, context: &RuntimeContext, instance: herdr_threads::node::NodeUuid) {
         Self::seed_with_store_clock(paths, context, instance, Arc::new(SystemClock::new()));
     }
 
@@ -1124,13 +1124,13 @@ impl Topology {
     /// writer quantum and budgets read; the host call keeps the system clock.
     /// Returns how many writer turns staged the snapshot's targets.
     fn seed_with_store_clock(
-        paths: &InstancePaths,
+        paths: &NodePaths,
         context: &RuntimeContext,
-        instance: uuid::Uuid,
+        instance: herdr_threads::node::NodeUuid,
         store_clock: Arc<dyn Clock>,
     ) -> usize {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-        let native = NativeCli::new(context.host_endpoint.clone(), clock.clone());
+        let native = NativeCli::new(context.host_endpoint.clone().unwrap(), clock.clone());
         let ctx = HostCallContext {
             budget: CallBudget {
                 deadline: MonoInstant(clock.monotonic_now().0 + 5000),
@@ -1146,17 +1146,17 @@ impl Topology {
             )
             .unwrap();
         let observation = observed.observation();
-        let store_context = StoreContext::new(paths.database_path.clone(), store_clock.clone());
+        let store_context = StoreContext::new(paths.database_path.clone(), store_clock.clone())
+            .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
         let budget = CallBudget {
             deadline: MonoInstant(store_clock.monotonic_now().0 + 5000),
             cancellation: Cancellation::default(),
         };
+        // The host row the elected daemon will attach (same endpoint).
+        store_context
+            .attach_host(&context.host_endpoint.clone().unwrap().to_string_lossy())
+            .unwrap();
         let db = store_context.open_writer().unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at) VALUES(?1,0)",
-            [instance.to_string()],
-        )
-        .unwrap();
         let store = SqliteStore::new(
             store_context,
             instance.to_string(),
@@ -1164,7 +1164,11 @@ impl Topology {
         )
         .unwrap();
         let admission = store
-            .begin_host_observation(&instance.to_string(), &budget)
+            .begin_host_observation(
+                &instance.to_string(),
+                herdr_threads::test_support::test_host_id(),
+                &budget,
+            )
             .unwrap();
         let snapshot = herdr_threads::ports::HostPort::enumerate_targets(&native, &ctx).unwrap();
         let stage = store
@@ -1200,14 +1204,14 @@ impl Topology {
             ("sender", "w4:p1", "term_1"),
             ("recipient", "w4:p2", "term_2"),
         ] {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0)",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
         }
         // The codex occupant's process is this test process, so the daemon's liveness worker
         // keeps the binding connected (deterministic availability across the epoch carry).
         let process = herdr_threads::protocol::authority::LivenessFingerprint::current_process();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1,?3,?4)",params![observation.host_boot.as_str(),execution.to_string(),i64::from(process.pid),process.start as i64]).unwrap();
         let contexts = paths
-            .instance_dir
+            .node_dir
             .join("contexts")
             .join(format!("{:x}", Sha256::digest(b"sender")));
         fs::DirBuilder::new()
@@ -1217,6 +1221,7 @@ impl Topology {
             .unwrap();
         fs::set_permissions(&contexts, fs::Permissions::from_mode(0o700)).unwrap();
         ContextJournal::open(&contexts, instance, "sender", Duration::from_secs(1))
+            .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
             .unwrap()
             .install_reattached(OccupantContext {
                 format_version: 1,
@@ -1238,7 +1243,14 @@ impl Topology {
     /// rewritten to `<thread>`, `<invitation>`, `<message>` and `<seat>` (the fixture's own seats, `sender`
     /// and `recipient`, stay).
     fn norm(&self) -> Norm {
-        let sockets = self.context.host_endpoint.parent().unwrap().to_path_buf();
+        let sockets = self
+            .context
+            .host_endpoint
+            .clone()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let mut norm = Norm::new(&[self.iso.state_root(), &sockets])
             .also(self.instance.to_string(), "<instance>");
         if let Ok(db) = Connection::open_with_flags(
@@ -1278,7 +1290,7 @@ impl Topology {
         cmd.arg("--state-dir")
             .arg(&self.context.state_dir)
             .arg("--host-endpoint")
-            .arg(&self.context.host_endpoint)
+            .arg(self.context.host_endpoint.clone().unwrap())
             .env("CLAUDE_CONFIG_DIR", self.iso.path("claude-config"))
             .env("CODEX_HOME", self.iso.path("codex-home"))
             .env("PATH", std::env::join_paths(path).unwrap())
@@ -1328,7 +1340,7 @@ impl Topology {
         cmd.args(["human", "--json", "--state-dir"])
             .arg(&self.context.state_dir)
             .arg("--host-endpoint")
-            .arg(&self.context.host_endpoint)
+            .arg(self.context.host_endpoint.clone().unwrap())
             .args(["setup", kind]);
         if kind == "claude" {
             cmd.arg("--keep-prompt-suggestions");
@@ -1399,9 +1411,9 @@ fn seeding_stages_the_rest_after_a_spent_writer_quantum() {
     let state = iso.path("state");
     fs::create_dir_all(&state).unwrap();
     let context = RuntimeContext::explicit(state, socket, None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
-    let instance = owner.instance_uuid();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = owner.node_uuid().unwrap();
     drop(owner);
     let clock: Arc<dyn Clock> = Arc::new(SteppingClock(std::sync::atomic::AtomicU64::new(1)));
     let turns = Topology::seed_with_store_clock(&paths, &context, instance, clock);
@@ -1573,11 +1585,14 @@ fn hook_stdout_healthy_checkin() {
             cmd.arg("--state-dir")
                 .arg(&t.context.state_dir)
                 .arg("--host-endpoint")
-                .arg(&t.context.host_endpoint)
+                .arg(t.context.host_endpoint.clone().unwrap())
                 .args(["hook", harness, "--event", event])
                 .env("HERDR_ENV", "1")
                 .env("HERDR_PANE_ID", pane)
-                .env("HERDR_SOCKET_PATH", &t.context.host_endpoint)
+                .env(
+                    "HERDR_SOCKET_PATH",
+                    t.context.host_endpoint.clone().unwrap(),
+                )
                 .env("CLAUDE_CONFIG_DIR", t.iso.path("claude-config"))
                 .env("CODEX_HOME", t.iso.path("codex-home"))
                 // The hook takes its liveness fingerprint from its harness process: this test

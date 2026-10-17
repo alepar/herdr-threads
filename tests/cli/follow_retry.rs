@@ -264,10 +264,10 @@ fn nick_cache_render_path_takes_no_context_lock() {
     std::fs::create_dir_all(&root).unwrap();
     // The journal refuses symlinked ancestors (macOS `/var` is one).
     let root = root.canonicalize().unwrap();
-    let instance = uuid::Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let seat = SeatId::new("seat-a");
-    let instance_dir = root.join("instance");
-    let dir = instance_dir
+    let node_dir = root.join("instance");
+    let dir = node_dir
         .join("contexts")
         .join(format!("{:x}", Sha256::digest(seat.as_str().as_bytes())));
     private_dir(&dir);
@@ -295,22 +295,23 @@ fn nick_cache_render_path_takes_no_context_lock() {
     lock.lock().unwrap();
 
     // Control: the locking reader cannot get in while the lock is held.
-    let journal =
-        ContextJournal::open(&dir, instance, "seat-a", Duration::from_millis(50)).unwrap();
+    let journal = ContextJournal::open(&dir, instance, "seat-a", Duration::from_millis(50))
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+        .unwrap();
     assert!(
         journal.current().is_err(),
         "the fixture must really hold the lock"
     );
 
     let started = Instant::now();
-    let harness = read_harness(&instance_dir, instance, &seat, 3);
+    let harness = read_harness(&node_dir, instance, &seat, 3);
     let took = started.elapsed();
     assert_eq!(harness, Some("claude"));
     assert!(
         took < Duration::from_millis(100),
         "waited {took:?} on the lock"
     );
-    assert_eq!(read_harness(&instance_dir, instance, &seat, 4), None);
+    assert_eq!(read_harness(&node_dir, instance, &seat, 4), None);
     drop(lock);
     std::fs::remove_dir_all(&root).unwrap();
 }
@@ -341,7 +342,7 @@ fn ctrl_c_during_a_call_returns_promptly() {
     let client = LocalSocketClient::new(
         socket.clone(),
         Arc::clone(&clock),
-        uuid::Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         Some(uuid::Uuid::new_v4()),
     );
     // The same chain a real signal takes: flag -> watcher -> Cancellation.
@@ -425,14 +426,22 @@ impl CompletedRetryFixture {
         let runtime =
             crate::daemon::paths::RuntimeContext::explicit(state.clone(), host.clone(), None)
                 .unwrap();
-        let paths = crate::daemon::paths::InstancePaths::resolve_read_only(&runtime).unwrap();
-        let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+        let paths = crate::daemon::paths::NodePaths::resolve_read_only(&runtime.state_dir).unwrap();
+        let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
         let context = crate::protocol::output::ContinuationContext {
             state_dir: Some(runtime.state_dir.to_string_lossy().into_owned()),
-            host: Some(runtime.host_endpoint.to_string_lossy().into_owned()),
+            host: Some(
+                runtime
+                    .host_endpoint
+                    .clone()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
         };
         let claim = CallerClaim {
-            instance: "00000000-0000-0000-0000-0000000000b1".into(),
+            host: crate::test_support::test_host_locator(),
+            instance: "000000000000000000000000000000b1".into(),
             seat: SeatId::new("sender"),
             target: HostTargetId::new("w1:p1"),
             binding_generation: 1,
@@ -472,6 +481,7 @@ impl CompletedRetryFixture {
         let reference = journal
             .record(
                 IntentScope::Cooperative {
+                    host: crate::test_support::test_host_locator(),
                     instance: claim.instance.clone(),
                     seat: claim.seat.clone(),
                 },
@@ -644,13 +654,21 @@ fn completed_agent_retry_survives_live_human_binding() {
     let fixture = CompletedRetryFixture::new(crate::protocol::authority::Harness::Codex);
     let runtime = crate::daemon::paths::RuntimeContext::explicit(
         fixture.context.state_dir.as_ref().unwrap().into(),
-        fixture.context.host.as_ref().unwrap().into(),
+        Some(std::path::PathBuf::from(
+            fixture.context.host.as_ref().unwrap(),
+        )),
         None,
     )
     .unwrap();
-    let paths = crate::daemon::paths::InstancePaths::resolve_read_only(&runtime).unwrap();
-    let instance = uuid::Uuid::parse_str(&fixture.claim.instance).unwrap();
-    let live = crate::cli::seat_contexts(&paths, instance, &fixture.claim.seat).unwrap();
+    let paths = crate::daemon::paths::NodePaths::resolve_read_only(&runtime.state_dir).unwrap();
+    let instance = crate::node::NodeUuid::parse_str(&fixture.claim.instance).unwrap();
+    let live = crate::cli::seat_contexts(
+        &paths,
+        instance,
+        &crate::test_support::test_host_locator(),
+        &fixture.claim.seat,
+    )
+    .unwrap();
     live.install_reattached(OccupantContext {
         format_version: 1,
         instance,

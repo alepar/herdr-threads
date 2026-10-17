@@ -19,6 +19,11 @@ use std::{
     time::Duration,
 };
 
+/// The Herdr server of the isolated fixture: the namespace's `host_endpoint`.
+fn isolated_host() -> herdr_threads::protocol::ids::HostLocator {
+    herdr_threads::protocol::ids::HostLocator::parse("/isolated-host.sock").unwrap()
+}
+
 struct Fixture {
     root: PathBuf,
     journal: Journal,
@@ -107,24 +112,20 @@ impl Fixture {
         std::fs::create_dir(&root).unwrap();
         let root = root.canonicalize().unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-        let context = StoreContext::new(root.join("store.db"), clock.clone());
+        let instance = herdr_threads::node::NodeUuid::from_u128(1);
+        let context = StoreContext::new(root.join("store.db"), clock.clone())
+            .with_test_host()
+            .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
+        // The fixture's claims name the isolated server: it is the fixture host.
+        context
+            .hosts()
+            .publish_for_test(isolated_host(), herdr_threads::test_support::test_host_id());
         let db = context.open_writer().unwrap();
-        // Pairs are created the pre-upgrade way (peer invited) unless a test calls `auto_join`.
-        db.pragma_update(
-            None,
-            "application_id",
-            herdr_threads::store::control::LEGACY_PAIR_MARKER,
-        )
-        .unwrap();
-        let instance = uuid::Uuid::from_u128(1);
-        db.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES(?1,0,'b',1)",
-            [instance.to_string()],
-        )
-        .unwrap();
+        db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
         for seat in ["seat-a", "seat-b"] {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES(?1,?2,'resolved','native',?1,1,1,0)", rusqlite::params![seat, instance.to_string()]).unwrap();
-            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES(?1,?2,'b',1,1,0,'fresh','term-'||?2,'inc','coherent_enumeration',1)", rusqlite::params![instance.to_string(), seat]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat, instance.to_string()]).unwrap();
+            db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),?2,'b',1,1,0,'fresh','term-'||?2,'inc','coherent_enumeration',1)", rusqlite::params![instance.to_string(), seat]).unwrap();
             db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES(?1,1,?1,'b',1,1,?2,'session','00000000-0000-4000-8000-000000000002',?3,0,'term-'||?1,'inc')", rusqlite::params![seat, if human {"human"} else {"codex"}, if human {"operator_human"} else {"cooperative_top_level"}]).unwrap();
         }
         let store = Arc::new(
@@ -136,8 +137,9 @@ impl Fixture {
         std::fs::create_dir(&directory).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let contexts =
-            ContextJournal::open(&directory, instance, "seat-a", Duration::from_secs(1)).unwrap();
+        let contexts = ContextJournal::open(&directory, instance, "seat-a", Duration::from_secs(1))
+            .map(|journal| journal.with_host(isolated_host()))
+            .unwrap();
         contexts
             .install_reattached(OccupantContext {
                 format_version: 1,
@@ -172,9 +174,6 @@ impl Fixture {
         }
     }
     /// Pairs created from now on auto-join both seats (the current behaviour).
-    fn auto_join(&self) {
-        self.db.pragma_update(None, "application_id", 0).unwrap();
-    }
     fn run(&self, args: &[&str], writer: &mut impl Write) -> Result<(), RunError> {
         self.run_with_journal(args, writer, &self.journal)
     }
@@ -398,6 +397,7 @@ fn record_historical_direct_receipt_control(
         send_key: OperationId::new(uuid::Uuid::new_v4().to_string()),
     };
     let scope = IntentScope::Cooperative {
+        host: isolated_host(),
         instance: claim.instance.clone(),
         seat: claim.seat.clone(),
     };
@@ -695,7 +695,7 @@ fn lost_committed_replies_restart_with_exact_keys_body_and_lazy_audience() {
         f.run_with_journal(&["retry", &recovery], &mut output, &reopened)
             .unwrap();
         assert_eq!(f.count("direct_threads"), 1);
-        assert_eq!(f.count("invitations"), 1);
+        assert_eq!(f.count("invitations"), 0);
         assert_eq!(f.count("lazy_recipients"), 1);
         assert_eq!(
             f.db.query_row(
@@ -755,7 +755,8 @@ fn assert_direct_send_frozen_claim_survives_changed_caller(
 
     let mut f = Fixture::new(false);
     let original_context = f.contexts.current().unwrap().unwrap();
-    let mut expected = herdr_threads::harness::bridge::caller_claim(&original_context).unwrap();
+    let mut expected =
+        herdr_threads::harness::bridge::caller_claim(&original_context, isolated_host()).unwrap();
     expected.liveness = fingerprint;
     let open_contexts = || {
         ContextJournal::open(
@@ -764,6 +765,7 @@ fn assert_direct_send_frozen_claim_survives_changed_caller(
             &original_context.seat,
             Duration::from_secs(1),
         )
+        .map(|journal| journal.with_host(isolated_host()))
         .unwrap()
     };
     if let Some(fingerprint) = fingerprint {
@@ -827,7 +829,7 @@ fn assert_direct_send_frozen_claim_survives_changed_caller(
         .unwrap();
     assert!(reopened.page(&Default::default()).unwrap().items.is_empty());
     assert_eq!(f.count("direct_threads"), 1);
-    assert_eq!(f.count("invitations"), 1);
+    assert_eq!(f.count("invitations"), 0);
     assert_eq!(
         f.db.query_row(
             "SELECT count(*) FROM messages WHERE body='frozen caller body'",
@@ -904,7 +906,7 @@ fn completed_output_loss_replays_history_without_new_effects() {
         .unwrap();
     f.db.execute("UPDATE threads SET archived=1", []).unwrap();
     f.db.execute(
-        "UPDATE seats SET state='retired', retired_at=1, retired_seq=(SELECT decision_seq+1 FROM host_instances LIMIT 1), generation=generation+1 WHERE id='seat-b'",
+        "UPDATE seats SET state='retired', retired_at=1, retired_seq=(SELECT decision_seq+1 FROM local_node LIMIT 1), generation=generation+1 WHERE id='seat-b'",
         [],
     )
     .unwrap();
@@ -958,7 +960,7 @@ fn invalid_target_and_caller_refuse_before_intent_or_pair() {
         match case {
             "retired" => {
                 f.db.execute(
-                    "UPDATE seats SET state='retired', retired_at=1, retired_seq=(SELECT decision_seq+1 FROM host_instances LIMIT 1), generation=generation+1 WHERE id='seat-b'",
+                    "UPDATE seats SET state='retired', retired_at=1, retired_seq=(SELECT decision_seq+1 FROM local_node LIMIT 1), generation=generation+1 WHERE id='seat-b'",
                     [],
                 )
                 .unwrap();
@@ -968,7 +970,7 @@ fn invalid_target_and_caller_refuse_before_intent_or_pair() {
                     .unwrap();
             }
             "held" => {
-                f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES(?1,'seat-b','b',1,'operator')", [uuid::Uuid::from_u128(1).to_string()]).unwrap();
+                f.db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'seat-b','b',1,'operator')", [herdr_threads::node::NodeUuid::from_u128(1).to_string()]).unwrap();
             }
             "stale-caller" => {
                 f.db.execute("UPDATE seats SET generation=2 WHERE id='seat-a'", [])
@@ -1027,7 +1029,7 @@ fn nudge_and_explicit_target_ack_use_ordinary_delivery() {
             // Only an explicit ACK recipient owes a receipt (D9): a bare nudge is a priority-0 row.
             assert_eq!(f.count("lazy_recipients"), 1);
             assert_eq!(f.count("receipts"), 0);
-            assert_eq!(f.count("invitations"), 1);
+            assert_eq!(f.count("invitations"), 0);
             continue;
         }
         assert_eq!(f.count("lazy_recipients"), 0);
@@ -1046,7 +1048,7 @@ fn nudge_and_explicit_target_ack_use_ordinary_delivery() {
             herdr_threads::store::effective::EffectiveReceiptState::Pending
         );
         assert_eq!(receipt.seat_id, "seat-b");
-        assert_eq!(f.count("invitations"), 1);
+        assert_eq!(f.count("invitations"), 0);
     }
 }
 
@@ -1177,7 +1179,7 @@ fn contradictory_saved_send_is_refused_without_publishing_another_message() {
         .unwrap(),
         0
     );
-    assert_eq!(f.count("invitations"), 1);
+    assert_eq!(f.count("invitations"), 0);
 }
 
 #[test]
@@ -1384,7 +1386,7 @@ fn deterministic_send_refusal_retains_staged_thread_body_and_retry() {
     assert!(rendered.contains(&recovery));
     assert_eq!(f.recovery(), recovery);
     assert_eq!(f.count("direct_threads"), 1);
-    assert_eq!(f.count("invitations"), 1);
+    assert_eq!(f.count("invitations"), 0);
     assert_eq!(
         f.db.query_row(
             "SELECT count(*) FROM messages WHERE body='retained'",
@@ -1415,21 +1417,19 @@ fn public_completed_retry_missing_endpoint_retains_files_and_one_frozen_hint() {
     let recovery = f.recovery();
     let runtime = herdr_threads::daemon::paths::RuntimeContext::explicit(
         f.root.clone(),
-        "/isolated-host.sock".into(),
+        Some("/isolated-host.sock".into()),
         None,
     )
     .unwrap();
-    let paths = herdr_threads::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
-    std::fs::create_dir_all(&paths.instance_dir).unwrap();
+    let paths = herdr_threads::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
+    std::fs::create_dir_all(&paths.node_dir).unwrap();
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&paths.instance_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::write(&paths.namespace_path, uuid::Uuid::from_u128(1).to_string()).unwrap();
-    std::fs::set_permissions(
-        &paths.namespace_path,
-        std::fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
-    let public_root = paths.instance_dir.join("intents");
+    std::fs::set_permissions(&paths.node_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    herdr_threads::test_support::write_node_hint(
+        &paths,
+        herdr_threads::node::NodeUuid::from_u128(1),
+    );
+    let public_root = paths.node_dir.join("intents");
     let _public = Journal::open(&public_root).unwrap();
     for entry in std::fs::read_dir(f.root.join("intents")).unwrap() {
         let path = entry.unwrap().path();
@@ -1566,42 +1566,11 @@ fn old_direct_peer_with_lazy_support_refuses_creation_policy_before_any_effect()
     );
 }
 
-#[test]
-fn modern_direct_send_creates_lazy_pending_invitation_without_invitation_wake() {
-    let f = Fixture::new(false);
-    f.run(
-        &["send", "--seat", "seat-b", "--body", "hello"],
-        &mut vec![],
-    )
-    .unwrap();
-    let row: (Option<String>, String, Option<String>) =
-        f.db.query_row(
-            "SELECT confirmation,state,inviter_seat_id FROM invitations",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        row,
-        (Some("lazy".into()), "pending".into(), Some("seat-a".into()))
-    );
-    assert_eq!(
-        f.db.query_row(
-            "SELECT count(*) FROM wake_work WHERE seat_id='seat-b' AND reason_bits&1!=0",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-}
-
-// ht-yha.6: with an auto-joining daemon (direct.auto_join_v1) a direct send needs no invitation:
+// ht-yha.6: a direct send needs no invitation:
 // both pair seats are joined at creation, the message is sent, and no accept step is printed.
 #[test]
 fn direct_send_to_an_auto_joining_daemon_records_no_invitation() {
     let f = Fixture::new(false);
-    f.auto_join();
     let mut out = vec![];
     f.run(&["send", "--seat", "seat-b", "--body", "hello"], &mut out)
         .unwrap();
@@ -1638,7 +1607,8 @@ fn ensure_command(
         recipient: SeatId::new("seat-b"),
         operation: OperationId::new(operation),
         claim: CallerClaim {
-            instance: uuid::Uuid::from_u128(1).to_string(),
+            host: isolated_host(),
+            instance: herdr_threads::node::NodeUuid::from_u128(1).to_string(),
             seat: SeatId::new("seat-a"),
             binding_generation: 1,
             role: CallerRole::TopLevel,
@@ -1676,55 +1646,6 @@ fn ensure_call(f: &Fixture, command: Command) -> Result<CommandResult, ApiError>
     )
 }
 #[test]
-fn human_initial_ensure_require_ack_refuses_before_pair_invitation_or_obligation_effects() {
-    let f = Fixture::new(true);
-    let obligations = f.count("seat_availability");
-    let operations = f.count("operations");
-    let result = ensure_call(
-        &f,
-        ensure_command(true, Some(initial_policy(true)), "human-timed"),
-    );
-    assert!(
-        result
-            .is_err_and(|e| e.code == herdr_threads::protocol::results::ErrorCode::InvalidRequest),
-        "Human issuer gained a new timed invitation mode"
-    );
-    assert_eq!(f.count("direct_threads"), 0);
-    assert_eq!(f.count("invitations"), 0);
-    assert_eq!(f.count("seat_availability"), obligations);
-    assert_eq!(f.count("operations"), operations);
-}
-#[test]
-fn explicit_initial_ensure_policy_applies_once_and_existing_episode_is_immutable() {
-    for timed in [false, true] {
-        let f = Fixture::new(false);
-        let first = ensure_call(
-            &f,
-            ensure_command(false, Some(initial_policy(timed)), "first-policy"),
-        )
-        .unwrap();
-        let row: (Option<String>,i64,i64,i64,Option<String>)=f.db.query_row("SELECT confirmation,frozen_duration_ms,created_at,deadline_at,inviter_seat_id FROM invitations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
-        assert_eq!(
-            row.0.as_deref(),
-            Some(if timed { "require_ack" } else { "lazy" })
-        );
-        assert_eq!(row.4.as_deref(), Some("seat-a"));
-        if timed {
-            assert_eq!(row.1, 11000);
-            assert_eq!(row.3 - row.2, 11000);
-        }
-        let second = ensure_call(
-            &f,
-            ensure_command(false, Some(initial_policy(!timed)), "second-policy"),
-        )
-        .unwrap();
-        assert_eq!(ensured_thread(&first), ensured_thread(&second));
-        let after: (Option<String>,i64,i64,i64,Option<String>)=f.db.query_row("SELECT confirmation,frozen_duration_ms,created_at,deadline_at,inviter_seat_id FROM invitations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
-        assert_eq!(row, after);
-        assert_eq!(f.count("invitations"), 1);
-    }
-}
-#[test]
 fn human_lazy_and_historical_ensure_and_existing_requested_policy_keep_old_episode() {
     for policy in [None, Some(initial_policy(false))] {
         let f = Fixture::new(true);
@@ -1735,7 +1656,7 @@ fn human_lazy_and_historical_ensure_and_existing_requested_policy_keep_old_episo
         )
         .unwrap();
         assert_eq!(ensured_thread(&first), ensured_thread(&second));
-        assert_eq!(f.count("invitations"), 1);
+        assert_eq!(f.count("invitations"), 0);
     }
 }
 
@@ -1749,8 +1670,9 @@ fn modern_ensure_returns_actual_canonical_policy_and_selection_outcome() {
     .unwrap();
     let first = serde_json::to_value(first).unwrap();
     assert_eq!(first["kind"], "direct_thread_ensured");
-    assert_eq!(first["data"]["outcome"], "created");
-    assert_eq!(first["data"]["invitation"]["confirmation"], "require_ack");
+    // The local recipient auto-joined at creation: no invitation exists.
+    assert_eq!(first["data"]["outcome"], "already_joined");
+    assert_eq!(first["data"]["invitation"], serde_json::Value::Null);
     let second = ensure_call(
         &f,
         ensure_command(false, Some(initial_policy(false)), "actual-reuse"),
@@ -1758,8 +1680,8 @@ fn modern_ensure_returns_actual_canonical_policy_and_selection_outcome() {
     .unwrap();
     let second = serde_json::to_value(second).unwrap();
     assert_eq!(second["kind"], "direct_thread_ensured");
-    assert_eq!(second["data"]["outcome"], "existing_pending");
-    assert_eq!(second["data"]["invitation"], first["data"]["invitation"]);
+    assert_eq!(second["data"]["outcome"], "already_joined");
+    assert_eq!(second["data"]["invitation"], serde_json::Value::Null);
     assert_eq!(second["data"]["thread"], first["data"]["thread"]);
     let replay = ensure_call(
         &f,
@@ -1778,12 +1700,10 @@ fn ensured_thread(result: &CommandResult) -> herdr_threads::protocol::ids::Threa
     })
 }
 #[test]
-fn modern_ensure_joined_rejected_and_left_use_actual_canonical_lifecycle() {
-    use herdr_threads::protocol::{
-        commands::{Accept, Leave, Reject},
-        ids::*,
-    };
-    for state in ["joined", "rejected", "left"] {
+fn modern_ensure_joined_and_left_use_actual_canonical_lifecycle() {
+    use herdr_threads::protocol::{commands::Leave, ids::*};
+    // A pair has no invitation to accept or reject: both seats join at creation.
+    for state in ["joined", "left"] {
         let f = Fixture::new(false);
         let first = ensure_call(
             &f,
@@ -1797,42 +1717,16 @@ fn modern_ensure_joined_rejected_and_left_use_actual_canonical_lifecycle() {
         let mut recipient = initial.claim;
         recipient.seat = SeatId::new("seat-b");
         recipient.target = HostTargetId::new("seat-b");
-        if state == "rejected" {
-            let invitation: String =
-                f.db.query_row("SELECT id FROM invitations", [], |r| r.get(0))
-                    .unwrap();
+        if state == "left" {
             ensure_call(
                 &f,
-                Command::Reject(Reject {
+                Command::Leave(Leave {
                     thread: thread.clone(),
-                    invitation: InvitationId::new(invitation),
-                    reason: "declined".into(),
-                    operation: OperationId::new("decline"),
+                    operation: OperationId::new("leave"),
                     claim: recipient,
                 }),
             )
             .unwrap();
-        } else {
-            ensure_call(
-                &f,
-                Command::Accept(Accept {
-                    thread: thread.clone(),
-                    operation: OperationId::new("accept"),
-                    claim: recipient.clone(),
-                }),
-            )
-            .unwrap();
-            if state == "left" {
-                ensure_call(
-                    &f,
-                    Command::Leave(Leave {
-                        thread: thread.clone(),
-                        operation: OperationId::new("leave"),
-                        claim: recipient,
-                    }),
-                )
-                .unwrap();
-            }
         }
         let result = ensure_call(
             &f,
@@ -1846,24 +1740,18 @@ fn modern_ensure_joined_rejected_and_left_use_actual_canonical_lifecycle() {
             assert!(result.is_err(), "{state} participant was resurrected");
         }
         assert_eq!(f.count("direct_threads"), 1);
-        assert_eq!(f.count("invitations"), 1);
+        assert_eq!(f.count("invitations"), 0);
     }
 }
 
 #[test]
-fn historical_ensure_omits_new_result_and_modern_reuse_reports_old_timed_origin_honestly() {
+fn historical_ensure_omits_new_result_and_modern_reuse_reports_the_joined_pair() {
     let f = Fixture::new(false);
     let historical = ensure_call(&f, ensure_command(false, None, "historical-initial")).unwrap();
     let historical = serde_json::to_value(&historical).unwrap();
     assert_eq!(historical["kind"], "thread_created");
     assert!(historical["data"].is_string());
-    let row: (i64, Option<String>) =
-        f.db.query_row(
-            "SELECT deadline_at,inviter_seat_id FROM invitations",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
+    assert_eq!(f.count("invitations"), 0);
     let modern = ensure_call(
         &f,
         ensure_command(false, Some(initial_policy(false)), "modern-old-pair"),
@@ -1871,14 +1759,8 @@ fn historical_ensure_omits_new_result_and_modern_reuse_reports_old_timed_origin_
     .unwrap();
     let modern = serde_json::to_value(modern).unwrap();
     assert_eq!(modern["kind"], "direct_thread_ensured");
-    assert_eq!(modern["data"]["outcome"], "existing_pending");
-    assert_eq!(modern["data"]["invitation"]["confirmation"], "require_ack");
-    assert_eq!(modern["data"]["invitation"]["effective_deadline_at"], row.0);
-    assert_eq!(
-        modern["data"]["invitation"]["inviter"],
-        serde_json::Value::Null
-    );
-    assert_eq!(row.1, None);
+    assert_eq!(modern["data"]["outcome"], "already_joined");
+    assert_eq!(modern["data"]["invitation"], serde_json::Value::Null);
     let replay = ensure_call(&f, ensure_command(false, None, "historical-initial")).unwrap();
     assert_eq!(serde_json::to_value(replay).unwrap(), historical);
 }
@@ -1909,11 +1791,7 @@ fn json_output_uses_the_versioned_send_envelope_with_the_thread() {
         })
         .unwrap();
     assert_eq!(direct["result"]["data"], message.as_str());
-    assert_eq!(direct["result"]["selection"]["outcome"], "created");
-    assert_eq!(
-        direct["result"]["selection"]["invitation"]["confirmation"],
-        "lazy"
-    );
+    assert_eq!(direct["result"]["selection"]["outcome"], "already_joined");
     assert_eq!(
         serde_json::from_value::<CommandResult>(direct["result"].clone()).unwrap(),
         CommandResult::MessageSent(herdr_threads::protocol::ids::MessageId::new(message))

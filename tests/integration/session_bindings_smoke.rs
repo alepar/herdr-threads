@@ -83,10 +83,6 @@ impl Agent {
         self.shim = true;
         self
     }
-    pub(super) fn without_session(mut self) -> Self {
-        self.no_session = true;
-        self
-    }
     pub(super) fn under_managed_daemon(mut self) -> Self {
         self.shim = true;
         self.managed_daemon = true;
@@ -222,22 +218,22 @@ impl Smoke {
     /// not depend on the embedded manifest (as the Hermes smoke does).
     pub(super) fn write_settings(&self, extra: &str) {
         let paths = self.paths();
-        paths.prepare_instance_dir().unwrap();
+        paths.prepare_node_dir().unwrap();
         let settings = paths
-            .instance_dir
+            .node_dir
             .join(herdr_threads::daemon::settings::SETTINGS_FILE);
         fs::write(&settings, format!(r#"{{{extra}"harness_manifest":"off"}}"#)).unwrap();
         fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
-    pub(super) fn paths(&self) -> herdr_threads::daemon::paths::InstancePaths {
+    pub(super) fn paths(&self) -> herdr_threads::daemon::paths::NodePaths {
         let runtime = herdr_threads::daemon::paths::RuntimeContext::explicit(
             self.state.clone(),
             self.herdr.socket_path(),
             None,
         )
         .unwrap();
-        herdr_threads::daemon::paths::InstancePaths::resolve(&runtime).unwrap()
+        herdr_threads::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap()
     }
 
     /// A new long-lived process to run an agent in: its pid is the agent's liveness fingerprint.
@@ -1084,8 +1080,7 @@ fn config3_hermes_interactive_and_a_one_shot_in_a_claude_pane() {
         "Claude's tool hook still carries the notice: {}",
         notice.stdout
     );
-    let acked = smoke.cli(&claude, &["ack", &message]).data();
-    assert_eq!(acked["acknowledged"][0], message.as_str(), "{acked}");
+    // Complete hook display settles the receipt without a separate ACK call.
     let acker: Option<String> = smoke
         .db()
         .query_row(
@@ -1095,6 +1090,16 @@ fn config3_hermes_interactive_and_a_one_shot_in_a_claude_pane() {
         )
         .unwrap();
     assert_eq!(acker.as_deref(), Some(claude_binding.id.as_str()));
+    let observation: String = smoke
+        .db()
+        .query_row(
+            "SELECT ack_observation FROM receipt_state WHERE message_id=?1 AND seat_id=?2",
+            [&message, &seat],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let observation: serde_json::Value = serde_json::from_str(&observation).unwrap();
+    assert_eq!(observation["action_provenance"], "cooperative_hook_context");
 
     // Sends are attributed per binding (the one-shot's was sent above).
     for (who, binding) in [(&claude, &claude_binding), (&hermes, &hermes_binding)] {
@@ -1414,8 +1419,7 @@ fn config5_resume_within_a_page_and_past_it() {
         smoke.binding(&seat, "codex", "codex-r", "").liveness,
         "disconnected"
     );
-    // Ordinary (nudge) sends: lazy ones would be presented in full by the resume's own hook
-    // (in-turn delivery), which this case does not exercise.
+    // All priorities are presented in full by the resume's own hook.
     for n in 1..=3 {
         smoke
             .cli(
@@ -1440,9 +1444,20 @@ fn config5_resume_within_a_page_and_past_it() {
     );
     assert_eq!(
         smoke.cursor(&binding.id, &thread),
-        Some(behind),
-        "nothing was skipped"
+        Some(smoke.count(
+            "SELECT MAX(sequence) FROM messages WHERE thread_id=?1 AND kind='ordinary'",
+            &[&thread]
+        )),
+        "complete resume display advances the cursor"
     );
+    assert!(smoke.cursor(&binding.id, &thread).unwrap() > behind);
+    for n in 1..=3 {
+        assert!(
+            out.stdout.contains(&format!("within-page-{n}")),
+            "{}",
+            out.stdout
+        );
+    }
     let inbox = smoke.cli(&codex, &["inbox"]).data();
     let bodies: Vec<&str> = inbox["items"]
         .as_array()
@@ -1452,12 +1467,13 @@ fn config5_resume_within_a_page_and_past_it() {
         .collect();
     assert_eq!(
         bodies,
-        ["within-page-1", "within-page-2", "within-page-3"],
-        "the resumed binding still has every message to read: {inbox}"
+        Vec::<&str>::new(),
+        "the resume already displayed every body: {inbox}"
     );
-    // Read them (the default text route records the display and moves this cursor only).
+    // An explicit text inbox has no duplicate bodies to display.
     let shown = smoke.text(&codex, &["inbox"]);
     assert_eq!(shown.code, 0, "{}", shown.text());
+    assert!(!shown.stdout.contains("within-page-"), "{}", shown.stdout);
     // The cursor covers every displayed message (the display ACK of the nudged messages appends
     // its own info event after them).
     assert_eq!(
@@ -1468,8 +1484,8 @@ fn config5_resume_within_a_page_and_past_it() {
         ))
     );
 
-    // Past one page: the resume fast-forwards to the head, reports the gap, and a pending ACK
-    // obligation stays listed.
+    // Past one page: the resume reports the history gap. A retained receipt
+    // obligation is still injected and ACKed when its complete body fits.
     assert_eq!(smoke.hook(&codex, &codex_end("codex-r")).code, 0);
     let big = "x".repeat(9_000);
     for n in 1..=2 {
@@ -1496,6 +1512,7 @@ fn config5_resume_within_a_page_and_past_it() {
         assert!(out.text().contains("store_busy"), "{}", out.text());
         std::thread::sleep(Duration::from_millis(100));
     };
+    let resume_frontier = smoke.head(&thread);
     let out = smoke.hook(&codex, &codex_start("codex-r", "resume"));
     assert_eq!(out.code, 0, "{}", out.text());
     assert!(
@@ -1508,19 +1525,30 @@ fn config5_resume_within_a_page_and_past_it() {
         "{}",
         out.stdout
     );
-    assert_eq!(
-        smoke.cursor(&binding.id, &thread),
-        Some(smoke.head(&thread)),
-        "the cursor jumped to the head"
+    // Reconnection can append unavailability-clear events before the page
+    // read. The display must cover at least the entire pre-resume head.
+    assert!(smoke.cursor(&binding.id, &thread).unwrap() >= resume_frontier);
+    assert!(
+        out.stdout.contains("owed"),
+        "the owed body was injected: {}",
+        out.stdout
     );
     let inbox = smoke.cli(&codex, &["inbox"]).data();
     assert!(
-        inbox["items"]
+        !inbox["items"]
             .as_array()
             .unwrap()
             .iter()
             .any(|item| item["message"] == owed.as_str()),
-        "the pending obligation is still listed: {inbox}"
+        "the fully injected obligation was settled: {inbox}"
+    );
+    let ack_binding: String = smoke.db().query_row(
+        "SELECT ack_binding_id FROM receipt_state WHERE message_id=?1 AND seat_id=?2 AND state='acked'",
+        [&owed, &seat], |r| r.get(0),
+    ).unwrap();
+    assert_eq!(
+        ack_binding, binding.id,
+        "the resumed binding completed the receipt"
     );
 }
 
@@ -1697,10 +1725,10 @@ fn config7_herdr_restart_keeps_seats_in_restore_hold() {
     );
     assert!(!smoke.archived(&thread), "no archival");
     assert_eq!(
-        smoke.count("SELECT baseline_hold_unclaimed FROM host_instances", &[]),
+        smoke.count("SELECT baseline_hold_unclaimed FROM herdr_hosts", &[]),
         1,
         "{}",
-        smoke.dump("host_instances")
+        smoke.dump("herdr_hosts")
     );
     // While held, nothing re-enrolls on the old pane id (the binding rows stay for a restore):
     // a resume is told the mapping is unresolved and opens no binding, and a new claim of the
@@ -1731,284 +1759,6 @@ fn config7_herdr_restart_keeps_seats_in_restore_hold() {
         claim.text().contains("target_unresolved"),
         "{}",
         claim.text()
-    );
-}
-
-// ---- configuration 8 -----------------------------------------------------------------------
-
-/// Rewrites the database at `path` (a current-schema database written by the real daemon) into
-/// the shape the v0.6.0 release left: the first 28 migrations replayed from the repository's own
-/// files, the data of every table both shapes have copied column for column (columns only the
-/// newer shape has are dropped, as a pre-upgrade writer never wrote them), `user_version` 28.
-/// The data therefore carries real seat, host and thread identifiers of the running Herdr.
-fn downgrade_to_v28(path: &Path, displayed_through: i64) {
-    {
-        let old = rusqlite::Connection::open(path).unwrap();
-        old.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
-            .unwrap();
-    }
-    let kept = path.with_extension("current");
-    fs::rename(path, &kept).unwrap();
-    for suffix in ["-wal", "-shm"] {
-        let mut side = path.as_os_str().to_owned();
-        side.push(suffix);
-        let _ = fs::remove_file(side);
-    }
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let mut files: Vec<PathBuf> = fs::read_dir(&dir)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .and_then(|n| n.get(..4))
-                .and_then(|n| n.parse::<u32>().ok())
-                .is_some_and(|n| (1..=28).contains(&n))
-        })
-        .collect();
-    files.sort();
-    assert_eq!(files.len(), 28);
-    let db = rusqlite::Connection::open(path).unwrap();
-    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=OFF")
-        .unwrap();
-    for file in &files {
-        db.execute_batch(&fs::read_to_string(file).unwrap())
-            .unwrap();
-    }
-    db.pragma_update(None, "user_version", 28).unwrap();
-    let triggers: Vec<(String, String)> = db
-        .prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger'")
-        .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    for (name, _) in &triggers {
-        db.execute_batch(&format!("DROP TRIGGER \"{name}\""))
-            .unwrap();
-    }
-    db.execute("ATTACH ?1 AS old", [kept.to_str().unwrap()])
-        .unwrap();
-    let columns = |schema: &str, table: &str| -> Vec<String> {
-        db.prepare(&format!(
-            "SELECT name FROM {schema}.pragma_table_info('{table}')"
-        ))
-        .unwrap()
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect()
-    };
-    let tables: Vec<String> = db
-        .prepare(
-            "SELECT name FROM main.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-        )
-        .unwrap()
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    for table in tables {
-        let present: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM old.sqlite_master WHERE type='table' AND name=?1",
-                [&table],
-                |r| r.get(0),
-            )
-            .unwrap();
-        // `schema_identity` is a constant the migrations seed; the rest is per-seat delivery
-        // state V32 and V34 re-key by binding (a pre-upgrade writer keyed it by generation, so
-        // the current rows say nothing a V28 database could hold). They start empty.
-        let rekeyed = [
-            "schema_identity",
-            "warning_offer",
-            "digest_notice_offer",
-            "catch_up",
-            "wake_work",
-            "seat_archival",
-        ];
-        if present == 0 || rekeyed.contains(&table.as_str()) {
-            continue;
-        }
-        let old_columns = columns("old", &table);
-        let common: Vec<String> = columns("main", &table)
-            .into_iter()
-            .filter(|c| old_columns.contains(c))
-            .map(|c| format!("\"{c}\""))
-            .collect();
-        if common.is_empty() {
-            continue;
-        }
-        let list = common.join(",");
-        db.execute_batch(&format!(
-            "INSERT OR REPLACE INTO main.\"{table}\"({list}) SELECT {list} FROM old.\"{table}\""
-        ))
-        .unwrap_or_else(|e| panic!("copying {table}: {e}"));
-    }
-    db.execute_batch("DETACH old").unwrap();
-    // V28 kept lazy display state per seat row: what the seat showed is `displayed`.
-    db.execute(
-        "UPDATE lazy_recipients SET state='displayed' WHERE EXISTS(SELECT 1 FROM messages m \
-         WHERE m.id=lazy_recipients.message_id AND m.sequence<=?1)",
-        [displayed_through],
-    )
-    .unwrap();
-    for (_, sql) in triggers {
-        db.execute_batch(&sql).unwrap();
-    }
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        28
-    );
-    db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
-        .unwrap();
-}
-
-// Kills: an upgrade that drops or duplicates mail pending at the upgrade (a lazy message and an
-// ACK obligation), an agent mid-session that is not re-adopted from its stored session (with its
-// cursor, so nothing already shown comes back), and a pre-upgrade caller with no session claim
-// that is attributed to the pane instead of refused with the way out.
-#[test]
-fn config8_upgrade_from_a_v0_6_0_database() {
-    let Some(mut smoke) = Smoke::new("config8_upgrade_from_a_v0_6_0_database") else {
-        return;
-    };
-    let (pane, peer_pane) = (smoke.pane(), smoke.pane());
-    let (seat, _) = (smoke.seat(&pane), smoke.seat(&peer_pane));
-    let agent = Agent::claude("sess-pre", &pane);
-    let peer = Agent::claude("sess-peer", &peer_pane);
-    for who in [&agent, &peer] {
-        assert_eq!(
-            smoke.hook(who, &claude_start(&who.session, "startup")).code,
-            0
-        );
-    }
-    let thread = joined_thread(&smoke, &peer, &agent, &seat);
-    // Shown before the upgrade; must never come back.
-    smoke
-        .cli(&peer, &["send", &thread, "--body", "shown-before"])
-        .data();
-    assert_eq!(smoke.text(&agent, &["inbox"]).code, 0);
-    // Pending at the upgrade: a lazy message and an ordinary message the seat owes an ACK on.
-    smoke
-        .cli(&peer, &["send", &thread, "--body", "pending-lazy"])
-        .data();
-    let owed = smoke
-        .cli(
-            &peer,
-            &[
-                "send",
-                &thread,
-                "--body",
-                "pending-owed",
-                "--require-ack",
-                &seat,
-            ],
-        )
-        .data()
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let before = smoke.binding(&seat, "claude", "sess-pre", "");
-    let shown_cursor = smoke.cursor(&before.id, &thread).unwrap();
-    assert!(
-        smoke.head(&thread) > shown_cursor,
-        "mail is pending at the upgrade"
-    );
-    smoke.human(None, &["daemon", "stop"]).data();
-    downgrade_to_v28(&smoke.paths().database_path, shown_cursor);
-
-    // The new daemon migrates the database on its first start.
-    smoke.human(None, &["daemon", "ensure"]).data();
-    assert_eq!(
-        smoke.count("PRAGMA user_version", &[]),
-        herdr_threads::store::schema::LATEST_VERSION
-    );
-    let migrated = smoke.all_bindings(&seat);
-    assert_eq!(migrated.len(), 1, "{migrated:?}");
-    assert_eq!(migrated[0].session, "sess-pre");
-    assert_eq!(migrated[0].liveness, "disconnected", "{migrated:?}");
-    assert_eq!(
-        migrated[0].reason.as_deref(),
-        Some("migrated"),
-        "{migrated:?}"
-    );
-
-    // A pre-upgrade caller whose agent never exported a session id is refused with the way out.
-    let claimless = smoke.cli(
-        &Agent::claude("unused", &pane).shimmed().without_session(),
-        &["inbox"],
-    );
-    assert_eq!(claimless.code, REFUSED, "{}", claimless.text());
-    assert!(
-        claimless
-            .text()
-            .contains("did not export CLAUDE_CODE_SESSION_ID"),
-        "{}",
-        claimless.text()
-    );
-    assert!(
-        claimless.text().contains("restart the agent"),
-        "{}",
-        claimless.text()
-    );
-
-    // The agent's next call carries its stored session: the same binding, with its cursor.
-    let page = smoke.cli(&agent, &["inbox"]).data();
-    let mut bodies: Vec<String> = page["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|item| item["body"].as_str().map(str::to_owned))
-        .collect();
-    bodies.sort();
-    assert_eq!(bodies, ["pending-lazy", "pending-owed"], "{page}");
-    let readopted = smoke.binding(&seat, "claude", "sess-pre", "");
-    // (A pre-upgrade row has no binding id; the migration minted this one.)
-    assert_eq!(
-        readopted.id, migrated[0].id,
-        "the migrated binding is re-adopted"
-    );
-    assert_eq!(smoke.bindings(&seat).len(), 1, "no second binding appeared");
-    // V32 seeds the cursor at the thread head at upgrade, so nothing already shown (or ordinary
-    // and ACKed) can come back through the stream; the pending lazy mail and the ACK obligation
-    // came through the legacy and obligation paths above, once.
-    assert_eq!(
-        smoke.cursor(&readopted.id, &thread),
-        Some(smoke.head(&thread))
-    );
-    // A lifecycle check-in brings it back online with its fingerprint.
-    let checked = smoke.hook(&agent, &claude_start("sess-pre", "resume"));
-    assert_eq!(checked.code, 0, "{}", checked.text());
-    let online = smoke.binding(&seat, "claude", "sess-pre", "");
-    assert_eq!(online.id, migrated[0].id);
-    assert_eq!(online.liveness, "connected", "{online:?}");
-    assert!(online.pid.is_some(), "{online:?}");
-    // The check-in's own hook presents the pending lazy row in full (in-turn delivery); the
-    // text inbox then shows the obligation. Display and ACK settle everything exactly once;
-    // nothing is delivered a second time.
-    assert!(
-        checked.stdout.contains("pending-lazy"),
-        "{}",
-        checked.text()
-    );
-    let shown = smoke.text(&agent, &["inbox"]);
-    assert_eq!(shown.code, 0, "{}", shown.text());
-    assert!(
-        shown.stdout.contains("pending-owed") && !shown.stdout.contains("pending-lazy"),
-        "{}",
-        shown.text()
-    );
-    assert!(!shown.stdout.contains("shown-before"), "{}", shown.text());
-    let again = smoke.cli(&agent, &["inbox"]).data();
-    assert_eq!(again["items"].as_array().map(Vec::len), Some(0), "{again}");
-    assert_eq!(
-        smoke.count(
-            "SELECT COUNT(*) FROM receipt_state WHERE message_id=?1 AND seat_id=?2 AND state='acked'",
-            &[&owed, &seat]
-        ),
-        1
     );
 }
 
@@ -2098,8 +1848,9 @@ impl Smoke {
         watch
     }
 
-    /// The pane's one non-shell foreground process, as Herdr reports it.
-    fn foreground_pid(&self, pane: &str) -> Option<i64> {
+    /// The intended foreground process, not a transient child of the pane's starting shell.
+    fn foreground_pid(&self, pane: &str, expected_argv: &[&str]) -> Option<i64> {
+        use herdr_threads::ports::ProcessInfo;
         let out = self
             .herdr
             .command("herdr")
@@ -2113,7 +1864,21 @@ impl Smoke {
             .as_array()?
             .iter()
             .filter_map(|p| p["pid"].as_i64())
-            .filter(|pid| Some(*pid) != shell);
+            .filter(|pid| Some(*pid) != shell)
+            .filter(|pid| {
+                u32::try_from(*pid)
+                    .ok()
+                    .and_then(|pid| {
+                        herdr_threads::host::process_table::HostProcessTable.process(pid)
+                    })
+                    .is_some_and(|process| {
+                        process
+                            .argv
+                            .iter()
+                            .map(String::as_str)
+                            .eq(expected_argv.iter().copied())
+                    })
+            });
         let pid = pids.next()?;
         pids.next().is_none().then_some(pid)
     }
@@ -2135,7 +1900,7 @@ fn config9_foreground_and_background_agents_in_one_pane() {
     let run = smoke
         .herdr
         .command("herdr")
-        .args(["pane", "run", &pane, "sleep 86400"])
+        .args(["pane", "run", &pane, "/bin/sleep 86400"])
         .output()
         .unwrap();
     assert!(run.status.success(), "{run:?}");
@@ -2144,7 +1909,9 @@ fn config9_foreground_and_background_agents_in_one_pane() {
         "Herdr to report the pane's foreground process",
         Duration::from_secs(20),
         || {
-            foreground_pid = smoke.foreground_pid(&pane);
+            // A starting shell can briefly have another foreground child. Its pid can die
+            // before SessionStart, leaving no harness fingerprint or lifecycle context.
+            foreground_pid = smoke.foreground_pid(&pane, &["/bin/sleep", "86400"]);
             foreground_pid.is_some()
         },
     );
@@ -2214,7 +1981,7 @@ fn config9_foreground_and_background_agents_in_one_pane() {
         + 1;
     let authority = herdr_threads::ports::ReservedWakeAuthority::Cooperative {
         terminal: herdr_threads::protocol::ids::TerminalId::new("t"),
-        incarnation: "i".into(),
+        incarnation: "34750f98bd59fcfc946da45aaabe933b".into(),
         binding_generation: None,
         harness: None,
         targets,

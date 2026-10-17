@@ -21,6 +21,36 @@ mod canary_manifest_writer;
 mod channel_archival;
 #[path = "contracts.rs"]
 mod contracts;
+#[path = "store/deadline_scope.rs"]
+mod deadline_scope;
+#[path = "store/fact_convergence.rs"]
+mod fact_convergence;
+#[path = "store/fact_convergence_invitation.rs"]
+mod fact_convergence_invitation;
+#[path = "store/fact_convergence_membership.rs"]
+mod fact_convergence_membership;
+#[path = "store/fact_convergence_message.rs"]
+mod fact_convergence_message;
+#[path = "store/fact_convergence_receipt.rs"]
+mod fact_convergence_receipt;
+#[path = "store/fact_convergence_seat.rs"]
+mod fact_convergence_seat;
+#[path = "store/fact_convergence_thread.rs"]
+mod fact_convergence_thread;
+#[path = "store/fact_order.rs"]
+mod fact_order;
+#[path = "sync/facts_invitation.rs"]
+mod facts_invitation;
+#[path = "sync/facts_membership.rs"]
+mod facts_membership;
+#[path = "sync/facts_message.rs"]
+mod facts_message;
+#[path = "sync/facts_receipt.rs"]
+mod facts_receipt;
+#[path = "sync/facts_seat.rs"]
+mod facts_seat;
+#[path = "sync/facts_thread.rs"]
+mod facts_thread;
 #[path = "golden_surfaces.rs"]
 mod golden_surfaces;
 #[path = "handoff_agy.rs"]
@@ -35,12 +65,14 @@ mod handoff_topology_cli;
 mod host_adapter;
 #[path = "cli/inbox_continuation_context.rs"]
 mod inbox_continuation_context;
+#[path = "sync/incarnations_scenarios.rs"]
+mod incarnations_scenarios;
 #[path = "installer_integrations.rs"]
 mod installer_integrations;
 #[path = "store/invitation_content.rs"]
 mod invitation_content;
-#[path = "store/lazy26_prerequisite.rs"]
-mod lazy26_prerequisite;
+#[path = "sync/journal_port_contract.rs"]
+mod journal_port_contract;
 #[path = "protocol/lazy_delivery.rs"]
 mod lazy_delivery;
 #[path = "cli/lazy_recovery_context.rs"]
@@ -53,10 +85,24 @@ mod lazy_send;
 mod lifecycle_ux;
 #[path = "local_endpoint.rs"]
 mod local_endpoint;
+#[path = "store/multi_host.rs"]
+mod multi_host;
+#[path = "store/multi_host_wake.rs"]
+mod multi_host_wake;
 #[path = "cli/read_picker_pty.rs"]
 mod read_picker_pty;
+#[path = "store/remote_seats.rs"]
+mod remote_seats;
 #[path = "setup_cli.rs"]
 mod setup_cli;
+#[path = "store/sync_contacts.rs"]
+mod sync_contacts;
+
+#[path = "store/sync_dial_targets.rs"]
+mod sync_dial_targets;
+#[path = "daemon/sync_dialer.rs"]
+mod sync_dialer;
+
 #[path = "store/topology_handoff.rs"]
 mod topology_handoff;
 #[path = "view.rs"]
@@ -92,6 +138,9 @@ fn every_top_level_test_file_is_built() {
 #[path = "store/lazy_publication.rs"]
 mod lazy_publication;
 
+#[path = "store/send_fence.rs"]
+mod send_fence;
+
 #[path = "store/lazy_metadata.rs"]
 mod lazy_metadata;
 
@@ -126,6 +175,9 @@ mod readme_commands;
 
 #[path = "cli/direct_send.rs"]
 mod direct_send;
+
+#[path = "cli/legacy_purge.rs"]
+mod legacy_purge;
 
 #[path = "integration/priority_config_smoke.rs"]
 mod priority_config_smoke;

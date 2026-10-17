@@ -93,6 +93,7 @@ impl Plan {
     pub(crate) fn validate_claim(&self, claim: &CallerClaim) -> io::Result<()> {
         self.validate()?;
         if self.namespace.instance != claim.instance
+            || self.namespace.host_endpoint.as_path() != claim.host.as_path()
             || self.request.target == claim.seat
             || (claim.harness != Harness::Human
                 && self.request.user_intent.is_some()
@@ -138,8 +139,8 @@ pub(crate) fn namespace(
     )?;
     Ok(HandoffNamespace {
         instance: instance.into(),
+        host_endpoint: runtime.require_host()?.to_path_buf(),
         state_dir: runtime.state_dir,
-        host_endpoint: runtime.host_endpoint,
     })
 }
 pub(crate) fn check_namespace(p: &Plan, context: &ContinuationContext) -> io::Result<()> {
@@ -234,6 +235,7 @@ fn inspect<C: LocalClient + ?Sized>(
     client: &C,
     clock: &dyn Clock,
     seat: &SeatId,
+    allow_remote: bool,
 ) -> Result<crate::protocol::results::SeatInspection, RunError> {
     let result = client.call(
         Command::SeatInspect(SeatInspectQuery {
@@ -248,11 +250,17 @@ fn inspect<C: LocalClient + ?Sized>(
     let CommandResult::SeatInspect(v) = result else {
         return Err(super::invalid_request("missing direct seat inspection"));
     };
+    // A recipient seat of another node has no binding here: it is `remote`, with
+    // no target, and is addressed by id alone (its home node delivers).
+    let remote = allow_remote
+        && v.summary.continuity == ContinuityStatus::Remote
+        && v.mapping.state == ContinuityStatus::Remote;
     if v.summary.seat != *seat
-        || v.summary.continuity != ContinuityStatus::Resolved
-        || v.mapping.state != ContinuityStatus::Resolved
-        || v.summary.target.is_none()
-        || v.summary.target != v.mapping.target
+        || !(remote
+            || (v.summary.continuity == ContinuityStatus::Resolved
+                && v.mapping.state == ContinuityStatus::Resolved
+                && v.summary.target.is_some()
+                && v.summary.target == v.mapping.target))
         || v.summary.retired_at.is_some()
         || v.retirement.is_some()
         || v.hold.is_some()
@@ -308,7 +316,7 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
     };
     p.validate_claim(&claim)?;
     require_capabilities(&p.request, client, clock)?;
-    let caller = inspect(client, clock, &claim.seat)?;
+    let caller = inspect(client, clock, &claim.seat, false)?;
     if caller.summary.generation != claim.binding_generation
         || caller.summary.target.as_ref() != Some(&claim.target)
         || !caller
@@ -318,9 +326,10 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
     {
         return Err(super::invalid_request("direct send caller binding differs"));
     }
-    inspect(client, clock, &p.request.target)?;
+    inspect(client, clock, &p.request.target, true)?;
     let scope = IntentScope::Cooperative {
         instance: claim.instance.clone(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
     };
     let semantic = SemanticMutation::freeze(SemanticMutation::DirectSend(Box::new(p)), claim)?;
@@ -371,12 +380,12 @@ fn recover(
 pub(crate) fn pre_executor_error(
     error: RunError,
     parsed: &super::commands::ParsedCli,
-    paths: &crate::daemon::paths::InstancePaths,
+    paths: &crate::daemon::paths::NodePaths,
 ) -> RunError {
     let super::commands::CliAction::Retry(reference) = &parsed.action else {
         return error;
     };
-    let root = paths.instance_dir.join("intents");
+    let root = paths.node_dir.join("intents");
     if super::retry::preflight_original_actor(
         &root,
         reference.as_str(),

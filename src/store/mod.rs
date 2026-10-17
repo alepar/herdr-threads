@@ -1,19 +1,27 @@
 //! SQLite-backed production store dispatch.
+pub mod apply;
 pub mod archival;
 pub mod attention;
+pub(crate) mod attribution;
 pub mod bindings;
 pub mod catch_up;
 pub mod connection;
 pub mod control;
+pub(crate) mod delivery_tail;
 pub mod effective;
 pub mod first_contact;
 pub mod handoff;
 pub mod harness_evidence;
+pub mod hosts;
+pub mod incarnations;
 pub mod invitation_content;
 pub mod invitation_due;
+pub mod journal;
 pub mod lazy_delivery;
 pub mod materialization;
+pub mod materialize;
 pub mod messages;
+pub mod node_directory;
 pub mod operator;
 pub mod page_fit;
 pub mod poke;
@@ -31,6 +39,10 @@ pub mod service_events;
 pub mod service_send;
 pub mod service_substrate;
 pub mod summary;
+pub mod sync_contacts;
+pub mod sync_dial_targets;
+pub mod sync_status;
+pub mod thread_registers;
 pub mod topology_handoff;
 pub(crate) mod verified;
 pub mod wake;
@@ -43,15 +55,15 @@ use crate::{
     ports::{
         ClosureEvidence, DuePhase, DuePhaseCursor, DuePhaseProgress, DueScanProgress,
         DueScanRequest, DueScanState, DurableWorkAdmission, GuardedInvalidationTransition,
-        GuardedSeatTransition, HostInvalidationFence, HostInvalidationReason, HostObservation,
-        HostObservationAdmission, InvalidationSeatPage, OperationReadScope, OperatorRequest,
-        PokeDue, PokeReceipt, PokeReservation, PriorLadder, PruneProgress, PublishedSnapshot,
-        ReadContext, ReceiptSparseCursor, ReconciliationOutcome, RegisterAvailableRequest,
-        RetirementJob, RetirementProgress, RetirementSummary, SendPreparationProgress,
-        SnapshotCleanupProgress, SnapshotGenerationId, SnapshotHeader, SnapshotSeatPage,
-        SnapshotStage, SnapshotStageProgress, StorePort, WakeCandidate, WakeOutcome,
-        WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
-        WorkAdmission, WorkCandidate, WorkKind, WorkProgress,
+        GuardedSeatTransition, HostId, HostInvalidationFence, HostInvalidationReason,
+        HostObservation, HostObservationAdmission, InvalidationSeatPage, OperationReadScope,
+        OperatorRequest, PokeDue, PokeReceipt, PokeReservation, PriorLadder, PruneProgress,
+        PublishedSnapshot, ReadContext, ReceiptSparseCursor, ReconciliationOutcome,
+        RegisterAvailableRequest, RetirementJob, RetirementProgress, RetirementSummary,
+        SendPreparationProgress, SnapshotCleanupProgress, SnapshotGenerationId, SnapshotHeader,
+        SnapshotSeatPage, SnapshotStage, SnapshotStageProgress, StorePort, WakeCandidate,
+        WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest,
+        WakeReservation, WorkAdmission, WorkCandidate, WorkKind, WorkProgress,
     },
     protocol::{
         authority::{MutationPermit, OperatorActor},
@@ -111,6 +123,10 @@ pub struct SqliteStore {
     /// Hook state of `writer`; declared after it so it outlives the connection.
     hooks: Box<connection::KickHooks>,
     kicks: Arc<CommitKicks>,
+    /// The writer admission the sync port's writes take a background turn on
+    /// (`with_sync_admission`); none in tools and tests that run without a
+    /// service.
+    sync_admission: Option<Arc<crate::service::fair_writer::FairWriter>>,
     /// Change mark (`retention::change_mark`) at which the last retention
     /// snapshot scan found no candidate; the scan is skipped while it holds.
     retention_idle: Mutex<Option<(u64, i64)>>,
@@ -120,6 +136,9 @@ pub struct SqliteStore {
     kick_sink: Mutex<Option<KickSink>>,
     #[cfg(any(test, feature = "test-support"))]
     kick_pause: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Passive WAL checkpoints run through `checkpoint_passive`.
+    #[cfg(any(test, feature = "test-support"))]
+    checkpoints: std::sync::atomic::AtomicU64,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -280,13 +299,55 @@ impl SqliteStore {
             ));
         }
         let mut writer = context.open_writer()?;
+        // Test stores run against an opened journal; the daemon opened its own
+        // before this point (its context has no auto-open seed). A store file
+        // that belongs to another node (a fixture built with `node_seed_for`,
+        // which has no key) stays unopened: there is no key to sign with.
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(seed) = context.auto_journal()
+            && !context.journal_open()
+        {
+            let identity = Arc::new(crate::node::NodeIdentity::from_seed(seed));
+            let stored: String = writer
+                .query_row("SELECT id FROM local_node", [], |row| row.get(0))
+                .map_err(store_error)?;
+            if stored == identity.uuid().to_string() {
+                journal::open(
+                    &context,
+                    &mut writer,
+                    identity,
+                    "test",
+                    crate::sync::facts::FactRegistry::builtins(),
+                )?;
+            }
+        }
         // A store stuck with a hold nothing protects (reconciliation already
         // finished, no unresolved seat) is cleared once at daemon start.
-        let tx = writer
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(store_error)?;
-        seats::lift_baseline_hold_if_clear(&tx, &instance, context.clock().utc_now())?;
-        tx.commit().map_err(store_error)?;
+        // Each remembered host's hold is judged on its own; a store with no host row has none to
+        // clear.
+        {
+            let hosts: Vec<i64> = {
+                let mut statement = writer
+                    .prepare("SELECT host_id FROM herdr_hosts WHERE node_id=?1 ORDER BY host_id")
+                    .map_err(store_error)?;
+                statement
+                    .query_map([&instance], |row| row.get(0))
+                    .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
+                    .map_err(store_error)?
+            };
+            for host in hosts {
+                let tx = writer
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .map_err(store_error)?;
+                seats::lift_baseline_hold_if_clear(
+                    &tx,
+                    &instance,
+                    crate::ports::HostId::from_row(host),
+                    context.clock().utc_now(),
+                )?;
+                tx.commit().map_err(store_error)?;
+            }
+        }
         Ok(Self {
             context,
             instance,
@@ -294,6 +355,7 @@ impl SqliteStore {
             hooks: connection::KickHooks::install(&writer),
             writer: Mutex::new(writer),
             kicks: Arc::new(CommitKicks::default()),
+            sync_admission: None,
             retention_idle: Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
             retention_cost: Mutex::new(None),
@@ -301,7 +363,21 @@ impl SqliteStore {
             kick_sink: Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
             kick_pause: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            checkpoints: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// The store's connection context (the daemon's post-commit identity
+    /// update reads through it; tests attach a host after the store started).
+    pub fn context(&self) -> &StoreContext {
+        &self.context
+    }
+
+    /// Test hook: how many passive WAL checkpoints `checkpoint_passive` ran.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn checkpoints_run(&self) -> u64 {
+        self.checkpoints.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Replaces the lane registry commits kick through. The daemon passes the
@@ -309,6 +385,18 @@ impl SqliteStore {
     #[must_use]
     pub fn with_commit_kicks(mut self, kicks: Arc<CommitKicks>) -> Self {
         self.kicks = kicks;
+        self
+    }
+
+    /// Makes the [`SyncStorePort`](crate::sync::sync_store::SyncStorePort)
+    /// writes wait for a background turn on `writer`, the one-at-a-time
+    /// admission the service's other background work shares.
+    #[must_use]
+    pub fn with_sync_admission(
+        mut self,
+        writer: Arc<crate::service::fair_writer::FairWriter>,
+    ) -> Self {
+        self.sync_admission = Some(writer);
         self
     }
 
@@ -846,11 +934,12 @@ const WAKE_RECOVERY_WALK_LIMIT: usize = 100;
 /// cursor's order). Cost follows the reserved set, not settled or retired seats.
 /// `CROSS JOIN` pins `wake_work` as the outer loop: with a plain join the planner
 /// drives from `seats` in ordinal order and walks every seat.
-pub(crate) const WAKE_RECOVERY_WALK_SQL: &str = "SELECT s.ordinal,s.id,w.reservation_id,w.reservation_boot FROM wake_work w INDEXED BY wake_work_reserved CROSS JOIN seats s ON s.id=w.seat_id WHERE w.reservation_id IS NOT NULL AND s.instance_id=?1 AND s.ordinal>?2 AND s.ordinal<=?3 ORDER BY s.ordinal LIMIT 100";
+pub(crate) const WAKE_RECOVERY_WALK_SQL: &str = "SELECT s.ordinal,s.id,w.reservation_id,w.reservation_boot FROM wake_work w INDEXED BY wake_work_reserved CROSS JOIN seats s ON s.id=w.seat_id WHERE w.reservation_id IS NOT NULL AND s.instance_id=?1 AND s.host_id=?4 AND s.ordinal>?2 AND s.ordinal<=?3 ORDER BY s.ordinal LIMIT 100";
 
 fn wake_recovery_page(
     context: &StoreContext,
     instance: &str,
+    host: HostId,
     elected_boot: Option<uuid::Uuid>,
     page: PageRequest,
     budget: &CallBudget,
@@ -896,7 +985,12 @@ fn wake_recovery_page(
         .prepare(WAKE_RECOVERY_WALK_SQL)
         .map_err(|error| db.map_error(error))?;
     let mut rows = statement
-        .query(params![instance, due_i64(after)?, due_i64(high_water)?])
+        .query(params![
+            instance,
+            due_i64(after)?,
+            due_i64(high_water)?,
+            host.get()
+        ])
         .map_err(|error| db.map_error(error))?;
     while let Some(row) = rows.next().map_err(|error| db.map_error(error))? {
         if budget.is_exhausted(context.clock()) {
@@ -1088,7 +1182,8 @@ fn pending_work_page_on(
 
 /// The seat walk of wake discovery: live (`seats_live_ordinal`) seats in ordinal
 /// order, excluding any seat whose current occupant is human (Wave 18).
-pub(crate) const WAKE_SEAT_WALK: &str = "SELECT s.ordinal,s.id FROM seats s INDEXED BY seats_live_ordinal WHERE s.instance_id=?1 AND s.state!='retired' AND s.ordinal>?2 AND s.ordinal<=?3 AND NOT EXISTS (SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=s.id AND ended_at IS NULL AND harness='human') ORDER BY s.ordinal LIMIT 1";
+// `s.is_local=1` spells `seats::LOCAL_SEAT` (a const &str cannot interpolate it).
+pub(crate) const WAKE_SEAT_WALK: &str = "SELECT s.ordinal,s.id FROM seats s INDEXED BY seats_live_ordinal WHERE s.instance_id=?1 AND s.host_id=?4 AND s.is_local=1 AND s.state!='retired' AND s.ordinal>?2 AND s.ordinal<=?3 AND NOT EXISTS (SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=s.id AND ended_at IS NULL AND harness='human') ORDER BY s.ordinal LIMIT 1";
 
 /// What one discovery pass found: the candidates, the `(before, ordinal)` position
 /// of each, the last seat ordinal passed, and why the pass stopped.
@@ -1106,6 +1201,7 @@ pub(crate) struct WakeDiscovery {
 pub(crate) fn discover_wake_candidates(
     db: &Connection,
     instance: &str,
+    host: HostId,
     mut after: u64,
     high_water: u64,
     limit: usize,
@@ -1121,7 +1217,7 @@ pub(crate) fn discover_wake_candidates(
             .prepare_cached(WAKE_SEAT_WALK)
             .map_err(store_error)?
             .query_row(
-                params![instance, due_i64(after)?, due_i64(high_water)?],
+                params![instance, due_i64(after)?, due_i64(high_water)?, host.get()],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
@@ -1171,6 +1267,7 @@ pub(crate) fn discover_wake_candidates(
 fn wake_candidates_page(
     context: &StoreContext,
     instance: &str,
+    host: HostId,
     page: PageRequest,
     budget: &CallBudget,
 ) -> Result<Page<WakeCandidate>, ApiError> {
@@ -1205,6 +1302,7 @@ fn wake_candidates_page(
     } = discover_wake_candidates(
         &db,
         instance,
+        host,
         cursor.as_ref().map_or(0, |c| c.after_ordinal),
         high_water,
         usize::from(page.limit),
@@ -1279,6 +1377,128 @@ impl crate::ports::ModStoreReads for SqliteStore {
         db.execute_batch("BEGIN DEFERRED")
             .map_err(|e| db.map_error(e))?;
         seats::mod_stall_oldest(&db, seat, at_or_before, body_limit)
+    }
+}
+
+impl crate::sync::sync_store::SyncStorePort for SqliteStore {
+    fn enabled_targets(
+        &self,
+        budget: &CallBudget,
+    ) -> Result<Vec<sync_dial_targets::DialTarget>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        sync_dial_targets::enabled(&db)
+    }
+
+    fn record_transition(
+        &self,
+        target: sync_dial_targets::TargetId,
+        transition: &sync_dial_targets::DialTransition,
+        now: UtcMillis,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let _turn = self
+            .sync_admission
+            .as_ref()
+            .map(|writer| writer.enter_background(budget, self.context.clock()))
+            .transpose()?;
+        let mut writer = self.writer(budget)?;
+        let tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        sync_dial_targets::record_transition(&tx, target, transition, now.0)?;
+        tx.commit().map_err(store_error)
+    }
+
+    fn record_contacts(
+        &self,
+        contacts: &[sync_contacts::NodeContact],
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        if contacts.is_empty() {
+            return Ok(());
+        }
+        let _turn = self
+            .sync_admission
+            .as_ref()
+            .map(|writer| writer.enter_background(budget, self.context.clock()))
+            .transpose()?;
+        let now = u64::try_from(self.context.clock().utc_now().0).unwrap_or(0);
+        let mut writer = self.writer(budget)?;
+        let tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        sync_contacts::record(&tx, contacts, now)?;
+        tx.commit().map_err(store_error)
+    }
+}
+
+impl crate::sync::resync::ResyncStore for SqliteStore {
+    fn peer_tag(
+        &self,
+        node: crate::node::NodeUuid,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::node::NodeTag>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        let is_self: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM local_node WHERE id = ?1)",
+                [node.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(store_error)?;
+        if is_self {
+            return Ok(None);
+        }
+        Ok(node_directory::get(&db, node)
+            .map_err(store_error)?
+            .map(|row| row.tag))
+    }
+
+    fn targets_reaching(
+        &self,
+        node: crate::node::NodeUuid,
+        budget: &CallBudget,
+    ) -> Result<Vec<sync_dial_targets::DialTarget>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        Ok(sync_dial_targets::enabled(&db)?
+            .into_iter()
+            .filter(|target| target.learned_node == Some(node))
+            .collect())
+    }
+}
+
+impl crate::sync::discovery::DiscoveryStore for SqliteStore {
+    fn upsert_discovered(
+        &self,
+        found: &[(String, sync_dial_targets::DiscoverySource)],
+        budget: &CallBudget,
+    ) -> Result<crate::sync::discovery::UpsertTally, ApiError> {
+        let _turn = self
+            .sync_admission
+            .as_ref()
+            .map(|writer| writer.enter_background(budget, self.context.clock()))
+            .transpose()?;
+        let now = self.context.clock().utc_now().0;
+        let mut writer = self.writer(budget)?;
+        let tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        let mut tally = crate::sync::discovery::UpsertTally::default();
+        for (dest, source) in found {
+            match sync_dial_targets::upsert_discovered(&tx, dest, *source, now)? {
+                sync_dial_targets::Discovered::Inserted(_) => tally.inserted += 1,
+                sync_dial_targets::Discovered::Present(_) => {}
+                sync_dial_targets::Discovered::Skipped => tally.skipped += 1,
+            }
+        }
+        tx.commit().map_err(store_error)?;
+        Ok(tally)
     }
 }
 
@@ -2141,19 +2361,19 @@ impl StorePort for SqliteStore {
             other => other,
         }
     }
-    fn persisted_host_epoch(&self, instance: &str, budget: &CallBudget) -> Result<u64, ApiError> {
-        if instance != self.instance {
-            return Err(api_error(
-                ErrorCode::InvalidRequest,
-                "host instance mismatch",
-            ));
-        }
-        let writer = self.writer(budget)?;
-        seats::persisted_host_epoch(&writer, instance)
+    fn attach_host(
+        &self,
+        locator: &crate::protocol::ids::HostLocator,
+        now: i64,
+        budget: &CallBudget,
+    ) -> Result<(crate::ports::HostId, i64), ApiError> {
+        let mut writer = self.writer(budget)?;
+        hosts::attach_host(&mut writer, locator, now)
     }
     fn begin_host_observation(
         &self,
         instance: &str,
+        host: crate::ports::HostId,
         budget: &CallBudget,
     ) -> Result<HostObservationAdmission, ApiError> {
         if instance != self.instance {
@@ -2163,7 +2383,7 @@ impl StorePort for SqliteStore {
             ));
         }
         let mut writer = self.writer(budget)?;
-        seats::begin_host_observation(&self.context, &mut writer, instance, budget)
+        seats::begin_host_observation(&self.context, &mut writer, instance, host, budget)
     }
     fn publish_current_target_observation(
         &self,
@@ -2783,10 +3003,11 @@ impl StorePort for SqliteStore {
     }
     fn wake_candidates(
         &self,
+        host: HostId,
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeCandidate>, ApiError> {
-        wake_candidates_page(&self.context, &self.instance, page, budget)
+        wake_candidates_page(&self.context, &self.instance, host, page, budget)
     }
     fn pending_work(
         &self,
@@ -2806,6 +3027,7 @@ impl StorePort for SqliteStore {
     }
     fn wake_batch_seats(
         &self,
+        host: HostId,
         after: Option<&SeatId>,
         limit: u16,
         budget: &CallBudget,
@@ -2825,7 +3047,8 @@ impl StorePort for SqliteStore {
                 params![
                     self.instance,
                     after.map(SeatId::as_str).unwrap_or(""),
-                    i64::from(limit)
+                    i64::from(limit),
+                    host.get()
                 ],
                 |r| r.get::<_, String>(0),
             )
@@ -2907,6 +3130,7 @@ impl StorePort for SqliteStore {
     }
     fn clear_wake_batch_if_empty(
         &self,
+        host: HostId,
         seat: &SeatId,
         budget: &CallBudget,
     ) -> Result<bool, ApiError> {
@@ -2914,6 +3138,7 @@ impl StorePort for SqliteStore {
         self.context.execute_decision(
             &mut writer,
             |tx| {
+                wake::require_seat_on_host(tx, host, seat)?;
                 let scan = attention::wake_seat_attention(tx, seat.as_str())?;
                 Ok(!scan.attention.has_pending_invitation
                     && !scan.attention.has_pending_receipt
@@ -2930,6 +3155,7 @@ impl StorePort for SqliteStore {
     }
     fn wake_batch_window(
         &self,
+        host: HostId,
         candidate: &WakeCandidate,
         budget: &CallBudget,
     ) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
@@ -2938,12 +3164,14 @@ impl StorePort for SqliteStore {
             &self.context,
             &mut writer,
             &self.instance,
+            host,
             candidate,
             self.settings.wake_batch_delay_ms,
         )
     }
     fn reserve_wake(
         &self,
+        host: HostId,
         candidate: &WakeCandidate,
         budget: &CallBudget,
     ) -> Result<Option<WakeReservation>, ApiError> {
@@ -2958,6 +3186,7 @@ impl StorePort for SqliteStore {
             &self.context,
             &mut writer,
             &self.instance,
+            host,
             candidate,
             daemon_boot,
             self.settings.minimum_wake_delay_ms,
@@ -2965,12 +3194,14 @@ impl StorePort for SqliteStore {
     }
     fn wake_recovery_candidates(
         &self,
+        host: HostId,
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
         wake_recovery_page(
             &self.context,
             &self.instance,
+            host,
             self.settings.daemon_boot,
             page,
             budget,
@@ -2978,6 +3209,7 @@ impl StorePort for SqliteStore {
     }
     fn recover_wake_reservation(
         &self,
+        host: HostId,
         request: WakeRecoveryRequest,
         budget: &CallBudget,
     ) -> Result<WakeRecoveryOutcome, ApiError> {
@@ -2986,6 +3218,7 @@ impl StorePort for SqliteStore {
             &self.context,
             &mut writer,
             &self.instance,
+            host,
             self.settings.daemon_boot,
             &request,
         )
@@ -3024,6 +3257,7 @@ impl StorePort for SqliteStore {
     }
     fn complete_wake(
         &self,
+        host: HostId,
         attempt: WakeAttemptId,
         outcome: WakeOutcome,
         refused_restore: Option<&PriorLadder>,
@@ -3039,6 +3273,7 @@ impl StorePort for SqliteStore {
         wake::complete(
             &self.context,
             &mut writer,
+            host,
             &attempt,
             daemon_boot,
             outcome,
@@ -3046,12 +3281,18 @@ impl StorePort for SqliteStore {
             budget,
         )
     }
-    fn poke_candidates(&self, limit: u16, budget: &CallBudget) -> Result<Vec<PokeDue>, ApiError> {
+    fn poke_candidates(
+        &self,
+        host: HostId,
+        limit: u16,
+        budget: &CallBudget,
+    ) -> Result<Vec<PokeDue>, ApiError> {
         let db = self.context.open_query(budget.clone())?;
         db.execute_batch("BEGIN DEFERRED")
             .map_err(|e| db.map_error(e))?;
-        poke::due_pokes(
+        poke::due_pokes_on_host(
             &db,
+            host,
             self.context.clock().utc_now().0,
             &self.settings.summary,
             limit,
@@ -3059,12 +3300,14 @@ impl StorePort for SqliteStore {
     }
     fn poke_for_wake(
         &self,
+        host: HostId,
         seat: &SeatId,
         budget: &CallBudget,
     ) -> Result<Option<PokeDue>, ApiError> {
         let db = self.context.open_query(budget.clone())?;
         db.execute_batch("BEGIN DEFERRED")
             .map_err(|e| db.map_error(e))?;
+        wake::require_seat_on_host(&db, host, seat)?;
         poke::due_pokes_for_seat(
             &db,
             seat,
@@ -3074,6 +3317,7 @@ impl StorePort for SqliteStore {
     }
     fn reserve_poke(
         &self,
+        host: HostId,
         due: &PokeDue,
         budget: &CallBudget,
     ) -> Result<Option<PokeReservation>, ApiError> {
@@ -3088,6 +3332,7 @@ impl StorePort for SqliteStore {
             &self.context,
             &mut writer,
             &self.instance,
+            host,
             due,
             daemon_boot,
             &self.settings.summary,
@@ -3095,6 +3340,7 @@ impl StorePort for SqliteStore {
     }
     fn complete_poke(
         &self,
+        host: HostId,
         attempt: WakeAttemptId,
         outcome: WakeOutcome,
         receipts: &[PokeReceipt],
@@ -3112,6 +3358,7 @@ impl StorePort for SqliteStore {
         wake::complete_with_pokes(
             &self.context,
             &mut writer,
+            host,
             &attempt,
             daemon_boot,
             outcome,

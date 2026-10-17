@@ -41,12 +41,9 @@
 //! global selectors the `watch` child was launched with (`--state-dir`, and
 //! `--host-endpoint` when needed) whenever a bare `herdr-threads` in the
 //! session's shell would not reach this instance, the rule the hooks use for
-//! every command they print. A truncated item is never acked by the mod. An
-//! ordinary row's marker names `body` (read-only) then `ack`; its receipt
-//! settles when the agent follows it or when a text `inbox` displays the item
-//! in full. A truncated `lazy` row has no receipt: its marker names only
-//! `body`, and the row stays pending until a text `inbox` shows it; nothing
-//! reminds about it.
+//! every command they print. A truncated item is never acked by the mod. A
+//! cut row's marker names text `inbox`: a complete display automatically settles
+//! existing receipts and completes lazy delivery, without an explicit ACK call.
 //!
 //! The mod frames all message text so a body can never pass for a header
 //! line, and never starts a submit with `/`.
@@ -56,7 +53,7 @@ use super::{
     ids::{MessageId, SeatId, ThreadId},
     summary::{AuthorRole, UserIntent},
     time::UtcMillis,
-    wire::{PROTOCOL_VERSION, valid_uuid, valid_wire_id},
+    wire::{PROTOCOL_VERSION, valid_instance, valid_uuid, valid_wire_id},
 };
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -106,29 +103,21 @@ pub fn truncation_marker(id: &MessageId) -> String {
 /// The marker appended to a cut body. `prefix` is the invocation the
 /// agent's shell must use (program plus global selectors, as
 /// `cli::hook::cli_prefix` builds it); empty means bare `herdr-threads`.
-/// An ordinary row names `body` (read-only) then `ack`, which settles the
-/// receipt; a lazy row has no receipt, so its marker names only `body`.
-pub fn truncation_marker_for(prefix: &[String], id: &MessageId, lazy: bool) -> String {
+/// Text inbox completes the display and automatically settles existing receipts.
+/// Keep the id/kind parameters for callers sharing the public helper.
+pub fn truncation_marker_for(prefix: &[String], _id: &MessageId, _lazy: bool) -> String {
     let program = [MARKER_PROGRAM.to_owned()];
     let prefix = if prefix.is_empty() {
         &program[..]
     } else {
         prefix
     };
-    let command = |verb: &str| {
-        let mut argv = prefix.to_vec();
-        argv.extend([verb.to_owned(), id.as_str().to_owned()]);
+    let mut argv = prefix.to_vec();
+    argv.push("inbox".to_owned());
+    format!(
+        "…truncated; next: {}",
         super::output::format_command_argv(&argv)
-    };
-    if lazy {
-        format!("…truncated; run {}", command("body"))
-    } else {
-        format!(
-            "…truncated; run {}, then {}",
-            command("body"),
-            command("ack")
-        )
-    }
+    )
 }
 
 /// The attention block's text: the same sentence as
@@ -228,7 +217,7 @@ impl<'de> Deserialize<'de> for WatchWireRequest {
         if raw.version != PROTOCOL_VERSION {
             return Err(serde::de::Error::custom("unknown wire version"));
         }
-        if !valid_wire_id(&raw.request_id) || !valid_uuid(&raw.expected_instance) {
+        if !valid_wire_id(&raw.request_id) || !valid_instance(&raw.expected_instance) {
             return Err(serde::de::Error::custom("invalid request or instance id"));
         }
         if raw

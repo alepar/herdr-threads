@@ -2,16 +2,13 @@ use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 
-fn instance_id(paths: &crate::daemon::paths::InstancePaths) -> uuid::Uuid {
-    uuid::Uuid::parse_str(
-        std::fs::read_to_string(&paths.namespace_path)
-            .unwrap()
-            .trim(),
-    )
-    .unwrap()
+fn instance_id(paths: &crate::daemon::paths::NodePaths) -> crate::node::NodeUuid {
+    crate::daemon::ownership::read_node_uuid_hint(paths)
+        .unwrap()
+        .unwrap()
 }
 
-fn health_request(instance: uuid::Uuid, request_id: &str) -> Vec<u8> {
+fn health_request(instance: crate::node::NodeUuid, request_id: &str) -> Vec<u8> {
     serde_json::to_vec(&WireRequest {
         version: PROTOCOL_VERSION,
         request_id: request_id.into(),
@@ -27,11 +24,11 @@ fn guarded_listener() -> (
     OwnedAsyncListener,
     std::path::PathBuf,
     std::path::PathBuf,
-    crate::daemon::paths::InstancePaths,
+    crate::daemon::paths::NodePaths,
 ) {
     use crate::daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     };
     use std::os::unix::fs::PermissionsExt;
     let root =
@@ -40,8 +37,8 @@ fn guarded_listener() -> (
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let host = root.join("host-placeholder.sock");
     let context = RuntimeContext::explicit(root.clone(), host, None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let bound = owner.bind_socket().unwrap();
     let socket = bound.path().to_owned();
     let listener = bound.into_async().unwrap();
@@ -202,7 +199,11 @@ async fn wrong_instance_and_boot_stop_do_not_cancel_real_socket_owner() {
         shutdown.clone(),
     ));
     for (expected_instance, expected_boot, code) in [
-        (uuid::Uuid::new_v4(), boot, ErrorCode::InstanceMismatch),
+        (
+            crate::node::NodeUuid::new_v4(),
+            boot,
+            ErrorCode::InstanceMismatch,
+        ),
         (
             instance_id,
             uuid::Uuid::new_v4(),
@@ -304,13 +305,15 @@ async fn disconnected_stop_keeps_worker_and_owner_lease_until_handler_exits() {
     };
     assert_eq!(pending.remaining(), 1);
     assert_eq!(
-        OwnerLock::acquire(&instance).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&instance)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::WouldBlock
     );
     service.release.store(true, Ordering::SeqCst);
     pending.wait().await.unwrap();
     drop(pending);
-    drop(OwnerLock::acquire(&instance).unwrap());
+    drop(OwnerLock::acquire_with_test_hint(&instance).unwrap());
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -507,7 +510,7 @@ async fn lost_response_reports_unknown_outcome_without_retry() {
     let client = crate::client::local::LocalSocketClient::new(
         path.clone(),
         clock,
-        uuid::Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         None,
     );
     let error = client
@@ -611,7 +614,7 @@ async fn client_cancellation_after_send_reports_unknown_outcome_promptly() {
     let client = crate::client::local::LocalSocketClient::new(
         path.clone(),
         clock,
-        uuid::Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         None,
     );
     let call = tokio::spawn(async move { client.call_async(Command::Health, &budget).await });
@@ -650,6 +653,9 @@ async fn mismatched_kernel_uid_never_reaches_handler() {
         Arc::new(LiveServiceGate::new()),
         Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
         Arc::new(Semaphore::new(1)),
+        None,
+        Arc::new(Semaphore::new(MAX_PEER_CONNECTIONS)),
+        ConnectionGauge::default().enter(),
     )
     .await
     .unwrap_err();
@@ -968,7 +974,9 @@ async fn shutdown_interrupts_incomplete_frame_and_reports_unfinished_worker() {
     };
     assert_eq!(pending.remaining(), 1);
     assert_eq!(
-        OwnerLock::acquire(&instance).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&instance)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::WouldBlock
     );
     service.release.store(true, Ordering::SeqCst);
@@ -977,7 +985,7 @@ async fn shutdown_interrupts_incomplete_frame_and_reports_unfinished_worker() {
         .unwrap()
         .unwrap();
     drop(pending);
-    drop(OwnerLock::acquire(&instance).unwrap());
+    drop(OwnerLock::acquire_with_test_hint(&instance).unwrap());
     drop(incomplete);
     drop(deciding);
     std::fs::remove_file(path).unwrap();
@@ -1041,7 +1049,7 @@ async fn incomplete_real_socket_frame_is_pre_submission_error() {
     let client = crate::client::local::LocalSocketClient::new(
         std::path::PathBuf::new(),
         clock.clone(),
-        uuid::Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         None,
     );
     let cancellation = Cancellation::default();
@@ -1099,13 +1107,15 @@ async fn drain_wait_keeps_owner_lease_after_an_earlier_task_error() {
             .is_err()
     );
     assert_eq!(
-        OwnerLock::acquire(&instance).unwrap_err().kind(),
+        OwnerLock::acquire_with_test_hint(&instance)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::WouldBlock
     );
     release.store(true, Ordering::SeqCst);
     assert!(pending.wait().await.is_err());
     drop(pending);
-    drop(OwnerLock::acquire(&instance).unwrap());
+    drop(OwnerLock::acquire_with_test_hint(&instance).unwrap());
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -1124,7 +1134,7 @@ async fn client_rejects_oversized_request_before_submission() {
     let client = crate::client::local::LocalSocketClient::new(
         path.clone(),
         clock,
-        uuid::Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         None,
     );
     let command = Command::Search(SearchQuery {
@@ -1232,9 +1242,12 @@ async fn another_instance_request_never_reaches_handler() {
         shutdown.clone(),
     ));
     let mut wrong = UnixStream::connect(&path).await.unwrap();
-    write_frame(&mut wrong, &health_request(uuid::Uuid::new_v4(), "wrong"))
-        .await
-        .unwrap();
+    write_frame(
+        &mut wrong,
+        &health_request(crate::node::NodeUuid::new_v4(), "wrong"),
+    )
+    .await
+    .unwrap();
     let mismatch: serde_json::Value =
         serde_json::from_slice(&read_frame(&mut wrong).await.unwrap()).unwrap();
     assert_eq!(mismatch["request_id"], "wrong");
@@ -1266,7 +1279,7 @@ async fn client_rejects_wrong_boot_after_submission_without_retry() {
     let path =
         crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
-    let instance = uuid::Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let expected_boot = uuid::Uuid::new_v4();
     let actual_boot = uuid::Uuid::new_v4();
     let accepted = tokio::spawn(async move {
@@ -1308,8 +1321,8 @@ async fn client_rejects_wrong_response_instance_after_submission() {
     let path =
         crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
-    let expected_instance = uuid::Uuid::new_v4();
-    let other_instance = uuid::Uuid::new_v4();
+    let expected_instance = crate::node::NodeUuid::new_v4();
+    let other_instance = crate::node::NodeUuid::new_v4();
     let boot = uuid::Uuid::new_v4();
     let accepted = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
@@ -1351,7 +1364,7 @@ async fn client_rejects_malformed_boot_even_without_expected_boot() {
     let path =
         crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
-    let instance = uuid::Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let accepted = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let request = WireRequest::decode(&read_frame(&mut stream).await.unwrap()).unwrap();
@@ -1386,7 +1399,7 @@ async fn correlated_server_rejection_preserves_its_error_code() {
     let path =
         crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
-    let instance = uuid::Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let boot = uuid::Uuid::new_v4();
     let accepted = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
@@ -1420,7 +1433,7 @@ async fn correlated_server_rejection_preserves_its_error_code() {
 }
 
 fn service_registration(
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     request_id: &str,
 ) -> crate::protocol::service::ServiceWireRequest {
     use crate::protocol::service::*;
@@ -1675,6 +1688,8 @@ async fn shutdown_during_registered_partial_frame(partial_body: bool) {
         uid,
         shutdown.clone(),
         gate.clone(),
+        None,
+        ConnectionGauge::default(),
     ));
     let mut registered = UnixStream::connect(&path).await.unwrap();
     let initial = service_call(&mut registered, &service_registration(instance, "register")).await;
@@ -1837,7 +1852,7 @@ async fn restart_starts_with_empty_live_slot_and_same_reserved_author() {
         ServeOutcome::Drained
     ));
     drop(old_client);
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let bound = owner.bind_socket().unwrap();
     let new_path = bound.path().to_owned();
     let new_boot = bound.boot_id().to_string();
@@ -1956,7 +1971,9 @@ impl LocalService for DecisionBarrierService {
     }
 }
 
-fn decision_request(instance: uuid::Uuid) -> crate::protocol::service::ServiceWireRequest {
+fn decision_request(
+    instance: crate::node::NodeUuid,
+) -> crate::protocol::service::ServiceWireRequest {
     use crate::protocol::{
         ids::{OperationId, ThreadId},
         service::{EnsureManagedThread, ServiceOperation, ServiceRequest},
@@ -2098,6 +2115,8 @@ async fn shutdown_retains_guarded_service_work_until_commit_and_exact_revoke() {
         uid,
         shutdown.clone(),
         gate.clone(),
+        None,
+        ConnectionGauge::default(),
     ));
     let mut client = UnixStream::connect(&path).await.unwrap();
     assert!(
@@ -2262,6 +2281,8 @@ async fn shutdown_interrupts_blocked_registered_response_after_commit() {
         uid,
         shutdown.clone(),
         gate.clone(),
+        None,
+        ConnectionGauge::default(),
     ));
     let mut client = UnixStream::connect(&path).await.unwrap();
     let registered = service_call(&mut client, &service_registration(instance, "register")).await;
@@ -2380,7 +2401,7 @@ impl LocalService for RecoveryDomain {
 
 async fn recovery_call(
     path: &std::path::Path,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     command: Command,
 ) -> WireResponse {
     let mut stream = UnixStream::connect(path).await.unwrap();
@@ -2445,6 +2466,8 @@ async fn operator_disconnect_is_generation_targeted_and_reports_audit_failure() 
         uid,
         shutdown.clone(),
         gate.clone(),
+        None,
+        ConnectionGauge::default(),
     ));
     let mut registered = UnixStream::connect(&path).await.unwrap();
     let initial = service_call(&mut registered, &service_registration(instance, "register")).await;
@@ -2684,6 +2707,8 @@ async fn operator_disconnect_after_commit_preserves_history_and_closes_socket() 
         uid,
         shutdown.clone(),
         gate.clone(),
+        None,
+        ConnectionGauge::default(),
     ));
     let mut registered = UnixStream::connect(&path).await.unwrap();
     let initial = service_call(&mut registered, &service_registration(instance, "register")).await;
@@ -2790,7 +2815,9 @@ async fn operator_disconnect_reports_real_writer_failure_after_revocation() {
     let database = root.join("recovery-audit.db");
     let store = Arc::new(
         crate::store::SqliteStore::new(
-            crate::store::connection::StoreContext::new(database.clone(), Arc::new(TestClock)),
+            crate::store::connection::StoreContext::new(database.clone(), Arc::new(TestClock))
+                .with_test_host()
+                .with_node_seed(crate::test_support::node_seed_for(instance)),
             instance.to_string(),
             crate::store::StoreSettings {
                 daemon_boot: Some(boot),
@@ -2814,6 +2841,8 @@ async fn operator_disconnect_reports_real_writer_failure_after_revocation() {
         uid,
         shutdown.clone(),
         gate.clone(),
+        None,
+        ConnectionGauge::default(),
     ));
     let mut registered = UnixStream::connect(&path).await.unwrap();
     let initial = service_call(&mut registered, &service_registration(instance, "register")).await;
@@ -2920,7 +2949,7 @@ struct HealthLockStore {
 }
 
 fn health_lock_store(
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     boot: uuid::Uuid,
     clock: Arc<dyn Clock>,
 ) -> HealthLockStore {
@@ -2930,7 +2959,8 @@ fn health_lock_store(
     ));
     std::fs::create_dir(&root).unwrap();
     let database = root.join("threads.sqlite3");
-    let context = crate::store::connection::StoreContext::new(database.clone(), clock);
+    let context =
+        crate::store::connection::StoreContext::new(database.clone(), clock).with_test_host();
     context.use_rollback_journal();
     let (busy_tx, busy) = std::sync::mpsc::channel();
     context.signal_next_query_busy(busy_tx);
@@ -2962,7 +2992,7 @@ fn health_lock_store(
 /// the same builder `run_elected` uses) over a real `SqliteStore`, behind the
 /// production `ControlService`.
 fn elected_health_control(
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     boot: uuid::Uuid,
     shutdown: Cancellation,
     store: Arc<dyn crate::ports::StorePort>,
@@ -3049,7 +3079,7 @@ fn locked_health_request_ends(
 ) -> Option<ErrorCode> {
     let step = Arc::new(HealthStepClock(std::sync::atomic::AtomicU64::new(1_000)));
     let clock: Arc<dyn Clock> = step.clone();
-    let (instance, boot) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    let (instance, boot) = (crate::node::NodeUuid::new_v4(), uuid::Uuid::new_v4());
     let HealthLockStore {
         store,
         writer,
@@ -3186,7 +3216,7 @@ async fn started_server(
     Cancellation,
     std::path::PathBuf,
     std::path::PathBuf,
-    crate::daemon::paths::InstancePaths,
+    crate::daemon::paths::NodePaths,
 ) {
     let (listener, path, root, instance) = guarded_listener();
     let uid = UnixStream::pair().unwrap().0.peer_cred().unwrap().uid();
@@ -3248,7 +3278,7 @@ async fn waiting_client_returns_on_cancel() {
     let client = crate::client::local::LocalSocketClient::new(
         path.clone(),
         clock,
-        uuid::Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         None,
     );
     let call = tokio::spawn(async move { client.call_async(Command::Health, &budget).await });
@@ -3305,7 +3335,7 @@ async fn accept_drain_returns_at_deadline_when_a_task_never_finishes() {
         .unwrap()
         .unwrap();
     drop(pending);
-    drop(OwnerLock::acquire(&instance).unwrap());
+    drop(OwnerLock::acquire_with_test_hint(&instance).unwrap());
     drop(deciding);
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir_all(root).unwrap();
@@ -3364,7 +3394,7 @@ impl LocalService for BootCheckService {
 
 async fn send_with_expected_boot(
     path: &std::path::Path,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     expected_boot: Option<String>,
 ) -> WireResponse {
     let mut stream = UnixStream::connect(path).await.unwrap();
@@ -3444,7 +3474,7 @@ async fn client_maps_daemon_boot_changed_to_definite_rejection() {
     let path =
         crate::test_support::scratch::temp_path(format!("herdr-ipc-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&path).unwrap();
-    let instance = uuid::Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let expected_boot = uuid::Uuid::new_v4();
     let actual_boot = uuid::Uuid::new_v4();
     let accepted = tokio::spawn(async move {
@@ -3490,7 +3520,7 @@ async fn local_client_sends_expected_boot_from_descriptor() {
             uuid::Uuid::new_v4()
         ));
         let listener = UnixListener::bind(&path).unwrap();
-        let instance = uuid::Uuid::new_v4();
+        let instance = crate::node::NodeUuid::new_v4();
         let accepted = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let frame = read_frame(&mut stream).await.unwrap();
@@ -3531,6 +3561,7 @@ fn maximum_automatic_recovery_result(
             .unwrap();
     let id = AutomaticBootstrapIdentity::new(
         crate::cli::journal::IntentScope::Cooperative {
+            host: crate::test_support::test_host_locator(),
             instance: instance.into(),
             seat: claim.seat.clone(),
         },
@@ -3894,7 +3925,7 @@ async fn automatic_historical_response_keeps_one_mib_client_allocation_limit() {
         let path =
             crate::test_support::scratch::temp_path(format!("ht-h-{}.sock", uuid::Uuid::new_v4()));
         let listener = UnixListener::bind(&path).unwrap();
-        let instance = uuid::Uuid::new_v4();
+        let instance = crate::node::NodeUuid::new_v4();
         let result = historical_completed_transport_result(
             &instance.to_string(),
             if large { usize::MAX } else { 300_000 },
@@ -3959,7 +3990,7 @@ async fn automatic_historical_response_keeps_one_mib_client_allocation_limit() {
 #[test]
 fn automatic_historical_response_keeps_one_mib_scoped_encoder_limit() {
     use crate::protocol::handoff::{AutomaticBootstrapAction, AutomaticBootstrapMutation};
-    let instance = uuid::Uuid::new_v4().to_string();
+    let instance = crate::node::NodeUuid::new_v4().to_string();
     let result = historical_completed_transport_result(&instance, usize::MAX);
     let command = Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
         identity: result.identity.clone(),
@@ -3987,7 +4018,7 @@ fn unscoped_ordinary_encoder_keeps_one_mib_even_for_automatic_result() {
     let response = crate::protocol::wire::WireResponse {
         version: crate::protocol::wire::PROTOCOL_VERSION,
         request_id: "request".into(),
-        instance: uuid::Uuid::from_u128(1).to_string(),
+        instance: crate::node::NodeUuid::from_u128(1).to_string(),
         daemon_boot: uuid::Uuid::from_u128(2).to_string(),
         result: Ok(CommandResult::AutomaticBootstrap(Box::new(
             maximum_automatic_recovery_result(&uuid::Uuid::from_u128(1).to_string()),
@@ -4091,6 +4122,256 @@ async fn automatic_known_request_rejects_unrelated_success_result_family() {
     std::fs::remove_dir_all(root).unwrap();
     assert!(reply.is_err_and(|e| e.code == ErrorCode::UnknownOutcome));
 }
+
+// ---------------------------------------------------------------------------
+// Peer sniffing, peer admission and the connection gauge.
+// ---------------------------------------------------------------------------
+
+/// A well-formed peer hello frame body.
+pub(super) fn hello_bytes() -> Vec<u8> {
+    use crate::sync::frame::{BASE_CAP, PeerHello, PeerLimits, Role};
+    PeerFrame::Hello(PeerHello {
+        envelope: 1,
+        node: crate::node::NodeUuid::from_u128(7),
+        tag: "aB3".parse().unwrap(),
+        pubkey: "11".repeat(32),
+        boot: uuid::Uuid::from_u128(9),
+        caps: vec![BASE_CAP.into()],
+        limits: PeerLimits {
+            max_frame: 1 << 20,
+            batch_entries: 256,
+            batch_bytes: 256 * 1024,
+            credit: 1 << 20,
+        },
+        nonce: "22".repeat(32),
+        role: Role::Dialer,
+    })
+    .encode()
+    .unwrap()
+}
+
+async fn expect_busy(stream: &mut UnixStream, detail: &str) {
+    let body = tokio::time::timeout(Duration::from_secs(2), read_frame(stream))
+        .await
+        .expect("a busy close arrives")
+        .unwrap();
+    match PeerFrame::decode(&body).unwrap() {
+        PeerFrame::Close {
+            reason: crate::sync::frame::CloseReason::Busy,
+            detail: Some(got),
+        } => assert_eq!(got, detail),
+        other => panic!("expected close busy, got {other:?}"),
+    }
+}
+
+struct PeerDaemon {
+    path: std::path::PathBuf,
+    root: std::path::PathBuf,
+    instance: crate::node::NodeUuid,
+    service: Arc<CountingService>,
+    shutdown: Cancellation,
+    gauge: ConnectionGauge,
+    server: tokio::task::JoinHandle<io::Result<ServeOutcome>>,
+}
+impl PeerDaemon {
+    fn start(peers: Option<PeerIntake>) -> Self {
+        let (listener, path, root, paths) = guarded_listener();
+        let uid = UnixStream::pair().unwrap().0.peer_cred().unwrap().uid();
+        let service = Arc::new(CountingService(
+            AtomicUsize::new(0),
+            instance_id(&paths).to_string(),
+            listener.boot_id().to_string(),
+        ));
+        let shutdown = Cancellation::default();
+        let gauge = ConnectionGauge::default();
+        let server = tokio::spawn(serve_with_gate(
+            listener,
+            instance_id(&paths),
+            service.clone(),
+            Arc::new(TestClock),
+            uid,
+            shutdown.clone(),
+            Arc::new(LiveServiceGate::new()),
+            peers,
+            gauge.clone(),
+        ));
+        Self {
+            path,
+            root,
+            instance: instance_id(&paths),
+            service,
+            shutdown,
+            gauge,
+            server,
+        }
+    }
+    async fn peer(&self) -> UnixStream {
+        let mut stream = UnixStream::connect(&self.path).await.unwrap();
+        write_frame(&mut stream, &hello_bytes()).await.unwrap();
+        stream
+    }
+    async fn stop(self) {
+        self.shutdown.cancel();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), self.server)
+            .await
+            .expect("the daemon drains")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(outcome, ServeOutcome::Drained));
+        let _ = std::fs::remove_dir_all(self.root);
+    }
+}
+
+async fn eventually(what: &str, mut ready: impl FnMut() -> bool) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !ready() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+}
+
+#[tokio::test]
+async fn hello_first_frame_reaches_peer_intake_without_ordinary_permit() {
+    let (intake, mut rx) = PeerIntake::with_slots(16);
+    let daemon = PeerDaemon::start(Some(intake));
+    let _peer = daemon.peer().await;
+    let offered = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("the hello reaches the intake")
+        .unwrap();
+    assert_eq!(offered.first_frame, hello_bytes());
+    // The peer is still open and holds a peer permit, so if it also held an
+    // ordinary one, 32 ordinary connections plus it would exceed the cap.
+    let mut idle = Vec::new();
+    for _ in 0..MAX_CONNECTIONS - 1 {
+        idle.push(UnixStream::connect(&daemon.path).await.unwrap());
+    }
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let mut last = UnixStream::connect(&daemon.path).await.unwrap();
+    write_frame(&mut last, &health_request(daemon.instance, "h"))
+        .await
+        .unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut last))
+        .await
+        .expect("the 32nd ordinary connection is admitted")
+        .unwrap();
+    assert!(!reply.is_empty());
+    assert_eq!(daemon.service.0.load(Ordering::SeqCst), 1);
+    drop((idle, offered));
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn seventeenth_peer_gets_busy() {
+    let (intake, mut rx) = PeerIntake::with_slots(MAX_PEER_CONNECTIONS);
+    let daemon = PeerDaemon::start(Some(intake));
+    let mut admitted = Vec::new();
+    let mut held = Vec::new();
+    for _ in 0..MAX_PEER_CONNECTIONS {
+        held.push(daemon.peer().await);
+        admitted.push(
+            tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    let mut seventeenth = daemon.peer().await;
+    expect_busy(&mut seventeenth, "peer connections full (16)").await;
+    // Releasing one admitted peer's permit frees a slot for the next hello.
+    drop(admitted.pop());
+    let _again = daemon.peer().await;
+    let offered = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("a freed slot admits the next peer")
+        .unwrap();
+    drop((offered, admitted, held));
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn none_intake_gives_busy() {
+    let daemon = PeerDaemon::start(None);
+    let mut peer = daemon.peer().await;
+    expect_busy(&mut peer, "sync not running").await;
+    assert_eq!(daemon.service.0.load(Ordering::SeqCst), 0);
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn refused_offer_gives_busy() {
+    let (intake, rx) = PeerIntake::with_slots(1);
+    drop(rx);
+    let daemon = PeerDaemon::start(Some(intake));
+    let mut peer = daemon.peer().await;
+    expect_busy(&mut peer, "sync busy").await;
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn uid_check_runs_first() {
+    let (intake, mut rx) = PeerIntake::with_slots(1);
+    let (stream, mut remote) = UnixStream::pair().unwrap();
+    let uid = stream.peer_cred().unwrap().uid();
+    write_frame(&mut remote, &hello_bytes()).await.unwrap();
+    let service = Arc::new(CountingService(
+        AtomicUsize::new(0),
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    ));
+    let error = serve_connection(
+        stream,
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+        service,
+        Arc::new(TestClock),
+        uid.wrapping_add(1),
+        Cancellation::default(),
+        Arc::new(Semaphore::new(5)),
+        Arc::new(Semaphore::new(1)),
+        Arc::new(LiveServiceGate::new()),
+        Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+        Arc::new(Semaphore::new(1)),
+        Some(intake),
+        Arc::new(Semaphore::new(MAX_PEER_CONNECTIONS)),
+        ConnectionGauge::default().enter(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    assert!(
+        rx.try_recv().is_err(),
+        "a foreign uid never reaches the intake"
+    );
+}
+
+#[tokio::test]
+async fn gauge_counts_ordinary_not_peer_and_guard_decrements() {
+    let (intake, mut rx) = PeerIntake::with_slots(16);
+    let daemon = PeerDaemon::start(Some(intake));
+    assert_eq!(daemon.gauge.count(), 0);
+    let ordinary = UnixStream::connect(&daemon.path).await.unwrap();
+    eventually("the idle ordinary connection to count", || {
+        daemon.gauge.count() == 1
+    })
+    .await;
+    let _peer = daemon.peer().await;
+    let offered = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(daemon.gauge.count(), 1, "the peer is not counted");
+    drop(ordinary);
+    eventually("the closed ordinary connection to leave the count", || {
+        daemon.gauge.count() == 0
+    })
+    .await;
+    drop(offered);
+    daemon.stop().await;
+}
+
 struct FixedAutomaticService(CommandResult);
 impl LocalService for FixedAutomaticService {
     crate::unserved_local_service_routes!(

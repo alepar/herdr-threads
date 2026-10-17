@@ -15,7 +15,7 @@ const LOG: &str = "/state/instances/i/logs/daemon.log";
 
 fn lane(name: &'static str) -> LaneDegradation {
     LaneDegradation {
-        lane: name,
+        lane: name.into(),
         summary: format!("lane {name} failed: StoreBusy"),
         class: Some(ErrorClass::Transient),
     }
@@ -29,7 +29,7 @@ fn pointer(class: Option<ErrorClass>) -> String {
 }
 
 pub(super) fn ready_inputs() -> HealthInputs {
-    let mut inputs = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4());
+    let mut inputs = HealthInputs::unknown(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     inputs.database = ComponentStatus::Ready;
     inputs.schema = ComponentStatus::Ready;
     inputs.host = ComponentStatus::Ready;
@@ -99,7 +99,7 @@ pub(super) fn worst_case_inputs() -> HealthInputs {
     ]
     .into_iter()
     .map(|name| LaneDegradation {
-        lane: name,
+        lane: name.into(),
         summary: format!("lane {name} failed: StoreBusy; retrying (attempt 9, next ≤ 30s)"),
         class: Some(ErrorClass::Transient),
     })

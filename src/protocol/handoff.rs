@@ -97,6 +97,7 @@ impl DeliveryMutation {
             != OriginalActor::Agent
             || self.claim.role != super::authority::CallerRole::TopLevel
             || self.claim.instance != self.plan.payload.namespace.instance
+            || self.claim.host.as_path() != self.plan.payload.namespace.host_endpoint.as_path()
             || self.digest
                 != format!(
                     "{:x}",
@@ -777,7 +778,8 @@ impl BootstrapIdentity {
             || self.digest != self.semantic_digest()?
             || self.claim.role != super::authority::CallerRole::TopLevel
             || self.claim.instance != self.payload.handoff.namespace.instance
-            || !matches!(&self.scope, crate::cli::journal::IntentScope::Cooperative { instance, seat } if instance == &self.claim.instance && seat == &self.claim.seat)
+            || self.claim.host.as_path() != self.payload.handoff.namespace.host_endpoint.as_path()
+            || !matches!(&self.scope, crate::cli::journal::IntentScope::Cooperative { instance, host, seat } if instance == &self.claim.instance && host == &self.claim.host && seat == &self.claim.seat)
         {
             return Err("bootstrap original identity mismatch");
         }
@@ -998,7 +1000,8 @@ pub(crate) mod topology_contract_tests {
     use super::*;
     pub(crate) fn claim() -> CallerClaim {
         CallerClaim {
-            instance: "i".into(),
+            host: crate::protocol::ids::HostLocator::parse("/host.sock").unwrap(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("sender"),
             binding_generation: 1,
             role: crate::protocol::authority::CallerRole::TopLevel,
@@ -1015,7 +1018,7 @@ pub(crate) mod topology_contract_tests {
             handoff: HandoffPayload {
                 policy: None,
                 namespace: HandoffNamespace {
-                    instance: "i".into(),
+                    instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                     state_dir: "/state".into(),
                     host_endpoint: "/host.sock".into(),
                 },
@@ -1057,6 +1060,7 @@ pub(crate) mod topology_contract_tests {
             compound: payload().handoff.keys.compound.clone(),
             scope: crate::cli::journal::IntentScope::Cooperative {
                 instance: claim.instance.clone(),
+                host: claim.host.clone(),
                 seat: claim.seat.clone(),
             },
             claim,
@@ -1253,7 +1257,7 @@ pub(crate) mod topology_contract_tests {
             let response = crate::protocol::wire::WireResponse {
                 version: crate::protocol::wire::PROTOCOL_VERSION,
                 request_id: "maximum-body".into(),
-                instance: "00000000-0000-4000-8000-000000000001".into(),
+                instance: "00000000000040008000000000000001".into(),
                 daemon_boot: "00000000-0000-4000-8000-000000000002".into(),
                 result: Ok(crate::protocol::results::CommandResult::Bootstrap(
                     Box::new(result),
@@ -1275,6 +1279,31 @@ pub(crate) mod topology_contract_tests {
             assert_eq!(saved.completed.unwrap().identity.payload.handoff.body, body);
             assert_eq!(saved.recovery.unwrap().identity.payload.handoff.body, body);
         }
+    }
+
+    #[test]
+    fn payload_with_foreign_host_refused() {
+        // The payload namespace host_endpoint is /host.sock: an original claim from another Herdr
+        // server is refused like one from another instance (digest and scope follow the claim, so
+        // only the namespace comparison can fail).
+        let retarget = |mutate: &dyn Fn(&mut BootstrapIdentity)| {
+            let mut identity = identity();
+            mutate(&mut identity);
+            identity.scope = crate::cli::journal::IntentScope::Cooperative {
+                instance: identity.claim.instance.clone(),
+                host: identity.claim.host.clone(),
+                seat: identity.claim.seat.clone(),
+            };
+            identity.digest = identity.semantic_digest().unwrap();
+            identity.validate()
+        };
+        assert_eq!(retarget(&|_| ()), Ok(()));
+        let foreign_host = retarget(&|identity| {
+            identity.claim.host = crate::protocol::ids::HostLocator::parse("/other.sock").unwrap();
+        });
+        let foreign_instance = retarget(&|identity| identity.claim.instance = "0".repeat(32));
+        assert_eq!(foreign_host, Err("bootstrap original identity mismatch"));
+        assert_eq!(foreign_host, foreign_instance);
     }
 
     #[test]
@@ -1402,7 +1431,7 @@ pub(crate) mod topology_contract_tests {
             .unwrap()
             .remove("expected_attempt");
         assert!(serde_json::from_value::<crate::protocol::commands::Command>(missing).is_err());
-        const LEGACY_CHILD: &str = r#"{"identity":{"compound":"child","digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","claim":{"instance":"i","seat":"sender","binding_generation":1,"role":"top_level","harness":"codex","native_session":"session","execution":"exec","target":"w1:p1"},"thread":"thread","recipient":"peer","create_key":"create","invite_key":"invite","send_key":"send"},"operation":"complete"}"#;
+        const LEGACY_CHILD: &str = r#"{"identity":{"compound":"child","digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","host":"/host.sock","seat":"sender","binding_generation":1,"role":"top_level","harness":"codex","native_session":"session","execution":"exec","target":"w1:p1"},"thread":"thread","recipient":"peer","create_key":"create","invite_key":"invite","send_key":"send"},"operation":"complete"}"#;
         assert_eq!(
             serde_json::to_string(&completion().legacy_completion).unwrap(),
             LEGACY_CHILD
@@ -1418,7 +1447,7 @@ pub(crate) mod topology_contract_tests {
                     .unwrap()
                 )
             ),
-            "c9722e3662c4af0d69f1da919f03984d14d8ae9bbddca3a69f63fea9ace15524"
+            "9ff6bf7bc8d6f884db46a415c575e0a3ba699db07ea0914e96fbbd9876f1e005"
         );
         assert_eq!(
             crate::store::control::cooperative_payload_hash(
@@ -1696,12 +1725,13 @@ mod automatic_contract_tests {
     use super::*;
     use crate::cli::journal::IntentScope;
     use crate::protocol::{commands::Command, ids::OperationId};
-    const PLAN: &str = r#"{"version":2,"payload":{"namespace":{"instance":"i","state_dir":"/state","host_endpoint":"/host.sock"},"keys":{"compound":"compound","begin":"begin","ensure":"ensure","send":"send","complete":"complete"},"channel":{"kind":"automatic"},"body":"work"},"recipient":"peer"}"#;
+    const PLAN: &str = r#"{"version":2,"payload":{"namespace":{"instance":"34750f98bd59fcfc946da45aaabe933b","state_dir":"/state","host_endpoint":"/host.sock"},"keys":{"compound":"compound","begin":"begin","ensure":"ensure","send":"send","complete":"complete"},"channel":{"kind":"automatic"},"body":"work"},"recipient":"peer"}"#;
     fn request() -> AutomaticDeliveryMutation {
         let claim = topology_contract_tests::claim();
         AutomaticDeliveryMutation::new(
             IntentScope::Cooperative {
                 instance: claim.instance.clone(),
+                host: claim.host.clone(),
                 seat: claim.seat.clone(),
             },
             claim,
@@ -1709,9 +1739,39 @@ mod automatic_contract_tests {
         )
         .unwrap()
     }
+    fn with_claim(
+        mutate: impl FnOnce(&mut CallerClaim),
+    ) -> Result<AutomaticDeliveryMutation, &'static str> {
+        let mut claim = topology_contract_tests::claim();
+        mutate(&mut claim);
+        AutomaticDeliveryMutation::new(
+            IntentScope::Cooperative {
+                instance: claim.instance.clone(),
+                host: claim.host.clone(),
+                seat: claim.seat.clone(),
+            },
+            claim,
+            AutomaticOriginal::Delivery(serde_json::from_str(PLAN).unwrap()),
+        )
+    }
+
+    #[test]
+    fn plan_with_foreign_host_refused() {
+        // The namespace host_endpoint of PLAN is /host.sock: a claim from another Herdr server is
+        // refused exactly like a claim from another instance.
+        with_claim(|_| ()).expect("same host and instance is admitted");
+        let foreign_host = with_claim(|claim| {
+            claim.host = crate::protocol::ids::HostLocator::parse("/other.sock").unwrap();
+        })
+        .unwrap_err();
+        let foreign_instance = with_claim(|claim| claim.instance = "0".repeat(32)).unwrap_err();
+        assert_eq!(foreign_host, "automatic original identity mismatch");
+        assert_eq!(foreign_host, foreign_instance);
+    }
+
     #[test]
     fn automatic_v2_keys_have_ensure_and_no_legacy_invite() {
-        let json = r#"{"version":2,"payload":{"namespace":{"instance":"i","state_dir":"/state","host_endpoint":"/host.sock"},"keys":{"compound":"compound","begin":"begin","ensure":"ensure","send":"send","complete":"complete"},"channel":{"kind":"automatic"},"body":"work"},"recipient":"peer"}"#;
+        let json = r#"{"version":2,"payload":{"namespace":{"instance":"34750f98bd59fcfc946da45aaabe933b","state_dir":"/state","host_endpoint":"/host.sock"},"keys":{"compound":"compound","begin":"begin","ensure":"ensure","send":"send","complete":"complete"},"channel":{"kind":"automatic"},"body":"work"},"recipient":"peer"}"#;
         assert!(
             serde_json::from_str::<crate::cli::journal::DeliveryPlan>(json).is_err(),
             "legacy payload must reject Ensure keys"
@@ -1735,7 +1795,7 @@ mod automatic_contract_tests {
         let request = request();
         assert_eq!(
             request.digest,
-            "8a9d2f46e0b4786658b9ee4ad9aa011cc91110e9ea9cf932479810c2f0998f71"
+            "ad504da6da75632284890f839f12b137232fb697966caedb71d576220b11d0da"
         );
         for phase in [
             request.clone(),
@@ -1781,7 +1841,7 @@ mod automatic_contract_tests {
         let historical = request();
         assert_eq!(
             historical.digest,
-            "8a9d2f46e0b4786658b9ee4ad9aa011cc91110e9ea9cf932479810c2f0998f71"
+            "ad504da6da75632284890f839f12b137232fb697966caedb71d576220b11d0da"
         );
         let AutomaticOriginal::Delivery(original) = &historical.original else {
             unreachable!()
@@ -1893,6 +1953,7 @@ mod automatic_contract_tests {
         let request = AutomaticDeliveryMutation::new(
             IntentScope::Cooperative {
                 instance: claim.instance.clone(),
+                host: claim.host.clone(),
                 seat: claim.seat.clone(),
             },
             claim,

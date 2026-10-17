@@ -152,7 +152,7 @@ impl Plugin {
                 let path = entry.path();
                 if path
                     .file_name()
-                    .is_some_and(|name| name == "threads.sqlite3")
+                    .is_some_and(|name| name == "herdr-threads.db")
                 {
                     return Some(path);
                 }
@@ -852,7 +852,7 @@ fn human_accept_summary_guidance_is_executable() {
     use herdr_threads::{
         cli::actor_route::InvocationActor,
         cli::commands::parse_argv,
-        daemon::paths::{InstancePaths, RuntimeContext},
+        daemon::paths::{NodePaths, RuntimeContext},
         test_support::spawn::SpawnOwned,
     };
     use std::{os::unix::fs::PermissionsExt, process::Stdio};
@@ -866,9 +866,9 @@ fn human_accept_summary_guidance_is_executable() {
         host: socket.clone(),
     };
     let context = RuntimeContext::explicit(plugin.state.clone(), socket.clone(), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    paths.prepare_instance_dir().unwrap();
-    let settings = paths.instance_dir.join("settings.json");
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    paths.prepare_node_dir().unwrap();
+    let settings = paths.node_dir.join("settings.json");
     fs::write(&settings, r#"{"summary":{"chunk_bytes":128}}"#).unwrap();
     fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
     plugin.ok(None, None, &["daemon", "ensure"]);

@@ -22,11 +22,17 @@ fn budget() -> CallBudget {
 fn fixture() -> Connection {
     let db = Connection::open_in_memory().unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+    schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
     db.execute_batch("\
-        INSERT INTO host_instances(id,created_at) VALUES('i',0);\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('s1','i','resolved','native',1,0),('s2','i','resolved','native',1,0),('s3','i','resolved','native',1,0);\
+        \
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);\
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES('s1','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('s3','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
     ").unwrap();
     db
 }
@@ -59,7 +65,7 @@ fn warning_snapshot_survives_later_leave_join_and_affected_deduplicates() {
     let mut db = fixture();
     db.execute_batch("\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq,left_seq) VALUES('t','s1',1,2,11),('t','s2',1,12,NULL);\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('i','w','t',1,'warn','w','{}',10,10);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','w','{}',10,10);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES('w',10,'t',2,'s1','receipt','m:s1');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',2);\
     ").unwrap();
@@ -99,10 +105,10 @@ fn warning_snapshot_survives_later_leave_join_and_affected_deduplicates() {
 fn later_anchor_does_not_restart_timer_or_enqueue_duplicate_attention() {
     let mut db = fixture();
     db.execute_batch("\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,'sealed');\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,'sealed');\
         INSERT INTO prepared_recipients(preparation_id,seat_id,thread_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','s1','t',1,300,0);\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10);\
-        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,0);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,1,0);\
         INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s1',11,1200,1,'verified'),('s1',12,500,1,'verified');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('a1','receipt_timer_materialization','1',1),('a2','receipt_timer_materialization','2',1);\
     ").unwrap();
@@ -137,7 +143,7 @@ fn failed_unit_keeps_prefix_and_restarts_without_duplicate_recipient() {
     let mut db = fixture();
     db.execute_batch("\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','s1',1,2),('t','s2',1,3);\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('i','w','t',1,'warn','w','{}',10,10);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','w','{}',10,10);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,condition_kind,condition_id) VALUES('w',10,'t',2,'receipt','m:s1');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',2);\
         CREATE TRIGGER reject_second BEFORE INSERT ON warning_recipients WHEN NEW.seat_id='s2' BEGIN SELECT RAISE(ABORT,'injected failure'); END;\
@@ -174,7 +180,7 @@ fn long_multibyte_second_unit_failure_commits_warning_prefix_across_reopen() {
     let (mut db, path) = file_fixture();
     db.execute_batch("\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','s1',1,2),('t','s2',1,3);\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('i','w','t',1,'warn','w','{}',10,10);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','w','{}',10,10);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,condition_kind,condition_id) VALUES('w',10,'t',2,'receipt','m:s1');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',2);\
     ").unwrap();
@@ -253,7 +259,7 @@ fn long_multibyte_first_unit_failure_retains_warning_error_across_reopen() {
     let (mut db, path) = file_fixture();
     db.execute_batch("\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','s1',1,2);\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('i','w','t',1,'warn','w','{}',10,10);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','w','{}',10,10);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,condition_kind,condition_id) VALUES('w',10,'t',1,'receipt','m:s1');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',1);\
     ").unwrap();
@@ -318,7 +324,7 @@ fn long_multibyte_first_unit_failure_retains_warning_error_across_reopen() {
 fn long_multibyte_cleanup_failure_retains_nonwarning_error() {
     let mut db = fixture();
     db.execute_batch("\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,'discarded');\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,'discarded');\
         INSERT INTO prepared_recipients(preparation_id,seat_id,thread_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','s1','t',1,300,0);\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('cleanup','preparation_cleanup','p',0);\
     ").unwrap();
@@ -359,7 +365,7 @@ fn first_unit_failure_is_durable_and_retried_at_same_cursor() {
     let mut db = fixture();
     db.execute_batch("\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','s1',1,2);\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('i','w','t',1,'warn','w','{}',10,10);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','w','{}',10,10);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,condition_kind,condition_id) VALUES('w',10,'t',1,'receipt','m:s1');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',1);\
         CREATE TRIGGER reject_first BEFORE INSERT ON warning_recipients BEGIN SELECT RAISE(ABORT,'injected first failure'); END;\
@@ -410,7 +416,7 @@ fn expired_call_budget_returns_committed_prefix_with_error() {
     let mut db = fixture();
     db.execute_batch("\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','s1',1,2),('t','s2',1,3);\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('i','w','t',1,'warn','w','{}',10,10);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','w','{}',10,10);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,condition_kind,condition_id) VALUES('w',10,'t',2,'invitation','missing');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',2);\
     ").unwrap();
@@ -437,11 +443,11 @@ fn expired_call_budget_returns_committed_prefix_with_error() {
 fn published_manifest_warning_and_first_anchor_project_without_new_decision() {
     let mut db = fixture();
     db.execute_batch("\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,warning_count,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,1,'sealed');\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,warning_count,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,1,'sealed');\
         INSERT INTO prepared_recipients(preparation_id,seat_id,thread_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','s1','t',1,300,0);\
         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES('p','key','w','s1',1,1,'{}');\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10);\
-        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,1);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,1,1);\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('send','send_attention','p',3);\
         INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s1',11,1200,1,'verified');\
     ").unwrap();
@@ -469,10 +475,10 @@ fn published_manifest_warning_and_first_anchor_project_without_new_decision() {
 fn warning_job_identity_collision_stops_send_projection_at_same_unit() {
     let mut db = fixture();
     db.execute_batch("\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,warning_count,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,0,1,'sealed');\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,warning_count,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t',0,0,0,0,0,0,0,1,'sealed');\
         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES('p','key','w','s1',1,1,'{}');\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10);\
-        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,0,1);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,0,1);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES('w',9,'t',0,'s2','unavailable','other');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('send','send_attention','p',2);\
     ").unwrap();
@@ -495,7 +501,7 @@ fn existing_warning_recipient_with_wrong_event_generation_fails_closed() {
     let mut db = fixture();
     db.execute_batch("\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','s1',1,2);\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('i','w','t',1,'warn','w','{}',10,10);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','w','{}',10,10);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,condition_kind,condition_id) VALUES('w',10,'t',1,'invitation','missing');\
         INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES('w','s1',9);\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',1);\
@@ -526,7 +532,7 @@ fn existing_warning_recipient_with_wrong_event_generation_fails_closed() {
 fn abandoned_preparation_cleanup_is_bounded_and_keeps_digest() {
     let mut db = fixture();
     db.execute_batch("\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,20,'discarded');\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t',0,0,0,0,0,0,20,'discarded');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('cleanup','preparation_cleanup','p',0);\
     ").unwrap();
     db.execute("INSERT INTO prepared_recipients(preparation_id,seat_id,thread_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','s1','t',1,300,0)",[]).unwrap();
@@ -574,10 +580,10 @@ fn abandoned_preparation_cleanup_is_bounded_and_keeps_digest() {
 fn cleanup_job_cannot_delete_published_logical_receipts() {
     let mut db = fixture();
     db.execute_batch("\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');\
         INSERT INTO prepared_recipients(preparation_id,seat_id,thread_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','s1','t',1,300,1);\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10);\
-        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,0);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,1,0);\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('cleanup','preparation_cleanup','p',0);\
     ").unwrap();
     let clock = TestClock(AtomicU64::new(0));
@@ -598,11 +604,11 @@ fn cleanup_job_cannot_delete_published_logical_receipts() {
 fn wide_warning_resumes_after_reopen_without_skipping_or_duplicate_rows() {
     let (mut db, path) = file_fixture();
     for n in 0..40 {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES(?1,'i','resolved','native',1,0)",[format!("member{n}")]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[format!("member{n}")]).unwrap();
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t',?1,1,2)",[format!("member{n}")]).unwrap();
     }
     db.execute_batch("\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('i','w','t',1,'warn','w','{}',10,10);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','w','{}',10,10);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,condition_kind,condition_id) VALUES('w',10,'t',40,'invitation','missing');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',40);\
     ").unwrap();
@@ -648,14 +654,14 @@ fn wide_warning_resumes_after_reopen_without_skipping_or_duplicate_rows() {
 fn restored_occupant_keeps_warning_history_without_warning_only_attention() {
     let mut db = fixture();
     db.execute_batch("\
-        UPDATE host_instances SET host_boot='boot',host_epoch=1 WHERE id='i';\
+        UPDATE herdr_hosts SET host_boot='boot',host_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b';\
         UPDATE seats SET unavailability_episode=1,unavailability_open=0 WHERE id='s1';\
         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('s1',1,'target','boot',1,'codex','native','exec','verified',0,20);\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,warning_count,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,1,'sealed');\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,warning_count,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,1,'sealed');\
         INSERT INTO prepared_recipients(preparation_id,seat_id,thread_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','s1','t',1,300,0);\
         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES('p','key','w','s1',1,1,'{}');\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10);\
-        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,1);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,1,1);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,phase) VALUES('w',10,'t',0,'s1','unavailable','key','affected');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',0);\
     ").unwrap();
@@ -678,14 +684,14 @@ fn restored_occupant_keeps_warning_history_without_warning_only_attention() {
 fn invalidated_host_binding_does_not_suppress_open_unavailability_warning() {
     let mut db = fixture();
     db.execute_batch("\
-        UPDATE host_instances SET host_boot='new',host_epoch=2 WHERE id='i';\
+        UPDATE herdr_hosts SET host_boot='new',host_epoch=2 WHERE node_id='34750f98bd59fcfc946da45aaabe933b';\
         UPDATE seats SET unavailability_episode=1,unavailability_open=1 WHERE id='s1';\
         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('s1',1,'target','old',1,'codex','native','exec','verified',0,20);\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,warning_count,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,1,'sealed');\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,warning_count,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,1,'sealed');\
         INSERT INTO prepared_recipients(preparation_id,seat_id,thread_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','s1','t',1,300,0);\
         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES('p','key','w','s1',1,1,'{}');\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10);\
-        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,1);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,1,1);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,phase) VALUES('w',10,'t',0,'s1','unavailable','key','affected');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',0);\
     ").unwrap();
@@ -709,11 +715,11 @@ fn ack_before_unavailable_warning_attribution_keeps_history_without_wake() {
     let mut db = fixture();
     db.execute_batch("\
         UPDATE seats SET unavailability_episode=1,unavailability_open=1 WHERE id='s1';\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,warning_count,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,1,'sealed');\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,warning_count,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,1,'sealed');\
         INSERT INTO prepared_recipients(preparation_id,seat_id,thread_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','s1','t',1,300,0);\
         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES('p','key','w','s1',1,1,'{}');\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10);\
-        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,1);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,1,1);\
         INSERT INTO receipt_state(message_id,seat_id,state,acked_at) VALUES('m','s1','acked',1010);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,phase) VALUES('w',10,'t',0,'s1','unavailable','key','affected');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',0);\
@@ -737,11 +743,11 @@ fn ack_before_unavailable_warning_attribution_keeps_history_without_wake() {
 fn current_offer_suppresses_projection_wake_but_successor_gets_attention() {
     let mut db = fixture();
     db.execute_batch("\
-        UPDATE host_instances SET decision_seq=10 WHERE id='i';\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('v','t','s1',1,'pending',1,0,300,300);\
+        UPDATE local_node SET decision_seq=10 WHERE id='34750f98bd59fcfc946da45aaabe933b';\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES('v','t','s1',1,'pending',1,0,300,300,(SELECT id FROM local_node));\
         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('s1',1,'target','boot',1,'codex','native','old','verified',0,1);\
         INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT binding_id,'s1',10 FROM occupant_bindings WHERE seat_id='s1' AND execution_id='old';\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,event_offset) VALUES('i','w1','t',1,'warn','w1','{}',10,10,0),('i','w2','t',2,'warn','w2','{}',10,10,1);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,event_offset) VALUES('34750f98bd59fcfc946da45aaabe933b','w1','t',1,'warn','w1','{}',10,10,0),('34750f98bd59fcfc946da45aaabe933b','w2','t',2,'warn','w2','{}',10,10,1);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,phase) VALUES('w1',10,'t',0,'s1','invitation','v','affected'),('w2',10,'t',0,'s1','invitation','v','affected');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j1','warning_attribution','w1',0),('j2','warning_attribution','w2',0);\
     ").unwrap();
@@ -809,7 +815,7 @@ fn warning_attribution_completion_stamps_completed_at() {
     let mut db = fixture();
     db.execute_batch("\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq,left_seq) VALUES('t','s1',1,2,NULL);\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('i','w','t',1,'warn','w','{}',10,10);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','w','{}',10,10);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES('w',10,'t',1,'s1','receipt','m:s1');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',1);\
     ").unwrap();
@@ -822,10 +828,10 @@ fn warning_attribution_completion_stamps_completed_at() {
 fn receipt_timer_completion_stamps_completed_at() {
     let mut db = fixture();
     db.execute_batch("\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,'sealed');\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,'sealed');\
         INSERT INTO prepared_recipients(preparation_id,seat_id,thread_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','s1','t',1,300,0);\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10);\
-        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,0);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,1,0);\
         INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s1',11,1200,1,'verified');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('a1','receipt_timer_materialization','1',1);\
     ").unwrap();
@@ -837,11 +843,11 @@ fn receipt_timer_completion_stamps_completed_at() {
 fn send_attention_completion_stamps_completed_at() {
     let mut db = fixture();
     db.execute_batch("\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,warning_count,status) VALUES('p','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,1,'sealed');\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,warning_count,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,1,1,'sealed');\
         INSERT INTO prepared_recipients(preparation_id,seat_id,thread_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','s1','t',1,300,0);\
         INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES('p','key','w','s1',1,1,'{}');\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10);\
-        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,1);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,1,1);\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('send','send_attention','p',3);\
         INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s1',11,1200,1,'verified');\
     ").unwrap();
@@ -853,9 +859,39 @@ fn send_attention_completion_stamps_completed_at() {
 }
 
 #[test]
+fn project_receipt_retired_ack_recipient_is_recipient_retired() {
+    // The recipient's retirement applied before the message did: the receipt
+    // projects `recipient_retired` at the seat's `retired_at`, not `pending`.
+    let mut db = fixture();
+    db.execute_batch("\
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,remote_kind,published) VALUES('sr','34750f98bd59fcfc946da45aaabe933b','retired','native',0,0,777,5,'abababababababababababababababab',0,'agent',1);\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','a','o',zeroblob(32),'t',0,0,0,0,0,0,1,2,'sealed');\
+        INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','t','s1',1,300,1),('p','t','sr',2,300,1);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,2,0);\
+        INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('send','send_attention','p',3);\
+    ").unwrap();
+    drive(&mut db, "send");
+    let row = |seat: &str| -> (String, Option<i64>) {
+        db.query_row(
+            "SELECT state,retired_at FROM receipt_state WHERE message_id='m' AND seat_id=?1",
+            [seat],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(row("sr"), ("recipient_retired".into(), Some(777)));
+    assert_eq!(
+        row("s1"),
+        ("pending".into(), None),
+        "a live recipient stays pending"
+    );
+}
+
+#[test]
 fn unavailable_send_materializes_due_deadline_without_availability() {
     let mut db = fixture();
-    db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','i','a','o',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','t','s1',1,300,0); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',10,1000,1,0,1,0); INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('send','send_attention','p',2);").unwrap();
+    db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','34750f98bd59fcfc946da45aaabe933b','a','o',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('p','t','s1',1,300,0); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('34750f98bd59fcfc946da45aaabe933b','p','m','t',10,1000,1,0,1,0); INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('send','send_attention','p',2);").unwrap();
     let clock = TestClock(AtomicU64::new(0));
     let mut complete = false;
     for _ in 0..3 {
@@ -905,7 +941,7 @@ fn stall_before_first_unit_still_does_one_unit_within_call_budget() {
     let mut db = fixture();
     db.execute_batch("\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','s1',1,2),('t','s2',1,3);\
-        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('i','w','t',1,'warn','w','{}',10,10);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('34750f98bd59fcfc946da45aaabe933b','w','t',1,'warn','w','{}',10,10);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,condition_kind,condition_id) VALUES('w',10,'t',2,'invitation','missing');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',2);\
     ").unwrap();

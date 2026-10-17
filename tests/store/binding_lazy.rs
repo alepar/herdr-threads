@@ -45,15 +45,15 @@ fn lazy_with_priority(db: &Connection, n: i64, priority: i64) {
 /// `lazy_with_priority` in `thread`, at thread sequence and decision `n` (unique across threads).
 fn lazy_in(db: &Connection, thread: &str, n: i64, priority: i64) {
     db.execute(
-        "INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('a','i','resolved','native',1,0)",
+        "INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
         [],
     )
     .unwrap();
     // The row, its preparation and its message carry one priority (lazy_recipient_source, lazy_manifest_source).
-    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'i','scope',?1,zeroblob(32),?3,0,0,0,0,0,0,0,'building','lazy',?2)",params![format!("prep-{n}"),priority,thread]).unwrap();
+    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','scope',?1,zeroblob(32),?3,0,0,0,0,0,0,0,'building','lazy',?2)",params![format!("prep-{n}"),priority,thread]).unwrap();
     db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES(?1,?2,?4,'s',?3)",params![format!("prep-{n}"),format!("msg-{n}"),priority,thread]).unwrap();
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,actor_seat_id,priority) VALUES(?1,'i',?4,?2,'ordinary',?2,'passive',0,'lazy','a',?3)",params![format!("msg-{n}"),n,priority,thread]).unwrap();
-    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'i',?4,?3,0,?3,0,1,0)",params![format!("prep-{n}"),format!("msg-{n}"),n,thread]).unwrap();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,actor_seat_id,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b',?4,?2,'ordinary',?2,'passive',0,'lazy','a',?3)",params![format!("msg-{n}"),n,priority,thread]).unwrap();
+    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'34750f98bd59fcfc946da45aaabe933b',?4,?3,0,?3,0,1,0)",params![format!("prep-{n}"),format!("msg-{n}"),n,thread]).unwrap();
 }
 
 fn msg(n: i64) -> MessageId {
@@ -70,7 +70,14 @@ fn unread(db: &Connection, binding: &BindingId) -> Vec<MessageId> {
 
 fn complete(db: &mut Connection, binding: Option<&BindingId>, ids: &[MessageId]) {
     let tx = db.transaction().unwrap();
-    complete_for_binding(&tx, "i", &SeatId::new("s"), binding, ids).unwrap();
+    complete_for_binding(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &SeatId::new("s"),
+        binding,
+        ids,
+    )
+    .unwrap();
     tx.commit().unwrap();
 }
 
@@ -230,7 +237,7 @@ fn a_disconnected_sibling_still_owes_its_display_and_sees_it_after_reconnecting(
     let offered = |db: &Connection, b: &BindingId| -> Option<MessageId> {
         crate::store::lazy_delivery::seek_pending(
             db,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &SeatId::new("s"),
             RowFilter::Binding(b),
             None,
@@ -344,15 +351,15 @@ fn the_display_owing_reason_literal_is_the_process_exit_reason() {
 
 /// An ordinary message `n` to seat `s` (a receipt), or from `s` itself, or to nobody.
 fn ordinary(db: &Connection, n: i64, actor: Option<&str>, receipt_for_s: bool) {
-    db.execute_batch("INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('a','i','resolved','native',1,0)").unwrap();
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,actor_seat_id) VALUES(?1,'i','t',?2,'ordinary',?2,'b',0,?3)",params![format!("ord-{n}"),n,actor]).unwrap();
+    db.execute_batch("INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))").unwrap();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,actor_seat_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?2,'b',0,?3)",params![format!("ord-{n}"),n,actor]).unwrap();
     if receipt_for_s {
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES(?1,'t','s','pending',100)",[format!("ord-{n}")]).unwrap();
         // "Receivable" is a prepared recipient joined to a send manifest (read_cursors).
         db.execute_batch(&format!(
-            "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('prep-ord-{n}','i','actor','prep-ord-{n}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
+            "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('prep-ord-{n}','34750f98bd59fcfc946da45aaabe933b','actor','prep-ord-{n}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
              INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('prep-ord-{n}','t','s',1,100,1);
-             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-ord-{n}','ord-{n}','i','t',{n},0,{n},0,1,0);"
+             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-ord-{n}','ord-{n}','34750f98bd59fcfc946da45aaabe933b','t',{n},0,{n},0,1,0);"
         ))
         .unwrap();
     }
@@ -430,7 +437,14 @@ fn completion_state_follows_the_binding() {
     let b = enroll_binding(&db, "sess-B", None);
     lazy(&db, 3);
     fn state(db: &Connection, binding: Option<&BindingId>) -> LazyCompletion {
-        lazy_completion_state(db, "i", &SeatId::new("s"), binding, &msg(3)).unwrap()
+        lazy_completion_state(
+            db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &SeatId::new("s"),
+            binding,
+            &msg(3),
+        )
+        .unwrap()
     }
     assert_eq!(state(&db, Some(&a)), LazyCompletion::Pending);
     assert_eq!(state(&db, None), LazyCompletion::Pending);
@@ -438,7 +452,14 @@ fn completion_state_follows_the_binding() {
     assert_eq!(state(&db, Some(&a)), LazyCompletion::Completed);
     assert_eq!(state(&db, Some(&b)), LazyCompletion::Pending);
     assert_eq!(
-        lazy_completion_state(&db, "i", &SeatId::new("other"), None, &msg(3)).unwrap(),
+        lazy_completion_state(
+            &db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &SeatId::new("other"),
+            None,
+            &msg(3)
+        )
+        .unwrap(),
         LazyCompletion::NotAddressed
     );
 }
@@ -474,12 +495,19 @@ fn left_threads_are_not_lazy_unread_for_a_binding_without_a_cursor() {
     assert!(!binding_has_unread_lazy(&db, &a).unwrap());
     assert!(!read_cursors::has_unread(&db, &a).unwrap());
     assert!(
-        binding_lazy_window(&db, "i", &a, i64::MAX, 10)
+        binding_lazy_window(&db, "34750f98bd59fcfc946da45aaabe933b", &a, i64::MAX, 10)
             .unwrap()
             .is_empty()
     );
     assert_eq!(
-        lazy_completion_state(&db, "i", &SeatId::new("s"), Some(&a), &msg(3)).unwrap(),
+        lazy_completion_state(
+            &db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &SeatId::new("s"),
+            Some(&a),
+            &msg(3)
+        )
+        .unwrap(),
         LazyCompletion::Completed,
         "a message in a left thread is not pending for the new binding"
     );
@@ -487,7 +515,14 @@ fn left_threads_are_not_lazy_unread_for_a_binding_without_a_cursor() {
     assert_eq!(unread(&db, &early), [msg(3)]);
     assert_eq!(seat_lazy_pending(&db, &SeatId::new("s"), 100).unwrap().0, 1);
     assert_eq!(
-        lazy_completion_state(&db, "i", &SeatId::new("s"), Some(&early), &msg(3)).unwrap(),
+        lazy_completion_state(
+            &db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &SeatId::new("s"),
+            Some(&early),
+            &msg(3)
+        )
+        .unwrap(),
         LazyCompletion::Pending
     );
 }
@@ -506,7 +541,14 @@ fn legacy_pending_survives_leaving_the_thread() {
     assert!(unread(&db, &sub).is_empty(), "never for a subagent");
     assert_eq!(seat_lazy_pending(&db, &SeatId::new("s"), 100).unwrap().0, 1);
     assert_eq!(
-        lazy_completion_state(&db, "i", &SeatId::new("s"), Some(&a), &msg(3)).unwrap(),
+        lazy_completion_state(
+            &db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &SeatId::new("s"),
+            Some(&a),
+            &msg(3)
+        )
+        .unwrap(),
         LazyCompletion::Pending
     );
 }
@@ -535,7 +577,7 @@ fn view(db: &Connection, binding: &BindingId) -> i64 {
 fn first(db: &Connection, filter: RowFilter<'_>) -> (Option<MessageId>, usize) {
     let seek = seek_pending(
         db,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &SeatId::new("s"),
         filter,
         None,
@@ -555,7 +597,7 @@ fn drain_binding(db: &Connection, binding: &BindingId) -> Vec<MessageId> {
     loop {
         let seek = seek_pending(
             db,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &SeatId::new("s"),
             RowFilter::Binding(binding),
             after,
@@ -901,7 +943,7 @@ fn reconnect_reseeds_exactly_the_unread_rows() {
 
 #[test]
 fn the_view_triggers_spell_the_held_predicate() {
-    let v47 = include_str!("../../migrations/0047_message_priority.sql");
+    let v47 = include_str!("../../migrations/node/0001_node_baseline.sql");
     for name in ["binding_pending_publish", "binding_pending_legacy_set"] {
         let statement = v47
             .split("\n\n")
@@ -1080,13 +1122,13 @@ fn publish_in(db: &mut Connection, thread: &str, n: i64) {
 fn invited_thread(db: &Connection, thread: &str, pair: Option<&str>, voluntary: &str) {
     for seat in ["a"].into_iter().chain(pair) {
         db.execute(
-            "INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)",
+            "INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
             [seat],
         )
         .unwrap();
     }
     db.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)",
         [thread],
     )
     .unwrap();
@@ -1096,13 +1138,13 @@ fn invited_thread(db: &Connection, thread: &str, pair: Option<&str>, voluntary: 
     )
     .unwrap();
     db.execute(
-        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES (?1,?2,'s',1,'pending',2,0,100,1000)",
+        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES (?1,?2,'s',1,'pending',2,0,100,1000,(SELECT id FROM local_node))",
         [format!("inv-{thread}"), thread.to_owned()],
     )
     .unwrap();
     if let Some(pair) = pair {
         db.execute(
-            "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i',?1,'s',?2)",
+            "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id,created_hlc,created_node) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'s',?2,0,(SELECT id FROM local_node))",
             [pair, thread],
         )
         .unwrap();
@@ -1159,7 +1201,7 @@ fn a_held_binding_has_a_cursor_in_every_joined_thread() {
     let b = enroll_binding(&db, "sess-B", None);
     disconnect_now(&db, &b, DisconnectReason::ProcessExit);
     db.execute_batch(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic','goal',0,0);
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);
          INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES ('t2','s','joined','joined',1);",
     )
     .unwrap();

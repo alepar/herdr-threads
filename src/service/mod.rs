@@ -7,11 +7,13 @@ pub mod dispatch;
 pub mod fair_writer;
 pub mod host_evidence;
 pub mod host_reachability;
+pub mod host_sessions;
 pub mod kicks;
 pub mod live_gate;
 pub mod liveness;
 pub mod mod_channels;
 pub mod pacer;
+pub mod sync_admin;
 pub mod workers;
 
 #[cfg(test)]

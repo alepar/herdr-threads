@@ -248,7 +248,14 @@ def header_priorities(screen):
     """{message id: priority} from the frame headers on the screen: a `[pN]` marker, else the silent default p1."""
     out = {}
     for m in HEADER.finditer(screen):
-        sender_and_markers = m.group(2).split(": ", 1)[0].rstrip(":")
+        rest = m.group(2)
+        if ":" not in rest:
+            # Claude's TUI breaks a long header with a real newline (soft wraps are already undone),
+            # so the markers and the closing colon can start the next line.
+            following = screen[m.end():].lstrip("\n").split("\n", 1)[0].strip()
+            if following.startswith("["):
+                rest += " " + following
+        sender_and_markers = rest.split(": ", 1)[0].rstrip(":")
         marker = re.search(r"\[p(\d)\]", sender_and_markers)
         out.setdefault(m.group(1), int(marker.group(1)) if marker else 1)
     return out
@@ -871,7 +878,7 @@ def provision_codex_auth(source, dest):
 
 
 def first_id(text, prefix):
-    m = re.search(r'"(%s[A-Za-z0-9]{8})"' % prefix, text)
+    m = re.search(r'"(%s[A-Za-z0-9]{11})"' % prefix, text)
     return m.group(1) if m else None
 
 
@@ -1195,7 +1202,7 @@ class Recipient:
     def store_rows(self, sql, args=()):
         """Read-only rows from the run's own daemon store (never a shared one)."""
         rows = []
-        for db in sorted(self.run.state.glob("instances/*/threads.sqlite3")):
+        for db in sorted(self.run.state.glob("node/herdr-threads.db")):
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
             try:
                 rows += con.execute(sql, args).fetchall()

@@ -34,7 +34,7 @@ impl Clock for FixedClock {
 
 #[test]
 fn service_recovery_audit_is_durable_and_uses_a_reserved_operation_scope() {
-    let instance = uuid::Uuid::new_v4().to_string();
+    let instance = crate::node::NodeUuid::new_v4().to_string();
     let boot = uuid::Uuid::new_v4();
     let path = crate::test_support::scratch::temp_path(format!(
         "herdr-recovery-audit-{}.db",
@@ -45,7 +45,9 @@ fn service_recovery_audit_is_durable_and_uses_a_reserved_operation_scope() {
         ..StoreSettings::default()
     };
     let store = SqliteStore::new(
-        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)),
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock))
+            .with_test_host()
+            .with_node_seed(crate::test_support::node_seed_for(&instance)),
         instance.clone(),
         settings.clone(),
     )
@@ -60,7 +62,9 @@ fn service_recovery_audit_is_durable_and_uses_a_reserved_operation_scope() {
         .unwrap();
     drop(store);
     let reopened = SqliteStore::new(
-        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)),
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock))
+            .with_test_host()
+            .with_node_seed(crate::test_support::node_seed_for(&instance)),
         instance.clone(),
         settings,
     )
@@ -114,23 +118,24 @@ fn public_facade_invitation_due_scan_is_idempotent_after_reopen() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-        [],
-    )
-    .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2','i','resolved','native',1,0)",[]).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)",[]).unwrap();
     db.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s2','invited')",
         [],
     )
     .unwrap();
-    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv','t','s2',1,'pending',0,1,100,100)",[]).unwrap();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv','t','s2',1,'pending',0,1,100,100,(SELECT id FROM local_node))",[]).unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let request = DueScanRequest {
         state: DueScanState::default(),
         max_candidates: 10,
@@ -142,8 +147,8 @@ fn public_facade_invitation_due_scan_is_idempotent_after_reopen() {
     assert!(matches!(first.invitations, DuePhaseProgress::Complete));
     drop(store);
     let reopened = SqliteStore::new(
-        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)),
-        "i",
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap();
@@ -170,21 +175,27 @@ fn public_facade_late_accept_and_ack_share_unique_due_warnings() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
-        INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1);\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',1,1,0);\
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,1,0,'fresh','term-'||'p','inc','coherent_enumeration',1);\
+        UPDATE herdr_hosts SET host_boot='b',host_epoch=1;\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,1,0,'fresh','term-'||'p','inc','coherent_enumeration',1);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||'p','inc');\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,2);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,2,0);\
         INSERT INTO memberships(thread_id,seat_id,state,episode) VALUES ('t','s','invited',1);\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv','t','s',1,'pending',0,1,50,50);\
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('m','i','t',1,'ordinary','body',1,0);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv','t','s',1,'pending',0,1,50,50,(SELECT id FROM local_node));\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','body',1,0);\
         INSERT INTO receipts(message_id,thread_id,seat_id,state,available_at,deadline_at,frozen_duration_ms) VALUES ('m','t','s','pending',0,50,50);\
     ").unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let accept = Accept {
         thread: ThreadId::new("t"),
         operation: OperationId::new("late-accept"),
@@ -230,8 +241,8 @@ fn public_facade_late_accept_and_ack_share_unique_due_warnings() {
     drop(db);
     drop(store);
     let reopened = SqliteStore::new(
-        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)),
-        "i",
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap();
@@ -256,17 +267,18 @@ fn public_facade_operator_invites_into_an_archived_orphan_without_receipt_author
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
-        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','unresolved','native',1,0);\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,archived) VALUES ('orphan','i','topic','goal',0,0,1);\
+        \
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,archived,journaled) VALUES ('orphan','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1,0);\
     ").unwrap();
     drop(db);
     let store = SqliteStore::new(
         context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings {
             invitation_default_ms: Some(120_000),
             ..StoreSettings::default()
@@ -331,28 +343,34 @@ fn public_facade_pages_participants_recipients_and_canonical_pending_ids() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
-        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,2);\
+        \
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,2,0);\
     ").unwrap();
     for seat in ["s1", "s2", "s3"] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)", [seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t',?1,'joined',0)",
             [seat],
         )
         .unwrap();
     }
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at) VALUES ('m','i','t',1,'ordinary','s1','body',1,0)", []).unwrap();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at) VALUES ('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','s1','body',1,0)", []).unwrap();
     for seat in ["s1", "s2", "s3"] {
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t',?1,'pending',300)", [seat]).unwrap();
     }
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let read = ReadContext {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         output: OutputSpec::default(),
         operation_scope: None,
     };
@@ -457,15 +475,16 @@ fn receipt_only_due_admission_runs_even_when_invitation_has_priority() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-        [],
+    drop(db);
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
     )
     .unwrap();
-    drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let progress = StorePort::due_obligations(
         &store,
         DueScanRequest {
@@ -489,19 +508,25 @@ fn one_candidate_due_budget_retains_unvisited_admitted_phase() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
     // One due invitation makes the invitation turn nonempty: since f93279dd
     // only an empty probe lends its quantum to the peer phase, so an empty
     // store would let both phases finish in one call.
     db.execute_batch("\
-        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv','t','s',1,'pending',0,1,50,50);\
+        \
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv','t','s',1,'pending',0,1,50,50,(SELECT id FROM local_node));\
     ").unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let first = StorePort::due_obligations(
         &store,
         DueScanRequest {
@@ -547,17 +572,18 @@ fn pending_work_pages_global_job_order_and_keeps_a_reachable_cursor() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-        [],
-    )
-    .unwrap();
     db.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES ('j1','preparation_cleanup','p1',0)",[]).unwrap();
     db.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES ('j2','send_attention','p2',0)",[]).unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let first = StorePort::pending_work(
         &store,
         PageRequest {
@@ -596,19 +622,20 @@ fn pending_work_skips_a_full_slice_of_completed_jobs() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-        [],
-    )
-    .unwrap();
     for n in 0..100 {
         db.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water,status) VALUES (?1,'preparation_cleanup',?1,0,'complete')",[format!("done-{n}")]).unwrap();
     }
     db.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES ('ready','send_attention','ready',0)",[]).unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let first = StorePort::pending_work(&store, PageRequest::default(), &budget()).unwrap();
     assert_eq!(first.items.len(), 1);
     assert_eq!(first.items[0].id, "ready");
@@ -625,18 +652,19 @@ fn pending_work_with_only_completed_jobs_is_an_empty_final_page() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-        [],
-    )
-    .unwrap();
     for n in 0..100 {
         db.execute("INSERT INTO work_jobs(id,kind,subject_id,high_water,status) VALUES (?1,'preparation_cleanup',?1,0,'complete')", [format!("done-{n}")]).unwrap();
     }
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let complete = StorePort::pending_work(&store, PageRequest::default(), &budget()).unwrap();
     assert!(complete.items.is_empty() && !complete.has_more && complete.next_cursor.is_none());
     assert!(serde_json::to_vec(&complete).unwrap().len() <= 256);
@@ -660,13 +688,9 @@ fn pending_work_fits_escaped_candidate_and_reaches_withheld_row() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-        [],
-    )
-    .unwrap();
     let escaped = "job\"\\\n\t雪";
     let later_id = format!("later-{}", "x".repeat(1_500));
     db.execute(
@@ -680,7 +704,12 @@ fn pending_work_fits_escaped_candidate_and_reaches_withheld_row() {
     )
     .unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let first_only = StorePort::pending_work(
         &store,
         PageRequest {
@@ -735,16 +764,23 @@ fn public_facade_publishes_an_empty_coherent_snapshot_atomically() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-        [],
+    drop(db);
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
     )
     .unwrap();
-    drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
-    let admission = StorePort::begin_host_observation(&store, "i", &budget()).unwrap();
+    let admission = StorePort::begin_host_observation(
+        &store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget(),
+    )
+    .unwrap();
     let snapshot = HostSnapshot {
         boot: HostBootId::new("b"),
         epoch: 1,
@@ -770,7 +806,7 @@ fn public_facade_publishes_an_empty_coherent_snapshot_atomically() {
     let db = store.context.open_writer().unwrap();
     assert_eq!(
         db.query_row(
-            "SELECT active_snapshot_id FROM host_instances WHERE id='i'",
+            "SELECT active_snapshot_id FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get::<_, String>(0)
         )
@@ -788,12 +824,16 @@ fn public_facade_retirement_fences_before_bounded_cleanup() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",[]).unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s2','i','resolved','native','p2',1,1,0)",[]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p2','b',1,1,0,'fresh','term-'||'p2','inc','coherent_enumeration',1)",[]).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)",[]).unwrap();
+    db.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
+    )
+    .unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native','p2',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p2','b',1,1,0,'fresh','term-'||'p2','inc','coherent_enumeration',1)",[]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)",[]).unwrap();
     db.execute(
         "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s2','joined',0)",
         [],
@@ -801,7 +841,12 @@ fn public_facade_retirement_fences_before_bounded_cleanup() {
     .unwrap();
     db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s2',1,1)",[]).unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let job = StorePort::begin_retirement(
         &store,
         SeatId::new("s2"),
@@ -861,39 +906,39 @@ fn public_facade_mixed_retirement_keeps_cutover_across_quanta_and_reopen() {
         uuid::Uuid::new_v4()
     ));
     let clock = Arc::new(AdvancingClock(std::sync::atomic::AtomicI64::new(100)));
-    let context = connection::StoreContext::new(path.clone(), clock.clone());
+    let context = connection::StoreContext::new(path.clone(), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
-        INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,30);\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('retiring','i','resolved','native','pane',1,1,0);\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('other','i','resolved','native',1,0);\
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane','b',1,1,0,'fresh','term-'||'pane','inc','coherent_enumeration',1);\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('receipts','i','topic','goal',0,0,21);\
+        UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=30;\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('retiring','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('other','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane','b',1,1,0,'fresh','term-'||'pane','inc','coherent_enumeration',1);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('receipts','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,21,0);\
         INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('receipts','retiring','joined',0);\
         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('receipts','retiring',1,1);\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,archived) VALUES ('unrelated','i','topic','goal',0,0,1);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,archived,journaled) VALUES ('unrelated','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1,0);\
     ").unwrap();
     for (name, deadline) in [("late-invite", 90), ("early-invite", 101)] {
-        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [name]).unwrap();
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", [name]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES (?1,'retiring','invited')",
             [name],
         )
         .unwrap();
-        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,?1,'retiring',1,'pending',0,1,?2,?2)", rusqlite::params![name,deadline]).unwrap();
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES (?1,?1,'retiring',1,'pending',0,1,?2,?2,(SELECT id FROM local_node))", rusqlite::params![name,deadline]).unwrap();
     }
     for n in 0..20 {
         let id = format!("receipt-{n}");
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at) VALUES (?1,'i','receipts',?2,'ordinary','other','body',?2,0)", rusqlite::params![id,n+1]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','receipts',?2,'ordinary','other','body',?2,0)", rusqlite::params![id,n+1]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'receipts','retiring',?2,90,0,?3)", rusqlite::params![id,if n==0 {"acked"} else {"pending"},if n==19 {101} else {90}]).unwrap();
     }
     for (n, duration) in [(21, 90), (22, 101)] {
         let prep = format!("logical-prep-{n}");
         let message = format!("logical-message-{n}");
-        db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES (?1,'i','seat:other',?1,zeroblob(32),'receipts',0,0,0,0,0,0,0,1,'sealed')", [&prep]).unwrap();
+        db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','seat:other',?1,zeroblob(32),'receipts',0,0,0,0,0,0,0,1,'sealed')", [&prep]).unwrap();
         db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES (?1,'receipts','retiring',1,?2,1)", rusqlite::params![prep,duration]).unwrap();
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at) VALUES (?1,'i','receipts',?2,'ordinary','other','body',?2,0)", rusqlite::params![message,n]).unwrap();
-        db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,'i','receipts',?3,0,?3,0,1,0)", rusqlite::params![prep,message,n]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','receipts',?2,'ordinary','other','body',?2,0)", rusqlite::params![message,n]).unwrap();
+        db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,'34750f98bd59fcfc946da45aaabe933b','receipts',?3,0,?3,0,1,0)", rusqlite::params![prep,message,n]).unwrap();
     }
     db.execute(
         "UPDATE threads SET next_sequence=23 WHERE id='receipts'",
@@ -901,7 +946,12 @@ fn public_facade_mixed_retirement_keeps_cutover_across_quanta_and_reopen() {
     )
     .unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let job = StorePort::begin_retirement(
         &store,
         SeatId::new("retiring"),
@@ -916,7 +966,7 @@ fn public_facade_mixed_retirement_keeps_cutover_across_quanta_and_reopen() {
     .unwrap();
     assert_eq!(job.retired_at, UtcMillis(100));
     let read = ReadContext {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         output: OutputSpec::default(),
         operation_scope: None,
     };
@@ -983,8 +1033,8 @@ fn public_facade_mixed_retirement_keeps_cutover_across_quanta_and_reopen() {
     let prefix = first.processed_total;
     drop(store);
     let store = SqliteStore::new(
-        connection::StoreContext::new(path.clone(), clock),
-        "i",
+        connection::StoreContext::new(path.clone(), clock).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap();
@@ -1105,21 +1155,33 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
-        INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('saved','i','unresolved','native',7,0);\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,2);\
+        \
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('saved','34750f98bd59fcfc946da45aaabe933b','unresolved','native',7,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,2,0);\
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','saved','invited');\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('pending-invite','t','saved',1,'pending',0,1,300,300);\
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('pending-message','i','t',1,'ordinary','body',1,0);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('pending-invite','t','saved',1,'pending',0,1,300,300,(SELECT id FROM local_node));\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('pending-message','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','body',1,0);\
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('pending-message','t','saved','pending',300);\
         INSERT INTO wake_work(seat_id,reason_bits,retry_step,reservation_id,reservation_boot,reserved_at_utc,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_reserved_at_utc,last_outcome) VALUES ('saved',1,3,'active-attempt','prior-daemon',50,60000,120000,'active-attempt','prior-daemon',50,'submitted');\
     ").unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
-    let admission = StorePort::begin_host_observation(&store, "i", &budget()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
+    let admission = StorePort::begin_host_observation(
+        &store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget(),
+    )
+    .unwrap();
     let snapshot = HostSnapshot {
         boot: HostBootId::new("b"),
         epoch: 1,
@@ -1165,7 +1227,13 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
         completed_at_mono: MonoInstant(1),
     };
     let publish = |observation: &HostObservation| {
-        let admission = StorePort::begin_host_observation(&store, "i", &budget()).unwrap();
+        let admission = StorePort::begin_host_observation(
+            &store,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &budget(),
+        )
+        .unwrap();
         assert!(
             StorePort::publish_current_target_observation(
                 &store,
@@ -1179,11 +1247,13 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
     let fresh_observation = observe("fresh", 2);
     publish(&fresh_observation);
     let fresh = OperatorFreshSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("fresh"),
         operation: OperationId::new("operator-fresh"),
     };
     let guard = OperatorTargetGuard::try_new(
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::FreshSeat(fresh.clone()),
         fresh_observation.clone(),
     )
@@ -1199,7 +1269,8 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
         panic!("wrong fresh route")
     };
     let replay_guard = OperatorTargetGuard::try_new(
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::FreshSeat(fresh.clone()),
         fresh_observation,
     )
@@ -1217,12 +1288,14 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
     let rebind_observation = observe("repair", 3);
     publish(&rebind_observation);
     let rebind = OperatorRebind {
+        host: crate::test_support::test_host_locator(),
         seat: SeatId::new("saved"),
         target: HostTargetId::new("repair"),
         operation: OperationId::new("operator-rebind"),
     };
     let guard = OperatorTargetGuard::try_new(
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::Rebind(rebind.clone()),
         rebind_observation,
     )
@@ -1238,6 +1311,17 @@ fn public_facade_operator_fresh_and_rebind_keep_provenance_without_receipt_autho
         CommandResult::OperatorRebound(SeatId::new("saved"))
     );
     let db = store.context.open_writer().unwrap();
+    // The operator-fresh insert writes the local home, the local flag and the
+    // fixture host.
+    assert_eq!(
+        db.query_row(
+            "SELECT home_node=(SELECT id FROM local_node), is_local, host_id=(SELECT MIN(host_id) FROM herdr_hosts) FROM seats WHERE id=?1",
+            [new_seat.as_str()],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+        )
+        .unwrap(),
+        (1, 1, 1)
+    );
     assert_eq!(db.query_row("SELECT COUNT(*) FROM allocation_decisions WHERE operator_label='operator:local-user:501'",[],|row|row.get::<_,i64>(0)).unwrap(),2);
     assert_eq!(
         db.query_row(
@@ -1307,17 +1391,20 @@ fn public_facade_check_in_commits_anchor_and_exact_empty_offer() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-        [],
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','resolved','native','p1',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
+    drop(db);
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
     )
     .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s1','i','resolved','native','p1',1,1,0)",[]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
-    drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let command = CheckIn {
         lineage_parent: None,
         mode: crate::protocol::commands::CheckInMode::Lifecycle {
@@ -1335,7 +1422,7 @@ fn public_facade_check_in_commits_anchor_and_exact_empty_offer() {
     let request = RegisterAvailableRequest {
         command,
         read: ReadContext {
-            instance: "i".into(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             output: OutputSpec::default(),
             operation_scope: None,
         },
@@ -1381,17 +1468,20 @@ fn lifecycle_check_in_resets_only_its_own_offer() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-        [],
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','resolved','native','p1',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
+    drop(db);
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
     )
     .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s1','i','resolved','native','p1',1,1,0)",[]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
-    drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let lifecycle = |session: &str, pid: u32, execution: &str, operation: &str| {
         let mut claim = fixture_claim("s1", "p1");
         claim.native_session = NativeSessionId::new(session);
@@ -1416,7 +1506,7 @@ fn lifecycle_check_in_resets_only_its_own_offer() {
             RegisterAvailableRequest {
                 command,
                 read: ReadContext {
-                    instance: "i".into(),
+                    instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                     output: OutputSpec::default(),
                     operation_scope: None,
                 },
@@ -1479,16 +1569,21 @@ fn public_facade_rejects_expired_permit() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(LateClock));
+    let context = connection::StoreContext::new(path.clone(), Arc::new(LateClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
-        INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1);\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',1,1,0);\
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,1,0,'fresh','term-'||'p','inc','coherent_enumeration',1);\
+        UPDATE herdr_hosts SET host_boot='b',host_epoch=1;\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,1,0,'fresh','term-'||'p','inc','coherent_enumeration',1);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,1,'p','b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||'p','inc');\
     ").unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let command = CreateThread {
         name: None,
         topic: "expired".into(),
@@ -1535,12 +1630,14 @@ fn public_facade_rejects_expired_permit() {
     );
     assert_eq!(
         db.query_row(
-            "SELECT decision_seq FROM host_instances WHERE id='i'",
+            "SELECT decision_seq FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |row| row.get::<_, i64>(0)
         )
         .unwrap(),
-        0
+        // Only the journal's bootstrap genesis consumed a decision; the
+        // rejected permit consumed none.
+        1
     );
     drop(db);
     drop(store);
@@ -1553,18 +1650,21 @@ fn public_facade_creates_thread_with_current_cooperative_permit() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-        [],
-    )
-    .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s1','i','resolved','native','p1',1,1,0)",[]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','resolved','native','p1',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s1',1,1,'p1','b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||'p1','inc');",[]).unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let command = CreateThread {
         name: None,
         topic: "topic".into(),
@@ -1598,24 +1698,25 @@ fn operation_status_uses_only_trusted_read_scope() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-        [],
-    )
-    .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s1','i','unresolved','native',0,0),('s2','i','unresolved','native',0,0)",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('s2','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
     let original =
         serde_json::to_string(&CommandResult::ThreadCreated(ThreadId::new("secret"))).unwrap();
     db.execute("INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES ('seat:s1','op',zeroblob(32),?1,100)",[original]).unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let command = Command::OperationStatus(OperationStatusQuery {
         operation: OperationId::new("op"),
     });
     let mut read = ReadContext {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         output: OutputSpec::default(),
         operation_scope: None,
     };
@@ -1648,7 +1749,8 @@ fn budget() -> CallBudget {
 
 fn fixture_claim(seat: &str, target: &str) -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new(seat),
         binding_generation: 1,
         role: crate::protocol::authority::CallerRole::TopLevel,
@@ -1677,20 +1779,23 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-        [],
-    )
-    .unwrap();
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
     for seat in ["s1", "s2"] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1,1,1,0)",[seat]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",[seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[seat]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",[seat]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,1,?1,'b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||?1,'inc')",[seat]).unwrap();
     }
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let create = CreateThread {
         name: None,
         topic: "topic".into(),
@@ -1806,16 +1911,17 @@ fn public_facade_routes_directory_through_real_query_connection() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-        [],
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
+    drop(db);
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
     )
     .unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
-    drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let command = Command::Directory(DirectoryQuery {
         recent: false,
         membership: None,
@@ -1828,7 +1934,7 @@ fn public_facade_routes_directory_through_real_query_connection() {
         },
     });
     let read = ReadContext {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         output: OutputSpec::default(),
         operation_scope: None,
     };
@@ -1848,18 +1954,19 @@ fn default_directory_and_inbox_resolve_only_the_trusted_selected_seat() {
         "herdr-facade-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES ('i',0)",
-        [],
-    )
-    .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s1','i','unresolved','native',0,0),('s2','i','unresolved','native',0,0)",[]).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t1','i','one','goal',0,0),('t2','i','two','goal',0,0)",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s1','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts)),('s2','34750f98bd59fcfc946da45aaabe933b','unresolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t1','34750f98bd59fcfc946da45aaabe933b','one','goal',0,0,0),('t2','34750f98bd59fcfc946da45aaabe933b','two','goal',0,0,0)",[]).unwrap();
     db.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t1','s1','joined',0),('t2','s2','joined',0)",[]).unwrap();
     drop(db);
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let command = Command::Directory(DirectoryQuery {
         recent: false,
         membership: None,
@@ -1868,7 +1975,7 @@ fn default_directory_and_inbox_resolve_only_the_trusted_selected_seat() {
         page: PageRequest::default(),
     });
     let read = ReadContext {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         output: OutputSpec::default(),
         operation_scope: Some(OperationReadScope::Seat(SeatId::new("s1"))),
     };
@@ -1919,16 +2026,14 @@ fn join_hint_fixture_inner(
         "herdr-join-hint-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context =
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-        [],
-    )
-    .unwrap();
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
     for seat in ["s1", "s2"] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1,1,1,0)",[seat]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",[seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[seat]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)",[seat]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,1,?1,'b',1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-'||?1,'inc')",[seat]).unwrap();
     }
     drop(db);
@@ -1939,7 +2044,7 @@ fn join_hint_fixture_inner(
         },
         ..Default::default()
     };
-    let store = SqliteStore::new(context, "i", settings).unwrap();
+    let store = SqliteStore::new(context, "34750f98bd59fcfc946da45aaabe933b", settings).unwrap();
     let create = CreateThread {
         name: None,
         topic: "topic".into(),
@@ -1973,10 +2078,11 @@ fn join_hint_fixture_inner(
     // Raw ordinary messages after the thread's events; the chunker sees them
     // through the published head.
     let raw = connection::StoreContext::new(path.clone(), Arc::new(FixedClock))
+        .with_test_host()
         .open_writer()
         .unwrap();
     for n in 0..bodies {
-        raw.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',(SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),?1,?2,(SELECT next_sequence FROM threads WHERE id=?2),'ordinary','s1',?3,50)", rusqlite::params![format!("raw-{n}"), thread.as_str(), "x".repeat(300)]).unwrap();
+        raw.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('34750f98bd59fcfc946da45aaabe933b',(SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'),?1,?2,(SELECT next_sequence FROM threads WHERE id=?2),'ordinary','s1',?3,50)", rusqlite::params![format!("raw-{n}"), thread.as_str(), "x".repeat(300)]).unwrap();
         raw.execute(
             "UPDATE threads SET next_sequence=next_sequence+1 WHERE id=?1",
             [thread.as_str()],
@@ -2056,8 +2162,8 @@ fn invalid_inbox_completion_writes_no_state() {
         uuid::Uuid::new_v4()
     ));
     let store = SqliteStore::new(
-        StoreContext::new(path.clone(), Arc::new(FixedClock)),
-        "i",
+        StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap();
@@ -2066,7 +2172,8 @@ fn invalid_inbox_completion_writes_no_state() {
         .query_row("PRAGMA data_version", [], |r| r.get(0))
         .unwrap();
     let claim = CallerClaim {
-        instance: "i".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("a"),
         binding_generation: 1,
         role: crate::protocol::authority::CallerRole::TopLevel,
@@ -2078,6 +2185,7 @@ fn invalid_inbox_completion_writes_no_state() {
         liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     };
     let completion = CompleteInboxDelivery {
+        receipt_candidates: Vec::new(),
         via: None,
         messages: vec![MessageId::new("m")],
         operation: OperationId::new("done"),
@@ -2231,7 +2339,7 @@ fn public_join_refuses_pending_archived_foreign_and_stale_context_without_writes
             "pending" => ErrorCode::Conflict,
             "required" => {
                 db.execute(
-                    "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('owner','i',0)",
+                    "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('owner','34750f98bd59fcfc946da45aaabe933b',0)",
                     [],
                 )
                 .unwrap();
@@ -2245,11 +2353,7 @@ fn public_join_refuses_pending_archived_foreign_and_stale_context_without_writes
                 ErrorCode::Conflict
             }
             "foreign" => {
-                db.execute(
-                    "INSERT INTO host_instances(id,created_at) VALUES ('other',0)",
-                    [],
-                )
-                .unwrap();
+                db.execute("PRAGMA foreign_keys=OFF", []).unwrap();
                 db.execute("UPDATE threads SET instance_id='other'", [])
                     .unwrap();
                 ErrorCode::NotFound
@@ -2271,7 +2375,7 @@ fn public_join_refuses_pending_archived_foreign_and_stale_context_without_writes
                 ErrorCode::CallerUnverified
             }
             "held" => {
-                db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','s2','b',1,'restored')", []).unwrap();
+                db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'s2','b',1,'restored')", []).unwrap();
                 ErrorCode::CallerUnverified
             }
             "subagent" => {
@@ -2364,8 +2468,8 @@ fn public_join_noop_and_historical_replay_preserve_interval_and_authority() {
     drop(db);
     drop(store);
     let store = SqliteStore::new(
-        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)),
-        "i",
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap();
@@ -2405,7 +2509,7 @@ fn public_join_after_rejected_and_released_required_invites_preserves_history() 
         } else {
             let db = store.context.open_writer().unwrap();
             db.execute(
-                "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('owner','i',0)",
+                "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('owner','34750f98bd59fcfc946da45aaabe933b',0)",
                 [],
             )
             .unwrap();
@@ -2552,7 +2656,7 @@ fn public_join_receipts_are_frozen_across_join_leave_and_rejoin() {
     .unwrap();
     let after = public_join_send(&store, &accept, "after", true);
     let read = ReadContext {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         output: OutputSpec::default(),
         operation_scope: None,
     };
@@ -2598,7 +2702,8 @@ fn public_join_cli_journal_recovers_committed_response_loss_without_rejoining() 
     ));
     let journal = Journal::open(&temp).unwrap();
     let scope = IntentScope::Cooperative {
-        instance: "i".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: accept.claim.seat.clone(),
     };
     let reference = journal
@@ -2694,7 +2799,7 @@ fn public_join_preserves_accepted_requirement_and_required_leave_guard() {
     let (store, path, accept, invitation) = join_hint_fixture(0);
     let db = store.context.open_writer().unwrap();
     db.execute(
-        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('owner','i',0)",
+        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('owner','34750f98bd59fcfc946da45aaabe933b',0)",
         [],
     )
     .unwrap();
@@ -2837,7 +2942,7 @@ fn public_join_invalidates_prepared_send_and_new_send_includes_new_member() {
     );
     let message = public_join_send(&store, &accept, "fresh-after-join", true);
     let read = ReadContext {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         output: OutputSpec::default(),
         operation_scope: None,
     };

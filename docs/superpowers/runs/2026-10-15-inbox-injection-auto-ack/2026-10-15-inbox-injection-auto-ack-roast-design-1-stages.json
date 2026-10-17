@@ -1,0 +1,157 @@
+[
+  {
+    "id": "001",
+    "role": "triage",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "lanes": [],
+      "domains": [
+        "distributed-systems",
+        "message-delivery-and-acknowledgment",
+        "agent-hook-and-channel-integration"
+      ]
+    }
+  },
+  {
+    "id": "002",
+    "role": "scout:premortem",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "003",
+    "role": "scout:completeness",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "004",
+    "role": "scout:yagni",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "005",
+    "role": "scout:failure-mode",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": [
+        {
+          "claim": "The retry design does not ensure a failed post-output receipt completion is re-offered when the saved attention token remains unchanged, so a complete hook display can leave its receipt pending through subsequent quiet tool hooks.",
+          "location": "Decision point 1 (quiet hooks), Decision point 3 (post-output failures), and Verification and acceptance",
+          "category": "failure-mode",
+          "external": false,
+          "kind": "GAP",
+          "evidence": "Decision point 1 requires \"Quiet hooks with no changed attention remain empty.\" Decision point 3 promises \"Post-output bookkeeping failures leave unsettled messages eligible for later automatic delivery,\" while prohibiting an unbounded retry or disk journal. The design specifies post-output completion but no coupling between saving the successful presentation attention mark and failing its later receipt completion, and no bounded retry exception to unchanged-attention suppression. If output and presentation-mark saving succeed but the receipt request fails before committing, receipt content and the attention token remain unchanged: eligibility alone does not cause another page read on a quiet tool boundary. The proposed lost-response/idempotent-re-offer test also does not explicitly exercise the next real quiet hook with the saved mark, which is the missing recovery transition. Specify a bounded mechanism that keeps a failed completion eligible for a real subsequent opportunity without requiring a new arrival or explicit agent command, and test that exact sequence."
+        }
+      ]
+    }
+  },
+  {
+    "id": "006",
+    "role": "scout:feasibility",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": [
+        {
+          "claim": "The design leaves automatic receipt recovery dependent on an unspecified re-offer trigger after successful context output followed by failed settlement, while requiring unchanged-attention hooks to remain silent.",
+          "location": "Decision points 1 (quiet hooks), 3 (failure retries), and 8 (verification)",
+          "category": "feasibility",
+          "external": false,
+          "kind": "UNVERIFIED-ASSUMPTION",
+          "evidence": "Section 1 requires \u201cQuiet hooks with no changed attention remain empty.\u201d Section 3 says \u201cPost-output bookkeeping failures leave unsettled messages eligible for later automatic delivery\u201d and prohibits a disk journal or unbounded retry. After a complete page was injected, however, section 1 removes the inbox direction and section 2 removes the manual ACK direction. The spec never states what forces a later eligible hook to re-read/re-offer when settlement failed before committing and no new message or attention change occurs, nor whether recording the successful-output attention token must be deferred/invalidated in that case. Eligibility alone does not establish that another automatic delivery opportunity will actually inspect the receipt. Section 8 asks for lost-response/idempotent re-offer coverage but does not require the no-new-attention, failure-before-commit case. This recovery needs an explicit trigger or an established invariant that pending unsettled receipts independently cause repeat delivery.",
+          "spike": "Question: Does an uncommitted receipt completion force a later native hook to offer the already-displayed receipt despite unchanged attention? Cheapest test: inject one complete ACK-required message, fail the completion before canonical commit after successful write/flush, advance through ordinary hook opportunities with no new mail or attention changes, and assert automatic settlement without any inbox/ack call. Kill criteria: the receipt stays pending until unrelated new attention or explicit retrieval."
+        }
+      ]
+    }
+  },
+  {
+    "id": "007",
+    "role": "scout:domain:distributed-systems",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "008",
+    "role": "scout:domain:message-delivery-and-acknowledgment",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "009",
+    "role": "scout:domain:agent-hook-and-channel-integration",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "findings": []
+    }
+  },
+  {
+    "id": "010",
+    "role": "dedupe",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "groups": [
+        {
+          "ids": [
+            0,
+            1
+          ],
+          "suggestedSeverity": "Blocking",
+          "rank": 1,
+          "mergedClaim": "The design does not specify how a later quiet hook retries failed post-output receipt settlement when the successful presentation attention token remains unchanged."
+        }
+      ]
+    }
+  },
+  {
+    "id": "011",
+    "role": "judge:reproduce#0",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "The recovery transition is missing. The Goal promises eligible hooks automatically settle receipts for complete displays, and decision 3 explicitly promises that post-output bookkeeping failures leave unsettled messages eligible for later automatic delivery without normal manual ACK. Decision 1 simultaneously requires quiet hooks with unchanged attention to remain empty. Concrete sequence: (1) a hook injects a full ACK-required message, with no inbox/ACK instruction under decisions 1-2; (2) stdout and flush succeed, so the successful presentation mark may be persisted; (3) the subsequent completion request fails before canonical settlement; (4) no new message or warning arrives, so the original attention token is unchanged; (5) ordinary tool hooks coalesce against the saved token and never re-read that pending receipt. This is an actual existing seam: src/cli/hook.rs:4177-4189 deliberately saves attention before calling LazyCommit, while src/harness/bridge.rs:1320-1334 returns an empty boundary when token advancement and notices_pending are both false; hook.rs:2422-2437 only reads the inbox for nonempty boundary text. notices_pending is specifically attributed programmatic warnings (store/attention.rs:1016 onward), not a retry signal for unsettled receipts. The design's new optional receipt candidates do not state that they alter this sequencing, invalidate/defer the mark, or add a bounded retry trigger. Thus eligibility is retained in storage but no subsequent normal quiet opportunity inspects it, defeating the promised automatic recovery until unrelated attention or explicit retrieval. The verification list tests lost responses and re-offers but does not require failure-before-commit with unchanged attention through a real subsequent hook. Specify the bounded trigger/mark coupling and test that sequence."
+    }
+  },
+  {
+    "id": "012",
+    "role": "judge:refute#0",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "The finding survives all four refutation checks. (a) The whole spec specifies idempotent settlement, cursor safety, pending eligibility and lost-response re-offer testing, but no mechanism that invalidates/defer-saves the attention mark, retries an uncommitted settlement independently, or forces a quiet hook to revisit pending receipt candidates. (b) This is not an accepted tradeoff: Goal promises automatic settlement without an explicit ack, \u00a73 promises later automatic delivery after bookkeeping failure, whereas \u00a71 retains unchanged-attention silence. The explicitly accepted at-least-once tradeoff concerns duplicates, not indefinite unsent completion. (c) Bounded recovery for this existing failure path is within scope; no new polling, durable hook journal or stronger cognition guarantee is required. (d) The outcome is material: a complete injected page prints neither inbox nor ack recovery, yet its requested receipt may remain pending indefinitely until unrelated attention. Current repository confirms the transition risk: src/cli/hook.rs:4177 commits the attention mark before LazyCommit; tool-boundary inbox_offer is gated on nonempty boundary.text around 2420. Extending LazyCommit with receipt candidates does not itself overcome that gate after an uncommitted completion fails. \u00a78 tests a lost completion response (possibly committed), but does not require failure-before-commit followed by a real unchanged-attention hook. Specify a bounded recovery trigger and cover that sequence."
+    }
+  },
+  {
+    "id": "013",
+    "role": "judge:ground#0",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "verdict": "CONFIRM",
+      "severity": "Should-fix",
+      "evidence": "Internal premises verified against the entire named spec and a search for attention/quiet/retry/re-offer/eligibility/journal/defer mechanisms. Decision 1 says quiet hooks with no changed attention remain empty; decision 3 promises unsettled messages remain eligible for later delivery but provides no exception to unchanged-attention suppression or requirement to withhold/invalidate the saved token on settlement failure. Decision 8 tests a lost response and idempotent re-offer, not failure before commit followed by actual unchanged-attention hook opportunities. The existing code makes this material: src/cli/hook.rs:4177 saves AttentionCommit before lazy.commit; :2409-2435 obtains the inbox page only when the tool-boundary check-in presents nonempty text after its digest comparison. A failed settlement that leaves canonical receipt state unchanged can therefore remain pending without a new automatic offer. Cursor safety preserves eligibility but does not supply the missing trigger. The design needs a bounded retry opportunity or attention-mark coupling and the stated no-new-attention integration test to uphold its automatic recovery promise. No external premise is needed."
+    }
+  },
+  {
+    "id": "014",
+    "role": "reporter",
+    "actualModel": "inherited GPT family",
+    "result": {
+      "verdict": "Should-fix (1 confirmed)",
+      "reportMarkdown": "super-roast verdict: Should-fix (1 confirmed)\nmode: design        iteration: 1 of 3\nprofile (assumed): Production local agent coordination tool. False receipt settlement can hide requested receipt obligations; missing delivery or redundant context costs user attention. Cooperative same-user trust model applies; receipt means display, not cognition.\ninputs: docs/superpowers/runs/2026-10-15-inbox-injection-auto-ack/2026-10-15-inbox-injection-auto-ack-design.md\ncoverage: scouts 8/8 (premortem, completeness, yagni, failure-mode, feasibility, domain:distributed-systems, domain:message-delivery-and-acknowledgment, domain:agent-hook-and-channel-integration) \u00b7 raw 2 \u2192 deduped 1 \u2192 panel 1 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion 100% \u00b7 remainder-capped: 0\nindependence: same-family (GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nseat-agreement: panels 1 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=1) \u00b7 reproduce 1/0/0 \u00b7 refute 1/0/0 \u00b7 ground 1/0/0\n\n## Confirmed findings\n- [Should-fix] Decision point 1 (quiet hooks), Decision point 3 (post-output failures), and Verification and acceptance; Decision points 1 (quiet hooks), 3 (failure retries), and 8 (verification) \u2014 The design does not specify how a later quiet hook retries failed post-output receipt settlement when the successful presentation attention token remains unchanged.\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats confirm the missing recovery transition. Decision 1 requires unchanged-attention hooks to remain empty; decision 3 preserves unsettled receipt eligibility after bookkeeping failure but supplies no trigger to inspect it. Current src/cli/hook.rs:4177-4189 saves the attention mark before LazyCommit; src/harness/bridge.rs:1320-1334 suppresses unchanged boundaries without pending notices; src/cli/hook.rs:2422-2437 reads inbox only for a nonempty boundary. A completion failure before canonical commit can therefore leave a fully displayed receipt pending indefinitely until unrelated attention arrives. The lost-response test does not explicitly cover failure before commit followed by actual quiet hooks with no new attention.\n  fix-shape hint: Couple successful attention-mark persistence to receipt completion, or provide a bounded automatic retry trigger, and test failure before commit followed by unchanged-attention hook opportunities without inbox or ack calls.\n\n## Not verified (beyond panel cap)\n- none\n\n## Not verified (dedupe failed or judge lost)\n- none\n\n## Beyond remainder cap (count only)\n- none\n\n## Rejected (with reason)\n- none\n\n## Unverified nits (spot-checked)\n- none\n\n## Escalations (need human)\n- none\n",
+      "confirmedCount": 1,
+      "escalations": []
+    }
+  }
+]

@@ -35,11 +35,11 @@ fn budget() -> CallBudget {
 /// extra agent `x`, all joined to thread `t`.
 fn fixture(threshold: i64, extra: bool) -> (SqliteStore, std::path::PathBuf) {
     let path = std::env::temp_dir().join(format!("herdr-nudge-thr-{}.db", uuid::Uuid::new_v4()));
-    let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);",
+        "UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;\
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);",
     )
     .unwrap();
     for (seat, execution, idle) in [
@@ -51,10 +51,10 @@ fn fixture(threshold: i64, extra: bool) -> (SqliteStore, std::path::PathBuf) {
             continue;
         }
         let target = format!("p{seat}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)", params![seat, target]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'host',1,1,0,'fresh',?2,'inc','coherent_enumeration',1)", params![target, format!("term-{target}")]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", params![seat, target]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'host',1,1,0,'fresh',?2,'inc','coherent_enumeration',1)", params![target, format!("term-{target}")]).unwrap();
         if idle {
-            db.execute("UPDATE observed_targets SET occupancy='occupied',ui_state='idle',verified_execution=?2,top_level_occupant=1 WHERE instance_id='i' AND target_id=?1", params![target, execution]).unwrap();
+            db.execute("UPDATE observed_targets SET occupancy='occupied',ui_state='idle',verified_execution=?2,top_level_occupant=1 WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND target_id=?1", params![target, execution]).unwrap();
         }
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,1,1,?2,'host',1,'codex',?3,?4,'fresh',0,0,?5,'inc')", params![seat, target, if seat == "a" { "n" } else { seat }, execution, format!("term-{target}")]).unwrap();
         db.execute(
@@ -72,7 +72,7 @@ fn fixture(threshold: i64, extra: bool) -> (SqliteStore, std::path::PathBuf) {
     drop(db);
     let store = SqliteStore::new(
         context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings {
             daemon_boot: Some(uuid::Uuid::parse_str(DAEMON_BOOT).unwrap()),
             wake_batch_delay_ms: 0,
@@ -94,7 +94,8 @@ fn request(priority: Option<u8>, operation: &str) -> SendMessage {
         deadline_millis: None,
         operation: OperationId::new(operation),
         claim: CallerClaim {
-            instance: "i".into(),
+            host: crate::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("a"),
             binding_generation: 1,
             role: CallerRole::TopLevel,
@@ -194,9 +195,14 @@ fn has_wake_rows(store: &SqliteStore) -> bool {
 }
 
 fn candidates(store: &SqliteStore) -> Vec<WakeCandidate> {
-    StorePort::wake_candidates(store, PageRequest::default(), &budget())
-        .unwrap()
-        .items
+    StorePort::wake_candidates(
+        store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget(),
+    )
+    .unwrap()
+    .items
 }
 
 fn direct_candidate(store: &SqliteStore) -> WakeCandidate {
@@ -204,7 +210,7 @@ fn direct_candidate(store: &SqliteStore) -> WakeCandidate {
     let scan = attention::wake_seat_attention(&db, "s").unwrap();
     wake::load_candidate(
         &db,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &SeatId::new("s"),
         &scan.attention,
         scan.decision_seq,
@@ -213,12 +219,19 @@ fn direct_candidate(store: &SqliteStore) -> WakeCandidate {
 }
 
 fn reserve(store: &SqliteStore, candidate: &WakeCandidate) -> Option<WakeReservation> {
-    StorePort::reserve_wake(store, candidate, &budget()).unwrap()
+    StorePort::reserve_wake(
+        store,
+        crate::test_support::test_host_id(),
+        candidate,
+        &budget(),
+    )
+    .unwrap()
 }
 
 fn settle(store: &SqliteStore, reservation: &WakeReservation) {
     StorePort::complete_wake(
         store,
+        crate::test_support::test_host_id(),
         reservation.attempt.clone(),
         WakeOutcome::Submitted,
         None,
@@ -373,10 +386,10 @@ fn bulk_p1_rows(store: &SqliteStore, n: i64) {
     let tx = db.transaction().unwrap();
     for k in 1..=n {
         let seq = 100 + k;
-        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1)", [format!("prep-{k}")]).unwrap();
+        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1)", [format!("prep-{k}")]).unwrap();
         tx.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES(?1,?2,'t','s',1)", params![format!("prep-{k}"), format!("msg-{k}")]).unwrap();
-        tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES(?1,'i','t',?2,'ordinary',?2,'passive',?2,'lazy',1)", params![format!("msg-{k}"), seq]).unwrap();
-        tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'i','t',?3,?3,?3,0,0,0)", params![format!("prep-{k}"), format!("msg-{k}"), seq]).unwrap();
+        tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?2,'passive',?2,'lazy',1)", params![format!("msg-{k}"), seq]).unwrap();
+        tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'34750f98bd59fcfc946da45aaabe933b','t',?3,?3,?3,0,0,0)", params![format!("prep-{k}"), format!("msg-{k}"), seq]).unwrap();
         lazy_delivery::note_published(&tx, &format!("prep-{k}")).unwrap();
     }
     tx.execute(
@@ -384,11 +397,8 @@ fn bulk_p1_rows(store: &SqliteStore, n: i64) {
         [100 + n + 1],
     )
     .unwrap();
-    tx.execute(
-        "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
-        [100 + n + 1],
-    )
-    .unwrap();
+    tx.execute("UPDATE local_node SET decision_seq=?1", [100 + n + 1])
+        .unwrap();
     tx.commit().unwrap();
 }
 
@@ -506,7 +516,7 @@ fn subagent_display_keeps_p0_row_in_frontier() {
     let tx = db.transaction().unwrap();
     lazy_delivery::complete_for_binding(
         &tx,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &SeatId::new("s"),
         Some(&BindingId::new(&sub)),
         std::slice::from_ref(&id),
@@ -525,7 +535,7 @@ fn subagent_display_keeps_p0_row_in_frontier() {
     let tx = db.transaction().unwrap();
     lazy_delivery::complete_for_binding(
         &tx,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &SeatId::new("s"),
         Some(&BindingId::new(&parent)),
         std::slice::from_ref(&id),
@@ -586,7 +596,7 @@ fn hydrate_wakes_follow_current_threshold() {
         };
         let result = crate::store::queries::query_with_output(
             &store.context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &Command::InboxBatchV2(query),
             &OutputSpec::default(),
             &budget(),

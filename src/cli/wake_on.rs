@@ -5,7 +5,7 @@ use super::{
     RunError,
     commands::{CliAction, CooperativeSelection, ParsedCli},
 };
-use crate::daemon::paths::InstancePaths;
+use crate::daemon::paths::NodePaths;
 use crate::ports::LocalClient;
 use crate::protocol::{
     commands::Command, priority::NudgeThreshold, results::CommandResult, time::Clock,
@@ -14,11 +14,14 @@ use std::io::Write;
 
 /// Run `wake-on` as the selected seat: `wake-on V` is `nudge-threshold` of the mapped value, plus
 /// one stderr deprecation line (about 55 bytes).
+// Allowed: the parsed action and selected seat, node paths and instance, claim host, client, clock and writer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
     parsed: ParsedCli,
     selection: &CooperativeSelection,
-    paths: &InstancePaths,
-    instance: uuid::Uuid,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
     client: &C,
     clock: &dyn Clock,
     writer: &mut W,
@@ -32,6 +35,7 @@ pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
         selection,
         paths,
         instance,
+        host,
         client,
         clock,
         writer,
@@ -44,8 +48,9 @@ pub(crate) fn run<C: LocalClient + ?Sized, W: Write>(
 /// current binding generation (the same check `summary` makes).
 pub(super) fn current_claim<C: LocalClient + ?Sized>(
     selection: &CooperativeSelection,
-    paths: &InstancePaths,
-    instance: uuid::Uuid,
+    paths: &NodePaths,
+    instance: crate::node::NodeUuid,
+    host: &crate::protocol::ids::HostLocator,
     client: &C,
     parsed: &ParsedCli,
     clock: &dyn Clock,
@@ -70,7 +75,7 @@ pub(super) fn current_claim<C: LocalClient + ?Sized>(
     // An agent caller acts as its harness session (decision 15): its context is derived from the
     // environment at the seat's mapping generation, never the saved pane context.
     let contexts = super::caller_journal(
-        super::seat_contexts(paths, instance, &selection.seat)?,
+        super::seat_contexts(paths, instance, host, &selection.seat)?,
         instance,
         selection,
         generation,

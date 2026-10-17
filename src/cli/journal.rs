@@ -28,6 +28,7 @@ use uuid::Uuid;
 pub enum IntentScope {
     Cooperative {
         instance: String,
+        host: crate::protocol::ids::HostLocator,
         seat: SeatId,
     },
     Native {
@@ -96,7 +97,7 @@ pub(crate) fn classify_original_claim(
     scope: &IntentScope,
     claim: &CallerClaim,
 ) -> io::Result<OriginalActor> {
-    if !matches!(scope, IntentScope::Cooperative { instance, seat } if instance == &claim.instance && seat == &claim.seat)
+    if !matches!(scope, IntentScope::Cooperative { instance, host, seat } if instance == &claim.instance && host == &claim.host && seat == &claim.seat)
     {
         return Err(invalid("intent authority scope mismatch"));
     }
@@ -136,12 +137,14 @@ pub enum SemanticMutation {
     },
     ResolveSeat {
         target: HostTargetId,
+        host: crate::protocol::ids::HostLocator,
     },
     /// TRUST-POLICY C1: resume-only seatless reattachment request. `event_id`
     /// is the hook event that recorded it; `execution` is the successor
     /// binding's execution id, fixed once so every retry sends the same value.
     ContinuityCheckIn {
         target: HostTargetId,
+        host: crate::protocol::ids::HostLocator,
         harness: crate::protocol::authority::Harness,
         native_session: NativeSessionId,
         source: String,
@@ -229,9 +232,11 @@ pub enum SemanticMutation {
     OperatorRebind {
         seat: SeatId,
         target: HostTargetId,
+        host: crate::protocol::ids::HostLocator,
     },
     OperatorFreshSeat {
         target: HostTargetId,
+        host: crate::protocol::ids::HostLocator,
     },
     OperatorRetire {
         seat: SeatId,
@@ -239,6 +244,7 @@ pub enum SemanticMutation {
     OperatorReplace {
         seat: SeatId,
         target: HostTargetId,
+        host: crate::protocol::ids::HostLocator,
         replace: SeatId,
     },
     OperatorOrphanInvite {
@@ -401,10 +407,10 @@ impl SemanticMutation {
                 if let Self::DirectSend(plan) = mutation.as_ref() {
                     plan.validate_claim(self.frozen_claim().unwrap())?;
                 }
-                if mutation
-                    .namespace()
-                    .is_some_and(|ns| ns.instance != self.frozen_claim().unwrap().instance)
-                {
+                if mutation.namespace().is_some_and(|ns| {
+                    let claim = self.frozen_claim().unwrap();
+                    ns.instance != claim.instance || ns.host_endpoint != claim.host.as_path()
+                }) {
                     return Err(invalid("frozen namespace differs from original claim"));
                 }
                 Ok(())
@@ -447,6 +453,7 @@ impl SemanticMutation {
             }
             Self::ContinuityCheckIn {
                 target,
+                host,
                 harness,
                 native_session,
                 source,
@@ -462,6 +469,7 @@ impl SemanticMutation {
                 }
                 ContinuityCheckIn {
                     target: target.clone(),
+                    host: host.clone(),
                     harness: *harness,
                     native_session: native_session.clone(),
                     source: source.clone(),
@@ -642,12 +650,14 @@ impl SemanticMutation {
                     Command::CheckIn(check)
                 }
             }
-            Self::ResolveSeat { target } => Command::ResolveSeat(ResolveSeat {
+            Self::ResolveSeat { target, host } => Command::ResolveSeat(ResolveSeat {
                 target: target.clone(),
+                host: host.clone(),
                 operation,
             }),
             Self::ContinuityCheckIn {
                 target,
+                host,
                 harness,
                 native_session,
                 source,
@@ -656,6 +666,7 @@ impl SemanticMutation {
                 ..
             } => Command::ContinuityCheckIn(ContinuityCheckIn {
                 target: target.clone(),
+                host: host.clone(),
                 harness: *harness,
                 native_session: native_session.clone(),
                 source: source.clone(),
@@ -758,6 +769,7 @@ impl SemanticMutation {
             }),
             Self::CompleteInboxDelivery { messages } => {
                 Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                    receipt_candidates: Vec::new(),
                     via: None,
                     messages: messages.clone(),
                     operation,
@@ -791,11 +803,14 @@ impl SemanticMutation {
                 operation,
                 claim: native()?,
             }),
-            Self::OperatorRebind { seat, target } => Command::OperatorRebind(OperatorRebind {
-                seat: seat.clone(),
-                target: target.clone(),
-                operation,
-            }),
+            Self::OperatorRebind { seat, target, host } => {
+                Command::OperatorRebind(OperatorRebind {
+                    seat: seat.clone(),
+                    target: target.clone(),
+                    host: host.clone(),
+                    operation,
+                })
+            }
             Self::OperatorRetire { seat } => {
                 Command::OperatorRetire(crate::protocol::commands::OperatorRetire {
                     seat: seat.clone(),
@@ -805,17 +820,22 @@ impl SemanticMutation {
             Self::OperatorReplace {
                 seat,
                 target,
+                host,
                 replace,
             } => Command::OperatorReplace(crate::protocol::commands::OperatorReplace {
                 seat: seat.clone(),
                 target: target.clone(),
+                host: host.clone(),
                 replace: replace.clone(),
                 operation,
             }),
-            Self::OperatorFreshSeat { target } => Command::OperatorFreshSeat(OperatorFreshSeat {
-                target: target.clone(),
-                operation,
-            }),
+            Self::OperatorFreshSeat { target, host } => {
+                Command::OperatorFreshSeat(OperatorFreshSeat {
+                    target: target.clone(),
+                    host: host.clone(),
+                    operation,
+                })
+            }
             Self::OperatorOrphanInvite {
                 thread,
                 seat,
@@ -906,6 +926,14 @@ struct LazyDisplayedProgress {
     body_len: u64,
     flushed_through: u64,
 }
+/// The displayed-prefix rule shared by both display chains: `covered` is the flushed contiguous
+/// prefix `[0, covered)` (`None`: nothing recorded). A span extends it only when it starts at or
+/// before its end (a restart from 0, an overlapping continuation, or a replay); a span past it
+/// would leave a gap and is refused (`None`).
+fn advance_displayed_prefix(covered: Option<u64>, start: u64, end: u64) -> Option<u64> {
+    let covered = covered.unwrap_or(0);
+    (start <= covered).then(|| covered.max(end))
+}
 impl Journal {
     fn lazy_display_path(&self, claim: &CallerClaim, message: &MessageId) -> io::Result<PathBuf> {
         let mut digest = Sha256::new();
@@ -915,6 +943,8 @@ impl Journal {
             .join(format!("display-lazy-{:x}.progress", digest.finalize())))
     }
     /// Cooperative display hint only; no receipt or canonical delivery mutation.
+    /// Progress is the flushed contiguous prefix; a span extends it when it starts at or before
+    /// the prefix end.
     /// Full caller identity isolates progress across every occupant transition.
     pub fn record_lazy_displayed_chunk(
         &self,
@@ -961,11 +991,10 @@ impl Journal {
         }) {
             return Err(invalid("lazy display progress identity changed"));
         }
-        let flushed = match &prior {
-            _ if start == 0 => prior.as_ref().map_or(end, |p| p.flushed_through.max(end)),
-            Some(p) if p.flushed_through == start => end,
-            Some(p) if p.flushed_through >= end => p.flushed_through,
-            _ => return Ok(false),
+        let Some(flushed) =
+            advance_displayed_prefix(prior.as_ref().map(|p| p.flushed_through), start, end)
+        else {
+            return Ok(false);
         };
         let progress = LazyDisplayedProgress {
             claim: claim.clone(),
@@ -1147,6 +1176,8 @@ impl Journal {
         let mut digest = Sha256::new();
         digest.update((claim.instance.len() as u64).to_be_bytes());
         digest.update(claim.instance.as_bytes());
+        digest.update((claim.host.as_str().len() as u64).to_be_bytes());
+        digest.update(claim.host.as_str().as_bytes());
         digest.update((claim.seat.as_str().len() as u64).to_be_bytes());
         digest.update(claim.seat.as_str().as_bytes());
         digest.update(claim.binding_generation.to_be_bytes());
@@ -1195,7 +1226,8 @@ impl Journal {
 
     /// Record a body span only after the selected inbox page was fully written
     /// and flushed. Client-local progress can only narrow automatic ACKs; the
-    /// daemon still decides receipt eligibility from canonical state.
+    /// daemon still decides receipt eligibility from canonical state. Progress is the flushed
+    /// contiguous prefix; a span extends it when it starts at or before the prefix end.
     pub fn record_displayed_chunk(
         &self,
         claim: &CallerClaim,
@@ -1223,13 +1255,12 @@ impl Journal {
         }) {
             return Err(invalid("inbox display progress identity changed"));
         }
-        let flushed = match prior.as_ref() {
-            _ if start == 0 => prior
-                .as_ref()
-                .map_or(end, |prior| prior.flushed_through.max(end)),
-            Some(prior) if prior.flushed_through == start => end,
-            Some(prior) if prior.flushed_through >= end => prior.flushed_through,
-            _ => return Ok(false),
+        let Some(flushed) = advance_displayed_prefix(
+            prior.as_ref().map(|prior| prior.flushed_through),
+            start,
+            end,
+        ) else {
+            return Ok(false);
         };
         let progress = DisplayedProgress {
             instance: claim.instance.clone(),
@@ -1949,12 +1980,21 @@ fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
         }
     }
     match (scope, semantic) {
-        (IntentScope::Cooperative { instance, seat }, semantic) => semantic
-            .frozen_claim()
-            .is_some_and(|claim| &claim.instance == instance && &claim.seat == seat),
+        (
+            IntentScope::Cooperative {
+                instance,
+                host,
+                seat,
+            },
+            semantic,
+        ) => semantic.frozen_claim().is_some_and(|claim| {
+            &claim.instance == instance && &claim.host == host && &claim.seat == seat
+        }),
         (
             IntentScope::ServiceAllocation { target, .. },
-            SemanticMutation::ResolveSeat { target: requested },
+            SemanticMutation::ResolveSeat {
+                target: requested, ..
+            },
         ) => target == requested,
         (
             IntentScope::Continuity { target, .. },

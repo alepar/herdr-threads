@@ -247,6 +247,30 @@ export default {
     ],
     "text": "[herdr-threads] new messages:\n\n[herdr-threads] message m1 in T1 \"plans\" from S1 \"alice\" [p0]:\n  body of m1\n\n[herdr-threads] message m2 in T1 \"plans\" from S1 \"alice\":\n  body of m2\n\n[herdr-threads] message m3 in T1 \"plans\" from S1 \"alice\" [p5]:\n  body of m3\n\n[herdr-threads] message m4 in T1 \"plans\" from S1 \"alice\" [p0] [human] [relays user] [rule]:\n  body of m4\n\n[herdr-threads] message m5 in T1 \"plans\" from S1 \"alice\":\n  body of m5"
   },
+  "tagged-ids": {
+    "items": [
+      {
+        "kind": "message",
+        "id": "mQ7aAb12Cd34",
+        "thread": "tQ7aZz99Yy88",
+        "threadName": "plans",
+        "sender": "sQ7aK3Fq9a2B",
+        "senderName": "alice",
+        "body": "body of mQ7aAb12Cd34"
+      },
+      {
+        "kind": "message",
+        "id": "mQ7aEf56Gh78",
+        "thread": "dK3Fq9a2B7x",
+        "threadName": "plans",
+        "sender": "sQ7aK3Fq9a2B",
+        "senderName": "bob",
+        "body": "body of mQ7aEf56Gh78",
+        "priority": 0
+      }
+    ],
+    "text": "[herdr-threads] new messages:\n\n[herdr-threads] message mQ7aAb12Cd34 in tQ7aZz99Yy88 \"plans\" from sQ7aK3Fq9a2B \"alice\":\n  body of mQ7aAb12Cd34\n\n[herdr-threads] message mQ7aEf56Gh78 in dK3Fq9a2B7x \"plans\" from sQ7aK3Fq9a2B \"bob\" [p0]:\n  body of mQ7aEf56Gh78"
+  },
   "attention": {
     "items": [
       {

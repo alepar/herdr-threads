@@ -1,8 +1,10 @@
 //! Bounded local IPC: ordinary requests are one-shot; registered service sessions persist.
 
+mod peer_connection;
 mod service_connection;
 mod watch_connection;
 
+use crate::node::NodeUuid;
 use crate::protocol::{
     authority::PeerIdentity,
     commands::Command,
@@ -14,23 +16,112 @@ use crate::protocol::{
         MAX_WIRE_FRAME_BYTES, PROTOCOL_VERSION, WireRequest, WireResponse, encode_wire_response,
     },
 };
+use crate::sync::{
+    coordinator::PeerIntake,
+    frame::{MAX_PEER_CONNECTIONS, PeerFrame},
+};
 use crate::{
     daemon::ownership::OwnedAsyncListener, ports::LocalService, service::live_gate::LiveServiceGate,
 };
 use serde::Serialize;
-use std::{io, io::Write, sync::Arc, time::Duration};
+use std::{
+    io,
+    io::Write,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::UnixStream,
     sync::Semaphore,
     task::JoinSet,
 };
-use uuid::Uuid;
 
 pub const MAX_FRAME_BYTES: usize = MAX_WIRE_FRAME_BYTES - 4;
 pub const MAX_CONNECTIONS: usize = 32;
 const ORDINARY_TIMEOUT: Duration = Duration::from_secs(5);
 const SHUTDOWN_DRAIN: Duration = Duration::from_millis(250);
+
+/// Count of live local-client connection tasks (ordinary, watch and service),
+/// read only by idle exit.
+///
+/// Responsibility (ConnectionGauge)
+/// - Owns: one atomic counter and the [`GaugeGuard`] that decrements it on drop,
+///   taken when the accept loop spawns a connection task.
+/// - Hides: that the count is an atomic; callers see `enter` and `count`.
+/// - Must not: count peer connections (a connection that sniffs as a peer hello
+///   releases its guard before the hand-off, so a long-lived link never keeps
+///   the daemon from idle exit through this count), gate admission, or be read
+///   by anything but idle exit.
+/// - Role: the transport side of "stay up while local clients exist"; peer
+///   links and dial targets are counted by the coordinator instead.
+#[derive(Clone, Debug, Default)]
+pub struct ConnectionGauge(Arc<AtomicUsize>);
+
+impl ConnectionGauge {
+    /// Count one connection until the returned guard drops.
+    pub fn enter(&self) -> GaugeGuard {
+        self.0.fetch_add(1, Ordering::AcqRel);
+        GaugeGuard(Some(self.0.clone()))
+    }
+
+    /// Connection tasks currently counted.
+    pub fn count(&self) -> usize {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// The sync runtime's seam into the accept loop: the elected daemon's service
+/// factory fills the peer intake (the coordinator starts there, after the
+/// listener is bound) and the owner lifecycle reads it when it starts serving.
+/// The gauge is created with the wiring so idle exit can read the same count
+/// the accept loop writes.
+#[derive(Clone, Default)]
+pub struct PeerWiring {
+    intake: Arc<std::sync::Mutex<Option<PeerIntake>>>,
+    gauge: ConnectionGauge,
+}
+
+impl PeerWiring {
+    /// Publish the coordinator's intake (once, at composition).
+    pub fn set_intake(&self, intake: PeerIntake) {
+        *self.intake.lock().unwrap_or_else(|e| e.into_inner()) = Some(intake);
+    }
+
+    /// The intake, `None` until composition (and for daemons without sync).
+    pub fn intake(&self) -> Option<PeerIntake> {
+        self.intake
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The connection gauge the accept loop counts into.
+    pub fn gauge(&self) -> ConnectionGauge {
+        self.gauge.clone()
+    }
+}
+
+/// Decrements its [`ConnectionGauge`] when dropped (or earlier via `release`).
+#[derive(Debug)]
+pub struct GaugeGuard(Option<Arc<AtomicUsize>>);
+
+impl GaugeGuard {
+    fn release(&mut self) {
+        if let Some(count) = self.0.take() {
+            count.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
+impl Drop for GaugeGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
 
 /// Incomplete shutdown retains the listener and every accepted task. The daemon
 /// owner must retain this value (and its ownership lease) until `wait` completes.
@@ -158,7 +249,7 @@ fn encode_response_scoped(response: &WireResponse, automatic: bool) -> io::Resul
 /// binds or removes a socket path and cannot elect a daemon owner.
 pub async fn serve(
     listener: OwnedAsyncListener,
-    instance_uuid: Uuid,
+    instance_uuid: NodeUuid,
     handler: Arc<dyn LocalService>,
     clock: Arc<dyn Clock>,
     owner_uid: u32,
@@ -172,26 +263,35 @@ pub async fn serve(
         owner_uid,
         shutdown,
         Arc::new(LiveServiceGate::new()),
+        None,
+        ConnectionGauge::default(),
     )
     .await
 }
 
 /// B2 can share this gate with generation-targeted recovery and diagnostics.
 /// The default `serve` path owns a fresh gate per daemon boot.
+// Allowed: the accept loop's composition points (gate, peer intake, gauge).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve_with_gate(
     listener: OwnedAsyncListener,
-    instance_uuid: Uuid,
+    instance_uuid: NodeUuid,
     handler: Arc<dyn LocalService>,
     clock: Arc<dyn Clock>,
     owner_uid: u32,
     shutdown: Cancellation,
     service_gate: Arc<LiveServiceGate>,
+    peers: Option<PeerIntake>,
+    gauge: ConnectionGauge,
 ) -> io::Result<ServeOutcome> {
     let instance = instance_uuid.to_string();
     let daemon_boot = listener.boot_id().to_string();
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     // Watch connections have their own admission, outside MAX_CONNECTIONS.
     let watch_slots = Arc::new(Semaphore::new(MAX_WATCH_CONNECTIONS));
+    // Inbound peer links have their own admission too: a sniffed hello gives
+    // its ordinary permit back and takes one of these.
+    let peer_slots = Arc::new(Semaphore::new(MAX_PEER_CONNECTIONS));
     let search_slots = Arc::new(Semaphore::new(5));
     let active_search = Arc::new(Semaphore::new(1));
     let mut tasks: JoinSet<io::Result<()>> = JoinSet::new();
@@ -222,6 +322,9 @@ pub(crate) async fn serve_with_gate(
         let instance = instance.clone();
         let daemon_boot = daemon_boot.clone();
         let service_gate = service_gate.clone();
+        let peers = peers.clone();
+        let peer_slots = peer_slots.clone();
+        let counted = gauge.enter();
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
             serve_connection(
@@ -237,6 +340,9 @@ pub(crate) async fn serve_with_gate(
                 service_gate,
                 permit,
                 watch_slots,
+                peers,
+                peer_slots,
+                counted,
             )
             .await
         });
@@ -314,6 +420,9 @@ async fn serve_connection(
     service_gate: Arc<LiveServiceGate>,
     permit: tokio::sync::OwnedSemaphorePermit,
     watch_slots: Arc<Semaphore>,
+    peers: Option<PeerIntake>,
+    peer_slots: Arc<Semaphore>,
+    mut counted: GaugeGuard,
 ) -> io::Result<()> {
     // The ordinary admission permit lives until this function returns, except
     // on a watch connection, which hands it back once sniffed.
@@ -354,6 +463,19 @@ async fn serve_connection(
             handler,
             clock,
             shutdown,
+        )
+        .await;
+    }
+    if PeerFrame::decode_hello(&frame).is_some() {
+        // A peer link is neither a local client nor an ordinary request: it
+        // leaves both counts and is admitted by its own slots.
+        drop(ordinary_permit.take());
+        counted.release();
+        return peer_connection::hand_off(
+            stream,
+            frame,
+            peer_slots.try_acquire_owned().ok(),
+            peers.as_ref(),
         )
         .await;
     }
@@ -429,7 +551,12 @@ async fn serve_connection(
     }
     let automatic_response = crate::protocol::wire::automatic_response_request(&request.command);
     let is_search = matches!(request.command, Command::Search(_));
-    let is_stop = matches!(request.command, Command::Stop(_));
+    // A resync request ends the daemon like `Stop`: the shutdown it triggers
+    // must not cancel the request that is answering it.
+    let is_stop = matches!(
+        request.command,
+        Command::Stop(_) | Command::Sync(crate::protocol::sync_admin::SyncCommand::Resync { .. })
+    );
     let is_service_control = matches!(
         request.command,
         Command::ServiceInspect | Command::ServiceDisconnect(_)

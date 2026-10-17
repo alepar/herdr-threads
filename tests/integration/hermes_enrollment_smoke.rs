@@ -128,22 +128,22 @@ impl Smoke {
     /// bare Hermes callback admission does not depend on the embedded manifest.
     fn write_settings(&self) {
         let paths = self.paths();
-        paths.prepare_instance_dir().unwrap();
+        paths.prepare_node_dir().unwrap();
         let settings = paths
-            .instance_dir
+            .node_dir
             .join(herdr_threads::daemon::settings::SETTINGS_FILE);
         fs::write(&settings, br#"{"harness_manifest":"off"}"#).unwrap();
         fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
-    fn paths(&self) -> herdr_threads::daemon::paths::InstancePaths {
+    fn paths(&self) -> herdr_threads::daemon::paths::NodePaths {
         let runtime = herdr_threads::daemon::paths::RuntimeContext::explicit(
             self.state.clone(),
             self.herdr.socket_path(),
             None,
         )
         .unwrap();
-        herdr_threads::daemon::paths::InstancePaths::resolve(&runtime).unwrap()
+        herdr_threads::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap()
     }
 
     /// The private environment every child gets: scrubbed, isolated HOME and

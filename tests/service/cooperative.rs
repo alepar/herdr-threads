@@ -68,20 +68,23 @@ fn fixture_with_clock(
         .create(&path)
         .unwrap();
     let directory = Arc::new(PrivateDirectory(path));
-    let context = StoreContext::new(directory.0.join("store.db"), clock.clone());
+    let context = StoreContext::new(directory.0.join("store.db"), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-        [],
-    )
-    .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',0,0,0)", []).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'p','inc','coherent_enumeration',1)", []).unwrap();
-    let store: Arc<dyn StorePort> =
-        Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'p','inc','coherent_enumeration',1)", []).unwrap();
+    let store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
     (
         OwnedFixture {
-            value: DomainService::new("i".into(), store, clock)
+            value: DomainService::new("34750f98bd59fcfc946da45aaabe933b".into(), store, clock)
                 .with_operator_owner(501)
                 .with_cooperative_owner(
                     501,
@@ -97,7 +100,8 @@ fn fixture_with_clock(
 }
 fn claim() -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: 0,
         role: CallerRole::TopLevel,
@@ -216,8 +220,8 @@ fn explicit_send_accept_and_ack_are_separate_sqlite_decisions() {
     use crate::protocol::commands::{Accept, Ack, Invite, SendMessage};
     let (service, db) = fixture();
     let sender = checked(&service, lifecycle(claim(), "sender")).context;
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','i','resolved','native','q',0,0,0)", []).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
     let peer = PeerIdentity::from_kernel(501);
     let created = service
         .handle(
@@ -569,7 +573,7 @@ fn partial_send_preparation_survives_budget_expiry_and_resumes_exact_intent() {
     };
     for index in 0..40 {
         let seat = format!("recipient-{index}");
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',0,0)",[seat.as_str()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[seat.as_str()]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES (?1,?2,'joined')",
             rusqlite::params![thread.as_str(), seat],
@@ -954,7 +958,14 @@ fn publish_snapshot_at(
     };
     use crate::store::seats;
     let mut conn = context.open_writer().unwrap();
-    let admission = seats::begin_host_observation(context, &mut conn, "i", &budget()).unwrap();
+    let admission = seats::begin_host_observation(
+        context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget(),
+    )
+    .unwrap();
     let snapshot = HostSnapshot {
         boot: HostBootId::new("b"),
         epoch,
@@ -1026,9 +1037,10 @@ fn publish_snapshot_at(
 fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
     use crate::protocol::commands::{Accept, Invite, SendMessage};
     let (service, db) = fixture();
-    let context = StoreContext::new(db.directory.0.join("store.db"), Arc::new(FixedClock));
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','i','resolved','native','q',0,0,0)", []).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
+    let context =
+        StoreContext::new(db.directory.0.join("store.db"), Arc::new(FixedClock)).with_test_host();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
     // R01: both seats register; the recipient joins the sender's thread.
     let peer = PeerIdentity::from_kernel(501);
     let sender = checked(&service, lifecycle(claim(), "sender")).context;
@@ -1086,7 +1098,14 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
         use crate::ports::HostInvalidationReason;
         use crate::store::seats;
         let mut conn = context.open_writer().unwrap();
-        let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget()).unwrap();
+        let admission = seats::begin_host_observation(
+            &context,
+            &mut conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &budget(),
+        )
+        .unwrap();
         seats::invalidate_host_observation(
             &context,
             &mut conn,
@@ -1101,7 +1120,7 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
     let epochs = || -> (i64, Vec<i64>) {
         let host: i64 = db
             .query_row(
-                "SELECT host_epoch FROM host_instances WHERE id='i'",
+                "SELECT host_epoch FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
                 [],
                 |r| r.get(0),
             )
@@ -1235,9 +1254,10 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
 fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
     use crate::protocol::commands::{Accept, Invite, SendMessage};
     let (service, db) = fixture();
-    let context = StoreContext::new(db.directory.0.join("store.db"), Arc::new(FixedClock));
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','i','resolved','native','q',0,0,0)", []).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
+    let context =
+        StoreContext::new(db.directory.0.join("store.db"), Arc::new(FixedClock)).with_test_host();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
     // Allocation records the seats' structural proof (terminal and
     // incarnation); the raw fixture rows carry none, so record it here.
     db.execute("UPDATE seats SET structural_terminal_id='term-'||target_id,structural_incarnation='inc',structural_incarnation_kind='coherent_enumeration',structural_host_boot='b',structural_host_epoch=1,structural_connection_epoch=1,structural_observation_sequence=1,target_generation=1 WHERE id IN ('s','recipient')", []).unwrap();
@@ -1297,7 +1317,7 @@ fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
     let publication = publish_snapshot_at(&context, 2, 7, &["p", "q"], true);
     let lagging: bool = db
         .query_row(
-            "SELECT reconciled_boot IS NOT recovery_boot OR reconciled_epoch IS NOT recovery_epoch FROM host_instances WHERE id='i'",
+            "SELECT reconciled_boot IS NOT recovery_boot OR reconciled_epoch IS NOT recovery_epoch FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -1459,17 +1479,17 @@ impl SendScenario {
         use crate::protocol::commands::{Accept, Invite};
         let (service, db) = fixture();
         let path = db.directory.0.join("store.db");
-        let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+        let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
         let store: Arc<dyn StorePort> = Arc::new(
             SqliteStore::new(
-                StoreContext::new(path, Arc::new(FixedClock)),
-                "i",
+                StoreContext::new(path, Arc::new(FixedClock)).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings::default(),
             )
             .unwrap(),
         );
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','i','resolved','native','q',0,0,0)", []).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'q','inc','coherent_enumeration',1)", []).unwrap();
         // Allocation records the seats' structural proof (terminal and
         // incarnation); the raw fixture rows carry none, so record it here.
         db.execute("UPDATE seats SET structural_terminal_id='term-'||target_id,structural_incarnation='inc',structural_incarnation_kind='coherent_enumeration',structural_host_boot='b',structural_host_epoch=1,structural_connection_epoch=1,structural_observation_sequence=1,target_generation=1 WHERE id IN ('s','recipient')", []).unwrap();
@@ -1495,7 +1515,7 @@ impl SendScenario {
                 .unwrap()
         );
         assert_eq!(
-            scenario.count("SELECT baseline_hold_unclaimed FROM host_instances WHERE id='i'"),
+            scenario.count("SELECT baseline_hold_unclaimed FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'"),
             0
         );
         let service = &scenario.service;
@@ -1562,7 +1582,7 @@ impl SendScenario {
     fn fences(&self) -> (i64, i64) {
         self.db
             .query_row(
-                "SELECT lifecycle_revision,send_eligibility_revision FROM host_instances WHERE id='i'",
+                "SELECT h.lifecycle_revision,n.send_eligibility_revision FROM local_node n JOIN herdr_hosts h ON h.node_id=n.id WHERE n.id='34750f98bd59fcfc946da45aaabe933b'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -1570,13 +1590,22 @@ impl SendScenario {
     }
 
     fn available(&self) -> bool {
-        crate::store::schema::effective_registered_availability(&self.db, "recipient", Some("i"))
-            .unwrap()
-            .is_some()
+        crate::store::schema::effective_registered_availability(
+            &self.db,
+            "recipient",
+            Some("34750f98bd59fcfc946da45aaabe933b"),
+        )
+        .unwrap()
+        .is_some()
     }
 
     fn carry_pending(&self) -> bool {
-        crate::store::schema::carry_pending(&self.db, "recipient", "i").unwrap()
+        crate::store::schema::carry_pending(
+            &self.db,
+            "recipient",
+            "34750f98bd59fcfc946da45aaabe933b",
+        )
+        .unwrap()
     }
 
     /// The production pass: plan each saved-seat page, apply its
@@ -1732,7 +1761,7 @@ impl SendScenario {
             crate::store::schema::effective_registered_availability(
                 &self.db,
                 "recipient",
-                Some("i"),
+                Some("34750f98bd59fcfc946da45aaabe933b"),
             )
             .unwrap(),
             self.carry_pending(),
@@ -1856,6 +1885,7 @@ fn subagent_stop_between_stage_and_decide_publishes_the_warning() {
         1
     );
     let sub = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         agent_id: Some(AgentId::new("agent-2")),
         ..sub
     };
@@ -1901,6 +1931,7 @@ fn plain_call_reconnect_between_stage_and_decide_drops_the_stale_warning() {
     assert!(!scenario.available());
     scenario.stage_change_decide("plain-reconnect", |s| {
         let resumed = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 4, start: 1 }),
             ..s.main.clone()
         };
@@ -1932,6 +1963,7 @@ fn plain_call_enrollment_between_stage_and_decide_drops_the_stale_warning() {
     assert!(!scenario.available());
     scenario.stage_change_decide("plain-enroll", |s| {
         let fresh = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             native_session: NativeSessionId::new("recipient-fresh"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000005"),
             liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 5, start: 1 }),
@@ -1997,6 +2029,7 @@ fn a_one_shot_under_a_live_main_session_refuses_no_send() {
     let scenario = SendScenario::new();
     let attempts = scenario.stage_change_decide("one-shot-enroll", |s| {
         let one_shot = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             native_session: NativeSessionId::new("recipient-one-shot"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000003"),
             liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 3, start: 1 }),
@@ -2072,6 +2105,7 @@ fn a_readoption_refreshing_a_stale_placement_between_stage_and_decide_is_fenced(
     assert!(!scenario.available());
     let attempts = scenario.stage_change_decide("readopt", |s| {
         let resumed = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 4, start: 1 }),
             ..s.main.clone()
         };
@@ -2110,6 +2144,7 @@ fn a_plain_reopen_after_a_rebind_between_stage_and_decide_is_fenced() {
     assert!(!scenario.available());
     let attempts = scenario.stage_change_decide("reopen", |s| {
         let resumed = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 4, start: 1 }),
             binding_generation: s.main.binding_generation + 1,
             ..s.main.clone()
@@ -2170,13 +2205,18 @@ fn an_authors_first_plain_call_enrollment_sends_in_one_attempt() {
     // Only the recipient's main session is alive: the sender's session exits.
     assert_eq!(scenario.liveness_pass(AlivePids(&[2])), 1);
     let author_seat_available = |s: &SendScenario| {
-        crate::store::schema::effective_registered_availability(&s.db, "s", Some("i"))
-            .unwrap()
-            .is_some()
+        crate::store::schema::effective_registered_availability(
+            &s.db,
+            "s",
+            Some("34750f98bd59fcfc946da45aaabe933b"),
+        )
+        .unwrap()
+        .is_some()
     };
     assert!(!author_seat_available(&scenario));
     let mut send = scenario.request("first-plain-send");
     send.claim = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new("sender-fresh"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000006"),
         liveness: Some(crate::protocol::authority::LivenessFingerprint { pid: 6, start: 1 }),
@@ -2496,6 +2536,7 @@ fn operator_check_in_requires_human_lifecycle() {
         service.handle(command, PeerIdentity::from_kernel(uid), &budget())
     };
     let human = |claim: CallerClaim| CallerClaim {
+        host: crate::test_support::test_host_locator(),
         harness: Harness::Human,
         native_session: NativeSessionId::new("plugin_context:person"),
         ..claim
@@ -2530,6 +2571,7 @@ fn operator_check_in_requires_human_lifecycle() {
     let agent = checked(&service, lifecycle(claim(), "agent-ok"));
     let plain = lifecycle(
         human(CallerClaim {
+            host: crate::test_support::test_host_locator(),
             binding_generation: agent.context.binding_generation,
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
             ..claim()
@@ -2545,8 +2587,8 @@ fn operator_check_in_requires_human_lifecycle() {
 fn lazy_inbox_fix_real_service_completion() {
     use crate::protocol::commands::{CompleteInboxDelivery, DeliveryMode, SendMessage};
     let (service, db) = fixture();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','i','resolved','native','q',0,0,0)", []).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-q','inc','coherent_enumeration',1)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-q','inc','coherent_enumeration',1)", []).unwrap();
     let peer = PeerIdentity::from_kernel(501);
     let sender = checked(&service, lifecycle(claim(), "sender")).context;
     let mut recipient = claim();
@@ -2604,6 +2646,7 @@ fn lazy_inbox_fix_real_service_completion() {
     };
     let id = send("lazy");
     let request = CompleteInboxDelivery {
+        receipt_candidates: Vec::new(),
         via: None,
         messages: vec![id.clone()],
         operation: OperationId::new("done"),
@@ -2645,10 +2688,12 @@ fn lazy_inbox_fix_real_service_completion() {
     db.execute("UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='recipient' AND ended_at IS NULL", []).unwrap();
     assert_eq!(
         invoke(CompleteInboxDelivery {
+            receipt_candidates: Vec::new(),
             via: None,
             messages: vec![human.clone()],
             operation: OperationId::new("human-done"),
             claim: CallerClaim {
+                host: crate::test_support::test_host_locator(),
                 harness: Harness::Human,
                 ..recipient
             }
@@ -2663,6 +2708,7 @@ fn two_sessions_on_one_seat_both_send() {
     use crate::protocol::commands::SendMessage;
     let (service, db) = fixture();
     let session = |name: &str, execution: &str| CallerClaim {
+        host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new(name),
         execution: ExecutionId::new(execution),
         ..claim()
@@ -2739,6 +2785,7 @@ fn two_sessions_on_one_seat_both_send() {
 /// A subagent claim of the same session: the declared role and an agent id.
 fn subagent_of(top: &CallerClaim) -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         role: CallerRole::Subagent,
         agent_id: Some(AgentId::new("agent-1")),
         ..top.clone()
@@ -2776,6 +2823,7 @@ fn subagent_ack_send_accept_leave_invite_and_check_in_are_refused() {
     let operations = before(&db);
     // The declared-role shape and the bare agent-id shape are both recognized.
     let bare_agent = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         agent_id: Some(AgentId::new("agent-2")),
         ..top.clone()
     };
@@ -2932,6 +2980,7 @@ fn binding_states(db: &Connection) -> Vec<BindingState> {
 }
 fn with_fingerprint(claim: CallerClaim) -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         ..claim
     }
@@ -3018,6 +3067,7 @@ fn session_end_disconnects_the_root_and_its_subagents() {
     let top = with_fingerprint(checked(&service, lifecycle(claim(), "top")).context);
     for (n, agent) in ["agent-1", "agent-2"].into_iter().enumerate() {
         let sub = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             agent_id: Some(AgentId::new(agent)),
             ..subagent_of(&top)
         };
@@ -3106,6 +3156,7 @@ fn hermes_child_start_registers_the_child_session_and_its_cli_claim_is_read_only
     let (service, db) = fixture();
     let peer = PeerIdentity::from_kernel(501);
     let parent = with_fingerprint(CallerClaim {
+        host: crate::test_support::test_host_locator(),
         harness: hermes(),
         native_session: NativeSessionId::new("hermes-parent"),
         ..claim()
@@ -3147,6 +3198,7 @@ fn hermes_child_start_registers_the_child_session_and_its_cli_claim_is_read_only
     // The child's own CLI claim (its session, no agent id) resolves to the subagent binding, so
     // a write is refused as a subagent write and no top-level binding is enrolled for it.
     let child_cli = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new("hermes-child"),
         ..parent.clone()
     };
@@ -3202,6 +3254,7 @@ fn hermes_registered_child_call_after_subagent_stop_stays_disconnected() {
     let (service, db) = fixture();
     let peer = PeerIdentity::from_kernel(501);
     let parent = with_fingerprint(CallerClaim {
+        host: crate::test_support::test_host_locator(),
         harness: hermes(),
         native_session: NativeSessionId::new("hermes-parent"),
         ..claim()
@@ -3221,6 +3274,7 @@ fn hermes_registered_child_call_after_subagent_stop_stays_disconnected() {
     );
     // The child's next CLI claim (its session, no agent id, a fingerprint).
     let child_cli = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new("hermes-child"),
         ..parent.clone()
     };
@@ -3269,6 +3323,7 @@ fn hermes_child_early_call_then_subagent_start(parent_lifecycle: bool) {
     let (service, db) = fixture();
     let peer = PeerIdentity::from_kernel(501);
     let parent = with_fingerprint(CallerClaim {
+        host: crate::test_support::test_host_locator(),
         harness: hermes(),
         native_session: NativeSessionId::new("hermes-parent"),
         ..claim()
@@ -3289,6 +3344,7 @@ fn hermes_child_early_call_then_subagent_start(parent_lifecycle: bool) {
     // The child's plain call, under its own session and the parent's fingerprint, before any
     // `subagent_start` registered that session.
     let child_cli = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new("hermes-child"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000002"),
         ..parent.clone()
@@ -3393,7 +3449,7 @@ fn hermes_child_early_call_then_subagent_start(parent_lifecycle: bool) {
         .unwrap();
     let authority = crate::ports::ReservedWakeAuthority::Cooperative {
         terminal: crate::protocol::ids::TerminalId::new("t"),
-        incarnation: "i".into(),
+        incarnation: "34750f98bd59fcfc946da45aaabe933b".into(),
         binding_generation: None,
         harness: None,
         targets,
@@ -3519,6 +3575,7 @@ fn hermes_child_check_in_is_refused_read_only() {
     let (service, db) = fixture();
     let peer = PeerIdentity::from_kernel(501);
     let parent = with_fingerprint(CallerClaim {
+        host: crate::test_support::test_host_locator(),
         harness: hermes(),
         native_session: NativeSessionId::new("hermes-parent"),
         ..claim()
@@ -3531,6 +3588,7 @@ fn hermes_child_check_in_is_refused_read_only() {
         1
     );
     let child_cli = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         native_session: NativeSessionId::new("hermes-child"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000002"),
         ..parent.clone()
@@ -3613,10 +3671,16 @@ fn binding_event_claim_shapes_are_validated() {
         binding_event(top.clone(), SubagentStart, None, "f"),
         binding_event(top.clone(), SubagentStop, None, "g"),
         binding_event(sub.clone(), SessionEnd, None, "h"),
-        binding_event(sub.clone(), SubagentStart, Some("child"), "i"),
+        binding_event(
+            sub.clone(),
+            SubagentStart,
+            Some("child"),
+            "34750f98bd59fcfc946da45aaabe933b",
+        ),
         binding_event(top.clone(), SessionEnd, Some("child"), "j"),
         binding_event(
             CallerClaim {
+                host: crate::test_support::test_host_locator(),
                 liveness: Some(crate::protocol::authority::LivenessFingerprint {
                     pid: 0,
                     start: 1,
@@ -3695,8 +3759,8 @@ fn direct_thread_real_service_ensure_and_lazy_send() {
     use crate::protocol::commands::{DeliveryMode, EnsureDirectThread, SendMessage};
     let (service, db) = fixture();
     let caller = checked(&service, lifecycle(claim(), "direct-checkin")).context;
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('peer','i','resolved','native','peer-pane',1,1,0)",[]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('peer','34750f98bd59fcfc946da45aaabe933b','resolved','native','peer-pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
     let ensure = Command::EnsureDirectThread(EnsureDirectThread {
         creation_policy: None,
         recipient: SeatId::new("peer"),
@@ -3805,7 +3869,7 @@ fn completion_hint_channels(service: &mut DomainService) -> Arc<CompletionHintCh
     channels
 }
 fn completion_hint_mail(db: &Connection) {
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('hint-thread','i','topic','goal',0,0,3)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('hint-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,3,0)", []).unwrap();
     db.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hint-thread','s','joined')",
         [],
@@ -3813,11 +3877,11 @@ fn completion_hint_mail(db: &Connection) {
     .unwrap();
     db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hint-thread','s',1,1)", []).unwrap();
     for (index, id) in ["hint-m1", "hint-m2"].into_iter().enumerate() {
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'i','hint-thread',?2,'ordinary','hello',0,?3)", rusqlite::params![id, index as i64 + 1, index as i64 + 2]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','hint-thread',?2,'ordinary','hello',0,?3)", rusqlite::params![id, index as i64 + 1, index as i64 + 2]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'hint-thread','s','pending',300000)", [id]).unwrap();
     }
     db.execute(
-        "UPDATE host_instances SET decision_seq=MAX(decision_seq,3) WHERE id='i'",
+        "UPDATE local_node SET decision_seq=MAX(decision_seq,3) WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();

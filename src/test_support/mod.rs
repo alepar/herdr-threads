@@ -1,12 +1,21 @@
 //! Test-only synchronization and fault fixtures; absent from ordinary builds.
 pub mod attention_oracle;
 pub mod counting_client;
+#[cfg(feature = "test-support")]
+pub mod fact_exchange;
 pub mod failpoints;
+#[cfg(feature = "test-support")]
+pub mod fake_herdr;
+pub mod fake_hosts;
 pub mod harness_shim;
 pub mod history;
 #[cfg(feature = "test-support")]
 pub mod isolated_herdr;
 pub mod isolation;
+#[cfg(feature = "test-support")]
+pub mod journal_oracle;
+#[cfg(feature = "test-support")]
+pub mod multinode;
 pub mod owner_watch;
 pub mod scratch;
 #[cfg(feature = "test-support")]
@@ -15,6 +24,136 @@ pub mod search_barrier;
 pub mod server_completion;
 pub mod slow_clock;
 pub mod spawn;
+#[cfg(feature = "test-support")]
+pub mod sync_node;
+#[cfg(feature = "test-support")]
+pub mod write_guard;
+
+pub use fake_hosts::{
+    FakeHostWorld, RefusingHost, fake_host_plan, single_host_plan, single_host_plan_at,
+    single_host_plan_with_observer,
+};
+
+use crate::{
+    node::{NodeUuid, tag_for},
+    store::{
+        connection::StoreContext,
+        schema::{NodeSeed, UNNAMED_HOST_ENDPOINT},
+    },
+};
+use rusqlite::Connection;
+
+/// The ed25519 seed of the node every fixture store is created with.
+pub const TEST_NODE_SEED: [u8; 32] = [1; 32];
+
+/// The node a test store belongs to: the uuid of [`TEST_NODE_SEED`]'s key,
+/// its tag at `k = 0`. A `StoreContext` built in a test build is created with
+/// it, so a fixture's `instance` string is [`test_node`].
+pub fn test_node_seed() -> NodeSeed {
+    let key = ed25519_dalek::SigningKey::from_bytes(&TEST_NODE_SEED);
+    let uuid = NodeUuid::from_public_key(&key.verifying_key().to_bytes());
+    NodeSeed {
+        uuid,
+        tag: tag_for(uuid, 0),
+        tag_k: 0,
+    }
+}
+
+/// The seed of an arbitrary node, for a fixture whose store belongs to a node
+/// other than the fixed test node (a daemon fixture that owns its own key).
+pub fn node_seed_for(uuid: impl std::fmt::Display) -> NodeSeed {
+    let uuid: NodeUuid = uuid.to_string().parse().expect("a 32-hex node uuid");
+    NodeSeed {
+        uuid,
+        tag: tag_for(uuid, 0),
+        tag_k: 0,
+    }
+}
+
+/// [`test_node_seed`]'s uuid in its 32-hex form: the `instance` string and the
+/// `instance_id` value of fixture rows.
+pub fn test_node() -> String {
+    test_node_seed().uuid.to_string()
+}
+
+/// A fixed canonical host locator for fixture claims: never touches the filesystem. It is the
+/// `host_endpoint` the handoff fixtures' namespaces carry, so a fixture claim and its namespace
+/// agree.
+pub fn test_host_locator() -> crate::protocol::ids::HostLocator {
+    crate::protocol::ids::HostLocator::parse("/host.sock").expect("canonical locator")
+}
+
+/// The endpoint of the host row a fixture attaches; it is also the endpoint a
+/// daemon records for a host composed without a socket path, so a fixture row
+/// is the row such a daemon attaches.
+pub const TEST_HOST_ENDPOINT: &str = UNNAMED_HOST_ENDPOINT;
+
+fn upsert_test_host(conn: &Connection) -> i64 {
+    crate::store::connection::upsert_host(conn, TEST_HOST_ENDPOINT, 0)
+        .expect("attach the test host row")
+}
+
+/// The id of the fixture host row: the first `herdr_hosts` row a fresh store
+/// gets, which every fixture that attaches [`TEST_HOST_ENDPOINT`] first uses.
+/// Observation entry points take it as their explicit host.
+pub fn test_host_id() -> crate::ports::HostId {
+    crate::ports::HostId::from_row(1)
+}
+
+/// A `HostId` for fixtures that build a second host: the raw `herdr_hosts.host_id`
+/// (the second `attach_host` of a fresh store gets 2).
+pub fn host_id_for_test(raw: i64) -> crate::ports::HostId {
+    crate::ports::HostId::from_row(raw)
+}
+
+/// The archival lane's evidence for the fixture host alone, as one attached
+/// session reports it: `Runtime.hosts` of a one-host archival fixture.
+pub fn test_host_evidence(
+    generation: i64,
+    coherent: bool,
+) -> Vec<crate::store::archival::HostArchivalEvidence> {
+    vec![crate::store::archival::HostArchivalEvidence {
+        host_id: test_host_id(),
+        generation,
+        coherent,
+        valid_until_mono: None,
+    }]
+}
+
+/// Attaches the fixture Herdr host to a store: upserts its `herdr_hosts` row
+/// through `conn` and publishes it into `ctx`'s `HostIndex` under
+/// [`test_host_locator`] (the host a fixture claim names). Idempotent.
+/// Returns the host id.
+pub fn attach_test_host(ctx: &StoreContext, conn: &Connection) -> i64 {
+    let host_id = upsert_test_host(conn);
+    ctx.hosts()
+        .publish(test_host_locator(), crate::ports::HostId::from_row(host_id));
+    host_id
+}
+
+/// [`attach_test_host`] for a bare connection that has no `StoreContext`
+/// (`schema::initialize` on `:memory:`): only the row is created.
+pub fn attach_test_host_to_connection(conn: &Connection) -> i64 {
+    upsert_test_host(conn)
+}
+
+/// Opens a raw connection to an existing store file the way a fixture reads or
+/// repairs it. The host row is not created here: a store opened through
+/// `StoreContext::with_test_host` has it.
+pub fn open_test_connection(path: &std::path::Path) -> Connection {
+    Connection::open(path).expect("open the store file")
+}
+
+impl StoreContext {
+    /// Test hook: attaches the fixture Herdr host through a short-lived writer
+    /// (see [`attach_test_host`]).
+    pub fn attach_test_host(&self) -> i64 {
+        let conn = self
+            .open_writer()
+            .expect("open a writer to attach the host");
+        attach_test_host(self, &conn)
+    }
+}
 
 /// A short real temp root for fixtures that bind Unix sockets (macOS caps
 /// socket paths at 104 bytes and its default TMPDIR is long). macOS uses the
@@ -722,3 +861,94 @@ pub fn bootstrap_attachment_guard(
 }
 #[cfg(feature = "test-support")]
 pub mod archival_composer_fixture;
+
+/// Write the `node.json` hint for `node_uuid` (tag derived at `tag_k` 0): what
+/// the elected daemon publishes from its loaded key, for fixtures that make a
+/// node visible to the CLI without running a daemon.
+pub fn write_node_hint(paths: &crate::daemon::paths::NodePaths, node_uuid: crate::node::NodeUuid) {
+    paths.prepare_node_dir().expect("node dir");
+    crate::node::json::write_if_differs(
+        &paths.node_json_path,
+        &crate::node::NodeJson::new(node_uuid, crate::node::tag_for(node_uuid, 0), 0, 0),
+    )
+    .expect("node hint");
+}
+
+/// Load (or create) the node key under `paths` and write its `node.json`
+/// hint, as the elected daemon does before it publishes anything. Returns the
+/// node's uuid; a daemon started later on the same state directory loads the
+/// same key.
+pub fn seed_node_identity(
+    paths: &crate::daemon::paths::NodePaths,
+) -> std::io::Result<crate::node::NodeUuid> {
+    paths.prepare_node_dir()?;
+    let identity = crate::node::NodeIdentity::load_or_create(paths, false)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    crate::node::json::write_if_differs(
+        &paths.node_json_path,
+        &crate::node::NodeJson::new(identity.uuid(), identity.tag(), identity.tag_k(), 0),
+    )?;
+    Ok(identity.uuid())
+}
+
+/// [`NodePaths::resolve`] for a state directory whose node key and
+/// `node.json` hint are already in place, as when the elected daemon starts.
+pub fn resolve_seeded(state_dir: &std::path::Path) -> crate::daemon::paths::NodePaths {
+    let paths = crate::daemon::paths::NodePaths::resolve(state_dir).expect("node paths");
+    seed_node_identity(&paths).expect("seed node identity");
+    paths
+}
+
+/// A detached `daemon run --state-dir <state>` child of the real binary,
+/// started the way the CLI's own ensure starts it, but owned by the test: the
+/// 5-argument form is store-only (no Herdr server attached unless the store
+/// remembers a live one), the 7-argument form adds `--host-endpoint <hint>`.
+/// stdout is discarded; pre-election stderr (a start failure's reason) goes to
+/// `stderr_to`. The child leads its own process group and is stopped when the
+/// returned handle drops (`spawn::OwnedChild`); `isolation` supplies the
+/// scrubbed, test-owned environment (HOME and XDG under its root).
+pub fn spawn_node_daemon(
+    isolation: &isolation::TestIsolation,
+    binary: impl AsRef<std::ffi::OsStr>,
+    state_dir: &std::path::Path,
+    host_hint: Option<&std::path::Path>,
+    stderr_to: &std::path::Path,
+) -> std::io::Result<spawn::OwnedChild> {
+    use spawn::SpawnOwned;
+    let mut command = isolation.command(binary);
+    command
+        .args(["daemon", "run", "--state-dir"])
+        .arg(state_dir);
+    if let Some(hint) = host_hint {
+        command.arg("--host-endpoint").arg(hint);
+    }
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(stderr_to)?)
+        .spawn_owned()
+}
+
+/// Asserts the delivery tail wrote nothing for a seat this node does not host:
+/// no `wake_work`, `lazy_recipients`, `warning_offer`, `in_turn_offer` or
+/// `catch_up` row names a seat with `is_local = 0`.
+pub fn assert_no_local_delivery_for_remote(conn: &Connection) {
+    for table in [
+        "wake_work",
+        "lazy_recipients",
+        "warning_offer",
+        "in_turn_offer",
+        "catch_up",
+    ] {
+        let rows: Vec<String> = conn
+            .prepare(&format!(
+                "SELECT t.seat_id FROM {table} t JOIN seats s ON s.id=t.seat_id WHERE s.is_local=0"
+            ))
+            .and_then(|mut stmt| {
+                stmt.query_map([], |r| r.get(0))?
+                    .collect::<Result<Vec<String>, _>>()
+            })
+            .unwrap_or_else(|e| panic!("query {table}: {e}"));
+        assert!(rows.is_empty(), "{table} names remote seats: {rows:?}");
+    }
+}

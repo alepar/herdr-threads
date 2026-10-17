@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod harness_evidence;
 pub mod harness_states;
 pub mod health;
+pub mod idle_exit;
 pub mod lifecycle;
 pub mod logs;
 pub mod ownership;
@@ -14,10 +15,10 @@ pub mod transport;
 
 use crate::daemon::{
     diagnostics::{BufferLimits, DiagnosticSink, DiagnosticSource},
-    lifecycle::run_owner_with_factory,
+    lifecycle::{run_owner_with_factory, run_owner_with_peers},
     logs::RotatingLogSink,
     ownership::EndpointDescriptor,
-    paths::InstancePaths,
+    paths::NodePaths,
 };
 use crate::ports::LocalService;
 use crate::protocol::time::{Cancellation, Clock};
@@ -122,9 +123,9 @@ struct ReaderCompletion {
 }
 
 impl ChildOwnedLogSink {
-    fn new(paths: &InstancePaths) -> Self {
+    fn new(paths: &NodePaths) -> Self {
         Self {
-            log: Arc::new(Mutex::new(RotatingLogSink::new(paths.instance_dir.clone()))),
+            log: Arc::new(Mutex::new(RotatingLogSink::new(paths.node_dir.clone()))),
             reader: None,
             close_deadline: Arc::new(OnceLock::new()),
             daemon_tail: Vec::new(),
@@ -339,7 +340,7 @@ impl Drop for ChildOwnedLogSink {
 /// Construct the service from the elected instance and bound boot before
 /// endpoint publication. Teardown is awaited under the same owner lease.
 pub async fn run_elected_with_diagnostics<F, R, D, Fut>(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     make_service: F,
@@ -347,13 +348,46 @@ pub async fn run_elected_with_diagnostics<F, R, D, Fut>(
     on_drained: D,
 ) -> io::Result<bool>
 where
-    F: FnOnce(Uuid, Uuid, Cancellation) -> io::Result<Arc<dyn LocalService>>,
+    F: FnOnce(crate::node::NodeUuid, Uuid, Cancellation) -> io::Result<Arc<dyn LocalService>>,
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
     D: FnOnce() -> Fut,
     Fut: Future<Output = io::Result<()>>,
 {
     run_owner_with_factory(
         paths,
+        clock,
+        shutdown,
+        ChildOwnedLogSink::new(paths),
+        BufferLimits::new(64 * 1024, 16 * 1024)?,
+        make_service,
+        on_ready,
+        on_drained,
+    )
+    .await
+}
+
+/// [`run_elected_with_diagnostics`] with the sync runtime's seam: `make_service`
+/// fills the `peers` intake and the accept loop serves with it.
+// Allowed: run_elected_with_diagnostics's inputs with peer wiring.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_elected_with_peers<F, R, D, Fut>(
+    paths: &NodePaths,
+    peers: transport::PeerWiring,
+    clock: Arc<dyn Clock>,
+    shutdown: Cancellation,
+    make_service: F,
+    on_ready: R,
+    on_drained: D,
+) -> io::Result<bool>
+where
+    F: FnOnce(crate::node::NodeUuid, Uuid, Cancellation) -> io::Result<Arc<dyn LocalService>>,
+    R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
+    D: FnOnce() -> Fut,
+    Fut: Future<Output = io::Result<()>>,
+{
+    run_owner_with_peers(
+        paths,
+        peers,
         clock,
         shutdown,
         ChildOwnedLogSink::new(paths),

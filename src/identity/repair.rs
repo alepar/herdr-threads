@@ -2,7 +2,7 @@
 use crate::{
     ports::{
         BootstrapAttachmentGuard, BootstrapObserver, ContinuityRequest, ContinuityTargetGuard,
-        HostCallContext, HostInvalidationReason, HostObservation, HostObservationAdmission,
+        HostCallContext, HostId, HostInvalidationReason, HostObservation, HostObservationAdmission,
         HostPort, OperatorRequest, OperatorTargetGuard, OrdinaryResolutionAttempt,
         OrdinaryResolutionGuard, OrdinaryResolutionOutcome, ResolvedTargetCheck, StorePort,
     },
@@ -56,8 +56,27 @@ enum ReadAttempt<R> {
 /// Own time budget of the C1 `agent.get` diagnostic read.
 const DIAGNOSTIC_READ_MILLIS: u64 = 750;
 
+/// OrdinaryIdentity: structural seat resolution and observation for ONE Herdr
+/// server.
+///
+/// Owns: the explicit current-target reads, the lane captures and the seat
+/// decisions (resolve, operator repair, C1 continuity, reconciliation pages) of
+/// the server named by its `host_id`. Every observation it admits, publishes or
+/// reconciles carries that `host_id`, so a snapshot of this server can resolve,
+/// unresolve or retire only seats whose `host_id` is this server's, and a target
+/// id (unique only within one server) is never matched against another server's
+/// seats.
+/// Does not own: which servers exist or are attached (`HostSessions`), the
+/// cooperative caller path (`cooperative_claim` names its own host), delivery,
+/// wake or archival scope, or native caller authority.
+/// Role: built once per attached server (interim: the one observation worker
+/// passes the attached session's `host_id`). New per-host queries take a
+/// [`HostId`] (from here, from a seat row's `host_id`, or from a claim) and add
+/// `host_id = ?` plus `LOCAL_SEAT` to every seat predicate; they never read the
+/// node-wide host.
 pub struct OrdinaryIdentity {
     instance: String,
+    host_id: HostId,
     store: Arc<dyn StorePort>,
     host: Arc<dyn HostPort>,
     clock: Arc<dyn Clock>,
@@ -76,6 +95,7 @@ pub struct OrdinaryIdentity {
 impl OrdinaryIdentity {
     pub fn new(
         instance: String,
+        host_id: HostId,
         store: Arc<dyn StorePort>,
         host: Arc<dyn HostPort>,
         clock: Arc<dyn Clock>,
@@ -83,6 +103,7 @@ impl OrdinaryIdentity {
     ) -> Self {
         Self {
             instance,
+            host_id,
             store,
             host,
             clock,
@@ -93,6 +114,16 @@ impl OrdinaryIdentity {
             service: Cancellation::default(),
             observation_pacer: None,
         }
+    }
+
+    /// The Herdr server this identity acts on.
+    pub fn host_id(&self) -> HostId {
+        self.host_id
+    }
+
+    /// The port of the Herdr server this identity acts on.
+    pub fn host_port(&self) -> &Arc<dyn HostPort> {
+        &self.host
     }
 
     /// Gate background retries on the observation lane's Pacer backoff.
@@ -140,6 +171,7 @@ impl OrdinaryIdentity {
             store,
             &mut lane,
             &self.instance,
+            self.host_id,
             &context,
             maintenance,
         );
@@ -283,8 +315,9 @@ impl OrdinaryIdentity {
             OperatorCommand::FreshSeat(request) => request.target.clone(),
         };
         self.with_observation(&target, budget, |_, observation| {
-            let guard = OperatorTargetGuard::try_new(&self.instance, &command, observation)
-                .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
+            let guard =
+                OperatorTargetGuard::try_new(&self.instance, self.host_id, &command, observation)
+                    .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
             let request = match command {
                 OperatorCommand::Rebind(c) => OperatorRequest::Rebind(c, guard),
                 OperatorCommand::FreshSeat(c) => OperatorRequest::FreshSeat(c, guard),
@@ -319,8 +352,9 @@ impl OrdinaryIdentity {
         let target = command.target.clone();
         let diagnostic = self.agent_session_diagnostic(&target, &command, budget);
         self.with_observation(&target, budget, |_, observation| {
-            let guard = ContinuityTargetGuard::try_new(&self.instance, &command, observation)
-                .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
+            let guard =
+                ContinuityTargetGuard::try_new(&self.instance, self.host_id, &command, observation)
+                    .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
             let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
             self.store.decide_continuity(
                 ContinuityRequest {
@@ -576,7 +610,8 @@ impl OrdinaryIdentity {
     ) -> Result<ReadAttempt<R>, ApiError> {
         let admission = {
             let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
-            self.store.begin_host_observation(&self.instance, budget)?
+            self.store
+                .begin_host_observation(&self.instance, self.host_id, budget)?
         };
         if let Some(previous) = previous
             && (admission.invalidation_revision != previous.invalidation_revision

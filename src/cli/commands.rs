@@ -417,6 +417,13 @@ pub enum CliAction {
     },
     /// Print the embedded agent skill (`skill` or `--skill`); local only.
     Skill,
+    /// `legacy purge`: report or, with `confirm`, remove the legacy
+    /// `<state>/instances` tree; local only, never contacts the daemon.
+    /// `operator` overrides the agent-evidence guard.
+    LegacyPurge {
+        confirm: bool,
+        operator: bool,
+    },
     /// Local registry discovery; never observes installations or contacts the daemon.
     Adapters,
     /// `contract-id [--harness H]`: the native hook payload contract ids;
@@ -607,6 +614,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::TopologyRecover(_)
         | CliAction::MeInit { .. }
         | CliAction::Skill
+        | CliAction::LegacyPurge { .. }
         | CliAction::Adapters
         | CliAction::ContractId { .. }
         | CliAction::Watch(_)
@@ -716,13 +724,21 @@ impl MutationSpec {
                 | Self::FreshSeat(_)
                 | Self::Invite { operator: true, .. }
         );
+        // The target-bearing commands carry the caller's Herdr server next to their target; they
+        // need no claim of their own, so the invocation's claim supplies it.
+        let host = claim.as_ref().map(|claim| claim.host.clone());
         let claim = if needs_claim {
             Some(claim.ok_or_else(|| invalid("native caller context required"))?)
         } else {
             None
         };
+        let target_host = || host.clone().ok_or_else(|| invalid("host locator required"));
         let command = match self {
-            Self::Resolve(target) => WireCommand::ResolveSeat(ResolveSeat { target, operation }),
+            Self::Resolve(target) => WireCommand::ResolveSeat(ResolveSeat {
+                target,
+                host: target_host()?,
+                operation,
+            }),
             Self::Create { name, topic, goal } => WireCommand::CreateThread(CreateThread {
                 name,
                 topic,
@@ -865,6 +881,7 @@ impl MutationSpec {
             Self::Rebind { seat, pane } => WireCommand::OperatorRebind(OperatorRebind {
                 seat,
                 target: pane,
+                host: target_host()?,
                 operation,
             }),
             Self::Retire(seat) => {
@@ -880,11 +897,13 @@ impl MutationSpec {
             } => WireCommand::OperatorReplace(crate::protocol::commands::OperatorReplace {
                 seat,
                 target: pane,
+                host: target_host()?,
                 replace,
                 operation,
             }),
             Self::FreshSeat(pane) => WireCommand::OperatorFreshSeat(OperatorFreshSeat {
                 target: pane,
+                host: target_host()?,
                 operation,
             }),
         };
@@ -1107,6 +1126,24 @@ enum Top {
         #[command(subcommand)]
         command: MeSub,
     },
+    /// Legacy `instances/` data from before the node layout (unused).
+    Legacy {
+        #[command(subcommand)]
+        command: LegacySub,
+    },
+    /// Cross-node sync peers: the ssh destinations this node dials. `add` and
+    /// `forget` are operator commands (`herdr-threads human peer ...`).
+    Peer {
+        #[command(subcommand)]
+        command: PeerSub,
+    },
+    /// Cross-node sync: status, verification and operator repair. `unapplied
+    /// replay`, `resync` and `clone-cleared` are operator commands
+    /// (`herdr-threads human sync ...`).
+    Sync {
+        #[command(subcommand)]
+        command: SyncSub,
+    },
     /// Print the agent skill (SKILL.md): how agents should use herdr-threads.
     /// Also available as `--skill`. Local only; never contacts the daemon.
     #[command(long_flag = "skill")]
@@ -1271,6 +1308,83 @@ enum InternalSub {
         /// Print the keys of the object at the path, one per line (exit 3 when not an object).
         #[arg(long)]
         keys: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PeerSub {
+    /// Dial SSH_DEST (anything `ssh` accepts) to link its node. Re-adding a
+    /// target restarts a stopped one.
+    Add {
+        ssh_dest: String,
+        /// The command to run on the remote side instead of `herdr-threads
+        /// peer --stdio`.
+        #[arg(long)]
+        remote_command: Option<String>,
+    },
+    /// Stop dialing a destination or a node (uuid or tag); deletes nothing.
+    Forget { target: String },
+    /// List every dial target with its state and learned node.
+    List,
+}
+
+#[derive(Subcommand)]
+enum SyncSub {
+    /// Per log counter, head, applied_through, parked and failed counts,
+    /// freeze, lag and skew; per link state, rx logs and last error; repairs,
+    /// open clone evidence with its remedy, store size and headroom.
+    Status {
+        /// Only the logs of this node (uuid or tag).
+        #[arg(long)]
+        log: Option<String>,
+    },
+    /// Check the journal invariants and every stored hash chain's linkage.
+    Verify,
+    /// Parked or failed journal entries: `list` (default) or `replay`.
+    Unapplied {
+        #[command(subcommand)]
+        command: Option<UnappliedSub>,
+    },
+    /// Rebuild the store from a peer's logs: stops this daemon; the next
+    /// start backs up the old store and pulls from NODE.
+    Resync {
+        /// The node (uuid or tag) to rebuild from.
+        #[arg(long)]
+        from: String,
+        /// Only these nodes' logs (uuid or tag); may repeat.
+        #[arg(long = "log")]
+        logs: Vec<String>,
+    },
+    /// Clear open clone evidence about this node (operator provenance) and
+    /// let held repairs run. See `sync status` for which remedy applies.
+    CloneCleared,
+}
+
+#[derive(Subcommand)]
+enum UnappliedSub {
+    /// A page of parked_unknown, parked_dep and failed entries.
+    List {
+        /// Continue after this ingest sequence (the page's `next:`).
+        #[arg(long)]
+        after: Option<u64>,
+        /// Entries per page (1..=64).
+        #[arg(long)]
+        limit: Option<u16>,
+    },
+    /// Re-attempt every parked and failed entry once (bounded).
+    Replay,
+}
+
+#[derive(Subcommand)]
+enum LegacySub {
+    /// List the legacy `instances/` data; with --confirm, remove it (never `node/`).
+    Purge {
+        /// Remove `<state>/instances` instead of listing it.
+        #[arg(long)]
+        confirm: bool,
+        /// With --confirm: override the agent guard as the local account.
+        #[arg(long)]
+        operator: bool,
     },
 }
 
@@ -2330,20 +2444,26 @@ where
             words.join(" ")
         ))));
     }
-    let requires_human = matches!(
+    // The mutating sync commands are operator commands (`human peer add`, ...).
+    let sync_operator = matches!(
         &parsed.action,
-        CliAction::MeInit { .. }
-            | CliAction::TopologyRecover(_)
-            | CliAction::Mutation(
-                MutationSpec::FreshSeat(_)
-                    | MutationSpec::Rebind { .. }
-                    | MutationSpec::Replace { .. }
-                    | MutationSpec::Retire(_)
-                    | MutationSpec::Invite { operator: true, .. }
-                    | MutationSpec::CheckInLifecycle { operator: true, .. }
-            )
-            | CliAction::Wire(WireCommand::ServiceDisconnect(_))
+        CliAction::Wire(WireCommand::Sync(sync)) if sync.is_mutating()
     );
+    let requires_human = sync_operator
+        || matches!(
+            &parsed.action,
+            CliAction::MeInit { .. }
+                | CliAction::TopologyRecover(_)
+                | CliAction::Mutation(
+                    MutationSpec::FreshSeat(_)
+                        | MutationSpec::Rebind { .. }
+                        | MutationSpec::Replace { .. }
+                        | MutationSpec::Retire(_)
+                        | MutationSpec::Invite { operator: true, .. }
+                        | MutationSpec::CheckInLifecycle { operator: true, .. }
+                )
+                | CliAction::Wire(WireCommand::ServiceDisconnect(_))
+        );
     if actor == InvocationActor::Agent && requires_human {
         return Err(ParseFailure::Invalid(invalid(guidance(&original, None))));
     }
@@ -3256,7 +3376,31 @@ fn parse_cli_in_registry(
             }
         }
         Top::PendingOps(args) => CliAction::PendingOps(page(args)?),
+        Top::Peer { command } => CliAction::Wire(match command {
+            PeerSub::Add {
+                ssh_dest,
+                remote_command,
+            } => super::peer::add(ssh_dest, remote_command)?,
+            PeerSub::Forget { target } => super::peer::forget(target)?,
+            PeerSub::List => super::peer::list(),
+        }),
+        Top::Sync { command } => CliAction::Wire(match command {
+            SyncSub::Status { log } => super::sync::status(log)?,
+            SyncSub::Verify => super::sync::verify(),
+            SyncSub::Unapplied { command: None } => super::sync::unapplied_list(None, None)?,
+            SyncSub::Unapplied {
+                command: Some(UnappliedSub::List { after, limit }),
+            } => super::sync::unapplied_list(after, limit)?,
+            SyncSub::Unapplied {
+                command: Some(UnappliedSub::Replay),
+            } => super::sync::unapplied_replay(),
+            SyncSub::Resync { from, logs } => super::sync::resync(from, logs)?,
+            SyncSub::CloneCleared => super::sync::clone_cleared(),
+        }),
         Top::Skill => CliAction::Skill,
+        Top::Legacy {
+            command: LegacySub::Purge { confirm, operator },
+        } => CliAction::LegacyPurge { confirm, operator },
         Top::WakeOn(args) => CliAction::WakeOn(
             args.value
                 .map(|value| {

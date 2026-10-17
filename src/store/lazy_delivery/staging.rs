@@ -15,7 +15,7 @@ pub fn note_published(tx: &Transaction<'_>, preparation: &str) -> Result<(), Api
     .map_err(store_error)?;
     tx.execute(
         &format!(
-            "INSERT INTO wake_work(seat_id,reason_bits,attention_version) SELECT DISTINCT r.seat_id,1,1 FROM lazy_recipients r INDEXED BY lazy_recipients_preparation_ordinal JOIN seats s ON s.id=r.seat_id WHERE r.preparation_id=?1 AND {} ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
+            "INSERT INTO wake_work(seat_id,reason_bits,attention_version) SELECT DISTINCT r.seat_id,1,1 FROM lazy_recipients r INDEXED BY lazy_recipients_preparation_ordinal JOIN seats s ON s.id=r.seat_id WHERE r.preparation_id=?1 AND s.is_local=1 AND {} ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
             crate::store::seats::THRESHOLD_ADMITS_SQL
         ),
         [preparation],
@@ -76,7 +76,7 @@ pub fn cleanup_unpublished(
     let last_inspected = candidates.last().copied().unwrap_or(after);
     let published: bool = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",
+            "SELECT EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1) OR EXISTS(SELECT 1 FROM send_preparations WHERE id=?1 AND origin='replicated')",
             [preparation],
             |r| r.get(0),
         )

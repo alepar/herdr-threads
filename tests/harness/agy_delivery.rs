@@ -54,7 +54,8 @@ fn runtime(now: u64, identity: &Identity) -> Runtime {
 }
 fn claim(generation: u64) -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: generation,
         role: CallerRole::TopLevel,
@@ -718,7 +719,7 @@ fn a_full_page_of_offered_ids_is_tracked() {
     let rig = Rig::new();
     let rt = runtime(1000, &ident("a"));
     let ids: Vec<String> = (0..PAGE_MAX_BLOCKS)
-        .map(|_| generate_public_id(prefix::MESSAGE))
+        .map(|_| generate_public_id(prefix::MESSAGE, &"abc".parse().unwrap()))
         .collect();
     let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
     rig.pre(0, &Fake::with(vec![page(&refs, TEXT, 1)]), &rt);
@@ -1438,27 +1439,30 @@ mod daemon {
     fn world() -> World {
         let temp = Temp::new();
         let clock: Arc<dyn Clock> = Arc::new(TestClock);
-        let context = StoreContext::new(temp.0.join("store.db"), clock.clone());
+        let context = StoreContext::new(temp.0.join("store.db"), clock.clone()).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,3)",
-            [],
-        )
+        db.execute_batch("UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=3")
         .unwrap();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',1,0,0)", []).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-p','inc','coherent_enumeration',1)", []).unwrap();
-        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,2)", []).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','p',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-p','inc','coherent_enumeration',1)", []).unwrap();
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,2,0)", []).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','joined')",
             [],
         )
         .unwrap();
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s',1,1)", []).unwrap();
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m1','i','t',1,'ordinary','hello agy',0,3)", []).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m1','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','hello agy',0,3)", []).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m1','t','s','pending',300000)", []).unwrap();
-        let store: Arc<dyn StorePort> =
-            Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
-        let service = DomainService::new("i".into(), store, clock)
+        let store: Arc<dyn StorePort> = Arc::new(
+            SqliteStore::new(
+                context,
+                "34750f98bd59fcfc946da45aaabe933b",
+                StoreSettings::default(),
+            )
+            .unwrap(),
+        );
+        let service = DomainService::new("34750f98bd59fcfc946da45aaabe933b".into(), store, clock)
             .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
         World {
             service,
@@ -1684,13 +1688,13 @@ mod daemon {
     }
     fn canonical_v2_allocations_fit_actual_native_codec(user: bool) {
         use crate::protocol::{
-            commands::{CreateThread, InvitationConfirmation, Invite},
+            commands::{CreateThread, Invite},
             delivery::DeliveryPageV2,
         };
         let world = world();
         let recipient = world.check_in();
-        world.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('origin','i','resolved','native','p-origin',0,0,0)", []).unwrap();
-        world.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p-origin','b',1,0,1,'fresh','unknown','unknown',0,0,'term-origin','inc-origin','coherent_enumeration',1)", []).unwrap();
+        world.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('origin','34750f98bd59fcfc946da45aaabe933b','resolved','native','p-origin',0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+        world.db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p-origin','b',1,0,1,'fresh','unknown','unknown',0,0,'term-origin','inc-origin','coherent_enumeration',1)", []).unwrap();
         let mut origin = claim(0);
         origin.seat = SeatId::new("origin");
         origin.target = HostTargetId::new("p-origin");
@@ -1737,15 +1741,6 @@ mod daemon {
         // old scripted1024NUL fixture, the released4096byte event admission fits.
         let topic = "\0".repeat(300);
         let goal = "\0".repeat(300);
-        // These are pre-upgrade Lazy invitations: new invitations are always confirming.
-        world
-            .db
-            .pragma_update(
-                None,
-                "application_id",
-                crate::store::control::LEGACY_PAIR_MARKER,
-            )
-            .unwrap();
         for n in 0..24 {
             let CommandResult::ThreadCreated(thread) = world
                 .service
@@ -1768,7 +1763,8 @@ mod daemon {
                 .service
                 .handle(
                     Command::Invite(Invite {
-                        confirmation: Some(InvitationConfirmation::Lazy),
+                        // Every new invitation is confirming (ht-yha.6 / reconcile items 8-10); this test's subject is the page codec, not the mode.
+                        confirmation: None,
                         thread,
                         seat: recipient.seat.clone(),
                         deadline_millis: None,
@@ -1781,7 +1777,7 @@ mod daemon {
                 .unwrap();
         }
         let counts: (i64, i64) = world.db.query_row(
-            "SELECT (SELECT count(*) FROM invitations i JOIN threads t ON t.id=i.thread_id WHERE i.seat_id=?1 AND t.instance_id=?2 AND i.state='pending' AND i.confirmation='lazy'),(SELECT count(*) FROM digest_pending_invitations d JOIN threads t ON t.id=d.thread_id WHERE d.seat_id=?1 AND t.instance_id=?2)",
+            "SELECT (SELECT count(*) FROM invitations i JOIN threads t ON t.id=i.thread_id WHERE i.seat_id=?1 AND t.instance_id=?2 AND i.state='pending' AND i.confirmation='require_ack'),(SELECT count(*) FROM digest_pending_invitations d JOIN threads t ON t.id=d.thread_id WHERE d.seat_id=?1 AND t.instance_id=?2)",
             rusqlite::params![recipient.seat.as_str(), recipient.instance],
             |row| Ok((row.get(0)?, row.get(1)?)),
         ).unwrap();
@@ -1861,7 +1857,7 @@ mod daemon {
                 let response = crate::protocol::wire::WireResponse {
                     version: crate::protocol::wire::PROTOCOL_VERSION,
                     request_id: "\"".repeat(128),
-                    instance: uuid::Uuid::from_u128(1).to_string(),
+                    instance: crate::node::NodeUuid::from_u128(1).to_string(),
                     daemon_boot: uuid::Uuid::from_u128(2).to_string(),
                     result: Ok(result.clone()),
                 };
@@ -1942,7 +1938,7 @@ mod daemon {
             let response = crate::protocol::wire::WireResponse {
                 version: crate::protocol::wire::PROTOCOL_VERSION,
                 request_id: "\"".repeat(128),
-                instance: uuid::Uuid::from_u128(1).to_string(),
+                instance: crate::node::NodeUuid::from_u128(1).to_string(),
                 daemon_boot: uuid::Uuid::from_u128(2).to_string(),
                 result: Ok(result),
             };
@@ -2012,7 +2008,7 @@ mod daemon {
             largest > 32_768,
             "exercise real aggregate escaping, not just tiny pages"
         );
-        let pending: i64 = world.db.query_row("SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending' AND confirmation='lazy'", [], |row| row.get(0)).unwrap();
+        let pending: i64 = world.db.query_row("SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending' AND confirmation='require_ack'", [], |row| row.get(0)).unwrap();
         assert_eq!(
             pending, 24,
             "emission confirmation is not invitation acceptance"

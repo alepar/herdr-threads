@@ -32,7 +32,8 @@ fn message() -> WatchMessage {
 
 fn claim(role: CallerRole) -> CallerClaim {
     CallerClaim {
-        instance: "11111111-1111-4111-8111-111111111111".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "11111111111141118111111111111111".into(),
         seat: SeatId::new("s1"),
         binding_generation: 1,
         role,
@@ -255,7 +256,7 @@ fn watch_wire_request_is_disjoint_from_other_first_frames() {
     let request = WatchWireRequest {
         version: PROTOCOL_VERSION,
         request_id: "r1".into(),
-        expected_instance: "11111111-1111-4111-8111-111111111111".into(),
+        expected_instance: "11111111111141118111111111111111".into(),
         expected_boot: None,
         watch: WatchRequest {
             claim: claim(CallerRole::TopLevel),
@@ -341,10 +342,10 @@ fn mod_delivery_setting_and_via_spellings() {
 }
 
 #[test]
-fn truncation_marker_names_body_then_ack() {
+fn truncation_marker_names_inbox() {
     assert_eq!(
         truncation_marker(&MessageId::new("m9")),
-        "…truncated; run herdr-threads body m9, then herdr-threads ack m9"
+        "…truncated; next: herdr-threads inbox"
     );
 }
 
@@ -364,7 +365,7 @@ fn selector_prefix() -> Vec<String> {
 fn truncation_marker_repeats_selectors() {
     assert_eq!(
         truncation_marker_for(&selector_prefix(), &MessageId::new("m9"), false),
-        "…truncated; run herdr-threads --state-dir /s/state --host-endpoint /s/h.sock body m9, then herdr-threads --state-dir /s/state --host-endpoint /s/h.sock ack m9"
+        "…truncated; next: herdr-threads --state-dir /s/state --host-endpoint /s/h.sock inbox"
     );
 }
 
@@ -375,20 +376,14 @@ fn truncation_marker_quotes_selector_paths() {
         .to_vec();
     let marker = truncation_marker_for(&prefix, &MessageId::new("m9"), false);
     assert!(
-        marker.contains("--state-dir '/tmp/my state' body m9"),
+        marker.contains("--state-dir '/tmp/my state' inbox"),
         "{marker}"
     );
-    let instruction = marker.strip_prefix("…truncated; run ").unwrap();
+    let instruction = marker.strip_prefix("…truncated; next: ").unwrap();
     let first = instruction.split(", then ").next().unwrap();
     assert_eq!(
         shlex::split(first).unwrap(),
-        [
-            "herdr-threads",
-            "--state-dir",
-            "/tmp/my state",
-            "body",
-            "m9"
-        ]
+        ["herdr-threads", "--state-dir", "/tmp/my state", "inbox"]
     );
 }
 
@@ -425,16 +420,16 @@ fn truncation_marker_for_empty_prefix_is_bare() {
 }
 
 #[test]
-fn lazy_truncation_marker_names_only_body() {
+fn lazy_truncation_marker_names_inbox() {
     let id = MessageId::new("m9");
     assert_eq!(
         truncation_marker_for(&[], &id, true),
-        "…truncated; run herdr-threads body m9"
+        "…truncated; next: herdr-threads inbox"
     );
     let with = truncation_marker_for(&selector_prefix(), &id, true);
     assert_eq!(
         with,
-        "…truncated; run herdr-threads --state-dir /s/state --host-endpoint /s/h.sock body m9"
+        "…truncated; next: herdr-threads --state-dir /s/state --host-endpoint /s/h.sock inbox"
     );
     assert!(!with.contains(" ack "), "{with}");
 }

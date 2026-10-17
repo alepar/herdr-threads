@@ -15,7 +15,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CachedCheckInKey {
-    pub instance: Uuid,
+    pub instance: crate::node::NodeUuid,
     pub seat: String,
     pub event_id: String,
     pub operation_id: Uuid,
@@ -509,7 +509,7 @@ mod tests {
         let reference = CacheRefV1 {
             version: 1,
             key: CachedCheckInKey {
-                instance: Uuid::from_u128(1),
+                instance: crate::node::NodeUuid::from_u128(1),
                 seat: "seat".into(),
                 event_id: "event".into(),
                 operation_id: Uuid::from_u128(2),
@@ -548,7 +548,7 @@ mod tests {
     fn near_limit_pages_reconstruct_exact_utf8_bytes() {
         let context = OccupantContext {
             format_version: 1,
-            instance: Uuid::from_u128(1),
+            instance: crate::node::NodeUuid::from_u128(1),
             seat: "seat".into(),
             target: "target".into(),
             harness: crate::harness::context::Harness::Codex,
@@ -860,7 +860,7 @@ mod tests {
         let reference = CacheRefV1 {
             version: 1,
             key: CachedCheckInKey {
-                instance: Uuid::from_u128(1),
+                instance: crate::node::NodeUuid::from_u128(1),
                 seat: "seat".into(),
                 event_id: "event".into(),
                 operation_id: Uuid::from_u128(2),
@@ -915,7 +915,7 @@ mod tests {
         let _cleanup = Cleanup(directory.clone());
         let context = OccupantContext {
             format_version: 1,
-            instance: Uuid::from_u128(1),
+            instance: crate::node::NodeUuid::from_u128(1),
             seat: "seat".into(),
             target: "target".into(),
             harness: crate::harness::context::Harness::Codex,
@@ -930,6 +930,7 @@ mod tests {
             &context.seat,
             Duration::from_secs(1),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
         let request = PendingCheckIn {
             operation_id: Uuid::from_u128(2),

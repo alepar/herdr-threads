@@ -34,9 +34,14 @@ use std::io::{self, Write};
 ///    Canonical pair resolution and direct_recipient use thread.direct_v1;
 ///    automatic handoff uses handoff.automatic_v1 within version 6.
 /// 7: session-keyed binding claims: CallerClaim gains optional agent_id and liveness fingerprint (ht-54r).
-/// 8: message delivery priority: a deliberate break, so a v0.x CLI or daemon is refused at the version
-///    check instead of half-working (e.g. on a format-2 inbox cursor). Legacy lazy/ordinary mappings stay.
-pub const PROTOCOL_VERSION: u16 = 8;
+/// 8: message delivery priority (main v1.0.0): a deliberate break, so a v0.x CLI or daemon is refused at
+///    the version check instead of half-working (e.g. on a format-2 inbox cursor). Legacy lazy/ordinary
+///    mappings stay.
+/// 8 (branch, never released): Herdr server locator on the wire: CallerClaim.host and `host` on the
+///    target-bearing commands (ht-5fr).
+/// 9: cross-node sync (ht-5fr) on top of main's protocol 8: host locators plus the priority model, so a
+///    v1.0.x CLI or daemon (protocol 8, no host locators) is refused at the version check.
+pub const PROTOCOL_VERSION: u16 = 9;
 pub const MAX_WIRE_FRAME_BYTES: usize = 1_048_576;
 /// Only replies to modern explicitly frozen-policy automatic topology requests use this envelope.
 pub const MAX_AUTOMATIC_RESPONSE_FRAME_BYTES: usize = 2 * MAX_WIRE_FRAME_BYTES;
@@ -107,7 +112,7 @@ impl<'de> Deserialize<'de> for WireRequest {
         if raw.version != PROTOCOL_VERSION {
             return Err(serde::de::Error::custom("unknown wire version"));
         }
-        if !valid_wire_id(&raw.request_id) || !valid_uuid(&raw.expected_instance) {
+        if !valid_wire_id(&raw.request_id) || !valid_instance(&raw.expected_instance) {
             return Err(serde::de::Error::custom("invalid request or instance id"));
         }
         if raw
@@ -154,6 +159,10 @@ pub(crate) fn valid_wire_id(value: &str) -> bool {
 pub(crate) fn valid_uuid(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok_and(|id| id.hyphenated().to_string() == value)
 }
+/// A node uuid on the wire: the canonical 32 lowercase hex form.
+pub(crate) fn valid_instance(value: &str) -> bool {
+    value.parse::<crate::node::NodeUuid>().is_ok()
+}
 impl WireRequest {
     pub fn decode(bytes: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(bytes)
@@ -182,7 +191,7 @@ impl<'de> Deserialize<'de> for WireResponse {
         }
         let raw = Raw::deserialize(deserializer)?;
         if !valid_wire_id(&raw.request_id)
-            || !valid_uuid(&raw.instance)
+            || !valid_instance(&raw.instance)
             || !valid_uuid(&raw.daemon_boot)
             || !result_identity_valid(&raw.result, &raw.instance, &raw.daemon_boot)
         {
@@ -204,7 +213,7 @@ impl WireResponse {
             && self.instance == request.expected_instance
             && expected_boot.is_none_or(|boot| self.daemon_boot == boot)
             && valid_wire_id(&self.request_id)
-            && valid_uuid(&self.instance)
+            && valid_instance(&self.instance)
             && valid_uuid(&self.daemon_boot)
     }
 
@@ -331,7 +340,7 @@ mod thread_name_wire_tests {
         for version in [4, 5] {
             for kind in ["create_thread", "invite", "send_message"] {
                 let error = serde_json::from_value::<WireRequest>(serde_json::json!({
-                    "version":version,"request_id":"request","expected_instance":"00000000-0000-4000-8000-000000000001",
+                    "version":version,"request_id":"request","expected_instance":"00000000000040008000000000000001",
                     "command":{"kind":kind,"args":{"user_intent":"invalid"}}
                 })).unwrap_err();
                 assert!(

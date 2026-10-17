@@ -10,7 +10,7 @@ use herdr_threads::{
     client::local::LocalSocketClient,
     daemon::{
         ownership::EndpointDescriptor,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     ports::LocalClient,
     protocol::{
@@ -34,12 +34,12 @@ struct World {
     root: PathBuf,
     state: PathBuf,
     socket: PathBuf,
-    paths: InstancePaths,
+    paths: NodePaths,
     _host: FakeHost,
     _scratch: Scratch,
 }
 impl World {
-    fn new(version: i64, disabled: bool) -> Self {
+    fn new(disabled: bool) -> Self {
         let root = PathBuf::from(format!(
             "{}/htch-{}",
             herdr_threads::test_support::SHORT_TMP,
@@ -51,39 +51,15 @@ impl World {
         sender["label"] = json!("sender");
         let host = FakeHost::start(&socket, vec![sender, pane("w1:p2", "terminal-b")]);
         let state = root.join("custom-state");
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(state.clone(), socket.clone(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(state.clone(), socket.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
-        paths.prepare_instance_dir().unwrap();
-        if version != 0 {
-            let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-            let mut migrations = fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
-                .unwrap()
-                .map(|e| e.unwrap().path())
-                .collect::<Vec<_>>();
-            migrations.sort();
-            for path in migrations {
-                let n = path.file_name().unwrap().to_str().unwrap()[..4]
-                    .parse::<i64>()
-                    .unwrap();
-                if n <= version {
-                    db.execute_batch(&fs::read_to_string(path).unwrap())
-                        .unwrap();
-                }
-            }
-            db.pragma_update(None, "user_version", version).unwrap();
-            let owner = herdr_threads::daemon::ownership::OwnerLock::acquire(&paths).unwrap();
-            let instance = owner.instance_uuid().to_string();
-            db.execute(
-                "INSERT INTO host_instances(id,created_at) VALUES(?1,0)",
-                [&instance],
-            )
-            .unwrap();
-            db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('historical',?1,'old channel','preserve',-9000000,-9000000)", [&instance]).unwrap();
-        }
+        paths.prepare_node_dir().unwrap();
         if disabled {
-            let path = paths.instance_dir.join("settings.json");
+            let path = paths.node_dir.join("settings.json");
             fs::write(&path, r#"{"auto_archive_after_ms":0}"#).unwrap();
             fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
         }
@@ -102,15 +78,15 @@ impl World {
         let db = world.db();
         wait("initial host reconciliation", || {
             db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM host_instances h
-                 JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.instance_id=h.id
+                "SELECT EXISTS(SELECT 1 FROM herdr_hosts h
+                 JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.host_id=h.host_id
                  WHERE g.status='published' AND g.staged_targets=g.expected_targets
                    AND g.host_boot=h.host_boot AND g.epoch=h.host_epoch
                    AND g.published_invalidation_revision=h.invalidation_revision
                    AND h.recovery_boot=h.host_boot AND h.recovery_epoch=h.host_epoch
                    AND h.reconciled_boot=h.recovery_boot AND h.reconciled_epoch=h.recovery_epoch
                    AND h.baseline_hold_unclaimed=0
-                   AND NOT EXISTS(SELECT 1 FROM recovery_holds r WHERE r.instance_id=h.id AND r.released_at IS NULL))",
+                   AND NOT EXISTS(SELECT 1 FROM recovery_holds r WHERE r.host_id=h.host_id AND r.released_at IS NULL))",
                 [],
                 |r| r.get::<_, bool>(0),
             )
@@ -191,7 +167,7 @@ impl World {
         let client = LocalSocketClient::new(
             descriptor.endpoint,
             clock.clone(),
-            descriptor.instance_uuid,
+            descriptor.node_uuid,
             Some(descriptor.boot_id),
         );
         client
@@ -207,17 +183,10 @@ impl World {
 }
 impl Drop for World {
     fn drop(&mut self) {
-        self.state = self
-            .paths
-            .instance_dir
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
+        self.state = self.paths.state_dir.clone();
         let _ = self.command(None, &["daemon", "stop"]).output();
         if std::thread::panicking() {
-            let path = self.paths.instance_dir.join("daemon.log");
+            let path = self.paths.node_dir.join("daemon.log");
             if let Ok(log) = fs::read_to_string(&path) {
                 eprintln!("{}: {log}", path.display());
             }
@@ -232,77 +201,48 @@ fn wait(what: &str, mut check: impl FnMut() -> bool) {
     }
 }
 #[test]
-fn channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane() {
-    for version in [0, 21, 22] {
-        let w = World::new(version, false);
-        // The boot archival pass may precede canonical host admission, then
-        // park until its 60s safety tick. Resolve a real fixture target before
-        // expecting prompt initialization: this admits qualified host evidence
-        // and the seat_archival insertion kicks the existing archival lane.
-        w.ok(None, &["seat", "resolve", "--pane", "w1:p1"]);
-        let db = w.db();
-        // The initializer upgrades each historical input to the latest schema.
-        assert_eq!(
-            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            herdr_threads::store::schema::LATEST_VERSION
-        );
-        wait("archival worker initialization", || {
-            db.query_row(
-                "SELECT count(*) FROM archival_instances WHERE policy_ms=3600000",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap()
-                == 1
-        });
-        let old_boot: String = db
-            .query_row("SELECT runtime_boot FROM archival_instances", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        w.ok(None, &["daemon", "stop"]);
-        w.ok(None, &["daemon", "ensure"]);
-        wait("fresh runtime grace", || {
-            db.query_row("SELECT runtime_boot FROM archival_instances", [], |r| {
-                r.get::<_, String>(0)
-            })
-            .unwrap()
-                != old_boot
-        });
-        assert_eq!(
-            db.query_row("SELECT count(*) FROM threads WHERE archived=1", [], |r| r
-                .get::<_, i64>(
-                0
-            ))
-            .unwrap(),
-            0,
-            "migration and restart cannot archive historical channels immediately"
-        );
-        if version != 0 {
-            wait("historical channel discovery", || {
-                db.query_row(
-                    "SELECT count(*) FROM channel_archival WHERE thread_id='historical'",
-                    [],
-                    |r| r.get::<_, i64>(0),
-                )
-                .unwrap()
-                    == 1
-            });
-            let (quiet, due): (Option<i64>, i64) = db
-                .query_row(
-                    "SELECT quiet_mono,due_mono FROM channel_archival WHERE thread_id='historical'",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .unwrap();
-            assert!(
-                quiet.is_none_or(|at| at >= 0) && due >= 0,
-                "historical timestamps cannot backdate monotonic grace"
-            );
-        }
-    }
-    let w = World::new(0, true);
+fn channel_activation_real_daemon_loads_fresh_store_and_owns_archival_lane() {
+    let w = World::new(false);
+    // The boot archival pass may precede canonical host admission, then
+    // park until its 60s safety tick. Resolve a real fixture target before
+    // expecting prompt initialization: this admits qualified host evidence
+    // and the seat_archival insertion kicks the existing archival lane.
+    w.ok(None, &["seat", "resolve", "--pane", "w1:p1"]);
+    let db = w.db();
+    herdr_threads::store::schema::verify_baseline(&db).unwrap();
+    wait("archival worker initialization", || {
+        db.query_row(
+            "SELECT count(*) FROM archival_instances WHERE policy_ms=3600000",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+            == 1
+    });
+    let old_boot: String = db
+        .query_row("SELECT runtime_boot FROM archival_instances", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    w.ok(None, &["daemon", "stop"]);
+    w.ok(None, &["daemon", "ensure"]);
+    wait("fresh runtime grace", || {
+        db.query_row("SELECT runtime_boot FROM archival_instances", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap()
+            != old_boot
+    });
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM threads WHERE archived=1", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0,
+        "restart cannot archive channels immediately"
+    );
+    let w = World::new(true);
     let claim = w.check_in();
     w.ok(Some(&claim), &["thread", "create", "--topic", "disabled"]);
     assert_eq!(
@@ -317,14 +257,14 @@ fn channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane()
 
 #[test]
 fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cleanup_only() {
-    let mut w = World::new(22, false);
+    let mut w = World::new(false);
     let claim = w.check_in();
     let recipient = SeatId::new(
         w.ok(None, &["seat", "resolve", "--pane", "w1:p2"])
             .as_str()
             .unwrap(),
     );
-    let journal_root = w.paths.instance_dir.join("intents");
+    let journal_root = w.paths.node_dir.join("intents");
     let journal = Journal::open(&journal_root).unwrap();
     let key = || OperationId::new(uuid::Uuid::new_v4().to_string());
     // This is a historical journal spelling, not merely a later CLI selector.
@@ -373,6 +313,7 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
     let reference = journal
         .record(
             IntentScope::Cooperative {
+                host: claim.host.clone(),
                 instance: claim.instance.clone(),
                 seat: claim.seat.clone(),
             },
@@ -492,18 +433,21 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
     // A copied UUID/database in a distinct root cannot authorize historical cleanup.
     let original_state = w.state.clone();
     let copied_state = w.root.join("copied-state");
-    let copied_paths = InstancePaths::resolve(
-        &RuntimeContext::explicit(copied_state.clone(), w.socket.clone(), None).unwrap(),
+    let copied_paths = NodePaths::resolve(
+        &RuntimeContext::explicit(copied_state.clone(), w.socket.clone(), None)
+            .unwrap()
+            .state_dir,
     )
     .unwrap();
-    copied_paths.prepare_instance_dir().unwrap();
+    copied_paths.prepare_node_dir().unwrap();
     db.execute(
         "VACUUM INTO ?1",
         [copied_paths.database_path.to_str().unwrap()],
     )
     .unwrap();
-    fs::copy(&w.paths.namespace_path, &copied_paths.namespace_path).unwrap();
-    let copied_journal = copied_paths.instance_dir.join("intents");
+    fs::copy(&w.paths.node_json_path, &copied_paths.node_json_path).unwrap();
+    fs::copy(&w.paths.key_path, &copied_paths.key_path).unwrap();
+    let copied_journal = copied_paths.node_dir.join("intents");
     fs::DirBuilder::new()
         .mode(0o700)
         .create(&copied_journal)

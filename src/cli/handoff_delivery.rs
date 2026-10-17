@@ -125,6 +125,7 @@ pub(crate) fn automatic_envelope(
 ) -> Result<crate::protocol::handoff::AutomaticDeliveryMutation, RunError> {
     let scope = IntentScope::Cooperative {
         instance: claim.instance.clone(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
     };
     crate::protocol::handoff::AutomaticDeliveryMutation::new(scope, claim.clone(), original)
@@ -216,6 +217,7 @@ pub(crate) fn publish_automatic(
     validate_automatic_local_admission(journal, &automatic_envelope(&claim, original.clone())?)?;
     let scope = IntentScope::Cooperative {
         instance: claim.instance.clone(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
     };
     Ok(journal.record(scope, original.semantic(claim), clock.utc_now().0)?)
@@ -249,6 +251,7 @@ pub(crate) fn prepare_automatic<C: LocalClient + ?Sized>(
     inputs.namespace.validate().map_err(fail)?;
     if inputs.claim.role != CallerRole::TopLevel
         || inputs.claim.instance != inputs.namespace.instance
+        || inputs.claim.host.as_path() != inputs.namespace.host_endpoint.as_path()
     {
         return Err(fail(
             "automatic delivery requires original top-level instance claim",
@@ -358,6 +361,7 @@ pub fn prepare<C: LocalClient + ?Sized>(
     inputs.namespace.validate().map_err(fail)?;
     if inputs.claim.role != CallerRole::TopLevel
         || inputs.claim.instance != inputs.namespace.instance
+        || inputs.claim.host.as_path() != inputs.namespace.host_endpoint.as_path()
     {
         return Err(fail(
             "delivery requires the original top-level instance claim",
@@ -579,6 +583,7 @@ pub fn publish(
     plan.validate()?;
     let scope = IntentScope::Cooperative {
         instance: claim.instance.clone(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
     };
     Ok(journal.record(
@@ -747,9 +752,11 @@ fn execute_locked<C: LocalClient + ?Sized>(
     if pending.header.scope
         != (IntentScope::Cooperative {
             instance: claim.instance.clone(),
+            host: claim.host.clone(),
             seat: claim.seat.clone(),
         })
         || claim.instance != plan.payload.namespace.instance
+        || claim.host.as_path() != plan.payload.namespace.host_endpoint.as_path()
         || claim.role != CallerRole::TopLevel
     {
         return Err(super::invalid_request("delivery original scope mismatch"));
@@ -958,9 +965,11 @@ fn delivery_plan(pending: &PendingIntent) -> Result<&DeliveryPlan, RunError> {
     if pending.header.scope
         != (IntentScope::Cooperative {
             instance: claim.instance.clone(),
+            host: claim.host.clone(),
             seat: claim.seat.clone(),
         })
         || claim.instance != plan.payload.namespace.instance
+        || claim.host.as_path() != plan.payload.namespace.host_endpoint.as_path()
         || claim.role != CallerRole::TopLevel
     {
         return Err(super::invalid_request("delivery original scope mismatch"));

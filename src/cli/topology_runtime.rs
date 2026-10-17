@@ -7,7 +7,7 @@ use super::{
     journal::{IntentScope, Journal, OriginalActor, SemanticMutation},
 };
 use crate::{
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     host::native::NativeCli,
     ports::{BootstrapObserver, HostCallContext, LocalClient},
     protocol::{
@@ -44,12 +44,18 @@ fn runtime(output: &OutputSpec) -> Result<RuntimeContext, RunError> {
         .0,
     )
 }
-fn namespace(selected: &RuntimeContext, instance: uuid::Uuid) -> HandoffNamespace {
-    HandoffNamespace {
+fn namespace(
+    selected: &RuntimeContext,
+    instance: crate::node::NodeUuid,
+) -> Result<HandoffNamespace, RunError> {
+    Ok(HandoffNamespace {
         instance: instance.to_string(),
         state_dir: selected.state_dir.clone(),
-        host_endpoint: selected.host_endpoint.clone(),
-    }
+        host_endpoint: selected
+            .require_host()
+            .map_err(super::context_error)?
+            .to_path_buf(),
+    })
 }
 fn recovery_origin_host_matches(
     semantic: &SemanticMutation,
@@ -59,7 +65,7 @@ fn recovery_origin_host_matches(
         .namespace()
         .ok_or_else(|| super::invalid_request("recovery lacks frozen namespace"))?;
     if frozen.state_dir.as_os_str() != selected.state_dir.as_os_str()
-        || frozen.host_endpoint.as_os_str() != selected.host_endpoint.as_os_str()
+        || frozen.host_endpoint.as_os_str() != selected.require_host()?.as_os_str()
     {
         return Err(super::invalid_request(
             "recovery selected namespace differs from original",
@@ -127,6 +133,7 @@ pub(crate) fn is_compound(semantic: &SemanticMutation) -> bool {
 fn agent_claim(claim: &CallerClaim) -> Result<(), RunError> {
     let scope = IntentScope::Cooperative {
         instance: claim.instance.clone(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
     };
     if super::journal::classify_original_claim(&scope, claim)? != OriginalActor::Agent
@@ -143,13 +150,13 @@ fn agent_claim(claim: &CallerClaim) -> Result<(), RunError> {
 pub(crate) fn try_completed<C: LocalClient + ?Sized>(
     parsed: &ParsedCli,
     journal: &Journal,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     selected: &RuntimeContext,
     client: &C,
     clock: &dyn Clock,
     writer: &mut dyn Write,
 ) -> Result<bool, RunError> {
-    let ns = namespace(selected, instance);
+    let ns = namespace(selected, instance)?;
     try_completed_with_namespace(parsed, journal, &ns, client, clock, writer)
 }
 
@@ -357,7 +364,7 @@ pub(crate) fn run(
     parsed: ParsedCli,
     claim: CallerClaim,
     journal: &Journal,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     writer: &mut dyn Write,
 ) -> Result<(), RunError> {
     let mut sink = ForwardWriter(writer);
@@ -365,16 +372,16 @@ pub(crate) fn run(
     let clock: Arc<dyn Clock> = Arc::new(super::SystemClock::new());
     let selected = runtime(&parsed.output)?;
     let (instance, _, client) = super::connect(paths, &clock)?;
-    let ns = namespace(&selected, instance);
+    let ns = namespace(&selected, instance)?;
     agent_claim(&claim)?;
     if !matches!(&parsed.action, CliAction::TopologyHandoff(request) if request.automatic && !request.existing)
     {
         require_capability(&client, clock.as_ref())?;
     }
-    let host = NativeCli::new(selected.host_endpoint.clone(), clock.clone());
+    let host = NativeCli::new(selected.require_host()?.to_path_buf(), clock.clone());
     let mut output = parsed.output.clone();
     output.context.state_dir = Some(selected.state_dir.to_string_lossy().into_owned());
-    output.context.host = Some(selected.host_endpoint.to_string_lossy().into_owned());
+    output.context.host = Some(selected.require_host()?.to_string_lossy().into_owned());
     let reference = match &parsed.action {
         CliAction::TopologyHandoff(request) if request.automatic && !request.existing => {
             let cwd = std::env::current_dir()?;
@@ -388,9 +395,14 @@ pub(crate) fn run(
                 super::launch::native_options_env(registry, harness)?.and_then(std::env::var_os);
             let mut env = super::setup::SetupEnv::from_process(&output)?;
             env.state_dir = Some(selected.state_dir.clone());
-            env.host_endpoint = Some(selected.host_endpoint.clone());
-            let seats =
-                super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
+            env.host_endpoint = Some(selected.require_host()?.to_path_buf());
+            let seats = super::launch::DaemonSeatResolver::new(
+                &client,
+                journal,
+                instance,
+                selected.claim_host()?,
+                clock.as_ref(),
+            );
             let shell = super::launch::SystemShellProbe::from_process();
             let mut launcher = super::handoff::NativeLauncher {
                 registry,
@@ -400,7 +412,7 @@ pub(crate) fn run(
                     seats: &seats,
                     handoff: &client,
                     clock: clock.as_ref(),
-                    record_dir: Some(&paths.instance_dir),
+                    record_dir: Some(&paths.node_dir),
                     shell_probe: &shell,
                 },
             };
@@ -433,7 +445,7 @@ pub(crate) fn run(
                             seats: &seats,
                             handoff: &client,
                             clock: clock.as_ref(),
-                            record_dir: Some(&paths.instance_dir),
+                            record_dir: Some(&paths.node_dir),
                             shell_probe: &shell,
                         },
                     )?;
@@ -488,6 +500,7 @@ pub(crate) fn run(
             )?;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance.clone(),
+                host: claim.host.clone(),
                 seat: claim.seat.clone(),
             };
             let semantic = SemanticMutation::freeze(
@@ -553,9 +566,14 @@ pub(crate) fn run(
             // resolves it. Canonical target admission remains after creation.
             let mut env = super::setup::SetupEnv::from_process(&output)?;
             env.state_dir = Some(selected.state_dir.clone());
-            env.host_endpoint = Some(selected.host_endpoint.clone());
-            let seats =
-                super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
+            env.host_endpoint = Some(selected.require_host()?.to_path_buf());
+            let seats = super::launch::DaemonSeatResolver::new(
+                &client,
+                journal,
+                instance,
+                selected.claim_host()?,
+                clock.as_ref(),
+            );
             let shell = super::launch::SystemShellProbe::from_process();
             let effective = super::topology_handoff::preflight_launch_request(&identity)?;
             let expected = crate::harness::launch::compose_native_argv(
@@ -572,7 +590,7 @@ pub(crate) fn run(
                     seats: &seats,
                     handoff: &client,
                     clock: clock.as_ref(),
-                    record_dir: Some(&paths.instance_dir),
+                    record_dir: Some(&paths.node_dir),
                     shell_probe: &shell,
                 },
             )?;
@@ -610,6 +628,7 @@ pub(crate) fn run(
             if original.header.scope
                 != (IntentScope::Cooperative {
                     instance: claim.instance.clone(),
+                    host: claim.host.clone(),
                     seat: claim.seat.clone(),
                 })
                 || original.semantic.frozen_claim() != Some(&claim)
@@ -652,12 +671,13 @@ pub(crate) fn run(
                 };
                 let mut env = super::setup::SetupEnv::from_process(&output)?;
                 env.state_dir = Some(selected.state_dir.clone());
-                env.host_endpoint = Some(selected.host_endpoint.clone());
+                env.host_endpoint = Some(selected.require_host()?.to_path_buf());
                 let registry = crate::harness::registry::builtins();
                 let seats = super::launch::DaemonSeatResolver::new(
                     &client,
                     journal,
                     instance,
+                    selected.claim_host()?,
                     clock.as_ref(),
                 );
                 let shell = super::launch::SystemShellProbe::from_process();
@@ -669,7 +689,7 @@ pub(crate) fn run(
                         seats: &seats,
                         handoff: &client,
                         clock: clock.as_ref(),
-                        record_dir: Some(&paths.instance_dir),
+                        record_dir: Some(&paths.node_dir),
                         shell_probe: &shell,
                     },
                 };
@@ -855,9 +875,16 @@ pub(crate) fn run(
             return Err(error);
         }
     };
+    env.host_endpoint = Some(selected.require_host()?.to_path_buf());
+    let claim_host = selected.claim_host()?;
     env.state_dir = Some(selected.state_dir);
-    env.host_endpoint = Some(selected.host_endpoint);
-    let seats = super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
+    let seats = super::launch::DaemonSeatResolver::new(
+        &client,
+        journal,
+        instance,
+        claim_host,
+        clock.as_ref(),
+    );
     let shell = super::launch::SystemShellProbe::from_process();
     let mut launcher = super::handoff::NativeLauncher {
         registry: crate::harness::registry::builtins(),
@@ -867,7 +894,7 @@ pub(crate) fn run(
             seats: &seats,
             handoff: &client,
             clock: clock.as_ref(),
-            record_dir: Some(&paths.instance_dir),
+            record_dir: Some(&paths.node_dir),
             shell_probe: &shell,
         },
     };
@@ -893,7 +920,7 @@ pub(crate) fn run(
 pub(crate) fn run_operator(
     parsed: &ParsedCli,
     selected: &RuntimeContext,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: &Arc<dyn Clock>,
     writer: &mut dyn Write,
 ) -> Result<bool, RunError> {
@@ -905,15 +932,15 @@ pub(crate) fn run_operator(
     ) {
         return Ok(false);
     }
-    let journal = Journal::open(paths.instance_dir.join("intents"))?;
+    let journal = Journal::open(paths.node_dir.join("intents"))?;
     let mut automatic_connect = || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
         let (instance, _, client) = super::connect(paths, clock)?;
-        Ok((namespace(selected, instance), Box::new(client)))
+        Ok((namespace(selected, instance)?, Box::new(client)))
     };
     let mut automatic_observe =
         |target: &crate::protocol::ids::HostTargetId,
          saved_request: Option<&crate::ports::CreateTabRequest>| {
-            let host = NativeCli::new(selected.host_endpoint.clone(), clock.clone());
+            let host = NativeCli::new(selected.require_host()?.to_path_buf(), clock.clone());
             let context = HostCallContext {
                 budget: super::cooperative_budget(clock.as_ref()),
                 expected_boot: None,
@@ -971,7 +998,7 @@ pub(crate) fn run_operator(
         ));
     }
     let (instance, _, client) = super::connect(paths, clock)?;
-    let ns = namespace(selected, instance);
+    let ns = namespace(selected, instance)?;
     super::topology_recover::require_capability(&client, clock.as_ref())?;
     let reference = if let Some(original) = original {
         original.header.reference
@@ -1006,7 +1033,7 @@ pub(crate) fn run_operator(
         };
         let disposition = match &request.disposition {
             super::topology_recover::Assertion::CreatedPane(target) => {
-                let host = NativeCli::new(selected.host_endpoint.clone(), clock.clone());
+                let host = NativeCli::new(selected.require_host()?.to_path_buf(), clock.clone());
                 let context = HostCallContext {
                     budget: super::cooperative_budget(clock.as_ref()),
                     expected_boot: None,

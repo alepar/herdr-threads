@@ -55,14 +55,20 @@ fn attachment_fixture_inner(real_writer: bool, retain_legacy: bool) -> Attachmen
             TerminalId::new("sender-terminal")
         });
     }
-    let admission =
-        crate::store::seats::begin_host_observation(&context, &mut db, "i", &budget).unwrap();
+    let admission = crate::store::seats::begin_host_observation(
+        &context,
+        &mut db,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = staged_test_snapshot(&context, &mut db, admission, &snapshot, &budget);
     crate::store::seats::publish_snapshot_stage(&context, &mut db, &stage, &budget).unwrap();
     let store = Arc::new(
         crate::store::SqliteStore::new(
-            StoreContext::new(path.clone(), clock),
-            "i",
+            StoreContext::new(path.clone(), clock).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             crate::store::StoreSettings::default(),
         )
         .unwrap(),
@@ -77,6 +83,7 @@ fn attachment_fixture_inner(real_writer: bool, retain_legacy: bool) -> Attachmen
     id.claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
     id.digest = id.semantic_digest().unwrap();
     let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: created.root_pane.clone(),
         operation: id.payload.resolve_key.clone(),
     };
@@ -88,9 +95,9 @@ fn attachment_fixture_inner(real_writer: bool, retain_legacy: bool) -> Attachmen
     else {
         panic!("missing recipient")
     };
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('sender','i','resolved','native','w1:p1',1,1,0)",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('sender','34750f98bd59fcfc946da45aaabe933b','resolved','native','w1:p1',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w1:p1',?1,1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0,'sender-terminal','herdr-server:pid=42:start=1.000002:uid=501')",[created.host_incarnation.as_str()]).unwrap();
-    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('thread','i','topic','goal',0,0); INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('thread','sender','joined',0)").unwrap();
+    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0); INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('thread','sender','joined',0)").unwrap();
     let a = BootstrapAttachment {
         attempt: BootstrapAttempt::first(),
         created,
@@ -166,6 +173,7 @@ fn attachment_guard(
     .unwrap();
     BootstrapAttachmentGuard::try_new(
         &ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: current.target.clone(),
             operation: operation.clone(),
         },
@@ -194,6 +202,7 @@ fn topology_attachment_uses_real_resolution_and_fresh_guard_without_allocating()
     .unwrap();
     let wrong_boot_guard = BootstrapAttachmentGuard::try_new(
         &ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: observation.target.clone(),
             operation: a.resolve_operation.clone(),
         },
@@ -283,24 +292,24 @@ fn topology_attachment_refuses_stale_or_held_evidence_and_missing_or_changed_res
         let mut guard = attachment_guard(&store, &observation, &budget, &a.resolve_operation, 3);
         match corruption {
             "hold" => {
-                db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','w1:p2',?1,1,'held')",[a.created.host_incarnation.as_str()]).unwrap();
+                db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'w1:p2',?1,1,'held')",[a.created.host_incarnation.as_str()]).unwrap();
             }
             "stale" => {
                 let _ = attachment_guard(&store, &observation, &budget, &a.resolve_operation, 4);
             }
             "missing" => {
                 db.execute(
-                    "DELETE FROM operations WHERE actor_scope='service-allocation:i'",
+                    "DELETE FROM operations WHERE actor_scope='service-allocation:34750f98bd59fcfc946da45aaabe933b'",
                     [],
                 )
                 .unwrap();
             }
             "digest" => {
-                db.execute("UPDATE operations SET digest=zeroblob(32) WHERE actor_scope='service-allocation:i'",[]).unwrap();
+                db.execute("UPDATE operations SET digest=zeroblob(32) WHERE actor_scope='service-allocation:34750f98bd59fcfc946da45aaabe933b'",[]).unwrap();
             }
             "result" => {
                 db.execute(
-                    "UPDATE operations SET result_json=?1 WHERE actor_scope='service-allocation:i'",
+                    "UPDATE operations SET result_json=?1 WHERE actor_scope='service-allocation:34750f98bd59fcfc946da45aaabe933b'",
                     [
                         serde_json::to_string(&CommandResult::SeatResolved(SeatId::new("wrong")))
                             .unwrap(),
@@ -332,6 +341,7 @@ fn topology_attachment_refuses_stale_or_held_evidence_and_missing_or_changed_res
                 .unwrap();
                 guard = BootstrapAttachmentGuard::try_new(
                     &ResolveSeat {
+                        host: crate::test_support::test_host_locator(),
                         target: current.target.clone(),
                         operation: a.resolve_operation.clone(),
                     },
@@ -398,7 +408,8 @@ fn new_thread_fixture_with_policy(
     id.payload.handoff.policy = policy;
     id.claim = claim("s1");
     id.scope = crate::cli::journal::IntentScope::Cooperative {
-        instance: "i".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s1"),
     };
     id.payload.handoff.channel = HandoffChannel::New {
@@ -1501,7 +1512,7 @@ fn automatic_linked_terminal_reconciles_completed_child_without_reopening_or_rel
         crate::store::seats::mutate_operator(
             &context,
             &mut db,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             crate::ports::OperatorRequest::Retire(crate::protocol::commands::OperatorRetire {
                 seat: seat.clone(),
                 operation: OperationId::new(format!("terminal-retire-{}", seat.as_str())),
@@ -1564,15 +1575,18 @@ fn automatic_linked_terminal_reconciles_completed_child_without_reopening_or_rel
             mono: at,
             utc: UtcMillis(at),
             after_ms: 60000,
-            host_generation: 0,
-            coherent: true,
-            valid_until_mono: None,
+            hosts: crate::test_support::test_host_evidence(0, true),
             legacy_source: Some("covered".into()),
         };
         for _ in 0..30 {
-            if !crate::store::archival::advance(&db, "i", &rt)
-                .unwrap()
-                .has_more
+            if !crate::store::archival::advance_with(
+                &db,
+                Some(&context),
+                "34750f98bd59fcfc946da45aaabe933b",
+                &rt,
+            )
+            .unwrap()
+            .has_more
             {
                 break;
             }
@@ -1726,7 +1740,7 @@ fn automatic_linked_created_recovery_uses_fresh_guard_and_replays_before_current
     assert!(
         matches!(cancelled,CommandResult::AutomaticBootstrap(ref status) if status.state==BootstrapState::Cancelled && status.creation.as_ref()==Some(&a.created))
     );
-    db.execute_batch("UPDATE occupant_bindings SET ended_at=1;UPDATE host_instances SET lifecycle_revision=lifecycle_revision+5;").unwrap();
+    db.execute_batch("UPDATE occupant_bindings SET ended_at=1;UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+5;").unwrap();
     assert_eq!(
         crate::ports::BootstrapStorePort::automatic_bootstrap_recovery_replay(
             &*store,
@@ -1751,6 +1765,7 @@ fn automatic_linked_created_recovery_uses_fresh_guard_and_replays_before_current
         store
             .resolve_seat(
                 ResolveSeat {
+                    host: crate::test_support::test_host_locator(),
                     target: a.created.root_pane,
                     operation: id.plan.payload.keys.resolve.clone()
                 },
@@ -1795,7 +1810,7 @@ fn automatic_linked_created_recovery_refuses_changed_witness_and_lifecycle_witho
             evidence.witness.socket.inode += 1;
         } else {
             db.execute(
-                "UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1",
+                "UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1",
                 [],
             )
             .unwrap();
@@ -2026,7 +2041,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
             serde_json::to_vec(&crate::protocol::wire::WireRequest {
                 version: crate::protocol::wire::PROTOCOL_VERSION,
                 request_id: "capacity".into(),
-                expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+                expected_instance: "00000000000040008000000000000001".into(),
                 expected_boot: Some("00000000-0000-4000-8000-000000000002".into()),
                 output: None,
                 command: crate::protocol::commands::Command::AutomaticBootstrap(Box::new(
@@ -2108,7 +2123,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
         );
         if body.starts_with('\u{1}') {
             assert!(maximum_original.len() > 524288);
-            assert!(db.execute("INSERT INTO automatic_bootstrap_parents(id,instance_id,actor_scope,compound,state_dir,host_endpoint,original_json,state,current_attempt) VALUES(98,'i','seat:sender','too-large','/state','/host',?1,'created',1)",[&maximum_original]).is_err());
+            assert!(db.execute("INSERT INTO automatic_bootstrap_parents(id,instance_id,actor_scope,compound,state_dir,host_endpoint,original_json,state,current_attempt) VALUES(98,'34750f98bd59fcfc946da45aaabe933b','seat:sender','too-large','/state','/host',?1,'created',1)",[&maximum_original]).is_err());
             assert_eq!(
                 db.query_row(
                     "SELECT count(*) FROM automatic_bootstrap_parents WHERE id=98",
@@ -2188,7 +2203,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
         let wire = serde_json::to_vec(&crate::protocol::wire::WireResponse {
             version: crate::protocol::wire::PROTOCOL_VERSION,
             request_id: "capacity".into(),
-            instance: "00000000-0000-4000-8000-000000000001".into(),
+            instance: "00000000000040008000000000000001".into(),
             daemon_boot: "00000000-0000-4000-8000-000000000002".into(),
             result: Ok(result),
         })
@@ -2205,7 +2220,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
         assert!(original.len() <= 524288);
         assert!(attached.len() <= 524288);
         assert!(recovered.len() <= 2097152);
-        db.execute("INSERT INTO automatic_bootstrap_parents(id,instance_id,actor_scope,compound,state_dir,host_endpoint,original_json,state,current_attempt) VALUES(99,'i','seat:sender','capacity','/state','/host',?1,'created',1)",[&original]).unwrap();
+        db.execute("INSERT INTO automatic_bootstrap_parents(id,instance_id,actor_scope,compound,state_dir,host_endpoint,original_json,state,current_attempt) VALUES(99,'34750f98bd59fcfc946da45aaabe933b','seat:sender','capacity','/state','/host',?1,'created',1)",[&original]).unwrap();
         db.execute(
             "INSERT INTO automatic_bootstrap_attempts VALUES(99,1,'created',0,?1)",
             [serde_json::to_vec(&a.created).unwrap()],

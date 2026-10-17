@@ -4,7 +4,7 @@ use herdr_threads::{
     client::local::LocalSocketClient,
     daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     harness::context::Harness,
     host::native::NativeCli,
@@ -98,8 +98,8 @@ fn trace_host(trace: &HostTrace, event: String) {
 struct Fixture {
     root: PathBuf,
     context: RuntimeContext,
-    paths: InstancePaths,
-    instance: Uuid,
+    paths: NodePaths,
+    instance: herdr_threads::node::NodeUuid,
     client: LocalSocketClient,
     clock: Arc<dyn Clock>,
     pane_reads: Arc<AtomicUsize>,
@@ -273,12 +273,15 @@ impl Fixture {
             host: Some(host),
         };
         let context = RuntimeContext::explicit(root.join("state"), endpoint, None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        let instance = owner.instance_uuid();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        let instance = owner.node_uuid().unwrap();
         drop(owner);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-        let native = Arc::new(NativeCli::new(context.host_endpoint.clone(), clock.clone()));
+        let native = Arc::new(NativeCli::new(
+            context.host_endpoint.clone().unwrap(),
+            clock.clone(),
+        ));
         let budget = CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5000),
             cancellation: Cancellation::default(),
@@ -294,13 +297,13 @@ impl Fixture {
             )
             .unwrap();
         let observation = pane.observation();
-        let store_context = StoreContext::new(paths.database_path.clone(), clock.clone());
+        let store_context = StoreContext::new(paths.database_path.clone(), clock.clone())
+            .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
+        // The host row the elected daemon will attach (same endpoint).
+        store_context
+            .attach_host(&context.host_endpoint.clone().unwrap().to_string_lossy())
+            .unwrap();
         let db = store_context.open_writer().unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-            [instance.to_string()],
-        )
-        .unwrap();
         let store = SqliteStore::new(
             store_context,
             instance.to_string(),
@@ -308,7 +311,11 @@ impl Fixture {
         )
         .unwrap();
         let admission = store
-            .begin_host_observation(&instance.to_string(), &budget)
+            .begin_host_observation(
+                &instance.to_string(),
+                herdr_threads::test_support::test_host_id(),
+                &budget,
+            )
             .unwrap();
         let snapshot = herdr_threads::ports::HostPort::enumerate_targets(
             native.as_ref(),
@@ -357,7 +364,7 @@ impl Fixture {
             ("sender", "w4:p1", "term_1"),
             ("recipient", "w4:p2", "term_2"),
         ] {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0)",rusqlite::params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",rusqlite::params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
         }
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w4:p1',?1,1,1,?3,'session',?2,'cooperative_top_level',0,0,'term_1',?1)",rusqlite::params![observation.host_boot.as_str(),execution.to_string(), original_harness.as_str()]).unwrap();
         drop(db);
@@ -384,8 +391,11 @@ impl Fixture {
                             daemon_clock,
                             daemon_stop,
                             ServiceConfig::default(),
-                            native.clone(),
-                            native,
+                            herdr_threads::test_support::single_host_plan_with_observer(
+                                native.clone(),
+                                native.clone(),
+                                daemon_context.require_host().unwrap(),
+                            ),
                             ready,
                         )
                         .await
@@ -395,7 +405,10 @@ impl Fixture {
                             daemon_clock,
                             daemon_stop,
                             ServiceConfig::default(),
-                            native,
+                            herdr_threads::test_support::single_host_plan_at(
+                                native,
+                                daemon_context.require_host().unwrap(),
+                            ),
                             ready,
                         )
                         .await
@@ -433,7 +446,7 @@ impl Fixture {
             harness: original_harness.as_str(),
         };
         let until = Instant::now() + Duration::from_secs(5);
-        while fixture.db().query_row("SELECT count(*) FROM host_instances WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch", [], |r|r.get::<_,i64>(0)).unwrap() == 0 {
+        while fixture.db().query_row("SELECT count(*) FROM herdr_hosts WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch", [], |r|r.get::<_,i64>(0)).unwrap() == 0 {
             assert!(Instant::now() < until, "canonical reconciliation");
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -470,7 +483,7 @@ impl Fixture {
                     std::ffi::OsStr::new("--state-dir"),
                     AsRef::<std::ffi::OsStr>::as_ref(&&self.context.state_dir),
                     std::ffi::OsStr::new("--host-endpoint"),
-                    AsRef::<std::ffi::OsStr>::as_ref(&&self.context.host_endpoint),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.context.host_endpoint.clone().unwrap()),
                 ],
                 args,
             ))
@@ -495,12 +508,20 @@ impl Fixture {
     }
     fn rotate_owned_endpoint(&self) {
         use std::os::unix::fs::MetadataExt;
-        let old = fs::metadata(&self.context.host_endpoint).unwrap().ino();
-        fs::rename(&self.context.host_endpoint, self.root.join("previous.sock")).unwrap();
-        let listener = UnixListener::bind(&self.context.host_endpoint).unwrap();
+        let old = fs::metadata(self.context.host_endpoint.clone().unwrap())
+            .unwrap()
+            .ino();
+        fs::rename(
+            self.context.host_endpoint.clone().unwrap(),
+            self.root.join("previous.sock"),
+        )
+        .unwrap();
+        let listener = UnixListener::bind(self.context.host_endpoint.clone().unwrap()).unwrap();
         listener.set_nonblocking(true).unwrap();
         assert_ne!(
-            fs::metadata(&self.context.host_endpoint).unwrap().ino(),
+            fs::metadata(self.context.host_endpoint.clone().unwrap())
+                .unwrap()
+                .ino(),
             old
         );
         let (ready, acknowledged) = std::sync::mpsc::sync_channel(0);
@@ -526,19 +547,21 @@ impl Fixture {
     fn unconfigured_domain(&self) -> herdr_threads::service::dispatch::DomainService {
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(self.paths.database_path.clone(), self.clock.clone()),
+                StoreContext::new(self.paths.database_path.clone(), self.clock.clone())
+                    .with_attached_host(&self.context.claim_host().unwrap()),
                 self.instance.to_string(),
                 StoreSettings::default(),
             )
             .unwrap(),
         );
         let host = Arc::new(NativeCli::new(
-            self.context.host_endpoint.clone(),
+            self.context.host_endpoint.clone().unwrap(),
             self.clock.clone(),
         ));
         let writer = Arc::new(herdr_threads::service::fair_writer::FairWriter::new(32));
         let identity = Arc::new(herdr_threads::identity::repair::OrdinaryIdentity::new(
             self.instance.to_string(),
+            herdr_threads::test_support::test_host_id(),
             store.clone(),
             host,
             self.clock.clone(),
@@ -563,7 +586,7 @@ impl Fixture {
             None,
         )
         .unwrap();
-        let copy_paths = InstancePaths::resolve(&copy_context).unwrap();
+        let copy_paths = NodePaths::resolve(&copy_context.state_dir).unwrap();
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -575,7 +598,8 @@ impl Fixture {
         f_copy_database(&self.db(), &copy);
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(copy, self.clock.clone()),
+                StoreContext::new(copy, self.clock.clone())
+                    .with_attached_host(&self.context.claim_host().unwrap()),
                 self.instance.to_string(),
                 StoreSettings::default(),
             )
@@ -588,6 +612,7 @@ impl Fixture {
         let writer = Arc::new(herdr_threads::service::fair_writer::FairWriter::new(32));
         let identity = Arc::new(herdr_threads::identity::repair::OrdinaryIdentity::new(
             self.instance.to_string(),
+            herdr_threads::test_support::test_host_id(),
             store.clone(),
             host.clone(),
             self.clock.clone(),
@@ -601,7 +626,7 @@ impl Fixture {
         )
         .with_operator_owner(unsafe { libc::geteuid() })
         .with_cooperative_owner(unsafe { libc::geteuid() }, writer)
-        .with_bootstrap_runtime(namespace, host, store)
+        .with_prebuilt_bootstrap(namespace, host, store)
         .unwrap()
     }
     fn db(&self) -> rusqlite::Connection {
@@ -760,7 +785,8 @@ fn registered_begin_create_replay_matrix(
     }
     let generic = f.unconfigured_domain();
     let store = SqliteStore::new(
-        StoreContext::new(f.paths.database_path.clone(), f.clock.clone()),
+        StoreContext::new(f.paths.database_path.clone(), f.clock.clone())
+            .with_attached_host(&f.context.claim_host().unwrap()),
         f.instance.to_string(),
         StoreSettings::default(),
     )
@@ -852,7 +878,7 @@ fn registered_begin_create_replay_matrix(
         "canonical attached child requires its exact frozen Begin key"
     );
     for seat in [&attachment.resolved_seat, &identity.claim.seat] {
-        f.db().execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) SELECT instance_id,target_id,structural_host_boot,structural_host_epoch,'owned R1 guard' FROM seats WHERE id=?1",[seat.as_str()]).unwrap();
+        f.db().execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) SELECT host_id,target_id,structural_host_boot,structural_host_epoch,'owned R1 guard' FROM seats WHERE id=?1",[seat.as_str()]).unwrap();
         for (command, expected) in commands.iter().zip(&positive) {
             let result = f.call(command.clone());
             if completed {
@@ -940,7 +966,7 @@ fn elected_public_delivery_is_staged_without_native_effect_and_completed_retry_i
             .any(|v| v == herdr_threads::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1)
     );
     let until = Instant::now() + Duration::from_secs(5);
-    while f.db().query_row("SELECT count(*) FROM host_instances WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch", [], |r|r.get::<_,i64>(0)).unwrap()==0 {assert!(Instant::now()<until,"reconciliation"); std::thread::sleep(Duration::from_millis(10));}
+    while f.db().query_row("SELECT count(*) FROM herdr_hosts WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch", [], |r|r.get::<_,i64>(0)).unwrap()==0 {assert!(Instant::now()<until,"reconciliation"); std::thread::sleep(Duration::from_millis(10));}
     let out = f.cli(
         &[
             "--cooperative-seat",
@@ -1022,7 +1048,7 @@ fn elected_public_delivery_is_staged_without_native_effect_and_completed_retry_i
     assert!(!refusal.status.success());
     assert!(refusal.stdout.is_empty());
     assert_eq!(f.effects.load(Ordering::Relaxed), 0);
-    assert!(f.instance != Uuid::nil());
+    assert!(f.instance != herdr_threads::node::NodeUuid::nil());
 }
 
 /// The default automatic two-seat channel (no --new-thread or --thread)
@@ -1281,7 +1307,8 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
         &budget,
     );
     let store = SqliteStore::new(
-        StoreContext::new(f.paths.database_path.clone(), f.clock.clone()),
+        StoreContext::new(f.paths.database_path.clone(), f.clock.clone())
+            .with_attached_host(&f.context.claim_host().unwrap()),
         f.instance.to_string(),
         StoreSettings::default(),
     )
@@ -1428,7 +1455,7 @@ fn elected_unconfigured_daemon_refuses_new_mode_before_semantic_publication_or_e
             .unwrap(),
         0
     );
-    let directory = f.paths.instance_dir.join("intents");
+    let directory = f.paths.node_dir.join("intents");
     assert!(fs::read_dir(directory).unwrap().all(|e| {
         !e.unwrap()
             .file_name()
@@ -1569,7 +1596,7 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
     };
     changed.operation = identity.payload.handoff.keys.invite.clone();
     assert!(f.call(phase).is_err());
-    f.db().execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) SELECT instance_id,target_id,structural_host_boot,structural_host_epoch,'owned live guard' FROM seats WHERE id=?1", [attachment.resolved_seat.as_str()]).unwrap();
+    f.db().execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) SELECT host_id,target_id,structural_host_boot,structural_host_epoch,'owned live guard' FROM seats WHERE id=?1", [attachment.resolved_seat.as_str()]).unwrap();
     assert!(f.call(invite.clone()).is_err());
     assert!(f.call(send.clone()).is_err());
     f.db()
@@ -1693,7 +1720,7 @@ fn public_unknown_created_pane_agent_retry_chain(retain_request: bool) {
             .unwrap(),
         1
     );
-    let directory = f.paths.instance_dir.join("intents");
+    let directory = f.paths.node_dir.join("intents");
     let journal = Journal::open(&directory).unwrap();
     let pending = journal.page(&Default::default()).unwrap();
     let local = pending
@@ -2040,6 +2067,7 @@ fn current_main_registered_original_caller_preserves_bootstrap_and_delivery_clai
         )
         .unwrap();
     let expected = CallerClaim {
+        host: f.context.claim_host().unwrap(),
         instance: f.instance.to_string(),
         seat: SeatId::new("sender"),
         target: HostTargetId::new("w4:p1"),
@@ -2240,7 +2268,7 @@ fn current_main_topology_native_preparation_refuses_before_publication() {
     );
     assert!(out.stdout.is_empty());
     let journal =
-        herdr_threads::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+        herdr_threads::cli::journal::Journal::open(f.paths.node_dir.join("intents")).unwrap();
     assert!(journal.page(&Default::default()).unwrap().items.is_empty());
 }
 
@@ -2261,6 +2289,7 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
     let f = Fixture::new_runtime(false);
     let execution: String = f.db().query_row("SELECT execution_id FROM occupant_bindings WHERE seat_id='sender' AND ended_at IS NULL", [], |r| r.get(0)).unwrap();
     let claim = CallerClaim {
+        host: f.context.claim_host().unwrap(),
         instance: f.instance.to_string(),
         seat: SeatId::new("sender"),
         binding_generation: 1,
@@ -2278,7 +2307,7 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
             namespace: HandoffNamespace {
                 instance: f.instance.to_string(),
                 state_dir: f.context.state_dir.clone(),
-                host_endpoint: f.context.host_endpoint.clone(),
+                host_endpoint: f.context.host_endpoint.clone().unwrap(),
             },
             keys: HandoffKeys {
                 compound: OperationId::new("task21-original"),
@@ -2314,10 +2343,11 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
         linked_complete_key: OperationId::new("task21-linked"),
     };
     let scope = IntentScope::Cooperative {
+        host: claim.host.clone(),
         instance: f.instance.to_string(),
         seat: claim.seat.clone(),
     };
-    let journal = Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(f.paths.node_dir.join("intents")).unwrap();
     let reference = journal
         .record(
             scope.clone(),
@@ -2369,7 +2399,7 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
         )
         .unwrap();
     let snapshot = || {
-        let mut files: Vec<_> = fs::read_dir(f.paths.instance_dir.join("intents"))
+        let mut files: Vec<_> = fs::read_dir(f.paths.node_dir.join("intents"))
             .unwrap()
             .map(|e| {
                 let p = e.unwrap().path();

@@ -74,18 +74,17 @@ fn fixture() -> Fixture {
         .unwrap();
     let clock = Arc::new(TestClock(AtomicI64::new(1_000_000)));
     let shared: Arc<dyn Clock> = clock.clone();
-    let context = StoreContext::new(directory.join("store.db"), shared.clone());
+    let context = StoreContext::new(directory.join("store.db"), shared.clone()).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,3)",
-        [],
+    db.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=3",
     )
     .unwrap();
     for (seat, target) in [("s", "p"), ("x", "px"), ("c", "pc")] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?2,1,0,0)", [seat, target]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat, target]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
     }
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,1)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1,0)", []).unwrap();
     for seat in ["s", "x", "c"] {
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'joined')",
@@ -94,12 +93,22 @@ fn fixture() -> Fixture {
         .unwrap();
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)", [seat]).unwrap();
     }
-    let store: Arc<dyn StorePort> =
-        Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
+    let store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
     let state = Arc::new(DeliveryPullState::default());
-    let service = DomainService::new("i".into(), Arc::clone(&store), shared)
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-        .with_delivery_pull(Arc::clone(&state));
+    let service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        Arc::clone(&store),
+        shared,
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+    .with_delivery_pull(Arc::clone(&state));
     Fixture {
         service,
         store,
@@ -113,9 +122,13 @@ fn fixture() -> Fixture {
 fn restart(f: &mut Fixture) {
     let shared: Arc<dyn Clock> = f.clock.clone();
     f.state = Arc::new(DeliveryPullState::default());
-    f.service = DomainService::new("i".into(), Arc::clone(&f.store), shared)
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
-        .with_delivery_pull(Arc::clone(&f.state));
+    f.service = DomainService::new(
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        Arc::clone(&f.store),
+        shared,
+    )
+    .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+    .with_delivery_pull(Arc::clone(&f.state));
 }
 
 fn claim(
@@ -126,7 +139,8 @@ fn claim(
     generation: u64,
 ) -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new(seat),
         binding_generation: generation,
         role: CallerRole::TopLevel,
@@ -151,7 +165,7 @@ fn fixture_claim(
     session: &str,
 ) -> CallerClaim {
     let generation: i64 = f.db.query_row(
-        "SELECT generation FROM seats WHERE id=?1 AND instance_id='i' AND target_id=?2 AND state='resolved'",
+        "SELECT generation FROM seats WHERE id=?1 AND instance_id='34750f98bd59fcfc946da45aaabe933b' AND target_id=?2 AND state='resolved'",
         params![seat, target],
         |row| row.get(0),
     ).unwrap();
@@ -513,7 +527,7 @@ fn retained_virtual_notice_lookup_uses_indexed_constant_vm_work() {
     let mut previous = 0;
     for count in [0, 64, 4096] {
         f.db.execute(
-            "WITH RECURSIVE n(n) AS (SELECT ?1+1 WHERE ?1<?2 UNION ALL SELECT n+1 FROM n WHERE n<?2) INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) SELECT 'lookup-unpublished-'||n,'i','actor','lookup-unpublished-'||n,zeroblob(32),'t',0,0,0,0,0,0,0,'building' FROM n",
+            "WITH RECURSIVE n(n) AS (SELECT ?1+1 WHERE ?1<?2 UNION ALL SELECT n+1 FROM n WHERE n<?2) INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) SELECT 'lookup-unpublished-'||n,'34750f98bd59fcfc946da45aaabe933b','actor','lookup-unpublished-'||n,zeroblob(32),'t',0,0,0,0,0,0,0,'building' FROM n",
             params![previous, count],
         ).unwrap();
         f.db.execute(
@@ -557,7 +571,7 @@ fn retained_virtual_notice_lookup_uses_indexed_constant_vm_work() {
                 warning.as_str(),
                 "t",
                 recipient.seat.as_str(),
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 true,
             ),
             (
@@ -565,7 +579,7 @@ fn retained_virtual_notice_lookup_uses_indexed_constant_vm_work() {
                 "lookup-missing",
                 "t",
                 recipient.seat.as_str(),
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 false,
             ),
             (
@@ -573,7 +587,7 @@ fn retained_virtual_notice_lookup_uses_indexed_constant_vm_work() {
                 warning.as_str(),
                 "lookup-other-thread",
                 recipient.seat.as_str(),
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 false,
             ),
             (
@@ -581,7 +595,7 @@ fn retained_virtual_notice_lookup_uses_indexed_constant_vm_work() {
                 warning.as_str(),
                 "t",
                 "lookup-other-seat",
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 false,
             ),
             (

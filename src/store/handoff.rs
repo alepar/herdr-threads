@@ -112,7 +112,7 @@ pub(crate) fn validate_live(
     identity: &HandoffIdentity,
     thread: Option<&ThreadId>,
 ) -> Result<(), ApiError> {
-    super::seats::cooperative_bound_mapping(db, &identity.claim, None)?;
+    super::seats::seat_bound_mapping(db, &identity.claim)?;
     if let Some(thread) = thread {
         let row:Option<(bool,bool)>=db.query_row("SELECT archived,EXISTS(SELECT 1 FROM memberships m WHERE m.thread_id=t.id AND m.seat_id=?2 AND m.state='joined') FROM threads t WHERE id=?1 AND instance_id=?3",params![thread.as_str(),identity.claim.seat.as_str(),identity.claim.instance],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
         match row {
@@ -310,7 +310,7 @@ pub(crate) fn begin_pending_impl(
 }
 
 /// Explicit daemon-selected namespace seam for a newly linked child. Public
-/// activation must pass its actual InstancePaths, never the retained parent.
+/// activation must pass its actual NodePaths, never the retained parent.
 pub fn begin_linked_pending(
     tx: &Transaction<'_>,
     canonical: &crate::protocol::handoff::HandoffNamespace,
@@ -341,7 +341,7 @@ pub(crate) fn complete_linked_child(
     if result.state == HandoffState::Completed {
         return Ok(result);
     }
-    super::seats::cooperative_bound_mapping(tx, &identity.claim, None)?;
+    super::seats::seat_bound_mapping(tx, &identity.claim)?;
     if result.thread.is_none() {
         return Err(api_error(
             ErrorCode::Conflict,
@@ -521,7 +521,12 @@ fn mutate_impl(
         command.operation.as_str(),
         digest,
         |tx| {
-            super::seats::cooperative_instance(tx, &identity.claim.instance, &identity.claim)?;
+            super::seats::cooperative_claim(
+                tx,
+                context,
+                &identity.claim.instance,
+                &identity.claim,
+            )?;
             if !complete {
                 if let Some(canonical) = canonical {
                     super::topology_handoff::validate_selected_child_phase(
@@ -539,6 +544,7 @@ fn mutate_impl(
         |_| Ok(()),
         |tx, decision| {
             super::control::decide_accountable(
+                context,
                 tx,
                 decision,
                 &mut permit,

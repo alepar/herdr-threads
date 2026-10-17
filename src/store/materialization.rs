@@ -2,6 +2,7 @@
 
 use super::{
     connection::{api_error, store_error},
+    delivery_tail::DeliveryTail,
     effective::{EffectiveReceiptState, effective_receipt, effective_warning_by_id},
     schema,
     work::commit_work_prefix,
@@ -110,7 +111,7 @@ pub(crate) fn backfill_receipt_deadlines_in(
             {
                 let indexed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM receipt_state WHERE message_id=?1 AND seat_id=?2 AND deadline_at IS NOT NULL)",params![message,seat],|r|r.get(0)).map_err(store_error)?;
                 if !indexed {
-                    project_receipt(tx, &message, &seat)?;
+                    project_receipt(tx, &message, &seat, true)?;
                 }
             }
             prepared = ordinal;
@@ -463,6 +464,10 @@ fn warning_unit(
 }
 
 fn attribute(tx: &Connection, warning: &str, seat: &str, event_seq: i64) -> Result<(), ApiError> {
+    // Warning recipients are local: a remote seat's node derives its own copy.
+    if !super::seats::is_local_seat(tx, &crate::protocol::ids::SeatId::new(seat))? {
+        return Ok(());
+    }
     let inserted=tx.execute("INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES(?1,?2,?3) ON CONFLICT(warning_id,seat_id) DO NOTHING",params![warning,seat,event_seq]).map_err(store_error)?;
     if inserted == 0 {
         let prior: i64 = tx
@@ -493,7 +498,7 @@ fn attribute(tx: &Connection, warning: &str, seat: &str, event_seq: i64) -> Resu
         None => !offered(tx, seat, event_seq)?,
     };
     if inserted > 0 && actionable(tx, warning, seat)? && unoffered {
-        bump(tx, seat)?;
+        DeliveryTail::attention(tx, seat, 0)?;
     }
     Ok(())
 }
@@ -551,7 +556,7 @@ fn actionable(tx: &Connection, warning: &str, seat: &str) -> Result<bool, ApiErr
                 return Ok(false);
             }
             let episode:Option<i64>=tx.query_row("SELECT unavailability_episode FROM prepared_unavailable_warnings WHERE warning_id=?1",[warning],|r|r.get(0)).optional().map_err(store_error)?;
-            let (current,open,available):(i64,i64,bool)=tx.query_row("SELECT s.unavailability_episode,s.unavailability_open,EXISTS(SELECT 1 FROM occupant_bindings b JOIN host_instances h ON h.id=s.instance_id WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.host_boot=h.host_boot AND b.host_epoch=h.host_epoch) FROM seats s WHERE s.id=?1",[owner.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(store_error)?;
+            let (current,open,available):(i64,i64,bool)=tx.query_row("SELECT s.unavailability_episode,s.unavailability_open,EXISTS(SELECT 1 FROM occupant_bindings b JOIN herdr_hosts h ON h.host_id=s.host_id WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.host_boot=h.host_boot AND b.host_epoch=h.host_epoch) FROM seats s WHERE s.id=?1",[owner.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(store_error)?;
             Ok(episode == Some(current) && open == 1 && !available && !condition.is_empty())
         }
         _ => Err(api_error(
@@ -566,11 +571,6 @@ pub(crate) fn offered(tx: &Connection, seat: &str, event_seq: i64) -> Result<boo
     tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM warning_offer o WHERE o.binding_id=({}) AND o.offered_through_seq>=?2)",super::attention::SEAT_NOTICE_BINDING_SQL),params![seat,event_seq],|r|r.get(0)).map_err(store_error)
 }
 
-fn bump(tx: &Connection, seat: &str) -> Result<(), ApiError> {
-    tx.execute("INSERT INTO wake_work(seat_id,attention_version) VALUES(?1,1) ON CONFLICT(seat_id) DO UPDATE SET attention_version=attention_version+1",[seat]).map_err(store_error)?;
-    Ok(())
-}
-
 fn send_unit(
     tx: &Connection,
     preparation: &str,
@@ -580,7 +580,7 @@ fn send_unit(
     if let Some(preparation) = preparation.strip_prefix("service-notify:") {
         return service_notification_unit(tx, preparation, position, high_water);
     }
-    let (message,seq,recipients,warnings,thread,interval_high_water):(String,i64,i64,i64,String,i64)=tx.query_row("SELECT message_id,decision_seq,recipient_count,warning_count,thread_id,interval_high_water FROM send_manifests WHERE preparation_id=?1",[preparation],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).map_err(store_error)?;
+    let (message,seq,recipients,warnings,thread,interval_high_water,suppressed):(String,i64,i64,i64,String,i64,Option<String>)=tx.query_row("SELECT message_id,decision_seq,recipient_count,warning_count,thread_id,interval_high_water,suppressed_seats FROM send_manifests WHERE preparation_id=?1",[preparation],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(store_error)?;
     let total = recipients
         .checked_add(warnings)
         .and_then(|n| n.checked_add(1))
@@ -596,7 +596,12 @@ fn send_unit(
         .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "send cursor overflow"))?;
     if next <= recipients {
         let seat:String=tx.query_row("SELECT seat_id FROM prepared_recipients WHERE preparation_id=?1 AND receipt_ordinal=?2",params![preparation,next],|r|r.get(0)).map_err(store_error)?;
-        project_receipt(tx, &message, &seat)?;
+        // A suppressed recipient (settled history) still gets its receipt row,
+        // but no attention.
+        let attend = !suppressed
+            .as_deref()
+            .is_some_and(|list| list.split('\n').any(|s| s == seat));
+        project_receipt(tx, &message, &seat, attend)?;
         return Ok((position + 1, false));
     }
     if next <= recipients + warnings {
@@ -683,6 +688,9 @@ fn service_notification_unit(
     let Some((ordinal, seat)) = row else {
         return Ok((high_water, true));
     };
+    if !super::seats::is_local_seat(tx, &crate::protocol::ids::SeatId::new(seat.as_str()))? {
+        return Ok((ordinal as u64, false));
+    }
     let inserted=tx.execute(
         "INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES(?1,?2,?3) ON CONFLICT(warning_id,seat_id) DO NOTHING",
         params![message,seat,seq]).map_err(store_error)?;
@@ -698,12 +706,17 @@ fn service_notification_unit(
         None => !offered(tx, &seat, seq)?,
     };
     if inserted > 0 && !retired && unoffered {
-        bump(tx, &seat)?;
+        DeliveryTail::attention(tx, &seat, 0)?;
     }
     Ok((ordinal as u64, false))
 }
 
-fn project_receipt(tx: &Connection, message: &str, seat: &str) -> Result<(), ApiError> {
+fn project_receipt(
+    tx: &Connection,
+    message: &str,
+    seat: &str,
+    attend: bool,
+) -> Result<(), ApiError> {
     let effective = effective_receipt(tx, message, seat)?
         .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "published receipt missing"))?;
     let prior: Option<String> = tx
@@ -721,9 +734,14 @@ fn project_receipt(tx: &Connection, message: &str, seat: &str) -> Result<(), Api
         EffectiveReceiptState::NotRequired => "pending",
     };
     let ack_required = i64::from(effective.state != EffectiveReceiptState::NotRequired);
-    tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_required) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(message_id,seat_id) DO UPDATE SET available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),ack_required=MIN(receipt_state.ack_required,excluded.ack_required) WHERE receipt_state.state='pending'",params![message,seat,physical_state,effective.available_at,effective.deadline_at,ack_required]).map_err(store_error)?;
-    if effective.state == EffectiveReceiptState::Pending && prior.is_none() {
-        bump(tx, seat)?;
+    // An ack recipient already retired when the message applies (its retirement
+    // fact came first) is projected `recipient_retired` at the seat's `retired_at`.
+    let retired_at = (effective.state == EffectiveReceiptState::RecipientRetired)
+        .then_some(effective.retired_at)
+        .flatten();
+    tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_required,retired_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(message_id,seat_id) DO UPDATE SET available_at=COALESCE(receipt_state.available_at,excluded.available_at),deadline_at=COALESCE(receipt_state.deadline_at,excluded.deadline_at),ack_required=MIN(receipt_state.ack_required,excluded.ack_required) WHERE receipt_state.state='pending'",params![message,seat,physical_state,effective.available_at,effective.deadline_at,ack_required,retired_at]).map_err(store_error)?;
+    if attend && effective.state == EffectiveReceiptState::Pending && prior.is_none() {
+        DeliveryTail::attention(tx, seat, 0)?;
     }
     Ok(())
 }
@@ -744,7 +762,7 @@ fn timer_unit(
     let row:Option<(i64,Option<String>)>=tx.query_row("SELECT pr.ordinal,sm.message_id FROM prepared_recipients pr LEFT JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE pr.seat_id=?1 AND pr.ordinal>?2 AND pr.ordinal<=?3 ORDER BY pr.ordinal LIMIT 1",params![seat,sql(position)?,sql(high_water)?],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
     if let Some((ordinal, message)) = row {
         if let Some(message) = message {
-            project_receipt(tx, &message, &seat)?;
+            project_receipt(tx, &message, &seat, true)?;
         }
         return Ok((
             u64::try_from(ordinal)
@@ -783,7 +801,7 @@ fn cleanup_unit(
         }
         return Ok((position, true));
     }
-    let safe:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM send_preparations p WHERE p.id=?1 AND p.status='discarded' AND NOT EXISTS(SELECT 1 FROM send_manifests sm WHERE sm.preparation_id=p.id))",[preparation],|r|r.get(0)).map_err(store_error)?;
+    let safe:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM send_preparations p WHERE p.id=?1 AND p.origin='local' AND p.status='discarded' AND NOT EXISTS(SELECT 1 FROM send_manifests sm WHERE sm.preparation_id=p.id))",[preparation],|r|r.get(0)).map_err(store_error)?;
     if !safe {
         return Err(api_error(
             ErrorCode::Conflict,

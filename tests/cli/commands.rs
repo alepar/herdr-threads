@@ -120,7 +120,7 @@ fn overdue_uses_global_context_and_typed_diagnostics_read_without_operation_key(
         ) -> Result<CommandResult, ApiError> {
             self.0 = Some((command, output.clone()));
             Ok(CommandResult::Health(Health::unknown(
-                "00000000-0000-4000-8000-000000000001".into(),
+                "00000000000040008000000000000001".into(),
                 "00000000-0000-4000-8000-000000000002".into(),
                 "test".into(),
                 1,
@@ -407,6 +407,7 @@ fn claim() -> crate::protocol::authority::CallerClaim {
         ids::*,
     };
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "i".into(),
         seat: SeatId::new("legacy-fixture"),
         binding_generation: 0,
@@ -478,7 +479,7 @@ fn documented_read_table_dispatches_to_stub_client() {
         ) -> Result<CommandResult, crate::protocol::results::ApiError> {
             self.0.push(command);
             Ok(CommandResult::Health(Health::unknown(
-                "00000000-0000-4000-8000-000000000001".into(),
+                "00000000000040008000000000000001".into(),
                 "00000000-0000-4000-8000-000000000002".into(),
                 "test".into(),
                 1,
@@ -674,7 +675,7 @@ fn ordinary_seat_resolution_requires_durable_mutation_key() {
     };
     assert_eq!(pane.as_str(), "p1");
     let command = MutationSpec::Resolve(pane)
-        .into_command(None, crate::protocol::ids::OperationId::new("op-resolve"))
+        .into_command(Some(claim()), crate::protocol::ids::OperationId::new("op-resolve"))
         .unwrap();
     assert!(
         matches!(command, crate::protocol::commands::Command::ResolveSeat(resolve) if
@@ -931,7 +932,7 @@ fn documented_mutations_dispatch_exact_typed_command_to_stub() {
         fn call(&mut self, command: Command, _: &OutputSpec) -> Result<CommandResult, ApiError> {
             self.0.push(command);
             Ok(CommandResult::Health(Health::unknown(
-                "00000000-0000-4000-8000-000000000001".into(),
+                "00000000000040008000000000000001".into(),
                 "00000000-0000-4000-8000-000000000002".into(),
                 "test".into(),
                 1,
@@ -1161,7 +1162,7 @@ fn local_command_table_uses_local_backend_without_wire_call() {
         ) -> Result<CommandResult, ApiError> {
             self.0.push(action);
             Ok(CommandResult::Health(Health::unknown(
-                "00000000-0000-4000-8000-000000000001".into(),
+                "00000000000040008000000000000001".into(),
                 "00000000-0000-4000-8000-000000000002".into(),
                 "test".into(),
                 1,
@@ -3825,6 +3826,7 @@ fn stamp_agent_id_sets_only_the_claim_agent_id() {
     use crate::protocol::{authority::*, ids::*};
     let parsed = parse_argv(["herdr-threads", "--agent-id=a1", "thread", "list"]).unwrap();
     let claim = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "i".into(),
         seat: SeatId::new("s"),
         binding_generation: 0,
@@ -4015,6 +4017,85 @@ fn automatic_handoff_channel_omission_parses_for_every_destination() {
             _ => panic!("unexpected automatic parser route"),
         }
     }
+}
+
+/// One tagged public id per prefix plus a direct-thread id, as minted by
+/// `protocol::ids` (ht-5fr.1.6).
+const TAGGED: [(&str, &str); 9] = [
+    ("s", "sQ7aK3Fq9a2B"),
+    ("t", "tQ7aZz99Yy88"),
+    ("i", "iQ7aAb12Cd34"),
+    ("q", "qQ7aAb12Cd34"),
+    ("r", "rQ7aAb12Cd34"),
+    ("e", "eQ7aAb12Cd34"),
+    ("m", "mQ7aEf56Gh78"),
+    ("n", "nQ7aEf56Gh78"),
+    ("d", "dK3Fq9a2B7x"),
+];
+
+#[test]
+fn tagged_and_direct_ids_are_public_ids_and_parse_from_arguments() {
+    use crate::protocol::{
+        commands::Command,
+        ids::{is_direct_thread_id, is_public_id},
+    };
+    for (prefix, id) in TAGGED {
+        if prefix == "d" {
+            assert!(is_direct_thread_id(id), "{id}");
+        } else {
+            assert!(is_public_id(prefix, id), "{id}");
+        }
+    }
+    // ack takes message ids (m and n), accept and body take thread/message ids.
+    let ack = parse_argv(["herdr-threads", "ack", "mQ7aEf56Gh78", "nQ7aEf56Gh78"]).unwrap();
+    let CliAction::Mutation(spec) = ack.action else {
+        panic!("expected mutation")
+    };
+    let command = spec
+        .into_command(Some(claim()), crate::protocol::ids::OperationId::new("op-1"))
+        .unwrap();
+    let Command::Ack(ref batch) = command else {
+        panic!("expected ack")
+    };
+    assert_eq!(
+        batch.messages.iter().map(|id| id.as_str()).collect::<Vec<_>>(),
+        ["mQ7aEf56Gh78", "nQ7aEf56Gh78"]
+    );
+    // The wire encoding keeps the ids unchanged.
+    let back: Command = serde_json::from_slice(&serde_json::to_vec(&command).unwrap()).unwrap();
+    assert_eq!(back, command);
+    for thread in ["tQ7aZz99Yy88", "dK3Fq9a2B7x"] {
+        let accept = parse_argv(["herdr-threads", "accept", thread]).unwrap();
+        let CliAction::Mutation(spec) = accept.action else {
+            panic!("expected mutation")
+        };
+        let command = spec
+            .into_command(Some(claim()), crate::protocol::ids::OperationId::new("op-2"))
+            .unwrap();
+        assert!(matches!(&command, Command::Accept(a) if a.thread.as_str() == thread));
+        let json = serde_json::to_string(&command).unwrap();
+        assert!(json.contains(thread), "{json}");
+        let back: Command = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, command);
+        let participants =
+            parse_argv(["herdr-threads", "thread", "participants", thread]).unwrap();
+        assert!(matches!(participants.action,
+            CliAction::Wire(Command::Participants(q)) if q.thread.as_str() == thread));
+    }
+    let send = parse_argv([
+        "herdr-threads",
+        "send",
+        "dK3Fq9a2B7x",
+        "--body",
+        "hi",
+        "--require-ack",
+        "sQ7aK3Fq9a2B",
+    ])
+    .unwrap();
+    assert!(matches!(send.action, CliAction::Mutation(_)));
+    let body = parse_argv(["herdr-threads", "body", "mQ7aEf56Gh78"]).unwrap();
+    assert!(matches!(body.action,
+        CliAction::Wire(Command::Message(q)) if q.message.as_str() == "mQ7aEf56Gh78"));
 }
 
 #[test]

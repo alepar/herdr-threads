@@ -11,7 +11,7 @@
 use super::sweep::{FakeHost, Scratch, agent_pane, pane};
 use herdr_threads::{
     cli::hook::installed_argv,
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     harness::{claude::setup::plan_claude, context::Harness},
     test_support::spawn::SpawnOwned,
 };
@@ -84,7 +84,7 @@ struct World {
     root: PathBuf,
     state: PathBuf,
     host: PathBuf,
-    instance_dir: PathBuf,
+    node_dir: PathBuf,
     claude_hooks: Value,
     codex_hook: String,
     _host: FakeHost,
@@ -118,9 +118,9 @@ impl World {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         }
         let context = RuntimeContext::explicit(state.clone(), socket.clone(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        paths.prepare_instance_dir().unwrap();
-        let file = paths.instance_dir.join("settings.json");
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        paths.prepare_node_dir().unwrap();
+        let file = paths.node_dir.join("settings.json");
         fs::write(&file, settings).unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
         let argv = installed_argv(binary, Some(state.to_str().unwrap()), None, Harness::Claude);
@@ -135,7 +135,7 @@ impl World {
             root,
             state,
             host: socket,
-            instance_dir: paths.instance_dir,
+            node_dir: paths.node_dir,
             claude_hooks,
             codex_hook,
             _host: host,
@@ -323,7 +323,7 @@ impl World {
     }
     fn db(&self) -> rusqlite::Connection {
         let db = rusqlite::Connection::open_with_flags(
-            self.instance_dir.join("threads.sqlite3"),
+            self.node_dir.join("herdr-threads.db"),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .unwrap();
@@ -338,7 +338,7 @@ impl World {
         use herdr_threads::{
             app::SystemClock,
             client::local::LocalSocketClient,
-            daemon::ownership::{read_descriptor, read_existing_namespace},
+            daemon::ownership::{read_descriptor, read_node_uuid_hint},
             protocol::{
                 output::{OutputFormat, OutputSpec, encode_selected},
                 time::{CallBudget, Cancellation, Clock, MonoInstant},
@@ -346,11 +346,13 @@ impl World {
         };
         use std::sync::Arc;
 
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
-        let instance = read_existing_namespace(&paths).unwrap().unwrap();
+        let instance = read_node_uuid_hint(&paths).unwrap().unwrap();
         let descriptor = read_descriptor(&paths, instance).unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let client = LocalSocketClient::new(
@@ -383,17 +385,25 @@ impl World {
     /// cooperative mutations send (an agent saves no context).
     fn seat_claim(&self, seat: &str) -> herdr_threads::protocol::authority::CallerClaim {
         use herdr_threads::{
-            daemon::ownership::read_existing_namespace,
+            daemon::ownership::read_node_uuid_hint,
             protocol::{
                 authority::{CallerRole, Harness, LivenessFingerprint},
                 ids::*,
             },
         };
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap(),
+        let context =
+            RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap();
+        // The Herdr server the elected daemon attached: the canonical path the CLI claims name.
+        let host = herdr_threads::protocol::ids::HostLocator::parse(
+            context
+                .require_host()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
         )
         .unwrap();
-        let instance = read_existing_namespace(&paths).unwrap().unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        let instance = read_node_uuid_hint(&paths).unwrap().unwrap();
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
         #[allow(clippy::type_complexity)]
         let (generation, harness, session, execution, target, pid, start): (
@@ -422,6 +432,7 @@ impl World {
             )
             .expect("the seat's lifecycle check-in opened its binding");
         herdr_threads::protocol::authority::CallerClaim {
+            host,
             instance: instance.to_string(),
             seat: SeatId::new(seat),
             binding_generation: generation as u64,
@@ -588,7 +599,7 @@ impl Drop for World {
     fn drop(&mut self) {
         let _ = self.cli(None, None, &["daemon", "stop"]);
         if std::thread::panicking()
-            && let Ok(log) = fs::read(self.instance_dir.join("daemon.log"))
+            && let Ok(log) = fs::read(self.node_dir.join("daemon.log"))
         {
             let tail = &log[log.len().saturating_sub(16 * 1024)..];
             eprintln!(
@@ -893,6 +904,19 @@ impl Fixture {
         let hook = self.world.hook("claude", PANE_B, &tool_boundary(SESSION_B));
         assert_eq!(hook.code, 0, "{}", hook.stderr);
         hook.stdout
+    }
+    /// The boundary's read-only digest query, without displaying inbox bodies.
+    /// Deadline/poke tests need receipts to remain pending until display.
+    fn attention_b(&self) -> String {
+        use herdr_threads::protocol::commands::{AttentionDigestQuery, Command};
+        self.world
+            .daemon_call(Command::AttentionDigest(AttentionDigestQuery {
+                seat: herdr_threads::protocol::ids::SeatId::new(&self.b),
+                lazy: true,
+                claim: Some(self.world.seat_claim(&self.b)),
+            }))
+            .unwrap()
+            .to_string()
     }
 }
 
@@ -1362,7 +1386,13 @@ fn held_items_are_pushed_after_ready() {
     let fx = Fixture::build();
     let first = fx.boundary_b();
     assert!(first.contains(&fx.ack), "{first}");
+    assert!(
+        fx.world.pending(&fx.b).is_empty(),
+        "display ACKs the initial request"
+    );
     let work = fx.summary(fx.caller_b());
+    let frontier = work["data"]["frontier"].as_u64().unwrap();
+    assert_eq!(frontier, HEAD + 1, "the initial ACK added a timeline event");
     let jobs = tickets(&work);
     let held = fx.send_as_a("an ordinary request", &["--require-ack", &fx.b]);
     assert!(!fx.boundary_b().contains(&held), "held while catching up");
@@ -1373,12 +1403,17 @@ fn held_items_are_pushed_after_ready() {
     let ready = fx.summary(fx.caller_b());
     assert_eq!(ready["status"], "ready", "{ready}");
     assert_eq!(
-        ready["data"]["frontier"], HEAD,
+        ready["data"]["frontier"], frontier,
         "Ready stops at F, not at the head"
     );
     assert_eq!(
-        ready["data"]["tail"].as_array().unwrap().len(),
-        1,
+        ready["data"]["tail"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["sequence"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        [HEAD, frontier],
         "the held message is not in Ready: {ready}"
     );
     let row = fx.world.catch_up(&fx.b, &fx.thread).unwrap();
@@ -1487,7 +1522,7 @@ fn lapsed_reservation_fetch_is_honoured_while_free() {
     // The real-store clock tests cover the 60 s transition. Backdate both
     // timestamps in this private fixture, retaining the reservation duration,
     // owner and token; every fetch and competing lease still uses the daemon.
-    let mut db = rusqlite::Connection::open(fx.world.instance_dir.join("threads.sqlite3")).unwrap();
+    let mut db = rusqlite::Connection::open(fx.world.node_dir.join("herdr-threads.db")).unwrap();
     db.busy_timeout(Duration::from_secs(5)).unwrap();
     // Take the writer lock before reading: a deferred read transaction cannot
     // upgrade while a daemon writer is active, even with the busy timeout.
@@ -1608,10 +1643,12 @@ fn stall_lapses_and_the_warning_fires_on_the_effective_deadline() {
             )
             .text("kick send");
     };
-    assert!(fx.boundary_b().contains(&fx.ack));
+    // Inspect pending attention without displaying/ACKing the receipt whose
+    // effective deadline and warning this test exercises.
+    assert!(fx.attention_b().contains(&fx.ack));
     assert_eq!(fx.summary(fx.caller_b())["status"], "work");
     let held = fx.send_as_a("an ordinary request", &["--require-ack", &fx.b]);
-    assert!(!fx.boundary_b().contains(&held));
+    assert!(!fx.attention_b().contains(&held));
     let pending = fx.world.pending_for(&fx.b, &fx.ack);
     let frozen = pending["deadline"].as_u64().unwrap();
     let effective = pending["effective_deadline"].as_u64().unwrap();
@@ -1668,11 +1705,6 @@ fn stall_lapses_and_the_warning_fires_on_the_effective_deadline() {
         effective,
         "no progress, no extension"
     );
-    // The release is a push.
-    assert!(
-        fx.boundary_b().contains(&held),
-        "held items are pushed when the row stalls"
-    );
     // The warning follows the effective deadline.
     wait_until("the overdue warning", Duration::from_secs(60), || {
         warned(&fx)
@@ -1682,6 +1714,15 @@ fn stall_lapses_and_the_warning_fires_on_the_effective_deadline() {
         "the warning fired after the effective deadline"
     );
     assert_eq!(fx.world.pending_for(&fx.b, &fx.ack)["overdue"], true);
+    // The release is a push. Only now display it, settling both receipts.
+    assert!(
+        fx.boundary_b().contains(&held),
+        "held items are pushed when the row stalls"
+    );
+    assert!(
+        fx.world.pending(&fx.b).is_empty(),
+        "complete hook display ACKs receipts"
+    );
 }
 
 /// Case 9: catch-up rows belong to the binding (ht-54r.22). A `clear` in B's
@@ -1788,7 +1829,7 @@ fn programmatic_rows_map_to_service() {
     use herdr_threads::{
         app::SystemClock,
         client::service::{PersistentServiceClient, ServiceIntentJournal},
-        daemon::ownership::{read_descriptor, read_existing_namespace},
+        daemon::ownership::{read_descriptor, read_node_uuid_hint},
         protocol::{
             ids::{OperationId, ThreadId},
             service::{
@@ -1804,14 +1845,14 @@ fn programmatic_rows_map_to_service() {
     let fx = Fixture::build_until(Stage::SeatA);
     let context =
         RuntimeContext::explicit(fx.world.state.clone(), fx.world.host.clone(), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let instance = read_existing_namespace(&paths).unwrap().expect("instance");
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let instance = read_node_uuid_hint(&paths).unwrap().expect("instance");
     let descriptor = read_descriptor(&paths, instance).unwrap();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let client = PersistentServiceClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
         ServiceIntentJournal::open(fx.world.root.join("intents")).unwrap(),
     );
@@ -1892,7 +1933,7 @@ fn programmatic_rows_map_to_service() {
     }
     assert!(
         notices.iter().any(|notice| {
-            herdr_threads::protocol::ids::is_short_public_id(
+            herdr_threads::protocol::ids::is_public_id(
                 herdr_threads::protocol::ids::prefix::NOTIFY,
                 notice["message"].as_str().unwrap(),
             )
@@ -2914,8 +2955,10 @@ use crate::token_diet::lazy_proxy as useful_page_proxy;
 /// The capability proxy in front of the fixture daemon, passing everything
 /// through until [`select_reader`] picks a reader.
 fn useful_page_proxy(fx: &Fixture) -> useful_page_proxy::Proxy {
-    let paths = herdr_threads::daemon::paths::InstancePaths::resolve(
-        &RuntimeContext::explicit(fx.world.state.clone(), fx.world.host.clone(), None).unwrap(),
+    let paths = herdr_threads::daemon::paths::NodePaths::resolve(
+        &RuntimeContext::explicit(fx.world.state.clone(), fx.world.host.clone(), None)
+            .unwrap()
+            .state_dir,
     )
     .unwrap();
     useful_page_proxy::Proxy::new(paths, &fx.world.root)
@@ -2957,6 +3000,57 @@ fn inbox_history_fixture(history_count: i64) -> Fixture {
     inbox_history_fixture_at(history_count, Stage::Sent)
 }
 fn inbox_history_fixture_at(history_count: i64, stage: Stage) -> Fixture {
+    let fx = inbox_history_fixture_base(stage);
+    // The history is real traffic: require-ACK sends from A, ACKed by B in batches of at most
+    // `MAX_BATCH_ITEMS` = 100 IDs after B's display advanced its cursors (an ACK alone does not),
+    // so every row has its `message.sent` fact and a retained settled receipt. The earlier
+    // unrelated `warn` rows have no cheap real-traffic equivalent (they come from lapsed
+    // deadlines), so this history is settled mail only.
+    let history = fx.publish_as_a_in_process(history_count as usize, "settled history");
+    for chunk in history.chunks(100) {
+        let mut ack = vec!["ack"];
+        ack.extend(chunk.iter().map(String::as_str));
+        fx.world
+            .cli(Some(fx.caller_b()), None, &ack)
+            .data("settle history");
+        fx.world
+            .daemon_call(herdr_threads::protocol::commands::Command::AdvanceCursors(
+                herdr_threads::protocol::commands::AdvanceCursors {
+                    in_turn: false,
+                    invitations: Vec::new(),
+                    claim: fx.world.seat_claim(&fx.b),
+                    operation: herdr_threads::protocol::ids::OperationId::new(format!(
+                        "history-displayed-{}",
+                        chunk[0]
+                    )),
+                    displayed: chunk
+                        .iter()
+                        .map(|id| herdr_threads::protocol::ids::MessageId::new(id.as_str()))
+                        .collect(),
+                },
+            ))
+            .expect("advance B's cursors over the displayed history");
+    }
+    eprintln!(
+        "VERSION-BOUND CLI+DAEMON {} settled={history_count}",
+        fx.world.binary
+    );
+    fx
+}
+
+/// Retained physical history for the bounded-scan cap test only. Direct SQL rows with no
+/// `message.sent` facts: the cap (`INBOX_DISPLAY_PAGE_READ_LIMIT` source pages of settled
+/// candidates) is reachable only through this shape. Settled real-traffic history (see
+/// `inbox_history_fixture_at`) is skipped by the v2 reader without walking it, whatever the
+/// pending mail's shape (checked with plain, require-ACK, displayed and undisplayed history), so
+/// real sends cannot drive 800+ scanned candidates. The rows are history the reader only skips:
+/// the useful mail itself is a real send and no ACK writes a journaled entity for them.
+fn inbox_history_fixture_physical(history_count: i64) -> Fixture {
+    let fx = inbox_history_fixture_base(Stage::Sent);
+    inbox_physical_history(&fx, history_count);
+    fx
+}
+fn inbox_history_fixture_base(stage: Stage) -> Fixture {
     let binary = std::env::var("HT_INBOX_FIXTURE_BINARY").unwrap_or_else(|_| BIN.to_owned());
     // A long require-ACK deadline: these tests never wait on it, and the
     // fixture's 3 s one can lapse on a loaded host before B settles it,
@@ -2968,7 +3062,11 @@ fn inbox_history_fixture_at(history_count: i64, stage: Stage) -> Fixture {
         .exec_in_pane(None, Some(PANE_B), None, &["inbox"], false);
     assert_eq!(original.code, 0, "{}", original.stderr);
     assert!(fx.world.pending(&fx.b).is_empty());
-    let mut db = rusqlite::Connection::open(fx.world.instance_dir.join("threads.sqlite3")).unwrap();
+    fx
+}
+
+fn inbox_physical_history(fx: &Fixture, history_count: i64) {
+    let mut db = rusqlite::Connection::open(fx.world.node_dir.join("herdr-threads.db")).unwrap();
     db.busy_timeout(Duration::from_secs(5)).unwrap();
     // One write transaction for the whole history: one commit (one fsync)
     // instead of three per row, and the daemon never sees a partial history.
@@ -2982,7 +3080,7 @@ fn inbox_history_fixture_at(history_count: i64, stage: Stage) -> Fixture {
         .unwrap();
     let high: i64 = db
         .query_row(
-            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            "SELECT decision_seq FROM local_node WHERE id=?1",
             [&instance],
             |r| r.get(0),
         )
@@ -3008,45 +3106,70 @@ fn inbox_history_fixture_at(history_count: i64, stage: Stage) -> Fixture {
     .unwrap();
     db.commit().unwrap();
     eprintln!(
-        "VERSION-BOUND CLI+DAEMON {} settled={history_count} unrelated-warnings={history_count}",
+        "VERSION-BOUND CLI+DAEMON {} physical-settled={history_count} unrelated-warnings={history_count}",
         fx.world.binary
     );
-    fx
 }
 
-fn add_pending_physical(fx: &Fixture, sent: &str) -> rusqlite::Connection {
-    let db = rusqlite::Connection::open(fx.world.instance_dir.join("threads.sqlite3")).unwrap();
-    db.busy_timeout(Duration::from_secs(5)).unwrap();
-    let instance: String = db
-        .query_row("SELECT instance_id FROM seats WHERE id=?1", [&fx.b], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    let high: i64 = db
-        .query_row(
-            "SELECT decision_seq FROM host_instances WHERE id=?1",
-            [&instance],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let seq: i64 = db
-        .query_row(
-            "SELECT next_sequence FROM threads WHERE id=?1",
-            [&fx.thread],
-            |r| r.get(0),
-        )
-        .unwrap();
-    // Supported legacy physical receipts must not hide behind settled rows.
-    // Fresh sparse sends alternate ahead of the physical history instead.
-    let offset: i64 = db.query_row("SELECT coalesce(max(event_offset),0)+1 FROM messages WHERE instance_id=?1 AND decision_seq=?2", rusqlite::params![instance,high], |r| r.get(0)).unwrap();
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,event_offset,decision_at) VALUES (?1,?2,?3,?4,'ordinary','USEFUL PENDING BODY',?5,?6,0)", rusqlite::params![sent,instance,fx.thread,seq,high,offset]).unwrap();
-    db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,?2,?3,'pending',300000)", rusqlite::params![sent,fx.thread,fx.b]).unwrap();
-    db.execute(
-        "UPDATE threads SET next_sequence=next_sequence+1 WHERE id=?1",
-        [&fx.thread],
+/// The useful pending mail: a real send (so `message.sent` creates it) behind the fixture's
+/// physical settled history. The v2 reader is shown a plain p1 send, which is lazy: B's row is a
+/// `lazy_recipients` row, not a receipt. The v1 reader predates delivery rows and walks receipts
+/// only, so it is shown a require-ACK send, whose receipt B's display settles.
+fn add_pending_sent(fx: &Fixture, v1: bool) -> (rusqlite::Connection, String) {
+    let sent = if v1 {
+        fx.send_as_a(useful_body(v1), &["--require-ack", &fx.b])
+    } else {
+        fx.send_as_a(useful_body(v1), &[])
+    };
+    let db = fx.world.db();
+    if v1 {
+        // The deadline worker projects the receipt in the background.
+        wait_until("useful pending projection", Duration::from_secs(60), || {
+            db.query_row(
+                "SELECT count(*) FROM receipt_state WHERE message_id=?1 AND seat_id=?2",
+                rusqlite::params![sent, fx.b],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                == 1
+        });
+    }
+    assert_eq!(
+        useful_state(&db, &sent, &fx.b, v1),
+        "pending",
+        "a fresh send is pending for B"
+    );
+    (db, sent)
+}
+
+/// The useful mail's body, distinct per reader: the v1 display does not move B's binding cursors,
+/// so the v2 pass still lists the v1 pass's mail beside its own.
+fn useful_body(v1: bool) -> &'static str {
+    if v1 {
+        "USEFUL PENDING BODY v1"
+    } else {
+        "USEFUL PENDING BODY v2"
+    }
+}
+
+/// B's state for the useful mail: its receipt (v1) or its delivery row (v2).
+fn useful_state(db: &rusqlite::Connection, message: &str, seat: &str, v1: bool) -> String {
+    let table = if v1 {
+        "receipt_state"
+    } else {
+        "lazy_recipients"
+    };
+    db.query_row(
+        &format!("SELECT state FROM {table} WHERE message_id=?1 AND seat_id=?2"),
+        rusqlite::params![message, seat],
+        |r| r.get(0),
     )
-    .unwrap();
-    db
+    .unwrap()
+}
+
+/// The state `useful_state` reports once B's display settled the mail.
+fn settled_state(v1: bool) -> &'static str {
+    if v1 { "acked" } else { "displayed" }
 }
 
 // The physical-history cases below share one fixture between the v1
@@ -3064,21 +3187,8 @@ fn inbox_first_useful_page_skips_historical_work() {
     inbox_first_useful_page_historical_only_reaches_empty(&fx, &proxy);
     for v1 in [true, false] {
         let mark = select_reader(&proxy, v1);
-        let sent = if v1 {
-            "useful-pending-v1"
-        } else {
-            "useful-pending-v2"
-        };
-        let db = add_pending_physical(&fx, sent);
-        assert_eq!(
-            db.query_row(
-                "SELECT state FROM receipts WHERE message_id=?1",
-                [sent],
-                |r| r.get::<_, String>(0)
-            )
-            .unwrap(),
-            "pending"
-        );
+        let (db, sent) = add_pending_sent(&fx, v1);
+        let sent = sent.as_str();
         for args in [
             vec!["inbox", "--machine"],
             vec!["--json", "inbox"],
@@ -3089,14 +3199,9 @@ fn inbox_first_useful_page_skips_historical_work() {
                 .exec_in_pane(None, Some(PANE_B), None, &args, false);
             assert_eq!(readonly.code, 0, "{}", readonly.stderr);
             assert_eq!(
-                db.query_row(
-                    "SELECT state FROM receipts WHERE message_id=?1",
-                    [sent],
-                    |r| r.get::<_, String>(0)
-                )
-                .unwrap(),
+                useful_state(&db, sent, &fx.b, v1),
                 "pending",
-                "read-only inbox must not ACK unseen mail"
+                "read-only inbox must not display unseen mail"
             );
         }
         let out = fx
@@ -3108,32 +3213,25 @@ fn inbox_first_useful_page_skips_historical_work() {
         );
         assert_eq!(out.code, 0, "{}", out.stderr);
         assert_eq!(
-            out.stdout.matches("USEFUL PENDING BODY").count(),
+            out.stdout.matches(useful_body(v1)).count(),
             1,
             "first page must show the pending body once, got {:?}",
             out.stdout
         );
-        assert_eq!(
-            db.query_row(
-                "SELECT state FROM receipts WHERE message_id=?1",
-                [sent],
-                |r| r.get::<_, String>(0)
-            )
-            .unwrap(),
-            "acked"
-        );
-        let db = fx.world.db();
-        let observation: String = db
-            .query_row(
-                "SELECT ack_observation FROM receipts WHERE message_id=?1 AND seat_id=?2",
-                rusqlite::params![sent, fx.b],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&observation).unwrap()["action_provenance"],
-            "cooperative_inbox_display"
-        );
+        assert_eq!(useful_state(&db, sent, &fx.b, v1), settled_state(v1));
+        if v1 {
+            let observation: String = db
+                .query_row(
+                    "SELECT ack_observation FROM receipt_state WHERE message_id=?1 AND seat_id=?2",
+                    rusqlite::params![sent, fx.b],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&observation).unwrap()["action_provenance"],
+                "cooperative_inbox_display"
+            );
+        }
         assert_reader(&proxy, mark, v1);
     }
 }
@@ -3158,17 +3256,6 @@ fn inbox_first_useful_page_historical_only_reaches_empty(
             out.stdout, "empty\n",
             "historical-only fixture should report empty"
         );
-        assert_eq!(
-            fx.world
-                .db()
-                .query_row(
-                    "SELECT count(*) FROM messages WHERE id LIKE 'historical-warning-%'",
-                    [],
-                    |r| r.get::<_, i64>(0)
-                )
-                .unwrap(),
-            120
-        );
         assert_reader(proxy, mark, v1);
     }
 }
@@ -3178,16 +3265,15 @@ fn inbox_first_useful_page_scan_cap_preserves_pending_and_exact_continuation() {
     // More settled rows than one display selection reads
     // (`INBOX_DISPLAY_PAGE_READ_LIMIT` = 8 source pages of `CANDIDATE_LIMIT`
     // = 100): the first invocation must stop on a continuation.
-    let fx = inbox_history_fixture(900);
+    let fx = inbox_history_fixture_physical(900);
     let proxy = useful_page_proxy(&fx);
-    for v1 in [true, false] {
+    // Only the v2 reader: a real require-ACK receipt is a manifest-sourced candidate that the v1
+    // reader orders ahead of the physical history (its body is on the first page), so the bounded
+    // scan has nothing to cap there. A lazy delivery row sits behind the history in v2.
+    for v1 in [false] {
         let mark = select_reader(&proxy, v1);
-        let sent = if v1 {
-            "useful-pending-v1"
-        } else {
-            "useful-pending-v2"
-        };
-        let db = add_pending_physical(&fx, sent);
+        let (db, sent) = add_pending_sent(&fx, v1);
+        let sent = sent.as_str();
         let mut args = vec!["inbox".to_owned()];
         let mut saw_body = false;
         for invocation in 0..10 {
@@ -3196,19 +3282,13 @@ fn inbox_first_useful_page_scan_cap_preserves_pending_and_exact_continuation() {
                 .world
                 .exec_in_pane(None, Some(PANE_B), None, &refs, false);
             assert_eq!(out.code, 0, "{}", out.stderr);
-            let state: String = db
-                .query_row(
-                    "SELECT state FROM receipts WHERE message_id=?1",
-                    [sent],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            if out.stdout.contains("USEFUL PENDING BODY") {
+            let state = useful_state(&db, sent, &fx.b, v1);
+            if out.stdout.contains(useful_body(v1)) {
                 assert!(
                     invocation > 0,
                     "first invocation must retain a continuation after bounded scanning"
                 );
-                assert_eq!(state, "acked");
+                assert_eq!(state, settled_state(v1));
                 saw_body = true;
                 break;
             }

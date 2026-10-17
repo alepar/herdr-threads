@@ -9,7 +9,7 @@ use crate::protocol::{
     time::{CallBudget, Clock, MonoInstant, UtcMillis},
 };
 use crate::store::{connection::StoreContext, control, schema, seats};
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use std::sync::Arc;
 
 struct TestClock;
@@ -27,22 +27,22 @@ fn setup() -> (StoreContext, Connection) {
         "wake-on-test-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = StoreContext::new(path, Arc::new(TestClock));
+    let context = StoreContext::new(path, Arc::new(TestClock)).with_test_host();
     let conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
-        [],
+    conn.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
     )
     .unwrap();
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('s','i','resolved','native','ps',1,1,0,1)", []).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','ps','b',1,1,0,'fresh','term-ps','inc','coherent_enumeration',1)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','ps',1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+    conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'ps','b',1,1,0,'fresh','term-ps','inc','coherent_enumeration',1)", []).unwrap();
     conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,'ps','b',1,1,'claude','ns','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',0,'term-ps','inc')", []).unwrap();
     (context, conn)
 }
 
 fn claim(role: CallerRole, generation: u64) -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new("s"),
         binding_generation: generation,
         role,
@@ -347,79 +347,98 @@ fn lazy_ordinal_rejects_zero_and_accepts_null_or_positive() {
     assert_eq!(last_lazy(&conn), Some(5));
 }
 
-/// A database at the historical schema version 30 (main's released chain), then migrated
-/// through V31 and the session-binding migrations after it.
-#[test]
-fn migration_up_adds_the_columns_with_their_defaults() {
-    let previous = crate::store::connection::tests::adapter_historical_database(30);
-    previous
-        .execute_batch(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1);
-             INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('old','i','resolved','native','po',1,1,0,1);
-             INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES ('old',1,1);",
-        )
-        .unwrap();
-    let has_column = |table: &str, column: &str| -> bool {
-        previous
-            .query_row(
-                &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name=?1"),
-                [column],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap()
-            == 1
-    };
-    assert!(!has_column("seats", "wake_on") && !has_column("wake_work", "last_lazy_ordinal"));
-    schema::initialize(&previous, || UtcMillis(0)).unwrap();
-    assert_eq!(
-        previous
-            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-    assert!(has_column("seats", "wake_on") && has_column("wake_work", "last_lazy_ordinal"));
-    let wake_on: String = previous
-        .query_row("SELECT wake_on FROM seats WHERE id='old'", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(wake_on, "nudge");
-    let old_threshold: i64 = previous
-        .query_row(
-            "SELECT nudge_threshold FROM seats WHERE id='old'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(old_threshold, 0, "a `nudge` seat upgrades to threshold 0");
-    let lazy: Option<i64> = previous
-        .query_row(
-            "SELECT last_lazy_ordinal FROM wake_work WHERE seat_id='old'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(lazy, None);
-    assert!(
-        previous
-            .execute(
-                "UPDATE wake_work SET last_lazy_ordinal=0 WHERE seat_id='old'",
-                params![]
-            )
-            .is_err()
-    );
-    assert!(
-        previous
-            .execute("UPDATE seats SET wake_on='bogus' WHERE id='old'", [])
-            .is_err()
-    );
-}
-
 #[test]
 fn a_database_missing_a_wake_on_column_is_incompatible() {
     let (_, conn) = setup();
     conn.execute_batch("ALTER TABLE seats DROP COLUMN wake_on")
         .unwrap();
     assert_eq!(
-        schema::initialize(&conn, || UtcMillis(0)).unwrap_err().code,
+        schema::initialize(
+            &conn,
+            || UtcMillis(0),
+            &crate::test_support::test_node_seed()
+        )
+        .unwrap_err()
+        .code,
         ErrorCode::IncompatibleSchema
     );
+}
+
+const FOREIGN_NODE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+/// A seat homed on another node (no host, no target), plus a directory row naming that node `bx1`.
+fn remote_seat(conn: &Connection) -> SeatId {
+    conn.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,host_id,published) \
+         VALUES ('r','34750f98bd59fcfc946da45aaabe933b','remote','native',0,0,?1,0,'agent',NULL,1)",
+        [FOREIGN_NODE],
+    )
+    .unwrap();
+    crate::store::node_directory::upsert(
+        conn,
+        &crate::store::node_directory::NodeDirectoryRow {
+            node_uuid: FOREIGN_NODE.parse().unwrap(),
+            tag: "bx1".parse().unwrap(),
+            tag_k: 0,
+            host_label: None,
+            first_seen_at: 0,
+            tag_hlc: None,
+        },
+    )
+    .unwrap();
+    SeatId::new("r")
+}
+
+#[test]
+fn remote_seat_threshold_read_is_refused_naming_its_home_node() {
+    let (_, conn) = setup();
+    let remote = remote_seat(&conn);
+    let errors = [
+        seats::nudge_threshold(&conn, &remote)
+            .map(|_| ())
+            .unwrap_err(),
+        seats::wake_on(&conn, &remote).map(|_| ()).unwrap_err(),
+    ];
+    for error in errors {
+        assert_eq!(error.code, ErrorCode::CallerUnverified);
+        assert_eq!(
+            error.detail,
+            "seat r is homed on node bx1; its nudge threshold is set there"
+        );
+    }
+}
+
+#[test]
+fn remote_seat_threshold_set_is_refused_before_any_write() {
+    let (context, mut conn) = setup();
+    let remote = remote_seat(&conn);
+    let mut command = threshold_command(3, "op-remote");
+    command.claim.seat = remote.clone();
+    let before = conn.total_changes();
+    let error = set_threshold(&context, &mut conn, &command).unwrap_err();
+    assert_eq!(error.code, ErrorCode::CallerUnverified);
+    assert!(
+        error.detail.contains("homed on node bx1"),
+        "{}",
+        error.detail
+    );
+    let mut wake = SetWakeOn {
+        value: WakeOn::All,
+        operation: OperationId::new("op-remote-wake"),
+        claim: command.claim.clone(),
+    };
+    wake.claim.seat = remote;
+    let error = set(&context, &mut conn, &wake).unwrap_err();
+    assert!(
+        error.detail.contains("homed on node bx1"),
+        "{}",
+        error.detail
+    );
+    assert_eq!(conn.total_changes(), before, "a refused set writes nothing");
+    let stored: i64 = conn
+        .query_row("SELECT nudge_threshold FROM seats WHERE id='r'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(stored, 0);
 }

@@ -20,7 +20,8 @@ fn canonical_fixture(
     endpoint: &std::path::Path,
 ) -> (Connection, BootstrapIdentity, BootstrapAttachmentGuard) {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
     let mut id = identity();
     id.payload.handoff.channel = HandoffChannel::New {
         name: None,
@@ -30,13 +31,13 @@ fn canonical_fixture(
     id.claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
     id.digest = id.semantic_digest().unwrap();
     let boot = created().host_incarnation;
-    db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,observation_sequence,observation_admission_sequence,observation_decided_sequence,lifecycle_revision,recovery_boot,recovery_epoch) VALUES('i',0,?1,1,1,1,1,1,?1,1)",[boot.as_str()]).unwrap();
-    db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g','i',?1,1,1,'herdr-server:pid=42:start=1.000002:uid=501',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
-    db.execute_batch("UPDATE host_instances SET active_snapshot_id='g',recovery_baseline_generation_id='g'; INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('sender','i','resolved','native','w1:p1',1,0,0);").unwrap();
+    db.execute("UPDATE herdr_hosts SET host_boot=?1,host_epoch=1,observation_sequence=1,observation_admission_sequence=1,observation_decided_sequence=1,lifecycle_revision=1,recovery_boot=?1,recovery_epoch=1",[boot.as_str()]).unwrap();
+    db.execute("INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g',(SELECT min(host_id) FROM herdr_hosts),?1,1,1,'herdr-server:pid=42:start=1.000002:uid=501',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
+    db.execute_batch("UPDATE herdr_hosts SET active_snapshot_id='g',recovery_baseline_generation_id='g'; INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('sender','34750f98bd59fcfc946da45aaabe933b','resolved','native','w1:p1',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));").unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('sender',1,'w1:p1',?1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0)",[boot.as_str()]).unwrap();
     for (pane, terminal, generation) in [("w1:p1", "caller-terminal", 0), ("w1:p2", "terminal", 1)]
     {
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i',?1,?2,1,?3,2,'fresh',0,?4,'herdr-server:pid=42:start=1.000002:uid=501','native_current_target',1)",params![pane,boot.as_str(),generation,terminal]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,?2,1,?3,2,'fresh',0,?4,'herdr-server:pid=42:start=1.000002:uid=501','native_current_target',1)",params![pane,boot.as_str(),generation,terminal]).unwrap();
     }
     let observation = HostObservation {
         focused: false,
@@ -63,7 +64,8 @@ fn canonical_fixture(
         completed_at_mono: MonoInstant(1),
     };
     let admission = HostObservationAdmission {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+        host_id: crate::test_support::test_host_id(),
         sequence: 1,
         expected_active: Some(SnapshotGenerationId::store_issued("g".into())),
         expected_boot: Some(boot),
@@ -73,6 +75,7 @@ fn canonical_fixture(
     };
     let guard = BootstrapAttachmentGuard::try_new(
         &crate::protocol::commands::ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: observation.target.clone(),
             operation: id.payload.resolve_key.clone(),
         },
@@ -188,11 +191,22 @@ impl Env {
             None,
         )
         .unwrap();
-        let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
-        let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
-        let (mut db, mut identity, guard) = canonical_fixture(&runtime.host_endpoint);
+        let paths = crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
+        let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
+        let (mut db, mut identity, guard) =
+            canonical_fixture(&runtime.host_endpoint.clone().unwrap());
         identity.payload.handoff.namespace.state_dir = runtime.state_dir;
-        identity.payload.handoff.namespace.host_endpoint = runtime.host_endpoint;
+        identity.payload.handoff.namespace.host_endpoint = runtime.host_endpoint.clone().unwrap();
+        // The original claim comes from the pane's Herdr server, the namespace's host.
+        identity.claim.host = crate::protocol::ids::HostLocator::parse(
+            runtime.host_endpoint.as_ref().unwrap().to_str().unwrap(),
+        )
+        .unwrap();
+        identity.scope = super::super::journal::IntentScope::Cooperative {
+            instance: identity.claim.instance.clone(),
+            host: identity.claim.host.clone(),
+            seat: identity.claim.seat.clone(),
+        };
         identity.payload.cwd = root.clone();
         identity.digest = identity.semantic_digest().unwrap();
         let semantic = SemanticMutation::freeze(
@@ -581,10 +595,10 @@ fn lost_noncreation_output_replays_old_decision_after_attempt_two_without_new_pe
 fn created_pane_uses_actual_canonical_structural_and_ordinary_guards_without_allocation() {
     for sql in [
         None,
-        Some("UPDATE host_instances SET observation_admission_sequence=2"),
+        Some("UPDATE herdr_hosts SET observation_admission_sequence=2"),
         Some("UPDATE observed_targets SET terminal_id='changed' WHERE target_id='w1:p2'"),
         Some(
-            "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) SELECT 'i','w1:p2',host_boot,1,'held' FROM host_instances",
+            "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) SELECT host_id,'w1:p2',host_boot,1,'held' FROM herdr_hosts",
         ),
     ] {
         let env = Env::new();
@@ -717,10 +731,11 @@ fn wrong_original_kind_harness_or_exact_scope_never_becomes_recovery() {
     for (scope, semantic) in [
         (
             IntentScope::ServiceAllocation {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 target: HostTargetId::new("w1:p2"),
             },
             SemanticMutation::ResolveSeat {
+                host: crate::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p2"),
             },
         ),

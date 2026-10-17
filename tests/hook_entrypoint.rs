@@ -9,7 +9,7 @@ use herdr_threads::{
     daemon::harness_evidence::{HarnessEvidenceRecorder, ManifestTrigger},
     daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     harness::manifest::{CurlFetcher, ManifestPolicy, ManifestService},
     harness::{claude::setup::plan_claude, context::Harness},
@@ -81,6 +81,9 @@ const HANG_FOR: Duration = Duration::from_millis(3000);
 const DROP: u8 = 3;
 /// Withhold the capability response beyond the production tool deadline.
 const WITHHOLD_CAPABILITIES: u8 = 4;
+const FAIL_COMPLETION: u8 = 5;
+const LOSE_COMPLETION_RESPONSE: u8 = 6;
+const FAIL_CURSOR: u8 = 7;
 
 /// Where a scripted arrival lands relative to the hook's calls.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -91,6 +94,8 @@ enum RaceAt {
     CurrentCheckIn,
     /// After the service answered a Lifecycle CheckIn.
     LifecycleCheckIn,
+    /// After the service answered the inbox page query (beyond its snapshot).
+    InboxPage,
 }
 type Race = Arc<std::sync::Mutex<Option<(RaceAt, Box<dyn FnOnce() + Send>)>>>;
 
@@ -304,6 +309,8 @@ impl Drop for HookHandlerPhase<'_> {
 
 struct Counting {
     inner: Arc<dyn herdr_threads::ports::LocalService>,
+    completions:
+        Arc<std::sync::Mutex<Vec<herdr_threads::protocol::commands::CompleteInboxDelivery>>>,
     check_ins: Arc<AtomicU64>,
     parse_failures: Arc<AtomicU64>,
     withheld_capabilities: Arc<AtomicU64>,
@@ -317,12 +324,50 @@ struct Counting {
     phases: Arc<HookPhases>,
 }
 impl Counting {
+    fn before_completion(
+        &self,
+        command: &Command,
+    ) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        if let Command::CompleteInboxDelivery(request) = command {
+            self.completions.lock().unwrap().push(request.clone());
+        }
+        if (matches!(command, Command::CompleteInboxDelivery(_))
+            && self.mode.load(Ordering::SeqCst) == FAIL_COMPLETION)
+            || (matches!(command, Command::AdvanceCursors(_))
+                && self.mode.load(Ordering::SeqCst) == FAIL_CURSOR)
+        {
+            return Err(herdr_threads::protocol::results::ApiError::new(
+                herdr_threads::protocol::results::ErrorCode::DeadlineExceeded,
+                "completion refused before commit",
+            ));
+        }
+        Ok(())
+    }
+
+    fn completion_result(
+        &self,
+        command: &Command,
+        result: Result<CommandResult, herdr_threads::protocol::results::ApiError>,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        if result.is_ok()
+            && matches!(command, Command::CompleteInboxDelivery(_))
+            && self.mode.load(Ordering::SeqCst) == LOSE_COMPLETION_RESPONSE
+        {
+            return Err(herdr_threads::protocol::results::ApiError::new(
+                herdr_threads::protocol::results::ErrorCode::DeadlineExceeded,
+                "response lost after canonical commit",
+            ));
+        }
+        result
+    }
+
     fn after(&self, command: &Command) {
         use herdr_threads::protocol::commands::CheckInMode;
         let stage = match command {
             Command::AttentionDigest(_) | Command::AttentionDigestDelivery(_) => RaceAt::Digest,
             Command::CheckIn(ci) if ci.mode == CheckInMode::Current => RaceAt::CurrentCheckIn,
             Command::CheckIn(_) => RaceAt::LifecycleCheckIn,
+            Command::InboxBatchV2(_) => RaceAt::InboxPage,
             _ => return,
         };
         let action = {
@@ -361,6 +406,7 @@ impl Counting {
         }
     }
     fn observe(&self, command: &Command) -> Result<(), herdr_threads::protocol::results::ApiError> {
+        self.before_completion(command)?;
         self.withhold_capabilities(command);
         if matches!(command, Command::HookParseFailure(_)) {
             self.parse_failures.fetch_add(1, Ordering::SeqCst);
@@ -412,8 +458,11 @@ impl herdr_threads::ports::LocalService for Counting {
         if matches!(command, Command::HookParseFailure(_)) {
             self.parse_failures.fetch_add(1, Ordering::SeqCst);
         }
-        self.inner
-            .service_control(command, peer, instance, boot, gate, budget)
+        self.before_completion(&command)?;
+        let result =
+            self.inner
+                .service_control(command.clone(), peer, instance, boot, gate, budget);
+        self.completion_result(&command, result)
     }
     fn audit_service_disconnect(
         &self,
@@ -450,7 +499,7 @@ impl herdr_threads::ports::LocalService for Counting {
         if result.is_ok() {
             self.after(&command);
         }
-        result
+        self.completion_result(&command, result)
     }
     fn handle_with_output(
         &self,
@@ -467,7 +516,7 @@ impl herdr_threads::ports::LocalService for Counting {
         if result.is_ok() {
             self.after(&command);
         }
-        result
+        self.completion_result(&command, result)
     }
 }
 
@@ -735,31 +784,23 @@ fn agent_origin(harness: &str, session: &str) -> herdr_threads::cli::caller::Ori
     ))
 }
 
-fn seed(paths: &InstancePaths) -> Uuid {
-    let owner = OwnerLock::acquire(paths).unwrap();
-    let instance = owner.instance_uuid();
+fn seed(paths: &NodePaths) -> herdr_threads::node::NodeUuid {
+    let owner = OwnerLock::acquire_with_test_hint(paths).unwrap();
+    let instance = owner.node_uuid().unwrap();
     drop(owner);
-    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
+    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()))
+        .with_test_host()
+        .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
     let db = setup.open_writer().unwrap();
-    // The pair suites here cover the pre-upgrade pending pair invitation and its accept display.
-    db.pragma_update(
-        None,
-        "application_id",
-        herdr_threads::store::control::LEGACY_PAIR_MARKER,
-    )
-    .unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
-        [instance.to_string()],
-    )
-    .unwrap();
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
     for (seat, pane, seq) in [
         ("seat", "w9:p1", 1),
         ("peer", "w9:p2", 2),
         ("cx", "w9:p3", 3),
     ] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", [seat, &instance.to_string(), pane]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,1,?3,'fresh','unknown','unknown',0,0,'term-'||?2,'inc','coherent_enumeration',1)", [instance.to_string(), pane.to_owned(), seq.to_string()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat, &instance.to_string(), pane]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),?2,'b',1,1,?3,'fresh','unknown','unknown',0,0,'term-'||?2,'inc','coherent_enumeration',1)", [instance.to_string(), pane.to_owned(), seq.to_string()]).unwrap();
     }
     db.execute("UPDATE seats SET structural_terminal_id='term-'||target_id, structural_incarnation='inc', structural_incarnation_kind='coherent_enumeration', structural_host_boot='b', structural_host_epoch=1, structural_connection_epoch=1, structural_observation_sequence=1", []).unwrap();
     instance
@@ -802,7 +843,13 @@ fn publish_fixture_snapshot(
         deadline: herdr_threads::protocol::time::MonoInstant(clock.monotonic_now().0 + 5000),
         cancellation: Cancellation::default(),
     };
-    let admission = store.begin_host_observation(instance, &budget).unwrap();
+    let admission = store
+        .begin_host_observation(
+            instance,
+            herdr_threads::test_support::test_host_id(),
+            &budget,
+        )
+        .unwrap();
     let snapshot = host
         .enumerate_targets(&HostCallContext {
             budget: budget.clone(),
@@ -859,11 +906,13 @@ fn publish_fixture_snapshot(
 
 struct Fixture {
     root: PathBuf,
+    completions:
+        Arc<std::sync::Mutex<Vec<herdr_threads::protocol::commands::CompleteInboxDelivery>>>,
     state: PathBuf,
     host: PathBuf,
     db: PathBuf,
-    instance_dir: PathBuf,
-    /// The elected daemon's endpoint, for raw protocol calls ([`Fixture::call`]).
+    node_dir: PathBuf,
+    /// The elected daemon's endpoint, for the store handle of in-process assertions.
     descriptor: herdr_threads::daemon::ownership::EndpointDescriptor,
     stop: Cancellation,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -933,7 +982,10 @@ impl Fixture {
         }
         let host = root.join("host.sock");
         let context = RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        // The fixture host is the Herdr server the hooks' claims name.
+        let claim_host =
+            herdr_threads::protocol::ids::HostLocator::parse(host.to_str().unwrap()).unwrap();
         let instance = seed(&paths);
         let db = paths.database_path.clone();
         let stop = Cancellation::default();
@@ -955,12 +1007,13 @@ impl Fixture {
         let (counted, moded, raced) =
             (Arc::clone(&check_ins), Arc::clone(&mode), Arc::clone(&race));
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let completions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_completions = Arc::clone(&completions);
         let worker = std::thread::spawn(move || {
             let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
             let service_clock = Arc::clone(&clock);
             let database = worker_paths.database_path.clone();
-            let manifest_dir =
-                herdr_threads::harness::manifest::cache_dir(&worker_paths.instance_dir);
+            let manifest_dir = herdr_threads::harness::manifest::cache_dir(&worker_paths.node_dir);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -975,7 +1028,13 @@ impl Fixture {
                     WriterSink(std::io::sink()),
                     BufferLimits::new(64 * 1024, 16 * 1024).unwrap(),
                     move |instance, boot, cancellation| {
-                        let context = StoreContext::new(database, Arc::clone(&service_clock));
+                        let context = StoreContext::new(database, Arc::clone(&service_clock))
+                            .with_test_host()
+                            .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
+                        context.hosts().publish_for_test(
+                            claim_host,
+                            herdr_threads::test_support::test_host_id(),
+                        );
                         if production_durability {
                             context.require_commit_durability();
                         }
@@ -1014,6 +1073,7 @@ impl Fixture {
                         let writer = Arc::new(FairWriter::new(32));
                         let domain = DomainService::with_host(
                             instance.to_string(),
+                            herdr_threads::test_support::test_host_id(),
                             store,
                             service_clock,
                             host,
@@ -1032,6 +1092,7 @@ impl Fixture {
                         ) as Arc<dyn LocalService>;
                         Ok(Arc::new(Counting {
                             inner,
+                            completions: captured_completions,
                             check_ins: counted,
                             parse_failures: parsed_failures,
                             withheld_capabilities: withheld,
@@ -1052,7 +1113,7 @@ impl Fixture {
                 .unwrap();
         });
         let descriptor = ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(descriptor.instance_uuid, instance);
+        assert_eq!(descriptor.node_uuid, instance);
         let argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Claude);
         // This fixture exercises multiple callback classes through a legacy
         // registration. Explicit --event routing is covered separately.
@@ -1061,10 +1122,11 @@ impl Fixture {
         let codex = herdr_threads::harness::setup::shell_command(&codex_argv).unwrap();
         Self {
             root,
+            completions,
             state,
             host,
             db,
-            instance_dir: paths.instance_dir.clone(),
+            node_dir: paths.node_dir.clone(),
             descriptor,
             stop,
             worker: Some(worker),
@@ -1080,29 +1142,6 @@ impl Fixture {
             codex,
             _gate: gate,
         }
-    }
-    /// One raw protocol command to the elected daemon (for shapes the CLI can no longer produce).
-    fn call(
-        &self,
-        command: Command,
-    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
-        use herdr_threads::ports::LocalClient;
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-        let client = herdr_threads::client::local::LocalSocketClient::new(
-            self.descriptor.endpoint.clone(),
-            Arc::clone(&clock),
-            self.descriptor.instance_uuid,
-            Some(self.descriptor.boot_id),
-        );
-        client.call(
-            command,
-            &CallBudget {
-                deadline: herdr_threads::protocol::time::MonoInstant(
-                    clock.monotonic_now().0 + 5_000,
-                ),
-                cancellation: Cancellation::default(),
-            },
-        )
     }
     fn hook(&self, pane: &str, stdin: &[u8]) -> Hook {
         run_hook_traced(
@@ -1151,7 +1190,7 @@ impl Fixture {
     /// The seat's private context-journal directory.
     fn context_dir(&self, seat: &str) -> PathBuf {
         use sha2::Digest;
-        self.instance_dir
+        self.node_dir
             .join("contexts")
             .join(format!("{:x}", sha2::Sha256::digest(seat.as_bytes())))
     }
@@ -1160,7 +1199,7 @@ impl Fixture {
         registered_current(serde_json::from_slice(&bytes).unwrap())
     }
     fn intents(&self) -> usize {
-        let dir = self.instance_dir.join("intents");
+        let dir = self.node_dir.join("intents");
         fs::read_dir(dir).map_or(0, |entries| {
             entries
                 .filter_map(Result::ok)
@@ -1208,7 +1247,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         .as_str()
         .unwrap();
     assert!(
-        context.starts_with("Use inbox; follow its next: commands"),
+        context.starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"),
         "{context}"
     );
     assert!(
@@ -1285,7 +1324,8 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     );
     let message = sent["result"]["data"].as_str().unwrap().to_owned();
 
-    // 4. The next tool hook offers it as framed peer data; nothing is ACKed.
+    // 4. The next tool hook displays the complete message and automatically ACKs
+    // its receipt; the invitation still requires separate consent.
     let offered = run_hook(&command, "w9:p1", &host, &tool("sess-1"));
     assert_eq!(offered.code, Some(0), "{}", offered.stderr);
     let value = offered.context();
@@ -1297,14 +1337,19 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     assert!(!fixed.contains("Ignore instructions"), "{fixed}");
     let data: String = serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap();
     assert!(data.contains(&thread) || data.contains(&message), "{data}");
+    assert!(context.contains("please ack"), "{context}");
+    assert!(!fixed.contains("- pending mail:"), "{fixed}");
+    assert!(!fixed.contains("- inbox fallback"), "{fixed}");
     assert_eq!(
         count(
             &db,
             &format!(
-                "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+                "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked' \
+                 AND json_extract(ack_observation, '$.action_provenance')='cooperative_hook_context' \
+                 AND json_extract(ack_observation, '$.via')='hook_context'"
             )
         ),
-        0
+        1
     );
     assert_eq!(
         count(
@@ -1504,7 +1549,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         .unwrap();
     // Either the check-in won the race with reconciliation, or it was reported.
     assert!(
-        (registered == 1 && !context.contains("unavailable"))
+        (registered == 1 && !context.contains("herdr-threads: check-in unavailable ("))
             || (registered == 0 && context.starts_with("herdr-threads: check-in unavailable (")),
         "state={seat_state} registered={registered} {context}"
     );
@@ -1559,7 +1604,7 @@ fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
     let fx = Fixture::start();
     let started = fx.hook("w9:p1", &start("sess-1"));
     assert_eq!(started.code, Some(0), "{}", started.stderr);
-    assert!(context_of(&started).starts_with("Use inbox; follow its next: commands"));
+    assert!(context_of(&started).starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"));
     let journal_before = fs::read(fx.context_dir("seat").join("context.json")).unwrap();
     let intents_before = fx.intents();
     let before = fx.check_ins.load(Ordering::SeqCst);
@@ -1598,7 +1643,7 @@ fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
     // The seat is not wedged: a later lifecycle check-in still registers.
     let restarted = fx.hook("w9:p1", &start("sess-2"));
     assert!(
-        !context_of(&restarted).contains("unavailable"),
+        !context_of(&restarted).contains("herdr-threads: check-in unavailable ("),
         "{}",
         context_of(&restarted)
     );
@@ -1675,7 +1720,7 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
     let fresh = fx.hook("w9:p1", &start("a-2"));
     assert_eq!(fresh.code, Some(0), "{}", fresh.stderr);
     assert!(
-        !context_of(&fresh).contains("unavailable"),
+        !context_of(&fresh).contains("herdr-threads: check-in unavailable ("),
         "{} / {}",
         context_of(&fresh),
         fresh.stderr
@@ -1702,7 +1747,7 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
     let fresh = fx.hook("w9:p1", &start("b-2"));
     assert_eq!(fresh.code, Some(0), "{}", fresh.stderr);
     assert!(
-        !context_of(&fresh).contains("unavailable"),
+        !context_of(&fresh).contains("herdr-threads: check-in unavailable ("),
         "{} / {}",
         context_of(&fresh),
         fresh.stderr
@@ -1741,10 +1786,15 @@ fn cooperative_seat_on_own_target_startup_clear_resume_register_session_bindings
         assert_eq!(hook.code, Some(0), "{source}: {}", hook.stderr);
         let context = context_of(&hook);
         assert!(
-            context.starts_with("Use inbox; follow its next: commands"),
+            context.starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"),
             "{source}: {context}"
         );
-        assert!(!context.contains("unavailable"), "{source}: {context}");
+        assert!(
+            !context.contains("herdr-threads: check-in unavailable ("),
+            "{source}: {context}"
+        );
+        assert!(!context.contains("- pending mail:"), "{source}: {context}");
+        assert!(!context.contains("- inbox fallback"), "{source}: {context}");
         let next = fx.count("SELECT generation FROM seats WHERE id='seat'");
         assert_eq!(next, generation, "{source}: {generation} -> {next}");
         assert_eq!(
@@ -1768,365 +1818,6 @@ fn cooperative_seat_on_own_target_startup_clear_resume_register_session_bindings
         fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"),
         0
     );
-}
-
-// Q4: current direct-invitation Lazy work is visible before acceptance. Ordinary
-// pending bodies are also shown, but their unjoined display does not move a cursor.
-// The explicit ACK below is not display evidence: acceptance preserves that gap,
-// so settled ordinary and later Lazy bodies remain in this binding's own stream.
-#[test]
-// Keep the upstream registration key; direct acceptance preserves the actual reader gap.
-fn pair_accept_delivers_mixed_opening_mail_once() {
-    let fx = Fixture::start();
-    let started = fx.hook("w9:p1", &start("sess-1"));
-    assert_eq!(started.code, Some(0), "{}", started.stderr);
-    // The in-process CLI acts as session `sess-1` (`agent_origin`); direct send's ensure
-    // enrolls no binding, so the peer's binding must already be that session.
-    let peer = fx.hook("w9:p2", &start("sess-1"));
-    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
-    let direct = |body: &str| {
-        fx.cooperative("peer", "w9:p2", &["send", "--seat", "seat", "--body", body]);
-    };
-    direct("lazy-open");
-    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
-    let ordinary = |body: &str| {
-        fx.cooperative(
-            "peer",
-            "w9:p2",
-            &["send", &thread, "--body", body, "--require-ack", "seat"],
-        )["result"]["data"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-    };
-    let acked = ordinary("ordinary-acked");
-    direct("lazy-middle");
-    ordinary("ordinary-pending");
-    direct("lazy-last");
-    let hook = |label: &str| {
-        let hook = fx.hook("w9:p1", &tool("sess-1"));
-        assert_eq!(hook.code, Some(0), "{label}: {}", hook.stderr);
-        assert!(hook.stderr.is_empty(), "{label}: {}", hook.stderr);
-        if hook.stdout.is_empty() {
-            String::new()
-        } else {
-            context_of(&hook)
-        }
-    };
-    let times = |context: &str, body: &str| context.matches(&format!("\\n  {body}")).count();
-    let before = hook("before accept");
-    assert!(before.contains("invitation "), "{before}");
-    for (body, n) in [
-        ("ordinary-acked", 1),
-        ("ordinary-pending", 1),
-        ("lazy-open", 1),
-        ("lazy-middle", 1),
-        ("lazy-last", 1),
-    ] {
-        assert_eq!(times(&before, body), n, "before accept, {body}: {before}");
-    }
-    let read_position = || {
-        fx.count(&format!(
-        "SELECT c.seq FROM binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id WHERE b.seat_id='seat' AND b.native_session='sess-1' AND c.thread_id='{thread}'"
-    ))
-    };
-    let lazy_open = fx.count(&format!(
-        "SELECT sequence FROM messages WHERE thread_id='{thread}' AND body='lazy-open'"
-    ));
-    assert_eq!(
-        read_position(),
-        lazy_open,
-        "unjoined ordinary display does not pass its cursor gap"
-    );
-    // The display above the cursor gap is remembered per binding (binding_row_displays).
-    let marked = |body: &str| {
-        fx.count(&format!(
-            "SELECT count(*) FROM binding_row_displays d JOIN messages m ON m.id=d.message_id JOIN occupant_bindings b ON b.binding_id=d.binding_id WHERE m.body='{body}' AND b.seat_id='seat' AND b.native_session='sess-1'"
-        ))
-    };
-    assert_eq!(
-        marked("lazy-middle"),
-        1,
-        "the first display marked lazy-middle"
-    );
-    assert_eq!(marked("lazy-last"), 1, "the first display marked lazy-last");
-    fx.cooperative("seat", "w9:p1", &["ack", &acked]);
-    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
-    assert_eq!(
-        read_position(),
-        lazy_open,
-        "acceptance preserves the existing reader cursor"
-    );
-    let after = hook("after accept");
-    // Shown once in total: the before-accept display marked lazy-middle and lazy-last
-    // (binding_row_displays), so accept does not offer them again.
-    for (body, n) in [
-        ("ordinary-acked", 1),
-        ("ordinary-pending", 1),
-        ("lazy-open", 0),
-        ("lazy-middle", 0),
-        ("lazy-last", 0),
-    ] {
-        assert_eq!(times(&after, body), n, "after accept, {body}: {after}");
-    }
-    assert_eq!(hook("after delivery"), "");
-    assert_eq!(
-        fx.count("SELECT count(*) FROM lazy_recipients WHERE legacy_pending=1"),
-        0,
-        "direct acceptance never replaces this binding stream with seat-wide legacy rows"
-    );
-}
-
-// ht-br0: the text-accept twin of `pair_accept_delivers_mixed_opening_mail_once`. The accept's
-// own output is the binding's own text inbox restricted to the thread's lazy rows, and only to
-// those its display can settle: Lazy and ordinary rows share one per-binding cursor, and the
-// cursor walk stops at the first unread ordinary row (an explicit, non-display ACK does not let
-// it pass), so a lazy row past that row would be shown again by the next hook. The accept
-// therefore shows only the lazy rows before the thread's first unread ordinary row (here the
-// opener) and neither shows nor ACKs the ordinary (receipt) messages; the next hook shows the
-// rest of the stream (ordinary rows and the later lazy rows) once, as the hook does in the base
-// test. Each lazy row is shown exactly once across the accept output, the following hooks and a
-// text `inbox`. Kills: an accept page that shows lazy rows its bookkeeping cannot settle.
-#[test]
-fn text_pair_accept_shows_each_lazy_opening_row_once_across_accept_and_hooks() {
-    let fx = Fixture::start();
-    let started = fx.hook("w9:p1", &start("sess-1"));
-    assert_eq!(started.code, Some(0), "{}", started.stderr);
-    let peer = fx.hook("w9:p2", &start("sess-1"));
-    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
-    let direct = |body: &str| {
-        fx.cooperative("peer", "w9:p2", &["send", "--seat", "seat", "--body", body]);
-    };
-    direct("lazy-open");
-    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
-    let ordinary = |body: &str| {
-        fx.cooperative(
-            "peer",
-            "w9:p2",
-            &["send", &thread, "--body", body, "--require-ack", "seat"],
-        )["result"]["data"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-    };
-    let acked = ordinary("ordinary-acked");
-    direct("lazy-middle");
-    ordinary("ordinary-pending");
-    direct("lazy-last");
-    fx.cooperative("seat", "w9:p1", &["ack", &acked]);
-    let text = text_cli(
-        &fx,
-        "claude",
-        "sess-1",
-        "seat",
-        "w9:p1",
-        &["accept", &thread],
-    );
-    let times = |context: &str, body: &str| context.matches(&format!("\\n  {body}")).count();
-    let shown = |out: &str, body: &str| out.matches(&format!("\n  {body}\n")).count();
-    assert!(text.starts_with("accepted"), "{text}");
-    for (body, n) in [
-        ("ordinary-acked", 0),
-        ("ordinary-pending", 0),
-        ("lazy-open", 1),
-        ("lazy-middle", 0),
-        ("lazy-last", 0),
-    ] {
-        assert_eq!(shown(&text, body), n, "accept output, {body}: {text}");
-    }
-    assert!(!text.contains("next:"), "one page holds the opener: {text}");
-    let sequence = |body: &str| {
-        fx.count(&format!(
-            "SELECT sequence FROM messages WHERE thread_id='{thread}' AND body='{body}'"
-        ))
-    };
-    let read_position = fx.count(&format!(
-        "SELECT c.seq FROM binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id WHERE b.seat_id='seat' AND b.native_session='sess-1' AND c.thread_id='{thread}'"
-    ));
-    assert!(
-        read_position >= sequence("lazy-open") && read_position < sequence("ordinary-acked"),
-        "the accept's display passes the opener for this binding, up to the ordinary gap: {read_position}"
-    );
-    let hook = |label: &str| {
-        let hook = fx.hook("w9:p1", &tool("sess-1"));
-        assert_eq!(hook.code, Some(0), "{label}: {}", hook.stderr);
-        if hook.stdout.is_empty() {
-            String::new()
-        } else {
-            context_of(&hook)
-        }
-    };
-    let after = hook("after accept");
-    for (body, n) in [
-        ("ordinary-acked", 1),
-        ("ordinary-pending", 1),
-        ("lazy-open", 0),
-        ("lazy-middle", 1),
-        ("lazy-last", 1),
-    ] {
-        assert_eq!(times(&after, body), n, "after accept, {body}: {after}");
-    }
-    let again = hook("after delivery");
-    for body in ["lazy-open", "lazy-middle", "lazy-last"] {
-        assert_eq!(times(&again, body), 0, "second hook, {body}: {again}");
-    }
-    let inbox = text_cli(&fx, "claude", "sess-1", "seat", "w9:p1", &["inbox"]);
-    for body in ["lazy-open", "lazy-middle", "lazy-last"] {
-        assert!(!inbox.contains(body), "inbox, {body}: {inbox}");
-    }
-    assert_eq!(
-        fx.count("SELECT count(*) FROM lazy_recipients WHERE legacy_pending=1"),
-        0,
-        "direct acceptance marks no seat-wide legacy rows"
-    );
-}
-
-// ht-br0: an opening larger than one default inbox page (20 rows). The accept shows the first
-// page and exactly one `next:` line naming the caller's plain `inbox` (the daemon's scoped
-// continuation is not offered); running that line verbatim shows only the rest, never a row the
-// accept already showed, and nothing remains for the next hook.
-#[test]
-fn text_pair_accept_with_more_than_a_page_prints_one_working_inbox_next_line() {
-    let fx = Fixture::start();
-    let started = fx.hook("w9:p1", &start("sess-1"));
-    assert_eq!(started.code, Some(0), "{}", started.stderr);
-    let peer = fx.hook("w9:p2", &start("sess-1"));
-    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
-    let bodies: Vec<String> = (0..23).map(|n| format!("opening-row-{n:02}")).collect();
-    for body in &bodies {
-        fx.cooperative("peer", "w9:p2", &["send", "--seat", "seat", "--body", body]);
-    }
-    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
-    let text = text_cli(
-        &fx,
-        "claude",
-        "sess-1",
-        "seat",
-        "w9:p1",
-        &["accept", &thread],
-    );
-    assert!(text.starts_with("accepted"), "{text}");
-    let shown = |out: &str, body: &str| out.matches(&format!("\n  {body}\n")).count();
-    let in_accept: Vec<&String> = bodies.iter().filter(|b| shown(&text, b) == 1).collect();
-    assert!(
-        !in_accept.is_empty() && in_accept.len() < bodies.len(),
-        "{text}"
-    );
-    let next: Vec<&str> = text.lines().filter(|l| l.starts_with("next:")).collect();
-    assert_eq!(next.len(), 1, "{text}");
-    let argv: Vec<String> = next[0]["next:".len()..]
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect();
-    assert_eq!(argv.last().map(String::as_str), Some("inbox"), "{text}");
-    assert_eq!(argv[0], "herdr-threads", "{text}");
-    // Run the printed line verbatim, as the same agent (cooperative stand-in flags before the
-    // subcommand, as `text_cli` passes them).
-    let mut args: Vec<String> = argv[..argv.len() - 1].to_vec();
-    for flag in [
-        "--cooperative-seat",
-        "seat",
-        "--cooperative-target",
-        "w9:p1",
-        "--cooperative-harness",
-        "claude",
-        "--cooperative-role",
-        "top-level",
-        "inbox",
-    ] {
-        args.push(flag.into());
-    }
-    let mut out = Vec::new();
-    {
-        let _agent = agent_origin("claude", "sess-1");
-        herdr_threads::cli::run(args, &mut out).unwrap();
-    }
-    let inbox = String::from_utf8(out).unwrap();
-    for body in &bodies {
-        let total = shown(&text, body) + shown(&inbox, body);
-        assert_eq!(
-            total, 1,
-            "{body} once across accept and inbox:\n{text}\n{inbox}"
-        );
-    }
-    let hook = fx.hook("w9:p1", &tool("sess-1"));
-    assert_eq!(hook.code, Some(0), "{}", hook.stderr);
-    let after = if hook.stdout.is_empty() {
-        String::new()
-    } else {
-        context_of(&hook)
-    };
-    assert!(!after.contains("opening-row-"), "{after}");
-}
-
-// ht-br0 negatives: a person's `human accept`, a JSON accept and a `--machine` accept print no
-// opening body and complete nothing: the opener stays undisplayed (direct acceptance marks no
-// seat-wide legacy row) and an agent's next hook still delivers it.
-#[test]
-fn human_json_and_machine_accept_leave_the_opening_message_pending() {
-    for mode in ["json", "machine", "human"] {
-        let fx = Fixture::start();
-        let peer = fx.hook("w9:p2", &start("sess-1"));
-        assert_eq!(peer.code, Some(0), "{mode}: {}", peer.stderr);
-        if mode != "human" {
-            let started = fx.codex_hook(
-                "w9:p3",
-                &Payload::session_start("cx-sess", "startup")
-                    .codex("t0")
-                    .bytes(),
-            );
-            assert_eq!(started.code, Some(0), "{mode}: {}", started.stderr);
-        }
-        fx.cooperative(
-            "peer",
-            "w9:p2",
-            &["send", "--seat", "cx", "--body", "pending opening body"],
-        );
-        let thread = fx.count_text("SELECT thread_id FROM direct_threads");
-        let text = match mode {
-            "json" => text_cli(
-                &fx,
-                "codex",
-                "cx-sess",
-                "cx",
-                "w9:p3",
-                &["--json", "accept", &thread],
-            ),
-            "machine" => text_cli(
-                &fx,
-                "codex",
-                "cx-sess",
-                "cx",
-                "w9:p3",
-                &["--machine", "accept", &thread],
-            ),
-            _ => human_cli(&fx, "w9:p3", &["accept", &thread]),
-        };
-        assert!(text.contains("accepted"), "{mode}: {text}");
-        assert!(!text.contains("pending opening body"), "{mode}: {text}");
-        assert_eq!(
-            fx.count(
-                "SELECT count(*) FROM lazy_recipients WHERE seat_id='cx' AND state='pending' AND legacy_pending=0"
-            ),
-            1,
-            "{mode}: the row stays undisplayed"
-        );
-        if mode != "human" {
-            let tool = fx.codex_hook(
-                "w9:p3",
-                &Payload::pre_tool_use("cx-sess", "ls")
-                    .codex("t1")
-                    .with("tool_use_id", "call_1".into())
-                    .bytes(),
-            );
-            assert_eq!(tool.code, Some(0), "{mode}: {}", tool.stderr);
-            let tool_out = String::from_utf8_lossy(&tool.stdout);
-            assert!(
-                tool_out.contains("pending opening body"),
-                "{mode}: the binding's next hook delivers it: {tool_out}"
-            );
-        }
-    }
 }
 
 // ht-br0, generic (non-pair) acceptance: the join frontier keeps its seat-wide policy (an
@@ -2230,133 +1921,91 @@ fn text_generic_accept_shows_seat_pending_lazy_mail_once() {
     }
 }
 
-// ht-br0 on direct acceptance: the text accept's page completes the opener for the accepting
-// binding only. A sibling top-level binding of the seat keeps its independent own stream (its
-// cursor was inserted at the same event floor), so its next hook still shows the opener once.
-// Kills: a scoped display that settles seat-wide where direct acceptance does not.
+// ht-5fr.57: a text accept of an ordinary-thread invitation whose backlog body exceeds the page
+// shows its first chunk with one `next: ... inbox` line and leaves the row pending; plain `inbox`
+// restarts the body at offset 0 and follows its continuation to the tail. Kills: a continuation
+// line dropped from the accept page, a partially shown row passed or completed by the accept.
 #[test]
-fn text_pair_accept_completes_the_opener_for_the_accepting_binding_only() {
+fn text_accept_of_an_ordinary_invitation_shows_a_large_body_first_chunk_and_inbox_restarts_it() {
     let fx = Fixture::start();
-    fx.register("w9:p1", "sess-1");
-    let cleared = fx.hook("w9:p1", &Payload::session_start("sess-b", "clear").bytes());
-    assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
-    fx.register("w9:p2", "sess-1");
-    assert_eq!(
-        fx.count(
-            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND role='top_level'"
-        ),
-        2
+    let peer = fx.hook("w9:p2", &start("sess-1"));
+    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
+    let started = fx.codex_hook(
+        "w9:p3",
+        &Payload::session_start("cx-sess", "startup")
+            .codex("t0")
+            .bytes(),
     );
-    fx.cooperative(
-        "peer",
-        "w9:p2",
-        &["send", "--seat", "seat", "--body", "sibling opening body"],
-    );
-    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
-    let text = text_cli(
-        &fx,
-        "claude",
-        "sess-1",
-        "seat",
-        "w9:p1",
-        &["accept", &thread],
-    );
-    assert!(text.starts_with("accepted"), "{text}");
-    assert_eq!(text.matches("sibling opening body").count(), 1, "{text}");
-    let pull = |session: &str| {
-        let hook = fx.hook("w9:p1", &tool(session));
-        assert_eq!(hook.code, Some(0), "{session}: {}", hook.stderr);
-        if hook.stdout.is_empty() {
-            String::new()
-        } else {
-            context_of(&hook)
-        }
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let thread = fx.cooperative("peer", "w9:p2", &["thread", "create", "--topic", "big"])["result"]
+        ["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
+    let json = |command: &[&str]| {
+        let mut args = vec!["--json"];
+        args.extend_from_slice(command);
+        text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", &args)
     };
-    let times = |context: &str, body: &str| context.matches(&format!("\\n  {body}")).count();
-    let accepting = pull("sess-1");
-    assert_eq!(times(&accepting, "sibling opening body"), 0, "{accepting}");
-    let sibling = pull("sess-b");
-    assert_eq!(times(&sibling, "sibling opening body"), 1, "{sibling}");
-    assert_eq!(
-        fx.count("SELECT count(*) FROM lazy_recipients WHERE legacy_pending=1"),
-        0,
-        "direct acceptance marks no seat-wide legacy rows"
-    );
-}
-
-// ht-8y9: leave, reinvite and rejoin with two bindings of the seat at distinct read positions.
-// Q4 direct invitation acceptance preserves each established cursor, including across rejoin.
-// Both readers retain their own opening mail; one binding's display does not consume its sibling's stream.
-#[test]
-fn pair_rejoin_with_two_bindings_pins_read_positions() {
-    let fx = Fixture::start();
-    // A is `sess-1`, the session the in-process CLI acts as (`agent_origin`).
-    fx.register("w9:p1", "sess-1");
-    let cleared = fx.hook("w9:p1", &Payload::session_start("sess-b", "clear").bytes());
-    assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
-    fx.register("w9:p2", "sess-1");
-    assert_eq!(
-        fx.count(
-            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL"
-        ),
-        2
-    );
-    let direct = |body: &str| {
-        fx.cooperative("peer", "w9:p2", &["send", "--seat", "seat", "--body", body]);
-    };
-    let pull = |session: &str| {
-        let hook = fx.hook("w9:p1", &tool(session));
-        assert_eq!(hook.code, Some(0), "{session}: {}", hook.stderr);
-        if hook.stdout.is_empty() {
-            String::new()
-        } else {
-            context_of(&hook)
-        }
-    };
-    let shows = |context: &str, body: &str| context.contains(&format!("\\n  {body}"));
-    direct("first-contact");
-    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
-    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
-    // Direct acceptance preserves both readers; A's display leaves B's copy unread.
-    let a = pull("sess-1");
-    assert!(shows(&a, "first-contact"), "{a}");
-    let b = pull("sess-b");
-    assert!(shows(&b, "first-contact"), "{b}");
-    // Joined-era mail: A reads it, B does not.
-    direct("joined-era");
-    let a = pull("sess-1");
-    assert!(shows(&a, "joined-era"), "{a}");
-    let cursor = |session: &str| {
-        fx.count(&format!(
-            "SELECT c.seq FROM binding_cursors c JOIN occupant_bindings o ON o.binding_id=c.binding_id \
-             WHERE o.seat_id='seat' AND o.native_session='{session}' AND c.thread_id='{thread}'"
+    json(&["accept", &thread]);
+    let body = format!("HEAD-{}-TAIL", "x".repeat(40_000));
+    fx.cooperative("peer", "w9:p2", &["send", &thread, "--body", &body]);
+    json(&["leave", &thread]);
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
+    let id = fx.count_text(&format!(
+        "SELECT id FROM messages WHERE thread_id='{thread}' AND body LIKE 'HEAD-%'"
+    ));
+    let state = || {
+        fx.count_text(&format!(
+            "SELECT state FROM lazy_recipients WHERE seat_id='cx' AND message_id='{id}'"
         ))
     };
-    let joined_era = fx.count(&format!(
-        "SELECT sequence FROM messages WHERE thread_id='{thread}' AND body='joined-era'"
-    ));
-    assert!(cursor("sess-b") < joined_era && cursor("sess-1") >= joined_era);
-    fx.cooperative("seat", "w9:p1", &["leave", &thread]);
-    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
-    direct("rejoin-open");
-    let before_reaccept = (cursor("sess-1"), cursor("sess-b"));
-    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
-    assert_eq!((cursor("sess-1"), cursor("sess-b")), before_reaccept);
-    // B now pulls first: its retained cursor still owns joined-era and rejoin-open.
-    // A independently receives rejoin-open, without repeating joined-era.
-    let b = pull("sess-b");
-    assert!(shows(&b, "joined-era"), "{b}");
-    assert!(shows(&b, "rejoin-open"), "{b}");
-    let a = pull("sess-1");
-    assert!(!shows(&a, "joined-era"), "{a}");
-    assert!(shows(&a, "rejoin-open"), "{a}");
-    // Mail after the rejoin reaches both bindings through their cursors.
-    direct("after-rejoin");
-    for session in ["sess-1", "sess-b"] {
-        let context = pull(session);
-        assert!(shows(&context, "after-rejoin"), "{session}: {context}");
-        assert!(!shows(&context, "rejoin-open"), "{session}: {context}");
+
+    let accepted = text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", &["accept", &thread]);
+    assert!(accepted.starts_with("accepted"), "{accepted}");
+    assert!(accepted.contains("HEAD-"), "first chunk shown: {accepted}");
+    assert!(!accepted.contains("-TAIL"), "tail not shown: {accepted}");
+    let next: Vec<&str> = accepted
+        .lines()
+        .filter(|line| line.starts_with("next:"))
+        .collect();
+    assert_eq!(next.len(), 1, "{accepted}");
+    assert_eq!(
+        next[0].split_whitespace().last(),
+        Some("inbox"),
+        "{accepted}"
+    );
+    assert_eq!(state(), "pending", "a partly shown row stays pending");
+
+    let mut text = text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", &["inbox"]);
+    assert!(text.contains("HEAD-"), "inbox restarts at offset 0: {text}");
+    for _ in 0..8 {
+        if text.contains("-TAIL") {
+            break;
+        }
+        let line = text
+            .lines()
+            .rev()
+            .find(|line| line.starts_with("next:"))
+            .unwrap_or_else(|| panic!("no continuation before the tail: {text}"));
+        let args: Vec<String> = line["next:".len()..]
+            .split_whitespace()
+            .skip_while(|word| *word != "inbox" && *word != "body")
+            .map(str::to_owned)
+            .collect();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        text = text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", &args);
     }
+    assert!(
+        text.contains("-TAIL"),
+        "continuation reaches the tail: {text}"
+    );
+    assert_eq!(
+        state(),
+        "displayed",
+        "the followed continuation completes the restarted body (ht-5fr.58)"
+    );
 }
 
 // Required test 3: offer -> identical second tool call is quiet -> new message
@@ -2418,8 +2067,8 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
     let second = send("second");
     offered("second message");
     quiet("after second");
-    // ACK one message and receive another in the same thread between two tool
-    // calls: the pending count is unchanged, but the new message is emitted.
+    // Acceptance stays explicit; replaying ACKs of the displayed messages is
+    // harmless, and a later arrival still moves the attention frontier.
     fx.cooperative("seat", "w9:p1", &["accept", &thread]);
     fx.cooperative("seat", "w9:p1", &["ack", &first]);
     quiet("after ack");
@@ -2442,10 +2091,11 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
     let _fourth = send("fourth");
     let hook = fx.hook("w9:p1", &tool("sess-2"));
     assert!(context_of(&hook).contains("peer_data"));
-    // Nothing here ACKs on the model's behalf.
+    // All four messages were fully displayed by hooks, including before the
+    // invitation was accepted. Every complete display settles its receipt once.
     assert_eq!(
         fx.count("SELECT count(*) FROM receipt_state WHERE state='acked'"),
-        2
+        4
     );
 }
 
@@ -2453,8 +2103,8 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
 // message, with nothing else pending, moves the digest so the next Bash
 // PreToolUse presents it, and the hook injects the actual inbox rows (not just
 // an inbox pointer). Whole lazy bodies shown are completed after delivery;
-// ACK-required messages are shown with an exact ack command, never ACKed by
-// the hook. Subagent calls never see or complete anything; a body too large
+// ACK-required messages settle automatically after complete output flush.
+// Subagent calls never see or complete anything; a body too large
 // for the bound is never shown or completed and the next call stays quiet.
 // Kills: a lazy-only arrival that leaves the hook quiet (digest unchanged), a
 // pointer-only hook, completion before or without whole display, a hook ACK
@@ -2540,7 +2190,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert_eq!(displayed(), 1);
 
     // 3. Ordinary and lazy together: both rows injected, the ACK-required
-    // one with an exact ack command and left unACKed; the lazy one completed.
+    // one automatically ACKed after delivery; the lazy one completed.
     let ordinary = data(fx.cooperative(
         "peer",
         "w9:p2",
@@ -2557,14 +2207,13 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert!(context.contains("needs a receipt"), "{context}");
     assert!(context.contains("lazy for the top level only"), "{context}");
     assert!(context.contains(&second), "{context}");
-    assert!(context.contains(&format!(" ack {ordinary}")), "{context}");
+    assert!(!context.contains(&format!(" ack {ordinary}")), "{context}");
     assert_eq!(displayed(), 2);
     assert_eq!(
         fx.count("SELECT count(*) FROM receipt_state WHERE state='acked'"),
-        0,
-        "the hook never ACKs"
+        1,
+        "the complete hook display automatically ACKs"
     );
-    fx.cooperative("seat", "w9:p1", &["ack", &ordinary]);
     quiet("after mixed");
 
     // 4. A body larger than the bound moves the digest, but is never shown
@@ -2579,7 +2228,7 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert!(!context.contains(&big[..100]), "{context}");
     assert!(!context.contains(INBOX_HEADER), "{context}");
     assert!(
-        context.contains("do not fit this hook's context"),
+        context.contains("More inbox content may remain"),
         "{context}"
     );
     assert!(context.len() <= 4096, "{}", context.len());
@@ -2594,6 +2243,323 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
             )),
             0,
             "{table}"
+        );
+    }
+}
+
+// Native receipt settlement is seat-wide; unread delivery and wake remain each binding's own.
+#[test]
+fn native_hook_auto_ack_preserves_sibling_unread_and_delivery_wake() {
+    use herdr_threads::{
+        ports::StorePort,
+        protocol::{ids::BindingId, pagination::PageRequest, priority::NudgeThreshold},
+        store::{SqliteStore, StoreSettings, lazy_delivery},
+    };
+
+    let fx = Fixture::start();
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "native-siblings"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    fx.register("w9:p1", "sess-b");
+    fx.hook("w9:p1", &tool("sess-1"));
+    fx.hook("w9:p1", &tool("sess-b"));
+    let binding = |session: &str| {
+        BindingId::new(fx.count_text(&format!(
+        "SELECT binding_id FROM occupant_bindings WHERE seat_id='seat' AND native_session='{session}' AND ended_at IS NULL"
+    )))
+    };
+    let (a, b) = (binding("sess-1"), binding("sess-b"));
+    assert_ne!(a, b);
+    assert_eq!(fx.count("SELECT count(DISTINCT liveness_pid) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND liveness='connected' AND role='top_level'"), 2,
+        "separate harness processes permit independent wake targets");
+    let cursor = |binding: &BindingId| {
+        fx.count(&format!(
+            "SELECT seq FROM binding_cursors WHERE binding_id='{}' AND thread_id='{thread}'",
+            binding.as_str()
+        ))
+    };
+    let (floor_a, floor_b) = (cursor(&a), cursor(&b));
+    fx.completions.lock().unwrap().clear();
+    let message = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &[
+            "send",
+            &thread,
+            "--body",
+            "requested sibling receipt",
+            "--require-ack",
+            "seat",
+        ],
+    ));
+    // A requested receipt has no delivery row. Default p1 mail supplies an independent row,
+    // whose own unread/wake predicate must survive the seat-level receipt's settlement.
+    let delivery = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "independent sibling delivery"],
+    ));
+    assert_eq!(
+        fx.count(&format!(
+            "SELECT priority FROM lazy_recipients WHERE message_id='{delivery}' AND seat_id='seat'"
+        )),
+        1
+    );
+    assert_eq!(
+        fx.count(&format!(
+            "SELECT priority FROM messages WHERE id='{message}'"
+        )),
+        0
+    );
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+    let store = SqliteStore::new(
+        StoreContext::new(fx.db.clone(), Arc::clone(&clock)),
+        fx.descriptor.node_uuid.to_string(),
+        StoreSettings {
+            daemon_boot: Some(fx.descriptor.boot_id),
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
+    let budget = || CallBudget {
+        deadline: herdr_threads::protocol::time::MonoInstant(clock.monotonic_now().0 + 5000),
+        cancellation: Cancellation::default(),
+    };
+    let host = herdr_threads::test_support::host_id_for_test(
+        fx.count("SELECT host_id FROM seats WHERE id='seat'"),
+    );
+    let candidate = || {
+        store
+            .wake_candidates(host, PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|c| c.seat.as_str() == "seat")
+    };
+    assert!(
+        candidate().unwrap().has_pending_receipt,
+        "control: receipt initially owes attention"
+    );
+    let shown = fx.hook("w9:p1", &tool("sess-1"));
+    assert_eq!(shown.code, Some(0), "{}", shown.stderr);
+    assert!(shown.stderr.is_empty(), "{}", shown.stderr);
+    let context = context_of(&shown);
+    for body in ["requested sibling receipt", "independent sibling delivery"] {
+        assert_eq!(context.matches(body).count(), 1, "{context}");
+    }
+    for directive in [
+        "- pending mail",
+        "More inbox content may remain",
+        " ack ",
+        "- inbox fallback",
+    ] {
+        assert!(!context.contains(directive), "{directive}: {context}");
+    }
+    let requests = fx.completions.lock().unwrap().clone();
+    let receipts: Vec<_> = requests
+        .iter()
+        .filter(|r| !r.receipt_candidates.is_empty())
+        .collect();
+    assert_eq!(receipts.len(), 1, "{requests:?}");
+    assert_eq!(
+        receipts[0]
+            .receipt_candidates
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        [&message]
+    );
+    assert_eq!(receipts[0].claim.native_session.as_str(), "sess-1");
+    assert!(cursor(&a) > floor_a);
+    assert_eq!(
+        cursor(&b),
+        floor_b,
+        "native completion must not advance a sibling"
+    );
+    let receipt = || {
+        fx.count_text(&format!(
+        "SELECT ack_observation FROM receipt_state WHERE message_id='{message}' AND seat_id='seat' AND state='acked'"
+    ))
+    };
+    let observation = receipt();
+    let source: serde_json::Value = serde_json::from_str(&observation).unwrap();
+    assert_eq!(source["action_provenance"], "cooperative_hook_context");
+    assert_eq!(source["via"], "hook_context");
+    assert_eq!(source["session"], "sess-1");
+    assert_eq!(fx.count_text(&format!("SELECT ack_binding_id FROM receipt_state WHERE message_id='{message}' AND seat_id='seat'")), a.as_str());
+    let terminal_events = || {
+        fx.count(&format!(
+        "SELECT count(*) FROM messages WHERE thread_id='{thread}' AND json_extract(event_json,'$.event')='ack' AND json_extract(event_json,'$.seat')='seat'"
+    ))
+    };
+    assert_eq!(terminal_events(), 1);
+    assert!(
+        candidate().is_none(),
+        "T=0 excludes the independent p1 row after receipt settlement"
+    );
+
+    let db = rusqlite::Connection::open(&fx.db).unwrap();
+    assert_eq!(
+        lazy_delivery::wake_frontier(&db, "seat", NudgeThreshold::new(0).unwrap()).unwrap(),
+        None
+    );
+    let frontier =
+        lazy_delivery::wake_frontier(&db, "seat", NudgeThreshold::new(1).unwrap()).unwrap();
+    assert!(
+        frontier.is_some(),
+        "sibling retains admitted independent delivery work"
+    );
+    db.execute("UPDATE seats SET nudge_threshold=1 WHERE id='seat'", [])
+        .unwrap();
+    let remaining = candidate().expect("T=1 admits the sibling's unread delivery");
+    assert!(!remaining.has_pending_receipt);
+    assert_eq!(remaining.pending_lazy(), frontier);
+    assert_eq!(
+        remaining
+            .targets
+            .iter()
+            .map(|t| &t.binding)
+            .collect::<Vec<_>>(),
+        [&b]
+    );
+    // The fixture normally observes an empty shell. Simulate the host's occupied harness
+    // observation at each UI boundary; discovery alone must never authorize a busy nudge.
+    db.execute("UPDATE observed_targets SET occupancy='occupied',ui_state='active_turn' WHERE target_id='w9:p1'", []).unwrap();
+    let busy = candidate().unwrap();
+    assert!(
+        store
+            .reserve_wake(host, &busy, &budget())
+            .unwrap()
+            .is_none(),
+        "busy process cannot be nudged"
+    );
+    db.execute(
+        "UPDATE observed_targets SET ui_state='idle' WHERE target_id='w9:p1'",
+        [],
+    )
+    .unwrap();
+    let idle = candidate().unwrap();
+    let reservation = store
+        .reserve_wake(host, &idle, &budget())
+        .unwrap()
+        .expect("idle unread sibling is wake eligible");
+    assert_eq!(reservation.reasons, ["lazy"]);
+    assert!(
+        !store
+            .wake_owed_to_binding(&reservation, Some(&a), &budget())
+            .unwrap()
+    );
+    assert!(
+        store
+            .wake_owed_to_binding(&reservation, Some(&b), &budget())
+            .unwrap()
+    );
+
+    let sibling = fx.hook("w9:p1", &tool("sess-b"));
+    assert_eq!(sibling.code, Some(0), "{}", sibling.stderr);
+    assert!(sibling.stderr.is_empty(), "{}", sibling.stderr);
+    let context = context_of(&sibling);
+    for body in ["requested sibling receipt", "independent sibling delivery"] {
+        assert_eq!(context.matches(body).count(), 1, "{context}");
+    }
+    assert!(cursor(&b) > floor_b);
+    assert_eq!(
+        receipt(),
+        observation,
+        "sibling replay cannot rewrite receipt attribution"
+    );
+    assert_eq!(
+        terminal_events(),
+        1,
+        "one seat-level terminal ACK across both displays"
+    );
+    assert_eq!(
+        lazy_delivery::wake_frontier(&db, "seat", NudgeThreshold::new(1).unwrap()).unwrap(),
+        None
+    );
+    assert!(
+        !store
+            .wake_owed_to_binding(&reservation, Some(&b), &budget())
+            .unwrap(),
+        "sibling display clears only its own delivery wake"
+    );
+    for session in ["sess-1", "sess-b"] {
+        let repeat = fx.hook("w9:p1", &tool(session));
+        assert_eq!(repeat.code, Some(0), "{}", repeat.stderr);
+        assert!(
+            repeat.stdout.is_empty(),
+            "{session}: {}",
+            String::from_utf8_lossy(&repeat.stdout)
+        );
+    }
+    assert_eq!(terminal_events(), 1);
+    assert_eq!(receipt(), observation);
+}
+
+// Actual eligible hooks retry after completion uncertainty without an arrival,
+// explicit inbox/ACK, timer or local retry journal. Covers receipt-only requests.
+#[test]
+fn native_hook_completion_failures_retry_on_the_next_unchanged_attention_hook() {
+    for failure in [FAIL_COMPLETION, FAIL_CURSOR, LOSE_COMPLETION_RESPONSE] {
+        let fx = Fixture::start();
+        fx.register("w9:p1", "sess-1");
+        fx.register("w9:p2", "peer-sess");
+        let thread = data(fx.cooperative(
+            "peer",
+            "w9:p2",
+            &["thread", "create", "--topic", "retry-hook"],
+        ));
+        fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+        fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+        // Drain enrollment/invitation attention before the one receipt arrival.
+        fx.hook("w9:p1", &tool("sess-1"));
+        let message = data(fx.cooperative(
+            "peer",
+            "w9:p2",
+            &[
+                "send",
+                &thread,
+                "--body",
+                "receipt-only recovery",
+                "--require-ack",
+                "seat",
+            ],
+        ));
+        fx.mode.store(failure, Ordering::SeqCst);
+        let first = fx.hook("w9:p1", &tool("sess-1"));
+        assert!(context_of(&first).contains("receipt-only recovery"));
+        assert!(
+            first.stderr.contains("delivery completion uncertain"),
+            "{}",
+            first.stderr
+        );
+        let acked = || {
+            fx.count(&format!(
+                "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+            ))
+        };
+        assert_eq!(acked(), i64::from(failure != FAIL_COMPLETION));
+        fx.mode.store(PASS, Ordering::SeqCst);
+        // No new message or manual settlement between these two hook invocations.
+        let next = fx.hook("w9:p1", &tool("sess-1"));
+        assert!(
+            context_of(&next).contains("receipt-only recovery"),
+            "{}",
+            next.stderr
+        );
+        assert!(next.stderr.is_empty(), "{}", next.stderr);
+        assert_eq!(acked(), 1);
+        let quiet = fx.hook("w9:p1", &tool("sess-1"));
+        assert!(
+            quiet.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&quiet.stdout)
         );
     }
 }
@@ -2710,109 +2676,6 @@ fn text_cli(
     let _agent = agent_origin(harness, session);
     herdr_threads::cli::run(args, &mut out).unwrap();
     String::from_utf8(out).unwrap()
-}
-
-/// One `herdr-threads human ...` run by a person (no harness ancestry or marker) in `pane`, in
-/// text output; returns stdout. `me init` first makes the pane's seat a person's.
-fn human_cli(fx: &Fixture, pane: &str, command: &[&str]) -> String {
-    let run = |command: &[&str]| {
-        let out = scrubbed_command(BIN)
-            .arg("human")
-            .args([
-                "--state-dir",
-                fx.state.to_str().unwrap(),
-                "--host-endpoint",
-                fx.host.to_str().unwrap(),
-            ])
-            .args(command)
-            .env("HERDR_ENV", "1")
-            .env("HERDR_PANE_ID", pane)
-            .env("HERDR_SOCKET_PATH", &fx.host)
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{command:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8(out.stdout).unwrap()
-    };
-    run(&["me", "init"]);
-    run(command)
-}
-
-// ht-br0: Codex has no post-tool delivery, so when `accept` of a pair invitation is the last
-// tool call of a turn, the pair's lazy opening message must ride the accept's own output (the
-// caller's own text-inbox display, thread-scoped), not wait for the next hook or wake. Kills:
-// an accept that leaves the opener seat-pending until the next PreToolUse/UserPromptSubmit.
-#[test]
-fn codex_pair_accept_output_carries_the_opening_message() {
-    let fx = Fixture::start();
-    // The in-process CLI acts as session `sess-1`; direct send's ensure enrolls no binding.
-    let peer = fx.hook("w9:p2", &start("sess-1"));
-    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
-    let started = fx.codex_hook(
-        "w9:p3",
-        &Payload::session_start("cx-sess", "startup")
-            .codex("t0")
-            .bytes(),
-    );
-    assert_eq!(started.code, Some(0), "{}", started.stderr);
-    fx.cooperative(
-        "peer",
-        "w9:p2",
-        &["send", "--seat", "cx", "--body", "codex opening body"],
-    );
-    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
-    let id = fx.count_text("SELECT id FROM messages WHERE body='codex opening body'");
-    let text = text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", &["accept", &thread]);
-    assert!(text.starts_with("accepted"), "{text}");
-    assert!(text.contains(&id), "accept output names the opener: {text}");
-    assert_eq!(
-        text.matches("codex opening body").count(),
-        1,
-        "accept output carries the opener body once: {text}"
-    );
-    assert_eq!(
-        fx.count(
-            "SELECT count(*) FROM lazy_recipients WHERE seat_id='cx' AND state='displayed' AND legacy_pending=0"
-        ),
-        1,
-        "the accept's display completes the opener (no seat-wide legacy row on direct acceptance)"
-    );
-    let opener = fx.count(&format!("SELECT sequence FROM messages WHERE id='{id}'"));
-    assert!(
-        fx.count(&format!(
-            "SELECT c.seq FROM binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id WHERE b.seat_id='cx' AND b.native_session='cx-sess' AND c.thread_id='{thread}'"
-        )) >= opener,
-        "the accepting binding's own cursor passed the opener"
-    );
-    let tool = fx.codex_hook(
-        "w9:p3",
-        &Payload::pre_tool_use("cx-sess", "ls")
-            .codex("t1")
-            .with("tool_use_id", "call_1".into())
-            .bytes(),
-    );
-    assert_eq!(tool.code, Some(0), "{}", tool.stderr);
-    let tool_out = String::from_utf8_lossy(&tool.stdout);
-    assert!(!tool_out.contains("codex opening body"), "{tool_out}");
-    let turn = fx.codex_hook(
-        "w9:p3",
-        &Payload::bare("UserPromptSubmit")
-            .with("session_id", "cx-sess".into())
-            .with("transcript_path", serde_json::Value::Null)
-            .with("cwd", "/tmp".into())
-            .with("model", "gpt-5".into())
-            .with("permission_mode", "default".into())
-            .with("prompt", "hello".into())
-            .with("turn_id", "t2".into())
-            .bytes(),
-    );
-    assert_eq!(turn.code, Some(0), "{}", turn.stderr);
-    let turn_out = String::from_utf8_lossy(&turn.stdout);
-    assert!(!turn_out.contains("codex opening body"), "{turn_out}");
 }
 
 // ht-mu3: a text-only Codex turn makes no tool call, so the lazy item rides
@@ -3073,8 +2936,8 @@ impl Fixture {
         db.busy_timeout(Duration::from_secs(10)).unwrap();
         db.execute_batch(&format!(
             "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{n}) \
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'fill-'||x,(SELECT id FROM host_instances),'filler','',0,0 FROM n;"
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) \
+             SELECT 'fill-'||x,(SELECT id FROM local_node),'filler','',0,0,0 FROM n;"
         ))
         .unwrap();
     }
@@ -3281,12 +3144,12 @@ fn ack_then_arrival_between_tool_calls_is_emitted_once() {
 // 1. B arrives right after the Current CheckIn answered the offer of A;
 // 2. C arrives right after a digest query answered and before its CheckIn;
 // 3. D arrives right after a SessionStart (clear) lifecycle CheckIn answered.
-// Each late arrival is emitted on the next tool call with its exact ID and
-// then quiet. Kills: "digest read after the tool offer" (1: B would be in the
-// mark), "mark taken after the CheckIn" (2), and "lifecycle seed read after
-// the lifecycle CheckIn" (3: D would be in the seed).
+// Those arrivals ride the later inbox page in the same hook. A fourth
+// arrival after that page's snapshot must remain pending until the next
+// hook. Kills: a receipt settled without display, a missed page-snapshot
+// race, or a completed body re-offered merely because its digest was older.
 #[test]
-fn arrivals_racing_the_offer_are_emitted_on_the_next_call() {
+fn arrivals_racing_the_offer_or_inbox_are_displayed_without_loss() {
     let fx = Fixture::start();
     fx.register("w9:p1", "sess-1");
     fx.register("w9:p2", "peer-sess");
@@ -3307,10 +3170,13 @@ fn arrivals_racing_the_offer_are_emitted_on_the_next_call() {
     // 1. After the tool offer.
     let (action, sent) = peer_sends(&fx, &thread, "B");
     fx.race(RaceAt::CurrentCheckIn, action);
-    calls.offered("A", &[&a]);
+    let (_, _, shown) = calls.offered_hook("A", &[&a]);
     assert!(!fx.armed(), "race 1 did not run");
     let b = sent.recv_timeout(Duration::from_secs(5)).unwrap();
-    calls.offered("B after the tool offer", &["receipts=2 [", &b]);
+    assert!(
+        context_of(&shown).contains(&format!("message {b} ")),
+        "B rides the later inbox page"
+    );
     calls.quiet("after B");
 
     // 2. Between the digest query and its CheckIn.
@@ -3322,10 +3188,13 @@ fn arrivals_racing_the_offer_are_emitted_on_the_next_call() {
         "w9:p2",
         &["send", &thread, "--body", "E", "--require-ack", "seat"],
     ));
-    calls.offered("E", &[&e]);
+    let (_, _, shown) = calls.offered_hook("E", &[&e]);
     assert!(!fx.armed(), "race 2 did not run");
     let c = sent.recv_timeout(Duration::from_secs(5)).unwrap();
-    calls.offered("C between digest and offer", &[&c]);
+    assert!(
+        context_of(&shown).contains(&format!("message {c} ")),
+        "C rides the later inbox page"
+    );
     calls.quiet("after C");
 
     // 3. After a lifecycle offer.
@@ -3344,12 +3213,38 @@ fn arrivals_racing_the_offer_are_emitted_on_the_next_call() {
         fx: &fx,
         session: "sess-2",
     };
-    after_clear.offered("D after the lifecycle offer", &[&d]);
+    assert!(
+        context_of(&cleared).contains(&format!("message {d} ")),
+        "D rides the lifecycle inbox page"
+    );
     after_clear.quiet("after D");
-    // Nothing here ACKs on the model's behalf: only the explicit ACK of A.
+
+    // 4. An arrival after the inbox snapshot is not displayed or ACKed by
+    // that hook. The next ordinary hook must deliver it.
+    let f = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "F", "--require-ack", "seat"],
+    ));
+    let (action, sent) = peer_sends(&fx, &thread, "G");
+    fx.race(RaceAt::InboxPage, action);
+    let (_, _, shown) = after_clear.offered_hook("F", &[&f]);
+    assert!(!fx.armed(), "race 4 did not run");
+    let g = sent.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(!context_of(&shown).contains(&g));
+    // The receipt projection is asynchronous; the public pending query also
+    // covers the published manifest before that projection catches up.
+    let pending = fx.cooperative("seat", "w9:p1", &["pending-receipts"]);
+    assert!(
+        pending.to_string().contains(&g),
+        "undisplayed G stays pending: {pending}"
+    );
+    after_clear.offered("G after the inbox snapshot", &[&g]);
+    after_clear.quiet("after G");
+    // A through G (including E) were completely displayed and ACKed once.
     assert_eq!(
         fx.count("SELECT count(*) FROM receipt_state WHERE state='acked'"),
-        1
+        7
     );
 }
 
@@ -3364,26 +3259,26 @@ impl Fixture {
         db.busy_timeout(Duration::from_secs(30)).unwrap();
         db.execute_batch(&format!(
             "BEGIN; \
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'hist',(SELECT id FROM host_instances),'history','',0,0; \
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) \
+             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0,0; \
              INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','seat',1,1); \
              WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{acked}) \
              INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,event_offset) \
-             SELECT 'hist-m'||x,(SELECT id FROM host_instances),'hist',x,'ordinary','b',0,1,100000+x FROM n; \
+             SELECT 'hist-m'||x,(SELECT id FROM local_node),'hist',x,'ordinary','b',0,1,100000+x FROM n; \
              INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) \
              SELECT id,'hist','seat','pending',100 FROM messages WHERE thread_id='hist'; \
              UPDATE receipts SET state='acked',ack_actor_seat_id='seat',ack_generation=1,ack_observation='obs',acked_at=1 WHERE thread_id='hist'; \
              WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{warns}) \
-             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) \
-             SELECT 'hist-i'||x,'hist','seat',x+1,'pending',0,1,100,100 FROM n; \
+             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) \
+             SELECT 'hist-i'||x,'hist','seat',x+1,'pending',0,1,100,100,(SELECT id FROM local_node) FROM n; \
              INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) \
-             SELECT 'hist-w'||ordinal,(SELECT id FROM host_instances),'hist',10000000+ordinal,'warn','{{}}',0,1,5000000+ordinal FROM invitations WHERE thread_id='hist'; \
+             SELECT 'hist-w'||ordinal,(SELECT id FROM local_node),'hist',10000000+ordinal,'warn','{{}}',0,1,5000000+ordinal FROM invitations WHERE thread_id='hist'; \
              INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) \
              SELECT 'hist-w'||ordinal,1,'hist',1000000,'seat','invitation',id FROM invitations WHERE thread_id='hist'; \
              UPDATE invitations SET state='accepted',accepted_at=1,accepted_actor_seat_id='seat',accepted_generation=1,accepted_observation='obs' WHERE thread_id='hist'; \
              WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{warns}) \
              INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) \
-             SELECT 'hist-b'||x,(SELECT id FROM host_instances),'hist',20000000+x,'warn','{{}}',0,1,9000000+x FROM n; \
+             SELECT 'hist-b'||x,(SELECT id FROM local_node),'hist',20000000+x,'warn','{{}}',0,1,9000000+x FROM n; \
              COMMIT;"
         ))
         .unwrap();
@@ -3480,7 +3375,8 @@ impl Fixture {
     /// `receipts` row exists, as in production.
     fn production_history(&self, acked: u64) -> Duration {
         let started = Instant::now();
-        let context = StoreContext::new(self.db.clone(), Arc::new(SystemClock::new()));
+        let context =
+            StoreContext::new(self.db.clone(), Arc::new(SystemClock::new())).with_test_host();
         // History setup only: the production writers run unchanged, but this
         // setup connection commits with `synchronous=NORMAL` (WAL), so writing
         // the history is not fsync-bound on a disk shared with the suite.
@@ -3489,8 +3385,8 @@ impl Fixture {
         conn.busy_timeout(Duration::from_secs(30)).unwrap();
         conn.execute_batch(
             "BEGIN; \
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'hist',(SELECT id FROM host_instances),'history','',0,0; \
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) \
+             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0,0; \
              INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hist','peer','joined'),('hist','seat','joined'); \
              INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','peer',1,1),('hist','seat',1,1); \
              COMMIT;",
@@ -3504,8 +3400,8 @@ impl Fixture {
         // accept writer leaves them (state UPDATE, v8 triggers firing).
         conn.execute_batch(&format!(
             "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{acked}) \
-             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) \
-             SELECT 'settled-'||x,'hist','seat',x+10,'pending',0,1,100,100 FROM n; \
+             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) \
+             SELECT 'settled-'||x,'hist','seat',x+10,'pending',0,1,100,100,(SELECT id FROM local_node) FROM n; \
              UPDATE invitations SET state='accepted',accepted_at=2,accepted_actor_seat_id='seat',accepted_generation=1,accepted_observation='obs' WHERE id LIKE 'settled-%';"
         ))
         .unwrap();
@@ -3640,7 +3536,8 @@ impl Fixture {
     /// settled: its receipt is ACKed.
     fn settled_warning_history(&self, settled: u64) -> Duration {
         let started = Instant::now();
-        let context = StoreContext::new(self.db.clone(), Arc::new(SystemClock::new()));
+        let context =
+            StoreContext::new(self.db.clone(), Arc::new(SystemClock::new())).with_test_host();
         // History setup only: the production writers run unchanged, but this
         // setup connection commits with `synchronous=NORMAL` (WAL), so writing
         // the history is not fsync-bound on a disk shared with the suite.
@@ -3649,8 +3546,8 @@ impl Fixture {
         conn.busy_timeout(Duration::from_secs(30)).unwrap();
         conn.execute_batch(
             "BEGIN; \
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'hist',(SELECT id FROM host_instances),'history','',0,0; \
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) \
+             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0,0; \
              INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hist','peer','joined'),('hist','seat','joined'); \
              INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','peer',1,1),('hist','seat',1,1); \
              COMMIT;",
@@ -3783,7 +3680,8 @@ impl Fixture {
     /// A setup-only writer on the running daemon's store for history written
     /// through `test_support::history`.
     fn history_writer(&self) -> (StoreContext, rusqlite::Connection) {
-        let context = StoreContext::new(self.db.clone(), Arc::new(SystemClock::new()));
+        let context =
+            StoreContext::new(self.db.clone(), Arc::new(SystemClock::new())).with_test_host();
         // History setup only: the production writers run unchanged, but this
         // setup connection commits with `synchronous=NORMAL` (WAL), so writing
         // the history is not fsync-bound on a disk shared with the suite.
@@ -3805,8 +3703,8 @@ impl Fixture {
         let (context, mut conn) = self.history_writer();
         conn.execute_batch(
             "BEGIN; \
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) \
-             SELECT 'hist',(SELECT id FROM host_instances),'history','',0,0; \
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) \
+             SELECT 'hist',(SELECT id FROM local_node),'history','',0,0,0; \
              INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hist','peer','joined'),('hist','seat','joined'); \
              INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hist','peer',1,1),('hist','seat',1,1); \
              COMMIT;",
@@ -4446,9 +4344,6 @@ fn ready_command_ending(context: &str, label: &str, tail: &str) -> String {
         .unwrap_or_else(|| panic!("no `{label}` line ending `{tail}` in {context}"));
     line.split_once(": ").unwrap().1.to_owned()
 }
-fn ready_command(context: &str, label: &str) -> String {
-    ready_command_ending(context, label, "")
-}
 
 /// The escaped peer data section, decoded.
 fn peer_data(context: &str) -> String {
@@ -4458,13 +4353,11 @@ fn peer_data(context: &str) -> String {
     serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap()
 }
 
-// Demo-1 P1/P5, built binary end to end: a seat invited and sent a
-// require-ACK message before launch gets one ready inbox command and a
-// separate invitation-accept command. Running inbox in the pane displays the
-// complete message and ACKs it; accepting remains explicit. The digest form is
-// refused as invalid arguments naming the bare ID, and the accept and inbox
-// ACK observations share one JSON shape. A later PreToolUse inbox command
-// handles a new message the same way.
+// Demo-1 P1/P5, built binary end to end: startup displays and ACKs a complete
+// require-ACK message without accepting its invitation. The emitted
+// accept/reply commands run verbatim. The digest form is refused as invalid
+// arguments naming the bare ID, and accept and hook ACK observations share
+// their identity fields. A later tool hook displays and ACKs new mail.
 // Kills: a fixed section without the CLI or runnable argv, argv that does not
 // run in the pane (wrong subcommand or flags, missing --state-dir, a --seat
 // the pane does not need, the digest form as an argument), missing display
@@ -4493,6 +4386,21 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     assert_eq!(started.code, Some(0), "{}", started.stderr);
     let context = context_of(&started);
     assert!(context.len() <= herdr_threads::cli::hook::MAX_CONTEXT);
+    assert!(context.contains(&format!("message {message} ")) && context.contains("handoff"));
+    assert_eq!(
+        fx.count(&format!(
+            "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+        )),
+        1,
+        "startup display settles the receipt before acceptance"
+    );
+    assert_eq!(
+        fx.count(&format!(
+            "SELECT count(*) FROM invitations WHERE id='{invitation}' AND state='pending'"
+        )),
+        1,
+        "receipt display never accepts an invitation"
+    );
     let fixed = fixed_section(&context);
     assert!(fixed.contains("herdr-threads"), "{fixed}");
     assert!(!fixed.contains("Mail data (JSON)"), "{fixed}");
@@ -4501,7 +4409,7 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
         "- accept (if topic and goal fit your role/remit): ",
         &format!(" accept {thread}"),
     );
-    let inbox = ready_command_ending(&context, "- pending mail", " inbox");
+    assert!(!context.contains("- pending mail"), "{context}");
     // Review B1: the startup directory overview for the one thread is
     // delivered with the commands, within the budget.
     let peer = peer_data(&context);
@@ -4516,7 +4424,7 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     assert!(!peer.contains("overview has_more"), "{peer}");
     assert!(!accept.contains("--seat"), "{fixed}");
     assert!(accept.ends_with(&format!(" accept {thread}")), "{accept}");
-    assert!(inbox.ends_with(" inbox"), "{inbox}");
+    assert!(!context.contains("inbox fallback"), "{context}");
 
     // The digest form is refused with an actionable error, not not_found.
     let digest_form = accept.replace(
@@ -4532,9 +4440,9 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     );
     assert!(!stderr.contains("not_found"), "{stderr}");
 
-    // One complete text inbox display settles the receipt; there is no
-    // separate history read or manual ACK command.
-    for command in [&inbox, &accept] {
+    // Startup already displayed opening mail. Acceptance is still explicit.
+    {
+        let command = &accept;
         let out = run_in_pane(&fx, "w9:p1", command);
         assert_eq!(
             out.status.code(),
@@ -4543,6 +4451,10 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+    // Startup already displayed the body, so the normal hook stays quiet.
+    let delivered = fx.hook("w9:p1", &tool("sess-1"));
+    assert_eq!(delivered.code, Some(0), "{}", delivered.stderr);
+    assert!(delivered.stdout.is_empty(), "{}", context_of(&delivered));
     assert_eq!(
         fx.count(&format!("SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND seat_id='seat' AND state='acked' AND ack_actor_seat_id='seat'")),
         1,
@@ -4586,14 +4498,8 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     let offered = fx.hook("w9:p1", &tool("sess-1"));
     assert_eq!(offered.code, Some(0), "{}", offered.stderr);
     let context = context_of(&offered);
-    let inbox = ready_command_ending(&context, "- pending mail", " inbox");
-    let out = run_in_pane(&fx, "w9:p1", &inbox);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(context.contains("second"), "{context}");
+    assert!(!context.contains("- pending mail"), "{context}");
     assert_eq!(
         fx.count(&format!("SELECT count(*) FROM receipt_state WHERE message_id='{second}' AND seat_id='seat' AND state='acked' AND ack_actor_seat_id='seat'")),
         1
@@ -4630,12 +4536,12 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     let acked_keys = keys(&acked);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&acked).unwrap()["action_provenance"],
-        "cooperative_inbox_display"
+        "cooperative_hook_context"
     );
     assert_eq!(
         acked_keys
             .into_iter()
-            .filter(|key| key != "action_provenance")
+            .filter(|key| key != "action_provenance" && key != "via")
             .collect::<Vec<_>>(),
         accepted_keys
     );
@@ -4645,8 +4551,9 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
 // and a require-ACK message, reach the seat before launch. Its SessionStart
 // context stays within MAX_CONTEXT and carries both the startup directory
 // overview (every thread, with topic, creation time, signed age, message and
-// participant counts) and one ready inbox command plus each explicit accept;
-// they run verbatim in the pane. One inbox display ACKs all complete messages.
+// participant counts) and each explicit accept; they run verbatim in the
+// pane. Startup display ACKs complete messages, leaving invitations pending;
+// any bounded overflow is read through the hook's exact inbox continuation.
 // Kills: dropping the overview whole in the oversize fallback, command lines
 // that do not run, or a budget that forces commands out for a typical startup.
 #[test]
@@ -4734,10 +4641,27 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
             "{thread}: {row}"
         );
     }
+    for (_, invitation, message, _) in &threads {
+        let shown = context.contains(&format!("message {message} "));
+        assert_eq!(
+            fx.count(&format!(
+                "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+            )),
+            i64::from(shown),
+            "only startup-displayed bodies are ACKed: {context}"
+        );
+        assert_eq!(
+            fx.count(&format!(
+                "SELECT count(*) FROM invitations WHERE id='{invitation}' AND state='pending'"
+            )),
+            1
+        );
+    }
     for label in ["\"age_millis_signed\":", "\"created_at", "\"joined_"] {
         assert!(peer.contains(label), "{label}: {peer}");
     }
-    let mut commands = vec![ready_command_ending(&context, "- pending mail", " inbox")];
+    assert!(!context.contains("- pending mail"), "{context}");
+    let mut commands = Vec::new();
     for (thread, _, _, _) in &threads {
         commands.push(ready_command_ending(
             &context,
@@ -4750,6 +4674,20 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
         !fixed_section(&context).contains("- ACK after reading:"),
         "{context}"
     );
+    let mut displayed = context.clone();
+    if let Some(inbox) = context.lines().find_map(|line| {
+        line.strip_prefix("More inbox content may remain: run ")
+            .and_then(|line| line.strip_suffix("; follow its next: commands."))
+    }) {
+        let out = run_in_pane(&fx, "w9:p1", inbox);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        displayed.push_str(&String::from_utf8_lossy(&out.stdout));
+    }
     for command in &commands {
         let out = run_in_pane(&fx, "w9:p1", command);
         assert_eq!(
@@ -4758,8 +4696,16 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
             "{command}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+        displayed.push_str(&String::from_utf8_lossy(&out.stdout));
     }
+    let delivered = fx.hook("w9:p1", &tool("sess-1"));
+    assert_eq!(delivered.code, Some(0), "{}", delivered.stderr);
+    assert!(delivered.stdout.is_empty(), "{}", context_of(&delivered));
     for (_, invitation, message, _) in &threads {
+        assert!(
+            displayed.contains(&format!("message {message} ")),
+            "{displayed}"
+        );
         assert_eq!(
             fx.count(&format!(
                 "SELECT count(*) FROM invitations WHERE id='{invitation}' AND state='accepted'"
@@ -4815,27 +4761,24 @@ fn deep_state_dir_startup_context_fits_and_names_the_main_thread() {
         context.len()
     );
     let state = fx.state.to_str().unwrap();
-    // The one ready inbox command labels the main thread whose overview is
-    // retained and carries the exact long state path.
-    let inbox = ready_command(&context, "- pending mail for ");
-    assert!(
-        inbox.contains(state),
-        "exact state dir in the command: {inbox}"
-    );
-    let mail_label = fixed_section(&context)
+    // The bounded native page overflow owns one exact routed continuation.
+    let inbox = context
         .lines()
-        .find(|line| line.starts_with("- pending mail for "))
-        .unwrap();
-    let main = mail_label
-        .strip_prefix("- pending mail for ")
-        .unwrap()
-        .split(" and other threads: ")
-        .next()
-        .unwrap();
+        .find_map(|line| line.strip_prefix("More inbox content may remain: run "))
+        .and_then(|line| line.strip_suffix("; follow its next: commands."))
+        .expect("one native inbox continuation")
+        .to_owned();
+    assert!(inbox.contains(state), "exact state dir in command: {inbox}");
+    assert_eq!(
+        context
+            .matches("More inbox content may remain: run ")
+            .count(),
+        1
+    );
     let peer = peer_data(&context);
     assert!(
-        peer.contains(&format!("\"thread\":\"{main}\"")),
-        "main thread row: {peer}"
+        peer.contains("\"thread\":"),
+        "retained main thread row: {peer}"
     );
     assert!(peer.contains("overview has_more:"), "{peer}");
     assert!(!peer.contains(state), "{peer}");
@@ -5015,14 +4958,14 @@ fn conflicting_globals_fail_the_cli_but_fail_open_only_for_hook() {
     }
 }
 
-// A user-level hook runs in every harness session. Outside a Herdr pane, or
-// in a pane of another Herdr instance than the installed `--host-endpoint`,
-// it must exit 0 at once with no stdout and no stderr, without observing the
-// harness version (no `claude --version` probe), reading state or starting a
-// daemon. Inside a pane of the installed instance it still runs (here it
-// reports a hook diagnostic, without invoking the harness). Kills: a
-// user-level hook that is noisy or slow in unrelated sessions, ignores the
-// recorded instance, or starts a daemon for a foreign Herdr server.
+// A user-level hook runs in every harness session. Outside a Herdr pane
+// (or without HERDR_PANE_ID) it must exit 0 at once with no stdout and no
+// stderr, without observing the harness version (no `claude --version`
+// probe), reading state or starting a daemon. Inside any Herdr pane it runs,
+// whichever Herdr server the pane belongs to: the claim carries the pane's own
+// server and the daemon decides by lazy attach (here it reports a hook
+// diagnostic, without invoking the harness). Kills: a user-level hook that is
+// noisy or slow in unrelated sessions, or silent in a pane of another server.
 // -- harness version evidence (ht-xoc.4) ------------------------------------
 
 /// The Claude hook command setup installs for `event` (it names the event with
@@ -5291,19 +5234,7 @@ fn user_level_hook_is_silent_outside_its_herdr_instance() {
         (output, started.elapsed())
     };
     let other = root.join("other.sock").display().to_string();
-    for env in [
-        vec![],
-        vec![("HERDR_ENV", "1".to_owned())],
-        vec![
-            ("HERDR_ENV", "1".to_owned()),
-            ("HERDR_PANE_ID", "w1:p1".to_owned()),
-        ],
-        vec![
-            ("HERDR_ENV", "1".to_owned()),
-            ("HERDR_PANE_ID", "w1:p1".to_owned()),
-            ("HERDR_SOCKET_PATH", other.clone()),
-        ],
-    ] {
+    for env in [vec![], vec![("HERDR_ENV", "1".to_owned())]] {
         let (output, elapsed) = run(&env);
         assert_eq!(output.status.code(), Some(0), "{env:?}");
         assert!(output.stdout.is_empty(), "{env:?}");
@@ -5316,6 +5247,30 @@ fn user_level_hook_is_silent_outside_its_herdr_instance() {
         assert!(!marker.exists(), "{env:?}: the harness version was probed");
         assert!(!state.exists(), "{env:?}: state was created");
     }
+    // A pane without HERDR_SOCKET_PATH falls back to the installed host, and a pane of another
+    // Herdr server claims that server: neither is foreign. The hook proceeds past the gate (and,
+    // with no daemon to attach, reports) without probing the harness.
+    let (output, _) = run(&[
+        ("HERDR_ENV", "1".to_owned()),
+        ("HERDR_PANE_ID", "w1:p1".to_owned()),
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!marker.exists(), "operational hooks must not probe");
+    assert!(
+        !output.stderr.is_empty(),
+        "a pane without HERDR_SOCKET_PATH was gated out"
+    );
+    let (output, _) = run(&[
+        ("HERDR_ENV", "1".to_owned()),
+        ("HERDR_PANE_ID", "w1:p1".to_owned()),
+        ("HERDR_SOCKET_PATH", other.clone()),
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!marker.exists(), "operational hooks must not probe");
+    assert!(
+        !output.stderr.is_empty(),
+        "a pane of another Herdr server was gated out"
+    );
     // The same socket through another spelling of its directory is the
     // installed instance: the hook proceeds past the gate.
     let (output, _) = run(&[
@@ -5400,7 +5355,7 @@ fn hook_path_takeover_replaces_a_human_occupant_with_a_new_agent_generation() {
     let takeover = fx.hook("w9:p1", &start("agent-2"));
     assert_eq!(takeover.code, Some(0), "{}", takeover.stderr);
     assert!(
-        !context_of(&takeover).contains("unavailable"),
+        !context_of(&takeover).contains("herdr-threads: check-in unavailable ("),
         "{} / {}",
         context_of(&takeover),
         takeover.stderr
@@ -5676,9 +5631,9 @@ mod continuity {
         root: PathBuf,
         pub host: PathBuf,
         pub db: PathBuf,
-        pub instance_dir: PathBuf,
-        paths: InstancePaths,
-        pub instance: Uuid,
+        pub node_dir: PathBuf,
+        paths: NodePaths,
+        pub instance: herdr_threads::node::NodeUuid,
         herdr: Arc<Herdr>,
         clock: Arc<dyn Clock>,
         descriptor: Option<herdr_threads::daemon::ownership::EndpointDescriptor>,
@@ -5719,34 +5674,25 @@ mod continuity {
             let state = root.join("state");
             let host = root.join("host.sock");
             let context = RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap();
-            let paths = InstancePaths::resolve(&context).unwrap();
-            let owner = OwnerLock::acquire(&paths).unwrap();
-            let instance = owner.instance_uuid();
+            let paths = NodePaths::resolve(&context.state_dir).unwrap();
+            let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+            let instance = owner.node_uuid().unwrap();
             drop(owner);
             if manifest_off {
                 use std::os::unix::fs::PermissionsExt;
-                paths.prepare_instance_dir().unwrap();
+                paths.prepare_node_dir().unwrap();
                 let settings = paths
-                    .instance_dir
+                    .node_dir
                     .join(herdr_threads::daemon::settings::SETTINGS_FILE);
                 fs::write(&settings, br#"{"harness_manifest":"off"}"#).unwrap();
                 fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
             }
             let setup =
-                StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
+                StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()))
+                    .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
+            // The seeded seats sit on the server the daemon will attach (and the claims name).
+            setup.attach_host(&host.to_string_lossy()).unwrap();
             let db = setup.open_writer().unwrap();
-            // Pre-upgrade pair and lazy-invitation fixtures (see `seed`).
-            db.pragma_update(
-                None,
-                "application_id",
-                herdr_threads::store::control::LEGACY_PAIR_MARKER,
-            )
-            .unwrap();
-            db.execute(
-                "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-                [instance.to_string()],
-            )
-            .unwrap();
             seed(&db, &instance.to_string());
             drop(db);
             // Write the pinned version reporters before any thread of this
@@ -5787,7 +5733,7 @@ mod continuity {
                 root,
                 host,
                 db: paths.database_path.clone(),
-                instance_dir: paths.instance_dir.clone(),
+                node_dir: paths.node_dir.clone(),
                 paths,
                 instance,
                 herdr,
@@ -5810,6 +5756,7 @@ mod continuity {
             let paths = self.paths.clone();
             let clock = Arc::clone(&self.clock);
             let host = Arc::clone(&self.herdr);
+            let endpoint = self.host.clone();
             let stop = self.stop.clone();
             self.daemon = Some(std::thread::spawn(move || {
                 tokio::runtime::Builder::new_current_thread()
@@ -5821,7 +5768,7 @@ mod continuity {
                         clock,
                         stop,
                         ServiceConfig::default(),
-                        host,
+                        herdr_threads::test_support::single_host_plan_at(host, endpoint),
                         move |descriptor| {
                             tx.send(descriptor.clone()).unwrap();
                             Ok(())
@@ -5831,7 +5778,7 @@ mod continuity {
             let descriptor = rx
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap_or_else(|error| {
-                    let log = fs::read_to_string(self.paths.instance_dir.join("daemon.log"))
+                    let log = fs::read_to_string(self.paths.node_dir.join("daemon.log"))
                         .unwrap_or_default();
                     panic!("elected daemon not ready: {error}; {log}");
                 });
@@ -5867,7 +5814,7 @@ mod continuity {
         pub fn wait_reconciled(&self) {
             let until = Instant::now() + Duration::from_secs(15);
             while self.count(
-                "SELECT count(*) FROM host_instances WHERE active_snapshot_id IS NOT NULL AND reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",
+                "SELECT count(*) FROM herdr_hosts WHERE active_snapshot_id IS NOT NULL AND reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",
             ) == 0
             {
                 assert!(
@@ -5883,9 +5830,14 @@ mod continuity {
             LocalSocketClient::new(
                 descriptor.endpoint,
                 Arc::clone(&self.clock),
-                descriptor.instance_uuid,
+                descriptor.node_uuid,
                 Some(descriptor.boot_id),
             )
+        }
+
+        /// The Herdr server the fixture's daemon attached and its hooks' claims name.
+        pub fn host_locator(&self) -> herdr_threads::protocol::ids::HostLocator {
+            herdr_threads::protocol::ids::HostLocator::parse(self.host.to_str().unwrap()).unwrap()
         }
 
         pub fn call(
@@ -5915,7 +5867,7 @@ mod continuity {
 
         pub fn context_dir(&self, seat: &str) -> PathBuf {
             use sha2::Digest;
-            self.instance_dir
+            self.node_dir
                 .join("contexts")
                 .join(format!("{:x}", sha2::Sha256::digest(seat.as_bytes())))
         }
@@ -5924,7 +5876,7 @@ mod continuity {
             super::registered_current(serde_json::from_slice(&bytes).unwrap())
         }
         pub fn intents(&self) -> usize {
-            fs::read_dir(self.instance_dir.join("intents")).map_or(0, |entries| {
+            fs::read_dir(self.node_dir.join("intents")).map_or(0, |entries| {
                 entries
                     .filter_map(Result::ok)
                     .filter(|e| e.path().extension().is_some_and(|x| x == "intent"))
@@ -5957,7 +5909,7 @@ mod continuity {
             // joined shutdown restores the descriptors and drains the reader;
             // only then replay a failure diagnostic before deleting the root.
             if std::thread::panicking()
-                && let Ok(log) = fs::read(self.instance_dir.join("daemon.log"))
+                && let Ok(log) = fs::read(self.node_dir.join("daemon.log"))
             {
                 let tail = &log[log.len().saturating_sub(8 * 1024)..];
                 let mut stderr = std::io::stderr().lock();
@@ -5977,7 +5929,7 @@ mod continuity {
         harness: &str,
         session: &str,
     ) {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,?2,'unresolved','native',1,0)", [seat, instance]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat, instance]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at) VALUES (?1,1,'old-pane','old-boot',1,?2,?3,?4,'cooperative_top_level',1,1,2)",
             rusqlite::params![seat, harness, session, Uuid::new_v4().to_string()]).unwrap();
     }
@@ -6070,7 +6022,7 @@ mod continuity {
             // Commit an ordinary intent but lose its reply before journal completion.
             // The next hook must reuse that allocation, not manufacture another role.
             use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
-            let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+            let journal = Journal::open(fx.node_dir.join("intents")).unwrap();
             let reference = journal
                 .record(
                     IntentScope::ServiceAllocation {
@@ -6078,6 +6030,7 @@ mod continuity {
                         target: HostTargetId::new(PANE),
                     },
                     SemanticMutation::ResolveSeat {
+                        host: fx.host_locator(),
                         target: HostTargetId::new(PANE),
                     },
                     1,
@@ -6315,7 +6268,7 @@ mod continuity {
         // A racing start may leave an uncertain intent for explicit replay;
         // settle each under its exact key and frozen payload.
         use herdr_threads::cli::journal::Journal;
-        let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+        let journal = Journal::open(fx.node_dir.join("intents")).unwrap();
         let pending = journal
             .page(&herdr_threads::protocol::pagination::PageRequest {
                 cursor: None,
@@ -6430,7 +6383,7 @@ mod continuity {
                     .unwrap()
                     .insert("w1:p3".into(), Agent::NoSession);
                 let store = herdr_threads::store::SqliteStore::new(
-                    StoreContext::new(fx.db.clone(), Arc::clone(&fx.clock)),
+                    StoreContext::new(fx.db.clone(), Arc::clone(&fx.clock)).with_test_host(),
                     fx.instance.to_string(),
                     herdr_threads::store::StoreSettings::default(),
                 )
@@ -6441,8 +6394,8 @@ mod continuity {
                     &fx.instance.to_string(),
                     fx.clock.as_ref(),
                 );
-                assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT active_snapshot_id FROM host_instances)"), 1);
-                assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT recovery_baseline_generation_id FROM host_instances)"), 0);
+                assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT active_snapshot_id FROM herdr_hosts)"), 1);
+                assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT recovery_baseline_generation_id FROM herdr_hosts)"), 0);
                 let resume = fx.hook(
                     harness,
                     "w1:p3",
@@ -6488,7 +6441,7 @@ mod continuity {
                     .insert(pane.into(), Agent::NoSession);
             }
             let store = herdr_threads::store::SqliteStore::new(
-                StoreContext::new(fx.db.clone(), Arc::clone(&fx.clock)),
+                StoreContext::new(fx.db.clone(), Arc::clone(&fx.clock)).with_test_host(),
                 fx.instance.to_string(),
                 herdr_threads::store::StoreSettings::default(),
             )
@@ -6499,7 +6452,7 @@ mod continuity {
                 &fx.instance.to_string(),
                 fx.clock.as_ref(),
             );
-            assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT recovery_baseline_generation_id FROM host_instances)"), 0);
+            assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT recovery_baseline_generation_id FROM herdr_hosts)"), 0);
             for source in ["startup", "clear", "resume"] {
                 let callback = fx.hook(
                     harness,
@@ -6543,7 +6496,7 @@ mod continuity {
             let fx = reattaching_fixture(harness, Agent::Session("S-1".into()));
             // The pane is held by the restore baseline until the saved seat is resolved.
             assert_eq!(
-                fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
                 1,
                 "{harness}"
             );
@@ -6555,7 +6508,7 @@ mod continuity {
             assert_eq!(resumed.code, Some(0), "{harness}: {}", resumed.stderr);
             let context = context_of(&resumed);
             assert!(
-                context.starts_with("Use inbox; follow its next: commands"),
+                context.starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"),
                 "{harness}: {context}"
             );
             assert_eq!(
@@ -6579,7 +6532,7 @@ mod continuity {
                 0
             );
             assert_eq!(
-                fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
                 0,
                 "{harness}"
             );
@@ -6619,7 +6572,7 @@ mod continuity {
                         1 - recovered
                     );
                     assert_eq!(
-                        fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                        fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
                         1 - recovered
                     );
                     assert_eq!(
@@ -6664,7 +6617,7 @@ mod continuity {
                 1
             );
             assert_eq!(
-                fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
                 1
             );
             assert_eq!(fx.intents(), 0, "a definitive refusal discards the intent");
@@ -6683,7 +6636,7 @@ mod continuity {
                 "{harness}"
             );
             assert_eq!(
-                fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+                fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
                 1
             );
             assert_eq!(fx.count("SELECT count(*) FROM allocation_decisions"), 0);
@@ -6814,7 +6767,7 @@ mod continuity {
             1
         );
         assert_eq!(
-            fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+            fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
             1
         );
         // The other pane is still held; reattaching the last unresolved seat lifts it.
@@ -6825,7 +6778,7 @@ mod continuity {
             0
         );
         assert_eq!(
-            fx.count("SELECT baseline_hold_unclaimed FROM host_instances"),
+            fx.count("SELECT baseline_hold_unclaimed FROM herdr_hosts"),
             0
         );
         assert_eq!(
@@ -6839,7 +6792,7 @@ mod continuity {
     fn commit_with_lost_reply(fx: &Fixture, harness: &str, session: &str) -> String {
         use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
         use herdr_threads::protocol::authority::Harness as Wire;
-        let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+        let journal = Journal::open(fx.node_dir.join("intents")).unwrap();
         let reference = journal
             .record(
                 IntentScope::Continuity {
@@ -6847,6 +6800,7 @@ mod continuity {
                     target: HostTargetId::new(PANE),
                 },
                 SemanticMutation::ContinuityCheckIn {
+                    host: fx.host_locator(),
                     target: HostTargetId::new(PANE),
                     harness: if harness == "codex" {
                         Wire::Codex
@@ -6890,6 +6844,7 @@ mod continuity {
             .create(&dir)
             .unwrap();
         ContextJournal::open(&dir, fx.instance, seat, Duration::from_secs(1))
+            .map(|journal| journal.with_host(fx.host_locator()))
             .unwrap()
             .install_reattached(OccupantContext {
                 format_version: 1,
@@ -7001,7 +6956,7 @@ mod continuity {
         // gave up while the daemon had not reconciled).
         {
             use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
-            let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+            let journal = Journal::open(fx.node_dir.join("intents")).unwrap();
             journal
                 .record(
                     IntentScope::Continuity {
@@ -7009,6 +6964,7 @@ mod continuity {
                         target: HostTargetId::new(PANE),
                     },
                     SemanticMutation::ContinuityCheckIn {
+                        host: fx.host_locator(),
                         target: HostTargetId::new(PANE),
                         harness: herdr_threads::protocol::authority::Harness::Claude,
                         native_session: herdr_threads::protocol::ids::NativeSessionId::new("S-1"),
@@ -7137,7 +7093,7 @@ mod continuity {
             // An earlier hook gave up with its intent kept (daemon down, or
             // not yet reconciled): nothing was decided.
             fx.stop_daemon();
-            let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+            let journal = Journal::open(fx.node_dir.join("intents")).unwrap();
             let reference = journal
                 .record(
                     IntentScope::Continuity {
@@ -7145,6 +7101,7 @@ mod continuity {
                         target: HostTargetId::new(PANE),
                     },
                     SemanticMutation::ContinuityCheckIn {
+                        host: fx.host_locator(),
                         target: HostTargetId::new(PANE),
                         harness: if harness == "codex" {
                             herdr_threads::protocol::authority::Harness::Codex
@@ -7562,4 +7519,87 @@ fn versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capab
     );
     // The withheld response outlasted the hook: release it only now.
     fx.mode.store(PASS, Ordering::SeqCst);
+}
+
+/// The installed hook must leave both receipt and binding progress untouched
+/// when its actual stdout cannot deliver the encoded context. The next normal
+/// hook recovers without a new arrival or an explicit inbox/ACK command.
+#[test]
+fn native_hook_broken_stdout_does_not_settle_or_hide_receipt_mail() {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+
+    let fx = Fixture::start();
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "broken-output"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    fx.hook("w9:p1", &tool("sess-1"));
+    let message = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &[
+            "send",
+            &thread,
+            "--body",
+            "receipt survives broken native output",
+            "--require-ack",
+            "seat",
+        ],
+    ));
+    let cursor_sql = format!(
+        "SELECT COALESCE(sum(c.seq),0) FROM binding_cursors c \
+         JOIN occupant_bindings b ON b.binding_id=c.binding_id \
+         WHERE b.seat_id='seat' AND c.thread_id='{thread}'"
+    );
+    let before = fx.count(&cursor_sql);
+    // A real open output descriptor with no reader yields EPIPE. Closing fd 1
+    // before exec is insufficient: a runtime may reopen it onto /dev/null.
+    let (sink, reader) = UnixStream::pair().unwrap();
+    drop(reader);
+    let sink: OwnedFd = sink.into();
+    let mut command = herdr_threads::test_support::harness_shim::under_harness(
+        "claude",
+        Path::new("/bin/sh"),
+        &["-c", &fx.command],
+        &[],
+    );
+    command
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", "w9:p1")
+        .env("HERDR_SOCKET_PATH", &fx.host)
+        .env("PATH", harness_path(&fx.host))
+        .env_remove("HERDR_PLUGIN_STATE_DIR")
+        .env_remove("HERDR_BIN_PATH")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(sink))
+        .stderr(Stdio::piped());
+    let mut child = command.spawn_owned().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&tool("sess-1"))
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    assert_eq!(
+        fx.count(&cursor_sql),
+        before,
+        "failed output moved the cursor"
+    );
+    let receipt_sql = format!(
+        "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+    );
+    assert_eq!(fx.count(&receipt_sql), 0, "failed output ACKed a receipt");
+    let retry = fx.hook("w9:p1", &tool("sess-1"));
+    assert!(context_of(&retry).contains("receipt survives broken native output"));
+    assert_eq!(fx.count(&receipt_sql), 1);
+    assert!(fx.count(&cursor_sql) > before);
+    assert!(fx.hook("w9:p1", &tool("sess-1")).stdout.is_empty());
 }

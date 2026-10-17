@@ -18,7 +18,7 @@ use super::sweep::{Scratch, agent_pane, host_reply, pane};
 use herdr_threads::{
     app::{LaneProbe, SystemClock, run_elected_probed},
     cli::hook::installed_argv,
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     harness::{claude::setup::plan_claude, context::Harness},
     host::native::NativeCli,
     ports::HostPort,
@@ -363,7 +363,7 @@ struct Rig {
     root: PathBuf,
     state: PathBuf,
     socket: PathBuf,
-    paths: InstancePaths,
+    paths: NodePaths,
     clock: Arc<ShiftedClock>,
     host: Host,
     claude_hooks: Value,
@@ -426,10 +426,10 @@ impl Rig {
         let plan = plan_claude(b"{}", &argv).unwrap();
         let installed: Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
         let context = RuntimeContext::explicit(state.clone(), socket.clone(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        paths.prepare_instance_dir().unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        paths.prepare_node_dir().unwrap();
         if let Some(settings) = settings {
-            let file = paths.instance_dir.join("settings.json");
+            let file = paths.node_dir.join("settings.json");
             fs::write(&file, serde_json::to_vec(&settings).unwrap()).unwrap();
             fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
         }
@@ -513,7 +513,9 @@ impl Rig {
     fn start_daemon(&mut self) {
         assert!(self.daemon.is_none());
         let clock: Arc<dyn Clock> = self.clock.clone();
-        let host: Arc<dyn HostPort> = Arc::new(NativeCli::new(self.socket.clone(), clock.clone()));
+        // The canonical path the CLI claims name, which is also the endpoint the daemon attaches.
+        let endpoint = std::fs::canonicalize(&self.socket).unwrap();
+        let host: Arc<dyn HostPort> = Arc::new(NativeCli::new(endpoint.clone(), clock.clone()));
         let stop = Cancellation::default();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (paths, daemon_stop, config) = (self.paths.clone(), stop.clone(), self.config.clone());
@@ -534,7 +536,7 @@ impl Rig {
                     clock,
                     daemon_stop,
                     config,
-                    host,
+                    herdr_threads::test_support::single_host_plan_at(host, endpoint),
                     probe,
                     move |descriptor| {
                         ready_tx
@@ -573,7 +575,7 @@ impl Rig {
 
     fn require_advertised_presentation(&self) {
         use herdr_threads::{
-            daemon::ownership::{read_descriptor, read_existing_namespace},
+            daemon::ownership::{read_descriptor, read_node_uuid_hint},
             protocol::{
                 commands::Command,
                 results::CommandResult,
@@ -582,13 +584,13 @@ impl Rig {
         };
         let descriptor = read_descriptor(
             &self.paths,
-            read_existing_namespace(&self.paths).unwrap().unwrap(),
+            read_node_uuid_hint(&self.paths).unwrap().unwrap(),
         )
         .unwrap();
         let request = WireRequest {
             version: PROTOCOL_VERSION,
             request_id: uuid::Uuid::new_v4().to_string(),
-            expected_instance: descriptor.instance_uuid.to_string(),
+            expected_instance: descriptor.node_uuid.to_string(),
             expected_boot: Some(descriptor.boot_id.to_string()),
             output: None,
             command: Command::Capabilities,
@@ -714,6 +716,17 @@ impl Rig {
         .to_vec()
     }
 
+    fn body_read_steps(&self, id: &str) -> Vec<Vec<String>> {
+        ["body", "ack"]
+            .into_iter()
+            .map(|verb| {
+                let mut argv = self.launch();
+                argv.extend([verb.to_owned(), id.to_owned()]);
+                argv
+            })
+            .collect()
+    }
+
     /// The mod's `watch` child as the setup-written launch runs it, in the
     /// session-shell environment (see [`Rig::raw_command`]), for B.
     fn raw_watch(&self, session: &str) -> Watch {
@@ -736,7 +749,7 @@ impl Rig {
 
     /// The truncation marker's steps as printed, each parsed into an argv.
     fn marker_steps(&self, body: &str) -> Vec<Vec<String>> {
-        let instruction = body.rsplit("…truncated; run ").next().unwrap();
+        let instruction = body.rsplit("…truncated; next: ").next().unwrap();
         instruction
             .split(", then ")
             .map(|step| {
@@ -1295,7 +1308,7 @@ impl Drop for Rig {
         // The elected daemon points this process's stderr at daemon.log, so a
         // failed assertion's message lands there: show its tail.
         if std::thread::panicking()
-            && let Ok(log) = fs::read(self.paths.instance_dir.join("daemon.log"))
+            && let Ok(log) = fs::read(self.paths.node_dir.join("daemon.log"))
         {
             let tail = &log[log.len().saturating_sub(8 * 1024)..];
             println!("daemon.log tail:\n{}", String::from_utf8_lossy(tail));
@@ -2429,7 +2442,7 @@ fn activation_invitation(rig: &Rig) -> String {
 fn activation_warn(rig: &Rig) {
     use herdr_threads::{
         client::service::{PersistentServiceClient, ServiceIntentJournal},
-        daemon::ownership::{read_descriptor, read_existing_namespace},
+        daemon::ownership::{read_descriptor, read_node_uuid_hint},
         protocol::{
             ids::{OperationId, SeatId, ThreadId},
             service::{
@@ -2441,14 +2454,14 @@ fn activation_warn(rig: &Rig) {
     };
     let descriptor = read_descriptor(
         &rig.paths,
-        read_existing_namespace(&rig.paths).unwrap().unwrap(),
+        read_node_uuid_hint(&rig.paths).unwrap().unwrap(),
     )
     .unwrap();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let client = PersistentServiceClient::new(
         descriptor.endpoint,
         clock.clone(),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
         ServiceIntentJournal::open(rig.root.join("activation-intents")).unwrap(),
     );
@@ -2997,7 +3010,7 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
         json!({
             "consumer": metadata("SELECT json_object('control',substr(control_state,1,2048),'outbox_more',outbox_more,'token',outbox_token,'retired',outbox_retired_mask,'confirmed',outbox_confirmed_mask,'descriptor_count',json_array_length(outbox_descriptors),'descriptors',json((SELECT json_group_array(json_object('kind',json_extract(value,'$.item.kind'),'id',json_extract(value,'$.item.id'),'warning',json_extract(value,'$.item.warning'),'epoch',json_extract(value,'$.item.epoch'),'version',json_extract(value,'$.item.attention_version'))) FROM (SELECT value FROM json_each(outbox_descriptors) LIMIT 32))),'publication_after',ordinary_publication_after,'publication_high',ordinary_publication_high,'passive_generation',ordinary_passive_generation,'initial_after',initial_after,'initial_high',initial_high,'context_after',context_after_seq,'context_high',context_high,'context_thread',substr(context_thread,1,128),'context_invitation_after',context_invitation_after,'context_invitation_high',context_invitation_high,'dirty_after',dirty_after,'dirty_high',dirty_high,'revisit_after_bytes',revisit_after_bytes,'revisit_after_ordinal',revisit_after_ordinal,'revisit_high_bytes',revisit_high_bytes,'revisit_high_ordinal',revisit_high_ordinal,'ordinary_done',ordinary_done,'ordinary_version',ordinary_version,'carry_count',json_array_length(ordinary_pending,'$.items'),'partial_bytes',length(ordinary_partial),'rotation',rotation) FROM invitation_presentation_consumers WHERE seat_id=?1 AND consumer='watch'"),
             "relevance": metadata("SELECT COALESCE((SELECT json_object('fence',json_extract(proof_json,'$.fence'),'frontier',json_extract(proof_json,'$.frontier'),'native_version',json_extract(proof_json,'$.native_version'),'absent',json_extract(proof_json,'$.absent'),'witness',substr(COALESCE(json_extract(proof_json,'$.witness'),'null'),1,512),'slots',substr(COALESCE(json_extract(proof_json,'$.slots'),'null'),1,8192),'source_rotation',json_extract(proof_json,'$.source_rotation'),'fallback_rotation',json_extract(proof_json,'$.fallback_rotation')) FROM presentation_warning_proofs WHERE seat_id=?1 AND consumer='watch'),'{}')"),
-            "canonical": metadata("SELECT json_object('fence',(SELECT version FROM presentation_warning_fence WHERE singleton=1),'notice_frontier',(SELECT offered_ordinal FROM digest_notice_offer WHERE seat_id=?1),'confirming_invitations',(SELECT count(*) FROM presentation_confirming_invitations WHERE seat_id=?1),'pending_invitations',(SELECT count(*) FROM digest_pending_invitations WHERE seat_id=?1),'physical_pending_receipts',(SELECT count(*) FROM receipts WHERE seat_id=?1 AND state='pending'),'host_decision_max',(SELECT max(decision_seq) FROM host_instances))")
+            "canonical": metadata("SELECT json_object('fence',(SELECT version FROM presentation_warning_fence WHERE singleton=1),'notice_frontier',(SELECT offered_ordinal FROM digest_notice_offer WHERE seat_id=?1),'confirming_invitations',(SELECT count(*) FROM presentation_confirming_invitations WHERE seat_id=?1),'pending_invitations',(SELECT count(*) FROM digest_pending_invitations WHERE seat_id=?1),'physical_pending_receipts',(SELECT count(*) FROM receipts WHERE seat_id=?1 AND state='pending'),'host_decision_max',(SELECT max(decision_seq) FROM local_node))")
         })
     };
     let diagnostic_before = diagnostic_state();
@@ -3410,7 +3423,7 @@ fn send_attention_drain_ack_settles_with_mod_delivery_provenance() {
     assert_eq!(observation["provenance"], "cooperative_top_level");
     assert_eq!(observation["via"], "context");
     // The registration's audit line names the channel claim's provenance.
-    let log = fs::read_to_string(rig.paths.instance_dir.join("daemon.log")).unwrap_or_default();
+    let log = fs::read_to_string(rig.paths.node_dir.join("daemon.log")).unwrap_or_default();
     assert!(
         log.contains("mod channel registered")
             && log.contains("provenance=cooperative_mod_channel"),
@@ -3562,62 +3575,56 @@ fn lazy_row_appended_then_completed() {
     assert_eq!(again["result"], "already_settled", "{again}");
 }
 
-/// The accept CLI's live-channel grace (`HT_TEST_ACCEPT_CHANNEL_GRACE_MS`, test builds only).
-const ACCEPT_GRACE_ENV: &str = "HT_TEST_ACCEPT_CHANNEL_GRACE_MS";
-
-/// A pair opener from A to B, streamed to B's live watch before B accepts: (pair, id).
-fn pair_opener_streamed(rig: &Rig, watch: &mut Watch, body: &str) -> (String, String) {
-    // These tests cover `accept` of a pre-upgrade pending pair invitation (a new pair auto-joins
-    // and has nothing to accept): create the pair the pre-upgrade way.
-    let writer = rusqlite::Connection::open(&rig.paths.database_path).unwrap();
-    writer.busy_timeout(Duration::from_secs(5)).unwrap();
-    writer
-        .pragma_update(
-            None,
-            "application_id",
-            herdr_threads::store::control::LEGACY_PAIR_MARKER,
-        )
-        .unwrap();
-    drop(writer);
-    rig.cli(
-        Some((&rig.a, PANE_A)),
-        &["send", "--seat", &rig.b, "--body", body],
-    )
-    .data("direct send");
-    let (pair, id): (String, String) = rig
-        .db()
-        .query_row(
-            "SELECT m.thread_id,m.id FROM messages m JOIN direct_threads d ON d.thread_id=m.thread_id WHERE m.body=?1",
-            [body],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
+/// A lazy backlog A sends B, streamed to B's live watch, then left undisplayed across B's
+/// `leave` and A's re-invitation, so B's generic `accept` of `rig.thread` finds it seat-pending.
+fn ordinary_backlog_streamed(rig: &Rig, watch: &mut Watch, body: &str) -> String {
+    let id = rig.send_lazy(body);
     let line = watch.wait_item(&id);
     assert_eq!(line["kind"], "lazy", "{line}");
     assert_eq!(line["body"], body);
-    (pair, id)
+    rig.cli(Some((&rig.b, PANE_B)), &["leave", &rig.thread])
+        .data("leave");
+    rig.cli(
+        Some((&rig.a, PANE_A)),
+        &["invite", &rig.thread, "--seat", &rig.b],
+    )
+    .data("invite");
+    assert_eq!(
+        rig.lazy_state(&id),
+        "pending",
+        "leave and re-invite keep it"
+    );
+    id
 }
 
-/// ht-br0 handshake, channel in time: B's live mod channel completes the opener (its `append`
-/// ack) while B's text `accept` is still running. The accept waits for that completion within
-/// its bounded grace (a generous bound here: the test ends on the completion, not the bound),
-/// prints no opening body, and the watch streams the opener exactly once.
+/// ht-br0 handshake on an ordinary-thread invitation, channel in time: B's live mod channel
+/// completes the backlog (its `append` ack) while B's text `accept` is still running. The accept
+/// waits for that completion within its bounded grace and prints no body.
 #[test]
-fn text_accept_with_a_live_mod_channel_prints_nothing_when_the_channel_completes_in_time() {
+fn text_accept_with_a_live_mod_channel_prints_nothing_when_the_channel_completes_in_time_on_an_ordinary_invitation()
+ {
     let rig = Rig::new();
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
-    let (pair, id) = pair_opener_streamed(&rig, &mut watch, "pair opener via mod");
+    let body = "ordinary backlog via mod";
+    let id = ordinary_backlog_streamed(&rig, &mut watch, body);
     let accept = std::thread::scope(|scope| {
-        let accept =
-            scope.spawn(|| rig.cli_text_b_env(&["accept", &pair], &[(ACCEPT_GRACE_ENV, "20000")]));
-        // The channel appends and acks only once the accept committed, so the accept is inside
-        // its grace (or has not peeked yet) when the completion lands.
-        wait_until("B joined the pair", STEP, || {
+        let accept = scope.spawn(|| {
+            rig.cli_text_b_env(
+                &["accept", &rig.thread],
+                &[(
+                    herdr_threads::cli::accept_delivery::CHANNEL_GRACE_ENV,
+                    "20000",
+                )],
+            )
+        });
+        // The channel acks only once the accept committed, so the accept is inside its grace
+        // (or has not peeked yet) when the completion lands.
+        wait_until("B joined the thread again", STEP, || {
             rig.db()
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM memberships WHERE thread_id=?1 AND seat_id=?2 AND state='joined')",
-                    [pair.as_str(), rig.b.as_str()],
+                    [rig.thread.as_str(), rig.b.as_str()],
                     |row| row.get::<_, bool>(0),
                 )
                 .unwrap()
@@ -3629,45 +3636,36 @@ fn text_accept_with_a_live_mod_channel_prints_nothing_when_the_channel_completes
     });
     assert_eq!(accept.code, 0, "{}{}", accept.stdout, accept.stderr);
     assert!(accept.stdout.starts_with("accepted"), "{}", accept.stdout);
-    assert!(
-        !accept.stdout.contains("pair opener via mod"),
-        "{}",
-        accept.stdout
-    );
+    assert!(!accept.stdout.contains(body), "{}", accept.stdout);
     assert!(accept.stderr.is_empty(), "{}", accept.stderr);
     assert_eq!(rig.lazy_state(&id), "displayed");
-    // Only lines after the first copy count (`seen` keeps the one `wait_item` returned).
-    assert_eq!(
-        watch.seen.iter().filter(|line| line["id"] == id).count(),
-        1,
-        "{:#?}",
-        watch.seen
-    );
+    // The re-join may re-offer the still-pending row before the ack; only copies after
+    // settlement count.
     watch.seen.clear();
-    watch.assert_no_line("a second copy of the opener", QUIET, |line| {
-        line["id"] == id
-    });
+    watch.assert_no_line("a copy after settlement", QUIET, |line| line["id"] == id);
 }
 
-/// ht-br0 handshake, channel late: B's live watch streamed the opener but the mod never completes
-/// it (not consuming, or slower than the grace). After its bounded grace (shortened here) B's
-/// text `accept` shows the opener itself and settles it as its own text-inbox display; the
-/// channel's late `append` ack then finds it already settled (at least once).
+/// ht-br0 handshake on an ordinary-thread invitation, channel late: the mod never completes the
+/// backlog. After its bounded grace (shortened here) B's text `accept` shows the body itself and
+/// settles it; the channel's late `append` ack then finds it already settled (at least once).
 #[test]
-fn text_accept_with_a_live_mod_channel_shows_the_opener_after_the_grace() {
+fn text_accept_with_a_live_mod_channel_shows_the_backlog_after_the_grace_on_an_ordinary_invitation()
+{
     let rig = Rig::new();
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
-    let (pair, id) = pair_opener_streamed(&rig, &mut watch, "pair opener the mod missed");
-    let accept = rig.cli_text_b_env(&["accept", &pair], &[(ACCEPT_GRACE_ENV, "200")]);
+    let body = "ordinary backlog the mod missed";
+    let id = ordinary_backlog_streamed(&rig, &mut watch, body);
+    let accept = rig.cli_text_b_env(
+        &["accept", &rig.thread],
+        &[(
+            herdr_threads::cli::accept_delivery::CHANNEL_GRACE_ENV,
+            "200",
+        )],
+    );
     assert_eq!(accept.code, 0, "{}{}", accept.stdout, accept.stderr);
     assert!(accept.stdout.starts_with("accepted"), "{}", accept.stdout);
-    assert_eq!(
-        accept.stdout.matches("pair opener the mod missed").count(),
-        1,
-        "{}",
-        accept.stdout
-    );
+    assert_eq!(accept.stdout.matches(body).count(), 1, "{}", accept.stdout);
     assert!(accept.stderr.is_empty(), "{}", accept.stderr);
     assert_eq!(rig.lazy_state(&id), "displayed");
     let late = rig.ack_result(SESSION_B, "append", &id);
@@ -3678,7 +3676,7 @@ fn text_accept_with_a_live_mod_channel_shows_the_opener_after_the_grace() {
 /// `truncated: true`; the mod must not ack it, and when it does the ack is a
 /// terminal refusal decided by the daemon from the stored length (the local
 /// hint file is not needed); the receipt settles when the agent follows the
-/// marker's own instruction (`body`, which is read-only, then `ack`). The
+/// marker's own text-inbox instruction (automatic ACK on complete display). The
 /// watch runs as the setup-written launch in the session-shell environment
 /// and the agent runs the marker exactly as printed.
 #[test]
@@ -3692,20 +3690,20 @@ fn truncated_body_streamed_with_marker_and_ack_refused_terminal() {
     assert_eq!(line["body_len"], 9000);
     let body = line["body"].as_str().unwrap();
     assert!(
-        body[8 * 1024..].starts_with("…truncated; run "),
+        body[8 * 1024..].starts_with("…truncated; next: "),
         "cut at the 8 KiB limit: {body}"
     );
     assert!(
         body.contains(&format!("--state-dir {}", rig.state.display())),
         "{body}"
     );
-    assert!(body.contains(&format!(" body {id}")), "{body}");
-    assert!(body.contains(&format!(" ack {id}")), "{body}");
+    assert!(body.ends_with(" inbox"), "{body}");
+    assert!(!body.contains(" ack "), "{body}");
     let result = rig.ack_result(SESSION_B, "context", &id);
     assert_eq!(result["result"], "refused_terminal", "{result}");
     assert_eq!(result["reason"], "truncated");
     // Without the local hint the daemon still refuses (stored body length).
-    let contexts = rig.paths.instance_dir.join("contexts");
+    let contexts = rig.paths.node_dir.join("contexts");
     for entry in fs::read_dir(&contexts).unwrap().flatten() {
         if entry
             .file_name()
@@ -3731,9 +3729,9 @@ fn truncated_body_streamed_with_marker_and_ack_refused_terminal() {
             .unwrap(),
     );
     assert_ne!(bare.code, 0, "bare body: {}{}", bare.stdout, bare.stderr);
-    // Follow the marker as streamed: `body` (read-only), then `ack`.
+    // Follow the marker as streamed: text inbox displays and automatically ACKs.
     let steps = rig.marker_steps(body);
-    assert_eq!(steps.len(), 2, "{body}");
+    assert_eq!(steps.len(), 1, "{body}");
     let argv = &steps[0];
     let out = rig.run_marker_step(argv);
     assert_eq!(out.code, 0, "{argv:?}: {}{}", out.stdout, out.stderr);
@@ -3743,17 +3741,12 @@ fn truncated_body_streamed_with_marker_and_ack_refused_terminal() {
         out.stdout,
         out.stderr
     );
-    assert_eq!(rig.receipt_state(&id), "pending", "body is read-only");
-    let argv = &steps[1];
-    let out = rig.run_marker_step(argv);
-    assert_eq!(out.code, 0, "{argv:?}: {}{}", out.stdout, out.stderr);
     assert_eq!(rig.receipt_state(&id), "acked");
 }
 
-/// Spec D4: a lazy row has no receipt, so a cut lazy row's marker names only
-/// the read-only `body`.
+/// A cut lazy row uses text inbox too, completing its display without a receipt.
 #[test]
-fn truncated_lazy_row_marker_names_only_body() {
+fn truncated_lazy_row_marker_names_inbox() {
     let rig = Rig::new();
     let mut watch = rig.raw_watch(SESSION_B);
     watch.wait_connected();
@@ -3767,7 +3760,7 @@ fn truncated_lazy_row_marker_names_only_body() {
         body.contains(&format!("--state-dir {}", rig.state.display())),
         "{body}"
     );
-    assert!(body.contains(&format!(" body {id}")), "{body}");
+    assert!(body.ends_with(" inbox"), "{body}");
     assert!(!body.contains(" ack "), "{body}");
     let steps = rig.marker_steps(body);
     assert_eq!(steps.len(), 1, "{body}");
@@ -3780,7 +3773,11 @@ fn truncated_lazy_row_marker_names_only_body() {
         out.stdout,
         out.stderr
     );
-    assert_eq!(rig.lazy_state(&id), "pending", "reading completes nothing");
+    assert_eq!(
+        rig.lazy_state(&id),
+        "displayed",
+        "text inbox completes display"
+    );
 }
 
 /// ht-54r F1: a truncated ordinary message is refused by the mod's settlement, so the binding's
@@ -3803,7 +3800,7 @@ fn full_body_read_of_truncated_message_unblocks_binding_cursor() {
         cursor_of(&rig, &binding).is_none_or(|seq| seq < seq_long),
         "the refused display leaves the cursor behind it"
     );
-    let steps = rig.marker_steps(line["body"].as_str().unwrap());
+    let steps = rig.body_read_steps(&long);
     let out = rig.run_marker_step(&steps[0]);
     assert_eq!(out.code, 0, "{:?}: {}{}", steps[0], out.stdout, out.stderr);
     assert!(
@@ -3844,7 +3841,7 @@ fn full_body_read_passes_later_message_the_binding_already_displayed() {
     let mut watch = rig.raw_watch(SESSION_B);
     watch.wait_connected();
     let long = rig.send_ordinary(&"t".repeat(9000));
-    let line = watch.wait_item(&long);
+    watch.wait_item(&long);
     let refused = rig.ack_result(SESSION_B, "context", &long);
     assert_eq!(refused["result"], "refused_terminal", "{refused}");
     let later = rig.send_ordinary("displayed while held");
@@ -3856,7 +3853,7 @@ fn full_body_read_passes_later_message_the_binding_already_displayed() {
         cursor_of(&rig, &binding).is_none_or(|seq| seq < sequence_of(&rig, &long)),
         "held behind the truncated message"
     );
-    let steps = rig.marker_steps(line["body"].as_str().unwrap());
+    let steps = rig.body_read_steps(&long);
     let out = rig.run_marker_step(&steps[0]);
     assert_eq!(out.code, 0, "{:?}: {}{}", steps[0], out.stdout, out.stderr);
     let read_to = cursor_of(&rig, &binding);
@@ -3875,12 +3872,12 @@ fn machine_and_json_body_reads_do_not_advance_binding_cursor() {
     let mut watch = rig.raw_watch(SESSION_B);
     watch.wait_connected();
     let long = rig.send_ordinary(&"j".repeat(9000));
-    let line = watch.wait_item(&long);
+    watch.wait_item(&long);
     let refused = rig.ack_result(SESSION_B, "context", &long);
     assert_eq!(refused["result"], "refused_terminal", "{refused}");
     let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
     let before = cursor_of(&rig, &binding);
-    let body_step = rig.marker_steps(line["body"].as_str().unwrap()).remove(0);
+    let body_step = rig.body_read_steps(&long).remove(0);
     for flag in ["--json", "--machine"] {
         let mut argv = body_step.clone();
         argv.extend([
@@ -3915,13 +3912,13 @@ fn partial_body_read_does_not_advance_binding_cursor() {
     let mut watch = rig.raw_watch(SESSION_B);
     watch.wait_connected();
     let long = rig.send_ordinary(&"p".repeat(9000));
-    let line = watch.wait_item(&long);
+    watch.wait_item(&long);
     let refused = rig.ack_result(SESSION_B, "context", &long);
     assert_eq!(refused["result"], "refused_terminal", "{refused}");
     let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
     let before = cursor_of(&rig, &binding);
     let seq_long = sequence_of(&rig, &long);
-    let body_step = rig.marker_steps(line["body"].as_str().unwrap()).remove(0);
+    let body_step = rig.body_read_steps(&long).remove(0);
     let mut first = body_step.clone();
     first.extend(["--max-bytes".to_owned(), "4096".to_owned()]);
     let out = rig.run_marker_step(&first);
@@ -4277,7 +4274,7 @@ fn operator_switch_off_takes_effect_on_daemon_restart() {
     // Idle in the stream loop (the first drain is over) when the daemon stops.
     let id = rig.send_ordinary("before the operator switch");
     watch.wait_item(&id);
-    let settings = rig.paths.instance_dir.join("settings.json");
+    let settings = rig.paths.node_dir.join("settings.json");
     fs::write(&settings, br#"{"mod_delivery":"off"}"#).unwrap();
     fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
     rig.restart_daemon();
@@ -4443,7 +4440,7 @@ fn fresh_watch_after_accept_prints_no_attention() {
 fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     use herdr_threads::{
         client::service::{PersistentServiceClient, ServiceIntentJournal},
-        daemon::ownership::{read_descriptor, read_existing_namespace},
+        daemon::ownership::{read_descriptor, read_node_uuid_hint},
         protocol::{
             ids::{OperationId, SeatId, ThreadId},
             service::{
@@ -4495,15 +4492,13 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     // The killed child leaves the channel in reconnect grace; the next watch
     // replaces it.
     rig.kill(&mut watch);
-    let instance = read_existing_namespace(&rig.paths)
-        .unwrap()
-        .expect("instance");
+    let instance = read_node_uuid_hint(&rig.paths).unwrap().expect("instance");
     let descriptor = read_descriptor(&rig.paths, instance).unwrap();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let client = PersistentServiceClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
         ServiceIntentJournal::open(rig.root.join("intents")).unwrap(),
     );
@@ -4601,7 +4596,7 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     );
     assert!(notice.get("ack_required").is_none(), "{notice}");
     let (expected_binding, expected_generation, expected_execution) =
-        expected_notice_binding(&rig, descriptor.instance_uuid);
+        expected_notice_binding(&rig, descriptor.node_uuid);
     let (offered_generation, offered_execution, frontier, ordinal, generation, execution, thread, offered_binding):
         (i64, String, i64, i64, i64, String, String, String) = rig.db().query_row(
             "SELECT offered.generation,offered.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id,o.binding_id FROM digest_notice_offer o JOIN occupant_bindings offered ON offered.binding_id=o.binding_id AND offered.seat_id=o.seat_id JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN occupant_bindings b ON b.seat_id=o.seat_id AND b.harness='claude' AND b.native_session=?3 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected' AND b.binding_id=o.binding_id WHERE o.seat_id=?1 AND d.warning_id=?2 AND o.binding_id=?4",
@@ -4653,7 +4648,10 @@ fn clear_rebind_pending_item_restreamed_to_new_session() {
     let rig = Rig::new();
     let mut old = rig.watch(SESSION_B);
     old.wait_connected();
-    let id = rig.send_ordinary("pending across /clear");
+    // Keep the message outside the native hook envelope so it remains pending
+    // for the replacement channel, rather than being auto-ACKed at SessionStart.
+    let body = "pending across /clear".repeat(256);
+    let id = rig.send_ordinary(&body);
     old.wait_item(&id);
     rig.set_session_b("SB2");
     rig.session_start_hook_in_process_of(PANE_B, "SB2", "clear", SESSION_B);
@@ -4669,10 +4667,7 @@ fn clear_rebind_pending_item_restreamed_to_new_session() {
     let mut new = rig.watch_with(PANE_B, "SB2", &[("CLAUDE_CODE_SESSION_ID", "SB2")]);
     new.wait_connected();
     let line = new.wait_item(&id);
-    assert_eq!(
-        line["body"], "pending across /clear",
-        "re-streamed to the new session"
-    );
+    assert_eq!(line["body"], body, "re-streamed to the new session");
     rig.wait_channel(Some("live"));
     let (code, lines) = rig.ack_with(
         "SB2",
@@ -4689,7 +4684,10 @@ fn clear_rebind_pending_item_restreamed_to_new_session() {
 }
 
 /// The exact Watch binding expected by the notice tests, independently of its offer row.
-fn expected_notice_binding(rig: &Rig, instance: uuid::Uuid) -> (String, i64, String) {
+fn expected_notice_binding(
+    rig: &Rig,
+    instance: herdr_threads::node::NodeUuid,
+) -> (String, i64, String) {
     let (binding, generation): (String, i64) = rig.db().query_row(
         "SELECT b.binding_id,s.generation FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.target_id=?3 AND b.harness='claude' AND b.native_session=?4 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected'",
         rusqlite::params![rig.b.as_str(), instance.to_string(), PANE_B, SESSION_B],
@@ -4818,8 +4816,28 @@ fn clear_new_binding_digests_and_wakes_for_its_unread_mail_without_grace() {
         "the digest does not list the unread mail's pending receipt: {}",
         started.stdout
     );
+    assert!(
+        started.stdout.contains("only the watch saw this"),
+        "{}",
+        started.stdout
+    );
+    assert!(
+        !started.stdout.contains("- pending mail:"),
+        "{}",
+        started.stdout
+    );
+    assert!(
+        !started.stdout.contains("- inbox fallback"),
+        "{}",
+        started.stdout
+    );
     rig.wait_prompt(mark, PANE_B);
-    assert_eq!(rig.receipt_state(&id), "pending");
+    assert_eq!(rig.receipt_state(&id), "acked");
+    assert_eq!(
+        rig.ack_observation(&id)["action_provenance"],
+        "cooperative_hook_context"
+    );
+    assert_eq!(rig.ack_observation(&id)["via"], "hook_context");
 }
 
 /// Spec D5/D6 reload: the plugin reloads without rotating the generation; the
@@ -5066,7 +5084,7 @@ fn session_start_and_pre_tool_use_emit_no_digest_while_live() {
 fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
     use herdr_threads::{
         client::service::{PersistentServiceClient, ServiceIntentJournal},
-        daemon::ownership::{read_descriptor, read_existing_namespace},
+        daemon::ownership::{read_descriptor, read_node_uuid_hint},
         protocol::{
             ids::{OperationId, SeatId, ThreadId},
             service::{
@@ -5080,15 +5098,13 @@ fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
     let rig = Rig::new();
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
-    let instance = read_existing_namespace(&rig.paths)
-        .unwrap()
-        .expect("instance");
+    let instance = read_node_uuid_hint(&rig.paths).unwrap().expect("instance");
     let descriptor = read_descriptor(&rig.paths, instance).unwrap();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let client = PersistentServiceClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
         ServiceIntentJournal::open(rig.root.join("intents")).unwrap(),
     );
@@ -5166,7 +5182,7 @@ fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
     );
     assert!(notice.get("ack_required").is_none(), "{notice}");
     let (expected_binding, expected_generation, expected_execution) =
-        expected_notice_binding(&rig, descriptor.instance_uuid);
+        expected_notice_binding(&rig, descriptor.node_uuid);
     let (offered_generation, offered_execution, frontier, ordinal, generation, execution, thread, offered_binding):
         (i64, String, i64, i64, i64, String, String, String) = rig.db().query_row(
             "SELECT offered.generation,offered.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id,o.binding_id FROM digest_notice_offer o JOIN occupant_bindings offered ON offered.binding_id=o.binding_id AND offered.seat_id=o.seat_id JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN occupant_bindings b ON b.seat_id=o.seat_id AND b.harness='claude' AND b.native_session=?3 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected' AND b.binding_id=o.binding_id WHERE o.seat_id=?1 AND d.warning_id=?2 AND o.binding_id=?4",

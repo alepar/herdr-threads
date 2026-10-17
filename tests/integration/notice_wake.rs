@@ -44,7 +44,7 @@ fn budget() -> CallBudget {
 }
 fn read_context() -> ReadContext {
     ReadContext {
-        instance: "i".into(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         output: OutputSpec::default(),
         operation_scope: None,
     }
@@ -60,13 +60,13 @@ impl Fixture {
     fn new() -> Self {
         let iso = TestIsolation::new("notice-wake");
         let clock = Arc::new(FixedClock(AtomicI64::new(1000)));
-        let context = StoreContext::new(iso.path("store.db"), clock.clone());
+        let context = StoreContext::new(iso.path("store.db"), clock.clone()).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'b',1,1);
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);").unwrap();
+        db.execute_batch("UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);").unwrap();
         let store = SqliteStore::new(
-            StoreContext::new(iso.path("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.path("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap();
@@ -83,8 +83,8 @@ impl Fixture {
     }
     fn member(&self, seat: &str, n: usize) {
         let execution = format!("00000000-0000-4000-8000-00000000000{n}");
-        self.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES(?1,'i','resolved','native',?1,1,0,0)",[seat]).unwrap();
-        self.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES('i',?1,'b',1,0,1,'fresh',0,'term-'||?1,'inc','coherent_enumeration',1,'idle')",[seat]).unwrap();
+        self.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[seat]).unwrap();
+        self.db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch,ui_state) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,0,1,'fresh',0,'term-'||?1,'inc','coherent_enumeration',1,'idle')",[seat]).unwrap();
         self.db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES(?1,1,?1,'b',1,0,'codex','session-'||?1,?2,'cooperative_top_level',0,0,'term-'||?1,'inc')",params![seat, execution]).unwrap();
         self.db
             .execute(
@@ -97,7 +97,8 @@ impl Fixture {
     fn claim(&self, seat: &str) -> CallerClaim {
         let (generation, execution): (i64, String) = self.db.query_row("SELECT generation,execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",[seat],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
         CallerClaim {
-            instance: "i".into(),
+            host: herdr_threads::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new(seat),
             binding_generation: generation as u64,
             role: CallerRole::TopLevel,
@@ -226,7 +227,11 @@ impl Fixture {
     }
     fn candidate(&self, seat: &str) -> Option<WakeCandidate> {
         self.store
-            .wake_candidates(PageRequest::default(), &budget())
+            .wake_candidates(
+                herdr_threads::test_support::test_host_id(),
+                PageRequest::default(),
+                &budget(),
+            )
             .unwrap()
             .items
             .into_iter()
@@ -259,11 +264,16 @@ impl Fixture {
             .latest_warning_seq
     }
     fn digest_warnings(&self, seat: &str) -> u64 {
-        attention::seat_digest(&self.db, "i", &SeatId::new(seat), &|| Ok(()))
-            .unwrap()
-            .digest
-            .warnings
-            .count
+        attention::seat_digest(
+            &self.db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &SeatId::new(seat),
+            &|| Ok(()),
+        )
+        .unwrap()
+        .digest
+        .warnings
+        .count
     }
     fn conditions(&self) -> Vec<(String, Option<String>)> {
         let mut stmt = self

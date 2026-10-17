@@ -108,10 +108,16 @@ impl TestIsolation {
 /// set the one sanctioned `HERDR_` variable, the test-owner pid
 /// (`daemon::lifecycle::test_owner_env`, ht-6y1), so any daemon the child
 /// starts exits once this test process is gone. The
-/// `HT_TEST_OWNER` tag goes on too (`spawn::tag`, ht-p03.131).
+/// `HT_TEST_OWNER` tag goes on too (`spawn::tag`, ht-p03.131). Peer discovery
+/// is pointed at no program (a test sets its own to override): the real
+/// `herdr` on PATH would name the developer's saved machines as dial targets.
 pub fn scrub_env(command: &mut Command) -> &mut Command {
     scrub_inherited(command, std::env::vars_os().map(|(key, _)| key));
     crate::test_support::spawn::tag(command);
+    command.env(
+        "HT_TEST_MACHINE_LIST_PROGRAM",
+        "/nonexistent/herdr-no-machine-list",
+    );
     command
 }
 

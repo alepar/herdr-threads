@@ -540,7 +540,7 @@ fn current_pane_normalization_uses_current_response_not_focus() {
 }
 
 #[test]
-fn parent_only_read_scope_cannot_become_all_instance_directory() {
+fn parent_only_read_scope_cannot_become_all_node_directory() {
     assert!(
         super::super::commands::parse_argv(["ht", "thread", "list", "--all", "--tab", "tryout"])
             .is_err()

@@ -7,10 +7,10 @@ use super::{
 };
 use crate::{
     ports::{
-        LogicalAttentionFrontier, LogicalPublicationKey, PokeDue, PokeReceipt, PokeReservation,
-        PriorLadder, RefusalCause, ReservedWakeAuthority, WakeAttentionWitness, WakeCandidate,
-        WakeOutcome, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation, WakeTarget,
-        WarningOfferFrontier,
+        HostId, LogicalAttentionFrontier, LogicalPublicationKey, PokeDue, PokeReceipt,
+        PokeReservation, PriorLadder, RefusalCause, ReservedWakeAuthority, WakeAttentionWitness,
+        WakeCandidate, WakeOutcome, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
+        WakeTarget, WarningOfferFrontier,
     },
     protocol::{
         ids::{
@@ -23,17 +23,50 @@ use crate::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
+/// A per-seat wake write whose seat is not on the worker's host (rebound
+/// mid-pass, or never this worker's): the scheduler skips the seat.
+pub(crate) fn wrong_host() -> ApiError {
+    api_error(
+        ErrorCode::Conflict,
+        "seat is not on this wake worker's host",
+    )
+}
+
+fn require_host(scope: HostId, actual: HostId) -> Result<(), ApiError> {
+    if scope == actual {
+        Ok(())
+    } else {
+        Err(wrong_host())
+    }
+}
+
+/// `Conflict` unless the seat exists on `scope`'s host. A missing seat is
+/// left to the caller (its own not-found handling).
+pub(crate) fn require_seat_on_host(
+    db: &Connection,
+    scope: HostId,
+    seat: &SeatId,
+) -> Result<(), ApiError> {
+    let host: Option<Option<i64>> = db
+        .query_row(
+            "SELECT host_id FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    match host {
+        None => Ok(()),
+        Some(host) => require_host(scope, HostId::from_row(host.ok_or_else(wrong_host)?)),
+    }
+}
+
 /// The write every new-attention producer makes: set the attention reason bit
 /// and advance `attention_version` so the dispatcher re-derives the seat's
 /// wake reasons. Catch-up release (ht-1ip.6) calls it in the row-end
 /// transaction.
 pub fn note_new_attention(tx: &rusqlite::Connection, seat: &SeatId) -> Result<(), ApiError> {
-    tx.execute(
-        "INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
-        [seat.as_str()],
-    )
-    .map_err(store_error)?;
-    Ok(())
+    super::delivery_tail::DeliveryTail::attention(tx, seat.as_str(), 1)
 }
 
 fn nonnegative(value: i64) -> Result<u64, ApiError> {
@@ -49,9 +82,22 @@ pub fn load_candidate(
     attention: &EffectiveSeatAttention,
     scan_decision_seq: i64,
 ) -> Result<WakeCandidate, ApiError> {
-    let (state,target,generation,target_generation,boot,epoch,decision_seq,episode,open):(String,Option<String>,i64,i64,Option<String>,i64,i64,i64,i64)=db.query_row(
-        "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch,h.decision_seq,s.unavailability_episode,s.unavailability_open FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
-        params![seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).map_err(store_error)?;
+    type SeatColumns = (
+        String,
+        Option<String>,
+        i64,
+        i64,
+        Option<String>,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+    );
+    let (state,target,generation,target_generation,boot,epoch,decision_seq,episode,open,host_id):SeatColumns=db.query_row(
+        "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch,n.decision_seq,s.unavailability_episode,s.unavailability_open,h.host_id FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND s.instance_id=?2",
+        params![seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?))).map_err(store_error)?;
+    let host = HostId::from_row(host_id);
     if decision_seq != scan_decision_seq {
         return Err(api_error(
             ErrorCode::CursorStale,
@@ -59,14 +105,14 @@ pub fn load_candidate(
         ));
     }
     let observation = if let Some(target) = target.as_deref() {
-        effective::effective_observation(db, instance, target)?
+        effective::effective_observation(db, host, target)?
     } else {
         None
     };
     let held: bool = if let Some(target) = target.as_deref() {
         db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND released_at IS NULL)",
-        params![instance,target],|r|r.get(0)).map_err(store_error)?
+        "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE host_id=?1 AND target_id=?2 AND released_at IS NULL)",
+        params![host.get(),target],|r|r.get(0)).map_err(store_error)?
     } else {
         false
     };
@@ -398,15 +444,17 @@ pub(super) fn human_bound_sql(seat_expr: &str) -> String {
 
 /// SQL true when `seat_expr` can pass a wake or poke reservation without its
 /// own state changing first: resolved, with a target that has no unreleased
-/// recovery hold, and not bound to a person. The observation-dependent half
+/// recovery hold, local (`rs.{LOCAL_SEAT}`: a remote seat is never woken or
+/// poked from here) and not bound to a person. The observation-dependent half
 /// of the authority (boot, epoch, generation, UI) is rechecked at
 /// reservation time only.
 pub(super) fn reservable_seat_sql(seat_expr: &str) -> String {
     format!(
-        "(EXISTS(SELECT 1 FROM seats rs WHERE rs.id={seat_expr} AND rs.state='resolved' AND rs.target_id IS NOT NULL \
-         AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=rs.instance_id AND rh.target_id=rs.target_id AND rh.released_at IS NULL)) \
+        "(EXISTS(SELECT 1 FROM seats rs WHERE rs.id={seat_expr} AND rs.{LOCAL_SEAT} AND rs.state='resolved' AND rs.target_id IS NOT NULL \
+         AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.host_id=rs.host_id AND rh.target_id=rs.target_id AND rh.released_at IS NULL)) \
          AND NOT {})",
-        human_bound_sql(seat_expr)
+        human_bound_sql(seat_expr),
+        LOCAL_SEAT = super::seats::LOCAL_SEAT
     )
 }
 
@@ -414,7 +462,7 @@ pub(super) fn reservable_seat_sql(seat_expr: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 fn current_authority(
     db: &Connection,
-    instance: &str,
+    host: HostId,
     seat: &SeatId,
     target: &HostTargetId,
     generation: u64,
@@ -435,7 +483,7 @@ fn current_authority(
     if human {
         return Ok(None);
     }
-    let Some(observation) = effective::effective_observation(db, instance, target.as_str())? else {
+    let Some(observation) = effective::effective_observation(db, host, target.as_str())? else {
         return Ok(None);
     };
     if observation.host_boot != boot.as_str()
@@ -680,7 +728,7 @@ pub fn wake_owed_to_reached(
     if has(INVITATION) {
         let decision_seq: i64 = db
             .query_row(
-                "SELECT h.decision_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+                "SELECT h.decision_seq FROM seats s JOIN local_node h ON h.id=s.instance_id WHERE s.id=?1",
                 [seat],
                 |r| r.get(0),
             )
@@ -756,6 +804,7 @@ pub fn reserve(
     context: &StoreContext,
     db: &mut Connection,
     instance: &str,
+    scope: HostId,
     candidate: &WakeCandidate,
     daemon_boot: uuid::Uuid,
     configured_minimum: u64,
@@ -770,11 +819,13 @@ pub fn reserve(
         ));
     }
     let committed=context.execute_decision(db,|tx|{
-        type RowColumns = Option<(i64,i64,i64,i64,Option<String>,i64,String)>;
+        type RowColumns = Option<(i64,i64,i64,i64,Option<String>,i64,String,i64)>;
         let row:RowColumns=tx.query_row(
-            "SELECT h.decision_seq,s.unavailability_episode,s.unavailability_open,s.generation,s.target_id,s.target_generation,h.host_boot FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
-            params![candidate.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
-        let Some((decision_seq,episode,open,generation,target,target_generation,boot))=row else {return Ok(None)};
+            "SELECT n.decision_seq,s.unavailability_episode,s.unavailability_open,s.generation,s.target_id,s.target_generation,h.host_boot,h.host_id FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND s.instance_id=?2",
+            params![candidate.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
+        let Some((decision_seq,episode,open,generation,target,target_generation,boot,host_id))=row else {return Ok(None)};
+        let host=HostId::from_row(host_id);
+        require_host(scope,host)?;
         if !witness.valid_for(candidate,instance,nonnegative(decision_seq)?,nonnegative(episode)?,open!=0) {return Ok(None)}
         // The lazy frontier is not covered by the decision sequence: re-read it
         // (and the nudge threshold) so a reservation never rests on a moved frontier.
@@ -797,9 +848,9 @@ pub fn reserve(
             || current.last_reserved_frontier!=candidate.last_reserved_frontier {return Ok(None)}
         let Some(target)=target.map(HostTargetId::new) else {return Ok(None)};
         let boot=HostBootId::new(boot);
-        let host_epoch:i64=tx.query_row("SELECT host_epoch FROM host_instances WHERE id=?1",[instance],|r|r.get(0)).map_err(store_error)?;
+        let host_epoch:i64=tx.query_row("SELECT host_epoch FROM herdr_hosts WHERE host_id=?1",[host.get()],|r|r.get(0)).map_err(store_error)?;
         let seat_attention=current.has_pending_invitation||current.has_pending_receipt||current.actionable_warning_seq.is_some();
-        let Some(authority)=current_authority(tx,instance,&candidate.seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,seat_attention)? else {return Ok(None)};
+        let Some(authority)=current_authority(tx,host,&candidate.seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,seat_attention)? else {return Ok(None)};
         Ok(Some((target,boot,nonnegative(host_epoch)?,nonnegative(target_generation)?,authority,current)))
     },|tx,at,prepared|{
         let Some((target,host_boot,host_epoch,target_generation,authority,current))=prepared else {return Ok(None)};
@@ -842,10 +893,10 @@ pub fn validate_reservation(
     instance: &str,
     reservation: &WakeReservation,
 ) -> Result<bool, ApiError> {
-    type RowColumns = Option<(i64, i64, i64, String, i64, i64, Option<String>, i64)>;
+    type RowColumns = Option<(i64, i64, i64, String, i64, i64, Option<String>, i64, i64)>;
     let row:RowColumns=db.query_row(
-        "SELECT h.decision_seq,s.unavailability_episode,s.unavailability_open,h.host_boot,h.host_epoch,s.target_generation,s.target_id,s.generation FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved'",
-        params![reservation.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
+        "SELECT n.decision_seq,s.unavailability_episode,s.unavailability_open,h.host_boot,h.host_epoch,s.target_generation,s.target_id,s.generation,h.host_id FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved'",
+        params![reservation.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).optional().map_err(store_error)?;
     let Some((
         seq,
         episode,
@@ -855,6 +906,7 @@ pub fn validate_reservation(
         target_generation,
         target,
         seat_generation,
+        host_id,
     )) = row
     else {
         return Ok(false);
@@ -903,7 +955,7 @@ pub fn validate_reservation(
     // candidate's epoch-current binding.
     let current = current_authority(
         db,
-        instance,
+        HostId::from_row(host_id),
         &reservation.seat,
         &reservation.target,
         nonnegative(seat_generation)?,
@@ -926,9 +978,12 @@ pub fn validate_reservation(
 /// pre-reservation ladder row and returns whether it matched. A path that
 /// cleared the reservation in between (host invalidation, registration loss)
 /// matches 0 rows: no error, the durable step stays advanced by one.
+// Allowed: the completion inputs plus the worker's host scope.
+#[allow(clippy::too_many_arguments)]
 pub fn complete(
     context: &StoreContext,
     db: &mut Connection,
+    scope: HostId,
     attempt: &WakeAttemptId,
     daemon_boot: &uuid::Uuid,
     outcome: WakeOutcome,
@@ -938,6 +993,7 @@ pub fn complete(
     complete_with_pokes(
         context,
         db,
+        scope,
         attempt,
         daemon_boot,
         outcome,
@@ -956,6 +1012,7 @@ pub fn complete(
 pub fn complete_with_pokes(
     context: &StoreContext,
     db: &mut Connection,
+    scope: HostId,
     attempt: &WakeAttemptId,
     daemon_boot: &uuid::Uuid,
     outcome: WakeOutcome,
@@ -970,13 +1027,14 @@ pub fn complete_with_pokes(
         ));
     }
     context.execute_budgeted_decision(db,budget,|tx|{
-        type RowColumns = Option<(String,Option<String>,Option<i64>,i64,String)>;
+        type RowColumns = Option<(String,Option<String>,Option<i64>,i64,String,Option<i64>)>;
         let row:RowColumns=tx.query_row(
-            "SELECT w.seat_id,w.reservation_boot,w.binding_generation,s.generation,s.state FROM wake_work w JOIN seats s ON s.id=w.seat_id WHERE w.reservation_id=?1",
-            [attempt.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(store_error)?;
+            "SELECT w.seat_id,w.reservation_boot,w.binding_generation,s.generation,s.state,s.host_id FROM wake_work w JOIN seats s ON s.id=w.seat_id WHERE w.reservation_id=?1",
+            [attempt.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(store_error)?;
+        if let Some(r)=&row {require_host(scope,HostId::from_row(r.5.ok_or_else(wrong_host)?))?}
         Ok(row)
     },|tx,at,row|{
-        let Some((seat,reservation_boot,binding_generation,current_generation,state))=row else {return Ok(false)};
+        let Some((seat,reservation_boot,binding_generation,current_generation,state,_))=row else {return Ok(false)};
         let daemon_boot=daemon_boot.to_string();
         if reservation_boot.as_deref()!=Some(daemon_boot.as_str()) {return Ok(false)}
         let disposition=if state!="resolved" || binding_generation.is_some_and(|generation|generation!=current_generation) {
@@ -1028,6 +1086,7 @@ pub fn reserve_poke(
     context: &StoreContext,
     db: &mut Connection,
     instance: &str,
+    scope: HostId,
     due: &PokeDue,
     daemon_boot: uuid::Uuid,
     settings: &SummarySettings,
@@ -1040,11 +1099,13 @@ pub fn reserve_poke(
     }
     let seat = &due.seat;
     let committed=context.execute_decision(db,|tx|{
-        type RowColumns = Option<(i64,i64,i64,i64,Option<String>,i64,String,i64)>;
+        type RowColumns = Option<(i64,i64,i64,i64,Option<String>,i64,String,i64,i64)>;
         let row:RowColumns=tx.query_row(
-            "SELECT h.decision_seq,s.unavailability_episode,s.unavailability_open,s.generation,s.target_id,s.target_generation,h.host_boot,h.host_epoch FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
-            params![seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
-        let Some((decision_seq,episode,open,generation,target,target_generation,boot,host_epoch))=row else {return Ok(None)};
+            "SELECT n.decision_seq,s.unavailability_episode,s.unavailability_open,s.generation,s.target_id,s.target_generation,h.host_boot,h.host_epoch,h.host_id FROM seats s JOIN local_node n ON n.id=s.instance_id JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND s.instance_id=?2",
+            params![seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).optional().map_err(store_error)?;
+        let Some((decision_seq,episode,open,generation,target,target_generation,boot,host_epoch,host_id))=row else {return Ok(None)};
+        let host=HostId::from_row(host_id);
+        require_host(scope,host)?;
         let Some(target)=target.map(HostTargetId::new) else {return Ok(None)};
         // Only the receipts still due now are covered, never a stale selection.
         let now=context.clock().utc_now().0;
@@ -1056,7 +1117,7 @@ pub fn reserve_poke(
         if current.effectively_retired || !current.continuity_resolved || current.reservation_id.is_some() {return Ok(None)}
         let boot=HostBootId::new(boot);
         // A due receipt is seat-level attention: every connected top-level binding can act on it.
-        let Some(authority)=current_authority(tx,instance,seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,true)? else {return Ok(None)};
+        let Some(authority)=current_authority(tx,host,seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,true)? else {return Ok(None)};
         let witness=WakeAttentionWitness::from_complete(instance.into(),seat.clone(),nonnegative(decision_seq)?,false,true,None,nonnegative(episode)?,open!=0,LogicalAttentionFrontier::default());
         Ok(Some((target,boot,nonnegative(host_epoch)?,nonnegative(target_generation)?,authority,current,witness,receipts)))
     },|tx,at,prepared|{
@@ -1085,6 +1146,7 @@ pub fn recover_abandoned(
     context: &StoreContext,
     db: &mut Connection,
     instance: &str,
+    scope: HostId,
     elected_boot: Option<uuid::Uuid>,
     request: &WakeRecoveryRequest,
 ) -> Result<WakeRecoveryOutcome, ApiError> {
@@ -1106,15 +1168,16 @@ pub fn recover_abandoned(
         ));
     }
     context.execute_decision(db, |tx| {
-        type RowColumns = Option<(Option<String>, Option<String>, Option<String>, Option<String>)>;
+        type RowColumns = Option<(Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)>;
         let row: RowColumns = tx.query_row(
-            "SELECT w.reservation_id,w.reservation_boot,w.last_reservation_id,w.last_reservation_boot FROM wake_work w JOIN seats s ON s.id=w.seat_id WHERE w.seat_id=?1 AND s.instance_id=?2",
+            "SELECT w.reservation_id,w.reservation_boot,w.last_reservation_id,w.last_reservation_boot,s.host_id FROM wake_work w JOIN seats s ON s.id=w.seat_id WHERE w.seat_id=?1 AND s.instance_id=?2",
             params![request.seat.as_str(),instance],
-            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
         ).optional().map_err(store_error)?;
+        if let Some(r) = &row { require_host(scope, HostId::from_row(r.4.ok_or_else(wrong_host)?))?; }
         Ok(row)
     }, |tx, at, row| {
-        let Some((active, boot, last, last_boot)) = row else { return Ok(WakeRecoveryOutcome::Stale) };
+        let Some((active, boot, last, last_boot, _)) = row else { return Ok(WakeRecoveryOutcome::Stale) };
         let prior = request.prior_daemon_boot.to_string();
         if active.as_deref() == Some(request.attempt.as_str()) && boot.as_deref() == Some(prior.as_str()) {
             let changed = tx.execute(
@@ -1132,7 +1195,8 @@ pub fn recover_abandoned(
 
 /// The retained-window table drives this walk through its primary key. Cost
 /// follows retained windows, rather than all resolved or historical seats.
-pub(crate) const BATCH_SEATS_SQL: &str = "SELECT b.seat_id FROM wake_batches b CROSS JOIN seats s ON s.id=b.seat_id WHERE s.instance_id=?1 AND b.seat_id>?2 ORDER BY b.seat_id LIMIT ?3";
+// `s.is_local=1` spells `seats::LOCAL_SEAT` (a const &str cannot interpolate it).
+pub(crate) const BATCH_SEATS_SQL: &str = "SELECT b.seat_id FROM wake_batches b CROSS JOIN seats s ON s.id=b.seat_id WHERE s.instance_id=?1 AND s.host_id=?4 AND s.is_local=1 AND b.seat_id>?2 ORDER BY b.seat_id LIMIT ?3";
 
 fn receipt_attention_at(
     db: &Connection,
@@ -1221,61 +1285,102 @@ pub fn batch_window(
     context: &StoreContext,
     db: &mut Connection,
     instance: &str,
+    scope: HostId,
     candidate: &WakeCandidate,
     delay_ms: u64,
 ) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
     if delay_ms == 0 {
         return Ok(None);
     }
-    context.execute_decision(db, |tx| {
-        let live: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND state!='retired')",
-            params![candidate.seat.as_str(), instance], |r| r.get(0)).map_err(store_error)?;
-        if !live { return Ok((None, false)); }
-        let scan = super::attention::wake_seat_attention(tx, candidate.seat.as_str())?;
-        let invitations = super::attention::pending_confirming_invitations(tx, candidate.seat.as_str(), None, scan.decision_seq)?;
-        let pending = super::attention::pending_receipts(tx, candidate.seat.as_str(), None)?;
-        let mut first = None::<i64>;
-        let mut urgent = scan.attention.latest_warning_seq.is_some()
-            && !candidate.warning_offered_for_current_occupant();
-        let now = context.clock().utc_now().0;
-        for item in invitations.items {
-            let (created, due): (i64, Option<i64>) = tx.query_row(
-                "SELECT created_at,deadline_at FROM invitations WHERE id=?1", [&item.id],
-                |r| Ok((r.get(0)?,r.get(1)?))).map_err(store_error)?;
-            first = Some(first.map_or(created, |prior| prior.min(created)));
-            urgent |= due.is_some_and(|at| at <= now);
-        }
-        for item in pending.items {
-            if let Some(receipt) = effective::effective_receipt(tx, &item.id, candidate.seat.as_str())? {
-                let at = receipt_attention_at(tx, candidate.seat.as_str(), &receipt, item.key)?;
-                first = Some(first.map_or(at, |prior| prior.min(at)));
-                urgent |= super::receipts::effective_deadline(tx, &receipt)?.is_some_and(|at| at <= now);
+    context.execute_decision(
+        db,
+        |tx| {
+            let seat_host: Option<Option<i64>> = tx
+                .query_row(
+                    "SELECT host_id FROM seats WHERE id=?1 AND instance_id=?2 AND state!='retired'",
+                    params![candidate.seat.as_str(), instance],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(store_error)?;
+            let Some(seat_host) = seat_host else {
+                return Ok((None, false));
+            };
+            require_host(scope, HostId::from_row(seat_host.ok_or_else(wrong_host)?))?;
+            let scan = super::attention::wake_seat_attention(tx, candidate.seat.as_str())?;
+            let invitations = super::attention::pending_confirming_invitations(
+                tx,
+                candidate.seat.as_str(),
+                None,
+                scan.decision_seq,
+            )?;
+            let pending = super::attention::pending_receipts(tx, candidate.seat.as_str(), None)?;
+            let mut first = None::<i64>;
+            let mut urgent = scan.attention.latest_warning_seq.is_some()
+                && !candidate.warning_offered_for_current_occupant();
+            let now = context.clock().utc_now().0;
+            for item in invitations.items {
+                let (created, due): (i64, Option<i64>) = tx
+                    .query_row(
+                        "SELECT created_at,deadline_at FROM invitations WHERE id=?1",
+                        [&item.id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .map_err(store_error)?;
+                first = Some(first.map_or(created, |prior| prior.min(created)));
+                urgent |= due.is_some_and(|at| at <= now);
             }
-        }
-        // The oldest pending delivery row the seat's threshold admits batches like an
-        // ordinary receipt.
-        if scan.attention.frontier.lazy.is_some()
-            && let Some(at) = super::lazy_delivery::oldest_pending_at(tx, candidate.seat.as_str(),
-                super::seats::nudge_threshold(tx, &candidate.seat)?)? {
-            first = Some(first.map_or(at, |prior| prior.min(at)));
-        }
-        let existing: Option<i64> = tx.query_row("SELECT deadline_at FROM wake_batches WHERE seat_id=?1",
-            [candidate.seat.as_str()], |r| r.get(0)).optional().map_err(store_error)?;
-        if let Some(first_at) = first
-            && existing.is_none()
-            && let Some(oldest) = oldest_ordinary_at(tx, candidate.seat.as_str(), scan.decision_seq)? {
-            first = Some(first_at.min(oldest));
-        }
-        Ok((first, urgent))
-    }, |tx, _, (first, urgent)| {
-        let Some(first) = first else {
-            tx.execute("DELETE FROM wake_batches WHERE seat_id=?1", [candidate.seat.as_str()]).map_err(store_error)?;
-            return Ok(None);
-        };
-        let deadline = retain_batch_deadline(tx, candidate.seat.as_str(), first, delay_ms)?;
-        Ok((!urgent).then_some((deadline, delay_ms)))
-    })
+            for item in pending.items {
+                if let Some(receipt) =
+                    effective::effective_receipt(tx, &item.id, candidate.seat.as_str())?
+                {
+                    let at = receipt_attention_at(tx, candidate.seat.as_str(), &receipt, item.key)?;
+                    first = Some(first.map_or(at, |prior| prior.min(at)));
+                    urgent |= super::receipts::effective_deadline(tx, &receipt)?
+                        .is_some_and(|at| at <= now);
+                }
+            }
+            // The oldest pending delivery row the seat's threshold admits batches like an
+            // ordinary receipt.
+            if scan.attention.frontier.lazy.is_some()
+                && let Some(at) = super::lazy_delivery::oldest_pending_at(
+                    tx,
+                    candidate.seat.as_str(),
+                    super::seats::nudge_threshold(tx, &candidate.seat)?,
+                )?
+            {
+                first = Some(first.map_or(at, |prior| prior.min(at)));
+            }
+            let existing: Option<i64> = tx
+                .query_row(
+                    "SELECT deadline_at FROM wake_batches WHERE seat_id=?1",
+                    [candidate.seat.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(store_error)?;
+            if let Some(first_at) = first
+                && existing.is_none()
+                && let Some(oldest) =
+                    oldest_ordinary_at(tx, candidate.seat.as_str(), scan.decision_seq)?
+            {
+                first = Some(first_at.min(oldest));
+            }
+            Ok((first, urgent))
+        },
+        |tx, _, (first, urgent)| {
+            let Some(first) = first else {
+                tx.execute(
+                    "DELETE FROM wake_batches WHERE seat_id=?1",
+                    [candidate.seat.as_str()],
+                )
+                .map_err(store_error)?;
+                return Ok(None);
+            };
+            let deadline = retain_batch_deadline(tx, candidate.seat.as_str(), first, delay_ms)?;
+            Ok((!urgent).then_some((deadline, delay_ms)))
+        },
+    )
 }
 
 /// Retain the first deadline without sliding it on later attention. The caller

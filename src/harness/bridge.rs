@@ -246,8 +246,12 @@ fn directory_share(input: &HookInput<'_>, seat: &str) -> Result<u32, Presentatio
     Ok(share as u32)
 }
 
-/// Honest context conversion; absence retains a visibly tagged plugin reference.
-pub fn caller_claim(context: &OccupantContext) -> Result<CallerClaim, ContextError> {
+/// Honest context conversion; absence retains a visibly tagged plugin reference. `host` is the
+/// calling pane's Herdr server, from the caller's `RuntimeContext` (the persisted context has none).
+pub fn caller_claim(
+    context: &OccupantContext,
+    host: crate::protocol::ids::HostLocator,
+) -> Result<CallerClaim, ContextError> {
     if context.format_version != 1
         || context.instance.is_nil()
         || context.execution.is_nil()
@@ -267,6 +271,7 @@ pub fn caller_claim(context: &OccupantContext) -> Result<CallerClaim, ContextErr
     };
     Ok(CallerClaim {
         instance: context.instance.to_string(),
+        host,
         seat: SeatId::parse(context.seat.clone()).map_err(|_| ContextError::Invalid)?,
         binding_generation: context.binding_generation,
         role: CallerRole::TopLevel,
@@ -294,7 +299,10 @@ fn occupant_context(claim: &CallerClaim) -> Result<OccupantContext, ContextError
     };
     Ok(OccupantContext {
         format_version: 1,
-        instance: Uuid::parse_str(&claim.instance).map_err(|_| ContextError::Invalid)?,
+        instance: claim
+            .instance
+            .parse::<crate::node::NodeUuid>()
+            .map_err(|_| ContextError::Invalid)?,
         seat: claim.seat.as_str().into(),
         target: claim.target.as_str().into(),
         harness: claim.harness.into(),
@@ -388,6 +396,7 @@ pub fn prepare_event_as(
         }
         let scope = IntentScope::Cooperative {
             instance: seed.instance.to_string(),
+            host: contexts.claim_host()?.clone(),
             seat: SeatId::parse(seed.seat.clone()).map_err(|_| ContextError::Invalid)?,
         };
         let reference = journal.record_check_in_as(
@@ -462,6 +471,7 @@ pub fn prepare_qualified_turn(
             }
             let scope = IntentScope::Cooperative {
                 instance: seed.instance.to_string(),
+                host: contexts.claim_host()?.clone(),
                 seat: SeatId::parse(seed.seat.clone()).map_err(|_| ContextError::Invalid)?,
             };
             let lineage = turn
@@ -540,7 +550,7 @@ pub fn decode_request(request: &PendingCheckIn) -> Result<Command, ContextError>
     // the frozen claim keeps the one it was prepared with.
     let mut frozen = check.claim.clone();
     frozen.liveness = None;
-    if frozen != caller_claim(&request.context)?
+    if frozen != caller_claim(&request.context, check.claim.host.clone())?
         || check.operation.as_str() != request.operation_id.to_string()
         || check.mode != mode
     {

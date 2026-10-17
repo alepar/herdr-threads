@@ -147,6 +147,8 @@ impl AutomaticBootstrapIdentity {
         if self.version != 2
             || self.claim.role != crate::protocol::authority::CallerRole::TopLevel
             || self.claim.instance != self.plan.payload.handoff.namespace.instance
+            || self.claim.host.as_path()
+                != self.plan.payload.handoff.namespace.host_endpoint.as_path()
             || self.digest != self.semantic_digest()?
             || classify_original_claim(&self.scope, &self.claim)
                 .map_err(|_| "invalid bootstrap scope")?

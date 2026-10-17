@@ -509,7 +509,11 @@ fn setup_declares_only_context_hooks_behind_the_version_witness() {
     );
 }
 
-fn lifecycle_request(instance: Uuid, event: &str, session: &str) -> PendingCheckIn {
+fn lifecycle_request(
+    instance: crate::node::NodeUuid,
+    event: &str,
+    session: &str,
+) -> PendingCheckIn {
     PendingCheckIn {
         operation_id: Uuid::new_v4(),
         mode: CheckInMode::Lifecycle,
@@ -576,9 +580,10 @@ fn lifecycle_sources_map_and_clear_or_resume_reject_stale_session_requests() {
 
     for source in ["clear", "resume"] {
         let dir = private_dir(source);
-        let instance = Uuid::new_v4();
+        let instance = crate::node::NodeUuid::new_v4();
         let journal =
             ContextJournal::open(&dir, instance, "seat", std::time::Duration::from_millis(50))
+                .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
                 .unwrap();
         let event =
             codex::parse_event_for_version(&session_start(source, "new-session"), "ev", &pinned())
@@ -604,9 +609,11 @@ fn lifecycle_sources_map_and_clear_or_resume_reject_stale_session_requests() {
 #[test]
 fn failed_startup_then_fresh_root_callback_keeps_the_frozen_request() {
     let dir = private_dir("failed-start");
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let journal =
-        ContextJournal::open(&dir, instance, "seat", std::time::Duration::from_millis(50)).unwrap();
+        ContextJournal::open(&dir, instance, "seat", std::time::Duration::from_millis(50))
+            .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+            .unwrap();
     let first =
         codex::parse_event_for_version(&session_start("startup", "s1"), "start-1", &pinned())
             .unwrap();
@@ -703,10 +710,11 @@ fn concurrent_children_stay_distinct_and_never_gain_root_authority() {
     let dir = private_dir("children");
     let journal = ContextJournal::open(
         &dir,
-        Uuid::new_v4(),
+        crate::node::NodeUuid::new_v4(),
         "seat",
         std::time::Duration::from_millis(50),
     )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
     .unwrap();
     for event in events.iter().filter(|e| e.role == Role::Subagent) {
         assert_eq!(check_in_event(event, &journal, None, &mut never), Ok(None));

@@ -63,8 +63,9 @@ impl Fx {
         let clock = Arc::new(TestClock(AtomicI64::new(T0)));
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-                "i",
+                StoreContext::new(iso.state_root().join("store.db"), clock.clone())
+                    .with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings::default(),
             )
             .unwrap(),
@@ -504,8 +505,8 @@ fn record_with_the_fetch_held(label: &str) -> Duration {
     let clock = Arc::new(TestClock(AtomicI64::new(T0)));
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
@@ -2165,19 +2166,21 @@ mod publication_order {
         ) -> Result<CommandResult, ApiError> {
             self.inner.register_available(request, permit, budget)
         }
-        fn persisted_host_epoch(
+        fn attach_host(
             &self,
-            _instance: &str,
-            _budget: &CallBudget,
-        ) -> Result<u64, ApiError> {
-            self.inner.persisted_host_epoch(_instance, _budget)
+            locator: &crate::protocol::ids::HostLocator,
+            now: i64,
+            budget: &CallBudget,
+        ) -> Result<(crate::ports::HostId, i64), ApiError> {
+            self.inner.attach_host(locator, now, budget)
         }
         fn begin_host_observation(
             &self,
             instance: &str,
+            host: crate::ports::HostId,
             budget: &CallBudget,
         ) -> Result<HostObservationAdmission, ApiError> {
-            self.inner.begin_host_observation(instance, budget)
+            self.inner.begin_host_observation(instance, host, budget)
         }
         fn publish_current_target_observation(
             &self,
@@ -2485,10 +2488,11 @@ mod publication_order {
         }
         fn wake_candidates(
             &self,
+            host: crate::ports::HostId,
             page: PageRequest,
             budget: &CallBudget,
         ) -> Result<Page<WakeCandidate>, ApiError> {
-            self.inner.wake_candidates(page, budget)
+            self.inner.wake_candidates(host, page, budget)
         }
         fn pending_work(
             &self,
@@ -2507,46 +2511,52 @@ mod publication_order {
         }
         fn wake_batch_seats(
             &self,
+            host: crate::ports::HostId,
             _after: Option<&SeatId>,
             _limit: u16,
             _budget: &CallBudget,
         ) -> Result<Vec<SeatId>, ApiError> {
-            self.inner.wake_batch_seats(_after, _limit, _budget)
+            self.inner.wake_batch_seats(host, _after, _limit, _budget)
         }
         fn clear_wake_batch_if_empty(
             &self,
+            host: crate::ports::HostId,
             _seat: &SeatId,
             _budget: &CallBudget,
         ) -> Result<bool, ApiError> {
-            self.inner.clear_wake_batch_if_empty(_seat, _budget)
+            self.inner.clear_wake_batch_if_empty(host, _seat, _budget)
         }
         fn wake_batch_window(
             &self,
+            host: crate::ports::HostId,
             _candidate: &WakeCandidate,
             _budget: &CallBudget,
         ) -> Result<Option<(UtcMillis, u64)>, ApiError> {
-            self.inner.wake_batch_window(_candidate, _budget)
+            self.inner.wake_batch_window(host, _candidate, _budget)
         }
         fn reserve_wake(
             &self,
+            host: crate::ports::HostId,
             candidate: &WakeCandidate,
             budget: &CallBudget,
         ) -> Result<Option<WakeReservation>, ApiError> {
-            self.inner.reserve_wake(candidate, budget)
+            self.inner.reserve_wake(host, candidate, budget)
         }
         fn wake_recovery_candidates(
             &self,
+            host: crate::ports::HostId,
             page: PageRequest,
             budget: &CallBudget,
         ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
-            self.inner.wake_recovery_candidates(page, budget)
+            self.inner.wake_recovery_candidates(host, page, budget)
         }
         fn recover_wake_reservation(
             &self,
+            host: crate::ports::HostId,
             request: WakeRecoveryRequest,
             budget: &CallBudget,
         ) -> Result<WakeRecoveryOutcome, ApiError> {
-            self.inner.recover_wake_reservation(request, budget)
+            self.inner.recover_wake_reservation(host, request, budget)
         }
         fn validate_wake_reservation(
             &self,
@@ -2557,44 +2567,49 @@ mod publication_order {
         }
         fn complete_wake(
             &self,
+            host: crate::ports::HostId,
             attempt: WakeAttemptId,
             outcome: WakeOutcome,
             refused_restore: Option<&PriorLadder>,
             budget: &CallBudget,
         ) -> Result<bool, ApiError> {
             self.inner
-                .complete_wake(attempt, outcome, refused_restore, budget)
+                .complete_wake(host, attempt, outcome, refused_restore, budget)
         }
         fn poke_candidates(
             &self,
+            host: crate::ports::HostId,
             _limit: u16,
             _budget: &CallBudget,
         ) -> Result<Vec<PokeDue>, ApiError> {
-            self.inner.poke_candidates(_limit, _budget)
+            self.inner.poke_candidates(host, _limit, _budget)
         }
         fn reserve_poke(
             &self,
+            host: crate::ports::HostId,
             _due: &PokeDue,
             _budget: &CallBudget,
         ) -> Result<Option<PokeReservation>, ApiError> {
-            self.inner.reserve_poke(_due, _budget)
+            self.inner.reserve_poke(host, _due, _budget)
         }
         fn complete_poke(
             &self,
+            host: crate::ports::HostId,
             _attempt: WakeAttemptId,
             _outcome: WakeOutcome,
             _receipts: &[PokeReceipt],
             _budget: &CallBudget,
         ) -> Result<(), ApiError> {
             self.inner
-                .complete_poke(_attempt, _outcome, _receipts, _budget)
+                .complete_poke(host, _attempt, _outcome, _receipts, _budget)
         }
         fn poke_for_wake(
             &self,
+            host: crate::ports::HostId,
             _seat: &SeatId,
             _budget: &CallBudget,
         ) -> Result<Option<PokeDue>, ApiError> {
-            self.inner.poke_for_wake(_seat, _budget)
+            self.inner.poke_for_wake(host, _seat, _budget)
         }
     }
 

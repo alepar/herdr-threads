@@ -55,11 +55,12 @@ impl Fixture {
         let context = StoreContext::new(
             iso.path("db"),
             Arc::new(herdr_threads::test_support::slow_clock::SlowMonotonicClock::new()),
-        );
+        )
+        .with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'host',1,10000);
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','i','resolved','native','pane-s',1,1,0);
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','i','topic','goal',0,0,41);").unwrap();
+        db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=10000;
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-s',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,41,0);").unwrap();
         // Ordinary-content rows with canonical mixed priorities: the `is_lazy` rows are p0 (marked `[p0]`),
         // the others p1 (unmarked).
         // Read/Search do not require a membership/read cursor; none is manufactured.
@@ -69,12 +70,17 @@ impl Fixture {
                 Some(wanted) => wanted == id,
                 None => n % 2 == 0,
             };
-            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,author_role,priority) VALUES(?1,'i','t',?2,'ordinary','s',?3,?2,0,?4,'agent',?5)",
+            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,author_role,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary','s',?3,?2,0,?4,'agent',?5)",
                 rusqlite::params![id, n, format!("needle value π {}", "x".repeat(180)), if is_lazy { "lazy" } else { "ordinary" }, if is_lazy { 0 } else { 1 }]).unwrap();
         }
         let client = RecordedStore {
             inner: StoreClient {
-                store: SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
+                store: SqliteStore::new(
+                    context,
+                    "34750f98bd59fcfc946da45aaabe933b",
+                    StoreSettings::default(),
+                )
+                .unwrap(),
                 calls: Mutex::new(vec![]),
             },
             selected: Mutex::new(vec![]),
@@ -91,7 +97,7 @@ impl Fixture {
             &self.client.inner.store,
             command,
             &ReadContext {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 output: spec.clone(),
                 operation_scope: None,
             },
@@ -252,10 +258,11 @@ fn execute_owned(argv: &[String], client: &impl LocalClient) -> (Result<(), RunE
         .unwrap();
     let contexts = ContextJournal::open(
         &iso.path("contexts").canonicalize().unwrap(),
-        uuid::Uuid::from_u128(1),
+        herdr_threads::node::NodeUuid::from_u128(1),
         "seat-1",
         Duration::from_secs(1),
     )
+    .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
     .unwrap();
     let parsed = parse_argv(argv.iter().map(String::as_str)).unwrap();
     let _guard = PresentationGuard::enter(parsed.presentation, &parsed.output);

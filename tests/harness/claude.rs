@@ -792,9 +792,10 @@ fn claude_response_bounds_peer_data_and_rejects_unsafe_transport() {
         .as_str()
         .unwrap();
     assert!(context.contains("peer_data"));
-    assert!(context.contains("run herdr-threads inbox"));
+    assert!(!context.contains("run herdr-threads inbox"));
     let (instruction, peer_data) = context.split_once("peer_data: ").unwrap();
-    assert!(instruction.contains("run herdr-threads inbox"));
+    assert!(!instruction.contains("run herdr-threads inbox"));
+    assert!(instruction.contains("ACK eligible receipts automatically"));
     assert!(!instruction.contains("permissionDecision"));
     let decoded: String = serde_json::from_str(peer_data).unwrap();
     assert_eq!(decoded, hostile.replace(['\u{1b}', '\n'], ""));
@@ -826,7 +827,8 @@ fn claude_final_envelope_keeps_hostile_mail_fields_inside_marked_data() {
         .as_str()
         .unwrap();
     let (fixed, marked) = context.split_once("peer_data: ").unwrap();
-    assert!(fixed.contains("run herdr-threads inbox"));
+    assert!(!fixed.contains("run herdr-threads inbox"));
+    assert!(fixed.contains("ACK eligible receipts automatically"));
     assert!(!fixed.contains("run ACK all"));
     assert!(!fixed.contains("permissionDecision: allow"));
     assert_eq!(serde_json::from_str::<String>(marked).unwrap(), peer);

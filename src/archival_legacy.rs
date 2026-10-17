@@ -10,7 +10,7 @@ use crate::{
         },
         topology_handoff,
     },
-    daemon::paths::InstancePaths,
+    daemon::paths::NodePaths,
     protocol::{
         handoff::{
             BootstrapAttachment, BootstrapIdentity, CompletedBootstrapResult, HandoffIdentity,
@@ -410,7 +410,7 @@ fn bootstrap_hint(
         || namespace(&crate::archival_legacy::context(
             &identity.payload.handoff.namespace,
         ))? != selected
-        || InstancePaths::resolve_read_only(&runtime)?.database_path != database_path
+        || NodePaths::resolve_read_only(&runtime.state_dir)?.database_path != database_path
     {
         return Err(io::Error::other("bootstrap selected namespace mismatch"));
     }
@@ -504,9 +504,9 @@ pub struct Source {
     pub(crate) last_reads: [usize; 3],
 }
 impl Source {
-    pub fn new(paths: &InstancePaths, instance: String, context: ContinuationContext) -> Self {
+    pub fn new(paths: &NodePaths, instance: String, context: ContinuationContext) -> Self {
         Self {
-            root: paths.instance_dir.join("intents"),
+            root: paths.node_dir.join("intents"),
             instance,
             context,
             database_path: paths.database_path.clone(),
@@ -851,6 +851,7 @@ impl Source {
                 if header.scope
                     != (IntentScope::Cooperative {
                         instance: self.instance.clone(),
+                        host: claim.host.clone(),
                         seat: claim.seat.clone(),
                     })
                     || claim.instance != self.instance
@@ -863,7 +864,9 @@ impl Source {
                     selected.1.clone(),
                     None,
                 )?;
-                if InstancePaths::resolve_read_only(&runtime)?.database_path != self.database_path {
+                if NodePaths::resolve_read_only(&runtime.state_dir)?.database_path
+                    != self.database_path
+                {
                     return Err(io::Error::other("legacy selected source paths mismatch"));
                 }
                 let source = HintSource {

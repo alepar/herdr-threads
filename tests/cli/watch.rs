@@ -500,12 +500,12 @@ fn unlocated_caller_exits_2_no_binding() {
         None,
     )
     .unwrap();
-    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+    let paths = crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
     let clock: Arc<dyn Clock> = Arc::new(clock());
     // The pane maps to no seat.
     let connection = LazyConnection::new(|| {
         Ok((
-            uuid::Uuid::from_u128(1),
+            crate::node::NodeUuid::from_u128(1),
             FakeClient::new(|command| match command {
                 Command::Seats(_) => Ok(CommandResult::Seats(page(vec![], None))),
                 other => panic!("unexpected command {other:?}"),
@@ -589,7 +589,7 @@ fn unreachable_daemon_exits_1_daemon_unavailable() {
         None,
     )
     .unwrap();
-    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+    let paths = crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
     let clock: Arc<dyn Clock> = Arc::new(clock());
     let connection: LazyConnection<FakeClient, _> =
         LazyConnection::new(|| Err(crate::cli::daemon_unavailable()));
@@ -1037,7 +1037,8 @@ fn parent_death_ends_watch() {
 
 fn claim() -> CallerClaim {
     CallerClaim {
-        instance: uuid::Uuid::from_u128(1).to_string(),
+        host: crate::test_support::test_host_locator(),
+        instance: crate::node::NodeUuid::from_u128(1).to_string(),
         seat: SeatId::new("me"),
         binding_generation: 1,
         role: CallerRole::TopLevel,
@@ -1085,6 +1086,92 @@ fn watch_registers_with_its_own_session_claim() {
             .liveness,
         Some(LivenessFingerprint::TEST)
     );
+}
+
+// Kills: a watch child whose registration claim carries no host, or the installed/default host
+// instead of the pane's server (the mod's LAUNCH argv reaches this through `watch`).
+#[test]
+fn watch_claim_carries_pane_host() {
+    use crate::cli::caller::{CallerOrigin, fix_origin};
+    use crate::protocol::{
+        authority::{COOPERATIVE_ENV_SESSION_PROVENANCE, LivenessFingerprint},
+        results::{ContinuityStatus, MappingStatus, SeatInspection, SeatSummary},
+    };
+    let root = temp_dir("pane-host");
+    let host = root.join("pane.sock");
+    let runtime =
+        crate::daemon::paths::RuntimeContext::explicit(root.join("state"), host.clone(), None)
+            .unwrap();
+    let paths = crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap();
+    crate::test_support::write_node_hint(&paths, crate::node::NodeUuid::from_u128(1));
+    let summary = SeatSummary {
+        seat: SeatId::new("me"),
+        continuity: ContinuityStatus::Resolved,
+        target: Some(HostTargetId::new("w1:p1")),
+        generation: 1,
+        created_at: crate::protocol::time::UtcMillis(0),
+        retired_at: None,
+        active: false,
+        bindings: Vec::new(),
+        availability: None,
+    };
+    let connection = LazyConnection::new(|| {
+        let summary = summary.clone();
+        Ok((
+            crate::node::NodeUuid::from_u128(1),
+            FakeClient::new(move |command| match command {
+                Command::Seats(_) => Ok(CommandResult::Seats(page(vec![summary.clone()], None))),
+                Command::SeatInspect(_) => Ok(CommandResult::SeatInspect(SeatInspection {
+                    mapping: MappingStatus {
+                        state: ContinuityStatus::Resolved,
+                        target: summary.target.clone(),
+                        detail_argv: None,
+                    },
+                    summary: summary.clone(),
+                    hold: None,
+                    retirement: None,
+                    open_binding: None,
+                    history: page(vec![], None),
+                })),
+                other => panic!("unexpected command {other:?}"),
+            }),
+        ))
+    });
+    let clock: Arc<dyn Clock> = Arc::new(clock());
+    let _origin = fix_origin(CallerOrigin::Agent(crate::harness::caller_env::EnvClaim {
+        harness: crate::protocol::authority::Harness::Claude,
+        native_session: NativeSessionId::new("sess-1"),
+        agent_id: None,
+        role: CallerRole::TopLevel,
+        fingerprint: LivenessFingerprint::TEST,
+        provenance: COOPERATIVE_ENV_SESSION_PROVENANCE,
+    }));
+    let mut parsed = parse_argv([
+        "herdr-threads",
+        "watch",
+        "--harness",
+        "claude",
+        "--session",
+        "sess-1",
+    ])
+    .unwrap();
+    let (claim, seat, _) = locate_claim(
+        &mut parsed,
+        "sess-1",
+        Some("w1:p1"),
+        &runtime,
+        &paths,
+        &connection,
+        &clock,
+    )
+    .ok()
+    .expect("the watch child locates its caller");
+    assert_eq!(seat, SeatId::new("me"));
+    // The canonical spelling of the pane's server (the temp root is a symlink on macOS).
+    let canonical = runtime.host_endpoint.as_ref().unwrap();
+    assert_eq!(claim.host.as_path(), canonical.as_path());
+    assert_eq!(canonical.file_name(), host.file_name());
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 fn write_frame(stream: &mut UnixStream, value: &impl serde::Serialize) {
@@ -1373,7 +1460,7 @@ fn session<'a>(
         client,
         clock,
         socket,
-        instance: uuid::Uuid::from_u128(1),
+        instance: crate::node::NodeUuid::from_u128(1),
         claim: claim(),
         hint_path: None,
     }

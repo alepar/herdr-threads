@@ -69,8 +69,8 @@ fn doctor_current_diagnostics_are_bounded_and_expired_history_is_all_scopes() {
     )));
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
-            "i",
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap(),
@@ -872,7 +872,7 @@ fn doctor_report_and_text_carry_the_manifest_policy() {
     let context =
         crate::daemon::paths::RuntimeContext::explicit(state.clone(), endpoint.clone(), None)
             .unwrap();
-    let instance = crate::daemon::paths::instance_dir(&context);
+    let instance = crate::daemon::paths::node_dir(&context.state_dir);
     std::fs::create_dir_all(&instance).unwrap();
     std::fs::write(
         instance.join("settings.json"),
@@ -1637,4 +1637,73 @@ fn daemon_harness_keys_render_sorted_and_neutral() {
     .collect();
     assert!(positions.iter().all(Option::is_some), "{text}");
     assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
+}
+
+/// A local report over `state` through the production `collect_local`
+/// (no adapter selected, so no harness is probed).
+fn legacy_local_report(state: &std::path::Path, result: &str) -> Value {
+    let mut report = json!({
+        "context": {"ok": true, "state_dir": state.display().to_string()},
+        "result": result,
+    });
+    collect_local(
+        &mut report,
+        crate::harness::registry::builtins(),
+        Some("no-such-harness"),
+        &Default::default(),
+        &Default::default(),
+    );
+    report
+}
+
+/// Kills: a legacy object built from anything but `legacy_instances_dir`, a
+/// wrong count/size/settings list, a `legacy` key for an absent tree, and a
+/// legacy tree that changes the report's result or `writes_safe`.
+#[test]
+fn legacy_object_reported() {
+    let case = PathCase::new("legacy-object");
+    let absent = legacy_local_report(&case.dir, "ok");
+    assert!(absent.get("legacy").is_none(), "{absent}");
+
+    let instances = crate::daemon::paths::legacy_instances_dir(&case.dir);
+    std::fs::create_dir_all(instances.join("a")).unwrap();
+    std::fs::create_dir_all(instances.join("b")).unwrap();
+    std::fs::write(instances.join("a/threads.sqlite3"), [0u8; 700]).unwrap();
+    std::fs::write(instances.join("b/settings.json"), [0u8; 300]).unwrap();
+    let report = legacy_local_report(&case.dir, "ok");
+    let legacy = &report["legacy"];
+    assert_eq!(legacy["path"], json!(instances.display().to_string()));
+    assert_eq!(legacy["instances"], json!(2));
+    assert_eq!(legacy["bytes"], json!(1000));
+    assert_eq!(
+        legacy["settings"],
+        json!([instances.join("b/settings.json").display().to_string()])
+    );
+    assert_eq!(legacy["live"], json!([]));
+    assert_eq!(legacy["remedy"], json!("herdr-threads legacy purge"));
+    assert_eq!(report["result"], json!("ok"));
+    assert_eq!(writes_safe(&report), writes_safe(&absent));
+}
+
+/// Kills: a lock probe that never reports a holder, one that reports the pid
+/// from anywhere but that instance's `endpoint.json`, and a probe that leaves
+/// its own lock held.
+#[test]
+fn held_legacy_lock_shows_live() {
+    let case = PathCase::new("legacy-live");
+    let dir = crate::daemon::paths::legacy_instances_dir(&case.dir).join("x");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("endpoint.json"), br#"{"pid": 4242}"#).unwrap();
+    let held = std::fs::File::create(dir.join("owner.lock")).unwrap();
+    held.lock().unwrap();
+    let report = legacy_local_report(&case.dir, "ok");
+    assert_eq!(
+        report["legacy"]["live"],
+        json!([{"instance": "x", "pid": 4242}])
+    );
+    held.unlock().unwrap();
+    assert_eq!(
+        legacy_local_report(&case.dir, "ok")["legacy"]["live"],
+        json!([])
+    );
 }

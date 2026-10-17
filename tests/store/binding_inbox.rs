@@ -4,7 +4,7 @@
 use super::*;
 use crate::ports::StorePort;
 use crate::protocol::{
-    authority::{CallerClaim, CallerRole, Harness, LivenessFingerprint, ObligationRef},
+    authority::{CallerClaim, CallerRole, Harness, ObligationRef},
     commands::{Ack, AdvanceCursors, Join, PermitMutation, SendMessage},
     ids::*,
     results::InboxBatchV2Item,
@@ -75,19 +75,18 @@ fn insert_binding(
 
 fn fx(name: &str) -> Fx {
     let iso = TestIsolation::new(name);
-    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
     let conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
-        [],
+    conn.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
     )
     .unwrap();
     for seat in ["a", "b", "c"] {
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,'i','resolved','native',?2,1,1,0,1)", rusqlite::params![seat, format!("p{seat}")]).unwrap();
-        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh',?2,'inc','coherent_enumeration',1)", rusqlite::params![format!("p{seat}"), format!("term-p{seat}")]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat, format!("p{seat}")]).unwrap();
+        conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh',?2,'inc','coherent_enumeration',1)", rusqlite::params![format!("p{seat}"), format!("term-p{seat}")]).unwrap();
     }
     conn.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)",
         [],
     )
     .unwrap();
@@ -112,7 +111,8 @@ fn fx(name: &str) -> Fx {
 
 fn claim(seat: &str, session: &str, execution: &str, agent: Option<&str>) -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new(seat),
         binding_generation: 1,
         role: if agent.is_some() {
@@ -128,14 +128,6 @@ fn claim(seat: &str, session: &str, execution: &str, agent: Option<&str>) -> Cal
         liveness: None,
     }
 }
-/// `claim(..)` carrying a liveness fingerprint, which the daemon requires of every call that
-/// enrolls, reconnects or reopens a binding (decision 9).
-fn claim_fp(seat: &str, session: &str, execution: &str) -> CallerClaim {
-    CallerClaim {
-        liveness: Some(LivenessFingerprint::TEST),
-        ..claim(seat, session, execution, None)
-    }
-}
 fn claim_a() -> CallerClaim {
     claim("a", "na", EXEC_A, None)
 }
@@ -148,8 +140,8 @@ fn claim_b2() -> CallerClaim {
 
 fn store(fx: &Fx) -> crate::store::SqliteStore {
     crate::store::SqliteStore::new(
-        StoreContext::new(fx.iso.path("store.db"), Arc::new(FixedClock)),
-        "i",
+        StoreContext::new(fx.iso.path("store.db"), Arc::new(FixedClock)).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap()
@@ -305,7 +297,7 @@ fn page(fx: &Fx, claim: Option<&CallerClaim>) -> Vec<Row> {
 fn page_in(fx: &Fx, claim: Option<&CallerClaim>, thread: Option<&str>) -> Vec<Row> {
     let CommandResult::InboxBatchV2(page) = query_with_output(
         &fx.context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
             pushed: false,
             thread: thread.map(ThreadId::new),
@@ -515,9 +507,9 @@ fn invitations_are_listed_per_seat() {
     let fx = fx("bi-invitations");
     fx.conn
         .execute_batch(
-            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','i','other','goal',0,0);
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','other','goal',0,0,0);
              INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES ('u','b',1,'invited','invited');
-             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv1','u','b',1,'pending',1,0,300,99999999);",
+             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv1','u','b',1,'pending',1,0,300,99999999,(SELECT id FROM local_node));",
         )
         .unwrap();
     let want = vec![Row::Invitation("u".into())];
@@ -553,9 +545,9 @@ fn unknown_session_inbox_shows_no_backlog_past_the_seat_maximum() {
     let m3 = send(&mut fx, "three");
     fx.conn
         .execute_batch(
-            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','i','other','goal',0,0);
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','other','goal',0,0,0);
              INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES ('u','b',1,'invited','invited');
-             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('inv1','u','b',1,'pending',1,0,300,99999999);",
+             INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('inv1','u','b',1,'pending',1,0,300,99999999,(SELECT id FROM local_node));",
         )
         .unwrap();
     let listed = page(&fx, Some(&stranger));
@@ -626,165 +618,6 @@ fn join_gives_every_open_binding_a_cursor_at_the_join_point() {
         .execute("UPDATE memberships SET state='left' WHERE seat_id='c'", [])
         .unwrap();
     assert_eq!(cursor(&fx, &c1), Some(head));
-}
-
-// The store migrates V28 to the current LATEST_VERSION. The guarantee checked: nothing displayed
-// before the upgrade is delivered again, and pending obligations are listed once. The migrated
-// binding is disconnected, so its first call re-adopts it and must carry a fingerprint
-// (spec section 4 Migration V29, shipped as V32, decision 9; the 24 h grace is archival only).
-// Kills: re-showing a message that was already displayed before the upgrade (the migrated
-// binding's cursors start at each thread's head), losing a pending obligation, listing one
-// twice (once as unread and once as an obligation), a re-adoption without a fingerprint being
-// admitted, and a re-adoption enrolling a second binding.
-#[test]
-fn no_duplicate_delivery_after_v29_migration() {
-    let old = crate::store::connection::tests::adapter_historical_database(28);
-    old.execute_batch(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,50);
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES
-           ('a','i','resolved','native','pa',1,1,0,1),('b','i','resolved','native','pb',1,1,0,1);
-         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES
-           ('i','pa','b',1,1,0,'fresh','term-pa','inc','coherent_enumeration',1),('i','pb','b',1,1,0,'fresh','term-pb','inc','coherent_enumeration',1);
-         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);
-         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','a','joined'),('t','b','joined');
-         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','a',1,1),('t','b',1,1);
-         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES
-           ('a',1,'pa','b',1,1,'codex','na','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',0,0,'term-pa','inc'),
-           ('b',1,'pb','b',1,1,'codex','nb1','00000000-0000-4000-8000-0000000000b1','cooperative_top_level',0,0,'term-pb','inc');",
-    )
-    .unwrap();
-    // m1 was displayed and ACKed before the upgrade; m2 and m3 are still pending obligations.
-    for (n, id) in ["m1", "m2", "m3"].into_iter().enumerate() {
-        let n = n + 1;
-        old.execute_batch(&format!(
-            "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('i','{id}','t',{n},'ordinary','a','body {n}',{n},{n});
-             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p-{id}','i','actor','{id}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
-             INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p-{id}','t','b',1,300,1);
-             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('p-{id}','{id}','i','t',{n},{n},{n},0,1,0);"
-        ))
-        .unwrap();
-    }
-    old.execute_batch(
-        "INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES ('m1','b','acked','b',1,'cooperative_top_level',5);",
-    )
-    .unwrap();
-    let iso = TestIsolation::new("bi-v29");
-    let path = iso.path("store.db");
-    old.execute("VACUUM INTO ?1", [path.to_str().unwrap()])
-        .unwrap();
-    drop(old);
-    let fx = Fx {
-        context: StoreContext::new(path, Arc::new(FixedClock)),
-        conn: Connection::open_in_memory().unwrap(),
-        iso,
-        sends: 0,
-    };
-    // Opening the store migrates it.
-    let conn = fx.context.open_writer().unwrap();
-    let migrated = binding_of_in(&conn, &claim("b", "nb1", EXEC_B1, None));
-    assert_eq!(
-        read_cursors::cursor_for(&conn, &migrated, &ThreadId::new("t")).unwrap(),
-        Some(3),
-        "the migrated binding starts at the thread head"
-    );
-    let want = vec![Row::Msg("m2".into(), true), Row::Msg("m3".into(), true)];
-    // Until it is re-adopted the migrated binding is disconnected: it is not an accountable
-    // top-level binding, so it lists the same messages without offering to ACK them.
-    let before_readopt = vec![Row::Msg("m2".into(), false), Row::Msg("m3".into(), false)];
-    assert_eq!(
-        page(&fx, Some(&claim("b", "nb1", EXEC_B1, None))),
-        before_readopt
-    );
-    let state = |conn: &Connection| {
-        conn.query_row(
-            "SELECT liveness, disconnect_reason, liveness_pid, liveness_start, migrated FROM occupant_bindings WHERE binding_id=?1",
-            [migrated.as_str()],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, Option<i64>>(3)?,
-                    r.get::<_, i64>(4)?,
-                ))
-            },
-        )
-        .unwrap()
-    };
-    let before = state(&conn);
-    assert_eq!(
-        (before.0.as_str(), before.1.as_deref(), before.4),
-        ("disconnected", Some("migrated"), 1)
-    );
-    // The re-adopting call without a fingerprint is refused and changes nothing.
-    let refused = store(&fx)
-        .advance_cursors(
-            &AdvanceCursors {
-                in_turn: false,
-                invitations: Vec::new(),
-                claim: claim("b", "nb1", EXEC_B1, None),
-                operation: OperationId::new("readopt-nofp"),
-                displayed: vec![MessageId::new("m2")],
-            },
-            &budget(),
-        )
-        .unwrap_err();
-    assert_eq!(refused.code, ErrorCode::LivenessFingerprintRequired);
-    assert_eq!(
-        state(&conn),
-        before,
-        "a refused call leaves the binding as migrated"
-    );
-    assert_eq!(
-        read_cursors::cursor_for(&conn, &migrated, &ThreadId::new("t")).unwrap(),
-        Some(3)
-    );
-    // Re-adopting the binding (its first call after the upgrade, with its fingerprint) neither
-    // lowers its cursors nor delivers anything again.
-    let readopter = claim_fp("b", "nb1", EXEC_B1);
-    advance(&fx, &readopter, "readopt", &[&MessageId::new("m2")]);
-    let after = state(&conn);
-    assert_eq!(
-        (after.0.as_str(), after.1.clone(), after.2, after.3),
-        ("connected", None, Some(1), Some(1)),
-        "re-adoption reconnects the migrated binding with the caller's fingerprint"
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM occupant_bindings WHERE seat_id='b' AND native_session='nb1' AND ended_at IS NULL",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1,
-        "re-adoption must not enroll a second binding"
-    );
-    assert_eq!(
-        binding_of_in(&conn, &readopter),
-        migrated,
-        "the same binding is re-adopted"
-    );
-    assert_eq!(
-        read_cursors::cursor_for(&conn, &migrated, &ThreadId::new("t")).unwrap(),
-        Some(3)
-    );
-    let rows = page(&fx, Some(&readopter));
-    assert!(
-        !rows.is_empty()
-            && !rows.contains(&Row::Msg("m1".into(), true))
-            && !rows.contains(&Row::Msg("m1".into(), false)),
-        "no duplicate delivery: m1 was displayed and ACKed before the upgrade, got {rows:?}"
-    );
-    assert_eq!(rows, want, "pending obligations are listed once each");
-    // A session the upgrade never saw starts at the seat maximum: the same obligations, once.
-    assert_eq!(page(&fx, Some(&claim_fp("b", "fresh", EXEC_B2))), want);
-}
-
-fn binding_of_in(conn: &Connection, claim: &CallerClaim) -> BindingId {
-    bindings::match_claim(conn, &bindings::BindingKey::from_claim(claim))
-        .unwrap()
-        .unwrap()
-        .binding_id
 }
 
 /// Spec §2: every binding sees its own full lazy stream; one binding's display never hides a lazy
@@ -920,7 +753,7 @@ fn binding_enrolled_after_leave_gets_no_old_lazy_history() {
 fn warning_refs(fx: &Fx, claim: &CallerClaim) -> Vec<String> {
     let CommandResult::InboxBatchV2(page) = query_with_output(
         &fx.context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
             pushed: false,
             thread: None,
@@ -960,18 +793,18 @@ fn bound_warning_cutoff_is_the_reading_bindings_own_offer_frontier() {
     let decision: i64 = fx
         .conn
         .query_row(
-            "SELECT decision_seq+1 FROM host_instances WHERE id='i'",
+            "SELECT decision_seq+1 FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    fx.conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES('inv','t','b',2,'pending',0,?1,300,300)", [decision]).unwrap();
+    fx.conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,origin_node) VALUES('inv','t','b',2,'pending',0,?1,300,300,(SELECT id FROM local_node))", [decision]).unwrap();
     let warned = decision + 1;
-    fx.conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES('i','warning','t',100,'warn','{}',?1,0)", [warned]).unwrap();
+    fx.conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES('34750f98bd59fcfc946da45aaabe933b','warning','t',100,'warn','{}',?1,0)", [warned]).unwrap();
     fx.conn.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES('warning',?1,'t',100,'b','invitation','inv')", [warned]).unwrap();
     fx.conn
         .execute(
-            "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+            "UPDATE local_node SET decision_seq=?1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [warned],
         )
         .unwrap();
@@ -1011,7 +844,7 @@ fn thread_scoped_page_lists_only_that_threads_lazy_rows() {
     let mut fx = fx("binding-inbox-thread-scope");
     fx.conn
         .execute(
-            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic2','goal',0,0)",
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t2','34750f98bd59fcfc946da45aaabe933b','topic2','goal',0,0,0)",
             [],
         )
         .unwrap();
@@ -1045,7 +878,7 @@ fn thread_scoped_page_lists_only_that_threads_lazy_rows() {
     }
     let refused = query_with_output(
         &fx.context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &Command::InboxBatchV2(InboxQuery {
             pushed: false,
             thread: Some(ThreadId::new("t2")),
@@ -1093,21 +926,14 @@ fn caller_subsets_produce_the_right_classes() {
     let ack = send(&mut fx, "needs an ACK");
     let decision: i64 = fx
         .conn
-        .query_row(
-            "SELECT decision_seq+1 FROM host_instances WHERE id='i'",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT decision_seq+1 FROM local_node", [], |r| r.get(0))
         .unwrap();
-    fx.conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES('inv','t','b',2,'pending',0,?1,300,300)", [decision]).unwrap();
+    fx.conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,origin_node) VALUES('inv','t','b',2,'pending',0,?1,300,300,(SELECT id FROM local_node))", [decision]).unwrap();
     let warned = decision + 1;
-    fx.conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES('i','warning','t',100,'warn','{}',?1,0)", [warned]).unwrap();
+    fx.conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES('34750f98bd59fcfc946da45aaabe933b','warning','t',100,'warn','{}',?1,0)", [warned]).unwrap();
     fx.conn.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES('warning',?1,'t',100,'b','invitation','inv')", [warned]).unwrap();
     fx.conn
-        .execute(
-            "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
-            [warned],
-        )
+        .execute("UPDATE local_node SET decision_seq=?1", [warned])
         .unwrap();
     // Hook / CLI page: invitation and receipt (priority 0) before the priority-1 row, plus the
     // warning.
@@ -1130,7 +956,7 @@ fn caller_subsets_produce_the_right_classes() {
     let presentation = crate::store::queries::ordinary_presentation_page(
         &fx.conn,
         &fx.context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &claim_b1(),
         None,
         &budget(),
@@ -1182,7 +1008,7 @@ fn traverse(
         assert!(pages.len() < 400, "the traversal does not end");
         let CommandResult::InboxBatchV2(page) = query_with_output(
             &fx.context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &Command::InboxBatchV2(InboxQuery {
                 pushed: false,
                 thread: None,
@@ -1527,9 +1353,9 @@ fn backlog(
     for i in 0..invitations {
         fx.conn
             .execute_batch(&format!(
-                "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u{i}','i','other','goal',0,0);
+                "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('u{i}','34750f98bd59fcfc946da45aaabe933b','other','goal',0,0,0);
                  INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES ('u{i}','b',1,'invited','invited');
-                 INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('inv{i}','u{i}','b',1,'pending',1,0,300,{},'require_ack','a');",
+                 INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id,origin_node) VALUES ('inv{i}','u{i}','b',1,'pending',1,0,300,{},'require_ack','a',(SELECT id FROM local_node));",
                 101_000 + i * 7_000
             ))
             .unwrap();
@@ -1589,7 +1415,7 @@ fn clone_fx(fx: &Fx, name: &str) -> Fx {
     fx.conn
         .execute("VACUUM INTO ?1", [path.to_str().unwrap()])
         .unwrap();
-    let context = StoreContext::new(path, Arc::new(FixedClock));
+    let context = StoreContext::new(path, Arc::new(FixedClock)).with_test_host();
     let conn = context.open_writer().unwrap();
     Fx {
         iso,

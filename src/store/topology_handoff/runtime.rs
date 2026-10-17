@@ -494,7 +494,7 @@ impl BootstrapStorePort for SqliteStore {
                 budget,
                 Some(&issuance),
                 |tx| {
-                    seats::cooperative_instance(tx, &self.instance, &claim)?;
+                    seats::cooperative_claim(tx, &self.context, &self.instance, &claim)?;
                     current(tx, canonical, &v.identity)
                 },
                 |tx, at, status| {
@@ -502,6 +502,7 @@ impl BootstrapStorePort for SqliteStore {
                         v.state != crate::protocol::handoff::BootstrapState::Completed
                     }) {
                         control::decide_accountable(
+                            &self.context,
                             tx,
                             at,
                             &mut permit,
@@ -523,13 +524,14 @@ impl BootstrapStorePort for SqliteStore {
                 budget,
                 Some(&issuance),
                 |tx| {
-                    seats::cooperative_instance(tx, &self.instance, &claim)?;
+                    seats::cooperative_claim(tx, &self.context, &self.instance, &claim)?;
                     current(tx, canonical, &v.identity)?
                         .ok_or_else(|| api_error(ErrorCode::NotFound, "bootstrap missing"))
                 },
                 |tx, at, status| {
                     if status.state != crate::protocol::handoff::BootstrapState::Completed {
                         control::decide_accountable(
+                            &self.context,
                             tx,
                             at,
                             &mut permit,
@@ -556,10 +558,11 @@ impl BootstrapStorePort for SqliteStore {
             &format!("seat:{}", claim.seat.as_str()),
             input.operation.as_str(),
             input.payload_hash,
-            |tx| seats::cooperative_instance(tx, &self.instance, &claim),
+            |tx| seats::cooperative_claim(tx, &self.context, &self.instance, &claim).map(|_| ()),
             |_| Ok(()),
             |tx, at| {
                 control::decide_accountable(
+                    &self.context,
                     tx,
                     at,
                     &mut permit,

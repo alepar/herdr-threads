@@ -65,6 +65,63 @@ fn kick_to_an_unregistered_lane_is_a_noop() {
     assert!(!kicks.registered(Lane::Observation));
 }
 
+/// True when a kick is already latched on `pacer`. The test clock is fixed, so
+/// a wait on an unkicked pacer would never time out: probe from a thread and
+/// release it afterwards.
+fn observes_kick(pacer: &Arc<Pacer>) -> bool {
+    let (tx, rx) = mpsc::channel();
+    let waiter = pacer.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(waiter.wait_blocking(Duration::from_secs(5)));
+    });
+    let seen = rx.recv_timeout(Duration::from_millis(200)).ok() == Some(Wake::Kicked);
+    if !seen {
+        pacer.kick();
+        let _ = rx.recv_timeout(Duration::from_secs(2));
+    }
+    seen
+}
+
+#[test]
+fn kick_reaches_every_registered_pacer() {
+    let kicks = CommitKicks::default();
+    let (a, b) = (pacer("a"), pacer("b"));
+    kicks.register(Lane::Wakes, a.clone());
+    kicks.register(Lane::Wakes, b.clone());
+    kicks.kick(LaneSet::EMPTY.with(Lane::Wakes));
+    assert!(observes_kick(&a), "first pacer missed the kick");
+    assert!(observes_kick(&b), "second pacer missed the kick");
+}
+
+#[test]
+fn unregister_removes_exactly_one() {
+    let kicks = CommitKicks::default();
+    let (a, b, c) = (pacer("a"), pacer("b"), pacer("c"));
+    for p in [&a, &b, &c] {
+        kicks.register(Lane::Wakes, p.clone());
+    }
+    kicks.unregister(Lane::Wakes, &b);
+    kicks.kick(LaneSet::EMPTY.with(Lane::Wakes));
+    assert!(observes_kick(&a));
+    assert!(observes_kick(&c));
+    assert!(!observes_kick(&b), "unregistered pacer was still kicked");
+    // Unregistering a pacer that is not registered changes nothing.
+    kicks.unregister(Lane::Wakes, &b);
+    assert!(kicks.registered(Lane::Wakes));
+}
+
+#[test]
+fn registered_while_at_least_one_remains() {
+    let kicks = CommitKicks::default();
+    let (a, b) = (pacer("a"), pacer("b"));
+    kicks.register(Lane::Wakes, a.clone());
+    kicks.register(Lane::Wakes, b.clone());
+    kicks.unregister(Lane::Wakes, &a);
+    assert!(kicks.registered(Lane::Wakes));
+    kicks.unregister(Lane::Wakes, &b);
+    assert!(!kicks.registered(Lane::Wakes));
+}
+
 #[test]
 fn lane_set_is_a_set_over_all_lanes() {
     let set = LaneSet::EMPTY
@@ -79,7 +136,7 @@ fn lane_set_is_a_set_over_all_lanes() {
         set.union(LaneSet::EMPTY.with(Lane::Retention))
             .contains(Lane::Retention)
     );
-    assert_eq!(lanes_for_table("host_instances"), LaneSet::EMPTY);
+    assert_eq!(lanes_for_table("herdr_hosts"), LaneSet::EMPTY);
     let names: Vec<_> = Lane::ALL.iter().map(|lane| lane.name()).collect();
     assert_eq!(
         names,
@@ -89,7 +146,9 @@ fn lane_set_is_a_set_over_all_lanes() {
             "observation",
             "retention",
             "admission-observer",
-            "archival"
+            "archival",
+            "apply",
+            "sync"
         ]
     );
 }
@@ -136,15 +195,103 @@ fn no_table_maps_to_the_retention_lane() {
 }
 
 #[test]
-fn retention_origin_discards_kicks() {
-    assert!(origin_discards_kicks(Some(Lane::Retention)));
-    assert!(!origin_discards_kicks(None));
+fn retention_origin_discards_all() {
+    let all = Lane::ALL
+        .into_iter()
+        .fold(LaneSet::EMPTY, |set, lane| set.with(lane));
+    assert_eq!(kicks_for_commit(Some(Lane::Retention), all), LaneSet::EMPTY);
+    assert_eq!(kicks_for_commit(None, all), all);
     for lane in Lane::ALL
         .into_iter()
-        .filter(|lane| *lane != Lane::Retention)
+        .filter(|lane| !matches!(lane, Lane::Retention | Lane::Apply))
     {
-        assert!(!origin_discards_kicks(Some(lane)), "{lane:?}");
+        assert_eq!(kicks_for_commit(Some(lane), all), all, "{lane:?}");
     }
+}
+
+#[test]
+fn journal_kicks_apply_and_sync() {
+    assert_eq!(
+        lanes_for_table("journal"),
+        LaneSet::EMPTY.with(Lane::Apply).with(Lane::Sync)
+    );
+    assert!(!KNOWN_UNMAPPED.contains(&"journal"));
+    assert!(mapped_tables().any(|table| table == "journal"));
+    assert_eq!(Lane::Apply.name(), "apply");
+    assert_eq!(Lane::Sync.name(), "sync");
+}
+
+#[test]
+fn sync_logs_kicks_sync() {
+    assert_eq!(
+        lanes_for_table("sync_logs"),
+        LaneSet::EMPTY.with(Lane::Sync)
+    );
+    assert!(!KNOWN_UNMAPPED.contains(&"sync_logs"));
+    assert!(mapped_tables().any(|table| table == "sync_logs"));
+}
+
+#[test]
+fn sync_dial_targets_kick_sync_and_node_contact_kicks_nothing() {
+    assert_eq!(
+        lanes_for_table("sync_dial_targets"),
+        LaneSet::EMPTY.with(Lane::Sync)
+    );
+    assert!(!KNOWN_UNMAPPED.contains(&"sync_dial_targets"));
+    assert!(mapped_tables().any(|table| table == "sync_dial_targets"));
+    assert_eq!(lanes_for_table("sync_node_contact"), LaneSet::EMPTY);
+    assert!(KNOWN_UNMAPPED.contains(&"sync_node_contact"));
+    assert!(!mapped_tables().any(|table| table == "sync_node_contact"));
+}
+
+#[test]
+fn fact_attribution_staging_is_known_unmapped() {
+    assert_eq!(lanes_for_table("fact_attribution_staging"), LaneSet::EMPTY);
+    assert!(KNOWN_UNMAPPED.contains(&"fact_attribution_staging"));
+    assert!(!mapped_tables().any(|table| table == "fact_attribution_staging"));
+}
+
+#[test]
+fn sync_and_apply_origin_keep_sync() {
+    let sealed = LaneSet::EMPTY.with(Lane::Apply).with(Lane::Sync);
+    assert_eq!(
+        kicks_for_commit(Some(Lane::Apply), sealed),
+        LaneSet::EMPTY.with(Lane::Sync)
+    );
+    assert_eq!(kicks_for_commit(Some(Lane::Sync), sealed), sealed);
+    assert_eq!(
+        kicks_for_commit(Some(Lane::Retention), sealed),
+        LaneSet::EMPTY
+    );
+}
+
+#[test]
+fn apply_origin_drops_apply() {
+    let sealed = LaneSet::EMPTY.with(Lane::Apply).with(Lane::Wakes);
+    assert_eq!(
+        kicks_for_commit(Some(Lane::Apply), sealed),
+        LaneSet::EMPTY.with(Lane::Wakes)
+    );
+    assert_eq!(kicks_for_commit(None, sealed), sealed);
+}
+
+#[test]
+fn lane_set_holds_eight_lanes_without_overflow() {
+    assert_eq!(Lane::COUNT, 8);
+    assert_eq!(Lane::ALL.len(), Lane::COUNT);
+    // Every defined lane survives a bits round trip, including bits 6 and 7.
+    let all = Lane::ALL
+        .into_iter()
+        .fold(LaneSet::EMPTY, |set, lane| set.with(lane));
+    assert_eq!(all.to_bits(), 0b1111_1111);
+    assert_eq!(LaneSet::from_bits(all.to_bits()), all);
+    // Undefined high bits are masked off, never carried.
+    assert_eq!(LaneSet::from_bits(0xFFFF).to_bits(), 0b1111_1111);
+    assert_eq!(LaneSet::from_bits(1 << 8).to_bits(), 0);
+    assert_eq!(
+        LaneSet::from_bits(1 << 7).iter().collect::<Vec<_>>(),
+        [Lane::Sync]
+    );
 }
 
 #[test]

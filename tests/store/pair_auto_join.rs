@@ -2,7 +2,7 @@
 //! A child module of `direct_threads`: it reuses that module's fixtures.
 use super::*;
 use crate::protocol::{
-    commands::{Accept, InvitationConfirmation},
+    commands::InvitationConfirmation,
     priority::{DeliveryPriority, NudgeThreshold},
     results::{DirectThreadEnsureOutcome, DirectThreadEnsured},
 };
@@ -241,7 +241,7 @@ fn peer_offline_then_session_starts_is_offered_opener_and_later_sends() {
 }
 
 fn raw_thread(db: &Connection, id: &str) -> ThreadId {
-    db.execute_batch(&format!("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('{id}','i','t','g',0,0); INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES('{id}','s1','joined','joined',0); INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('{id}','s1',1,1);")).unwrap();
+    db.execute_batch(&format!("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('{id}','34750f98bd59fcfc946da45aaabe933b','t','g',0,0,0); INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES('{id}','s1','joined','joined',0); INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('{id}','s1',1,1);")).unwrap();
     ThreadId::new(id)
 }
 
@@ -341,8 +341,14 @@ fn every_new_invitation_is_confirming_with_deadline() {
 #[test]
 fn overdue_invitation_warns_the_inviter() {
     let (context, mut db, path, clock) = bound_fixture(100);
-    let scan_context = crate::store::connection::StoreContext::new(path.clone(), clock.clone());
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let scan_context =
+        crate::store::connection::StoreContext::new(path.clone(), clock.clone()).with_test_host();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let thread = raw_thread(&db, "t");
     let id = invite_store(
         &store,
@@ -379,7 +385,7 @@ fn old_client_lazy_invite_records_require_ack() {
     let command: crate::protocol::commands::Command = serde_json::from_value(serde_json::json!({
         "kind":"invite",
         "args":{"confirmation":"lazy","thread":"t","seat":"s2","deadline_millis":null,"operation":"old",
-            "claim":{"instance":"i","seat":"s1","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-000000000001","target":"s1"}}
+            "claim":{"host":"/host.sock","instance":"34750f98bd59fcfc946da45aaabe933b","seat":"s1","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-000000000001","target":"s1"}}
     }))
     .unwrap();
     let crate::protocol::commands::Command::Invite(old) = command else {
@@ -408,7 +414,7 @@ fn operator_orphan_invitation_stays_timed_with_effective_require_ack() {
         commands::OperatorOrphanInvite,
     };
     let (context, mut db, path, _) = fixture(100);
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,archived) VALUES ('orphan','i','topic','goal',0,0,1)", [])
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,archived,journaled) VALUES ('orphan','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1,0)", [])
         .unwrap();
     let actor = OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap();
     let command = OperatorOrphanInvite {
@@ -417,9 +423,15 @@ fn operator_orphan_invitation_stays_timed_with_effective_require_ack() {
         deadline_millis: None,
         operation: OperationId::new("operator"),
     };
-    let CommandResult::OperatorInvited(id) =
-        operator_orphan_invite(&context, &mut db, "i", &command, actor, None).unwrap()
-    else {
+    let CommandResult::OperatorInvited(id) = operator_orphan_invite(
+        &context,
+        &mut db,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &command,
+        actor,
+        None,
+    )
+    .unwrap() else {
         panic!("not an operator invitation")
     };
     let (stored, duration, deadline, created) = recorded(&db, &id);
@@ -436,58 +448,6 @@ fn operator_orphan_invitation_stays_timed_with_effective_require_ack() {
         1,
         "an operator invitation wakes its recipient"
     );
-    drop(db);
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
-fn pre_upgrade_pending_pair_invitation_still_accepts() {
-    // A pair as the pre-upgrade code created it (the fixture marker): caller joined, peer invited
-    // with a pending lazy invitation, which keeps its stored behaviour: no wake, and `accept` joins.
-    let (store, db, path) = store_fixture();
-    let policy = crate::protocol::commands::EnsureCreationPolicy {
-        confirmation: InvitationConfirmation::Lazy,
-        deadline_millis: None,
-    };
-    let created = ensure_with(&store, "s1", "s2", "ensure", Some(policy));
-    assert_eq!(created.outcome, DirectThreadEnsureOutcome::Created);
-    let invitation = created
-        .invitation
-        .expect("pre-upgrade pair has an invitation");
-    assert_eq!(invitation.confirmation, InvitationConfirmation::Lazy);
-    assert_eq!(count(&db, "wake_work"), 0);
-    let again = ensure_with(&store, "s1", "s2", "again", None);
-    assert_eq!(again.outcome, DirectThreadEnsureOutcome::ExistingPending);
-    assert_eq!(again.invitation.unwrap().id, invitation.id);
-    let v = Accept {
-        thread: created.thread.clone(),
-        operation: OperationId::new("accept-old"),
-        claim: claim("s2"),
-    };
-    let hash = cooperative_payload_hash("accept", &v).unwrap();
-    store
-        .mutate(
-            PermitMutation::Accept(v),
-            permit(
-                "s2",
-                "accept-old",
-                ObligationRef::Invitation(invitation.id.clone()),
-                hash,
-                100,
-            ),
-            &budget(),
-        )
-        .unwrap();
-    assert_eq!(
-        db.query_row(
-            "SELECT state FROM memberships WHERE thread_id=?1 AND seat_id='s2'",
-            [created.thread.as_str()],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "joined"
-    );
-    drop(store);
     drop(db);
     let _ = std::fs::remove_file(path);
 }
@@ -537,6 +497,47 @@ fn ack_send_on_an_auto_joined_pair_has_a_receipt_and_no_invitation() {
     assert_eq!(count(&db, "prepared_recipients WHERE seat_id='s2'"), 1);
     assert_eq!(count(&db, "lazy_recipients"), 0);
     drop(store);
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Reconcile item 11: right after creation a remote recipient has no row (its
+/// home node owes the auto-join), and the selection reports it joined with no
+/// invitation instead of refusing.
+#[test]
+fn a_remote_recipient_awaiting_its_auto_join_reports_already_joined() {
+    use crate::store::control::direct::{direct_pair_selection, pending_auto_join};
+    let (_store, db, path) = auto_join_fixture();
+    db.execute_batch(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+         VALUES ('s9',(SELECT id FROM local_node),'remote','native',0,0,'abababababababababababababababab',0,'agent',1); \
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('dpair',(SELECT id FROM local_node),'t','g',0,0,1); \
+         INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id,created_hlc,created_node) VALUES ((SELECT id FROM local_node),'s1','s9','dpair',0,(SELECT id FROM local_node)); \
+         INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES ('dpair','s1','joined','joined',0);",
+    )
+    .unwrap();
+    let (t, remote, local) = (ThreadId::new("dpair"), SeatId::new("s9"), SeatId::new("s1"));
+    assert!(pending_auto_join(&db, &t, &remote).unwrap());
+    assert!(!pending_auto_join(&db, &t, &local).unwrap(), "has a row");
+    assert!(
+        !pending_auto_join(&db, &t, &SeatId::new("s3")).unwrap(),
+        "not a pair seat"
+    );
+    let CommandResult::DirectThreadEnsured(ensured) =
+        direct_pair_selection(&db, t.clone(), &remote, true, true).unwrap()
+    else {
+        panic!("a modern ensure result");
+    };
+    assert_eq!(ensured.outcome, DirectThreadEnsureOutcome::AlreadyJoined);
+    assert!(ensured.invitation.is_none());
+    // Once the row exists as `left`, the pair needs an explicit repair again.
+    db.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,home_transition,last_joined_n) VALUES ('dpair','s9','left','left',2,1)",
+        [],
+    )
+    .unwrap();
+    assert!(!pending_auto_join(&db, &t, &remote).unwrap());
+    assert!(direct_pair_selection(&db, t, &remote, false, true).is_err());
     drop(db);
     let _ = std::fs::remove_file(path);
 }

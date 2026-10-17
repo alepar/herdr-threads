@@ -260,9 +260,9 @@ fn fixture(label: &str) -> Fixture {
         None,
     )
     .unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let owner = crate::daemon::ownership::OwnerLock::acquire(&paths).unwrap();
-    let instance = owner.instance_uuid();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let owner = crate::daemon::ownership::OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = owner.node_uuid().unwrap();
     let listener = owner.bind_socket().unwrap();
     owner
         .publish_endpoint(

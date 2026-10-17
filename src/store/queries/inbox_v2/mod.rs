@@ -166,7 +166,7 @@ pub(super) fn query_mode(
     }
     let decision: i64 = db
         .query_row(
-            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            "SELECT decision_seq FROM local_node WHERE id=?1",
             [instance],
             |r| r.get(0),
         )

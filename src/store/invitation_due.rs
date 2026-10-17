@@ -48,7 +48,7 @@ pub(crate) struct AdvisoryPage {
     high_water_ordinal: i64,
 }
 
-pub(crate) const INVITATION_DUE_SELECTION: &str = "SELECT i.id, i.deadline_at, i.ordinal FROM invitations i INDEXED BY invitations_confirmation_scan WHERE i.state='pending' AND i.warning_message_id IS NULL AND i.reject_recorded=0 AND (i.confirmation IS NULL OR i.confirmation='require_ack') AND i.ordinal>?1 AND i.ordinal<=?2 ORDER BY i.ordinal LIMIT ?3";
+pub(crate) const INVITATION_DUE_SELECTION: &str = "SELECT i.id, i.deadline_at, i.ordinal FROM invitations i INDEXED BY invitations_confirmation_scan WHERE i.state='pending' AND i.warning_message_id IS NULL AND i.reject_recorded=0 AND (i.confirmation IS NULL OR i.confirmation='require_ack') AND i.origin_node = (SELECT id FROM local_node) AND i.ordinal>?1 AND i.ordinal<=?2 ORDER BY i.ordinal LIMIT ?3";
 
 /// Advisory selection does not authorize any transition. It reads at most the
 /// admitted number of physical rows from the pending-unwarned index. The

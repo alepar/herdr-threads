@@ -1,5 +1,5 @@
 use super::*;
-use crate::daemon::paths::{InstancePaths, RuntimeContext};
+use crate::daemon::paths::{NodePaths, RuntimeContext};
 use crate::ports::LocalService;
 use crate::protocol::authority::PeerIdentity;
 use crate::protocol::results::{
@@ -90,7 +90,7 @@ async fn ensure_against_state(state: HealthState) -> Result<EndpointDescriptor, 
             crate::daemon::diagnostics::WriterSink(Vec::<u8>::new()),
             BufferLimits::new(1024, 256).unwrap(),
             move |descriptor| {
-                *instance.lock().unwrap() = descriptor.instance_uuid.to_string();
+                *instance.lock().unwrap() = descriptor.node_uuid.to_string();
                 *boot.lock().unwrap() = descriptor.boot_id.to_string();
                 ready_seen.store(1, Ordering::SeqCst);
                 Ok(())
@@ -169,7 +169,7 @@ impl LocalService for HealthService {
 /// A liveness bound for tests that are not about the ensure wait itself.
 const LIVENESS: Duration = Duration::from_secs(60);
 
-fn fixture() -> (PathBuf, RuntimeContext, InstancePaths) {
+fn fixture() -> (PathBuf, RuntimeContext, NodePaths) {
     use std::os::unix::fs::PermissionsExt;
     let root = crate::test_support::scratch::temp_path(format!(
         "herdr-lifecycle-{}",
@@ -178,14 +178,14 @@ fn fixture() -> (PathBuf, RuntimeContext, InstancePaths) {
     std::fs::create_dir(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
+    let paths = crate::test_support::resolve_seeded(&context.state_dir);
     (root, context, paths)
 }
 
 #[tokio::test]
 async fn live_unresponsive_owner_cannot_be_replaced() {
     let (root, context, paths) = fixture();
-    let lock = OwnerLock::acquire(&paths).unwrap();
+    let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let listener = lock.bind_socket().unwrap();
     let descriptor = lock
         .publish_endpoint(
@@ -203,7 +203,7 @@ async fn live_unresponsive_owner_cannot_be_replaced() {
     .await;
     assert!(result.is_err());
     assert_eq!(
-        crate::daemon::ownership::read_descriptor(&paths, lock.instance_uuid()).unwrap(),
+        crate::daemon::ownership::read_descriptor(&paths, lock.node_uuid().unwrap()).unwrap(),
         descriptor
     );
     drop(listener);
@@ -214,7 +214,7 @@ async fn live_unresponsive_owner_cannot_be_replaced() {
 #[tokio::test]
 async fn incompatible_protocol_owner_is_reported_before_health_dispatch() {
     let (root, context, paths) = fixture();
-    let lock = OwnerLock::acquire(&paths).unwrap();
+    let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let listener = lock.bind_socket().unwrap();
     let descriptor = lock
         .publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
@@ -246,7 +246,7 @@ async fn incompatible_protocol_owner_is_reported_before_health_dispatch() {
     assert!(error.detail.contains("`herdr-threads daemon ensure`"));
     assert!(started.elapsed() < Duration::from_secs(1));
     assert_eq!(
-        crate::daemon::ownership::read_descriptor(&paths, lock.instance_uuid()).unwrap(),
+        crate::daemon::ownership::read_descriptor(&paths, lock.node_uuid().unwrap()).unwrap(),
         descriptor
     );
     drop(listener);
@@ -257,7 +257,7 @@ async fn incompatible_protocol_owner_is_reported_before_health_dispatch() {
 #[tokio::test]
 async fn upgraded_client_against_previous_protocol_daemon_reports_mismatch() {
     let (root, context, paths) = fixture();
-    let lock = OwnerLock::acquire(&paths).unwrap();
+    let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let listener = lock.bind_socket().unwrap();
     let descriptor = lock
         .publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
@@ -286,7 +286,7 @@ async fn upgraded_client_against_previous_protocol_daemon_reports_mismatch() {
     );
     assert!(!error.detail.contains("did not become ready"));
     assert_eq!(
-        crate::daemon::ownership::read_descriptor(&paths, lock.instance_uuid()).unwrap(),
+        crate::daemon::ownership::read_descriptor(&paths, lock.node_uuid().unwrap()).unwrap(),
         descriptor
     );
     drop(listener);
@@ -298,8 +298,8 @@ async fn upgraded_client_against_previous_protocol_daemon_reports_mismatch() {
 async fn crashed_incompatible_protocol_owner_recovers_to_new_healthy_boot() {
     let (root, context, paths) = fixture();
     let launcher = launcher(&root);
-    let lock = OwnerLock::acquire(&paths).unwrap();
-    let instance = lock.instance_uuid();
+    let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = lock.node_uuid().unwrap();
     let listener = lock.bind_socket().unwrap();
     let stale = lock
         .publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
@@ -315,7 +315,7 @@ async fn crashed_incompatible_protocol_owner_recovers_to_new_healthy_boot() {
     )
     .await
     .unwrap();
-    assert_eq!(recovered.instance_uuid, instance);
+    assert_eq!(recovered.node_uuid, instance);
     assert_ne!(recovered.boot_id, stale.boot_id);
     // The stale boot's socket was replaced at the same stable pathname.
     assert_eq!(recovered.endpoint, stale.endpoint);
@@ -337,8 +337,8 @@ async fn crashed_incompatible_protocol_owner_recovers_to_new_healthy_boot() {
 async fn crashed_endpoint_is_retired_before_replacement_election() {
     let (root, context, paths) = fixture();
     let launcher = launcher(&root);
-    let lock = OwnerLock::acquire(&paths).unwrap();
-    let instance = lock.instance_uuid();
+    let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = lock.node_uuid().unwrap();
     let listener = lock.bind_socket().unwrap();
     let stale = lock
         .publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
@@ -398,19 +398,19 @@ async fn crashed_endpoint_is_retired_before_replacement_election() {
         "old metadata must be gone while the replacement holds the lease before its own cleanup"
     );
     let recovered = recovered.unwrap();
-    assert_eq!(recovered.instance_uuid, instance);
+    assert_eq!(recovered.node_uuid, instance);
     assert_ne!(recovered.boot_id, stale.boot_id);
     assert_eq!(recovered.endpoint, stale.endpoint);
     assert_eq!(recovered.protocol_version, PROTOCOL_VERSION);
 }
 
 #[tokio::test]
-async fn oversized_namespace_fails_without_spawn_or_rewrite() {
+async fn corrupt_node_hint_is_never_rewritten_by_the_client() {
     let (root, context, paths) = fixture();
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     drop(owner);
     let bytes = vec![b'a'; 8193];
-    std::fs::write(&paths.namespace_path, &bytes).unwrap();
+    std::fs::write(&paths.node_json_path, &bytes).unwrap();
     let error = ensure_running_with_timeout(
         &context,
         PathBuf::from("/bin/false").as_path(),
@@ -420,7 +420,7 @@ async fn oversized_namespace_fails_without_spawn_or_rewrite() {
     .await
     .unwrap_err();
     assert_eq!(error.code, ErrorCode::HostUnavailable);
-    assert_eq!(std::fs::read(&paths.namespace_path).unwrap(), bytes);
+    assert_eq!(std::fs::read(&paths.node_json_path).unwrap(), bytes);
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -448,7 +448,7 @@ async fn elected_owner_drains_before_releasing_lock() {
             crate::daemon::diagnostics::WriterSink(Vec::<u8>::new()),
             BufferLimits::new(1024, 256).unwrap(),
             move |descriptor| {
-                *instance.lock().unwrap() = descriptor.instance_uuid.to_string();
+                *instance.lock().unwrap() = descriptor.node_uuid.to_string();
                 *boot.lock().unwrap() = descriptor.boot_id.to_string();
                 ready_seen.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -493,7 +493,7 @@ async fn compatible_protocol_old_software_owner_requires_explicit_stop() {
             crate::daemon::diagnostics::WriterSink(Vec::<u8>::new()),
             BufferLimits::new(1024, 256).unwrap(),
             move |descriptor| {
-                *instance.lock().unwrap() = descriptor.instance_uuid.to_string();
+                *instance.lock().unwrap() = descriptor.node_uuid.to_string();
                 *boot.lock().unwrap() = descriptor.boot_id.to_string();
                 ready_seen.store(1, Ordering::SeqCst);
                 Ok(())
@@ -549,7 +549,7 @@ async fn healthy_matching_owner_is_reused_without_launch() {
             crate::daemon::diagnostics::WriterSink(Vec::<u8>::new()),
             BufferLimits::new(1024, 256).unwrap(),
             move |descriptor| {
-                *instance.lock().unwrap() = descriptor.instance_uuid.to_string();
+                *instance.lock().unwrap() = descriptor.node_uuid.to_string();
                 *boot.lock().unwrap() = descriptor.boot_id.to_string();
                 ready_seen.store(1, Ordering::SeqCst);
                 Ok(())
@@ -657,7 +657,9 @@ async fn factory_failure_logs_and_removes_only_unpublished_bound_socket() {
         |_| panic!("failed factory must not publish readiness"),
         move || async move {
             assert_eq!(
-                OwnerLock::acquire(&drain_paths).unwrap_err().kind(),
+                OwnerLock::acquire_with_test_hint(&drain_paths)
+                    .unwrap_err()
+                    .kind(),
                 io::ErrorKind::WouldBlock
             );
             drained_seen.fetch_add(1, Ordering::SeqCst);
@@ -703,14 +705,16 @@ async fn factory_receives_bound_identity_and_postfactory_failure_tears_down_once
         },
         |descriptor| {
             assert_eq!(
-                Some((descriptor.instance_uuid, descriptor.boot_id)),
+                Some((descriptor.node_uuid, descriptor.boot_id)),
                 *observed.lock().unwrap()
             );
             Err(io::Error::other("post-factory readiness failed"))
         },
         move || async move {
             assert_eq!(
-                OwnerLock::acquire(&drain_paths).unwrap_err().kind(),
+                OwnerLock::acquire_with_test_hint(&drain_paths)
+                    .unwrap_err()
+                    .kind(),
                 io::ErrorKind::WouldBlock
             );
             drained_seen.fetch_add(1, Ordering::SeqCst);
@@ -730,7 +734,7 @@ async fn factory_receives_bound_identity_and_postfactory_failure_tears_down_once
 #[tokio::test]
 async fn losing_owner_never_invokes_factory_or_installs_sink() {
     let (root, _, paths) = fixture();
-    let incumbent = OwnerLock::acquire(&paths).unwrap();
+    let incumbent = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let installed = Arc::new(AtomicUsize::new(0));
     struct CountingSink(Arc<AtomicUsize>);
     impl DiagnosticSink for CountingSink {
@@ -944,7 +948,7 @@ async fn shutdown_waits_for_synchronous_handler_before_releasing_lock() {
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),
         Arc::new(TestClock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
     );
     let clock = TestClock;
@@ -968,7 +972,7 @@ async fn shutdown_waits_for_synchronous_handler_before_releasing_lock() {
     .unwrap();
     shutdown.cancel();
     tokio::time::sleep(Duration::from_millis(350)).await;
-    assert!(OwnerLock::acquire(&path_for_probe).is_err());
+    assert!(OwnerLock::acquire_with_test_hint(&path_for_probe).is_err());
     assert_eq!(drained.load(Ordering::SeqCst), 0);
     release.store(1, Ordering::SeqCst);
     let _ = call.await.unwrap();
@@ -986,10 +990,10 @@ fn subprocess_owner_fixture() {
     crate::test_support::owner_watch::watch_from_env();
     let root = PathBuf::from(std::env::var_os("HERDR_LIFECYCLE_ROOT").unwrap());
     let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
+    let paths = crate::test_support::resolve_seeded(&context.state_dir);
     let held_replacement = root.join("hold-replacement-election").exists();
     if held_replacement {
-        let election = OwnerLock::acquire(&paths).unwrap();
+        let election = OwnerLock::acquire_with_test_hint(&paths).unwrap();
         std::fs::write(root.join("replacement-election-held"), b"").unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !root.join("release-replacement-election").exists() {
@@ -1039,7 +1043,7 @@ fn subprocess_owner_fixture() {
             crate::daemon::diagnostics::WriterSink(Vec::<u8>::new()),
             BufferLimits::new(1024, 256).unwrap(),
             move |descriptor| {
-                *instance.lock().unwrap() = descriptor.instance_uuid.to_string();
+                *instance.lock().unwrap() = descriptor.node_uuid.to_string();
                 *boot.lock().unwrap() = descriptor.boot_id.to_string();
                 Ok(())
             },
@@ -1119,8 +1123,8 @@ fn subprocess_resolved_environment_fixture() {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let context =
             RuntimeContext::explicit(root.clone(), root.join("host.sock"), selected).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        paths.prepare_instance_dir().unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        paths.prepare_node_dir().unwrap();
         spawn_detached(&script, &context, &paths, &StartAttempt::new()).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let observed = loop {
@@ -1144,7 +1148,7 @@ fn subprocess_resolved_environment_fixture() {
         assert!(observed.contains(&format!(
             "--state-dir\n{}\n--host-endpoint\n{}\n",
             context.state_dir.display(),
-            context.host_endpoint.display()
+            context.host_endpoint.clone().unwrap().display()
         )));
     }
     std::fs::remove_dir_all(root).unwrap();
@@ -1183,11 +1187,11 @@ async fn racing_ensure_callers_converge_and_crash_releases_owner() {
     assert!(launch_args.contains(&format!(
         "{}\n--host-endpoint\n{}\n",
         context.state_dir.display(),
-        context.host_endpoint.display()
+        context.host_endpoint.clone().unwrap().display()
     )));
     std::fs::write(root.join("crash"), b"crash").unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
-        while OwnerLock::acquire(&paths).is_err() {
+        while OwnerLock::acquire_with_test_hint(&paths).is_err() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -1213,5 +1217,47 @@ async fn racing_ensure_callers_converge_and_crash_releases_owner() {
     .unwrap();
     assert!(!recovered.endpoint.exists());
     assert!(!paths.descriptor_path.exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn spawn_detached_passes_the_host_only_when_the_client_resolved_one() {
+    let (root, _, _) = fixture();
+    for (name, host) in [("none", None), ("some", Some(root.join("host.sock")))] {
+        let output = root.join(format!("{name}.args"));
+        let script = root.join(format!("{name}.sh"));
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}.tmp'\nmv '{}.tmp' '{}'\n",
+                output.display(),
+                output.display(),
+                output.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = RuntimeContext::explicit(root.clone(), host, None).unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        paths.prepare_node_dir().unwrap();
+        spawn_detached(&script, &context, &paths, &StartAttempt::new()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let observed = loop {
+            if let Ok(value) = std::fs::read_to_string(&output) {
+                break value;
+            }
+            assert!(std::time::Instant::now() < deadline, "child wrote no argv");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let state = context.state_dir.display();
+        let expected = match context.host_endpoint {
+            None => format!("daemon\nrun\n--state-dir\n{state}\n"),
+            Some(host) => format!(
+                "daemon\nrun\n--state-dir\n{state}\n--host-endpoint\n{}\n",
+                host.display()
+            ),
+        };
+        assert_eq!(observed, expected);
+    }
     std::fs::remove_dir_all(root).unwrap();
 }

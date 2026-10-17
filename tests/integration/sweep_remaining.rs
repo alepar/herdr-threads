@@ -23,7 +23,7 @@ use crate::lanes_latency;
 use herdr_threads::{
     daemon::{
         health::HEALTH_LINE_BUDGET,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
         remedy::{RemedyContext, remedy},
     },
     protocol::{
@@ -720,7 +720,7 @@ impl WakeTarget {
             !competing,
             "measured recipient {seat} has prior attempts or competing attention"
         );
-        let after_seq = db.query_row("SELECT decision_seq FROM host_instances WHERE id=(SELECT instance_id FROM seats WHERE id=?1)", [seat], |row| row.get(0)).unwrap();
+        let after_seq = db.query_row("SELECT decision_seq FROM local_node WHERE id=(SELECT instance_id FROM seats WHERE id=?1)", [seat], |row| row.get(0)).unwrap();
         Self {
             seat: seat.into(),
             thread: thread.into(),
@@ -1460,12 +1460,17 @@ fn partial_projection_refusal_control(
         samples.push((at, snapshot));
     }));
     let candidate = || {
-        StorePort::wake_candidates(&**store, PageRequest::default(), &budget())
-            .unwrap()
-            .items
-            .into_iter()
-            .find(|c| c.seat.as_str() == target.seat)
-            .unwrap()
+        StorePort::wake_candidates(
+            &**store,
+            herdr_threads::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget(),
+        )
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|c| c.seat.as_str() == target.seat)
+        .unwrap()
     };
     let first_candidate = candidate();
     let prior = PriorLadder::from_candidate(&first_candidate);
@@ -1486,9 +1491,14 @@ fn partial_projection_refusal_control(
     assert!(state.can_reserve(&seat, clock.monotonic_now()));
     let first = {
         let _origin = enter_lane(Lane::Wakes);
-        StorePort::reserve_wake(&**store, &first_candidate, &budget())
-            .unwrap()
-            .unwrap()
+        StorePort::reserve_wake(
+            &**store,
+            herdr_threads::test_support::test_host_id(),
+            &first_candidate,
+            &budget(),
+        )
+        .unwrap()
+        .unwrap()
     };
     state
         .reserved(
@@ -1547,6 +1557,7 @@ fn partial_projection_refusal_control(
         let _origin = enter_lane(Lane::Wakes);
         StorePort::complete_wake(
             &**store,
+            herdr_threads::test_support::test_host_id(),
             first.attempt,
             WakeOutcome::Cancelled,
             None,
@@ -1570,6 +1581,7 @@ fn partial_projection_refusal_control(
         let _origin = enter_lane(Lane::Wakes);
         StorePort::complete_wake(
             &**store,
+            herdr_threads::test_support::test_host_id(),
             first.attempt.clone(),
             outcome,
             Some(&prior),
@@ -1617,9 +1629,14 @@ fn partial_projection_refusal_control(
     let second_candidate = candidate();
     let second = {
         let _origin = enter_lane(Lane::Wakes);
-        StorePort::reserve_wake(&**store, &second_candidate, &budget())
-            .unwrap()
-            .unwrap()
+        StorePort::reserve_wake(
+            &**store,
+            herdr_threads::test_support::test_host_id(),
+            &second_candidate,
+            &budget(),
+        )
+        .unwrap()
+        .unwrap()
     };
     assert_ne!(first.attempt, second.attempt);
     let attempt = samples
@@ -1667,6 +1684,7 @@ fn partial_projection_refusal_control(
         let _origin = enter_lane(Lane::Wakes);
         StorePort::complete_wake(
             &**store,
+            herdr_threads::test_support::test_host_id(),
             second.attempt,
             WakeOutcome::Cancelled,
             None,
@@ -1703,13 +1721,13 @@ fn producer_ordering_control(
         deadline: MonoInstant(clock.monotonic_now().0 + 3000),
         cancellation: Cancellation::default(),
     };
-    let context = StoreContext::new(iso.path("store.db"), clock.clone());
+    let context = StoreContext::new(iso.path("store.db"), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'b',1,1);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','ordering','ordering',0,0);").unwrap();
+    db.execute_batch("UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('t','34750f98bd59fcfc946da45aaabe933b','ordering','ordering',0,0,0);").unwrap();
     for seat in ["a", "b", "c"] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES(?1,'i','resolved','native',?2,1,1,0)", rusqlite::params![seat,format!("p-{seat}")]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i',?1,'b',1,1,1,'fresh',0,?2,'inc','coherent_enumeration',1)",rusqlite::params![format!("p-{seat}"),format!("term-{seat}")]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat,format!("p-{seat}")]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,1,'fresh',0,?2,'inc','coherent_enumeration',1)",rusqlite::params![format!("p-{seat}"),format!("term-{seat}")]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES(?1,1,?2,'b',1,1,'codex',?3,?5,'cooperative_top_level',0,0,?4,'inc')",rusqlite::params![seat,format!("p-{seat}"),format!("session-{seat}"),format!("term-{seat}"),format!("00000000-0000-4000-8000-0000000000{seat}1")]).unwrap();
         if seat != "c" {
             db.execute(
@@ -1720,12 +1738,12 @@ fn producer_ordering_control(
             db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t',?1,1,1)",[seat]).unwrap();
         }
     }
-    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES('unrelated','t','c',1,'pending',0,1,300000,300000);").unwrap();
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES('unrelated','t','c',1,'pending',0,1,300000,300000,(SELECT id FROM local_node));").unwrap();
     let control_boot = uuid::Uuid::new_v4();
     let store = Arc::new(
         SqliteStore::new(
             context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings {
                 daemon_boot: Some(control_boot),
                 wake_batch_delay_ms: 0,
@@ -1755,7 +1773,8 @@ fn producer_ordering_control(
         relays_user: false,
         operation: OperationId::new("send"),
         claim: CallerClaim {
-            instance: "i".into(),
+            host: herdr_threads::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("a"),
             target: HostTargetId::new("p-a"),
             binding_generation: 1,
@@ -1810,17 +1829,27 @@ fn producer_ordering_control(
     }
 
     if logical_first {
-        let candidate = StorePort::wake_candidates(&*store, PageRequest::default(), &budget())
-            .unwrap()
-            .items
-            .into_iter()
-            .find(|c| c.seat.as_str() == "b")
-            .unwrap();
+        let candidate = StorePort::wake_candidates(
+            &*store,
+            herdr_threads::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget(),
+        )
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|c| c.seat.as_str() == "b")
+        .unwrap();
         let reservation = {
             let _origin = enter_lane(Lane::Wakes);
-            StorePort::reserve_wake(&*store, &candidate, &budget())
-                .unwrap()
-                .expect("logical manifest is actionable before projection")
+            StorePort::reserve_wake(
+                &*store,
+                herdr_threads::test_support::test_host_id(),
+                &candidate,
+                &budget(),
+            )
+            .unwrap()
+            .expect("logical manifest is actionable before projection")
         };
         let first_at = Instant::now();
         assert_eq!(
@@ -2100,18 +2129,28 @@ fn producer_ordering_control(
             deadline: MonoInstant(clock.monotonic_now().0 + 3000),
             cancellation: Cancellation::default(),
         };
-        let candidate = StorePort::wake_candidates(&*prior_store, PageRequest::default(), &budget)
-            .unwrap()
-            .items
-            .into_iter()
-            .find(|c| c.seat.as_str() == "c")
-            .unwrap();
+        let candidate = StorePort::wake_candidates(
+            &*prior_store,
+            herdr_threads::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget,
+        )
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|c| c.seat.as_str() == "c")
+        .unwrap();
         let _origin = enter_lane(Lane::Wakes);
         let _turn = prior_writer.enter_background(&budget, &clock).unwrap();
         assert!(
-            StorePort::reserve_wake(&*prior_store, &candidate, &budget)
-                .unwrap()
-                .is_some()
+            StorePort::reserve_wake(
+                &*prior_store,
+                herdr_threads::test_support::test_host_id(),
+                &candidate,
+                &budget
+            )
+            .unwrap()
+            .is_some()
         );
     });
     let mut prior_guard = PausedWriter {
@@ -2131,19 +2170,28 @@ fn producer_ordering_control(
             deadline: MonoInstant(clock.monotonic_now().0 + 3000),
             cancellation: Cancellation::default(),
         };
-        let candidate =
-            StorePort::wake_candidates(&*producer_store, PageRequest::default(), &budget)
-                .unwrap()
-                .items
-                .into_iter()
-                .find(|c| c.seat.as_str() == "b")
-                .unwrap();
+        let candidate = StorePort::wake_candidates(
+            &*producer_store,
+            herdr_threads::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget,
+        )
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|c| c.seat.as_str() == "b")
+        .unwrap();
         let _origin = enter_lane(Lane::Wakes);
         let _turn = producer_writer.enter_background(&budget, &clock).unwrap();
         assert!(
-            StorePort::reserve_wake(&*producer_store, &candidate, &budget)
-                .unwrap()
-                .is_some()
+            StorePort::reserve_wake(
+                &*producer_store,
+                herdr_threads::test_support::test_host_id(),
+                &candidate,
+                &budget
+            )
+            .unwrap()
+            .is_some()
         );
     });
     let mut producer_guard = PausedWriter {
@@ -2244,7 +2292,7 @@ fn producer_ordering_control(
 /// Waits until every lane has finished a pass (the registry's Pacers).
 fn wait_lanes_settled_latency(s: &lanes_latency::Session) {
     let until = Instant::now() + Duration::from_secs(20);
-    while !Lane::ALL
+    while !Lane::WORKERS
         .iter()
         .all(|lane| s.probe.registered_idle_events(*lane) >= 1)
     {
@@ -2303,7 +2351,7 @@ fn send_commit_wake_under_100ms_with_all_five_lanes() {
     let Some(scene) = Scene::new("sweep_send_commit_wake", 3) else {
         return;
     };
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         assert!(
             scene.session().probe.registered(lane) && scene.session().probe.status_has_pacer(lane),
             "{} is not registered with both the kick registry and its status",
@@ -2607,27 +2655,27 @@ fn lane_failure_surfaces_through_remedy_text_within_the_health_line_budget() {
     wait_lanes_settled(&s, Duration::from_millis(1500));
     let (state, healthy) = s.health();
     assert_eq!(state, "healthy", "{healthy:?}");
-    let log_before: Vec<usize> = Lane::ALL
+    let log_before: Vec<usize> = Lane::WORKERS
         .iter()
         .map(|lane| s.lane_log_lines(*lane).len())
         .collect();
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         s.probe.fail_lane(lane, ErrorCode::StoreBusy);
     }
     let until = Instant::now() + Duration::from_secs(40);
-    while !Lane::ALL
+    while !Lane::WORKERS
         .iter()
         .all(|lane| s.probe.lane_health(*lane).is_some())
     {
         assert!(
             Instant::now() < until,
             "not every lane reported its failure: {:?}",
-            Lane::ALL
+            Lane::WORKERS
                 .iter()
                 .map(|lane| (lane.name(), s.probe.lane_health(*lane)))
                 .collect::<Vec<_>>()
         );
-        for lane in Lane::ALL {
+        for lane in Lane::WORKERS {
             s.probe.kick_registered(lane);
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -2645,8 +2693,8 @@ fn lane_failure_surfaces_through_remedy_text_within_the_health_line_budget() {
         .collect();
     assert_eq!(scheduler.len(), 1, "one folded summary line: {lines:?}");
     assert!(
-        scheduler[0].contains(&format!("{} lanes degraded", Lane::ALL.len()))
-            && Lane::ALL
+        scheduler[0].contains(&format!("{} lanes degraded", Lane::WORKERS.len()))
+            && Lane::WORKERS
                 .iter()
                 .all(|lane| scheduler[0].contains(lane.name()))
             && scheduler[0].contains(&format!("see {}", s.log.display())),
@@ -2656,7 +2704,7 @@ fn lane_failure_surfaces_through_remedy_text_within_the_health_line_budget() {
         lines.iter().all(|line| !line.starts_with("degraded: ")),
         "a folded summary carries the log path itself, not a pointer per lane: {lines:?}"
     );
-    for (lane, before) in Lane::ALL.iter().zip(&log_before) {
+    for (lane, before) in Lane::WORKERS.iter().zip(&log_before) {
         assert_eq!(
             s.lane_log_lines(*lane).len(),
             before + 1,
@@ -2666,14 +2714,14 @@ fn lane_failure_surfaces_through_remedy_text_within_the_health_line_budget() {
             s.daemon_log()
         );
     }
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         s.probe.heal_lane(lane);
     }
     wait_until("every lane to clear", Duration::from_secs(60), || {
-        for lane in Lane::ALL {
+        for lane in Lane::WORKERS {
             s.probe.kick_registered(lane);
         }
-        Lane::ALL
+        Lane::WORKERS
             .iter()
             .all(|lane| s.probe.lane_health(*lane).is_none())
     });
@@ -2716,11 +2764,13 @@ fn startup_failure_lane_failure_and_skew_reach_the_operator() {
         }
         let _cleanup = Cleanup(root.clone());
         let host = root.join("no-host.sock");
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(state.clone(), host.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
-        paths.prepare_instance_dir().unwrap();
+        paths.prepare_node_dir().unwrap();
         fs::write(&paths.database_path, b"this is not a sqlite database").unwrap();
         let ensure = crate::scrubbed_command(env!("CARGO_BIN_EXE_herdr-threads"))
             .arg("--state-dir")
@@ -2733,7 +2783,7 @@ fn startup_failure_lane_failure_and_skew_reach_the_operator() {
             .unwrap();
         let stderr = String::from_utf8_lossy(&ensure.stderr).into_owned();
         assert_eq!(ensure.status.code(), Some(3), "{stderr}");
-        let logs: Vec<_> = fs::read_dir(paths.instance_dir.join("logs"))
+        let logs: Vec<_> = fs::read_dir(paths.node_dir.join("logs"))
             .unwrap()
             .flatten()
             .collect();
@@ -2780,8 +2830,10 @@ fn startup_failure_lane_failure_and_skew_reach_the_operator() {
     assert!(lines.contains(&pointer), "{pointer:?} not in {lines:?}");
 
     // 3. Skew: the descriptor says the daemon speaks the previous protocol.
-    let paths = InstancePaths::resolve(
-        &RuntimeContext::explicit(s.state.clone(), s.herdr.socket_path(), None).unwrap(),
+    let paths = NodePaths::resolve(
+        &RuntimeContext::explicit(s.state.clone(), s.herdr.socket_path(), None)
+            .unwrap()
+            .state_dir,
     )
     .unwrap();
     let original = fs::read(&paths.descriptor_path).unwrap();

@@ -13,7 +13,8 @@ pub(super) fn identity() -> HandoffIdentity {
         compound: OperationId::new("compound"),
         digest: "a".repeat(64),
         claim: CallerClaim {
-            instance: "i".into(),
+            host: herdr_threads::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("s"),
             target: HostTargetId::new("p"),
             binding_generation: 1,
@@ -174,7 +175,14 @@ fn handoff_new_thread_attachment_matches_exact_actor_scope_and_create_key() {
     id.thread = None;
     let tx = db.transaction().unwrap();
     handoff::begin_pending(&tx, &id, UtcMillis(0)).unwrap();
-    handoff::attach_created(&tx, "i", "seat:other", "create", &ThreadId::new("t")).unwrap();
+    handoff::attach_created(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        "seat:other",
+        "create",
+        &ThreadId::new("t"),
+    )
+    .unwrap();
     assert!(
         handoff::current(&tx, &id)
             .unwrap()
@@ -182,7 +190,14 @@ fn handoff_new_thread_attachment_matches_exact_actor_scope_and_create_key() {
             .thread
             .is_none()
     );
-    handoff::attach_created(&tx, "i", "seat:s", "create", &ThreadId::new("t")).unwrap();
+    handoff::attach_created(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        "seat:s",
+        "create",
+        &ThreadId::new("t"),
+    )
+    .unwrap();
     assert_eq!(
         handoff::current(&tx, &id).unwrap().unwrap().thread,
         Some(ThreadId::new("t"))
@@ -230,15 +245,13 @@ pub(super) fn store_fixture_with_clock(
     std::fs::create_dir(&directory.0).unwrap();
     let path = directory.0.join("store.db");
     let store = SqliteStore::new(
-        StoreContext::new(path.clone(), clock),
-        "i",
+        StoreContext::new(path.clone(), clock).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap();
-    let db = rusqlite::Connection::open(path).unwrap();
+    let db = herdr_threads::test_support::open_test_connection(&path);
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
-        .unwrap();
     thread(&db);
     joined_agent(&db);
     StoreFixture {
@@ -351,134 +364,5 @@ fn handoff_real_create_attaches_atomically_and_begin_replay_reports_current_thre
     assert!(
         mutate(&fixture.store, PermitMutation::BeginHandoff(begin)).is_err(),
         "live historical replay must still check membership"
-    );
-}
-
-#[test]
-fn handoff_actual22_upgrade_imports_already_committed_create_then_replays_without_unattached_fence()
-{
-    use herdr_threads::{
-        protocol::{
-            commands::{CreateThread, PermitMutation},
-            results::CommandResult,
-        },
-        store::{
-            SqliteStore, StoreSettings, connection::StoreContext, control::cooperative_payload_hash,
-        },
-    };
-    let directory = Directory(herdr_threads::test_support::scratch::temp_path(format!(
-        "legacy-create-{}",
-        uuid::Uuid::new_v4()
-    )));
-    std::fs::create_dir(&directory.0).unwrap();
-    let path = directory.0.join("store.db");
-    let mut db = rusqlite::Connection::open(&path).unwrap();
-    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .collect::<Vec<_>>();
-    migrations.sort();
-    for path in migrations {
-        if path.file_name().unwrap().to_str().unwrap()[..4]
-            .parse::<u32>()
-            .unwrap()
-            <= 22
-        {
-            db.execute_batch(&std::fs::read_to_string(path).unwrap())
-                .unwrap();
-        }
-    }
-    db.pragma_update(None, "user_version", 22).unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES('i',0)",
-        [],
-    )
-    .unwrap();
-    thread(&db);
-    joined_agent(&db);
-    let mut id = identity();
-    // The migrated session binding is disconnected; its re-adopting call carries a fingerprint
-    // (spec section 4 Migration V29, shipped as V32, decision 9), or the daemon refuses it.
-    id.claim.liveness = Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST);
-    id.thread = None;
-    let create = CreateThread {
-        name: None,
-        topic: "topic".into(),
-        goal: "goal".into(),
-        operation: id.create_key.clone(),
-        claim: id.claim.clone(),
-    };
-    let historical =
-        serde_json::to_string(&CommandResult::ThreadCreated(ThreadId::new("t"))).unwrap();
-    db.execute("INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES('seat:s',?1,?2,?3,0)",rusqlite::params![id.create_key.as_str(),cooperative_payload_hash("create_thread",&create).unwrap().as_slice(),historical]).unwrap();
-    let store = SqliteStore::new(
-        StoreContext::new(path, std::sync::Arc::new(Clock)),
-        "i",
-        StoreSettings::default(),
-    )
-    .unwrap();
-    // The initializer upgrades the historical22 fixture to the latest schema.
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        herdr_threads::store::schema::LATEST_VERSION
-    );
-    let tx = db.transaction().unwrap();
-    let imported = handoff::import_hint(&tx, &id, None, "legacy22", UtcMillis(100)).unwrap();
-    assert_eq!(imported.thread, Some(ThreadId::new("t")));
-    tx.commit().unwrap();
-    let CommandResult::Handoff(result) = mutate(
-        &store,
-        PermitMutation::BeginHandoff(HandoffMutation {
-            identity: id.clone(),
-            operation: OperationId::new("begin"),
-        }),
-    )
-    .unwrap() else {
-        panic!("handoff")
-    };
-    assert_eq!(result.thread, Some(ThreadId::new("t")));
-    // The Begin re-adopted the migrated binding (connected again with the caller's fingerprint)
-    // instead of enrolling a second one.
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*), min(liveness), min(liveness_pid), min(liveness_start) FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
-            [],
-            |r| Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)?
-            ))
-        )
-        .unwrap(),
-        (1, "connected".to_owned(), 1, 1)
-    );
-    assert_eq!(
-        mutate(&store, PermitMutation::CreateThread(create)).unwrap(),
-        CommandResult::ThreadCreated(ThreadId::new("t"))
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM threads", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM channel_handoff_fences WHERE state='live' AND thread_id IS NULL",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT result_json FROM operations WHERE operation_key=?1",
-            [id.create_key.as_str()],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        historical
     );
 }

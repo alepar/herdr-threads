@@ -14,7 +14,7 @@
 //!    (`$XDG_CONFIG_HOME/herdr/herdr.sock`, else `~/.config/herdr/herdr.sock`)
 //!    when a socket exists there. With `XDG_STATE_HOME` set, a `~/.local/state`
 //!    directory is a legacy location, chosen only when it holds a store (an
-//!    `instances/<id>/` with the database) and the XDG directory does not; the
+//!    `node/herdr-threads.db`, or a legacy `instances/<id>/` with the database) and the XDG directory does not; the
 //!    source then says so. A named Herdr session (`HERDR_SESSION` /
 //!    `HERDR_CONFIG_PATH`) gets neither fast default: its server, not the
 //!    default one, decides, so both fields go through step 4;
@@ -38,8 +38,8 @@ use crate::daemon::paths::RuntimeContext;
 use serde_json::{Map, Value, json};
 use std::{
     ffi::OsString,
-    io,
-    os::unix::fs::FileTypeExt,
+    fs, io,
+    os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -186,6 +186,53 @@ pub fn default_state_dir(inputs: &InstanceInputs) -> Result<Option<(PathBuf, Str
     }))
 }
 
+/// Where the default state dir would be, whether or not it exists yet. `None` for a named
+/// Herdr session or no usable HOME/XDG root; `Err` when both roots already hold a store
+/// (ambiguous, as for [`default_state_dir`]).
+fn default_state_dir_to_create(inputs: &InstanceInputs) -> Result<Option<PathBuf>, String> {
+    if inputs.non_default_server {
+        return Ok(None);
+    }
+    let (xdg, home) = state_candidates(absolute(&inputs.home), absolute(&inputs.xdg_state_home));
+    Ok(choose_state_dir(xdg, home)?.map(|(dir, _, _)| dir))
+}
+
+/// The context for `peer --stdio`, the ssh-side pump. Like [`resolve_context`], except that a
+/// node never used locally (no `--state-dir`, no `HERDR_PLUGIN_STATE_DIR`, no default state dir
+/// yet) creates the default state dir, owner-only, so the inbound link starts its daemon there
+/// as a first local use would. An explicit state dir is never replaced: its error is returned.
+pub fn resolve_peer_context(inputs: &InstanceInputs) -> io::Result<RuntimeContext> {
+    let first = match resolve_context(inputs) {
+        Ok((context, _)) => return Ok(context),
+        Err(error) => error,
+    };
+    if inputs.state_flag.is_some() || inputs.env_state.is_some() {
+        return Err(first);
+    }
+    let Some(dir) = default_state_dir_to_create(inputs).ok().flatten() else {
+        return Err(first);
+    };
+    if dir.exists() {
+        return Err(first);
+    }
+    if let Some(parent) = dir.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // The daemon refuses a group/other-writable state root, so the leaf is created 0700
+    // whatever the umask (an ssh session may run with 002).
+    match fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    let created = InstanceInputs {
+        state_flag: Some(dir),
+        ..inputs.clone()
+    };
+    resolve_context(&created).map(|(context, _)| context)
+}
+
 /// What Herdr's plugin registry says about this plugin, read from a file only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginRegistry {
@@ -287,6 +334,19 @@ pub fn resolve_state_dir(inputs: &InstanceInputs) -> Result<(PathBuf, String), S
     }
 }
 
+/// The claim host: the Herdr server of the calling pane. An explicit user flag on an interactive
+/// command wins, then the pane's own `HERDR_SOCKET_PATH`, then the host baked into an installed
+/// argv at setup, which is only a fallback (and the daemon attach hint): a user-level hook runs in
+/// panes of any Herdr server, so the pane it runs in decides. Hooks pass no `explicit` (their argv
+/// is always installed). Spellings are returned as given; `RuntimeContext` canonicalizes.
+pub fn claim_host(
+    explicit: Option<&Path>,
+    pane_env: Option<&Path>,
+    installed: Option<&Path>,
+) -> Option<PathBuf> {
+    explicit.or(pane_env).or(installed).map(Path::to_path_buf)
+}
+
 /// The host endpoint and where it came from.
 pub fn resolve_host_endpoint(inputs: &InstanceInputs) -> Result<(PathBuf, String), String> {
     if let Some(host) = &inputs.host_flag {
@@ -301,8 +361,11 @@ pub fn resolve_host_endpoint(inputs: &InstanceInputs) -> Result<(PathBuf, String
     }
 }
 
-/// Both fields resolved into a runtime context, plus `{"state_dir": how,
-/// "host_endpoint": how}`. A failure names the flag and variable to use.
+/// The state directory (required) and the claim host (optional) resolved into
+/// a runtime context, plus `{"state_dir": how, "host_endpoint": how}`; the host
+/// source is `"none"` when no Herdr server resolved. A failure to find the
+/// state directory names the flag and variable to use; a call that needs the
+/// host fails later, in [`RuntimeContext::require_host`].
 pub fn resolve_context(inputs: &InstanceInputs) -> io::Result<(RuntimeContext, Value)> {
     resolve_context_with_selected_state(inputs).map(|(context, source, _)| (context, source))
 }
@@ -318,21 +381,17 @@ pub(crate) fn resolve_context_with_selected_state(
 /// context uses canonical paths. Each source is resolved only once.
 pub(crate) fn resolve_context_with_selected_paths(
     inputs: &InstanceInputs,
-) -> io::Result<(RuntimeContext, Value, PathBuf, PathBuf)> {
+) -> io::Result<(RuntimeContext, Value, PathBuf, Option<PathBuf>)> {
     let (state, state_how) = resolve_state_dir(inputs).map_err(|error| {
         io::Error::new(
             io::ErrorKind::NotFound,
             format!("state directory unknown: {error}; use --state-dir or HERDR_PLUGIN_STATE_DIR"),
         )
     })?;
-    let (host, host_how) = resolve_host_endpoint(inputs).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "Herdr host endpoint unknown: {error}; use --host-endpoint or HERDR_SOCKET_PATH"
-            ),
-        )
-    })?;
+    let (host, host_how) = match resolve_host_endpoint(inputs) {
+        Ok((host, how)) => (Some(host), how),
+        Err(_) => (None, "none".to_owned()),
+    };
     let selected_state = state.clone();
     let selected_host = host.clone();
     let context = RuntimeContext::explicit(
@@ -358,6 +417,46 @@ pub(crate) fn resolve_context_with_selected_paths(
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::PermissionsExt, os::unix::net::UnixListener};
+
+    fn fresh_inputs(home: &Path) -> InstanceInputs {
+        InstanceInputs {
+            home: Some(home.to_path_buf()),
+            ..InstanceInputs::default()
+        }
+    }
+
+    #[test]
+    fn peer_context_on_a_fresh_node_creates_an_owner_only_default_state_dir() {
+        let root = scratch();
+        let context = resolve_peer_context(&fresh_inputs(&root)).unwrap();
+        let state = root.join(".local/state/herdr/plugins/herdr-threads");
+        assert_eq!(context.state_dir, state.canonicalize().unwrap());
+        let mode = fs::metadata(&state).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "owner-only whatever the umask");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn peer_context_never_replaces_an_explicit_state_dir() {
+        let root = scratch();
+        for inputs in [
+            InstanceInputs {
+                state_flag: Some(PathBuf::from("rel/state")),
+                ..fresh_inputs(&root)
+            },
+            InstanceInputs {
+                env_state: Some(PathBuf::from("rel/state")),
+                ..fresh_inputs(&root)
+            },
+        ] {
+            assert!(resolve_peer_context(&inputs).is_err());
+            assert!(
+                !root.join(".local").exists(),
+                "no default state dir is created"
+            );
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     fn scratch() -> PathBuf {
         // Short, so socket paths stay under the sun_path limit.
@@ -402,6 +501,30 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_host_is_none_and_reported_as_such() {
+        let dir = scratch();
+        let state = dir.join("state");
+        fs::create_dir(&state).unwrap();
+        let inputs = InstanceInputs {
+            home: Some(dir.join("home")),
+            state_flag: Some(state.clone()),
+            non_default_server: true,
+            ..InstanceInputs::default()
+        };
+        let (context, source, _, selected_host) =
+            resolve_context_with_selected_paths(&inputs).unwrap();
+        assert_eq!(context.host_endpoint, None);
+        assert_eq!(selected_host, None);
+        assert_eq!(source["host_endpoint"], "none");
+        assert_eq!(source["state_dir"], "--state-dir");
+        assert_eq!(
+            context.require_host().unwrap_err().to_string(),
+            "host endpoint missing: use --host-endpoint or HERDR_SOCKET_PATH"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn selected_state_capture_preserves_raw_spelling_and_canonical_identity() {
         let dir = scratch();
         let state = dir.join("state");
@@ -434,7 +557,7 @@ mod tests {
         inputs.non_default_server = true;
         let (context, source, selected, selected_host) =
             resolve_context_with_selected_paths(&inputs).unwrap();
-        assert_eq!(selected_host, dir.join("host.sock"));
+        assert_eq!(selected_host, Some(dir.join("host.sock")));
         assert_eq!(
             selected,
             dir.join("home/.local/state/herdr/plugins/herdr-threads")
@@ -458,7 +581,7 @@ mod tests {
         let _listener = UnixListener::bind(&socket).unwrap();
         let (context, source) = resolve_context(&inputs).unwrap();
         assert_eq!(context.state_dir, state);
-        assert_eq!(context.host_endpoint, socket);
+        assert_eq!(context.host_endpoint, Some(socket));
         assert_eq!(source["state_dir"], "default (~/.local/state)");
         assert_eq!(source["host_endpoint"], "default (~/.config)");
         assert_eq!(calls(&dir), "", "fast path must not run herdr");

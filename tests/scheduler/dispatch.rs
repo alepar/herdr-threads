@@ -374,7 +374,7 @@ impl WakePort for FakeWakeStore {
         let Some(witness) = candidate.attention_witness.as_ref() else {
             return Ok(None);
         };
-        if !witness.valid_for(candidate, "i", 1, 0, false) {
+        if !witness.valid_for(candidate, "34750f98bd59fcfc946da45aaabe933b", 1, 0, false) {
             return Ok(None);
         }
         Ok(Some(WakeReservation {
@@ -627,7 +627,7 @@ fn four_connected_owned_calls_block_a_fifth_until_their_transports_exit() {
         let mut candidate = due_candidate();
         candidate.seat = SeatId::new(format!("seat-{index}"));
         candidate.attention_witness = Some(WakeAttentionWitness::from_complete(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             candidate.seat.clone(),
             1,
             true,
@@ -736,7 +736,7 @@ fn scheduler_drives_due_work_while_native_prompt_waits() {
         release: release.clone(),
     };
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &wake,
         &notifier,
@@ -829,7 +829,7 @@ fn due_candidate() -> WakeCandidate {
 
 fn test_witness(pending_invitation: bool, pending_receipt: bool) -> WakeAttentionWitness {
     WakeAttentionWitness::from_complete(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         SeatId::new("seat"),
         1,
         pending_invitation,
@@ -908,7 +908,7 @@ fn stale_attention_witness_is_rejected_by_reserving_store() {
     let runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
     let mut candidate = due_candidate();
     candidate.attention_witness = Some(WakeAttentionWitness::from_complete(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         candidate.seat.clone(),
         0,
         true,
@@ -1050,7 +1050,7 @@ impl WakePort for StrandedOldBootStore {
         request: WakeRecoveryRequest,
         _: &CallBudget,
     ) -> Result<WakeRecoveryOutcome, ApiError> {
-        assert_eq!(request.instance, "i");
+        assert_eq!(request.instance, "34750f98bd59fcfc946da45aaabe933b");
         assert_eq!(request.elected_boot, daemon_boot());
         assert_eq!(request.prior_daemon_boot, old_daemon_boot());
         assert_eq!(request.attempt, WakeAttemptId::new("old-attempt"));
@@ -1104,7 +1104,7 @@ fn elected_boot_recovers_stranded_attempt_then_waits_full_monotonic_delay() {
         due_calls: AtomicU64::new(0),
     };
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &store,
         &notifier,
@@ -1133,21 +1133,21 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
         mono: AtomicU64::new(0),
         utc: AtomicI64::new(0),
     });
-    let context = StoreContext::new(path.clone(), clock.clone());
+    let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
-        INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat','i','resolved','native','target',1,1,0);\
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','target','host',1,1,0,'fresh','occupied','idle','execution',1,'term-'||'target','inc','coherent_enumeration',1);\
+        UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'target','host',1,1,0,'fresh','occupied','idle','execution',1,'term-'||'target','inc','coherent_enumeration',1);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('seat',1,1,'target','host',1,'codex','session','execution','fresh',0,0,'term-'||'target','inc');\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread','i','topic','goal',0,0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);\
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('thread','seat','invited');\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq) VALUES ('invite','thread','seat',1,'pending',0,100,100,1);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq,origin_node) VALUES ('invite','thread','seat',1,'pending',0,100,100,1,(SELECT id FROM local_node));\
     ").unwrap();
     drop(db);
     let old_store = SqliteStore::new(
         context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings {
             daemon_boot: Some(old_daemon_boot()),
             minimum_wake_delay_ms: 60_000,
@@ -1160,24 +1160,34 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
         deadline: MonoInstant(10_000),
         cancellation: Cancellation::default(),
     };
-    let old_candidate = StorePort::wake_candidates(&old_store, PageRequest::default(), &old_budget)
-        .unwrap()
-        .items
-        .remove(0);
-    let old_reservation = StorePort::reserve_wake(&old_store, &old_candidate, &old_budget)
-        .unwrap()
-        .unwrap();
+    let old_candidate = StorePort::wake_candidates(
+        &old_store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &old_budget,
+    )
+    .unwrap()
+    .items
+    .remove(0);
+    let old_reservation = StorePort::reserve_wake(
+        &old_store,
+        crate::test_support::test_host_id(),
+        &old_candidate,
+        &old_budget,
+    )
+    .unwrap()
+    .unwrap();
     drop(old_store);
     // Recovery must clear old uncertainty even where normal candidate
     // discovery returns no work or target policy excludes the seat.
-    let recovery_context = StoreContext::new(path.clone(), clock.clone());
+    let recovery_context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
     let db = recovery_context.open_writer().unwrap();
     for (seat, state) in [
         ("zero", "resolved"),
         ("unsafe", "unresolved"),
         ("retired", "retired"),
     ] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,target_generation,created_at,retired_at) VALUES (?1,'i',?2,'native',1,1,0,CASE WHEN ?2='retired' THEN 0 ELSE NULL END)", rusqlite::params![seat,state]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,target_generation,created_at,retired_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,'native',1,1,0,CASE WHEN ?2='retired' THEN 0 ELSE NULL END,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat,state]).unwrap();
         db.execute("INSERT INTO wake_work(seat_id,reason_bits,retry_step,reservation_id,reservation_boot,last_reservation_id,last_reservation_boot,minimum_delay_ms,effective_delay_ms) VALUES (?1,0,0,?1,?2,?1,?2,60000,60000)", rusqlite::params![seat,old_daemon_boot().to_string()]).unwrap();
     }
     drop(db);
@@ -1186,8 +1196,8 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
     clock.utc.store(3_600_000, Ordering::SeqCst);
     let reopened = Arc::new(
         SqliteStore::new(
-            StoreContext::new(path.clone(), clock.clone()),
-            "i",
+            StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings {
                 daemon_boot: Some(daemon_boot()),
                 minimum_wake_delay_ms: 30_000,
@@ -1197,19 +1207,20 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
         )
         .unwrap(),
     );
-    let ports = ScheduledStore::new(reopened.clone(), Arc::new(FairWriter::new(32)));
+    let ports = ScheduledStore::new(reopened.clone(), Arc::new(FairWriter::new(32)))
+        .for_host(crate::test_support::test_host_id());
     let due = FakeDeadlinePort {
         clock: Arc::new(FakeClock(AtomicU64::new(100_000))),
         due_calls: AtomicU64::new(0),
     };
     let host = SqliteTimingHost {
-        context: StoreContext::new(path.clone(), clock.clone()),
+        context: StoreContext::new(path.clone(), clock.clone()).with_test_host(),
         clock: clock.clone(),
         calls: Mutex::new(Vec::new()),
     };
     let notifier = NativeWakeDispatcher::new(&host, &ports, clock.as_ref());
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &ports,
         &notifier,
@@ -1227,8 +1238,9 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
     assert_eq!(
         StorePort::recover_wake_reservation(
             reopened.as_ref(),
+            crate::test_support::test_host_id(),
             WakeRecoveryRequest {
-                instance: "i".into(),
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                 seat: SeatId::new("seat"),
                 attempt: old_reservation.attempt.clone(),
                 prior_daemon_boot: old_daemon_boot(),
@@ -1248,6 +1260,7 @@ fn sqlite_reopen_recovers_old_boot_before_real_fake_host_attempt() {
     assert_eq!(*host.calls.lock().unwrap(), vec![MonoInstant(160_000)]);
     StorePort::complete_wake(
         reopened.as_ref(),
+        crate::test_support::test_host_id(),
         old_reservation.attempt,
         WakeOutcome::Submitted,
         None,
@@ -1286,28 +1299,48 @@ impl WakePort for FailingCompletionStore<'_> {
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeCandidate>, ApiError> {
-        StorePort::wake_candidates(self.store, page, budget)
+        StorePort::wake_candidates(
+            self.store,
+            crate::test_support::test_host_id(),
+            page,
+            budget,
+        )
     }
     fn reserve_wake(
         &self,
         candidate: &WakeCandidate,
         budget: &CallBudget,
     ) -> Result<Option<WakeReservation>, ApiError> {
-        StorePort::reserve_wake(self.store, candidate, budget)
+        StorePort::reserve_wake(
+            self.store,
+            crate::test_support::test_host_id(),
+            candidate,
+            budget,
+        )
     }
     fn wake_recovery_candidates(
         &self,
         page: PageRequest,
         budget: &CallBudget,
     ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
-        StorePort::wake_recovery_candidates(self.store, page, budget)
+        StorePort::wake_recovery_candidates(
+            self.store,
+            crate::test_support::test_host_id(),
+            page,
+            budget,
+        )
     }
     fn recover_wake_reservation(
         &self,
         request: WakeRecoveryRequest,
         budget: &CallBudget,
     ) -> Result<WakeRecoveryOutcome, ApiError> {
-        StorePort::recover_wake_reservation(self.store, request, budget)
+        StorePort::recover_wake_reservation(
+            self.store,
+            crate::test_support::test_host_id(),
+            request,
+            budget,
+        )
     }
     fn complete_wake(
         &self,
@@ -1330,8 +1363,14 @@ impl WakePort for FailingCompletionStore<'_> {
             }
             return Err(completion_error());
         }
-        let matched =
-            StorePort::complete_wake(self.store, attempt, outcome, refused_restore, budget)?;
+        let matched = StorePort::complete_wake(
+            self.store,
+            crate::test_support::test_host_id(),
+            attempt,
+            outcome,
+            refused_restore,
+            budget,
+        )?;
         if self.lose_response.swap(false, Ordering::SeqCst) {
             return Err(completion_error());
         }
@@ -1356,23 +1395,23 @@ fn completion_fixture() -> (
         mono: AtomicU64::new(0),
         utc: AtomicI64::new(0),
     });
-    let context = StoreContext::new(path.clone(), clock.clone());
+    let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
-        INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat','i','resolved','native','target',1,1,0);\
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','target','host',1,1,0,'fresh','occupied','idle','execution',1,'term-'||'target','inc','coherent_enumeration',1);\
+        UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'target','host',1,1,0,'fresh','occupied','idle','execution',1,'term-'||'target','inc','coherent_enumeration',1);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('seat',1,1,'target','host',1,'codex','session','execution','fresh',0,0,'term-'||'target','inc');\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread','i','topic','goal',0,0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);\
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('thread','seat','invited');\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq) VALUES ('invite','thread','seat',1,'pending',0,100,100,1);\
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('message','i','thread',1,'ordinary','body',1,0);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq,origin_node) VALUES ('invite','thread','seat',1,'pending',0,100,100,1,(SELECT id FROM local_node));\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('message','34750f98bd59fcfc946da45aaabe933b','thread',1,'ordinary','body',1,0);\
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('message','thread','seat','pending',100);\
     ").unwrap();
     drop(db);
     let store = SqliteStore::new(
-        StoreContext::new(path.clone(), clock.clone()),
-        "i",
+        StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings {
             daemon_boot: Some(daemon_boot()),
             wake_batch_delay_ms: 0,
@@ -1396,7 +1435,7 @@ fn sqlite_same_boot_retries_joined_completion_without_another_prompt_or_ack() {
         completions: Mutex::new(vec![]),
     };
     let host = SqliteTimingHost {
-        context: StoreContext::new(path.clone(), clock.clone()),
+        context: StoreContext::new(path.clone(), clock.clone()).with_test_host(),
         clock: clock.clone(),
         calls: Mutex::new(vec![]),
     };
@@ -1407,7 +1446,7 @@ fn sqlite_same_boot_retries_joined_completion_without_another_prompt_or_ack() {
         due_calls: AtomicU64::new(0),
     };
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &failing,
         &notifier,
@@ -1481,7 +1520,7 @@ fn sqlite_joined_completion_survives_attention_retirement_and_response_loss() {
             false,
         ),
         (
-            "UPDATE seats SET generation=2; UPDATE host_instances SET host_epoch=2;",
+            "UPDATE seats SET generation=2; UPDATE herdr_hosts SET host_epoch=2;",
             "unsafe",
             false,
         ),
@@ -1497,7 +1536,7 @@ fn sqlite_joined_completion_survives_attention_retirement_and_response_loss() {
             completions: Mutex::new(vec![]),
         };
         let host = SqliteTimingHost {
-            context: StoreContext::new(path.clone(), clock.clone()),
+            context: StoreContext::new(path.clone(), clock.clone()).with_test_host(),
             clock: clock.clone(),
             calls: Mutex::new(vec![]),
         };
@@ -1508,7 +1547,7 @@ fn sqlite_joined_completion_survives_attention_retirement_and_response_loss() {
             due_calls: AtomicU64::new(0),
         };
         let scheduler = Scheduler::new(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             &due,
             &failing,
             &notifier,
@@ -1569,7 +1608,7 @@ fn sqlite_late_joined_completion_cannot_clear_new_attempt_or_foreign_boot() {
             completions: Mutex::new(vec![]),
         };
         let host = SqliteTimingHost {
-            context: StoreContext::new(path.clone(), clock.clone()),
+            context: StoreContext::new(path.clone(), clock.clone()).with_test_host(),
             clock: clock.clone(),
             calls: Mutex::new(vec![]),
         };
@@ -1580,7 +1619,7 @@ fn sqlite_late_joined_completion_cannot_clear_new_attempt_or_foreign_boot() {
             due_calls: AtomicU64::new(0),
         };
         let scheduler = Scheduler::new(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             &due,
             &failing,
             &notifier,
@@ -1795,7 +1834,7 @@ fn sqlite_actual_wake_worker_retries_completion_and_yields_to_foreground() {
     let status = Arc::new(WorkerStatus::default());
     let host = Arc::new(ContendedTimingHost {
         host: SqliteTimingHost {
-            context: StoreContext::new(path.clone(), clock.clone()),
+            context: StoreContext::new(path.clone(), clock.clone()).with_test_host(),
             clock: clock.clone(),
             calls: Mutex::new(vec![]),
         },
@@ -1811,7 +1850,8 @@ fn sqlite_actual_wake_worker_retries_completion_and_yields_to_foreground() {
         store.clone(),
         writer.clone(),
         host.clone(),
-        "i".into(),
+        crate::test_support::test_host_id(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         daemon_boot(),
         RetryConfig::default(),
         pacer.clone(),
@@ -1927,7 +1967,7 @@ fn sqlite_initial_settlement_releases_runner_state_during_external_writer_wait()
         completions: Mutex::new(vec![]),
     };
     let notifier = SqliteLockingNotifier {
-        context: StoreContext::new(path.clone(), clock.clone()),
+        context: StoreContext::new(path.clone(), clock.clone()).with_test_host(),
         lock: Mutex::new(None),
         calls: AtomicU64::new(0),
     };
@@ -1936,10 +1976,15 @@ fn sqlite_initial_settlement_releases_runner_state_during_external_writer_wait()
         deadline: MonoInstant(300_000),
         cancellation: Cancellation::default(),
     };
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget)
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget,
+    )
+    .unwrap()
+    .items
+    .remove(0);
     std::thread::scope(|scope| {
         let _release = ReleaseNotifierLockOnDrop(&notifier);
         let worker = scope.spawn(|| runner.try_candidate(&candidate, &budget));
@@ -1998,10 +2043,15 @@ fn sqlite_retry_settlement_releases_runner_state_during_external_writer_wait() {
         deadline: MonoInstant(300_000),
         cancellation: Cancellation::default(),
     };
-    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget)
-        .unwrap()
-        .items
-        .remove(0);
+    let candidate = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget,
+    )
+    .unwrap()
+    .items
+    .remove(0);
     assert!(runner.try_candidate(&candidate, &budget).is_err());
     let db = context.open_writer().unwrap();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -2060,9 +2110,14 @@ fn sqlite_claimed_settlement_counts_toward_four_slots_during_writer_wait() {
         deadline: MonoInstant(300_000),
         cancellation: Cancellation::default(),
     };
-    let candidates = StorePort::wake_candidates(&store, PageRequest::default(), &budget)
-        .unwrap()
-        .items;
+    let candidates = StorePort::wake_candidates(
+        &store,
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &budget,
+    )
+    .unwrap()
+    .items;
     assert_eq!(candidates.len(), 5);
     for candidate in &candidates[..4] {
         assert!(runner.try_candidate(candidate, &budget).is_err());
@@ -2125,9 +2180,14 @@ fn sqlite_contended_writer_cancellation_and_expiry_return_completion_claims() {
             deadline: MonoInstant(300_000),
             cancellation: Cancellation::default(),
         };
-        let candidates = StorePort::wake_candidates(&store, PageRequest::default(), &budget)
-            .unwrap()
-            .items;
+        let candidates = StorePort::wake_candidates(
+            &store,
+            crate::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget,
+        )
+        .unwrap()
+        .items;
         for candidate in &candidates {
             assert!(runner.try_candidate(candidate, &budget).is_err());
         }
@@ -2223,10 +2283,15 @@ fn sqlite_external_writer_budget_errors_keep_exact_completion_retryable() {
             deadline: MonoInstant(300_000),
             cancellation: Cancellation::default(),
         };
-        let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget)
-            .unwrap()
-            .items
-            .remove(0);
+        let candidate = StorePort::wake_candidates(
+            &store,
+            crate::test_support::test_host_id(),
+            PageRequest::default(),
+            &budget,
+        )
+        .unwrap()
+        .items
+        .remove(0);
         assert!(runner.try_candidate(&candidate, &budget).is_err());
         let original = failing.completions.lock().unwrap()[0].clone();
         let db = context.open_writer().unwrap();
@@ -2322,15 +2387,15 @@ fn add_completion_peer(context: &StoreContext, n: usize) {
     let db = context.open_writer().unwrap();
     let seat = format!("peer-{n}");
     let target = format!("target-{n}");
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?2,1,1,0)", rusqlite::params![seat,target]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'host',1,1,0,'fresh','occupied','idle',?2,1,'term-'||?1,'inc','coherent_enumeration',1)", rusqlite::params![target,seat]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat,target]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'host',1,1,0,'fresh','occupied','idle',?2,1,'term-'||?1,'inc','coherent_enumeration',1)", rusqlite::params![target,seat]).unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,1,1,?2,'host',1,'codex',?1,?1,'fresh',0,0,'term-'||?2,'inc')", rusqlite::params![seat,target]).unwrap();
     db.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('thread',?1,'invited')",
         [&seat],
     )
     .unwrap();
-    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq) VALUES (?1,'thread',?1,1,'pending',0,100,100,1)", [&seat]).unwrap();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq,origin_node) VALUES (?1,'thread',?1,1,'pending',0,100,100,1,(SELECT id FROM local_node))", [&seat]).unwrap();
 }
 
 #[test]
@@ -2351,7 +2416,7 @@ fn sqlite_failed_completion_allows_peer_progress_and_preserves_join_guard() {
         due_calls: AtomicU64::new(0),
     };
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &failing,
         &notifier,
@@ -2428,7 +2493,7 @@ fn sqlite_repeated_completion_failures_keep_bounded_capacity_and_retry_work() {
         due_calls: AtomicU64::new(0),
     };
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &failing,
         &notifier,
@@ -2582,28 +2647,28 @@ fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication()
         mono: AtomicU64::new(0),
         utc: AtomicI64::new(0),
     });
-    let context = StoreContext::new(path.clone(), clock.clone());
+    let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
     let db = context.open_writer().unwrap();
     db.execute_batch("\
-        INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,101);\
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat','i','resolved','native','target',1,1,0);\
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','target','host',1,1,0,'fresh','occupied','idle','execution',1,'term-'||'target','inc','coherent_enumeration',1);\
+        UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=101;\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'target','host',1,1,0,'fresh','occupied','idle','execution',1,'term-'||'target','inc','coherent_enumeration',1);\
         INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('seat',1,1,'target','host',1,'codex','session','execution','fresh',0,0,'term-'||'target','inc');\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread','i','topic','goal',0,0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);\
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('thread','seat','invited');\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq) VALUES ('invite','thread','seat',1,'pending',0,100,100,1);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq,origin_node) VALUES ('invite','thread','seat',1,'pending',0,100,100,1,(SELECT id FROM local_node));\
     ").unwrap();
     for n in 1..=101 {
         let message = format!("m{n}");
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES (?1,'i','thread',?2,'ordinary','body',?2,0)", rusqlite::params![message,n]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','thread',?2,'ordinary','body',?2,0)", rusqlite::params![message,n]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'thread','seat',?2,100)", rusqlite::params![message,if n==101 {"pending"} else {"acked"}]).unwrap();
     }
     db.execute("INSERT INTO wake_work(seat_id,reason_bits,retry_step,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset) VALUES ('seat',3,1,30000,60000,'prior',?1,1,1,101,0)", [daemon_boot().to_string()]).unwrap();
     drop(db);
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(path.clone(), clock.clone()),
-            "i",
+            StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings {
                 daemon_boot: Some(daemon_boot()),
                 wake_batch_delay_ms: 0,
@@ -2612,9 +2677,10 @@ fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication()
         )
         .unwrap(),
     );
-    let ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)));
+    let ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)))
+        .for_host(crate::test_support::test_host_id());
     let host = SqliteTimingHost {
-        context: StoreContext::new(path.clone(), clock.clone()),
+        context: StoreContext::new(path.clone(), clock.clone()).with_test_host(),
         clock: clock.clone(),
         calls: Mutex::new(Vec::new()),
     };
@@ -2624,7 +2690,7 @@ fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication()
         due_calls: AtomicU64::new(0),
     };
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &ports,
         &dispatch,
@@ -2660,11 +2726,11 @@ fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication()
     // projection or any attention-version change.
     let db = context.open_writer().unwrap();
     db.execute_batch("\
-        UPDATE host_instances SET decision_seq=102 WHERE id='i';\
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p','i','actor','o',zeroblob(32),'thread',0,0,0,0,0,0,1,'sealed');\
+        UPDATE local_node SET decision_seq=102 WHERE id='34750f98bd59fcfc946da45aaabe933b';\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p','34750f98bd59fcfc946da45aaabe933b','actor','o',zeroblob(32),'thread',0,0,0,0,0,0,1,'sealed');\
         INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p','thread','seat',1,100,0);\
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('unprojected','i','thread',102,'ordinary','body',0,102);\
-        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('p','unprojected','i','thread',102,0,102,0,1,0);\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('unprojected','34750f98bd59fcfc946da45aaabe933b','thread',102,'ordinary','body',0,102);\
+        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('p','unprojected','34750f98bd59fcfc946da45aaabe933b','thread',102,0,102,0,1,0);\
     ").unwrap();
     drop(db);
     let published = scheduler.drive_wakes(&budget).unwrap();
@@ -2691,10 +2757,10 @@ fn sqlite_completed_frontier_shortens_retry_only_after_new_logical_publication()
         0
     );
     db.execute_batch("\
-        UPDATE host_instances SET decision_seq=103 WHERE id='i';\
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread2','i','topic','goal',0,0);\
+        UPDATE local_node SET decision_seq=103 WHERE id='34750f98bd59fcfc946da45aaabe933b';\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('thread2','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);\
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('thread2','seat','invited');\
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq) VALUES ('invite2','thread2','seat',1,'pending',0,100,100,103);\
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq,origin_node) VALUES ('invite2','thread2','seat',1,'pending',0,100,100,103,(SELECT id FROM local_node));\
     ").unwrap();
     drop(db);
     clock.utc.store(3_600_000, Ordering::SeqCst);
@@ -2860,7 +2926,7 @@ fn failed_reservation_never_calls_host_and_remains_discoverable() {
         events: events.clone(),
     };
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &store,
         &notifier,
@@ -2881,6 +2947,116 @@ fn failed_reservation_never_calls_host_and_remains_discoverable() {
         *events.lock().unwrap(),
         vec!["reserve", "reserve", "host", "complete"]
     );
+}
+
+/// A port whose first per-seat write answers `Conflict`, as the store does for
+/// a seat that moved to another host between discovery and reservation.
+struct ConflictFirst<'a> {
+    inner: &'a FakeWakeStore,
+    conflict_window: bool,
+    armed: AtomicBool,
+}
+impl WakePort for ConflictFirst<'_> {
+    fn clock(&self) -> &dyn Clock {
+        self.inner.clock()
+    }
+    fn wake_recovery_candidates(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<WakeRecoveryCandidate>, ApiError> {
+        self.inner.wake_recovery_candidates(page, budget)
+    }
+    fn recover_wake_reservation(
+        &self,
+        request: WakeRecoveryRequest,
+        budget: &CallBudget,
+    ) -> Result<WakeRecoveryOutcome, ApiError> {
+        self.inner.recover_wake_reservation(request, budget)
+    }
+    fn wake_candidates(
+        &self,
+        page: PageRequest,
+        budget: &CallBudget,
+    ) -> Result<Page<WakeCandidate>, ApiError> {
+        self.inner.wake_candidates(page, budget)
+    }
+    fn wake_batch_window(
+        &self,
+        candidate: &WakeCandidate,
+        budget: &CallBudget,
+    ) -> Result<Option<(UtcMillis, u64)>, ApiError> {
+        if self.conflict_window && self.armed.swap(false, Ordering::SeqCst) {
+            return Err(ApiError::new(ErrorCode::Conflict, "seat on another host"));
+        }
+        self.inner.wake_batch_window(candidate, budget)
+    }
+    fn reserve_wake(
+        &self,
+        candidate: &WakeCandidate,
+        budget: &CallBudget,
+    ) -> Result<Option<WakeReservation>, ApiError> {
+        if !self.conflict_window && self.armed.swap(false, Ordering::SeqCst) {
+            self.inner.events.lock().unwrap().push("reserve");
+            return Err(ApiError::new(ErrorCode::Conflict, "seat on another host"));
+        }
+        self.inner.reserve_wake(candidate, budget)
+    }
+    fn complete_wake(
+        &self,
+        attempt: WakeAttemptId,
+        outcome: WakeOutcome,
+        refused_restore: Option<&PriorLadder>,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        self.inner
+            .complete_wake(attempt, outcome, refused_restore, budget)
+    }
+}
+
+// Kills: a scheduler that propagates the per-seat `Conflict` (the whole pass
+// fails and the seat is retried as an error) or records it as a refusal (the
+// seat then backs off for the retry delay although nothing was attempted).
+#[test]
+fn conflict_seat_is_skipped_without_refusal() {
+    for conflict_window in [false, true] {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let base = FakeWakeStore {
+            clock: Arc::new(FakeClock(AtomicU64::new(0))),
+            events: events.clone(),
+            batch: None,
+            fail_reservation: AtomicBool::new(false),
+        };
+        let store = ConflictFirst {
+            inner: &base,
+            conflict_window,
+            armed: AtomicBool::new(true),
+        };
+        let notifier = FakeNotifier {
+            events: events.clone(),
+        };
+        let runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
+        let budget = CallBudget {
+            deadline: MonoInstant(5_000),
+            cancellation: Cancellation::default(),
+        };
+        assert_eq!(
+            runner.try_candidate(&due_candidate(), &budget).unwrap(),
+            None,
+            "a Conflict seat is skipped, not failed (window={conflict_window})"
+        );
+        assert!(
+            !events.lock().unwrap().contains(&"host"),
+            "a skipped seat is never prompted"
+        );
+        // No refusal and no delay was recorded: the seat is attempted at once
+        // when it comes back to this host.
+        assert_eq!(
+            runner.try_candidate(&due_candidate(), &budget).unwrap(),
+            Some(WakeOutcome::Submitted)
+        );
+        assert!(events.lock().unwrap().contains(&"host"));
+    }
 }
 
 struct CancelAfterReserve<'a>(&'a FakeWakeStore);
@@ -3002,9 +3178,13 @@ struct EpisodeReservationCheck {
 }
 impl ReservationCheck for EpisodeReservationCheck {
     fn is_current(&self, reservation: &WakeReservation, _: &CallBudget) -> Result<bool, ApiError> {
-        Ok(reservation
-            .attention_witness
-            .valid_at("i", &reservation.seat, 1, self.episode, false))
+        Ok(reservation.attention_witness.valid_at(
+            "34750f98bd59fcfc946da45aaabe933b",
+            &reservation.seat,
+            1,
+            self.episode,
+            false,
+        ))
     }
 }
 struct FakeNativeHost {
@@ -3652,25 +3832,31 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
             real: clock.clone(),
             frozen: AtomicU64::new(0),
         });
-        let context = StoreContext::new(path.clone(), store_clock.clone());
+        let context = StoreContext::new(path.clone(), store_clock.clone()).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,?1,1,10)", [observed.host_boot.as_str()]).unwrap();
+        db.execute(
+            "UPDATE herdr_hosts SET host_boot=?1,host_epoch=1",
+            [observed.host_boot.as_str()],
+        )
+        .unwrap();
+        db.execute("UPDATE local_node SET decision_seq=10", [])
+            .unwrap();
         db.execute_batch("\
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('a','i','resolved','native','w4:p9',1,1,0);\
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat','i','resolved','native','w4:p1',1,1,0);\
-            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,2);\
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native','w4:p9',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('seat','34750f98bd59fcfc946da45aaabe933b','resolved','native','w4:p1',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,2,0);\
             INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','a','joined',0);\
             INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','seat','joined',0);\
-            INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('m','i','t',1,'ordinary','a','handoff',0,5);\
+            INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('m','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary','a','handoff',0,5);\
             INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m','t','seat','pending',500,0,500);\
         ").unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','w4:p1',?1,1,1,0,'fresh','term_1',?2,'native_current_target',1)", rusqlite::params![observed.host_boot.as_str(), identity]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'w4:p1',?1,1,1,0,'fresh','term_1',?2,'native_current_target',1)", rusqlite::params![observed.host_boot.as_str(), identity]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES ('seat',1,1,'w4:p1',?1,0,'claude','session','self-reported','cooperative_top_level',0,0,'term_1',?2,?3,1)", rusqlite::params![observed.host_boot.as_str(), identity, std::process::id()]).unwrap();
         drop(db);
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(path.clone(), store_clock.clone()),
-                "i",
+                StoreContext::new(path.clone(), store_clock.clone()).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings {
                     daemon_boot: Some(daemon_boot()),
                     wake_batch_delay_ms: 0,
@@ -3679,10 +3865,11 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
             )
             .unwrap(),
         );
-        let ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)));
+        let ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)))
+            .for_host(crate::test_support::test_host_id());
         let dispatch = NativeWakeDispatcher::new(&cli, &ports, clock.as_ref());
         let scheduler = Scheduler::new(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             &ports,
             &ports,
             &dispatch,
@@ -3891,7 +4078,7 @@ fn drive_scripted_wake(
     };
     let dispatch = NativeWakeDispatcher::new(&host, &check, clock.as_ref());
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &wake,
         &dispatch,
@@ -4119,7 +4306,7 @@ fn refusals_back_off_without_climbing_the_ladder() {
     );
     let due = refusal_due_port();
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &failing,
         &notifier,
@@ -4295,7 +4482,7 @@ fn refusal_backoff_of_a_seat_that_left_the_listing_stops_reporting_a_due_time() 
     );
     let due = refusal_due_port();
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &unlisting,
         &notifier,
@@ -4330,7 +4517,7 @@ fn refused_warning_wake_is_retried_not_offered() {
     candidate.actionable_warning_generation = Some(1);
     candidate.actionable_warning_seq = Some(5);
     candidate.attention_witness = Some(WakeAttentionWitness::from_complete(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         SeatId::new("seat"),
         1,
         false,
@@ -4455,7 +4642,7 @@ fn pre_submit_prompt_error_restores_ladder_and_backs_off() {
     let (path, clock, context, store) = refusal_fixture();
     let failing = failing_store(&store, clock.as_ref());
     let host = SubmitErrHost(SqliteTimingHost {
-        context: StoreContext::new(path.clone(), clock.clone()),
+        context: StoreContext::new(path.clone(), clock.clone()).with_test_host(),
         clock: clock.clone(),
         calls: Mutex::new(vec![]),
     });
@@ -4463,7 +4650,7 @@ fn pre_submit_prompt_error_restores_ladder_and_backs_off() {
     let notifier = NativeWakeDispatcher::new(&host, &fence, clock.as_ref());
     let due = refusal_due_port();
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &failing,
         &notifier,
@@ -4505,8 +4692,8 @@ fn crash_between_reserve_and_complete_keeps_the_advanced_step() {
     // test shares.
     let crash_boot = uuid::Uuid::new_v4();
     let store = SqliteStore::new(
-        StoreContext::new(path.clone(), clock.clone()),
-        "i",
+        StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings {
             daemon_boot: Some(crash_boot),
             wake_batch_delay_ms: 0,
@@ -4519,7 +4706,7 @@ fn crash_between_reserve_and_complete_keeps_the_advanced_step() {
     let due = refusal_due_port();
     {
         let scheduler = Scheduler::new(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             &due,
             &failing,
             &notifier,
@@ -4544,8 +4731,8 @@ fn crash_between_reserve_and_complete_keeps_the_advanced_step() {
     clock.mono.store(100_000, Ordering::SeqCst);
     let recovery_boot = uuid::Uuid::new_v4();
     let reopened = SqliteStore::new(
-        StoreContext::new(path.clone(), clock.clone()),
-        "i",
+        StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings {
             daemon_boot: Some(recovery_boot),
             wake_batch_delay_ms: 0,
@@ -4555,7 +4742,7 @@ fn crash_between_reserve_and_complete_keeps_the_advanced_step() {
     .unwrap();
     let failing = failing_store(&reopened, clock.as_ref());
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &failing,
         &notifier,
@@ -4630,7 +4817,7 @@ fn fence_miss_restores_nothing_and_keeps_memory_consistent() {
             Ok(WakeOutcome::Submitted),
         ],
     );
-    let invalidating = StoreContext::new(path.clone(), clock.clone());
+    let invalidating = StoreContext::new(path.clone(), clock.clone()).with_test_host();
     *notifier.hook.lock().unwrap() = Some(Box::new(move || {
         // The mark-unresolved path's wake_work write.
         invalidating
@@ -4644,7 +4831,7 @@ fn fence_miss_restores_nothing_and_keeps_memory_consistent() {
     }));
     let due = refusal_due_port();
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &failing,
         &notifier,
@@ -4707,7 +4894,7 @@ fn outcome_unknown_from_an_unsent_prompt_keeps_the_step_and_ignores_the_refusal_
     );
     let due = refusal_due_port();
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &failing,
         &notifier,
@@ -6217,7 +6404,7 @@ fn with_scheduler<H: HostPort, R>(
     };
     let dispatcher = NativeWakeDispatcher::new(host, &check, store.clock.as_ref());
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         store,
         &dispatcher,
@@ -8231,7 +8418,7 @@ fn durable_batch_cleanup_pages_untracked_windows_and_requeues_failed_check() {
     };
     let notifier = CompletionNotifier(Mutex::new(Vec::new()));
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         &due,
         &store,
         &notifier,

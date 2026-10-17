@@ -270,7 +270,7 @@ enum OpenError {
 /// Connect, send the registration frame and read the reply.
 fn open_watch(
     socket: &Path,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     claim: CallerClaim,
     presentation_v2: bool,
 ) -> Result<(WatchReply, SocketConn), OpenError> {
@@ -334,7 +334,7 @@ pub(crate) struct WatchSession<'a> {
     pub client: &'a dyn LocalClient,
     pub clock: &'a dyn Clock,
     pub socket: &'a Path,
-    pub instance: uuid::Uuid,
+    pub instance: crate::node::NodeUuid,
     pub claim: CallerClaim,
     pub hint_path: Option<PathBuf>,
 }
@@ -868,7 +868,7 @@ fn record_truncated(state: &EmitState, id: &str) {
 }
 
 /// `<instance dir>/contexts/watch-truncated-<seat>.ids`
-fn hint_path(paths: &crate::daemon::paths::InstancePaths, seat: &SeatId) -> PathBuf {
+fn hint_path(paths: &crate::daemon::paths::NodePaths, seat: &SeatId) -> PathBuf {
     let name: String = seat
         .as_str()
         .chars()
@@ -881,7 +881,7 @@ fn hint_path(paths: &crate::daemon::paths::InstancePaths, seat: &SeatId) -> Path
         })
         .collect();
     paths
-        .instance_dir
+        .node_dir
         .join("contexts")
         .join(format!("watch-truncated-{name}.ids"))
 }
@@ -1054,13 +1054,13 @@ fn locate_claim<C, F>(
     session: &str,
     caller_pane: Option<&str>,
     context: &crate::daemon::paths::RuntimeContext,
-    paths: &crate::daemon::paths::InstancePaths,
+    paths: &crate::daemon::paths::NodePaths,
     connection: &LazyConnection<C, F>,
     clock: &Arc<dyn Clock>,
-) -> Result<(CallerClaim, SeatId, uuid::Uuid), CallerFailure>
+) -> Result<(CallerClaim, SeatId, crate::node::NodeUuid), CallerFailure>
 where
     C: LocalClient,
-    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
 {
     let (instance, client) = connection.get().map_err(|_| CallerFailure::Daemon)?;
     let origin = watch_origin(parsed, session);
@@ -1096,12 +1096,14 @@ where
             &selection.target,
             generation,
         );
-        let claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+        let host = context.claim_host().map_err(|_| CallerFailure::Other)?;
+        let claim = bridge::caller_claim(&current, host).map_err(|_| CallerFailure::NoBinding)?;
         let claim = own_session_claim(claim, session, Some(env.fingerprint))?;
         return Ok((claim, selection.seat, *instance));
     }
-    let contexts =
-        seat_contexts(paths, *instance, &selection.seat).map_err(|_| CallerFailure::Other)?;
+    let host = context.claim_host().map_err(|_| CallerFailure::Other)?;
+    let contexts = seat_contexts(paths, *instance, &host, &selection.seat)
+        .map_err(|_| CallerFailure::Other)?;
     let current = contexts
         .current()
         .map_err(|_| CallerFailure::Other)?
@@ -1112,7 +1114,7 @@ where
     ) {
         return Err(CallerFailure::NoPushChannel);
     }
-    let claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+    let claim = bridge::caller_claim(&current, host).map_err(|_| CallerFailure::NoBinding)?;
     let claim = own_session_claim(claim, session, None)?;
     Ok((claim, selection.seat, *instance))
 }
@@ -1143,14 +1145,14 @@ pub(super) fn run_watch<C, F, W>(
     request: &WatchRequest,
     caller_pane: Option<&str>,
     context: &crate::daemon::paths::RuntimeContext,
-    paths: &crate::daemon::paths::InstancePaths,
+    paths: &crate::daemon::paths::NodePaths,
     connection: &LazyConnection<C, F>,
     clock: &Arc<dyn Clock>,
     writer: &mut W,
 ) -> Result<(), RunError>
 where
     C: LocalClient,
-    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
     W: Write,
 {
     let mut state = EmitState::default();
@@ -1188,7 +1190,7 @@ where
     // environment, as for the hooks) would reach decides the marker's selectors.
     let command_prefix = super::hook::cli_prefix(&super::hook::pane_selectors(
         Some(&context.state_dir),
-        Some(&context.host_endpoint),
+        context.host_endpoint.as_deref(),
         &super::hook::pane_inputs(),
     ));
     let code = run_session_marked(
@@ -1214,14 +1216,14 @@ pub(super) fn run_ack<C, F, W>(
     request: &WatchAckRequest,
     caller_pane: Option<&str>,
     context: &crate::daemon::paths::RuntimeContext,
-    paths: &crate::daemon::paths::InstancePaths,
+    paths: &crate::daemon::paths::NodePaths,
     connection: &LazyConnection<C, F>,
     clock: &Arc<dyn Clock>,
     writer: &mut W,
 ) -> Result<(), RunError>
 where
     C: LocalClient,
-    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
     W: Write,
 {
     let Ok((claim, seat, _)) = locate_claim(

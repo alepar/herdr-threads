@@ -65,8 +65,8 @@ impl Fx {
         let path = iso.state_root().join("store.db");
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(path.clone(), Arc::new(FixedClock)),
-                "i",
+                StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings::default(),
             )
             .unwrap(),
@@ -87,17 +87,14 @@ impl Fx {
             worker,
         };
         let db = fx.raw();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
-            [],
-        )
-        .unwrap();
+        db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
         fx.seat("s");
         fx
     }
 
     fn raw(&self) -> Connection {
-        let db = Connection::open(&self.path).unwrap();
+        let db = crate::test_support::open_test_connection(&self.path);
         db.busy_timeout(Duration::from_secs(5)).unwrap();
         db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
         db
@@ -108,12 +105,12 @@ impl Fx {
         let db = self.raw();
         let target = format!("p-{id}");
         db.execute(
-            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_open) VALUES (?1,'i','resolved','native',?2,0,1,0,0)",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_open,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?2,0,1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
             rusqlite::params![id, target],
         )
         .unwrap();
         db.execute(
-            "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('i',?1,'b',1,1,1,'fresh')",
+            "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,1,'fresh')",
             [&target],
         )
         .unwrap();
@@ -577,7 +574,7 @@ fn held_unresolved_or_retired_seats_are_skipped() {
     )
     .unwrap();
     db.execute(
-        "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','p-s','b',1,'restore')",
+        "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'p-s','b',1,'restore')",
         [],
     )
     .unwrap();

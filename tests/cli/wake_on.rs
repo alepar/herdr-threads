@@ -55,6 +55,7 @@ fn wire_shapes_round_trip_and_wake_on_is_snake_case() {
     assert_eq!(serde_json::to_value(WakeOn::All).unwrap(), "all");
     assert_eq!(WakeOn::default(), WakeOn::Nudge);
     let claim = crate::protocol::authority::CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "i".into(),
         seat: SeatId::new("s"),
         binding_generation: 1,

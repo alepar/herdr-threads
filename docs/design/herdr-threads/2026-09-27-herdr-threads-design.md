@@ -21,7 +21,7 @@ The [adopted shared-contract amendment, revision 4](shared-contract-amendment-ad
 
 ## Product boundaries
 
-One local Herdr instance, across its workspaces and Git worktrees. Initial harness integrations are native Codex and Claude Code. Preserve native PTYs, approvals, and the user's other hooks and sessions. No cross-machine federation, automatic work-completion inference, or plugin-run model summaries. The release target is alepar/herdr-threads with a valid herdr-plugin.toml, suitable for herdr.dev/plugins/ discovery.
+One local Herdr instance, across its workspaces and Git worktrees. Initial harness integrations are native Codex and Claude Code. Preserve native PTYs, approvals, and the user's other hooks and sessions. No cross-machine federation in this design (cross-machine sync between nodes was later designed as an extension; see [cross-node sync](../../superpowers/runs/2026-10-14-cross-node-sync/2026-10-14-cross-node-sync-design.md) and the [trust policy's](../../../TRUST-POLICY.md) cross-node section), no automatic work-completion inference, or plugin-run model summaries. The release target is alepar/herdr-threads with a valid herdr-plugin.toml, suitable for herdr.dev/plugins/ discovery.
 
 A thread starts with an explicit topic/purpose/goal. Its participants update the topic as scope evolves and archive when done. Any joined seat can invite, edit the topic, archive or reopen. All control changes retain actor and timestamp; there is no special creator-admin role. When no joined seats remain, expose the thread as orphaned without changing its goal or archive state. An explicit local-user operator invitation can restore the normal invitation/acceptance path; only the target's later verified acceptance grants joined authority.
 

@@ -31,7 +31,7 @@ use super::{
     seat_selector::{self, Narrowing},
 };
 use crate::{
-    daemon::paths::InstancePaths,
+    daemon::paths::{NodePaths, RuntimeContext},
     host::observation::HostTopology,
     ports::LocalClient,
     protocol::{
@@ -213,7 +213,7 @@ pub(crate) fn resolve_cli_seats<C, F, W>(
 ) -> Result<DeferredSeats, RunError>
 where
     C: LocalClient,
-    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
     W: Write,
 {
     if parsed.seat_selectors.is_empty() {
@@ -304,7 +304,7 @@ fn check_direct_ack_before_allocation<C, F>(
 ) -> Result<(), RunError>
 where
     C: LocalClient,
-    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
 {
     if !matches!(
         &parsed.action,
@@ -351,14 +351,15 @@ where
 pub(crate) fn allocate_deferred_seats<C, F, W>(
     deferred: DeferredSeats,
     parsed: &mut ParsedCli,
-    paths: &InstancePaths,
+    context: &RuntimeContext,
+    paths: &NodePaths,
     connection: &LazyConnection<C, F>,
     clock: &Arc<dyn Clock>,
     stderr: &mut W,
 ) -> Result<(), RunError>
 where
     C: LocalClient,
-    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
     W: Write,
 {
     if deferred.entries.is_empty() {
@@ -372,6 +373,7 @@ where
             Some(seat) => seat.clone(),
             None => {
                 let seat = super::allocate_recipient_seat(
+                    context,
                     paths,
                     instance,
                     client,
@@ -424,7 +426,7 @@ fn write_resolved_line<W: Write>(
 impl<C, F, W, T, L> Stage<'_, C, F, W, T, L>
 where
     C: LocalClient,
-    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
     W: Write,
     T: FnOnce() -> Result<HostTopology, ApiError>,
     L: FnOnce() -> Result<Option<HostTargetId>, ApiError>,

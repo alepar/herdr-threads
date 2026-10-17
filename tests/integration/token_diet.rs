@@ -9,7 +9,7 @@ use super::sweep::{FakeHost, Scratch, pane};
 use serde_json::{Value, json};
 #[path = "../support/lazy_proxy.rs"]
 pub(super) mod lazy_proxy;
-use herdr_threads::daemon::paths::{InstancePaths, RuntimeContext};
+use herdr_threads::daemon::paths::{NodePaths, RuntimeContext};
 use std::sync::atomic::Ordering;
 use std::{fs, os::unix::fs::DirBuilderExt, path::PathBuf, process::Command};
 
@@ -111,7 +111,7 @@ fn split_p0_rows(text: &str) -> (Vec<&str>, &str) {
     while let Some(row) = rest.strip_prefix("[p0] ") {
         let (id, tail) = row.split_once('\n').expect("annotation row ends");
         assert!(
-            herdr_threads::protocol::ids::is_short_public_id(
+            herdr_threads::protocol::ids::is_public_id(
                 herdr_threads::protocol::ids::prefix::MESSAGE,
                 id,
             ),
@@ -239,8 +239,10 @@ fn agent_facing_machine_text_is_compact() {
     // Retain the legacy compact byte contract on supported wire6 with
     // pre-lazy capabilities. Current v2 machine bodies are covered separately.
     let inbox = {
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(plugin.state.clone(), plugin.host.clone(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(plugin.state.clone(), plugin.host.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
         let proxy = lazy_proxy::Proxy::new(paths, &root);
@@ -329,7 +331,7 @@ fn agent_facing_machine_text_is_compact() {
     let message_id = lines[2].split_whitespace().nth(1).unwrap();
     assert!(
         lines[2].starts_with("#23 ")
-            && herdr_threads::protocol::ids::is_short_public_id(
+            && herdr_threads::protocol::ids::is_public_id(
                 herdr_threads::protocol::ids::prefix::MESSAGE,
                 message_id,
             )
@@ -346,7 +348,7 @@ fn agent_facing_machine_text_is_compact() {
         .map(|(id, _)| id)
         .unwrap();
     assert!(
-        herdr_threads::protocol::ids::is_short_public_id(
+        herdr_threads::protocol::ids::is_public_id(
             herdr_threads::protocol::ids::prefix::MESSAGE,
             clipped_id,
         ),
@@ -415,7 +417,7 @@ fn agent_facing_machine_text_is_compact() {
     assert!(
         pending.lines().skip(1).all(|l| {
             l.split_whitespace().next().is_some_and(|id| {
-                herdr_threads::protocol::ids::is_short_public_id(
+                herdr_threads::protocol::ids::is_public_id(
                     herdr_threads::protocol::ids::prefix::MESSAGE,
                     id,
                 )
@@ -523,10 +525,14 @@ fn agent_facing_machine_text_is_compact() {
         assert!(read.starts_with("[p0] "), "read {bound}: {read}");
         assert!(read.contains(&probe), "read {bound}: {read}");
     }
-    // A one-hit search page needs 574 bytes from the daemon even unannotated
-    // (`search match cannot fit`, required minimum 574), so search is measured from
-    // there: the `[p0]` row never pushes a fitting page into a refusal.
-    for bound in [574, 575, 589, 600] {
+    // A one-hit search page needs 592 bytes from the daemon even unannotated
+    // (`search match cannot fit`, required minimum 592; 574 on 8-character ids, and the
+    // 3-character node tag adds 18 bytes over its 6 id occurrences: message, the
+    // `preview_detail` body argv, author, event_author, thread and the continuation's
+    // `--thread`), so search is measured from there: minimum, minimum + 1, minimum + the
+    // 18-byte `[p0] <id>\n` row, and a roomier bound. The `[p0]` row never pushes a
+    // fitting page into a refusal.
+    for bound in [592, 593, 610, 618] {
         let bound_arg = bound.to_string();
         let search = plugin.text(
             Some(hatter),

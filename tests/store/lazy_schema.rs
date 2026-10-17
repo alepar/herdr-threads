@@ -1,34 +1,6 @@
 use herdr_threads::{protocol::time::UtcMillis, store::schema};
 use rusqlite::Connection;
 
-#[test]
-fn lazy_schema_upgrade25_defaults_existing_messages_to_ordinary() {
-    let db = Connection::open_in_memory().unwrap();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let mut paths = std::fs::read_dir(root)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .collect::<Vec<_>>();
-    paths.sort();
-    for path in paths.into_iter().take(25) {
-        db.execute_batch(&std::fs::read_to_string(path).unwrap())
-            .unwrap();
-    }
-    db.execute_batch("PRAGMA user_version=25; INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at) VALUES('m','i','t',1,'ordinary',1,'old',0)").unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
-    assert_eq!(
-        db.query_row("SELECT delivery_mode FROM messages WHERE id='m'", [], |r| r
-            .get::<_, String>(0))
-            .unwrap(),
-        "ordinary"
-    );
-    assert_eq!(
-        db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
-            .unwrap(),
-        schema::LATEST_VERSION
-    );
-}
-
 use herdr_threads::{
     protocol::{
         commands::DeliveryMode,
@@ -45,15 +17,15 @@ fn fixture() -> Connection {
     db
 }
 fn stage(db: &Connection, n: i64) {
-    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1)",[format!("prep-{n}")]).unwrap();
+    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1)",[format!("prep-{n}")]).unwrap();
     db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES(?1,?2,'t','s')",params![format!("prep-{n}"),format!("msg-{n}")]).unwrap();
 }
 fn publish(db: &Connection, n: i64) {
     publish_at(db, n, n);
 }
 fn publish_at(db: &Connection, n: i64, decision: i64) {
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES(?1,'i','t',?2,'ordinary',?3,'passive',0,'lazy',1)",params![format!("msg-{n}"),n,decision]).unwrap();
-    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'i','t',?4,0,?3,0,1,0)",params![format!("prep-{n}"),format!("msg-{n}"),n,decision]).unwrap();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','t',?2,'ordinary',?3,'passive',0,'lazy',1)",params![format!("msg-{n}"),n,decision]).unwrap();
+    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'34750f98bd59fcfc946da45aaabe933b','t',?4,0,?3,0,1,0)",params![format!("prep-{n}"),format!("msg-{n}"),n,decision]).unwrap();
     // note_published: the decision is copied onto the delivery row exactly once.
     db.execute(
         "UPDATE lazy_recipients SET decision_seq=?2 WHERE preparation_id=?1 AND decision_seq IS NULL",
@@ -61,7 +33,7 @@ fn publish_at(db: &Connection, n: i64, decision: i64) {
     )
     .unwrap();
     db.execute(
-        "UPDATE host_instances SET decision_seq=max(decision_seq,?1) WHERE id='i'",
+        "UPDATE local_node SET decision_seq=max(decision_seq,?1) WHERE id='34750f98bd59fcfc946da45aaabe933b'",
         [decision],
     )
     .unwrap();
@@ -108,7 +80,16 @@ fn lazy_schema_rejects_identity_and_mode_rewrites() {
 fn drain(db: &Connection, seat: &SeatId, dh: u64) -> (Vec<MessageId>, usize) {
     let (mut after, mut seen, mut work) = (None, Vec::new(), 0);
     loop {
-        let seek = seek_pending(db, "i", seat, RowFilter::Seat, after, dh, 37).unwrap();
+        let seek = seek_pending(
+            db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            seat,
+            RowFilter::Seat,
+            after,
+            dh,
+            37,
+        )
+        .unwrap();
         work += seek.visited;
         seen.extend(seek.row.map(|(_, recipient)| recipient.message));
         after = seek.position;
@@ -128,7 +109,7 @@ fn lazy_pending_scan_bounds_unpublished_work() {
     // Staged rows carry no decision_seq: the seek never visits one.
     assert_eq!(drain(&db, &seat, 1_000_000), (vec![], 0));
     publish(&db, 1200);
-    let dh = lazy_delivery::capture_high_water(&db, "i", &seat, None)
+    let dh = lazy_delivery::capture_high_water(&db, "34750f98bd59fcfc946da45aaabe933b", &seat, None)
         .unwrap()
         .publication_decision as u64;
     stage(&db, 1201);
@@ -193,8 +174,14 @@ fn lazy_pending_scan_skips_large_displayed_history() {
     assert_eq!(work, 1);
     let tx = db.transaction().unwrap();
     for _ in 0..2 {
-        lazy_delivery::complete_for_binding(&tx, "i", &seat, None, &[MessageId::new("msg-1200")])
-            .unwrap();
+        lazy_delivery::complete_for_binding(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &seat,
+            None,
+            &[MessageId::new("msg-1200")],
+        )
+        .unwrap();
     }
     tx.commit().unwrap();
     assert_eq!(drain(&db, &seat, 1200), (vec![], 0));
@@ -206,7 +193,12 @@ fn lazy_mode_lookup_is_exact_and_instance_scoped() {
     stage(&db, 1);
     publish(&db, 1);
     assert_eq!(
-        lazy_delivery::recorded_mode(&db, "i", &MessageId::new("msg-1")).unwrap(),
+        lazy_delivery::recorded_mode(
+            &db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &MessageId::new("msg-1")
+        )
+        .unwrap(),
         Some(DeliveryMode::Lazy)
     );
     assert_eq!(
@@ -214,7 +206,12 @@ fn lazy_mode_lookup_is_exact_and_instance_scoped() {
         None
     );
     assert_eq!(
-        lazy_delivery::recorded_mode(&db, "i", &MessageId::new("msg-")).unwrap(),
+        lazy_delivery::recorded_mode(
+            &db,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &MessageId::new("msg-")
+        )
+        .unwrap(),
         None
     );
     assert!(lazy_delivery::capture_high_water(&db, "other", &SeatId::new("s"), None).is_err());
@@ -259,7 +256,12 @@ fn lazy_schema_audit_rejects_missing_or_altered_guards() {
                 .unwrap();
             }
             assert!(
-                schema::initialize(&db, || UtcMillis(0)).is_err(),
+                schema::initialize(
+                    &db,
+                    || UtcMillis(0),
+                    &herdr_threads::test_support::test_node_seed()
+                )
+                .is_err(),
                 "{guard} altered={altered}"
             );
         }
@@ -267,7 +269,14 @@ fn lazy_schema_audit_rejects_missing_or_altered_guards() {
     let db = fixture();
     db.execute_batch("DROP INDEX lazy_recipients_pending_seat_ordinal")
         .unwrap();
-    assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
+    assert!(
+        schema::initialize(
+            &db,
+            || UtcMillis(0),
+            &herdr_threads::test_support::test_node_seed()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -294,7 +303,12 @@ fn priority_schema_audit_rejects_missing_or_altered_objects() {
                 .unwrap();
             }
             assert!(
-                schema::initialize(&db, || UtcMillis(0)).is_err(),
+                schema::initialize(
+                    &db,
+                    || UtcMillis(0),
+                    &herdr_threads::test_support::test_node_seed()
+                )
+                .is_err(),
                 "{guard} altered={altered}"
             );
         }
@@ -314,7 +328,12 @@ fn priority_schema_audit_rejects_missing_or_altered_objects() {
                 .unwrap();
             }
             assert!(
-                schema::initialize(&db, || UtcMillis(0)).is_err(),
+                schema::initialize(
+                    &db,
+                    || UtcMillis(0),
+                    &herdr_threads::test_support::test_node_seed()
+                )
+                .is_err(),
                 "{index} altered={altered}"
             );
         }
@@ -327,7 +346,12 @@ fn priority_schema_audit_rejects_missing_or_altered_objects() {
                 .unwrap();
         }
         assert!(
-            schema::initialize(&db, || UtcMillis(0)).is_err(),
+            schema::initialize(
+                &db,
+                || UtcMillis(0),
+                &herdr_threads::test_support::test_node_seed()
+            )
+            .is_err(),
             "binding_row_displays altered={altered}"
         );
     }
@@ -352,7 +376,7 @@ fn lazy_cleanup_is_bounded_and_preserves_published_rows() {
     assert_eq!(
         lazy_delivery::lazy_completion_state(
             &tx,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &SeatId::new("s"),
             None,
             &MessageId::new("msg-1")
@@ -380,7 +404,10 @@ fn lazy_addressed_completion_uses_exact_index_even_after_display() {
         ))
         .unwrap();
     let plan = stmt
-        .query_map(params!["s", "msg-1", "i"], |r| r.get::<_, String>(3))
+        .query_map(
+            params!["s", "msg-1", "34750f98bd59fcfc946da45aaabe933b"],
+            |r| r.get::<_, String>(3),
+        )
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
@@ -395,11 +422,24 @@ fn lazy_addressed_completion_uses_exact_index_even_after_display() {
     let tx = db.transaction().unwrap();
     let (seat, message) = (SeatId::new("s"), MessageId::new("msg-1"));
     for _ in 0..2 {
-        lazy_delivery::complete_for_binding(&tx, "i", &seat, None, std::slice::from_ref(&message))
-            .unwrap();
+        lazy_delivery::complete_for_binding(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &seat,
+            None,
+            std::slice::from_ref(&message),
+        )
+        .unwrap();
     }
     assert_eq!(
-        lazy_delivery::lazy_completion_state(&tx, "i", &seat, None, &message).unwrap(),
+        lazy_delivery::lazy_completion_state(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &seat,
+            None,
+            &message
+        )
+        .unwrap(),
         lazy_delivery::LazyCompletion::Completed
     );
     assert_eq!(
@@ -413,13 +453,13 @@ fn lazy_source_guards_pin_existing_preparation_message_derivation() {
     let db = fixture();
     stage(&db, 1);
     assert!(db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','wrong','t','s')",[]).is_err());
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('q','i','resolved','native','q',1,0,0)",[]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES('q','34750f98bd59fcfc946da45aaabe933b','resolved','native','q',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
     assert!(db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','wrong','t','q')",[]).is_err());
-    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES('pABCDEFGH','i','scope','compact',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1)",[]).unwrap();
-    db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('pABCDEFGH','mABCDEFGH','t','s')",[]).unwrap();
-    assert!(db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('pABCDEFGH','mABCDEFG!', 't','q')",[]).is_err());
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES('wrong','i','t',1,'ordinary',1,'passive',0,'lazy',1)",[]).unwrap();
-    assert!(db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-1','wrong','i','t',1,0,1,0,1,0)",[]).is_err());
+    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES('pTstABCDEFGH','34750f98bd59fcfc946da45aaabe933b','scope','compact',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1)",[]).unwrap();
+    db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('pTstABCDEFGH','mTstABCDEFGH','t','s')",[]).unwrap();
+    assert!(db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('pTstABCDEFGH','mTstABCDEFG!', 't','q')",[]).is_err());
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES('wrong','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',1,'passive',0,'lazy',1)",[]).unwrap();
+    assert!(db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('prep-1','wrong','34750f98bd59fcfc946da45aaabe933b','t',1,0,1,0,1,0)",[]).is_err());
 }
 
 #[test]
@@ -427,7 +467,7 @@ fn lazy_cleanup_large_preparation_advances_bounded_units() {
     let mut db = fixture();
     stage(&db, 1);
     for n in 1..=300 {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES(?1,'i','resolved','native',?1,1,0,0)",[format!("seat{n}")]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[format!("seat{n}")]).unwrap();
         db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','msg-1','t',?1)",[format!("seat{n}")]).unwrap();
     }
     let tx = db.transaction().unwrap();
@@ -449,22 +489,6 @@ fn lazy_cleanup_large_preparation_advances_bounded_units() {
     assert_eq!(after, high);
 }
 
-fn v46_database() -> Connection {
-    let db = Connection::open_in_memory().unwrap();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let mut paths = std::fs::read_dir(root)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .collect::<Vec<_>>();
-    paths.sort();
-    for path in paths.into_iter().take(46) {
-        db.execute_batch(&std::fs::read_to_string(path).unwrap())
-            .unwrap();
-    }
-    db.execute_batch("PRAGMA user_version=46").unwrap();
-    db
-}
-const SEAT_ROW: &str = "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES";
 const PREPARATION_COLUMNS: &str = "id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode";
 const MANIFEST_COLUMNS: &str = "preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count";
 
@@ -480,9 +504,12 @@ fn plan(db: &Connection, sql: &str, args: &[&dyn rusqlite::ToSql]) -> Vec<String
 }
 
 #[test]
-fn priority_schema_fresh_database_has_audited_shape() {
+fn priority_schema_fresh_node_baseline_has_the_audited_v47_shape() {
     let db = fixture();
-    assert_eq!(scalar(&db, "PRAGMA user_version"), schema::LATEST_VERSION);
+    assert_eq!(
+        scalar(&db, "PRAGMA user_version"),
+        schema::NODE_SCHEMA_VERSION
+    );
     for (table, column, not_null, default) in [
         ("messages", "priority", 1, Some("0")),
         ("send_preparations", "priority", 1, Some("0")),
@@ -521,192 +548,6 @@ fn priority_schema_fresh_database_has_audited_shape() {
             "{name}"
         );
     }
-}
-
-#[test]
-fn priority_schema_upgrade46_backfills_priority_threshold_and_publication() {
-    let db = v46_database();
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);").unwrap();
-    db.execute_batch(&format!("{SEAT_ROW} ('a','i','resolved','native','a',1,0,0),('n','i','resolved','native','n',1,0,0),('w','i','resolved','native','w',1,0,0); UPDATE seats SET wake_on='all' WHERE id='a'; UPDATE seats SET wake_on='nudge' WHERE id='n'")).unwrap();
-    // Ordinary message with its preparation.
-    db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS}) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','ordinary'); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('msg-1','i','t',1,'ordinary',1,'plain',0,'ordinary')")).unwrap();
-    // Published lazy message at decision 7, and a staged lazy preparation.
-    db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS}) VALUES('prep-2','i','scope','prep-2',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy'),('prep-3','i','scope','prep-3',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy'); INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-2','msg-2','t','a'),('prep-3','msg-3','t','a'); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('msg-2','i','t',2,'ordinary',7,'passive',0,'lazy'); INSERT INTO send_manifests({MANIFEST_COLUMNS}) VALUES('prep-2','msg-2','i','t',7,0,2,0,1,0)")).unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
-    assert_eq!(scalar(&db, "PRAGMA user_version"), schema::LATEST_VERSION);
-    let pair = |sql: &str| -> Vec<(String, i64)> {
-        db.prepare(sql)
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
-    };
-    assert_eq!(
-        pair("SELECT id,priority FROM messages ORDER BY id"),
-        [("msg-1".into(), 0), ("msg-2".into(), 1)]
-    );
-    assert_eq!(
-        pair("SELECT id,priority FROM send_preparations ORDER BY id"),
-        [
-            ("prep-1".into(), 0),
-            ("prep-2".into(), 1),
-            ("prep-3".into(), 1)
-        ]
-    );
-    assert_eq!(
-        pair("SELECT message_id,priority FROM lazy_recipients ORDER BY message_id"),
-        [("msg-2".into(), 1), ("msg-3".into(), 1)]
-    );
-    assert_eq!(
-        scalar(
-            &db,
-            "SELECT decision_seq FROM lazy_recipients WHERE message_id='msg-2'"
-        ),
-        7
-    );
-    assert_eq!(
-        scalar(
-            &db,
-            "SELECT decision_seq IS NULL FROM lazy_recipients WHERE message_id='msg-3'"
-        ),
-        1
-    );
-    assert_eq!(
-        pair("SELECT id,nudge_threshold FROM seats ORDER BY id"),
-        [("a".into(), -1), ("n".into(), 0), ("w".into(), 0)]
-    );
-    assert_eq!(
-        scalar(
-            &db,
-            "SELECT count(*) FROM lazy_recipients r JOIN send_preparations p ON p.id=r.preparation_id WHERE r.priority<>p.priority"
-        ),
-        0
-    );
-    let catalog = || -> Vec<(String, String, Option<String>)> {
-        db.prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
-    };
-    let before = catalog();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
-    assert_eq!(catalog(), before);
-    assert_eq!(scalar(&db, "PRAGMA user_version"), schema::LATEST_VERSION);
-    assert_eq!(
-        pair("SELECT id,priority FROM messages ORDER BY id"),
-        [("msg-1".into(), 0), ("msg-2".into(), 1)]
-    );
-}
-
-fn in_flight_rows(db: &Connection) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
-    [
-        "receipts",
-        "receipt_state",
-        "invitations",
-        "requirement_episodes",
-        "digest_pending_invitations",
-        "presentation_confirming_invitations",
-        "warning_conditions",
-        "wake_work",
-        "direct_threads",
-        "memberships",
-    ]
-    .into_iter()
-    .map(|table| {
-        let stmt = db.prepare(&format!("SELECT * FROM {table}")).unwrap();
-        let columns = stmt.column_count();
-        let order = (1..=columns)
-            .map(|n| n.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        drop(stmt);
-        let mut stmt = db
-            .prepare(&format!("SELECT * FROM {table} ORDER BY {order}"))
-            .unwrap();
-        let rows = stmt
-            .query_map([], |r| (0..columns).map(|n| r.get(n)).collect())
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        (table.to_owned(), rows)
-    })
-    .collect()
-}
-
-/// The v47 backfill seeds `binding_pending` from the unread predicate (ht-yha.44); kept here with the other
-/// v46 -> v47 upgrade tests, whose store fixtures it reuses.
-#[test]
-fn priority_schema_upgrade46_seeds_the_binding_pending_views() {
-    let db = v46_database();
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);").unwrap();
-    db.execute_batch(&format!(
-        "{SEAT_ROW} ('a','i','resolved','native','a',1,0,0),('s','i','resolved','native','s',1,0,0)"
-    ))
-    .unwrap();
-    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES('t','s','joined','joined',0)").unwrap();
-    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,binding_id) VALUES('s',1,'s','boot',1,'h','sess','exec','test',0,'bind-1'),('s',2,'s','boot',1,'h','sess2','exec2','test',0,'bind-2'); UPDATE occupant_bindings SET ended_at=9,liveness='disconnected',disconnected_at=9,disconnect_reason='liveness_process_exit' WHERE binding_id='bind-2'").unwrap();
-    db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS}) VALUES('prep-2','i','scope','prep-2',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy'); INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-2','msg-2','t','s'); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('msg-2','i','t',2,'ordinary',7,'passive',0,'lazy'); INSERT INTO send_manifests({MANIFEST_COLUMNS}) VALUES('prep-2','msg-2','i','t',7,0,2,0,1,0)")).unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
-    let rows = |binding: &str| -> Vec<(String, i64, i64)> {
-        db.prepare("SELECT r.message_id,p.priority,p.decision_seq FROM binding_pending p JOIN lazy_recipients r ON r.ordinal=p.ordinal WHERE p.binding_id=?1")
-            .unwrap()
-            .query_map([binding], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
-    };
-    assert_eq!(rows("bind-1"), [("msg-2".to_owned(), 1, 7)]);
-    assert!(rows("bind-2").is_empty(), "an ended binding has no view");
-}
-
-#[test]
-fn priority_schema_upgrade46_leaves_in_flight_state_as_recorded() {
-    let db = v46_database();
-    db.execute_batch("INSERT INTO host_instances(id,created_at,decision_seq) VALUES('i',0,1000); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0),('pair','i','topic','goal',0,0);").unwrap();
-    db.execute_batch(&format!("{SEAT_ROW} ('s1','i','resolved','native','s1',1,0,0),('s2','i','resolved','native','s2',1,0,0)")).unwrap();
-    // Pending receipt owed with a deadline, and its overdue warning condition.
-    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at) VALUES('m1','i','t',1,'ordinary',1,'ack me',0); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES('m1','t','s2','pending',300000,0,300000); INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,episode,open_warning_id,opened_seq) VALUES('receipt','t','m1:s2','s2',NULL,'warn-1',2)").unwrap();
-    // Pending lazy invitation and pending pair invitation.
-    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq,confirmation,inviter_seat_id) VALUES('inv-lazy','t','s2',1,'pending',7,300,307,3,'lazy','s1'),('inv-pair','pair','s2',1,'pending',7,300,307,4,'require_ack','s1'); INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES('i','s1','s2','pair'); INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES('pair','s1','joined','joined',0),('pair','s2','invited','invited',NULL)").unwrap();
-    let before = in_flight_rows(&db);
-    for (table, rows) in &before {
-        if [
-            "receipts",
-            "warning_conditions",
-            "invitations",
-            "direct_threads",
-        ]
-        .contains(&table.as_str())
-        {
-            assert!(!rows.is_empty(), "fixture populates {table}");
-        }
-    }
-    schema::initialize(&db, || UtcMillis(10_000)).unwrap();
-    assert_eq!(in_flight_rows(&db), before);
-    assert_eq!(
-        scalar(
-            &db,
-            "SELECT count(*) FROM receipts WHERE state='pending' AND deadline_at=300000"
-        ),
-        1
-    );
-    assert_eq!(
-        scalar(
-            &db,
-            "SELECT count(*) FROM invitations WHERE state='pending' AND confirmation='lazy'"
-        ),
-        1
-    );
-    assert_eq!(
-        scalar(
-            &db,
-            "SELECT count(*) FROM memberships WHERE thread_id='pair' AND state='invited'"
-        ),
-        1
-    );
 }
 
 #[test]
@@ -753,9 +594,9 @@ fn priority_schema_ordered_pending_seek_uses_the_new_indexes() {
 #[test]
 fn priority_schema_mixed_ack_preparation_stages_and_completes() {
     let db = fixture();
-    db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS},priority) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','ordinary',0)")).unwrap();
+    db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS},priority) VALUES('prep-1','34750f98bd59fcfc946da45aaabe933b','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','ordinary',0)")).unwrap();
     db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES('prep-1','msg-1','t','s',0)", []).unwrap();
-    db.execute_batch(&format!("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES('msg-1','i','t',1,'ordinary',1,'mixed',0,'ordinary',0); INSERT INTO send_manifests({MANIFEST_COLUMNS}) VALUES('prep-1','msg-1','i','t',1,0,1,0,1,1)")).unwrap();
+    db.execute_batch(&format!("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES('msg-1','34750f98bd59fcfc946da45aaabe933b','t',1,'ordinary',1,'mixed',0,'ordinary',0); INSERT INTO send_manifests({MANIFEST_COLUMNS}) VALUES('prep-1','msg-1','34750f98bd59fcfc946da45aaabe933b','t',1,0,1,0,1,1)")).unwrap();
     db.execute("UPDATE lazy_recipients SET decision_seq=1", [])
         .unwrap();
     db.execute("UPDATE lazy_recipients SET state='displayed'", [])
@@ -774,7 +615,7 @@ fn priority_schema_guards() {
     let err = |db: &Connection, sql: &str| db.execute(sql, []).unwrap_err().to_string();
     // Staging must carry a NULL decision_seq.
     let db = fixture();
-    db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS},priority) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1)")).unwrap();
+    db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS},priority) VALUES('prep-1','34750f98bd59fcfc946da45aaabe933b','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1)")).unwrap();
     assert!(
         err(&db, "INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,decision_seq) VALUES('prep-1','msg-1','t','s',3)")
             .contains("lazy recipient source mismatch")
@@ -810,17 +651,17 @@ fn priority_schema_guards() {
     db.execute("UPDATE seats SET nudge_threshold=9", [])
         .unwrap();
     assert!(
-        err(&db, "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,priority) VALUES('big','i','t',9,'ordinary',9,'x',0,10)")
+        err(&db, "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,priority) VALUES('big','34750f98bd59fcfc946da45aaabe933b','t',9,'ordinary',9,'x',0,10)")
             .contains("CHECK constraint failed")
     );
     // Manifest guards.
     let db = fixture();
     let prepare = |db: &Connection, n: i64, preparation: i64, message: i64| {
-        db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS},priority) VALUES('prep-{n}','i','scope','prep-{n}',zeroblob(32),'t',0,0,0,0,0,0,0,'building','ordinary',{preparation}); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES('msg-{n}','i','t',{n},'ordinary',{n},'x',0,'ordinary',{message})")).unwrap();
+        db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS},priority) VALUES('prep-{n}','34750f98bd59fcfc946da45aaabe933b','scope','prep-{n}',zeroblob(32),'t',0,0,0,0,0,0,0,'building','ordinary',{preparation}); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES('msg-{n}','34750f98bd59fcfc946da45aaabe933b','t',{n},'ordinary',{n},'x',0,'ordinary',{message})")).unwrap();
     };
     let manifest = |n: i64, warnings: i64| {
         format!(
-            "INSERT INTO send_manifests({MANIFEST_COLUMNS}) VALUES('prep-{n}','msg-{n}','i','t',{n},0,{n},0,1,{warnings})"
+            "INSERT INTO send_manifests({MANIFEST_COLUMNS}) VALUES('prep-{n}','msg-{n}','34750f98bd59fcfc946da45aaabe933b','t',{n},0,{n},0,1,{warnings})"
         )
     };
     prepare(&db, 1, 1, 0);
@@ -831,47 +672,12 @@ fn priority_schema_guards() {
     db.execute(&manifest(2, 1), []).unwrap();
 }
 
-// ht-yha.6: invitations written before the upgrade keep their stored behaviour.
-#[test]
-fn priority_schema_upgrade46_keeps_pending_lazy_and_pair_invitations() {
-    // The ht-yha.2 fixture: a v46 database with a pending lazy invitation and a pending pair
-    // invitation. The upgrade never rewrites them; they keep their stored (no-deadline, no-wake)
-    // behaviour and are still accepted by `accept`.
-    let db = v46_database();
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0);
-        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s1','i','resolved','native','s1',1,0,0),('s2','i','resolved','native','s2',1,0,0);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('ord','i','t','g',0,0),('pair','i','p','p',0,0);
-        INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES('i','s1','s2','pair');
-        INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES('ord','s1','joined','joined',0),('pair','s1','joined','joined',0);
-        INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES('ord','s2',1,'invited','invited'),('pair','s2',1,'invited','invited');
-        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('ord','s1',1,1),('pair','s1',1,1);
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES('inv-lazy','ord','s2',1,'pending',0,2,1,1,'lazy','s1'),('inv-pair','pair','s2',1,'pending',0,2,300000,300000,'lazy','s1');").unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
-    let rows: Vec<(String, String, i64, i64)> = db
-        .prepare(
-            "SELECT id,confirmation,deadline_at,frozen_duration_ms FROM invitations ORDER BY id",
-        )
-        .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    assert_eq!(
-        rows,
-        [
-            ("inv-lazy".into(), "lazy".into(), 1, 1),
-            ("inv-pair".into(), "lazy".into(), 300_000, 300_000)
-        ]
-    );
-    assert_eq!(scalar(&db, "SELECT count(*) FROM wake_work"), 0);
-}
-
 // Kills (ht-yha.66 M8): a delivery row staged at a priority other than its preparation's, and a
 // schema audit that accepts the pre-check copy of `lazy_recipient_source`.
 #[test]
 fn priority_schema_row_priority_matches_its_preparation() {
     let db = fixture();
-    db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS},priority) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',3)")).unwrap();
+    db.execute_batch(&format!("INSERT INTO send_preparations({PREPARATION_COLUMNS},priority) VALUES('prep-1','34750f98bd59fcfc946da45aaabe933b','scope','prep-1',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',3)")).unwrap();
     for wrong in [0, 1, 4] {
         let error = db
             .execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES('prep-1','msg-1','t','s',?1)", [wrong])
@@ -897,5 +703,12 @@ fn priority_schema_row_priority_matches_its_preparation() {
     assert_ne!(unchecked, live, "the live trigger checks the priority");
     db.execute_batch(&format!("DROP TRIGGER lazy_recipient_source; {unchecked};"))
         .unwrap();
-    assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
+    assert!(
+        schema::initialize(
+            &db,
+            || UtcMillis(0),
+            &herdr_threads::test_support::test_node_seed()
+        )
+        .is_err()
+    );
 }

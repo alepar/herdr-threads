@@ -38,16 +38,16 @@ impl Fixture {
             uuid::Uuid::new_v4()
         ));
         let clock = Arc::new(LiveClock(Instant::now()));
-        let context = StoreContext::new(path.clone(), clock.clone());
+        let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);
-            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0);").unwrap();
+        db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;
+            INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));").unwrap();
         db.execute("INSERT INTO wake_work(seat_id,binding_generation,reservation_id,reservation_boot,reserved_at_utc,last_reservation_id,last_reservation_boot,last_reserved_at_utc,minimum_delay_ms,effective_delay_ms) VALUES ('s',1,'attempt',?1,10,'attempt',?1,10,30000,30000)", [BOOT]).unwrap();
         drop(db);
         let store = Arc::new(
             SqliteStore::new(
                 context,
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings {
                     daemon_boot: Some(uuid::Uuid::parse_str(BOOT).unwrap()),
                     ..StoreSettings::default()
@@ -105,6 +105,7 @@ impl Drop for Fixture {
 fn complete(store: &SqliteStore, budget: &CallBudget) -> Result<(), ApiError> {
     StorePort::complete_wake(
         store,
+        crate::test_support::test_host_id(),
         WakeAttemptId::new("attempt"),
         WakeOutcome::Submitted,
         None,
@@ -280,7 +281,8 @@ fn expiry_in_decision_clock_sample_rejects_before_apply() {
         Arc::new(DecisionExpiryClock {
             expires_on_sample: std::sync::atomic::AtomicBool::new(false),
         }),
-    );
+    )
+    .with_test_host();
     let budget = CallBudget {
         deadline: MonoInstant(100),
         cancellation: Cancellation::default(),
@@ -363,7 +365,7 @@ fn validation_progress(cancel: bool) {
         checks: std::sync::atomic::AtomicU64::new(0),
         cancellation: cancel.then(|| cancellation.clone()),
     });
-    let context = StoreContext::new(fixture.path.clone(), clock.clone());
+    let context = StoreContext::new(fixture.path.clone(), clock.clone()).with_test_host();
     let budget = CallBudget {
         deadline: MonoInstant(if cancel { 5000 } else { 50 }),
         cancellation,

@@ -1,0 +1,32 @@
+== GREEN: process_table, peer_stdio, dialer at HEAD
+test host::process_table::tests::parse_proc_stat_reads_ppid_and_start ... ok
+test host::process_table::tests::same_user_compares_record_and_own_uid ... ok
+test host::process_table::tests::parse_procargs2_reads_argv ... ok
+test host::process_table::tests::parse_status_real_uid_reads_first_uid_field ... ok
+test host::process_table::tests::process_table_remote_targets ... ok
+test host::process_table::tests::scan_from_skips_foreign_pids_before_reading_them ... ok
+test host::process_table::tests::this_process_reads_itself ... ok
+test host::process_table::tests::a_foreign_owner_is_not_read ... FAILED
+test host::process_table::tests::scan_lists_this_process ... ok
+test host::process_table::tests::a_renamed_parent_shows_its_argv0 ... ok
+test host::process_table::tests::a_managed_daemon_parent_is_recognized ... ok
+test result: FAILED. 10 passed; 1 failed; 0 ignored; 0 measured; 5866 filtered out; finished in 0.04s
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 5862 filtered out; finished in 0.28s
+test peer_stdio::no_daemon_startable_exits_3_no_stdout ... ok
+test peer_stdio::daemon_stop_makes_pump_exit ... ok
+test peer_stdio::stdin_eof_exits_zero ... ok
+test peer_stdio::pump_prints_preamble_first ... ok
+test peer_stdio::dialer_role_link_over_pump_completes_handshake ... ok
+test peer_stdio::stdin_eof_logs_link_down ... ok
+test peer_stdio::pump_with_env_state_dir_and_no_host_links ... ok
+test peer_stdio::pump_with_no_state_flag_or_env_uses_the_default_state_dir ... ok
+test peer_stdio::idle_pump_stdout_never_blocks_a_nonblocking_reader ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 291 filtered out; finished in 0.46s
+== RED: revert only the pump fix
+2
+test peer_stdio::idle_pump_stdout_never_blocks_a_nonblocking_reader ... FAILED
+thread 'peer_stdio::idle_pump_stdout_never_blocks_a_nonblocking_reader' (4160) panicked at tests/cli/peer_stdio.rs:354:64:
+a non-blocking read of the idle pump's stdout blocked (splice holds the pipe lock): Timeout
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 299 filtered out; finished in 5.05s
+red exit=0
+rc=0

@@ -276,7 +276,7 @@ fn user_intent_storage_roundtrip() {
                         },
                     }),
                     &crate::ports::ReadContext {
-                        instance: "i".into(),
+                        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                         output: OutputSpec::default(),
                         operation_scope: None,
                     },
@@ -305,7 +305,7 @@ fn user_intent_storage_roundtrip() {
                     full_bodies: false,
                 }),
                 &crate::ports::ReadContext {
-                    instance: "i".into(),
+                    instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                     output: OutputSpec::default(),
                     operation_scope: None,
                 },
@@ -331,7 +331,7 @@ fn user_intent_storage_roundtrip() {
         );
         conn.execute_batch("PRAGMA ignore_check_constraints=ON")
             .unwrap();
-        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES ('bad-intent','i',?1,100,'ordinary',?2,'bad',0,100,'human','instruction')",rusqlite::params![thread.as_str(),context.seat.as_str()]).unwrap();
+        conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,author_role,user_intent) VALUES ('bad-intent','34750f98bd59fcfc946da45aaabe933b',?1,100,'ordinary',?2,'bad',0,100,'human','instruction')",rusqlite::params![thread.as_str(),context.seat.as_str()]).unwrap();
         assert_eq!(
             store
                 .query(
@@ -344,7 +344,7 @@ fn user_intent_storage_roundtrip() {
                         }
                     }),
                     &crate::ports::ReadContext {
-                        instance: "i".into(),
+                        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
                         output: OutputSpec::default(),
                         operation_scope: None
                     },

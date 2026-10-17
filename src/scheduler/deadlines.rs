@@ -1,6 +1,7 @@
 //! Bounded scheduling of store-owned due and retirement decisions.
 
 use std::collections::VecDeque;
+use std::sync::{Arc, OnceLock};
 
 use crate::ports::{
     DuePhase, DuePhaseProgress, DueScanProgress, DueScanRequest, DueScanState,
@@ -12,12 +13,30 @@ use crate::protocol::{
     results::{ApiError, CleanupState, ErrorCode, RetirementStatus},
     time::{CallBudget, Clock, MonoInstant},
 };
+use crate::sync::signals::RoundState;
 
 pub const DUE_BATCH_LIMIT: u16 = 100;
 /// The deadline lane's safety tick: a pass with nothing kicking it still runs
 /// this often, so time-driven expiries fire at most this late. Commits that
 /// create work kick the lane at once (`after_committed_change`).
 pub const TICK_MILLIS: u64 = 5_000;
+/// How long a sync hold lasts at most (peer-link spec §12): an unreachable
+/// peer delays overdue emission by this much, never longer.
+pub const SYNC_HOLD_MILLIS: u64 = 60_000;
+
+/// The longest sync hold in force: [`SYNC_HOLD_MILLIS`], except that a
+/// `test-support` build lets `HT_TEST_SYNC_HOLD_MS` shorten it, because a
+/// spawned daemon of a cluster test has no injected clock (ht-5fr.11).
+fn sync_hold_millis() -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(ms) = std::env::var("HT_TEST_SYNC_HOLD_MS")
+        .ok()
+        .and_then(|ms| ms.parse::<u64>().ok())
+    {
+        return ms;
+    }
+    SYNC_HOLD_MILLIS
+}
 const RETIREMENT_RETRY_MILLIS: u64 = 5_000;
 const DUE_PHASE_RETRY_MILLIS: u64 = 5_000;
 // Retry bookkeeping is bounded independently of the durable work queue.
@@ -74,6 +93,130 @@ pub trait DeadlinePort {
         budget: &CallBudget,
     ) -> Result<WorkProgress, ApiError>;
 }
+/// What the deadline lane reads of the sync runtime to hold overdue emission
+/// until the node has caught up with its peers (spec §7).
+pub trait SyncReadiness: Send + Sync {
+    /// Ask for a fresh sync round on every active link.
+    fn request_round(&self, at: MonoInstant);
+    /// Whether every active link and every enabled dial target completed a
+    /// round that began at or after `since`.
+    fn round_state(&self, since: MonoInstant) -> RoundState;
+    /// An enabled dial target exists (a link may still come up).
+    fn has_enabled_target(&self) -> bool;
+    /// `(ingested, drained)` Apply epochs: entries ingested up to `ingested`
+    /// are applied or parked once `drained >= ingested`.
+    fn apply_epochs(&self) -> (u64, u64);
+}
+
+/// The production readiness: the sync handle's round signal, held back until
+/// the Apply lane drained what was ingested before the round completed.
+pub struct SyncHoldReadiness {
+    pub sync: crate::sync::coordinator::SyncHandle,
+    pub epochs: Arc<crate::store::connection::ApplyEpochs>,
+}
+
+impl SyncReadiness for SyncHoldReadiness {
+    fn request_round(&self, at: MonoInstant) {
+        self.sync.signals().request_round(at);
+    }
+    fn round_state(&self, since: MonoInstant) -> RoundState {
+        self.sync.signals().round_state(since)
+    }
+    fn has_enabled_target(&self) -> bool {
+        // Before the Dialer's first reload the count is an unknown 0: a node
+        // with a target must not look target-less at start (it would release
+        // the hold, and the due scan would warn for a deadline the peer met).
+        !self.sync.dial_targets_loaded() || self.sync.enabled_target_count() > 0
+    }
+    fn apply_epochs(&self) -> (u64, u64) {
+        (self.epochs.ingested(), self.epochs.drained())
+    }
+}
+
+/// Filled once the sync runtime is composed. The deadline lane starts earlier,
+/// so until it is set the lane holds (bounded by [`SYNC_HOLD_MILLIS`]).
+pub type SyncHoldSlot = OnceLock<Arc<dyn SyncReadiness>>;
+
+/// Hold state of the lane's overdue emission: armed at start and after a
+/// wall-clock jump larger than the lane period.
+struct SyncHoldGate {
+    slot: Arc<SyncHoldSlot>,
+    /// Monotonic and wall time of the previous tick.
+    last: Option<(MonoInstant, i64)>,
+    active: bool,
+    armed_at: MonoInstant,
+    /// When the round was requested; `None` until the sync runtime is set.
+    since: Option<MonoInstant>,
+    /// The `ingested` epoch seen when the round completed; the hold lasts
+    /// until the Apply lane's `drained` epoch reaches it.
+    apply_target: Option<u64>,
+}
+
+impl SyncHoldGate {
+    fn new(slot: Arc<SyncHoldSlot>) -> Self {
+        Self {
+            slot,
+            last: None,
+            active: false,
+            armed_at: MonoInstant(0),
+            since: None,
+            apply_target: None,
+        }
+    }
+
+    /// Re-evaluates at a tick; true while overdue emission is held.
+    fn held(&mut self, now: MonoInstant, wall: i64, tick_millis: u64) -> bool {
+        let jumped = match self.last {
+            None => true,
+            Some((mono, last_wall)) => {
+                let wall_delta = i128::from(wall) - i128::from(last_wall);
+                let mono_delta = i128::from(now.0) - i128::from(mono.0);
+                (wall_delta - mono_delta).unsigned_abs() > u128::from(tick_millis)
+            }
+        };
+        self.last = Some((now, wall));
+        if jumped {
+            self.active = true;
+            self.armed_at = now;
+            self.since = None;
+            self.apply_target = None;
+        }
+        if !self.active {
+            return false;
+        }
+        let ready = self.slot.get();
+        if self.since.is_none()
+            && let Some(sync) = ready
+        {
+            sync.request_round(now);
+            self.since = Some(now);
+        }
+        let expired = now.0.saturating_sub(self.armed_at.0) >= sync_hold_millis();
+        let held = !expired
+            && match (self.since, ready) {
+                (Some(since), Some(sync)) => match sync.round_state(since) {
+                    RoundState::Complete => {
+                        // Complete means everything is stored, not applied:
+                        // wait for the Apply lane to drain what was ingested.
+                        let (ingested, drained) = sync.apply_epochs();
+                        drained < *self.apply_target.get_or_insert(ingested)
+                    }
+                    RoundState::Pending { .. } => {
+                        self.apply_target = None;
+                        true
+                    }
+                    RoundState::NoLinks => {
+                        self.apply_target = None;
+                        sync.has_enabled_target()
+                    }
+                },
+                _ => true,
+            };
+        self.active = held;
+        held
+    }
+}
+
 /// Affirmative discovery coverage, independent of job admission/progress.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DiscoveryProgress {
@@ -104,6 +247,8 @@ pub struct DriveOutcome {
     pub work_error: Option<ApiError>,
     /// This call was a scheduler tick (it passed the tick gate), not a skip.
     pub ticked: bool,
+    /// The due scan was skipped: overdue emission is held for sync.
+    pub due_held: bool,
 }
 
 impl DriveOutcome {
@@ -137,6 +282,7 @@ pub struct DeadlineDriver<'a, P: DeadlinePort + ?Sized> {
     work_discovery_retry_at: MonoInstant,
     work_retry_at: VecDeque<(String, MonoInstant)>,
     first_class: u8,
+    hold: Option<SyncHoldGate>,
 }
 impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
     pub fn new(port: &'a P) -> Self {
@@ -154,7 +300,15 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
             work_discovery_retry_at: MonoInstant(0),
             work_retry_at: VecDeque::new(),
             first_class: 0,
+            hold: None,
         }
+    }
+
+    /// Holds overdue emission at start and after a wall-clock jump until the
+    /// sync round completes or [`SYNC_HOLD_MILLIS`] pass (spec §7).
+    pub fn with_sync_hold(mut self, slot: Arc<SyncHoldSlot>) -> Self {
+        self.hold = Some(SyncHoldGate::new(slot));
+        self
     }
 
     /// Overrides the tick gate's length (default [`TICK_MILLIS`]); lets a test
@@ -192,13 +346,23 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
             ticked: true,
             ..DriveOutcome::default()
         };
+        let held = match self.hold.as_mut() {
+            Some(gate) => {
+                let wall = self.port.clock().utc_now().0;
+                gate.held(now, wall, self.tick_millis)
+            }
+            None => false,
+        };
+        outcome.due_held = held;
         let first_class = self.first_class;
         self.first_class = (first_class + 1) % 3;
         for offset in 0..3 {
             match (first_class + offset) % 3 {
                 0 => self.drive_retirement(budget, &mut outcome),
                 1 => {
-                    if let Err(error) = self.drive_due(now, budget, &mut outcome) {
+                    if held {
+                        self.due_continuation = false;
+                    } else if let Err(error) = self.drive_due(now, budget, &mut outcome) {
                         on_partial(&outcome, &error);
                         return Err(error);
                     }

@@ -89,16 +89,13 @@ struct Matrix {
 
 impl Matrix {
     fn new() -> Self {
-        Self::with_instance(format!(
-            "crash-{}",
-            &uuid::Uuid::new_v4().simple().to_string()[..12]
-        ))
+        Self::with_instance(crate::node::NodeUuid::new_v4().to_string())
     }
 
     /// The shipped CLI names instances by UUID (its private context journal
     /// and claims carry `uuid::Uuid`), so CLI-driven rows use one.
     fn with_uuid_instance() -> Self {
-        Self::with_instance(uuid::Uuid::new_v4().to_string())
+        Self::with_instance(crate::node::NodeUuid::new_v4().to_string())
     }
 
     fn with_instance(instance: String) -> Self {
@@ -109,10 +106,7 @@ impl Matrix {
     /// runs every write, from the first, and its restart on the production
     /// `FULL` setting.
     fn with_production_durability() -> Self {
-        Self::with_instance_durability(
-            format!("crash-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
-            true,
-        )
+        Self::with_instance_durability(crate::node::NodeUuid::new_v4().to_string(), true)
     }
 
     fn with_instance_durability(instance: String, production_durability: bool) -> Self {
@@ -129,16 +123,15 @@ impl Matrix {
             mono: AtomicU64::new(1_000),
         });
         let db_path = root.join("store.db");
-        let context = StoreContext::new(db_path.clone(), clock.clone());
+        let context = StoreContext::new(db_path.clone(), clock.clone())
+            .with_test_host()
+            .with_node_seed(crate::test_support::node_seed_for(&instance));
         if production_durability {
             context.require_commit_durability();
         }
         let db = context.open_writer().unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
-            [&instance],
-        )
-        .unwrap();
+        db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
         drop(db);
         let boot = uuid::Uuid::new_v4();
         let (store, service) =
@@ -147,7 +140,8 @@ impl Matrix {
             clock,
             instance,
             db_path,
-            ports: ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32))),
+            ports: ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)))
+                .for_host(crate::test_support::test_host_id()),
             store,
             service,
             boot,
@@ -165,7 +159,7 @@ impl Matrix {
         production_durability: bool,
     ) -> (Arc<SqliteStore>, DomainService) {
         let clock: Arc<dyn Clock> = clock.clone();
-        let context = StoreContext::new(db_path.to_path_buf(), clock.clone());
+        let context = StoreContext::new(db_path.to_path_buf(), clock.clone()).with_test_host();
         if production_durability {
             context.require_commit_durability();
         }
@@ -202,7 +196,8 @@ impl Matrix {
             self.production_durability,
         );
         self.service = service;
-        self.ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)));
+        self.ports = ScheduledStore::new(store.clone(), Arc::new(FairWriter::new(32)))
+            .for_host(crate::test_support::test_host_id());
         self.store = store;
     }
 
@@ -211,7 +206,7 @@ impl Matrix {
     }
 
     fn db(&self) -> Connection {
-        Connection::open(&self.db_path).unwrap()
+        crate::test_support::open_test_connection(&self.db_path)
     }
 
     fn count(&self, sql: &str, args: impl rusqlite::Params) -> i64 {
@@ -227,8 +222,8 @@ impl Matrix {
 
     fn add_seat(&self, seat: &str) {
         let db = self.db();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?1,0,0,0)", params![seat, self.instance]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc','coherent_enumeration',1)", params![self.instance, seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?1,0,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", params![seat, self.instance]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),?2,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc','coherent_enumeration',1)", params![self.instance, seat]).unwrap();
     }
 
     fn handle(&self, command: Command) -> Result<CommandResult, ApiError> {
@@ -240,6 +235,7 @@ impl Matrix {
     fn check_in(&self, seat: &str) -> CallerClaim {
         let n = self.executions.fetch_add(1, Ordering::SeqCst);
         let claim = CallerClaim {
+            host: crate::test_support::test_host_locator(),
             instance: self.instance.clone(),
             seat: SeatId::new(seat),
             binding_generation: 0,
@@ -585,8 +581,13 @@ fn send_failure_before_commit_leaves_no_acceptance_and_retry_commits_once() {
     );
     // Pending work: the recipient has nothing to read, and no wake is due.
     assert!(m.pending("r").is_empty());
-    let wake =
-        StorePort::wake_candidates(m.store.as_ref(), PageRequest::default(), &m.budget()).unwrap();
+    let wake = StorePort::wake_candidates(
+        m.store.as_ref(),
+        crate::test_support::test_host_id(),
+        PageRequest::default(),
+        &m.budget(),
+    )
+    .unwrap();
     assert!(
         wake.items.iter().all(|c| !c.has_pending_receipt),
         "failed commit must never wake: {wake:?}"
@@ -742,7 +743,7 @@ impl Matrix {
     fn host_observes_idle(&self, claim: &CallerClaim) {
         self.db()
             .execute(
-                "UPDATE observed_targets SET occupancy='occupied',ui_state='idle',top_level_occupant=1,verified_execution=?1 WHERE instance_id=?2 AND target_id=?3",
+                "UPDATE observed_targets SET occupancy='occupied',ui_state='idle',top_level_occupant=1,verified_execution=?1 WHERE host_id=(SELECT min(host_id) FROM herdr_hosts WHERE node_id=?2) AND target_id=?3",
                 params![claim.execution.as_str(), self.instance, claim.target.as_str()],
             )
             .unwrap();
@@ -765,7 +766,7 @@ fn configured_batching_retains_first_attention_without_self_kicks() {
     let sent = m.send(&s, &thread, "first", &[], "batch-first").unwrap();
     let store = Arc::new(
         SqliteStore::new(
-            StoreContext::new(m.db_path.clone(), m.clock.clone()),
+            StoreContext::new(m.db_path.clone(), m.clock.clone()).with_test_host(),
             m.instance.clone(),
             StoreSettings {
                 daemon_boot: Some(m.boot),
@@ -781,7 +782,8 @@ fn configured_batching_retains_first_attention_without_self_kicks() {
     store.set_kick_sink(Box::new(move |lanes, _| {
         captured.lock().unwrap().push(lanes)
     }));
-    let ports = ScheduledStore::new(store, Arc::new(FairWriter::new(32)));
+    let ports = ScheduledStore::new(store, Arc::new(FairWriter::new(32)))
+        .for_host(crate::test_support::test_host_id());
     let notifier = PromptLog::default();
     let scheduler = Scheduler::new(
         m.instance.clone(),
@@ -1554,7 +1556,7 @@ fn corrupt_or_unknown_schema_fails_explicitly_and_never_rewrites_history() {
         let before = hash(&path);
         let clock: Arc<dyn Clock> = clock.clone();
         let error = match SqliteStore::new(
-            StoreContext::new(path.clone(), clock),
+            StoreContext::new(path.clone(), clock).with_test_host(),
             instance.clone(),
             StoreSettings::default(),
         ) {
@@ -1834,6 +1836,7 @@ impl Matrix {
     ) -> Arc<crate::identity::repair::OrdinaryIdentity> {
         let identity = Arc::new(crate::identity::repair::OrdinaryIdentity::new(
             self.instance.clone(),
+            crate::test_support::test_host_id(),
             self.store.clone(),
             host.clone(),
             self.clock.clone(),
@@ -1875,6 +1878,7 @@ impl Matrix {
         for pane in ["pane-s", "pane-r"] {
             let CommandResult::SeatResolved(seat) = self
                 .handle(Command::ResolveSeat(ResolveSeat {
+                    host: crate::test_support::test_host_locator(),
                     target: HostTargetId::new(pane),
                     operation: OperationId::new(format!("resolve-{pane}")),
                 }))
@@ -1892,6 +1896,7 @@ impl Matrix {
                 .unwrap()
                 .1 = Some(execution.clone());
             let claim = CallerClaim {
+                host: crate::test_support::test_host_locator(),
                 instance: self.instance.clone(),
                 seat: seat.clone(),
                 binding_generation: 0,
@@ -1997,8 +2002,8 @@ impl Matrix {
 /// The shipped CLI for one seat's pane: `run_selected`, its context gate and
 /// the seat's private lifecycle-context journal, over this composed service.
 struct CliSeat {
-    paths: crate::daemon::paths::InstancePaths,
-    instance: uuid::Uuid,
+    paths: crate::daemon::paths::NodePaths,
+    instance: crate::node::NodeUuid,
     selection: crate::cli::commands::CooperativeSelection,
 }
 
@@ -2041,8 +2046,8 @@ impl Matrix {
         )
         .unwrap();
         CliSeat {
-            paths: crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap(),
-            instance: uuid::Uuid::parse_str(&self.instance).expect("UUID instance"),
+            paths: crate::daemon::paths::NodePaths::resolve(&runtime.state_dir).unwrap(),
+            instance: crate::node::NodeUuid::parse_str(&self.instance).expect("UUID instance"),
             selection: crate::cli::commands::CooperativeSelection {
                 seat: claim.seat.clone(),
                 target: claim.target.clone(),
@@ -2068,6 +2073,7 @@ impl Matrix {
             &seat.selection,
             &seat.paths,
             seat.instance,
+            &crate::test_support::test_host_locator(),
             &MatrixClient(self),
             self.clock.as_ref(),
             &mut output,
@@ -2083,9 +2089,13 @@ impl Matrix {
             seat.selection.seat.as_str(),
             Duration::from_secs(1),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
-        crate::harness::bridge::caller_claim(&contexts.current().unwrap().expect("context"))
-            .unwrap()
+        crate::harness::bridge::caller_claim(
+            &contexts.current().unwrap().expect("context"),
+            crate::test_support::test_host_locator(),
+        )
+        .unwrap()
     }
 
     fn seat_generation(&self, seat: &SeatId) -> i64 {
@@ -2142,7 +2152,7 @@ fn socket_denial_freezes_seats_and_bindings_until_reconnect() {
         assert_eq!(m.seat_generation(&pair.r.seat), generation);
         assert_eq!(open_bindings(), bindings);
         assert_eq!(
-            m.count("SELECT invalidation_revision FROM host_instances", []),
+            m.count("SELECT invalidation_revision FROM herdr_hosts", []),
             0
         );
     }
@@ -2414,6 +2424,7 @@ fn operator_repair_invalidates_pre_repair_context() {
     let CommandResult::OperatorRebound(rebound) = m
         .handle(Command::OperatorRebind(
             crate::protocol::commands::OperatorRebind {
+                host: crate::test_support::test_host_locator(),
                 seat: pair.r.seat.clone(),
                 target: pair.r.target.clone(),
                 operation: OperationId::new("repair-r"),
@@ -2483,6 +2494,7 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
     assert_eq!((retirements, error), (0, None));
     let CommandResult::SeatResolved(seat_u) = m
         .handle(Command::ResolveSeat(ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new("pane-u"),
             operation: OperationId::new("resolve-pane-u"),
         }))
@@ -2498,6 +2510,7 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
     };
     assert_eq!(bindings_u(), 0, "resolved but never registered");
     let u = CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: m.instance.clone(),
         seat: seat_u.clone(),
         binding_generation: 0,
@@ -2548,8 +2561,10 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
             && sample.reason == Some(UnresolvedReason::HostInvalidation)),
         "{summary:?}"
     );
-    let mut inputs =
-        crate::daemon::health::HealthInputs::unknown(uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    let mut inputs = crate::daemon::health::HealthInputs::unknown(
+        crate::node::NodeUuid::new_v4(),
+        uuid::Uuid::new_v4(),
+    );
     inputs.unresolved = Some(summary);
     let health = inputs.assemble();
     assert_eq!(health.unresolved_seats, Some(3));
@@ -2671,7 +2686,7 @@ fn startup_evidence_health_recomputes_after_operator_repair_and_reregistration()
     assert_eq!(m.seat_states(), "resolved:- unresolved:host_invalidation");
     let healthy = |report| {
         let mut inputs = crate::daemon::health::HealthInputs::unknown(
-            uuid::Uuid::new_v4(),
+            crate::node::NodeUuid::new_v4(),
             uuid::Uuid::new_v4(),
         );
         inputs.database = crate::daemon::health::ComponentStatus::Ready;
@@ -2709,6 +2724,7 @@ fn startup_evidence_health_recomputes_after_operator_repair_and_reregistration()
     let CommandResult::OperatorRebound(rebound) = m
         .handle(Command::OperatorRebind(
             crate::protocol::commands::OperatorRebind {
+                host: crate::test_support::test_host_locator(),
                 seat: pair.s.seat.clone(),
                 target: pair.s.target.clone(),
                 operation: OperationId::new("repair-s"),
@@ -2752,7 +2768,7 @@ fn failpoints_cannot_be_armed_through_requests_or_foreign_scopes() {
     let base = WireRequest {
         version: PROTOCOL_VERSION,
         request_id: "r".into(),
-        expected_instance: uuid::Uuid::new_v4().to_string(),
+        expected_instance: crate::node::NodeUuid::new_v4().to_string(),
         expected_boot: None,
         output: None,
         command: Command::SendMessage(SendMessage {

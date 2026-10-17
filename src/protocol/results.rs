@@ -122,6 +122,7 @@ pub enum CommandResult {
     BootstrapRecovered(Box<crate::protocol::handoff::BootstrapRecoveryResult>),
     LinkedBootstrapCompleted(Box<crate::protocol::handoff::CompletedBootstrapResult>),
     HandoffDelivery(crate::protocol::handoff::DeliveryResult),
+    Sync(crate::protocol::sync_admin::SyncReply),
 }
 
 /// Canonical selection at Ensure time; replay never reinterprets the episode.
@@ -714,6 +715,51 @@ pub struct Health {
     /// a reason for `degraded`. Absent from an older daemon's Health.
     #[serde(default)]
     pub notes: Vec<String>,
+    /// One entry per attached Herdr server, ascending by `host_id`, at most
+    /// [`MAX_HEALTH_HOSTS`]. Empty means a store-only daemon (doctor's
+    /// `store-only` label). `host` above is the aggregate over these entries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<AttachedHostHealth>,
+}
+
+/// The most attached-host entries Health carries (the daemon's attach cap).
+pub const MAX_HEALTH_HOSTS: usize = 16;
+
+/// The longest `AttachedHostHealth::endpoint`, in bytes.
+pub const HEALTH_ENDPOINT_MAX_BYTES: usize = 128;
+
+/// One attached Herdr server as Health reports it.
+///
+/// Operator-only surface: Health is read by `doctor` and `health`, never
+/// injected into an agent's context, so the node-local `host_id` and the
+/// server's socket path may appear here (and nowhere agent-facing).
+/// `endpoint` is the socket path bounded to 128 bytes keeping the tail (the
+/// distinguishing part), `…`-prefixed when cut.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttachedHostHealth {
+    pub host_id: i64,
+    pub endpoint: String,
+    pub reachability: ComponentState,
+    pub version: Option<String>,
+    pub coherent_enumeration: CapabilityState,
+    pub safe_prompt: CapabilityState,
+    pub current_execution: CapabilityState,
+    pub last_reconciliation_at: Option<UtcMillis>,
+}
+
+/// `endpoint` bounded to [`HEALTH_ENDPOINT_MAX_BYTES`], keeping the tail and
+/// starting with `…` when cut (always on a character boundary).
+pub fn bound_endpoint_tail(endpoint: &str) -> String {
+    if endpoint.len() <= HEALTH_ENDPOINT_MAX_BYTES {
+        return endpoint.to_owned();
+    }
+    let keep = HEALTH_ENDPOINT_MAX_BYTES - '…'.len_utf8();
+    let mut start = endpoint.len() - keep;
+    while !endpoint.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &endpoint[start..])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -856,11 +902,11 @@ impl Health {
             settings: None,
             limitations: Vec::new(),
             notes: Vec::new(),
+            hosts: Vec::new(),
         }
     }
     pub fn validate(&self) -> Result<(), &'static str> {
-        if uuid::Uuid::parse_str(&self.instance_id)
-            .map_or(true, |id| id.to_string() != self.instance_id)
+        if !crate::protocol::wire::valid_instance(&self.instance_id)
             || uuid::Uuid::parse_str(&self.boot_id)
                 .map_or(true, |id| id.to_string() != self.boot_id)
         {
@@ -877,6 +923,14 @@ impl Health {
             || self.limitations.iter().any(|s| s.len() > 256)
             || self.notes.len() > 16
             || self.notes.iter().any(|s| s.len() > 256)
+        {
+            return Err("unbounded health detail");
+        }
+        if self.hosts.len() > MAX_HEALTH_HOSTS
+            || self.hosts.iter().any(|host| {
+                host.endpoint.len() > HEALTH_ENDPOINT_MAX_BYTES
+                    || host.version.as_ref().is_some_and(|s| s.len() > 128)
+            })
         {
             return Err("unbounded health detail");
         }
@@ -1018,6 +1072,8 @@ pub enum ContinuityStatus {
     Resolved,
     Unresolved,
     Retired,
+    /// A seat homed on another node: listed and addressable, never bound here.
+    Remote,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1036,8 +1092,45 @@ pub struct SeatSummary {
     pub bindings: Vec<BindingPresence>,
     /// Availability slot, filled by the liveness worker; absent until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub availability: Option<String>,
+    pub availability: Option<PresenceAvailability>,
 }
+/// The presence availability slot of a seat or participant row. On the wire it
+/// is the string `available`, `unavailable@<unix-ms>` (since when) or `remote`
+/// (a seat homed on another node: no bindings here, so no availability).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresenceAvailability {
+    Available,
+    UnavailableSince(UtcMillis),
+    Remote,
+}
+
+impl Serialize for PresenceAvailability {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Available => serializer.serialize_str("available"),
+            Self::UnavailableSince(since) => {
+                serializer.collect_str(&format_args!("unavailable@{}", since.0))
+            }
+            Self::Remote => serializer.serialize_str("remote"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PresenceAvailability {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        match text.as_str() {
+            "available" => Ok(Self::Available),
+            "remote" => Ok(Self::Remote),
+            other => other
+                .strip_prefix("unavailable@")
+                .and_then(|ms| ms.parse::<i64>().ok())
+                .map(|ms| Self::UnavailableSince(UtcMillis(ms)))
+                .ok_or_else(|| serde::de::Error::custom("unknown presence availability")),
+        }
+    }
+}
+
 /// One open binding as shown in presence listings; session ids are not presentation data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1590,7 +1683,19 @@ pub struct Participant {
     pub bindings: Vec<BindingPresence>,
     /// Availability slot, filled by the liveness worker; absent until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub availability: Option<String>,
+    pub availability: Option<PresenceAvailability>,
+    /// Set on the first row of each unreachable home node in the page: the
+    /// reader prints one `node <tag> unreachable` line per node, not per seat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_unreachable: Option<UnreachableHome>,
+}
+/// A remote seat's home node that has had no sync contact for too long.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnreachableHome {
+    pub tag: String,
+    /// Last contact; `None` when none was ever recorded.
+    pub since: Option<UtcMillis>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

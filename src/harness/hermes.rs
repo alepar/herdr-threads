@@ -2049,13 +2049,14 @@ mod adapter_tests {
         std::fs::create_dir(&directory).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let instance = uuid::Uuid::new_v4();
+        let instance = crate::node::NodeUuid::new_v4();
         let journal = ContextJournal::open(
             &directory,
             instance,
             "fixture-seat",
             Duration::from_millis(50),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
         let current = OccupantContext {
             format_version: 1,
@@ -2155,26 +2156,20 @@ mod adapter_tests {
     #[cfg(feature = "test-support")]
     fn declared_reset_observer_records_only_hint_then_qualified_journal_consumes_once() {
         use crate::{
-            daemon::paths::{InstancePaths, RuntimeContext},
+            daemon::paths::{NodePaths, RuntimeContext},
             harness::context::*,
             test_support::isolation::TestIsolation,
         };
-        use std::os::unix::fs::PermissionsExt;
         let iso = TestIsolation::new("hermes-reset");
         let host = iso.path("host.sock");
         let context =
             RuntimeContext::explicit(iso.state_root().into(), host.clone(), None).unwrap();
-        let paths = InstancePaths::resolve_read_only(&context).unwrap();
-        paths.prepare_instance_dir().unwrap();
-        let instance = uuid::Uuid::new_v4();
-        std::fs::write(&paths.namespace_path, instance.to_string()).unwrap();
-        std::fs::set_permissions(
-            &paths.namespace_path,
-            std::fs::Permissions::from_mode(0o600),
-        )
-        .unwrap();
-        crate::daemon::paths::ensure_private_dir(&paths.instance_dir.join("contexts")).unwrap();
-        let directory = paths.instance_dir.join("contexts/synthetic-seat");
+        let paths = NodePaths::resolve_read_only(&context.state_dir).unwrap();
+        paths.prepare_node_dir().unwrap();
+        let instance = crate::node::NodeUuid::new_v4();
+        crate::test_support::write_node_hint(&paths, instance);
+        crate::daemon::paths::ensure_private_dir(&paths.node_dir.join("contexts")).unwrap();
+        let directory = paths.node_dir.join("contexts/synthetic-seat");
         crate::daemon::paths::ensure_private_dir(&directory).unwrap();
         let journal = ContextJournal::open(
             &directory,
@@ -2182,6 +2177,7 @@ mod adapter_tests {
             "fixture-seat",
             Duration::from_millis(50),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
         let current = OccupantContext {
             format_version: 1,
@@ -2288,6 +2284,7 @@ mod adapter_tests {
             "fixture-seat",
             Duration::from_millis(50),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
         assert_eq!(
             journal
@@ -2569,13 +2566,14 @@ mod adapter_tests {
         // The journal requires a physical path; macOS temp dirs sit under /var.
         let directory = iso.path(".").canonicalize().unwrap().join("contexts");
         crate::daemon::paths::ensure_private_dir(&directory).unwrap();
-        let instance = uuid::Uuid::new_v4();
+        let instance = crate::node::NodeUuid::new_v4();
         let journal = ContextJournal::open(
             &directory,
             instance,
             "fixture-seat",
             Duration::from_millis(50),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
         let r = registration();
         let mut seed = OccupantContext {
@@ -2836,8 +2834,9 @@ mod adapter_tests {
                 crate::store::connection::StoreContext::new(
                     iso.state_root().join("store.db"),
                     Arc::clone(&clock),
-                ),
-                "synthetic-instance",
+                )
+                .with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 crate::store::StoreSettings::default(),
             )
             .unwrap(),
@@ -2957,13 +2956,14 @@ mod adapter_tests {
         // The journal requires a physical path; macOS temp dirs sit under /var.
         let directory = iso.path(".").canonicalize().unwrap().join("contexts");
         crate::daemon::paths::ensure_private_dir(&directory).unwrap();
-        let instance = uuid::Uuid::new_v4();
+        let instance = crate::node::NodeUuid::new_v4();
         let journal = ContextJournal::open(
             &directory,
             instance,
             "fixture-seat",
             Duration::from_millis(50),
         )
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
         .unwrap();
         let harness: super::super::context::Harness =
             super::super::registry::OccupantHarness::Agent(

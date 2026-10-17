@@ -328,19 +328,28 @@ instance_pid() {
     printf '%s\n' "$pid"
 }
 
-# Instance directories of live herdr-threads daemons under Herdr's default
-# plugin state roots, one per line ("$state/instances/<digest>"). Best effort:
-# a daemon run with another --state-dir is not found.
+# Daemon directories of live herdr-threads daemons under Herdr's default
+# plugin state roots, one per line ("$state/node", or "$state/instances/<digest>"
+# for a daemon of the pre-node layout). Best effort: a daemon run with another
+# --state-dir is not found.
 live_instances() {
     local state instance
     for state in "${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/$PLUGIN_ID" \
         "$HOME/.local/state/herdr/plugins/$PLUGIN_ID"; do
-        for instance in "$state"/instances/*; do
+        for instance in "$state"/node "$state"/instances/*; do
             [ -f "$instance/endpoint.json" ] || continue
             instance_pid "$instance" > /dev/null || continue
             printf '%s\n' "$instance"
         done
     done | sort -u
+}
+
+# The state directory a live_instances entry belongs to.
+state_of_instance() {
+    case "$1" in
+        */node) printf '%s\n' "${1%/node}" ;;
+        *) printf '%s\n' "${1%/instances/*}" ;;
+    esac
 }
 
 # PIDs of live herdr-threads daemons published under Herdr's default plugin
@@ -354,12 +363,14 @@ daemon_pids() {
 
 # Stop the running daemon with the still-installed executable: first with its
 # own context resolution, then once per live instance with that instance's
-# state dir and host endpoint (its `locator`) named explicitly, so a
-# Herdr-less, HERDR_CONFIG_PATH environment still reaches it. Returns 0 only
+# state dir named explicitly, so a Herdr-less, HERDR_CONFIG_PATH environment
+# still reaches it: a node daemon gets its state dir alone, a pre-node
+# instance its state dir and host endpoint (its `locator`). Returns 0 only
 # when a stop succeeded and no daemon found by the scan is left running; the
 # last stop error line is left in $stop_err.
 stop_with_installed() {
     local ok=0 err instance locator _
+    local -a where
     stop_err=''
     if err=$("$installed_binary" daemon stop 2>&1 > /dev/null); then
         ok=1
@@ -369,10 +380,15 @@ stop_with_installed() {
     if [ "$ok" = 0 ] || [ -n "$(live_instances)" ]; then
         while IFS= read -r instance; do
             [ -n "$instance" ] || continue
-            locator=$(cat "$instance/locator" 2>/dev/null) || continue
-            [ -n "$locator" ] || continue
-            if err=$("$installed_binary" --state-dir "${instance%/instances/*}" \
-                --host-endpoint "$locator" daemon stop 2>&1 > /dev/null); then
+            case "$instance" in
+                */node) where=(--state-dir "$(state_of_instance "$instance")") ;;
+                *)
+                    locator=$(cat "$instance/locator" 2>/dev/null) || continue
+                    [ -n "$locator" ] || continue
+                    where=(--state-dir "$(state_of_instance "$instance")" --host-endpoint "$locator")
+                    ;;
+            esac
+            if err=$("$installed_binary" "${where[@]}" daemon stop 2>&1 > /dev/null); then
                 ok=1
             else
                 stop_err=$(printf '%s\n' "$err" | tail -n 1)

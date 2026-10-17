@@ -10,8 +10,8 @@ use crate::{
     client::local::LocalSocketClient,
     daemon::{
         logs::daemon_log_path,
-        ownership::{read_descriptor, read_existing_namespace},
-        paths::{InstancePaths, check_owned_state_root, check_private_dir, is_unsafe_local_state},
+        ownership::{read_descriptor, read_node_uuid_hint},
+        paths::{NodePaths, check_owned_state_root, check_private_dir, is_unsafe_local_state},
     },
     ports::LocalClient,
     protocol::{
@@ -170,11 +170,11 @@ fn daemon_details(client: &dyn LocalClient, budget: &CallBudget) -> DaemonDetail
 }
 
 pub(crate) fn probe_daemon(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: &Arc<dyn Clock>,
     budget: &CallBudget,
 ) -> Result<Daemon, String> {
-    let instance = match read_existing_namespace(paths) {
+    let instance = match read_node_uuid_hint(paths) {
         Ok(Some(instance)) => instance,
         Ok(None) => return Ok(Daemon::NotRunning),
         Err(error) => return Err(format!("namespace: {error}")),
@@ -216,23 +216,17 @@ pub(crate) fn probe_daemon(
     }
 }
 
-/// First existing plugin-created private directory (`instances/`, then the
-/// instance directory) that fails the 0700 ownership checks `daemon ensure`
-/// applies. Absent directories are fine: ensure creates them 0700.
+/// The node directory, when it exists and fails the 0700 ownership checks
+/// `daemon ensure` applies. An absent directory is fine: ensure creates it 0700.
 /// Only the typed unsafe-state marker counts, exactly as `daemon ensure`
 /// classifies it, so the two commands cannot disagree.
-fn unsafe_private_dir(paths: &InstancePaths) -> Option<String> {
-    let instances = paths.instance_dir.parent()?;
-    for dir in [instances, paths.instance_dir.as_path()] {
-        match check_private_dir(dir) {
-            Ok(()) => (),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
-            Err(error) if is_unsafe_local_state(&error) => return Some(error.to_string()),
-            // Other I/O failures are what ensure reports as unavailable (3).
-            Err(_) => return None,
-        }
+fn unsafe_private_dir(paths: &NodePaths) -> Option<String> {
+    match check_private_dir(&paths.node_dir) {
+        Ok(()) => None,
+        Err(error) if is_unsafe_local_state(&error) => Some(error.to_string()),
+        // Absent, or other I/O failures (what ensure reports as unavailable, 3).
+        Err(_) => None,
     }
-    None
 }
 
 /// Assemble the report and its exit status. Split from rendering for tests.
@@ -241,14 +235,14 @@ fn unsafe_private_dir(paths: &InstancePaths) -> Option<String> {
 /// `offline_env` is this process's `HERDR_THREADS_OFFLINE`; the daemon reads
 /// its own environment (and `settings.json`) once at start.
 pub(crate) fn harness_manifest_report(
-    instance_dir: &std::path::Path,
+    node_dir: &std::path::Path,
     offline_env: Option<&std::ffi::OsStr>,
 ) -> Value {
     use crate::harness::manifest::{
         SUPPORTED_SCHEMA_VERSION, cache_dir, format_rfc3339_utc, policy_from, policy_words,
         read_meta,
     };
-    let meta = read_meta(&cache_dir(instance_dir));
+    let meta = read_meta(&cache_dir(node_dir));
     let cache_fetched_at = meta.fetched_at_ms.map(format_rfc3339_utc);
     let (policy, source, settings_error, policy_from_who, policy_recorded_at) =
         if let Some(recorded) = &meta.daemon_policy {
@@ -260,7 +254,7 @@ pub(crate) fn harness_manifest_report(
                 json!(format_rfc3339_utc(recorded.recorded_at_ms)),
             )
         } else {
-            match crate::daemon::settings::load(instance_dir) {
+            match crate::daemon::settings::load(node_dir) {
                 Ok(settings) => {
                     let (policy, source) = policy_words(policy_from(&settings, offline_env));
                     (
@@ -506,8 +500,7 @@ fn doctor_environment(
             .unwrap_or_default(),
         host_endpoint: report["context"]["host_endpoint"]
             .as_str()
-            .map(PathBuf::from)
-            .unwrap_or_default(),
+            .map(PathBuf::from),
     };
     let mut environment = super::setup::SetupEnv::for_context(&context).snapshot();
     environment.instance_source = report["context"]["source"].clone();
@@ -585,6 +578,12 @@ fn collect_local_with_budget(
     }
     report["hooks"] = json!({});
     report["local_harnesses"] = json!({});
+    if let Some(legacy) = report["context"]["state_dir"]
+        .as_str()
+        .and_then(|state| super::legacy::LegacyInventory::scan(std::path::Path::new(state)))
+    {
+        report["legacy"] = legacy.to_json();
+    }
     let entries: Vec<_> = registry
         .registrations()
         .iter()
@@ -725,9 +724,12 @@ fn collect_local_with_budget(
 }
 /// Doctor's word for the daemon's Health state. A daemon that reports itself
 /// starting ([`crate::protocol::results::Health::starting`]) is `starting`,
-/// not `degraded`, until its first reconciliation or the startup bound.
+/// not `degraded`, until its first reconciliation or the startup bound. A
+/// daemon that reports no attached host (an empty `hosts` list) is `store-only`.
 pub(crate) fn daemon_state_label(health: &crate::protocol::results::Health) -> &'static str {
     match health.state {
+        // A daemon with no attached Herdr server serves the store only.
+        HealthState::Healthy | HealthState::Degraded if health.hosts.is_empty() => "store-only",
         HealthState::Healthy => "healthy",
         HealthState::Degraded if health.starting() => "starting",
         HealthState::Degraded => "degraded",
@@ -752,7 +754,7 @@ fn writes_safe(report: &Value) -> bool {
         && report["daemon"]["version_matches"] != false
         && matches!(
             report["daemon"]["state"].as_str(),
-            Some("not_running" | "healthy" | "starting" | "degraded")
+            Some("not_running" | "healthy" | "starting" | "store-only" | "degraded")
         )
 }
 fn repair_outcome(name: &str, outcome: Result<String, String>) -> Value {
@@ -782,7 +784,7 @@ struct CapturedDoctorContext {
     context: crate::daemon::paths::RuntimeContext,
     source: Value,
     selected_state: PathBuf,
-    selected_host: PathBuf,
+    selected_host: Option<PathBuf>,
 }
 
 fn local_ownership_environment(
@@ -793,7 +795,7 @@ fn local_ownership_environment(
     let mut local = environment.clone();
     if !supplied && let Some(captured) = captured {
         local.state_dir = Some(captured.selected_state.clone());
-        local.host_endpoint = Some(captured.selected_host.clone());
+        local.host_endpoint = captured.selected_host.clone();
     }
     local
 }
@@ -841,11 +843,17 @@ fn report_captured(
         "version": env!("CARGO_PKG_VERSION"),
         "protocol_version": PROTOCOL_VERSION,
     });
-    let host_present = std::fs::symlink_metadata(&context.host_endpoint).is_ok();
+    let host_present = context
+        .host_endpoint
+        .as_ref()
+        .is_some_and(|host| std::fs::symlink_metadata(host).is_ok());
     report["context"] = json!({
         "ok": true,
         "state_dir": context.state_dir.display().to_string(),
-        "host_endpoint": context.host_endpoint.display().to_string(),
+        "host_endpoint": context
+            .host_endpoint
+            .as_ref()
+            .map(|host| host.display().to_string()),
         "host_endpoint_present": host_present,
         "source": source,
     });
@@ -858,7 +866,7 @@ fn report_captured(
     // Resolving may check the plugin-created runtime socket directory; an
     // unsafe one is the same invalid local context `daemon ensure` reports
     // (status 2), not an unavailable daemon.
-    let resolved = InstancePaths::resolve_read_only(context);
+    let resolved = NodePaths::resolve_read_only(&context.state_dir);
     if state_error.is_none() {
         state_error = match &resolved {
             Err(error) if is_unsafe_local_state(error) => Some(error.to_string()),
@@ -891,10 +899,10 @@ fn report_captured(
             }
         }
         Ok(paths) => {
-            report["instance_dir"] = json!(paths.instance_dir.display().to_string());
+            report["node_dir"] = json!(paths.node_dir.display().to_string());
             report["daemon_log"] = json!(daemon_log_path(&paths).display().to_string());
             report["harness_manifest"] = harness_manifest_report(
-                &paths.instance_dir,
+                &paths.node_dir,
                 std::env::var_os("HERDR_THREADS_OFFLINE").as_deref(),
             );
             match probe_daemon(&paths, clock, budget) {
@@ -1252,11 +1260,8 @@ pub(crate) fn render_debug_text_in(
             "host_endpoint.source: {}\n",
             scalar(&context["source"]["host_endpoint"])
         ));
-        if !report["instance_dir"].is_null() {
-            out.push_str(&format!(
-                "instance_dir: {}\n",
-                scalar(&report["instance_dir"])
-            ));
+        if !report["node_dir"].is_null() {
+            out.push_str(&format!("node_dir: {}\n", scalar(&report["node_dir"])));
         }
         if !report["daemon_log"].is_null() {
             out.push_str(&format!("daemon_log: {}\n", scalar(&report["daemon_log"])));
@@ -1375,6 +1380,7 @@ pub(crate) fn render_text_in(
     if daemon["version_matches"] == json!(false) {
         out.push_str("issue: daemon version differs from this CLI; inspect with --debug\n");
     }
+    out.push_str(&super::legacy::report_lines(&report["legacy"]));
     for registration in &adapters {
         let hooks = &report["hooks"][registration.metadata().id];
         if hooks.is_null() {
@@ -1463,7 +1469,7 @@ pub(crate) fn repairs_allowed(report: &Value) -> bool {
         && report["daemon"]["version_matches"] != json!(false)
         && matches!(
             report["daemon"]["state"].as_str(),
-            Some("not_running" | "healthy" | "starting" | "degraded")
+            Some("not_running" | "healthy" | "starting" | "store-only" | "degraded")
         )
 }
 
@@ -1610,10 +1616,12 @@ pub(crate) fn run_registered<W: Write>(
                         .state_dir
                         .clone()
                         .ok_or_else(|| io::Error::other("state directory unavailable"))?,
-                    host_endpoint: environment
-                        .host_endpoint
-                        .clone()
-                        .ok_or_else(|| io::Error::other("host endpoint unavailable"))?,
+                    host_endpoint: Some(
+                        environment
+                            .host_endpoint
+                            .clone()
+                            .ok_or_else(|| io::Error::other("host endpoint unavailable"))?,
+                    ),
                 };
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -1720,12 +1728,12 @@ mod selected_ownership_tests {
         let captured = CapturedDoctorContext {
             context: crate::daemon::paths::RuntimeContext {
                 state_dir: PathBuf::from("/canonical/state"),
-                host_endpoint: PathBuf::from("/canonical/host"),
+                host_endpoint: Some(PathBuf::from("/canonical/host")),
                 herdr_bin: None,
             },
             source: json!({}),
             selected_state: PathBuf::from("/selected/state"),
-            selected_host: PathBuf::from("/selected/host"),
+            selected_host: Some(PathBuf::from("/selected/host")),
         };
         let environment = crate::harness::adapter::SetupEnvironment {
             state_dir: Some(PathBuf::from("/supplied/state")),
@@ -1735,10 +1743,10 @@ mod selected_ownership_tests {
         };
         let local = local_ownership_environment(&environment, Some(&captured), false);
         assert_eq!(local.state_dir, Some(captured.selected_state.clone()));
-        assert_eq!(local.host_endpoint, Some(captured.selected_host.clone()));
+        assert_eq!(local.host_endpoint, captured.selected_host.clone());
         assert_eq!(
             captured.context.host_endpoint,
-            PathBuf::from("/canonical/host")
+            Some(PathBuf::from("/canonical/host"))
         );
         let supplied = local_ownership_environment(&environment, Some(&captured), true);
         assert_eq!(supplied.state_dir, environment.state_dir);

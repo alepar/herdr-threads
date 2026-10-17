@@ -429,7 +429,7 @@ fn digest_for(
     let seat_id = seat.as_str();
     let (decision_seq, episode, open): (i64, i64, i64) = db
         .query_row(
-            "SELECT h.decision_seq,s.unavailability_episode,s.unavailability_open FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+            "SELECT h.decision_seq,s.unavailability_episode,s.unavailability_open FROM seats s JOIN local_node h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
             params![seat_id, instance],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -608,7 +608,7 @@ pub fn add_binding_lazy(
 ) -> Result<(), ApiError> {
     let through: i64 = db
         .query_row(
-            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            "SELECT decision_seq FROM local_node WHERE id=?1",
             [instance],
             |r| r.get(0),
         )
@@ -672,7 +672,7 @@ pub fn add_lazy(
 ) -> Result<(), ApiError> {
     let through: i64 = db
         .query_row(
-            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            "SELECT decision_seq FROM local_node WHERE id=?1",
             [instance],
             |r| r.get(0),
         )
@@ -1098,7 +1098,7 @@ pub fn settle_pulled_notices(
     };
     let current: bool = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?5 AND s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=?3 AND b.generation=?3 AND b.native_session=?4 AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='' AND b.liveness='connected' AND NOT EXISTS(SELECT 1 FROM recovery_holds h WHERE h.instance_id=s.instance_id AND h.target_id=s.target_id AND h.released_at IS NULL))",
+            "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?5 AND s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=?3 AND b.generation=?3 AND b.native_session=?4 AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='' AND b.liveness='connected' AND NOT EXISTS(SELECT 1 FROM recovery_holds h WHERE h.host_id=s.host_id AND h.target_id=s.target_id AND h.released_at IS NULL))",
             params![seat_id, instance, generation, native_session, binding.as_str()],
             |r| r.get(0),
         )
@@ -1582,7 +1582,7 @@ pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, Api
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WakeSeatAttention {
     pub attention: effective::EffectiveSeatAttention,
-    /// `host_instances.decision_seq`, read once before the walks. It is the
+    /// `local_node.decision_seq`, read once before the walks. It is the
     /// position `reserve` re-reads and refuses on any change; it is not
     /// derived from the walked rows (an ACK that settles a receipt adds no
     /// newer row).
@@ -1739,7 +1739,7 @@ pub fn wake_warnings(
 pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAttention, ApiError> {
     let decision_seq: i64 = db
         .query_row(
-            "SELECT h.decision_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+            "SELECT h.decision_seq FROM seats s JOIN local_node h ON h.id=s.instance_id WHERE s.id=?1",
             [seat_id],
             |r| r.get(0),
         )

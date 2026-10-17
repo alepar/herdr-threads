@@ -16,7 +16,7 @@ use herdr_threads::{
     daemon::{
         logs::daemon_log_path,
         ownership::EndpointDescriptor,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
         remedy::{RemedyContext, remedy},
     },
     host::native::NativeCli,
@@ -67,11 +67,13 @@ impl Session {
         let state = herdr.root().join("plugin-state");
         fs::create_dir_all(&state).unwrap();
         let context = RuntimeContext::explicit(state.clone(), herdr.socket_path(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
         let log = daemon_log_path(&paths);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        // The canonical path the CLI claims name, which is also the endpoint the daemon attaches.
+        let endpoint = context.require_host().unwrap().to_path_buf();
         let host: Arc<dyn HostPort> =
-            Arc::new(NativeCli::new(herdr.socket_path(), Arc::clone(&clock)));
+            Arc::new(NativeCli::new(endpoint.clone(), Arc::clone(&clock)));
         let probe = LaneProbe::default();
         // The detached daemon's stderr is its daemon.log; in this process the
         // lane error log is pointed at the same file.
@@ -89,7 +91,7 @@ impl Session {
                     clock,
                     daemon_stop,
                     ServiceConfig::default(),
-                    host,
+                    herdr_threads::test_support::single_host_plan_at(host, endpoint),
                     daemon_probe,
                     move |descriptor| {
                         ready_tx
@@ -260,8 +262,10 @@ impl Session {
     }
 
     pub(crate) fn db(&self) -> rusqlite::Connection {
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(self.state.clone(), self.herdr.socket_path(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(self.state.clone(), self.herdr.socket_path(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
@@ -367,12 +371,12 @@ pub(crate) fn wait_lanes_settled(s: &Session, quiet: Duration) {
         "every lane to finish its first pass",
         Duration::from_secs(20),
         || {
-            Lane::ALL
+            Lane::WORKERS
                 .iter()
                 .all(|lane| s.probe.registered_idle_events(*lane) >= 1)
         },
     );
-    let mut last: Vec<u64> = Lane::ALL
+    let mut last: Vec<u64> = Lane::WORKERS
         .iter()
         .map(|l| s.probe.registered_idle_events(*l))
         .collect();
@@ -385,7 +389,7 @@ pub(crate) fn wait_lanes_settled(s: &Session, quiet: Duration) {
             s.dump_table("wake_work")
         );
         std::thread::sleep(Duration::from_millis(20));
-        let now: Vec<u64> = Lane::ALL
+        let now: Vec<u64> = Lane::WORKERS
             .iter()
             .map(|l| s.probe.registered_idle_events(*l))
             .collect();
@@ -448,7 +452,7 @@ fn every_lane_registers() {
     let Some(s) = Session::new("every_lane_registers") else {
         return;
     };
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         wait_until(
             &format!("{} to register and attach its Pacer", lane.name()),
             Duration::from_secs(10),
@@ -456,7 +460,7 @@ fn every_lane_registers() {
         );
     }
     wait_lanes_settled(&s, Duration::from_millis(1500));
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         let before = s.probe.registered_idle_events(lane);
         s.probe.kick_registered(lane);
         wait_until(
@@ -594,7 +598,7 @@ fn injected_lane_failure_logs_and_degrades_then_clears() {
             &RemedyContext::LaneDegraded { log: s.log.clone() }
         )
     );
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         let name = lane.name();
         assert_eq!(s.probe.lane_health(lane), None, "{name} starts healthy");
         let log_before = s.lane_log_lines(lane).len();
@@ -715,7 +719,7 @@ fn spawn_blocking_revoke_counts_as_request_origin() {
     let client = PersistentServiceClient::new(
         s.descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        s.descriptor.instance_uuid,
+        s.descriptor.node_uuid,
         Some(s.descriptor.boot_id),
         ServiceIntentJournal::open(s.herdr.root().join("intents")).unwrap(),
     );
@@ -757,7 +761,7 @@ fn spawn_blocking_revoke_counts_as_request_origin() {
     let ordinary = LocalSocketClient::new(
         s.descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        s.descriptor.instance_uuid,
+        s.descriptor.node_uuid,
         Some(s.descriptor.boot_id),
     );
     let CommandResult::ServiceDisconnected(revoked) = ordinary

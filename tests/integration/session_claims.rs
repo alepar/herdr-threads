@@ -3,7 +3,7 @@
 //! endpoint and a detached daemon. Each test names the mutation it kills.
 use super::sweep::{FakeHost, Scratch, pane};
 use herdr_threads::{
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     test_support::{harness_shim, spawn::SpawnOwned},
 };
 use serde_json::Value;
@@ -23,7 +23,7 @@ pub(super) struct World {
     root: PathBuf,
     state: PathBuf,
     socket: PathBuf,
-    pub(super) paths: InstancePaths,
+    pub(super) paths: NodePaths,
     _host: FakeHost,
     _scratch: Scratch,
 }
@@ -42,11 +42,13 @@ impl World {
             vec![pane("w1:p1", "terminal-a"), pane("w1:p2", "terminal-b")],
         );
         let state = root.join("state");
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(state.clone(), socket.clone(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(state.clone(), socket.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
-        paths.prepare_instance_dir().unwrap();
+        paths.prepare_node_dir().unwrap();
         let world = Self {
             root: root.clone(),
             state,
@@ -316,7 +318,7 @@ fn two_claude_sessions_in_one_pane_are_distinct_bindings() {
     assert!(again.status.success(), "{again:?} {}", stderr(&again));
     assert_eq!(world.bindings(&seat).len(), 2);
     // The context journal was not the source of either identity.
-    let contexts = world.paths.instance_dir.join("contexts").join(&seat);
+    let contexts = world.paths.node_dir.join("contexts").join(&seat);
     let saved = contexts.join("context.json");
     let saved = fs::read_to_string(&saved).unwrap_or_default();
     assert!(

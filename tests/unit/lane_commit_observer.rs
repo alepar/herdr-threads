@@ -3,13 +3,21 @@ use crate::{store::StoreSettings, test_support::isolation::TestIsolation};
 
 fn fixture() -> (TestIsolation, Arc<SqliteStore>, LaneProbe) {
     let iso = TestIsolation::new("lane-commit-observer");
-    let context = StoreContext::new(iso.path("store.db"), Arc::new(SystemClock::new()));
+    let context =
+        StoreContext::new(iso.path("store.db"), Arc::new(SystemClock::new())).with_test_host();
     context.open_writer().unwrap().execute_batch(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'b',1,1);
-         INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('s','i','unresolved','native',1,0);
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1;
+         INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES('s','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
          INSERT INTO work_jobs(id,kind,subject_id,high_water,status,completed_at) VALUES('old','send_attention','old',0,'complete',0);"
     ).unwrap();
-    let store = Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
+    let store = Arc::new(
+        SqliteStore::new(
+            context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
     let probe = LaneProbe::default();
     probe.attach_store(&store);
     (iso, store, probe)
@@ -86,7 +94,11 @@ fn observers_are_exclusive_per_origin_ignore_noops_and_clean_up() {
         let _origin = crate::service::kicks::enter_lane(Lane::Wakes);
         assert!(
             store
-                .clear_wake_batch_if_empty(&crate::protocol::ids::SeatId::new("s"), &budget())
+                .clear_wake_batch_if_empty(
+                    crate::test_support::test_host_id(),
+                    &crate::protocol::ids::SeatId::new("s"),
+                    &budget()
+                )
                 .unwrap()
         );
     }

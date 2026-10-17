@@ -5,7 +5,7 @@ use herdr_threads::{
     app::SystemClock,
     daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     harness::context::{ContextJournal, Harness, OccupantContext, Role, SessionReference},
     host::native::NativeCli,
@@ -97,51 +97,6 @@ fn install_helper(path: &Path, body: &str) {
     if !linked {
         executable(path, body);
     }
-}
-/// Seed a not-yet-created store with this binary's fresh-schema template, as
-/// the library's own tests do: creating the schema replays every migration
-/// (~0.1 s per fixture), while `open_writer` on the copy still runs the full
-/// schema audit. Any failure leaves ordinary creation to `open_writer`.
-fn seed_fresh_schema(database: &Path) {
-    if fs::symlink_metadata(database).is_err()
-        && let Some(template) = fresh_schema_template()
-    {
-        let _ = fs::copy(template, database);
-    }
-}
-/// Keyed by this binary's identity, so a rebuild never reuses a template
-/// produced by different schema code.
-fn fresh_schema_template() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let meta = fs::metadata(&exe).ok()?;
-    let built = meta
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?;
-    let path = exe.with_file_name(format!(
-        "handoff-topology-cli-schema-{}-{}.db",
-        meta.len(),
-        built.as_nanos()
-    ));
-    if !path.is_file() {
-        let staging = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
-        let clock_read = std::cell::Cell::new(false);
-        let built = Connection::open(&staging).ok().and_then(|db| {
-            herdr_threads::store::schema::initialize(&db, || {
-                clock_read.set(true);
-                herdr_threads::protocol::time::UtcMillis(0)
-            })
-            .ok()
-        });
-        // A creation path that reads the clock is not reproducible from a
-        // template; never replaces a template another process published.
-        if built.is_some() && !clock_read.get() {
-            let _ = fs::hard_link(&staging, &path);
-        }
-        let _ = fs::remove_file(&staging);
-    }
-    path.is_file().then_some(path)
 }
 fn finish(mut child: OwnedChild) -> Output {
     wait("owned CLI/helper exit", || {
@@ -373,18 +328,18 @@ pub(super) struct Fixture {
     pub(super) host: Host,
     pub(super) iso: TestIsolation,
     pub(super) context: RuntimeContext,
-    paths: InstancePaths,
-    pub(super) instance: Uuid,
+    paths: NodePaths,
+    pub(super) instance: herdr_threads::node::NodeUuid,
     cli_log: Mutex<Vec<Value>>,
 }
 impl Fixture {
     pub(super) fn new() -> Self {
         Self::with_instance(None)
     }
-    fn with_instance(copied: Option<Uuid>) -> Self {
+    fn with_instance(copied: Option<&Fixture>) -> Self {
         Self::with_layout(copied, false)
     }
-    fn with_layout(copied: Option<Uuid>, long_state: bool) -> Self {
+    fn with_layout(copied: Option<&Fixture>, long_state: bool) -> Self {
         let iso = TestIsolation::new("handoff-topology-cli");
         for dir in ["claude-config", "codex-home", "cwd"] {
             fs::create_dir(iso.path(dir)).unwrap();
@@ -421,23 +376,25 @@ impl Fixture {
         }
         fs::create_dir_all(&state).unwrap();
         let context = RuntimeContext::explicit(state, socket, None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        let mut instance = owner.instance_uuid();
-        drop(owner);
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        // A copied state directory carries the original node's key, so the
+        // copy is the same node (same uuid).
         if let Some(copied) = copied {
-            fs::write(&paths.namespace_path, copied.to_string()).unwrap();
-            let owner = OwnerLock::acquire(&paths).unwrap();
-            instance = owner.instance_uuid();
-            assert_eq!(instance, copied);
-            drop(owner);
+            paths.prepare_node_dir().unwrap();
+            fs::copy(&copied.paths.key_path, &paths.key_path).unwrap();
         }
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        let instance = owner.node_uuid().unwrap();
+        if let Some(copied) = copied {
+            assert_eq!(instance, copied.instance);
+        }
+        drop(owner);
         Self::seed(&paths, &context, instance);
         let mut cmd = iso.command(BIN);
         cmd.args(["daemon", "run", "--state-dir"])
             .arg(&context.state_dir)
             .arg("--host-endpoint")
-            .arg(&context.host_endpoint)
+            .arg(context.host_endpoint.clone().unwrap())
             .env("CLAUDE_CONFIG_DIR", iso.path("claude-config"))
             .env("CODEX_HOME", iso.path("codex-home"))
             .stdout(fs::File::create(iso.path("daemon.stdout")).unwrap())
@@ -449,12 +406,12 @@ impl Fixture {
                 return false;
             }
             let db = Connection::open(&paths.database_path).unwrap();
-            db.query_row("SELECT count(*) FROM host_instances WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",[],|r|r.get::<_,i64>(0)).unwrap_or(0)>0
+            db.query_row("SELECT count(*) FROM herdr_hosts WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch",[],|r|r.get::<_,i64>(0)).unwrap_or(0)>0
         });
         println!(
             "fixture instance={instance} root={} host={} daemon={}",
             iso.state_root().display(),
-            context.host_endpoint.display(),
+            context.host_endpoint.clone().unwrap().display(),
             daemon.id()
         );
         Self {
@@ -467,9 +424,9 @@ impl Fixture {
             cli_log: Mutex::new(Vec::new()),
         }
     }
-    fn seed(paths: &InstancePaths, context: &RuntimeContext, instance: Uuid) {
+    fn seed(paths: &NodePaths, context: &RuntimeContext, instance: herdr_threads::node::NodeUuid) {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-        let native = NativeCli::new(context.host_endpoint.clone(), clock.clone());
+        let native = NativeCli::new(context.host_endpoint.clone().unwrap(), clock.clone());
         let budget = CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5000),
             cancellation: Cancellation::default(),
@@ -486,14 +443,16 @@ impl Fixture {
             )
             .unwrap();
         let observation = observed.observation();
-        seed_fresh_schema(&paths.database_path);
-        let store_context = StoreContext::new(paths.database_path.clone(), clock.clone());
+        let store_context = StoreContext::new(paths.database_path.clone(), clock.clone())
+            .with_node_seed(herdr_threads::store::schema::NodeSeed {
+                uuid: instance,
+                tag: herdr_threads::node::tag_for(instance, 0),
+                tag_k: 0,
+            });
+        store_context
+            .attach_host(&context.host_endpoint.clone().unwrap().to_string_lossy())
+            .unwrap();
         let db = store_context.open_writer().unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at) VALUES(?1,0)",
-            [instance.to_string()],
-        )
-        .unwrap();
         let store = SqliteStore::new(
             store_context,
             instance.to_string(),
@@ -501,7 +460,11 @@ impl Fixture {
         )
         .unwrap();
         let admission = store
-            .begin_host_observation(&instance.to_string(), &budget)
+            .begin_host_observation(
+                &instance.to_string(),
+                herdr_threads::test_support::test_host_id(),
+                &budget,
+            )
             .unwrap();
         let snapshot = herdr_threads::ports::HostPort::enumerate_targets(&native, &ctx).unwrap();
         let stage = store
@@ -540,14 +503,14 @@ impl Fixture {
             ("sender", "w4:p1", "term_1"),
             ("recipient", "w4:p2", "term_2"),
         ] {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0)",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at,home_node,is_local,host_id) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
         }
         // A live fingerprint: the liveness worker (decision 9) disconnects a binding without one.
         let sender_fp =
             herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "session");
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1,?3,?4)",params![observation.host_boot.as_str(),execution.to_string(),i64::from(sender_fp.pid),sender_fp.start as i64]).unwrap();
         let contexts = paths
-            .instance_dir
+            .node_dir
             .join("contexts")
             .join(format!("{:x}", Sha256::digest(b"sender")));
         fs::DirBuilder::new()
@@ -557,6 +520,7 @@ impl Fixture {
             .unwrap();
         fs::set_permissions(&contexts, fs::Permissions::from_mode(0o700)).unwrap();
         ContextJournal::open(&contexts, instance, "sender", Duration::from_secs(1))
+            .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
             .unwrap()
             .install_reattached(OccupantContext {
                 format_version: 1,
@@ -579,7 +543,10 @@ impl Fixture {
         std::env::join_paths(paths).unwrap()
     }
     fn command(&self) -> Command {
-        self.command_in(&self.context.state_dir, &self.context.host_endpoint)
+        self.command_in(
+            &self.context.state_dir,
+            &self.context.host_endpoint.clone().unwrap(),
+        )
     }
     fn command_in(&self, state: &Path, host: &Path) -> Command {
         self.command_in_format(state, host, true)
@@ -613,7 +580,11 @@ impl Fixture {
         let mut cmd = if json {
             self.command()
         } else {
-            self.command_in_format(&self.context.state_dir, &self.context.host_endpoint, false)
+            self.command_in_format(
+                &self.context.state_dir,
+                &self.context.host_endpoint.clone().unwrap(),
+                false,
+            )
         };
         cmd.args([
             "--cooperative-seat",
@@ -647,7 +618,7 @@ impl Fixture {
             .args(["--json", "--state-dir"])
             .arg(&self.context.state_dir)
             .arg("--host-endpoint")
-            .arg(&self.context.host_endpoint)
+            .arg(self.context.host_endpoint.clone().unwrap())
             .args(["setup", kind, "--harness-binary"])
             .arg(self.iso.path(kind))
             .env("PATH", self.owned_path())
@@ -687,15 +658,21 @@ impl Fixture {
         };
         let mut seats = rows("SELECT * FROM seats WHERE id='recipient'");
         assert_eq!(seats.len(), 1);
+        let mut seat = seats.pop().unwrap();
+        // The first fact that names a local seat publishes it (`seat.created`,
+        // fact-kinds design section 4): a delivery's `message.sent` or the
+        // invitation of a direct pair flips `published`, which is replication
+        // bookkeeping, not identity.
+        seat.retain(|(name, _)| name != "published");
         RecipientIdentity {
-            seat: seats.pop().unwrap(),
+            seat,
             bindings: rows(
                 "SELECT * FROM occupant_bindings WHERE seat_id='recipient' ORDER BY ordinal",
             ),
         }
     }
     fn journal(&self) -> PathBuf {
-        self.paths.instance_dir.join("intents")
+        self.paths.node_dir.join("intents")
     }
     fn reference(&self) -> String {
         let files: Vec<_> = fs::read_dir(self.journal())
@@ -771,7 +748,16 @@ impl Fixture {
         let bootstrap = argv.last().unwrap();
         assert!(bootstrap.contains(&self.instance.to_string()));
         assert!(bootstrap.contains(self.context.state_dir.to_str().unwrap()));
-        assert!(bootstrap.contains(self.context.host_endpoint.to_str().unwrap()));
+        assert!(
+            bootstrap.contains(
+                self.context
+                    .host_endpoint
+                    .clone()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            )
+        );
         assert!(!bootstrap.contains(BODY));
         let host = self.host.state.lock().unwrap();
         assert_eq!(host.helpers.len(), 1);
@@ -817,7 +803,7 @@ impl Fixture {
         self.db().execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT 'recipient',1,'w4:p2',host_boot,host_epoch,1,'codex','peer-session',?1,'cooperative_top_level',observed_at,registered_at,'term_2',incarnation,?2,?3 FROM occupant_bindings WHERE seat_id='sender'",params![execution.to_string(),i64::from(peer_fp.pid),peer_fp.start as i64]).unwrap();
         let contexts = self
             .paths
-            .instance_dir
+            .node_dir
             .join("contexts")
             .join(format!("{:x}", Sha256::digest(b"recipient")));
         fs::DirBuilder::new()
@@ -832,6 +818,7 @@ impl Fixture {
             "recipient",
             Duration::from_secs(1),
         )
+        .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
         .unwrap()
         .install_reattached(OccupantContext {
             format_version: 1,
@@ -1163,8 +1150,11 @@ fn new_tab_preserves_both_harness_configs_and_caller_workspace() {
         let alias = f.iso.path("state-alias");
         std::os::unix::fs::symlink(&f.context.state_dir, &alias).unwrap();
         let host_parent = f.iso.path("host-alias");
-        std::os::unix::fs::symlink(f.context.host_endpoint.parent().unwrap(), &host_parent)
-            .unwrap();
+        std::os::unix::fs::symlink(
+            f.context.host_endpoint.clone().unwrap().parent().unwrap(),
+            &host_parent,
+        )
+        .unwrap();
         let mut cmd = f.command_in(&alias, &host_parent.join("host.sock"));
         cmd.args(["retry", out["handoff"]["recovery_ref"].as_str().unwrap()]);
         let replay = successful(f.capture(cmd));
@@ -1652,7 +1642,7 @@ fn public_copied_uuid_namespace_refuses_before_effects() {
     ));
     let saved = original.original_bytes();
     assert!(!saved.is_empty());
-    let foreign = Fixture::with_instance(Some(original.instance));
+    let foreign = Fixture::with_instance(Some(&original));
     assert_eq!(foreign.instance, original.instance);
     fs::create_dir_all(foreign.journal()).unwrap();
     fs::set_permissions(foreign.journal(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -1748,7 +1738,7 @@ fn final_sdd_actual_native_maximum_completes_and_historical_retry_never_relaunch
         assert_eq!(actual.len(), 64);
         assert_eq!(&actual[..63], frozen);
         assert!(actual[63].contains(f.context.state_dir.to_str().unwrap()));
-        assert!(actual[63].contains(f.context.host_endpoint.to_str().unwrap()));
+        assert!(actual[63].contains(f.context.host_endpoint.clone().unwrap().to_str().unwrap()));
         assert!(actual[63].len() <= 4096);
         let reference = first["handoff"]["recovery_ref"].as_str().unwrap();
         let retry = successful(f.run(&["retry", reference], "'malformed"));
@@ -1774,14 +1764,23 @@ fn final_sdd_pending(f: &Fixture, out: &Output, phase: &str) -> Value {
     );
     assert_eq!(
         report["namespace"]["host_endpoint"],
-        f.context.host_endpoint.to_str().unwrap()
+        f.context.host_endpoint.clone().unwrap().to_str().unwrap()
     );
     assert_eq!(report["recovery_ref"], f.reference());
     assert_eq!(report["attempt"], 1);
     for key in ["retry_argv", "inspect_argv"] {
         let argv: Vec<String> = serde_json::from_value(report[key].clone()).unwrap();
         assert!(argv.contains(&f.context.state_dir.to_string_lossy().into_owned()));
-        assert!(argv.contains(&f.context.host_endpoint.to_string_lossy().into_owned()));
+        assert!(
+            argv.contains(
+                &f.context
+                    .host_endpoint
+                    .clone()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
     }
     report.clone()
 }
@@ -1821,7 +1820,7 @@ fn final_sdd_public_creation_unknown_reports_pinned_attempt_and_conditional_huma
     assert!(text.contains("outcome: creation_unknown"));
     assert!(text.contains("created_pane_argv: herdr-threads human --state-dir"));
     assert!(text.contains(f.context.state_dir.to_str().unwrap()));
-    assert!(text.contains(f.context.host_endpoint.to_str().unwrap()));
+    assert!(text.contains(f.context.host_endpoint.clone().unwrap().to_str().unwrap()));
     let retry = f.run(&["retry", &f.reference()], "'malformed");
     let second = final_sdd_pending(&f, &retry, "creation");
     assert_eq!(report, second);
@@ -1996,7 +1995,7 @@ fn pending_public_postpublication_witnessed_read_failure_reports() {
             );
             assert_eq!(
                 report["namespace"]["host_endpoint"],
-                f.context.host_endpoint.to_str().unwrap()
+                f.context.host_endpoint.clone().unwrap().to_str().unwrap()
             );
             // No canonical status was observed: unknown, never invented.
             assert!(report["attempt"].is_null());
@@ -2015,7 +2014,16 @@ fn pending_public_postpublication_witnessed_read_failure_reports() {
             let retry: Vec<String> = serde_json::from_value(report["retry_argv"].clone()).unwrap();
             assert_eq!(retry[1], "HERDR_PANE_ID=w4:p1");
             assert!(retry.contains(&f.context.state_dir.to_string_lossy().into_owned()));
-            assert!(retry.contains(&f.context.host_endpoint.to_string_lossy().into_owned()));
+            assert!(
+                retry.contains(
+                    &f.context
+                        .host_endpoint
+                        .clone()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                )
+            );
             assert_eq!(
                 retry[retry.len() - 2..],
                 ["retry".to_owned(), reference.clone()]

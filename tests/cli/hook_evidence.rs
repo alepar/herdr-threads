@@ -47,8 +47,9 @@ fn hermes_structural_domains_reach_real_recorder_without_qualification_conflatio
     let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
     let store = Arc::new(
         crate::store::SqliteStore::new(
-            crate::store::connection::StoreContext::new(iso.path("store.db"), clock.clone()),
-            "i",
+            crate::store::connection::StoreContext::new(iso.path("store.db"), clock.clone())
+                .with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             crate::store::StoreSettings::default(),
         )
         .unwrap(),
@@ -899,7 +900,7 @@ fn evidence_skips_a_previous_protocol_daemon() {
     use crate::{
         daemon::{
             ownership::OwnerLock,
-            paths::{InstancePaths, RuntimeContext},
+            paths::{NodePaths, RuntimeContext},
         },
         protocol::wire::PROTOCOL_VERSION,
     };
@@ -917,8 +918,8 @@ fn evidence_skips_a_previous_protocol_daemon() {
         None,
     )
     .unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let lock = OwnerLock::acquire(&paths).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let lock = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     // Bound but never accepted: a client that sent anyway would block.
     let listener = lock.bind_socket().unwrap();
     lock.publish_endpoint(&listener, "0.0.1", PROTOCOL_VERSION - 1)
@@ -1239,8 +1240,9 @@ fn codex_session_resumed_after_an_upgrade_records_nothing_for_either_version() {
             crate::store::connection::StoreContext::new(
                 iso.state_root().join("store.db"),
                 Arc::clone(&clock),
-            ),
-            "i",
+            )
+            .with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             crate::store::StoreSettings::default(),
         )
         .unwrap(),

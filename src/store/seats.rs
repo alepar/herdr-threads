@@ -3,7 +3,7 @@
 use crate::{
     ports::{
         BindingEvidence, DurableStructuralProof, DurableWorkAdmission, EvidenceKind,
-        ExecutionEvidence, GuardedInvalidationTransition, GuardedSeatTransition,
+        ExecutionEvidence, GuardedInvalidationTransition, GuardedSeatTransition, HostId,
         HostInvalidationFence, HostInvalidationReason, HostObservation, HostObservationAdmission,
         HostUiState, InvalidationSeatPage, ObservationProvenance, OperatorRequest,
         OrdinaryResolutionAttempt, OrdinaryResolutionGuard, OrdinaryResolutionOutcome,
@@ -27,10 +27,346 @@ use crate::{
         connection::{DecisionInstant, StoreContext, api_error, store_error},
         control,
         effective::{self, EffectiveObservationSource, EffectiveRecoveryDisposition},
+        journal,
+        materialize::MaterializeInput,
         schema,
+    },
+    sync::facts::{
+        payload::SeatKind,
+        seat::{RetireReason, SeatCreated, SeatCreatedPayload, SeatRetiredPayload},
     },
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+
+/// The one published local-seat predicate: a seat is local when its home is
+/// this node (`is_local = 1`; the `seats_home_node_*` triggers keep the column
+/// equal to `home_node = local_node.id`, and a home never changes).
+///
+/// Responsibility: owns the predicate's spelling ([`LOCAL_SEAT`] for SQL,
+/// [`is_local_seat`] for one seat). Hides how locality is stored. Must not be
+/// restated: callers never compare `home_node` inline. New locality questions
+/// (a remote seat's host, its kind) get a function here.
+///
+/// Adopting node-local workers (each selects local seats only; a new
+/// seat-selecting worker query adds it): observation and reconciliation (this
+/// module's snapshot apply, absence closure, allocation, retirement by
+/// observation, recovery baseline), liveness sampling
+/// (`bindings::liveness_candidates`), wake (`WAKE_SEAT_WALK`, `BATCH_SEATS_SQL`,
+/// `wake::reservable_seat_sql`, which the poke scans share), archival
+/// (`archival::has_live_remote_member` negates it) and pane listings
+/// (`panes`, the picker directory, `seats --panes`). Reads that list members
+/// (participants, thread show, directory, `seats`) deliberately include remote
+/// seats and render them with state `remote`. Role: the one locality test.
+pub(crate) const LOCAL_SEAT: &str = "is_local=1";
+
+/// The Herdr server a local seat sits on (`seats.host_id`; the last server of an
+/// unresolved seat). A remote or unknown seat has none.
+pub(crate) fn seat_host(conn: &Connection, seat: &SeatId) -> Result<HostId, ApiError> {
+    conn.query_row(
+        &format!("SELECT host_id FROM seats WHERE id=?1 AND {LOCAL_SEAT}"),
+        [seat.as_str()],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(store_error)?
+    .map(HostId::from_row)
+    .ok_or_else(|| api_error(ErrorCode::NotFound, "local seat not found"))
+}
+
+/// Whether `seat` exists and is local (see [`LOCAL_SEAT`]); an unknown seat is
+/// not local.
+pub(crate) fn is_local_seat(conn: &Connection, seat: &SeatId) -> Result<bool, ApiError> {
+    conn.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND {LOCAL_SEAT})"),
+        [seat.as_str()],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
+// Seats whose first occupant binding was enrolled in the running write
+// transaction and that are not yet published (`seat.created`).
+//
+// `bindings::enroll_with_hooks` takes a bare connection and has no store
+// context to author with, so it only queues the seat here; the write runner
+// (`StoreContext::execute_decision`) publishes the queue in the same
+// transaction before it commits (`PublicationScope::publish`).
+thread_local! {
+    static PENDING_PUBLICATION: std::cell::RefCell<Option<Vec<SeatId>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The publication queue of one write transaction.
+///
+/// Responsibility
+/// - Owns: the thread-local queue `bindings::enroll_with_hooks` fills
+///   ([`queue_publication`]) and its drain into [`ensure_published`] at the end
+///   of the transaction's apply step.
+/// - Must not: author outside the transaction that queued, keep a seat past
+///   its transaction (dropping the scope clears the queue, so a failed
+///   transaction publishes nothing), or decide the kind (that is
+///   [`ensure_published`]).
+/// - Role: opened by the write runners in `store::connection`; a write outside
+///   them (a plain-connection unit test) queues nothing and publishes nothing.
+pub(crate) struct PublicationScope {
+    owner: bool,
+}
+
+impl PublicationScope {
+    /// Opens the queue; a nested scope joins the outer one.
+    pub(crate) fn begin() -> Self {
+        let owner = PENDING_PUBLICATION.with(|q| {
+            let mut q = q.borrow_mut();
+            if q.is_some() {
+                false
+            } else {
+                *q = Some(Vec::new());
+                true
+            }
+        });
+        Self { owner }
+    }
+
+    /// Publishes every queued seat (each through [`ensure_published`], so an
+    /// already published seat authors nothing). A store without an open
+    /// journal publishes nothing.
+    pub(crate) fn publish(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &StoreContext,
+        decision: DecisionInstant,
+    ) -> Result<(), ApiError> {
+        if !self.owner {
+            return Ok(());
+        }
+        let queued = PENDING_PUBLICATION
+            .with(|q| q.borrow_mut().as_mut().map(std::mem::take))
+            .unwrap_or_default();
+        if !ctx.journal_open() {
+            return Ok(());
+        }
+        for seat in queued {
+            ensure_published(tx, ctx, decision, &seat)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PublicationScope {
+    fn drop(&mut self) {
+        if self.owner {
+            PENDING_PUBLICATION.with(|q| *q.borrow_mut() = None);
+        }
+    }
+}
+
+/// Queues `seat` for publication when a [`PublicationScope`] is open.
+pub(crate) fn queue_publication(seat: &SeatId) {
+    PENDING_PUBLICATION.with(|q| {
+        if let Some(queue) = q.borrow_mut().as_mut() {
+            queue.push(seat.clone());
+        }
+    });
+}
+
+/// Publishes a local seat once: authors `seat.created` so other nodes list it.
+/// Returns whether it authored.
+///
+/// Responsibility
+/// - Owns: the decision "this local seat is not yet published" (`is_local = 1`,
+///   `published = 0`), the published kind (`schema::open_binding_role`:
+///   `Some("human")` is `human`, anything else, no open binding included, is
+///   `agent`) and the one `journal::author::<SeatCreated>` call; the handler
+///   then sets `published = 1`.
+/// - Does not: run for a remote or already published seat (those return
+///   `false` and write nothing), run on the local-only route (managed
+///   membership never publishes), or allocate a seat (allocation by
+///   observation and the operator fresh seat stay local inserts that author
+///   nothing).
+/// - Role: called by `bindings::enroll_with_hooks` (through the write runner's
+///   [`PublicationScope`]) when a seat is resolved to an occupant, and by
+///   `FactRoute::Journal` for every referenced local seat as an idempotent
+///   backstop. Commands never call it themselves.
+///
+/// Accepted limit: a seat's published kind is fixed. If its occupant later
+/// switches between human and agent, other nodes keep the published kind; only
+/// the ACK expectation of remote recipients depends on it.
+pub fn ensure_published(
+    tx: &Transaction<'_>,
+    ctx: &StoreContext,
+    decision: DecisionInstant,
+    seat: &SeatId,
+) -> Result<bool, ApiError> {
+    let row: Option<(bool, bool)> = tx
+        .query_row(
+            "SELECT is_local, published FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if row != Some((true, false)) {
+        return Ok(false);
+    }
+    let kind = match schema::open_binding_role(tx, seat)? {
+        Some("human") => SeatKind::Human,
+        _ => SeatKind::Agent,
+    };
+    journal::author::<SeatCreated>(
+        tx,
+        ctx,
+        decision,
+        &SeatCreatedPayload {
+            seat: seat.clone(),
+            kind,
+            display_name: None,
+        },
+    )?;
+    Ok(true)
+}
+
+/// Materializes `seat.created` (fact-kinds design section 4), shared by the
+/// handler for both the authoring node and every other node.
+///
+/// - Row exists and is local: `published = 1` (the authoring node).
+/// - Row exists and is remote: no-op (a second `seat.created` for one seat,
+///   even with another kind, keeps the first: the root accepted fork limit).
+/// - Row absent, origin is another node: insert the remote row.
+/// - Row absent, origin is this node (an own old incarnation pulled back after
+///   a wipe): insert a local `unresolved` seat on the `herdr_hosts` row with
+///   the greatest `last_attached_at`; with no such row it is
+///   `HostUnavailable "own seat restore needs an attached host"`, which the
+///   handler maps to `FactError::Wait { on: Host }`: the entry parks on
+///   `wait:host` and is re-attempted at startup and when the first host
+///   attaches.
+pub fn materialize_seat_created(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    payload: &SeatCreatedPayload,
+) -> Result<(), ApiError> {
+    let id = payload.seat.as_str();
+    let existing: Option<bool> = tx
+        .query_row("SELECT is_local FROM seats WHERE id=?1", [id], |r| r.get(0))
+        .optional()
+        .map_err(store_error)?;
+    match existing {
+        Some(true) => {
+            tx.execute(
+                "UPDATE seats SET published=1 WHERE id=?1 AND published=0",
+                [id],
+            )
+            .map_err(store_error)?;
+        }
+        Some(false) => {}
+        None if !m.local_origin => {
+            let kind = match payload.kind {
+                SeatKind::Agent => "agent",
+                SeatKind::Human => "human",
+            };
+            tx.execute(
+                "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+                 VALUES(?1,(SELECT id FROM local_node),'remote','native',0,?2,?3,0,?4,1)",
+                params![id, m.origin_ms, m.origin_node.to_string(), kind],
+            )
+            .map_err(store_error)?;
+        }
+        None => {
+            let host: Option<i64> = tx
+                .query_row(
+                    "SELECT host_id FROM herdr_hosts ORDER BY last_attached_at DESC, host_id DESC LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(store_error)?;
+            let Some(host) = host else {
+                return Err(api_error(
+                    ErrorCode::HostUnavailable,
+                    "own seat restore needs an attached host",
+                ));
+            };
+            tx.execute(
+                "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at,home_node,is_local,host_id,published) \
+                 VALUES(?1,(SELECT id FROM local_node),'unresolved','other','native',1,?2,(SELECT id FROM local_node),1,?3,1)",
+                params![id, m.origin_ms, host],
+            )
+            .map_err(store_error)?;
+        }
+    }
+    Ok(())
+}
+
+/// Materializes `seat.retired` (fact-kinds design section 4), shared by the
+/// handler for both the authoring node and every other node.
+///
+/// - Local origin: a no-op. The authoring node's retirement fence already
+///   retired the row, and its job writes the audit; an own old incarnation or
+///   a re-issued copy changes nothing, and a local-origin fact never retires a
+///   remote seat (it is not the seat's home).
+/// - Remote seat, not yet retired: `state = 'retired'`, `retired_at` from the
+///   payload, `retired_seq = decision_seq`; the send-eligibility and directory
+///   revisions move and a `retirements` row with `origin = 'replicated'` lets
+///   the retirement job (`advance_retirement`) settle the seat's pending
+///   invitations and receipts as `recipient_retired` and close its memberships.
+/// - Remote seat already retired: a no-op (no second row).
+/// - Unknown seat: `InvalidRequest` (`needs` makes this the overflow case).
+pub fn materialize_seat_retired(
+    tx: &Transaction<'_>,
+    m: &MaterializeInput<'_>,
+    payload: &SeatRetiredPayload,
+) -> Result<(), ApiError> {
+    if m.local_origin {
+        return Ok(());
+    }
+    let id = payload.seat.as_str();
+    let row: Option<bool> = tx
+        .query_row("SELECT is_local FROM seats WHERE id=?1", [id], |r| r.get(0))
+        .optional()
+        .map_err(store_error)?;
+    match row {
+        None => {
+            return Err(api_error(ErrorCode::InvalidRequest, "unknown seat"));
+        }
+        // `require_author` already refused a non-home origin; a local seat is
+        // retired by its own fence.
+        Some(true) => return Ok(()),
+        Some(false) => {}
+    }
+    let instance: String = tx
+        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+        .map_err(store_error)?;
+    let retired_seq = i64::try_from(m.decision_seq)
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "decision_seq out of range"))?;
+    let changed = schema::apply_eligibility_transition(tx, &instance, |tx| {
+        let changed = tx
+            .execute(
+                "UPDATE seats SET state='retired',retired_at=?1,retired_seq=?2 WHERE id=?3 AND state!='retired'",
+                params![payload.retired_at, retired_seq, id],
+            )
+            .map_err(store_error)?;
+        Ok(changed == 1)
+    })?;
+    if !changed {
+        return Ok(());
+    }
+    schema::bump_filter_revision(tx, &instance, "directory", "all")?;
+    crate::store::control::bump_member_directory(tx, &instance, &payload.seat)?;
+    let job = crate::protocol::ids::RetirementJobId::new(crate::store::public_ids::fresh(
+        tx,
+        crate::protocol::ids::prefix::RETIREMENT,
+        &[(
+            "retirements",
+            "id",
+            crate::protocol::ids::prefix::RETIREMENT,
+        )],
+    )?);
+    tx.execute(
+        "INSERT INTO retirements(id,seat_id,cutover_at,origin) VALUES (?1,?2,?3,'replicated')",
+        params![job.as_str(), id, payload.retired_at],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
 
 #[cfg(test)]
 use crate::ports::HostSnapshot;
@@ -66,15 +402,16 @@ fn snapshot_budget(context: &StoreContext, budget: &CallBudget) -> Result<(), Ap
     }
 }
 
-/// Columns of a `snapshot_generations` row, in `load_snapshot_stage`'s SELECT order.
-type SnapshotStageColumns = (String, String, i64, i64, String, i64, i64, String);
+/// Columns of a `snapshot_generations` row, in `load_snapshot_stage`'s SELECT order
+/// (the first is the generation's `host_id`).
+type SnapshotStageColumns = (i64, String, i64, i64, String, i64, i64, String);
 
 fn load_snapshot_stage(
     conn: &Connection,
     stage: &SnapshotGenerationId,
 ) -> Result<SnapshotStageColumns, ApiError> {
     conn.query_row(
-        "SELECT instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status FROM snapshot_generations WHERE id=?1",
+        "SELECT host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status FROM snapshot_generations WHERE id=?1",
         [stage.as_str()],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
     )
@@ -101,6 +438,7 @@ pub fn begin_host_observation(
     context: &StoreContext,
     conn: &mut Connection,
     instance: &str,
+    host: HostId,
     budget: &CallBudget,
 ) -> Result<HostObservationAdmission, ApiError> {
     snapshot_budget(context, budget)?;
@@ -113,32 +451,39 @@ pub fn begin_host_observation(
     context.execute_budgeted_decision(
         conn, budget,
         |_| Ok(()),
-        |tx, at, ()| {
-            tx.execute(
-                "INSERT INTO host_instances(id,created_at) VALUES (?1,?2) ON CONFLICT(id) DO NOTHING",
-                params![instance, at.utc.0],
-            )
-            .map_err(store_error)?;
+        |tx, _at, ()| {
             let changed = tx
                 .execute(
-                    "UPDATE host_instances SET observation_admission_sequence=observation_admission_sequence+1 WHERE id=?1 AND observation_admission_sequence<?2",
-                    params![instance, i64::MAX],
+                    "UPDATE herdr_hosts SET observation_admission_sequence=observation_admission_sequence+1 WHERE host_id=?3 AND node_id=?1 AND observation_admission_sequence<?2",
+                    params![instance, i64::MAX, host.get()],
                 )
                 .map_err(store_error)?;
             if changed != 1 {
-                return Err(api_error(ErrorCode::SequenceExhausted, "host observation admission exhausted"));
+                let known: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM herdr_hosts WHERE host_id=?1 AND node_id=?2)",
+                        params![host.get(), instance],
+                        |r| r.get(0),
+                    )
+                    .map_err(store_error)?;
+                return Err(if known {
+                    api_error(ErrorCode::SequenceExhausted, "host observation admission exhausted")
+                } else {
+                    api_error(ErrorCode::HostUnavailable, "no Herdr server attached")
+                });
             }
             let (sequence, active, boot, epoch, lifecycle, invalidation): (
                 i64, Option<String>, Option<String>, i64, i64, i64,
             ) = tx
                 .query_row(
-                    "SELECT observation_admission_sequence,active_snapshot_id,host_boot,host_epoch,lifecycle_revision,invalidation_revision FROM host_instances WHERE id=?1",
-                    [instance],
+                    "SELECT observation_admission_sequence,active_snapshot_id,host_boot,host_epoch,lifecycle_revision,invalidation_revision FROM herdr_hosts WHERE host_id=?2 AND node_id=?1",
+                    params![instance, host.get()],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
                 )
                 .map_err(store_error)?;
             Ok(HostObservationAdmission {
                 instance: instance.into(),
+                host_id: host,
                 sequence: sequence as u64,
                 expected_active: active.map(SnapshotGenerationId::store_issued),
                 expected_boot: boot.map(HostBootId::new),
@@ -148,19 +493,6 @@ pub fn begin_host_observation(
             })
         },
     )
-}
-
-pub fn persisted_host_epoch(conn: &Connection, instance: &str) -> Result<u64, ApiError> {
-    let epoch: Option<i64> = conn
-        .query_row(
-            "SELECT host_epoch FROM host_instances WHERE id=?1",
-            [instance],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(store_error)?;
-    u64::try_from(epoch.unwrap_or(0))
-        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative persisted host epoch"))
 }
 
 /// Commit one explicit current-target read under the store-issued observation
@@ -213,8 +545,8 @@ pub fn publish_current_target_observation(
         |tx| {
             type HostColumns = Option<(Option<String>, i64, i64, Option<String>, i64, i64, i64, i64)>;
             let host: HostColumns = tx.query_row(
-                "SELECT host_boot,host_epoch,observation_sequence,active_snapshot_id,lifecycle_revision,invalidation_revision,observation_admission_sequence,observation_decided_sequence FROM host_instances WHERE id=?1",
-                [admission.instance()],
+                "SELECT host_boot,host_epoch,observation_sequence,active_snapshot_id,lifecycle_revision,invalidation_revision,observation_admission_sequence,observation_decided_sequence FROM herdr_hosts WHERE host_id=?2 AND node_id=?1",
+                params![admission.instance(), admission.host_id.get()],
                 |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
             ).optional().map_err(store_error)?;
             let Some((boot, epoch, published_sequence, active, lifecycle, invalidation, issued, decided)) = host else {
@@ -236,8 +568,8 @@ pub fn publish_current_target_observation(
             let Some(active) = active else { return Ok(false); };
             if let Some(proof) = &proof {
                 let snapshot_incarnation: Option<String> = tx.query_row(
-                    "SELECT incarnation FROM snapshot_generations WHERE id=?1 AND instance_id=?2 AND status='published'",
-                    params![active,admission.instance()],
+                    "SELECT incarnation FROM snapshot_generations WHERE id=?1 AND host_id=?2 AND status='published'",
+                    params![active,admission.host_id.get()],
                     |r| r.get(0),
                 ).optional().map_err(store_error)?;
                 if snapshot_incarnation.as_deref() != Some(proof.incarnation()) {
@@ -245,8 +577,8 @@ pub fn publish_current_target_observation(
                 }
             }
             let prior: Option<(String, i64, i64, Option<i64>)> = tx.query_row(
-                "SELECT host_boot,epoch,observation_sequence,connection_epoch FROM observed_targets WHERE instance_id=?1 AND target_id=?2",
-                params![admission.instance(),observation.target.as_str()],
+                "SELECT host_boot,epoch,observation_sequence,connection_epoch FROM observed_targets WHERE host_id=?1 AND target_id=?2",
+                params![admission.host_id.get(),observation.target.as_str()],
                 |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
             ).optional().map_err(store_error)?;
             if prior.is_some_and(|(prior_boot,prior_epoch,prior_sequence,prior_connection)| {
@@ -261,26 +593,26 @@ pub fn publish_current_target_observation(
         |tx, _, fresh| {
             if !fresh { return Ok(false); }
             tx.execute(
-                "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,connection_epoch,incarnation,incarnation_source_kind,observed_at,provenance,terminal_id,occupancy,ui_state,verified_execution,top_level_occupant) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'fresh',?11,?12,?13,?14,?15) ON CONFLICT(instance_id,target_id) DO UPDATE SET host_boot=excluded.host_boot,epoch=excluded.epoch,generation=excluded.generation,observation_sequence=excluded.observation_sequence,connection_epoch=excluded.connection_epoch,incarnation=excluded.incarnation,incarnation_source_kind=excluded.incarnation_source_kind,observed_at=excluded.observed_at,provenance='fresh',terminal_id=excluded.terminal_id,occupancy=excluded.occupancy,ui_state=excluded.ui_state,verified_execution=excluded.verified_execution,top_level_occupant=excluded.top_level_occupant",
-                params![admission.instance(),observation.target.as_str(),observation.host_boot.as_str(),host_epoch,generation,sequence,
+                "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,connection_epoch,incarnation,incarnation_source_kind,observed_at,provenance,terminal_id,occupancy,ui_state,verified_execution,top_level_occupant) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'fresh',?11,?12,?13,?14,?15) ON CONFLICT(host_id,target_id) DO UPDATE SET host_boot=excluded.host_boot,epoch=excluded.epoch,generation=excluded.generation,observation_sequence=excluded.observation_sequence,connection_epoch=excluded.connection_epoch,incarnation=excluded.incarnation,incarnation_source_kind=excluded.incarnation_source_kind,observed_at=excluded.observed_at,provenance='fresh',terminal_id=excluded.terminal_id,occupancy=excluded.occupancy,ui_state=excluded.ui_state,verified_execution=excluded.verified_execution,top_level_occupant=excluded.top_level_occupant",
+                params![admission.host_id.get(),observation.target.as_str(),observation.host_boot.as_str(),host_epoch,generation,sequence,
                     proof.as_ref().map(|_| connection_epoch),proof.as_ref().map(DurableStructuralProof::incarnation),
                     proof.as_ref().map(DurableStructuralProof::source_spelling),observation.observed_at_utc.0,
                     observation.terminal.as_ref().map(TerminalId::as_str),occupancy,ui,execution,top_level],
             ).map_err(store_error)?;
             tx.execute(
-                "UPDATE host_instances SET observation_decided_sequence=?1 WHERE id=?2 AND observation_decided_sequence<?1",
-                params![admission_sequence,admission.instance()],
+                "UPDATE herdr_hosts SET observation_decided_sequence=?1 WHERE host_id=?3 AND node_id=?2 AND observation_decided_sequence<?1",
+                params![admission_sequence,admission.instance(),admission.host_id.get()],
             ).map_err(store_error)?;
             let current_seat: Option<(String, bool)> = tx.query_row(
-                "SELECT s.id, s.target_generation=?3 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.host_boot=?4 AND b.host_epoch=?5) FROM seats s WHERE s.instance_id=?1 AND s.target_id=?2 AND s.state='resolved'",
-                params![admission.instance(),observation.target.as_str(),generation,observation.host_boot.as_str(),host_epoch],
+                "SELECT s.id, s.target_generation=?3 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.host_boot=?4 AND b.host_epoch=?5) FROM seats s WHERE s.host_id=?1 AND s.target_id=?2 AND s.state='resolved' AND s.is_local=1",
+                params![admission.host_id.get(),observation.target.as_str(),generation,observation.host_boot.as_str(),host_epoch],
                 |r| Ok((r.get(0)?,r.get(1)?)),
             ).optional().map_err(store_error)?;
             if let Some((seat, false)) = current_seat {
                 schema::ensure_unavailability_episode(tx, &SeatId::new(seat))?;
             }
             schema::apply_eligibility_transition(tx, admission.instance(), |_| Ok(true))?;
-            schema::bump_lifecycle_revision(tx, admission.instance())?;
+            schema::bump_host_lifecycle_revision(tx, admission.host_id)?;
             Ok(true)
         },
     )
@@ -300,8 +632,8 @@ pub fn invalidate_host_observation(
         |tx| {
             let state: Option<(i64, i64)> = tx
                 .query_row(
-                    "SELECT observation_admission_sequence,observation_decided_sequence FROM host_instances WHERE id=?1",
-                    [admission.instance()],
+                    "SELECT observation_admission_sequence,observation_decided_sequence FROM herdr_hosts WHERE host_id=?2 AND node_id=?1",
+                    params![admission.instance(), admission.host_id.get()],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()
@@ -317,8 +649,8 @@ pub fn invalidate_host_observation(
             }
             let changed = tx
                 .execute(
-                    "UPDATE host_instances SET observation_decided_sequence=?1,invalidation_revision=invalidation_revision+1 WHERE id=?2 AND observation_decided_sequence<?1 AND invalidation_revision<?3",
-                    params![sequence, admission.instance(), i64::MAX],
+                    "UPDATE herdr_hosts SET observation_decided_sequence=?1,invalidation_revision=invalidation_revision+1 WHERE host_id=?4 AND node_id=?2 AND observation_decided_sequence<?1 AND invalidation_revision<?3",
+                    params![sequence, admission.instance(), i64::MAX, admission.host_id.get()],
                 )
                 .map_err(store_error)?;
             if changed != 1 {
@@ -327,8 +659,8 @@ pub fn invalidate_host_observation(
             schema::apply_eligibility_transition(tx, admission.instance(), |_| Ok(true))?;
             let revision: i64 = tx
                 .query_row(
-                    "SELECT invalidation_revision FROM host_instances WHERE id=?1",
-                    [admission.instance()],
+                    "SELECT invalidation_revision FROM herdr_hosts WHERE host_id=?2 AND node_id=?1",
+                    params![admission.instance(), admission.host_id.get()],
                     |r| r.get(0),
                 )
                 .map_err(store_error)?;
@@ -354,6 +686,7 @@ pub fn begin_snapshot_stage(
     if header.instance.is_empty()
         || header.instance.len() > 128
         || header.admission.instance != header.instance
+        || header.admission.host_id != header.host_id
         || header.boot.as_str().is_empty()
         || header.incarnation.is_empty()
         || header.incarnation.len() > 128
@@ -372,8 +705,8 @@ pub fn begin_snapshot_stage(
             type OldColumns = Option<(Option<String>, i64, i64, Option<String>, i64, i64, Option<i64>, i64, i64)>;
             let old: OldColumns = tx
                 .query_row(
-                    "SELECT host_boot,host_epoch,observation_sequence,active_snapshot_id,lifecycle_revision,invalidation_revision,recovery_epoch,observation_admission_sequence,observation_decided_sequence FROM host_instances WHERE id=?1",
-                    [&header.instance],
+                    "SELECT host_boot,host_epoch,observation_sequence,active_snapshot_id,lifecycle_revision,invalidation_revision,recovery_epoch,observation_admission_sequence,observation_decided_sequence FROM herdr_hosts WHERE host_id=?2 AND node_id=?1",
+                    params![&header.instance, header.host_id.get()],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)),
                 )
                 .optional()
@@ -406,8 +739,8 @@ pub fn begin_snapshot_stage(
                 })
                 .unwrap_or((None, 0, 0, None));
             tx.execute(
-                "INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,status,captured_active_id,captured_lifecycle_revision,captured_invalidation_revision,captured_recovery_epoch,admission_sequence,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'building',?8,?9,?10,?11,?12,?13)",
-                params![id.as_str(), header.instance, header.boot.as_str(), epoch, sequence, header.incarnation, expected, active, lifecycle, invalidation, recovery_epoch, admission_sequence, at.utc.0],
+                "INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,status,captured_active_id,captured_lifecycle_revision,captured_invalidation_revision,captured_recovery_epoch,admission_sequence,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'building',?8,?9,?10,?11,?12,?13)",
+                params![id.as_str(), header.host_id.get(), header.boot.as_str(), epoch, sequence, header.incarnation, expected, active, lifecycle, invalidation, recovery_epoch, admission_sequence, at.utc.0],
             )
             .map_err(store_error)?;
             Ok(snapshot_stage(&id, expected, 0, "building"))
@@ -645,18 +978,18 @@ pub fn publish_snapshot_stage(
         conn, budget,
         |tx| {
             type RowColumns = Option<(
-                String, String, i64, i64, String, i64, i64, String,
+                i64, String, i64, i64, String, i64, i64, String,
                 Option<String>, i64, i64, Option<i64>, i64,
             )>;
             let row: RowColumns = tx
                 .query_row(
-                    "SELECT instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_active_id,captured_lifecycle_revision,captured_invalidation_revision,captured_recovery_epoch,admission_sequence FROM snapshot_generations WHERE id=?1",
+                    "SELECT host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_active_id,captured_lifecycle_revision,captured_invalidation_revision,captured_recovery_epoch,admission_sequence FROM snapshot_generations WHERE id=?1",
                     [stage.as_str()],
                     |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?)),
                 )
                 .optional()
                 .map_err(store_error)?;
-            let Some((instance, boot, epoch, sequence, incarnation, expected, staged, status, captured_active, captured_lifecycle, captured_invalidation, captured_recovery_epoch, admission_sequence)) = row else {
+            let Some((host_id, boot, epoch, sequence, incarnation, expected, staged, status, captured_active, captured_lifecycle, captured_invalidation, captured_recovery_epoch, admission_sequence)) = row else {
                 return Err(api_error(ErrorCode::NotFound, "snapshot stage not found"));
             };
             if status != "sealed" || staged != expected {
@@ -664,16 +997,16 @@ pub fn publish_snapshot_stage(
             }
             type CurrentColumns = (
                 Option<String>, Option<String>, i64, i64, Option<String>, Option<i64>,
-                Option<String>, i64, i64, i64, i64, i64,
+                Option<String>, i64, i64, i64, i64, i64, String,
             );
             let current: CurrentColumns = tx
                 .query_row(
-                    "SELECT active_snapshot_id,host_boot,host_epoch,observation_sequence,recovery_boot,recovery_epoch,recovery_baseline_generation_id,baseline_hold_unclaimed,lifecycle_revision,invalidation_revision,observation_admission_sequence,observation_decided_sequence FROM host_instances WHERE id=?1",
-                    [&instance],
-                    |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?)),
+                    "SELECT active_snapshot_id,host_boot,host_epoch,observation_sequence,recovery_boot,recovery_epoch,recovery_baseline_generation_id,baseline_hold_unclaimed,lifecycle_revision,invalidation_revision,observation_admission_sequence,observation_decided_sequence,node_id FROM herdr_hosts WHERE host_id=?1",
+                    [host_id],
+                    |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?)),
                 )
                 .map_err(store_error)?;
-            let (active, old_boot, old_epoch, old_sequence, recovery_boot, recovery_epoch, baseline, old_hold, lifecycle, invalidation, issued, decided) = current;
+            let (active, old_boot, old_epoch, old_sequence, recovery_boot, recovery_epoch, baseline, old_hold, lifecycle, invalidation, issued, decided, instance) = current;
             if active != captured_active
                 || lifecycle != captured_lifecycle
                 || invalidation != captured_invalidation
@@ -700,11 +1033,11 @@ pub fn publish_snapshot_stage(
             let changed_or_unknown_incarnation = prior
                 .as_ref()
                 .is_none_or(|(prior, _, _, _)| *prior != incarnation);
-            let nonretired = has_nonretired_seat(tx, &instance)?;
+            let nonretired = has_nonretired_seat(tx, HostId::from_row(host_id))?;
             let unresolved: bool = tx
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND state='unresolved' LIMIT 1)",
-                    [&instance],
+                    &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved' LIMIT 1)"),
+                    [host_id],
                     |r| r.get(0),
                 )
                 .map_err(store_error)?;
@@ -750,14 +1083,14 @@ pub fn publish_snapshot_stage(
                 },
             ) && !tx
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM observed_targets WHERE instance_id=?1 AND provenance='fresh' AND host_boot=?2 AND epoch=?3 AND observation_sequence>?4)",
-                    params![instance, boot, epoch, old_sequence],
+                    "SELECT EXISTS(SELECT 1 FROM observed_targets WHERE host_id=?1 AND provenance='fresh' AND host_boot=?2 AND epoch=?3 AND observation_sequence>?4)",
+                    params![host_id, boot, epoch, old_sequence],
                     |r| r.get::<_, bool>(0),
                 )
                 .map_err(store_error)?;
-            Ok((instance, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, new_recovery, baseline, hold, !unchanged))
+            Ok((instance, host_id, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, new_recovery, baseline, hold, !unchanged))
         },
-        |tx, _, (instance, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, _new_recovery, baseline, hold, eligibility_may_change)| {
+        |tx, _, (instance, host_id, boot, epoch, sequence, incarnation, expected, admission_sequence, invalidation, _new_recovery, baseline, hold, eligibility_may_change)| {
             let changed = tx
                 .execute(
                     "UPDATE snapshot_generations SET status='published',published_invalidation_revision=?1 WHERE id=?2 AND status='sealed' AND staged_targets=expected_targets",
@@ -768,14 +1101,15 @@ pub fn publish_snapshot_stage(
                 return Err(api_error(ErrorCode::StaleHostObservation, "snapshot stage changed"));
             }
             tx.execute(
-                "UPDATE host_instances SET host_boot=?1,host_epoch=?2,observation_sequence=?3,recovery_boot=?1,recovery_epoch=?2,active_snapshot_id=?4,recovery_baseline_generation_id=?5,baseline_hold_unclaimed=?6,observation_decided_sequence=?7 WHERE id=?8",
-                params![boot,epoch,sequence,stage.as_str(),baseline,hold,admission_sequence,instance],
+                "UPDATE herdr_hosts SET host_boot=?1,host_epoch=?2,observation_sequence=?3,recovery_boot=?1,recovery_epoch=?2,active_snapshot_id=?4,recovery_baseline_generation_id=?5,baseline_hold_unclaimed=?6,observation_decided_sequence=?7 WHERE host_id=?8",
+                params![boot,epoch,sequence,stage.as_str(),baseline,hold,admission_sequence,host_id],
             )
             .map_err(store_error)?;
             schema::apply_eligibility_transition(tx, &instance, |_| Ok(eligibility_may_change))?;
             Ok(PublishedSnapshot {
                 id: stage.clone(),
                 instance,
+                host_id: HostId::from_row(host_id),
                 boot: HostBootId::new(boot),
                 epoch: epoch as u64,
                 observation_sequence: sequence as u64,
@@ -787,30 +1121,33 @@ pub fn publish_snapshot_stage(
     )
 }
 
-pub(crate) fn has_nonretired_seat(conn: &Connection, instance: &str) -> Result<bool, ApiError> {
+pub(crate) fn has_nonretired_seat(conn: &Connection, host: HostId) -> Result<bool, ApiError> {
     conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' LIMIT 1)",
-        [instance],
+        &format!("SELECT EXISTS(SELECT 1 FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=(SELECT node_id FROM herdr_hosts WHERE host_id=?1) AND host_id=?1 AND {LOCAL_SEAT} AND state!='retired' LIMIT 1)"),
+        [host.get()],
         |r| r.get(0),
     )
     .map_err(store_error)
 }
 
+/// The still-active publication `stage`; reconciliation reads only the seats of
+/// its `host_id`.
 fn active_publication(
     conn: &Connection,
     stage: &SnapshotGenerationId,
 ) -> Result<PublishedSnapshot, ApiError> {
-    type RowColumns = Option<(String, String, i64, i64, String, i64, i64, i64)>;
+    type RowColumns = Option<(String, i64, String, i64, i64, String, i64, i64, i64)>;
     let row: RowColumns = conn
         .query_row(
-            "SELECT g.instance_id,g.host_boot,g.epoch,g.observation_sequence,g.incarnation,g.expected_targets,g.published_invalidation_revision,h.invalidation_revision FROM snapshot_generations g JOIN host_instances h ON h.id=g.instance_id AND h.active_snapshot_id=g.id WHERE g.id=?1 AND g.status='published'",
+            "SELECT h.node_id,h.host_id,g.host_boot,g.epoch,g.observation_sequence,g.incarnation,g.expected_targets,g.published_invalidation_revision,h.invalidation_revision FROM snapshot_generations g JOIN herdr_hosts h ON h.host_id=g.host_id AND h.active_snapshot_id=g.id WHERE g.id=?1 AND g.status='published'",
             [stage.as_str()],
-            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?)),
         )
         .optional()
         .map_err(store_error)?;
     let Some((
         instance,
+        host_id,
         boot,
         epoch,
         sequence,
@@ -834,6 +1171,7 @@ fn active_publication(
     Ok(PublishedSnapshot {
         id: stage.clone(),
         instance,
+        host_id: HostId::from_row(host_id),
         boot: HostBootId::new(boot),
         epoch: epoch as u64,
         observation_sequence: sequence as u64,
@@ -1162,7 +1500,7 @@ fn saved_seat_scalar(
         && unresolved_reason.as_deref() == Some("host_invalidation")
     {
         let prior: Option<(String, i64, String, i64, String)> = conn.query_row(
-            "SELECT g.id,g.epoch,g.host_boot,s.unresolved_prior_binding_generation,g.incarnation FROM seats s JOIN snapshot_generations g ON g.id=s.unresolved_from_generation_id AND g.status='published' AND g.staged_targets=g.expected_targets WHERE s.id=?1 AND g.instance_id=s.instance_id",
+            "SELECT g.id,g.epoch,g.host_boot,s.unresolved_prior_binding_generation,g.incarnation FROM seats s JOIN snapshot_generations g ON g.id=s.unresolved_from_generation_id AND g.status='published' AND g.staged_targets=g.expected_targets WHERE s.id=?1 AND g.host_id=s.host_id",
             [&id],
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
         ).optional().map_err(store_error)?;
@@ -1312,27 +1650,31 @@ pub fn saved_seats_page(
     let conn: &Connection = &read_tx;
     let after = checked_host_number(after_ordinal)?;
     let publication = active_publication(conn, published)?;
+    let host = publication.host_id;
     let high_water = match high_water_ordinal {
         Some(value) => checked_host_number(value)?,
         None => conn
             .query_row(
-                "SELECT COALESCE(MAX(ordinal),0) FROM seats WHERE instance_id=?1",
-                [&publication.instance],
+                &format!(
+                    "SELECT COALESCE(MAX(ordinal),0) FROM seats WHERE host_id=?1 AND {LOCAL_SEAT}"
+                ),
+                [host.get()],
                 |r| r.get(0),
             )
             .map_err(store_error)?,
     };
     let mut stmt = conn
-        .prepare(
-            "SELECT ordinal,id,state,unresolved_reason,target_id,generation FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4",
-        )
+        .prepare(&format!(
+            "SELECT ordinal,id,state,unresolved_reason,target_id,generation FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND host_id=?5 AND {LOCAL_SEAT} AND state!='retired' AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4"
+        ))
         .map_err(store_error)?;
     let mut rows = stmt
         .query(params![
             publication.instance,
             after,
             high_water,
-            i64::from(limit)
+            i64::from(limit),
+            host.get()
         ])
         .map_err(store_error)?;
     let mut seats = Vec::new();
@@ -1372,8 +1714,8 @@ pub fn saved_seats_page(
     }
     let has_more: bool = conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' AND ordinal>?2 AND ordinal<=?3)",
-            params![publication.instance,last,high_water],
+            &format!("SELECT EXISTS(SELECT 1 FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND host_id=?4 AND {LOCAL_SEAT} AND state!='retired' AND ordinal>?2 AND ordinal<=?3)"),
+            params![publication.instance,last,high_water,host.get()],
             |r| r.get(0),
         )
         .map_err(store_error)?;
@@ -1408,8 +1750,8 @@ pub fn saved_seats_page_for_invalidation(
     let after = checked_host_number(after_ordinal)?;
     let current: Option<(i64, i64)> = conn
         .query_row(
-            "SELECT invalidation_revision,observation_decided_sequence FROM host_instances WHERE id=?1",
-            [fence.instance()],
+            "SELECT invalidation_revision,observation_decided_sequence FROM herdr_hosts WHERE host_id=?2 AND node_id=?1",
+            params![fence.instance(), fence.admission.host_id.get()],
             |r| Ok((r.get(0)?,r.get(1)?)),
         )
         .optional()
@@ -1429,23 +1771,26 @@ pub fn saved_seats_page_for_invalidation(
         Some(value) => checked_host_number(value)?,
         None => conn
             .query_row(
-                "SELECT COALESCE(MAX(ordinal),0) FROM seats WHERE instance_id=?1",
-                [fence.instance()],
+                &format!(
+                    "SELECT COALESCE(MAX(ordinal),0) FROM seats WHERE host_id=?1 AND {LOCAL_SEAT}"
+                ),
+                [fence.admission.host_id.get()],
                 |r| r.get(0),
             )
             .map_err(store_error)?,
     };
     let mut stmt = conn
-        .prepare(
-            "SELECT ordinal,id,state,unresolved_reason,target_id,generation FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4",
-        )
+        .prepare(&format!(
+            "SELECT ordinal,id,state,unresolved_reason,target_id,generation FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND host_id=?5 AND {LOCAL_SEAT} AND state!='retired' AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4"
+        ))
         .map_err(store_error)?;
     let mut rows = stmt
         .query(params![
             fence.instance(),
             after,
             high_water,
-            i64::from(limit)
+            i64::from(limit),
+            fence.admission.host_id.get()
         ])
         .map_err(store_error)?;
     let mut seats = Vec::new();
@@ -1485,8 +1830,8 @@ pub fn saved_seats_page_for_invalidation(
     }
     let has_more: bool = conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND state!='retired' AND ordinal>?2 AND ordinal<=?3)",
-            params![fence.instance(),last,high_water],
+            &format!("SELECT EXISTS(SELECT 1 FROM seats INDEXED BY seats_live_ordinal WHERE instance_id=?1 AND host_id=?4 AND {LOCAL_SEAT} AND state!='retired' AND ordinal>?2 AND ordinal<=?3)"),
+            params![fence.instance(),last,high_water,fence.admission.host_id.get()],
             |r| r.get(0),
         )
         .map_err(store_error)?;
@@ -1519,12 +1864,12 @@ pub fn discard_snapshot_stage(
         .map_err(store_error)?;
     context.take_snapshot_stage_match(stage.as_str());
     let started = context.clock().monotonic_now();
-    let (instance, _, _, _, _, _, _, status) = load_snapshot_stage(&tx, stage)?;
+    let (host_id, _, _, _, _, _, _, status) = load_snapshot_stage(&tx, stage)?;
     if status == "published" {
         let retained: bool = tx
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM host_instances WHERE id=?1 AND (active_snapshot_id=?2 OR recovery_baseline_generation_id=?2)) OR EXISTS(SELECT 1 FROM seats WHERE unresolved_from_generation_id=?2)",
-                params![instance, stage.as_str()],
+                "SELECT EXISTS(SELECT 1 FROM herdr_hosts WHERE host_id=?1 AND (active_snapshot_id=?2 OR recovery_baseline_generation_id=?2)) OR EXISTS(SELECT 1 FROM seats WHERE unresolved_from_generation_id=?2)",
+                params![host_id, stage.as_str()],
                 |r| r.get(0),
             )
             .map_err(store_error)?;
@@ -1583,9 +1928,12 @@ pub fn discard_snapshot_stage(
     })
 }
 
+// Allowed: the compare-and-set names every component of the saved seat it fences.
+#[allow(clippy::too_many_arguments)]
 fn saved_seat_cas(
     tx: &Transaction<'_>,
     instance: &str,
+    host: HostId,
     seat: &SeatId,
     expected_generation: u64,
     expected_target: Option<&HostTargetId>,
@@ -1596,8 +1944,8 @@ fn saved_seat_cas(
     type SavedColumns = Option<(String, Option<String>, i64, Option<String>, Option<String>)>;
     let saved: SavedColumns = tx
         .query_row(
-            "SELECT state,unresolved_reason,generation,target_id,structural_terminal_id FROM seats WHERE id=?1 AND instance_id=?2",
-            params![seat.as_str(), instance],
+            &format!("SELECT state,unresolved_reason,generation,target_id,structural_terminal_id FROM seats WHERE id=?1 AND instance_id=?2 AND host_id=?3 AND {LOCAL_SEAT}"),
+            params![seat.as_str(), instance, host.get()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()
@@ -1637,14 +1985,16 @@ fn saved_seat_cas(
     Ok(terminal.as_deref() == expected_terminal.map(|id| id.as_str()))
 }
 
-/// TRUST-POLICY C2: instance-wide restore-hold release when nothing is left
-/// to protect. Predicate: reconciliation of the current recovery boot/epoch
-/// finished (persisted marker) and no unresolved nonretired seat remains.
-/// Clears `baseline_hold_unclaimed` and releases every open `recovery_holds`
-/// row of the instance in the caller's transaction. Returns whether it lifted.
+/// TRUST-POLICY C2: per-host restore-hold release when nothing is left to
+/// protect on that host. Predicate: reconciliation of the host's current
+/// recovery boot/epoch finished (persisted marker) and no unresolved nonretired
+/// seat of the host remains. Clears `baseline_hold_unclaimed` and releases every
+/// open `recovery_holds` row of the host in the caller's transaction. Returns
+/// whether it lifted.
 pub(crate) fn lift_baseline_hold_if_clear(
     tx: &Transaction<'_>,
     instance: &str,
+    host: HostId,
     at: UtcMillis,
 ) -> Result<bool, ApiError> {
     type Marker = Option<(
@@ -1656,8 +2006,8 @@ pub(crate) fn lift_baseline_hold_if_clear(
     )>;
     let row: Marker = tx
         .query_row(
-            "SELECT recovery_boot,recovery_epoch,reconciled_boot,reconciled_epoch,baseline_hold_unclaimed FROM host_instances WHERE id=?1",
-            [instance],
+            "SELECT recovery_boot,recovery_epoch,reconciled_boot,reconciled_epoch,baseline_hold_unclaimed FROM herdr_hosts WHERE host_id=?2 AND node_id=?1",
+            params![instance, host.get()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()
@@ -1673,15 +2023,15 @@ pub(crate) fn lift_baseline_hold_if_clear(
     }
     let unresolved: bool = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND state='unresolved')",
-            [instance],
+            &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved')"),
+            [host.get()],
             |r| r.get(0),
         )
         .map_err(store_error)?;
     let open_holds: bool = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND released_at IS NULL)",
-            [instance],
+            "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE host_id=?1 AND released_at IS NULL)",
+            [host.get()],
             |r| r.get(0),
         )
         .map_err(store_error)?;
@@ -1689,16 +2039,16 @@ pub(crate) fn lift_baseline_hold_if_clear(
         return Ok(false);
     }
     tx.execute(
-        "UPDATE host_instances SET baseline_hold_unclaimed=0 WHERE id=?1",
-        [instance],
+        "UPDATE herdr_hosts SET baseline_hold_unclaimed=0 WHERE host_id=?1",
+        [host.get()],
     )
     .map_err(store_error)?;
     tx.execute(
-        "UPDATE recovery_holds SET released_at=?1 WHERE instance_id=?2 AND released_at IS NULL",
-        params![at.0, instance],
+        "UPDATE recovery_holds SET released_at=?1 WHERE host_id=?2 AND released_at IS NULL",
+        params![at.0, host.get()],
     )
     .map_err(store_error)?;
-    schema::bump_lifecycle_revision(tx, instance)?;
+    schema::bump_host_lifecycle_revision(tx, host)?;
     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
     Ok(true)
 }
@@ -1724,26 +2074,27 @@ pub fn record_reconciliation_pass(
         |tx| {
             let current = match active_publication(tx, &published.id) {
                 Ok(current) => current,
-                Err(error) if error.code == ErrorCode::CursorStale => return Ok(false),
+                Err(error) if error.code == ErrorCode::CursorStale => return Ok(None),
                 Err(error) => return Err(error),
             };
             if current != *published {
-                return Ok(false);
+                return Ok(None);
             }
+            let host = current.host_id;
             let recovery: Option<(Option<String>, Option<i64>)> = tx
                 .query_row(
-                    "SELECT recovery_boot,recovery_epoch FROM host_instances WHERE id=?1",
-                    [published.instance.as_str()],
+                    "SELECT recovery_boot,recovery_epoch FROM herdr_hosts WHERE host_id=?1",
+                    [host.get()],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()
                 .map_err(store_error)?;
-            Ok(recovery == Some((Some(published.boot.as_str().to_owned()), Some(epoch))))
+            Ok((recovery == Some((Some(published.boot.as_str().to_owned()), Some(epoch)))).then_some(host))
         },
         |tx, at, current| {
-            if !current {
+            let Some(host) = current else {
                 return Ok(false);
-            }
+            };
             // `carry_pending` reads the marker: moving it can end a pending
             // carry the planner did not schedule (it plans from the latest
             // open registered binding only), turning a recipient staged
@@ -1754,13 +2105,13 @@ pub fn record_reconciliation_pass(
             // complete pass changes nothing and stays quiet.
             let moves = tx
                 .execute(
-                    "UPDATE host_instances SET reconciled_boot=?1,reconciled_epoch=?2 WHERE id=?3 AND (reconciled_boot IS NOT ?1 OR reconciled_epoch IS NOT ?2)",
-                    params![published.boot.as_str(), epoch, published.instance],
+                    "UPDATE herdr_hosts SET reconciled_boot=?1,reconciled_epoch=?2 WHERE host_id=?3 AND (reconciled_boot IS NOT ?1 OR reconciled_epoch IS NOT ?2)",
+                    params![published.boot.as_str(), epoch, host.get()],
                 )
                 .map_err(store_error)?
                 != 0;
             // A lift bumps both fences itself.
-            let lifted = lift_baseline_hold_if_clear(tx, &published.instance, at.utc)?;
+            let lifted = lift_baseline_hold_if_clear(tx, &published.instance, host, at.utc)?;
             schema::apply_eligibility_transition(tx, &published.instance, |_| {
                 Ok(moves && !lifted)
             })?;
@@ -1773,6 +2124,7 @@ fn mark_seat_unresolved(
     tx: &Transaction<'_>,
     at: DecisionInstant,
     instance: &str,
+    host: HostId,
     seat: &SeatId,
     generation: u64,
     reason: UnresolvedReason,
@@ -1786,8 +2138,8 @@ fn mark_seat_unresolved(
     }
     let prior_generation: Option<String> = if reason == UnresolvedReason::HostInvalidation {
         tx.query_row(
-        "SELECT g.id FROM seats s JOIN host_instances h ON h.id=s.instance_id JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.status='published' AND g.staged_targets=g.expected_targets JOIN snapshot_targets t ON t.generation_id=g.id AND t.target_id=s.target_id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=?3 AND t.terminal_id IS NOT NULL",
-        params![seat.as_str(), instance, generation],
+        "SELECT g.id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.status='published' AND g.staged_targets=g.expected_targets JOIN snapshot_targets t ON t.generation_id=g.id AND t.target_id=s.target_id WHERE s.id=?1 AND s.instance_id=?2 AND s.host_id=?4 AND s.state='resolved' AND s.generation=?3 AND t.terminal_id IS NOT NULL",
+        params![seat.as_str(), instance, generation, host.get()],
         |r| r.get(0),
     ).optional().map_err(store_error)?
     } else {
@@ -1799,8 +2151,8 @@ fn mark_seat_unresolved(
     };
     let changed = tx
         .execute(
-            "UPDATE seats SET state='unresolved',unresolved_reason=?4,unresolved_from_generation_id=?5,unresolved_prior_binding_generation=CASE WHEN ?5 IS NULL THEN NULL ELSE generation END,generation=generation+1 WHERE id=?1 AND instance_id=?2 AND generation=?3 AND state='resolved'",
-            params![seat.as_str(),instance,generation,reason_sql,prior_generation],
+            "UPDATE seats SET state='unresolved',unresolved_reason=?4,unresolved_from_generation_id=?5,unresolved_prior_binding_generation=CASE WHEN ?5 IS NULL THEN NULL ELSE generation END,generation=generation+1 WHERE id=?1 AND instance_id=?2 AND host_id=?6 AND is_local=1 AND generation=?3 AND state='resolved'",
+            params![seat.as_str(),instance,generation,reason_sql,prior_generation,host.get()],
         )
         .map_err(store_error)?;
     if changed != 1 {
@@ -1827,11 +2179,11 @@ fn mark_seat_unresolved(
     .map_err(store_error)?;
     schema::ensure_unavailability_episode(tx, seat)?;
     tx.execute(
-        "UPDATE host_instances SET baseline_hold_unclaimed=1 WHERE id=?1 AND recovery_baseline_generation_id IS NOT NULL",
-        [instance],
+        "UPDATE herdr_hosts SET baseline_hold_unclaimed=1 WHERE host_id=?1 AND recovery_baseline_generation_id IS NOT NULL",
+        [host.get()],
     )
     .map_err(store_error)?;
-    schema::bump_lifecycle_revision(tx, instance)?;
+    schema::bump_host_lifecycle_revision(tx, host)?;
     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
     Ok(ReconciliationOutcome::Applied)
 }
@@ -1850,8 +2202,8 @@ pub fn mark_unresolved_from_invalidation(
             let instance = transition.fence.instance();
             let current: Option<(i64, i64, Option<String>)> = tx
                 .query_row(
-                    "SELECT invalidation_revision,observation_decided_sequence,active_snapshot_id FROM host_instances WHERE id=?1",
-                    [instance],
+                    "SELECT invalidation_revision,observation_decided_sequence,active_snapshot_id FROM herdr_hosts WHERE host_id=?2 AND node_id=?1",
+                    params![instance, transition.fence.admission.host_id.get()],
                     |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
                 )
                 .optional()
@@ -1881,6 +2233,7 @@ pub fn mark_unresolved_from_invalidation(
             saved_seat_cas(
                 tx,
                 instance,
+                transition.fence.admission.host_id,
                 &transition.seat,
                 transition.expected_binding_generation,
                 transition.expected_target.as_ref(),
@@ -1896,6 +2249,7 @@ pub fn mark_unresolved_from_invalidation(
                 tx,
                 at,
                 transition.fence.instance(),
+                transition.fence.admission.host_id,
                 &transition.seat,
                 transition.expected_binding_generation,
                 UnresolvedReason::HostInvalidation,
@@ -2064,6 +2418,7 @@ pub fn apply_reconciliation_transition(
             if publication != transition.publication {
                 return Ok(None);
             }
+            let host = publication.host_id;
             // The plan keeps an already-unresolved seat unresolved when this
             // publication cannot reconfirm it (for example its agent exited
             // during the outage). That is a no-op, not a stale plan: treating
@@ -2073,17 +2428,18 @@ pub fn apply_reconciliation_transition(
             // reconfirm a host-invalidated seat.
             if matches!(transition.action, ReconciliationAction::MarkUnresolved) {
                 let already_unresolved: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND state='unresolved' AND generation=?3 AND target_id IS ?4)",
-                    params![transition.seat.as_str(),publication.instance,checked_host_number(transition.expected_binding_generation)?,transition.expected_target.as_ref().map(HostTargetId::as_str)],
+                    &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND host_id=?5 AND {LOCAL_SEAT} AND state='unresolved' AND generation=?3 AND target_id IS ?4)"),
+                    params![transition.seat.as_str(),publication.instance,checked_host_number(transition.expected_binding_generation)?,transition.expected_target.as_ref().map(HostTargetId::as_str),host.get()],
                     |r| r.get(0),
                 ).map_err(store_error)?;
                 if already_unresolved {
-                    return Ok(Some((0, None, true)));
+                    return Ok(Some((0, None, true, host)));
                 }
             }
             if !saved_seat_cas(
                     tx,
                     &publication.instance,
+                    host,
                     &transition.seat,
                     transition.expected_binding_generation,
                     transition.expected_target.as_ref(),
@@ -2150,8 +2506,8 @@ pub fn apply_reconciliation_transition(
                         return Ok(None);
                     }
                     let owned: bool = tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved' AND id!=?3)",
-                        params![publication.instance,target.as_str(),transition.seat.as_str()],
+                        "SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND target_id=?2 AND state='resolved' AND id!=?3)",
+                        params![host.get(),target.as_str(),transition.seat.as_str()],
                         |r| r.get(0),
                     ).map_err(store_error)?;
                     if owned { return Ok(None); }
@@ -2180,8 +2536,8 @@ pub fn apply_reconciliation_transition(
                     }
                     let owned: bool = tx
                         .query_row(
-                            "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved' AND id!=?3)",
-                            params![publication.instance,target.as_str(),transition.seat.as_str()],
+                            "SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND target_id=?2 AND state='resolved' AND id!=?3)",
+                            params![host.get(),target.as_str(),transition.seat.as_str()],
                             |r| r.get(0),
                         )
                         .map_err(store_error)?;
@@ -2322,10 +2678,10 @@ pub fn apply_reconciliation_transition(
                 }
                 _ => None,
             };
-            Ok(Some((generation, proof, false)))
+            Ok(Some((generation, proof, false, host)))
         },
         |tx, at, prepared| {
-            let Some((target_generation, proof, already_unresolved)) = prepared else {
+            let Some((target_generation, proof, already_unresolved, host)) = prepared else {
                 return Ok(ReconciliationOutcome::Stale);
             };
             if already_unresolved {
@@ -2338,23 +2694,24 @@ pub fn apply_reconciliation_transition(
                     tx,
                     at,
                     instance,
+                    host,
                     seat,
                     transition.expected_binding_generation,
                     UnresolvedReason::Other,
                 )?,
                 ReconciliationAction::ReconfirmStructure { target, .. } => {
                     let changed = tx.execute(
-                        "UPDATE seats SET state='resolved',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,target_id=?1,target_generation=?2 WHERE id=?3 AND instance_id=?4 AND generation=?5 AND state='unresolved' AND unresolved_reason='host_invalidation'",
-                        params![target.as_str(),target_generation,seat.as_str(),instance,checked_host_number(transition.expected_binding_generation)?],
+                        "UPDATE seats SET state='resolved',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,target_id=?1,target_generation=?2 WHERE id=?3 AND instance_id=?4 AND host_id=?6 AND is_local=1 AND generation=?5 AND state='unresolved' AND unresolved_reason='host_invalidation'",
+                        params![target.as_str(),target_generation,seat.as_str(),instance,checked_host_number(transition.expected_binding_generation)?,host.get()],
                     ).map_err(store_error)?;
                     if changed != 1 { return Ok(ReconciliationOutcome::Stale); }
                     // Nothing to carry: the invalidation that unresolved the
                     // seat ended its bindings and bumped its generation, and no
                     // check-in registers while it is unresolved (ht-0b8).
                     update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
-                    schema::bump_lifecycle_revision(tx, instance)?;
+                    schema::bump_host_lifecycle_revision(tx, host)?;
                     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
-                    lift_baseline_hold_if_clear(tx, instance, at.utc)?;
+                    lift_baseline_hold_if_clear(tx, instance, host, at.utc)?;
                     ReconciliationOutcome::Applied
                 }
                 ReconciliationAction::CarryForward { target, .. } => {
@@ -2373,7 +2730,7 @@ pub fn apply_reconciliation_transition(
                         params![target_generation,seat.as_str(),generation],
                     ).map_err(store_error)?;
                     update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
-                    schema::bump_lifecycle_revision(tx, instance)?;
+                    schema::bump_host_lifecycle_revision(tx, host)?;
                     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
                     ReconciliationOutcome::Applied
                 }
@@ -2390,14 +2747,16 @@ pub fn apply_reconciliation_transition(
                         params![target.as_str(),terminal.as_str(),target_generation,seat.as_str()],
                     ).map_err(store_error)?;
                     update_structural_proof(tx, seat, proof.as_ref().expect("validated structural proof"))?;
-                    schema::bump_lifecycle_revision(tx, instance)?;
+                    schema::bump_host_lifecycle_revision(tx, host)?;
                     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
                     ReconciliationOutcome::Applied
                 }
                 ReconciliationAction::BeginRetirement { absent_target } => {
-                    let job = control::begin_retirement_fence(
+                    let job = control::begin_retirement_authored(
                         tx,
-                        at.utc,
+                        context,
+                        at,
+                        RetireReason::Closed,
                         seat.clone(),
                         instance,
                         transition.publication.boot.as_str(),
@@ -2405,7 +2764,7 @@ pub fn apply_reconciliation_transition(
                         absent_target.as_str(),
                         target_generation,
                     )?;
-                    lift_baseline_hold_if_clear(tx, instance, at.utc)?;
+                    lift_baseline_hold_if_clear(tx, instance, host, at.utc)?;
                     ReconciliationOutcome::RetirementStarted(job)
                 }
             };
@@ -2422,6 +2781,7 @@ pub fn record_snapshot(
     context: &StoreContext,
     conn: &mut Connection,
     instance: &str,
+    host: HostId,
     snapshot: HostSnapshot,
 ) -> Result<(), ApiError> {
     if i64::try_from(snapshot.epoch).is_err()
@@ -2465,7 +2825,7 @@ pub fn record_snapshot(
         |tx| {
             type OldColumns = Option<(Option<String>, i64, i64, Option<String>, Option<i64>)>;
             let old: OldColumns = tx.query_row(
-                "SELECT host_boot,host_epoch,observation_sequence,recovery_boot,recovery_epoch FROM host_instances WHERE id=?1", [instance],
+                "SELECT host_boot,host_epoch,observation_sequence,recovery_boot,recovery_epoch FROM herdr_hosts WHERE host_id=?2 AND node_id=?1", params![instance, host.get()],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             ).optional().map_err(store_error)?;
             if let Some((Some(boot), epoch, sequence, _, _)) = &old
@@ -2483,14 +2843,17 @@ pub fn record_snapshot(
             let new_baseline = old.as_ref().is_none_or(|(_, _, _, boot, _)| boot.as_deref() != Some(snapshot.boot.as_str()));
             let mut eligibility_changed = old.as_ref().is_some_and(|(boot,epoch,_,_,_)|
                 boot.as_deref() != Some(snapshot.boot.as_str()) || *epoch != snapshot.epoch as i64);
-            tx.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,observation_sequence,recovery_boot,recovery_epoch) VALUES (?1,?2,?3,?4,?5,?3,?4) \
-                ON CONFLICT(id) DO UPDATE SET host_boot=excluded.host_boot,host_epoch=excluded.host_epoch,observation_sequence=excluded.observation_sequence,recovery_boot=excluded.recovery_boot,recovery_epoch=CASE WHEN ?6 THEN excluded.recovery_epoch ELSE host_instances.recovery_epoch END",
-                params![instance, decision.utc.0, snapshot.boot.as_str(), snapshot.epoch as i64, snapshot.observation_sequence as i64, new_baseline]).map_err(store_error)?;
-            let unresolved: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND state='unresolved')", [instance], |r| r.get(0)).map_err(store_error)?;
+            // The attached host's row exists from attach (never created here).
+            let attached = tx.execute("UPDATE herdr_hosts SET host_boot=?2,host_epoch=?3,observation_sequence=?4,recovery_boot=?2,recovery_epoch=CASE WHEN ?5 THEN ?3 ELSE recovery_epoch END WHERE host_id=?6 AND node_id=?1",
+                params![instance, snapshot.boot.as_str(), snapshot.epoch as i64, snapshot.observation_sequence as i64, new_baseline, host.get()]).map_err(store_error)?;
+            if attached != 1 {
+                return Err(api_error(ErrorCode::HostUnavailable, "no Herdr server attached"));
+            }
+            let unresolved: bool = tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved')"), [host.get()], |r| r.get(0)).map_err(store_error)?;
             for target in &snapshot.targets {
                 let prior:Option<(String,i64,i64,i64,i64,String)>=tx.query_row(
-                    "SELECT host_boot,epoch,generation,observation_sequence,observed_at,provenance FROM observed_targets WHERE instance_id=?1 AND target_id=?2",
-                    params![instance,target.target.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))
+                    "SELECT host_boot,epoch,generation,observation_sequence,observed_at,provenance FROM observed_targets WHERE host_id=?1 AND target_id=?2",
+                    params![host.get(),target.target.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))
                     .optional().map_err(store_error)?;
                 if let Some((boot,epoch,generation,sequence,observed_at,provenance))=&prior
                     && boot==snapshot.boot.as_str() && *epoch==snapshot.epoch as i64 {
@@ -2509,37 +2872,37 @@ pub fn record_snapshot(
                     || *generation!=target.generation as i64 || provenance!=provenance_name(target.provenance)) {
                     eligibility_changed = true;
                 }
-                tx.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) \
-                    ON CONFLICT(instance_id,target_id) DO UPDATE SET host_boot=excluded.host_boot,epoch=excluded.epoch,generation=excluded.generation,observation_sequence=excluded.observation_sequence,observed_at=excluded.observed_at,provenance=excluded.provenance",
-                    params![instance,target.target.as_str(),snapshot.boot.as_str(),snapshot.epoch as i64,target.generation as i64,
+                tx.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) \
+                    ON CONFLICT(host_id,target_id) DO UPDATE SET host_boot=excluded.host_boot,epoch=excluded.epoch,generation=excluded.generation,observation_sequence=excluded.observation_sequence,observed_at=excluded.observed_at,provenance=excluded.provenance",
+                    params![host.get(),target.target.as_str(),snapshot.boot.as_str(),snapshot.epoch as i64,target.generation as i64,
                         target.observation_sequence as i64,target.observed_at_utc.0,provenance_name(target.provenance)]).map_err(store_error)?;
                 if prior_generation.is_some_and(|prior|prior!=target.generation as i64) {
-                    tx.execute("UPDATE seats SET target_generation=?1 WHERE instance_id=?2 AND target_id=?3 AND state='resolved'",
-                        params![target.generation as i64,instance,target.target.as_str()]).map_err(store_error)?;
+                    tx.execute(&format!("UPDATE seats SET target_generation=?1 WHERE host_id=?2 AND {LOCAL_SEAT} AND target_id=?3 AND state='resolved'"),
+                        params![target.generation as i64,host.get(),target.target.as_str()]).map_err(store_error)?;
                 }
                 let host_changed=old.as_ref().is_some_and(|(boot,epoch,_,_,_)|
                     boot.as_deref()!=Some(snapshot.boot.as_str()) || *epoch!=snapshot.epoch as i64);
                 if host_changed || prior_generation.is_some_and(|prior|prior!=target.generation as i64) {
-                    let current_seat:Option<String>=tx.query_row("SELECT id FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved'",
-                        params![instance,target.target.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
+                    let current_seat:Option<String>=tx.query_row(&format!("SELECT id FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND target_id=?2 AND state='resolved'"),
+                        params![host.get(),target.target.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
                     if let Some(current_seat)=current_seat {
                         schema::ensure_unavailability_episode(tx,&SeatId::new(current_seat))?;
                     }
                 }
-                let owned: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved')",
-                    params![instance,target.target.as_str()], |r| r.get(0)).map_err(store_error)?;
-                let prior: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM recovery_baseline_targets WHERE instance_id=?1 AND target_id=?2 AND baseline_boot=?3)",
-                    params![instance,target.target.as_str(),snapshot.boot.as_str()], |r| r.get(0)).map_err(store_error)?;
+                let owned: bool = tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND target_id=?2 AND state='resolved')"),
+                    params![host.get(),target.target.as_str()], |r| r.get(0)).map_err(store_error)?;
+                let prior: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM recovery_baseline_targets WHERE host_id=?1 AND target_id=?2 AND baseline_boot=?3)",
+                    params![host.get(),target.target.as_str(),snapshot.boot.as_str()], |r| r.get(0)).map_err(store_error)?;
                 if !new_baseline && prior { continue; }
                 let disposition = if owned { "already_owned" } else if new_baseline && unresolved { "held_for_repair" }
                     else if new_baseline { "unambiguous_unclaimed" } else { "created_after_baseline" };
-                tx.execute("INSERT INTO recovery_baseline_targets(instance_id,target_id,baseline_boot,baseline_epoch,captured_at,disposition) VALUES (?1,?2,?3,?4,?5,?6) \
-                    ON CONFLICT(instance_id,target_id) DO UPDATE SET baseline_boot=excluded.baseline_boot,baseline_epoch=excluded.baseline_epoch,captured_at=excluded.captured_at,disposition=excluded.disposition",
-                    params![instance,target.target.as_str(),snapshot.boot.as_str(),snapshot.epoch as i64,decision.utc.0,disposition]).map_err(store_error)?;
+                tx.execute("INSERT INTO recovery_baseline_targets(host_id,target_id,baseline_boot,baseline_epoch,captured_at,disposition) VALUES (?1,?2,?3,?4,?5,?6) \
+                    ON CONFLICT(host_id,target_id) DO UPDATE SET baseline_boot=excluded.baseline_boot,baseline_epoch=excluded.baseline_epoch,captured_at=excluded.captured_at,disposition=excluded.disposition",
+                    params![host.get(),target.target.as_str(),snapshot.boot.as_str(),snapshot.epoch as i64,decision.utc.0,disposition]).map_err(store_error)?;
                 if disposition == "held_for_repair" {
-                    tx.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES (?1,?2,?3,?4,'unresolved saved seat continuity') \
-                        ON CONFLICT(instance_id,target_id) DO UPDATE SET baseline_boot=excluded.baseline_boot,baseline_epoch=excluded.baseline_epoch,reason=excluded.reason,released_at=NULL",
-                        params![instance,target.target.as_str(),snapshot.boot.as_str(),snapshot.epoch as i64]).map_err(store_error)?;
+                    tx.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES (?1,?2,?3,?4,'unresolved saved seat continuity') \
+                        ON CONFLICT(host_id,target_id) DO UPDATE SET baseline_boot=excluded.baseline_boot,baseline_epoch=excluded.baseline_epoch,reason=excluded.reason,released_at=NULL",
+                        params![host.get(),target.target.as_str(),snapshot.boot.as_str(),snapshot.epoch as i64]).map_err(store_error)?;
                 }
             }
             schema::apply_eligibility_transition(tx,instance,|_|Ok(eligibility_changed))?;
@@ -2547,14 +2910,14 @@ pub fn record_snapshot(
         })
 }
 
-fn target_free(tx: &Transaction<'_>, instance: &str, target: &str) -> Result<bool, ApiError> {
-    tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved')",
-        params![instance,target], |r| r.get(0)).map_err(store_error)
+fn target_free(tx: &Transaction<'_>, host: HostId, target: &str) -> Result<bool, ApiError> {
+    tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND target_id=?2 AND state='resolved')",
+        params![host.get(),target], |r| r.get(0)).map_err(store_error)
 }
 
 fn observed_matches(
     tx: &Transaction<'_>,
-    instance: &str,
+    host: HostId,
     target: &str,
     boot: &HostBootId,
     epoch: u64,
@@ -2563,7 +2926,7 @@ fn observed_matches(
     let epoch = checked_host_number(epoch)?;
     let generation = checked_host_number(generation)?;
     Ok(
-        effective::effective_observation(tx, instance, target)?.is_some_and(|observation| {
+        effective::effective_observation(tx, host, target)?.is_some_and(|observation| {
             observation.source == EffectiveObservationSource::NewerCurrentTarget
                 && observation.host_boot == boot.as_str()
                 && observation.epoch == epoch
@@ -2574,13 +2937,13 @@ fn observed_matches(
 
 fn structural_proof_matches_current(
     tx: &Transaction<'_>,
-    instance: &str,
+    host: HostId,
     proof: &DurableStructuralProof,
 ) -> Result<bool, ApiError> {
     let epoch = checked_host_number(proof.host_epoch())?;
     let sequence = checked_host_number(proof.observation_sequence())?;
     let generation = checked_host_number(proof.target_generation())?;
-    let observation = effective::effective_observation(tx, instance, proof.target().as_str())?;
+    let observation = effective::effective_observation(tx, host, proof.target().as_str())?;
     let source_matches = observation.is_some_and(|observation| {
         observation.source == EffectiveObservationSource::NewerCurrentTarget
             && observation.host_boot == proof.host_boot().as_str()
@@ -2593,8 +2956,8 @@ fn structural_proof_matches_current(
         return Ok(false);
     }
     let incarnation_matches: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM host_instances h JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.status='published' WHERE h.id=?1 AND h.host_boot=?2 AND h.host_epoch=?3 AND g.incarnation=?4)",
-        params![instance, proof.host_boot().as_str(), epoch, proof.incarnation()],
+        "SELECT EXISTS(SELECT 1 FROM herdr_hosts h JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.status='published' WHERE h.host_id=?1 AND h.host_boot=?2 AND h.host_epoch=?3 AND g.incarnation=?4)",
+        params![host.get(), proof.host_boot().as_str(), epoch, proof.incarnation()],
         |r| r.get(0),
     ).map_err(store_error)?;
     Ok(incarnation_matches)
@@ -2604,6 +2967,7 @@ fn insert_ordinary_allocation(
     tx: &Transaction<'_>,
     at: DecisionInstant,
     instance: &str,
+    host: HostId,
     proof: &DurableStructuralProof,
 ) -> Result<CommandResult, ApiError> {
     let seat = SeatId::new(crate::store::public_ids::fresh(
@@ -2611,15 +2975,15 @@ fn insert_ordinary_allocation(
         prefix::SEAT,
         &[("seats", "id", prefix::SEAT)],
     )?);
-    tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,unavailability_episode) VALUES (?1,?2,'resolved','native',?3,1,?4,?5,?6,?7,?8,?9,?10,?11,?12,1)",
+    tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at,unavailability_episode,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,?4,?5,?6,?7,?8,?9,?10,?11,?12,1,?2,1,?13)",
                 params![seat.as_str(),instance,proof.target().as_str(),checked_host_number(proof.target_generation())?,
                     proof.terminal().as_str(),proof.incarnation(),proof.source_spelling(),proof.host_boot().as_str(),
                     checked_host_number(proof.host_epoch())?,checked_host_number(proof.connection_epoch())?,
-                    checked_host_number(proof.observation_sequence())?,at.utc.0]).map_err(store_error)?;
-    tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES (?1,?2,?3,'ordinary',?4,?5,?6,?7)",
-                params![instance,proof.target().as_str(),seat.as_str(),at.utc.0,proof.host_boot().as_str(),checked_host_number(proof.host_epoch())?,checked_host_number(proof.target_generation())?]).map_err(store_error)?;
+                    checked_host_number(proof.observation_sequence())?,at.utc.0,host.get()]).map_err(store_error)?;
+    tx.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES (?1,?2,?3,'ordinary',?4,?5,?6,?7)",
+                params![host.get(),proof.target().as_str(),seat.as_str(),at.utc.0,proof.host_boot().as_str(),checked_host_number(proof.host_epoch())?,checked_host_number(proof.target_generation())?]).map_err(store_error)?;
     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
-    schema::bump_lifecycle_revision(tx, instance)?;
+    schema::bump_host_lifecycle_revision(tx, host)?;
     schema::bump_filter_revision(tx, instance, "directory", "all")?;
     Ok(CommandResult::SeatResolved(seat))
 }
@@ -2689,12 +3053,13 @@ fn validate_resolution_evidence(
     let observed_sequence = checked_host_number(proof.observation_sequence())?;
     let generation = checked_host_number(proof.target_generation())?;
     let connection_epoch = checked_host_number(proof.connection_epoch())?;
+    let host = admission.host_id;
     let admitted: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM host_instances h JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.instance_id=h.id AND g.status='published' AND g.staged_targets=g.expected_targets WHERE h.id=?1 AND h.host_boot=?2 AND h.host_epoch=?3 AND h.observation_admission_sequence=?4 AND h.observation_decided_sequence=?4 AND h.invalidation_revision=?5 AND h.active_snapshot_id=?6 AND g.incarnation=?7 AND g.published_invalidation_revision=h.invalidation_revision)",
-        params![instance,proof.host_boot().as_str(),epoch,sequence,checked_host_number(admission.invalidation_revision)?,admission.expected_active.as_ref().map(SnapshotGenerationId::as_str),proof.incarnation()],
+        "SELECT EXISTS(SELECT 1 FROM herdr_hosts h JOIN snapshot_generations g ON g.id=h.active_snapshot_id AND g.host_id=h.host_id AND g.status='published' AND g.staged_targets=g.expected_targets WHERE h.host_id=?8 AND h.node_id=?1 AND h.host_boot=?2 AND h.host_epoch=?3 AND h.observation_admission_sequence=?4 AND h.observation_decided_sequence=?4 AND h.invalidation_revision=?5 AND h.active_snapshot_id=?6 AND g.incarnation=?7 AND g.published_invalidation_revision=h.invalidation_revision)",
+        params![instance,proof.host_boot().as_str(),epoch,sequence,checked_host_number(admission.invalidation_revision)?,admission.expected_active.as_ref().map(SnapshotGenerationId::as_str),proof.incarnation(),host.get()],
         |r| r.get(0),
     ).map_err(store_error)?;
-    let effective = effective::effective_observation(tx, instance, proof.target().as_str())?;
+    let effective = effective::effective_observation(tx, host, proof.target().as_str())?;
     if admission.instance() != instance
         || !admitted
         || !effective.is_some_and(|row| {
@@ -2724,15 +3089,16 @@ pub(crate) fn current_resolution_owner(
 ) -> Result<Option<SeatId>, ApiError> {
     validate_resolution_evidence(tx, instance, guard)?;
     let proof = guard.structural_proof();
+    let host = guard.admission().host_id;
     // Ownership is only a locator; independently check active explicit holds.
     let held: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND released_at IS NULL)",
-        params![instance,proof.target().as_str()], |r| r.get(0),
+        "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE host_id=?1 AND target_id=?2 AND released_at IS NULL)",
+        params![host.get(),proof.target().as_str()], |r| r.get(0),
     ).map_err(store_error)?;
     if held {
         return Err(resolution_recovery_refusal(
             tx,
-            instance,
+            host,
             proof.target().as_str(),
             "explicit restore hold",
         )?);
@@ -2748,8 +3114,8 @@ pub(crate) fn current_resolution_owner(
         Option<i64>,
     )>;
     let owner: OwnerColumns = tx.query_row(
-        "SELECT id,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,retired_at,retired_seq FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",
-        params![instance,proof.target().as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
+        "SELECT id,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,retired_at,retired_seq FROM seats WHERE host_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",
+        params![host.get(),proof.target().as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
     ).optional().map_err(store_error)?;
     let Some((seat, generation, terminal, incarnation, boot, epoch, retired_at, retired_seq)) =
         owner
@@ -2778,15 +3144,15 @@ pub(crate) fn current_resolution_owner(
 
 fn resolution_recovery_refusal(
     tx: &Transaction<'_>,
-    instance: &str,
+    host: HostId,
     target: &str,
     cause: &str,
 ) -> Result<ApiError, ApiError> {
     let pane = shlex::try_quote(target)
         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid target"))?;
-    let mut blockers = tx.prepare("SELECT id FROM seats WHERE instance_id=?1 AND state='unresolved' ORDER BY ordinal LIMIT 3").map_err(store_error)?;
+    let mut blockers = tx.prepare(&format!("SELECT id FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='unresolved' ORDER BY ordinal LIMIT 3")).map_err(store_error)?;
     let seats = blockers
-        .query_map([instance], |row| row.get::<_, String>(0))
+        .query_map([host.get()], |row| row.get::<_, String>(0))
         .map_err(store_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(store_error)?;
@@ -2804,34 +3170,33 @@ fn resolution_recovery_refusal(
 
 fn validate_resolution_allocation(
     tx: &Transaction<'_>,
-    instance: &str,
+    host: HostId,
     proof: &DurableStructuralProof,
 ) -> Result<(), ApiError> {
     // A target appearing after the restore baseline is not a new pane when
     // an unresolved seat still references it. Decide this canonically rather
     // than relying on a client's earlier seat listing to refuse allocation.
     let unresolved: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='unresolved')",
-        params![instance, proof.target().as_str()], |row| row.get(0),
+        &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND target_id=?2 AND state='unresolved')"),
+        params![host.get(), proof.target().as_str()], |row| row.get(0),
     ).map_err(store_error)?;
     if unresolved {
         return Err(resolution_recovery_refusal(
             tx,
-            instance,
+            host,
             proof.target().as_str(),
             "target has unresolved seat mapping",
         )?);
     }
     let recovery: Option<(Option<String>, Option<i64>)> = tx
         .query_row(
-            "SELECT recovery_boot,recovery_epoch FROM host_instances WHERE id=?1",
-            [instance],
+            "SELECT recovery_boot,recovery_epoch FROM herdr_hosts WHERE host_id=?1",
+            [host.get()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
         .map_err(store_error)?;
-    let disposition =
-        effective::effective_recovery_disposition(tx, instance, proof.target().as_str())?;
+    let disposition = effective::effective_recovery_disposition(tx, host, proof.target().as_str())?;
     let cause = match disposition {
         EffectiveRecoveryDisposition::UnambiguousUnclaimed
         | EffectiveRecoveryDisposition::CreatedAfterBaseline => None,
@@ -2844,7 +3209,7 @@ fn validate_resolution_allocation(
     if let Some(cause) = cause {
         return Err(resolution_recovery_refusal(
             tx,
-            instance,
+            host,
             proof.target().as_str(),
             cause,
         )?);
@@ -2872,8 +3237,8 @@ pub(crate) fn validate_bootstrap_creation(
     if owner.is_none() {
         let lifecycle: i64 = tx
             .query_row(
-                "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
-                [instance],
+                "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=?1",
+                [guard.admission().host_id.get()],
                 |r| r.get(0),
             )
             .map_err(store_error)?;
@@ -2891,7 +3256,7 @@ pub(crate) fn validate_bootstrap_creation(
                 "allocation observation predates a lifecycle change",
             ));
         }
-        validate_resolution_allocation(tx, instance, guard.structural_proof())?;
+        validate_resolution_allocation(tx, guard.admission().host_id, guard.structural_proof())?;
     }
     Ok(owner)
 }
@@ -2964,8 +3329,15 @@ fn resolve_observed(
         },
         |tx, at| {
             snapshot_budget(context, budget)?;
-            ordinary_resolution_apply(tx, at, instance, &request.target, guard.structural_proof())
-                .map(|(result, _)| result)
+            ordinary_resolution_apply(
+                tx,
+                at,
+                instance,
+                guard.admission().host_id,
+                &request.target,
+                guard.structural_proof(),
+            )
+            .map(|(result, _)| result)
         },
     )?;
     match result {
@@ -3035,6 +3407,7 @@ fn resolve_bootstrap_seat_impl(
         .ok_or_else(|| api_error(ErrorCode::Conflict, "bootstrap creation missing"))?;
     let ordinary = crate::protocol::commands::ResolveSeat {
         target: created.root_pane,
+        host: request.identity.claim.host.clone(),
         operation: request.operation.clone(),
     };
     let digest = ordinary_resolution_digest(&canonical.instance, &ordinary)?;
@@ -3054,8 +3427,8 @@ fn resolve_bootstrap_seat_impl(
             })?;
         let lifecycle: i64 = tx
             .query_row(
-                "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
-                [&canonical.instance],
+                "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=?1",
+                [guard.ordinary().admission().host_id.get()],
                 |r| r.get(0),
             )
             .map_err(store_error)?;
@@ -3082,12 +3455,14 @@ fn resolve_bootstrap_seat_impl(
         &format!("service-allocation:{}", canonical.instance),
         request.operation.as_str(),
         digest,
-        |tx| super::seats::cooperative_instance(tx, &canonical.instance, &request.identity.claim),
+        |tx| {
+            cooperative_claim(tx, context, &canonical.instance, &request.identity.claim).map(|_| ())
+        },
         |tx| {
             if validate(tx, false)?.is_none() {
                 validate_resolution_allocation(
                     tx,
-                    &canonical.instance,
+                    guard.ordinary().admission().host_id,
                     guard.ordinary().structural_proof(),
                 )?;
             }
@@ -3097,6 +3472,7 @@ fn resolve_bootstrap_seat_impl(
             snapshot_budget(context, budget)?;
             if let Some(permit) = permit.as_mut() {
                 super::control::decide_accountable(
+                    context,
                     tx,
                     at,
                     permit,
@@ -3111,6 +3487,7 @@ fn resolve_bootstrap_seat_impl(
                 tx,
                 at,
                 &canonical.instance,
+                guard.ordinary().admission().host_id,
                 &ordinary.target,
                 guard.ordinary().structural_proof(),
             )?;
@@ -3149,10 +3526,18 @@ pub(crate) fn ordinary_resolution_apply(
     tx: &Transaction<'_>,
     at: DecisionInstant,
     instance: &str,
+    host: HostId,
     target: &HostTargetId,
     proof: &DurableStructuralProof,
 ) -> Result<(CommandResult, bool), ApiError> {
-    let owner:Option<String>=tx.query_row("SELECT id FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",params![instance,target.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
+    let owner: Option<String> = tx
+        .query_row(
+            "SELECT id FROM seats WHERE host_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",
+            params![host.get(), target.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
     if let Some(seat) = owner {
         return Ok((CommandResult::SeatResolved(SeatId::new(seat)), false));
     }
@@ -3163,9 +3548,9 @@ pub(crate) fn ordinary_resolution_apply(
     // would split the role; the retry after that pass resolves the seat itself.
     let moved: Option<String> = tx
         .query_row(
-            "SELECT id FROM seats WHERE instance_id=?1 AND state='resolved' AND structural_terminal_id=?2 AND structural_host_boot=?3 AND structural_incarnation=?4 AND target_id IS NOT ?5 LIMIT 1",
+            &format!("SELECT id FROM seats WHERE host_id=?1 AND {LOCAL_SEAT} AND state='resolved' AND structural_terminal_id=?2 AND structural_host_boot=?3 AND structural_incarnation=?4 AND target_id IS NOT ?5 LIMIT 1"),
             params![
-                instance,
+                host.get(),
                 proof.terminal().as_str(),
                 proof.host_boot().as_str(),
                 proof.incarnation(),
@@ -3185,7 +3570,7 @@ pub(crate) fn ordinary_resolution_apply(
             ),
         ));
     }
-    insert_ordinary_allocation(tx, at, instance, proof).map(|result| (result, true))
+    insert_ordinary_allocation(tx, at, instance, host, proof).map(|result| (result, true))
 }
 
 pub fn check_resolved_target(
@@ -3210,8 +3595,8 @@ pub fn check_resolved_target(
             }
             let lifecycle: i64 = tx
                 .query_row(
-                    "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
-                    [instance],
+                    "SELECT lifecycle_revision FROM herdr_hosts WHERE host_id=?1",
+                    [check.guard.admission().host_id.get()],
                     |r| r.get(0),
                 )
                 .map_err(store_error)?;
@@ -3250,6 +3635,7 @@ pub fn mutate_operator(
         target,
         operation,
         instance,
+        host,
         expected_boot,
         expected_epoch,
         expected_generation,
@@ -3261,6 +3647,7 @@ pub fn mutate_operator(
             command.target.clone(),
             command.operation.clone(),
             guard.instance().to_owned(),
+            guard.host_id(),
             guard.host_boot().clone(),
             guard.epoch(),
             guard.generation(),
@@ -3272,6 +3659,7 @@ pub fn mutate_operator(
             command.target.clone(),
             command.operation.clone(),
             guard.instance().to_owned(),
+            guard.host_id(),
             guard.host_boot().clone(),
             guard.epoch(),
             guard.generation(),
@@ -3283,6 +3671,7 @@ pub fn mutate_operator(
             command.target.clone(),
             command.operation.clone(),
             guard.instance().to_owned(),
+            guard.host_id(),
             guard.host_boot().clone(),
             guard.epoch(),
             guard.generation(),
@@ -3335,9 +3724,13 @@ pub fn mutate_operator(
         operation.as_str(),
         digest,
         |tx| {
+            // A remote seat is never rebound or replaced here; refused before any write.
+            for named in seat.iter().chain(replace.iter()) {
+                require_local_seat(tx, named)?;
+            }
             if !observed_matches(
                 tx,
-                &instance,
+                host,
                 target.as_str(),
                 &expected_boot,
                 expected_epoch,
@@ -3353,8 +3746,8 @@ pub fn mutate_operator(
                 // nobody else, and NEW must not be the seat being rebound.
                 let owned: bool = tx
                     .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND state='resolved' AND target_id=?3)",
-                        params![replace.as_str(), instance, target.as_str()],
+                        "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND host_id=?4 AND state='resolved' AND target_id=?3)",
+                        params![replace.as_str(), instance, target.as_str(), host.get()],
                         |r| r.get(0),
                     )
                     .map_err(store_error)?;
@@ -3364,16 +3757,16 @@ pub fn mutate_operator(
                         "replace target is not owned by NEW",
                     ));
                 }
-            } else if !target_free(tx, &instance, target.as_str())? {
+            } else if !target_free(tx, host, target.as_str())? {
                 return Err(owned_target_refusal(
                     tx,
-                    &instance,
+                    host,
                     target.as_str(),
                     seat.as_ref(),
                 )?);
             }
             if let Some(proof) = &structural_proof
-                && !structural_proof_matches_current(tx, &instance, proof)?
+                && !structural_proof_matches_current(tx, host, proof)?
             {
                 return Err(api_error(
                     ErrorCode::StaleHostObservation,
@@ -3383,7 +3776,7 @@ pub fn mutate_operator(
             if let Some(seat) = &seat {
                 let state: Option<(String, i64)> = tx
                     .query_row(
-                        "SELECT state,generation FROM seats WHERE id=?1 AND instance_id=?2",
+                        &format!("SELECT state,generation FROM seats WHERE id=?1 AND instance_id=?2 AND {LOCAL_SEAT}"),
                         params![seat.as_str(), instance],
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )
@@ -3405,7 +3798,7 @@ pub fn mutate_operator(
             Ok(())
         },
         |tx, at| {
-            let fresh = effective::effective_observation(tx, &instance, target.as_str())?
+            let fresh = effective::effective_observation(tx, host, target.as_str())?
                 .filter(|observation| {
                     observation.source == EffectiveObservationSource::NewerCurrentTarget
                 })
@@ -3430,7 +3823,7 @@ pub fn mutate_operator(
                         binding_generation: 0,
                         known_invalidated: !observed_matches(
                             tx,
-                            &instance,
+                            host,
                             target.as_str(),
                             &expected_boot,
                             expected_epoch,
@@ -3445,7 +3838,7 @@ pub fn mutate_operator(
                 // serializes behind this writer and sees OLD.
                 let (boot, epoch, new_generation): (Option<String>, i64, i64) = tx
                     .query_row(
-                        "SELECT h.host_boot,h.host_epoch,s.generation FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+                        "SELECT h.host_boot,h.host_epoch,s.generation FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND s.instance_id=?2",
                         params![replace.as_str(), instance],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                     )
@@ -3457,9 +3850,11 @@ pub fn mutate_operator(
                     ));
                 }
                 let boot = boot.unwrap_or_default();
-                control::begin_retirement_fence(
+                control::begin_retirement_authored(
                     tx,
-                    at.utc,
+                    context,
+                    at,
+                    RetireReason::Operator,
                     replace.clone(),
                     &instance,
                     &boot,
@@ -3467,10 +3862,10 @@ pub fn mutate_operator(
                     target.as_str(),
                     expected_generation_sql,
                 )?;
-                tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_retire',?4,?5,?6,?7,?8)",
-                    params![instance,target.as_str(),replace.as_str(),at.utc.0,boot,epoch,expected_generation_sql,actor.audit_label()]).map_err(store_error)?;
+                tx.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_retire',?4,?5,?6,?7,?8)",
+                    params![host.get(),target.as_str(),replace.as_str(),at.utc.0,boot,epoch,expected_generation_sql,actor.audit_label()]).map_err(store_error)?;
             }
-            if !target_free(tx, &instance, target.as_str())? {
+            if !target_free(tx, host, target.as_str())? {
                 return Err(api_error(
                     ErrorCode::TargetAlreadyOwned,
                     "target became owned",
@@ -3480,6 +3875,7 @@ pub fn mutate_operator(
                 rebind_unresolved_seat(
                     tx,
                     &instance,
+                    host,
                     seat,
                     target.as_str(),
                     expected_generation_sql,
@@ -3492,8 +3888,8 @@ pub fn mutate_operator(
                     prefix::SEAT,
                     &[("seats", "id", prefix::SEAT)],
                 )?);
-                tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES (?1,?2,'resolved','operator_fresh',?3,1,?4,?5,1)",
-                    params![seat.as_str(),instance,target.as_str(),expected_generation_sql,at.utc.0]).map_err(store_error)?;
+                tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES (?1,?2,'resolved','operator_fresh',?3,1,?4,?5,1,?2,1,?6)",
+                    params![seat.as_str(),instance,target.as_str(),expected_generation_sql,at.utc.0,host.get()]).map_err(store_error)?;
                 CommandResult::OperatorFreshSeat(seat)
             };
             let result_seat = match &result {
@@ -3506,10 +3902,10 @@ pub fn mutate_operator(
                 // Operator mapping without structural evidence cannot carry a prior proof.
                 tx.execute("UPDATE seats SET structural_terminal_id=NULL,structural_incarnation=NULL,structural_incarnation_kind=NULL,structural_host_boot=NULL,structural_host_epoch=NULL,structural_connection_epoch=NULL,structural_observation_sequence=NULL WHERE id=?1", [result_seat.as_str()]).map_err(store_error)?;
             }
-            tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                params![instance,target.as_str(),result_seat.as_str(),kind,at.utc.0,expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,actor.audit_label()]).map_err(store_error)?;
-            release_claimed_target(tx, &instance, target.as_str(), at.utc)?;
-            lift_baseline_hold_if_clear(tx, &instance, at.utc)?;
+            tx.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![host.get(),target.as_str(),result_seat.as_str(),kind,at.utc.0,expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,actor.audit_label()]).map_err(store_error)?;
+            release_claimed_target(tx, &instance, host, target.as_str(), at.utc)?;
+            lift_baseline_hold_if_clear(tx, &instance, host, at.utc)?;
             Ok(result)
         },
     )?;
@@ -3517,7 +3913,8 @@ pub fn mutate_operator(
     Ok(result)
 }
 
-/// The seat-side half of a rebind of an unresolved seat onto `target`: one
+/// The seat-side half of a rebind of an unresolved seat onto `target` on `host`
+/// (a seat's host changes only together with its target, here): one
 /// generation step, the open binding ended, its warning offer dropped and an
 /// unavailability episode open. Operator repair leaves the successor binding to
 /// the agent's next check-in; TRUST-POLICY C1 continuity opens it in the same
@@ -3525,13 +3922,14 @@ pub fn mutate_operator(
 fn rebind_unresolved_seat(
     tx: &Transaction<'_>,
     instance: &str,
+    host: HostId,
     seat: &SeatId,
     target: &str,
     target_generation: i64,
     at: UtcMillis,
 ) -> Result<(), ApiError> {
-    let changed = tx.execute("UPDATE seats SET state='resolved',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,target_id=?1,generation=generation+1,target_generation=?2 WHERE id=?3 AND instance_id=?4 AND state='unresolved'",
-        params![target,target_generation,seat.as_str(),instance]).map_err(store_error)?;
+    let changed = tx.execute("UPDATE seats SET state='resolved',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,target_id=?1,host_id=?5,generation=generation+1,target_generation=?2 WHERE id=?3 AND instance_id=?4 AND is_local=1 AND state='unresolved'",
+        params![target,target_generation,seat.as_str(),instance,host.get()]).map_err(store_error)?;
     if changed != 1 {
         return Err(api_error(ErrorCode::TargetUnresolved, "source changed"));
     }
@@ -3561,15 +3959,16 @@ fn rebind_unresolved_seat(
 fn release_claimed_target(
     tx: &Transaction<'_>,
     instance: &str,
+    host: HostId,
     target: &str,
     at: UtcMillis,
 ) -> Result<(), ApiError> {
-    tx.execute("UPDATE recovery_holds SET released_at=?1 WHERE instance_id=?2 AND target_id=?3 AND released_at IS NULL",
-        params![at.0,instance,target]).map_err(store_error)?;
+    tx.execute("UPDATE recovery_holds SET released_at=?1 WHERE host_id=?2 AND target_id=?3 AND released_at IS NULL",
+        params![at.0,host.get(),target]).map_err(store_error)?;
     let baseline: Option<String> = tx
         .query_row(
-            "SELECT recovery_baseline_generation_id FROM host_instances WHERE id=?1",
-            [instance],
+            "SELECT recovery_baseline_generation_id FROM herdr_hosts WHERE host_id=?1",
+            [host.get()],
             |r| r.get(0),
         )
         .map_err(store_error)?;
@@ -3584,16 +3983,16 @@ fn release_claimed_target(
         if member {
             let sequence = schema::next_decision_seq(tx, instance)?;
             tx.execute(
-                "INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) VALUES (?1,?2,?3,?4) ON CONFLICT(instance_id,baseline_generation_id,target_id) DO NOTHING",
-                params![instance,baseline,target,checked_host_number(sequence)?],
+                "INSERT INTO recovery_baseline_releases(host_id,baseline_generation_id,target_id,decision_seq) VALUES (?1,?2,?3,?4) ON CONFLICT(host_id,baseline_generation_id,target_id) DO NOTHING",
+                params![host.get(),baseline,target,checked_host_number(sequence)?],
             )
             .map_err(store_error)?;
         }
     }
-    tx.execute("UPDATE recovery_baseline_targets SET disposition='already_owned' WHERE instance_id=?1 AND target_id=?2",
-        params![instance,target]).map_err(store_error)?;
+    tx.execute("UPDATE recovery_baseline_targets SET disposition='already_owned' WHERE host_id=?1 AND target_id=?2",
+        params![host.get(),target]).map_err(store_error)?;
     schema::apply_eligibility_transition(tx, instance, |_| Ok(true))?;
-    schema::bump_lifecycle_revision(tx, instance)?;
+    schema::bump_host_lifecycle_revision(tx, host)?;
     schema::bump_filter_revision(tx, instance, "directory", "all")?;
     Ok(())
 }
@@ -3601,11 +4000,11 @@ fn release_claimed_target(
 /// Whether the first reconciliation pass of the current recovery epoch has
 /// not run yet: seats a Herdr restart will unresolve may still look resolved,
 /// and unresolved seats it will rebuild may not exist yet.
-fn reconciliation_lags(tx: &Transaction<'_>, instance: &str) -> Result<bool, ApiError> {
+fn reconciliation_lags(tx: &Transaction<'_>, host: HostId) -> Result<bool, ApiError> {
     Ok(tx
         .query_row(
-            "SELECT recovery_boot IS NOT reconciled_boot OR recovery_epoch IS NOT reconciled_epoch FROM host_instances WHERE id=?1",
-            [instance],
+            "SELECT recovery_boot IS NOT reconciled_boot OR recovery_epoch IS NOT reconciled_epoch FROM herdr_hosts WHERE host_id=?1",
+            [host.get()],
             |r| r.get(0),
         )
         .optional()
@@ -3613,8 +4012,9 @@ fn reconciliation_lags(tx: &Transaction<'_>, instance: &str) -> Result<bool, Api
         .unwrap_or(false))
 }
 
-/// TRUST-POLICY C1 candidates: nonretired unresolved seats of the instance
-/// whose bindings include this harness's session `native_session` (any
+/// TRUST-POLICY C1 candidates: nonretired unresolved **local** seats of the instance, whatever
+/// Herdr server they last sat on (a remote seat is never a candidate, so C1 never moves a seat
+/// between nodes), whose bindings include this harness's session `native_session` (any
 /// top-level row, open or ended, not only the newest: a one-shot or `/clear`
 /// successor enrolled later must not hide the main session, ht-54r.78).
 /// Sentinel (`plugin_context:`), empty and human values never match, and a
@@ -3634,9 +4034,9 @@ pub(crate) fn continuity_candidates(
     native_session: &str,
 ) -> Result<Vec<SeatId>, ApiError> {
     let mut statement = tx
-        .prepare(
-            "SELECT s.id, COALESCE(MAX(b.disconnect_reason IS 'seat_unresolved'),0) FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' GROUP BY s.id ORDER BY s.id",
-        )
+        .prepare(&format!(
+            "SELECT s.id, COALESCE(MAX(b.disconnect_reason IS 'seat_unresolved'),0) FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.{LOCAL_SEAT} AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' GROUP BY s.id ORDER BY s.id",
+        ))
         .map_err(store_error)?;
     let rows: Vec<(String, bool)> = statement
         .query_map(params![instance, harness, native_session], |r| {
@@ -3764,6 +4164,16 @@ pub fn decide_continuity(
     command
         .validate()
         .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
+    // C1 does not go through `cooperative_claim`: the resumed session id is its evidence, and the
+    // seat may sit on another server of this node (the move C1 exists for). The command's server
+    // is the one it reattaches onto; an unattached one is `HostUnavailable`.
+    let host = context.hosts().attached_id(&command.host)?;
+    if request.guard.host_id() != host {
+        return Err(api_error(
+            ErrorCode::StaleHostObservation,
+            "continuity guard belongs to another Herdr server",
+        ));
+    }
     let target = command.target.clone();
     let expected_boot = request.guard.host_boot().clone();
     let expected_epoch = request.guard.epoch();
@@ -3792,7 +4202,7 @@ pub fn decide_continuity(
             }
             if !observed_matches(
                 tx,
-                &instance,
+                host,
                 target.as_str(),
                 &expected_boot,
                 expected_epoch,
@@ -3809,14 +4219,14 @@ pub fn decide_continuity(
             // epoch has run, the owner may be a mapping from the previous
             // Herdr incarnation that the pass will unresolve (a restored
             // pane that kept its id, ht-p63): pending, not final.
-            if !target_free(tx, &instance, target.as_str())? {
-                return Err(if reconciliation_lags(tx, &instance)? {
+            if !target_free(tx, host, target.as_str())? {
+                return Err(if reconciliation_lags(tx, host)? {
                     api_error(
                         ErrorCode::ServiceBusy,
                         "recovery reconciliation of the current host epoch has not finished; retry",
                     )
                 } else {
-                    let owner: String = tx.query_row("SELECT id FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved'", params![instance,target.as_str()], |row| row.get(0)).map_err(store_error)?;
+                    let owner: String = tx.query_row("SELECT id FROM seats WHERE host_id=?1 AND target_id=?2 AND state='resolved'", params![host.get(),target.as_str()], |row| row.get(0)).map_err(store_error)?;
                     let owner = shlex::try_quote(&owner)
                         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid owner id"))?;
                     let pane = shlex::try_quote(target.as_str())
@@ -3830,7 +4240,7 @@ pub fn decide_continuity(
                 });
             }
             if let Some(proof) = &structural_proof
-                && !structural_proof_matches_current(tx, &instance, proof)?
+                && !structural_proof_matches_current(tx, host, proof)?
             {
                 return Err(api_error(
                     ErrorCode::StaleHostObservation,
@@ -3844,7 +4254,7 @@ pub fn decide_continuity(
                     // recovery epoch has run, "no unresolved seat" only says the
                     // daemon has not yet rebuilt the seats a Herdr restart
                     // unresolved: pending, not final.
-                    if reconciliation_lags(tx, &instance)? {
+                    if reconciliation_lags(tx, host)? {
                         api_error(
                             ErrorCode::ServiceBusy,
                             "recovery reconciliation of the current host epoch has not finished; retry",
@@ -3886,7 +4296,7 @@ pub fn decide_continuity(
             Ok(())
         },
         |tx, at| {
-            let fresh = effective::effective_observation(tx, &instance, target.as_str())?
+            let fresh = effective::effective_observation(tx, host, target.as_str())?
                 .filter(|observation| {
                     observation.source == EffectiveObservationSource::NewerCurrentTarget
                 })
@@ -3913,7 +4323,7 @@ pub fn decide_continuity(
                         binding_generation: 0,
                         known_invalidated: !observed_matches(
                             tx,
-                            &instance,
+                            host,
                             target.as_str(),
                             &expected_boot,
                             expected_epoch,
@@ -3926,7 +4336,7 @@ pub fn decide_continuity(
             let [seat] = candidates.as_slice() else {
                 return Err(api_error(ErrorCode::Conflict, "continuity match changed"));
             };
-            if !target_free(tx, &instance, target.as_str())? {
+            if !target_free(tx, host, target.as_str())? {
                 return Err(api_error(
                     ErrorCode::TargetAlreadyOwned,
                     "target became owned",
@@ -3935,6 +4345,7 @@ pub fn decide_continuity(
             rebind_unresolved_seat(
                 tx,
                 &instance,
+                host,
                 seat,
                 target.as_str(),
                 expected_generation_sql,
@@ -3980,6 +4391,7 @@ pub fn decide_continuity(
             // one at the seat's read position; both run the enroll hooks.
             let claim = crate::protocol::authority::CallerClaim {
                 instance: instance.clone(),
+                host: command.host.clone(),
                 seat: seat.clone(),
                 binding_generation: u64::try_from(new_generation)
                     .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat generation"))?,
@@ -4043,10 +4455,10 @@ pub fn decide_continuity(
                 [seat.as_str()],
             )
             .map_err(store_error)?;
-            tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,?9)",
-                params![instance,target.as_str(),seat.as_str(),crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE,at.utc.0,expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,diagnostic]).map_err(store_error)?;
-            release_claimed_target(tx, &instance, target.as_str(), at.utc)?;
-            lift_baseline_hold_if_clear(tx, &instance, at.utc)?;
+            tx.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label,continuity_diagnostic) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,?9)",
+                params![host.get(),target.as_str(),seat.as_str(),crate::protocol::authority::COOPERATIVE_CONTINUITY_PROVENANCE,at.utc.0,expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,diagnostic]).map_err(store_error)?;
+            release_claimed_target(tx, &instance, host, target.as_str(), at.utc)?;
+            lift_baseline_hold_if_clear(tx, &instance, host, at.utc)?;
             Ok(CommandResult::ContinuityReattached(
                 crate::protocol::results::ContinuityReattachment {
                     seat: seat.clone(),
@@ -4067,14 +4479,14 @@ pub fn decide_continuity(
 /// a live seat of this instance (the observation, not a seat, is then stale).
 fn owned_target_refusal(
     tx: &Transaction<'_>,
-    instance: &str,
+    host: HostId,
     target: &str,
     old: Option<&SeatId>,
 ) -> Result<ApiError, ApiError> {
     let owner: Option<String> = tx
         .query_row(
-            "SELECT id FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",
-            params![instance, target],
+            "SELECT id FROM seats WHERE host_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",
+            params![host.get(), target],
             |r| r.get(0),
         )
         .optional()
@@ -4117,7 +4529,7 @@ fn operator_retire(
         |tx| {
             let state: Option<(String, i64)> = tx
                 .query_row(
-                    "SELECT state,generation FROM seats WHERE id=?1 AND instance_id=?2",
+                    &format!("SELECT state,generation FROM seats WHERE id=?1 AND instance_id=?2 AND {LOCAL_SEAT}"),
                     params![seat.as_str(), instance],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
@@ -4140,13 +4552,14 @@ fn operator_retire(
             }
         },
         |tx, at| {
-            let (boot, epoch): (Option<String>, i64) = tx
+            let (boot, epoch, host_id): (Option<String>, i64, i64) = tx
                 .query_row(
-                    "SELECT host_boot,host_epoch FROM host_instances WHERE id=?1",
-                    [instance],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    "SELECT h.host_boot,h.host_epoch,h.host_id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1",
+                    [seat.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .map_err(store_error)?;
+            let host = HostId::from_row(host_id);
             let (target, generation): (Option<String>, i64) = tx
                 .query_row(
                     "SELECT target_id,target_generation FROM seats WHERE id=?1",
@@ -4167,9 +4580,11 @@ fn operator_retire(
                     .unwrap_or_default(),
             };
             let boot = boot.unwrap_or_default();
-            control::begin_retirement_fence(
+            control::begin_retirement_authored(
                 tx,
-                at.utc,
+                context,
+                at,
+                RetireReason::Operator,
                 seat.clone(),
                 instance,
                 &boot,
@@ -4177,9 +4592,9 @@ fn operator_retire(
                 &target,
                 generation,
             )?;
-            tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_retire',?4,?5,?6,?7,?8)",
-                params![instance,target,seat.as_str(),at.utc.0,boot,epoch,generation,actor.audit_label()]).map_err(store_error)?;
-            lift_baseline_hold_if_clear(tx, instance, at.utc)?;
+            tx.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_retire',?4,?5,?6,?7,?8)",
+                params![host.get(),target,seat.as_str(),at.utc.0,boot,epoch,generation,actor.audit_label()]).map_err(store_error)?;
+            lift_baseline_hold_if_clear(tx, instance, host, at.utc)?;
             Ok(CommandResult::OperatorRetired(seat.clone()))
         },
     )?;
@@ -4229,39 +4644,171 @@ pub(crate) fn binding_evidence<'a>(
     }
 }
 
-pub(crate) fn cooperative_instance(
+/// The one store entry check of a cooperative call: node, declared role, the attached Herdr
+/// server the claim names, a local seat, and that seat sitting on that server. Returns the
+/// `HostId` the caller keeps for the rest of its transaction (mapping, holds, observation,
+/// seat writes).
+///
+/// Owns: the decision whether a claim may act (A2, decided inside the deciding transaction from
+/// the canonical view). Does not own: the claim's wire shape, the host's reachability or session,
+/// or what the call then does. Error split: `CallerUnverified` for a claim that does not match
+/// the store (node or role, a seat that is not local, a seat on another server), `HostUnavailable`
+/// when the named server is not attached (retryable once it is). C1 continuity and the operator
+/// rebinds do not go through here (they carry no claim, or move a seat between servers).
+pub(crate) fn cooperative_claim(
     db: &Connection,
-    instance: &str,
+    ctx: &StoreContext,
+    node: &str,
     claim: &crate::protocol::authority::CallerClaim,
+) -> Result<HostId, ApiError> {
+    claim_shape(claim, node)?;
+    let host = ctx.hosts().attached_id(&claim.host)?;
+    let seat_host = local_seat_host(db, &claim.seat, node)?;
+    if seat_host != host {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative seat sits on another Herdr server",
+        ));
+    }
+    Ok(host)
+}
+
+/// The claim's node and declared role against the store's node. A subagent claim carries its
+/// agent id and resolves to a binding attached to its parent (ht-54r.3); refusing it a write is
+/// `Command::validate`'s and dispatch's job (ht-54r.20).
+fn claim_shape(
+    claim: &crate::protocol::authority::CallerClaim,
+    node: &str,
 ) -> Result<(), ApiError> {
     use crate::protocol::authority::CallerRole;
-    // A subagent claim carries its agent id and resolves to a binding attached to its parent
-    // (ht-54r.3); refusing it a write is `Command::validate`'s and dispatch's job (ht-54r.20).
     let role_matches = match claim.role {
         CallerRole::TopLevel => claim.agent_id.is_none(),
         CallerRole::Subagent => claim.agent_id.is_some(),
     };
-    if claim.instance != instance || !role_matches {
+    if claim.instance != node || !role_matches {
         return Err(api_error(
             ErrorCode::CallerUnverified,
-            "cooperative instance or declared role mismatch",
+            "cooperative node or declared role mismatch",
         ));
     }
-    let owner: Option<String> = db
+    Ok(())
+}
+
+/// The server a local seat of `node` sits on; a missing or remote seat is `CallerUnverified`.
+fn local_seat_host(db: &Connection, seat: &SeatId, node: &str) -> Result<HostId, ApiError> {
+    if !is_local_seat(db, seat)? {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative seat is not local",
+        ));
+    }
+    let owner: String = db
         .query_row(
             "SELECT instance_id FROM seats WHERE id=?1",
-            [claim.seat.as_str()],
+            [seat.as_str()],
             |r| r.get(0),
         )
-        .optional()
         .map_err(store_error)?;
-    if owner.as_deref() != Some(instance) {
+    if owner != node {
         return Err(api_error(
             ErrorCode::CallerUnverified,
             "cooperative seat belongs to another instance",
         ));
     }
-    Ok(())
+    seat_host(db, seat)
+}
+
+/// The mapping of the claim's seat on the server the seat itself sits on, for a revalidation
+/// inside a transaction (or a permit issue) whose entry already ran [`cooperative_claim`]: it
+/// checks the claim's node, role and the seat's locality, not `claim.host` against the seat.
+/// The entry points hold the one A2 claim-host check; the deep validators of handoff and
+/// bootstrap call this.
+pub(crate) fn seat_mapping(
+    db: &Connection,
+    claim: &crate::protocol::authority::CallerClaim,
+    mode: Option<crate::protocol::commands::CheckInMode>,
+) -> Result<CooperativeMapping, ApiError> {
+    claim_shape(claim, &claim.instance)?;
+    let host = local_seat_host(db, &claim.seat, &claim.instance)?;
+    cooperative_mapping(db, host, claim, mode)
+}
+
+/// [`seat_mapping`] plus: the claim's own binding is open (see [`cooperative_bound_mapping`]).
+pub(crate) fn seat_bound_mapping(
+    db: &Connection,
+    claim: &crate::protocol::authority::CallerClaim,
+) -> Result<CooperativeMapping, ApiError> {
+    claim_shape(claim, &claim.instance)?;
+    let host = local_seat_host(db, &claim.seat, &claim.instance)?;
+    cooperative_bound_mapping(db, host, claim, None)
+}
+
+/// [`cooperative_claim`] then [`cooperative_mapping`] on the host it returned, for a decision that
+/// needs the mapping and not the host afterwards.
+pub(crate) fn claimed_mapping(
+    db: &Connection,
+    ctx: &StoreContext,
+    node: &str,
+    claim: &crate::protocol::authority::CallerClaim,
+    mode: Option<crate::protocol::commands::CheckInMode>,
+) -> Result<CooperativeMapping, ApiError> {
+    let host = cooperative_claim(db, ctx, node, claim)?;
+    cooperative_mapping(db, host, claim, mode)
+}
+
+/// Refuses a seat that exists and is not local: a remote seat is never occupied on this node.
+/// The same error as [`cooperative_claim`]'s, for the paths that name a seat without a claim
+/// (bindings, check-in, resolve, operator actions). An unknown seat is left to the caller's own
+/// not-found handling. Checked before any write.
+pub(crate) fn require_local_seat(conn: &Connection, seat: &SeatId) -> Result<(), ApiError> {
+    let remote: bool = conn
+        .query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND NOT ({LOCAL_SEAT}))"),
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if remote {
+        Err(api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative seat is not local",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Refuses a seat homed on another node for the node-local nudge threshold (reconcile item 18:
+/// never replicated, a remote row's value is never read). The detail names the home node's tag so
+/// the operator knows where to set it. An unknown seat is left to the caller's not-found handling.
+pub(crate) fn require_local_threshold_seat(
+    conn: &Connection,
+    seat: &SeatId,
+) -> Result<(), ApiError> {
+    let home: Option<String> = conn
+        .query_row(
+            &format!("SELECT home_node FROM seats WHERE id=?1 AND NOT ({LOCAL_SEAT})"),
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some(home) = home else {
+        return Ok(());
+    };
+    let tag = home
+        .parse::<crate::node::NodeUuid>()
+        .ok()
+        .and_then(|uuid| super::node_directory::get(conn, uuid).ok().flatten())
+        .map(|row| row.tag.to_string())
+        .unwrap_or_else(|| home.chars().take(8).collect());
+    Err(api_error(
+        ErrorCode::CallerUnverified,
+        format!(
+            "seat {} is homed on node {tag}; its nudge threshold is set there",
+            seat.as_str()
+        ),
+    ))
 }
 
 /// Delivery's current recipient predicate uses canonical continuity without
@@ -4279,16 +4826,42 @@ pub(crate) fn eligible_delivery_recipient(
         i64,
         Option<i64>,
         Option<i64>,
+        i64,
     );
-    let row: Option<Row> = db.query_row("SELECT s.state,s.target_id,s.target_generation,h.host_boot,h.host_epoch,s.retired_at,s.retired_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2", params![seat.as_str(), instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
-    let Some((state, Some(target), generation, boot, epoch, retired_at, retired_seq)) = row else {
+    // A remote seat has no host, target or observation: it is eligible iff its
+    // row is `remote` (a retired one is not). Local seats keep the check below.
+    let remote_state: Option<String> = db
+        .query_row(
+            &format!(
+                "SELECT state FROM seats WHERE id=?1 AND instance_id=?2 AND NOT ({LOCAL_SEAT})"
+            ),
+            params![seat.as_str(), instance],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if let Some(state) = remote_state {
+        return if state == "remote" {
+            Ok(())
+        } else {
+            Err(api_error(
+                ErrorCode::TargetUnresolved,
+                "delivery recipient unresolved, held or invalidated",
+            ))
+        };
+    }
+    let row: Option<Row> = db.query_row("SELECT s.state,s.target_id,s.target_generation,h.host_boot,h.host_epoch,s.retired_at,s.retired_seq,h.host_id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND s.instance_id=?2", params![seat.as_str(), instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
+    let Some((state, Some(target), generation, boot, epoch, retired_at, retired_seq, host_id)) =
+        row
+    else {
         return Err(api_error(
             ErrorCode::TargetUnresolved,
             "delivery recipient missing or foreign",
         ));
     };
-    let held: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND released_at IS NULL)", params![instance, target], |r| r.get(0)).map_err(store_error)?;
-    let observation = effective::effective_observation(db, instance, &target)?;
+    let host = HostId::from_row(host_id);
+    let held: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE host_id=?1 AND target_id=?2 AND released_at IS NULL)", params![host.get(), target], |r| r.get(0)).map_err(store_error)?;
+    let observation = effective::effective_observation(db, host, &target)?;
     if state != "resolved"
         || retired_at.is_some()
         || retired_seq.is_some()
@@ -4307,12 +4880,14 @@ pub(crate) fn eligible_delivery_recipient(
     Ok(())
 }
 
+/// The claim seat's canonical mapping on `host`, the server [`cooperative_claim`] resolved for
+/// the claim (or the seat's own server for a claim the store builds itself).
 pub(crate) fn cooperative_mapping(
     db: &Connection,
+    host: HostId,
     claim: &crate::protocol::authority::CallerClaim,
     mode: Option<crate::protocol::commands::CheckInMode>,
 ) -> Result<CooperativeMapping, ApiError> {
-    cooperative_instance(db, &claim.instance, claim)?;
     if !uuid::Uuid::parse_str(claim.execution.as_str())
         .is_ok_and(|execution| execution.hyphenated().to_string() == claim.execution.as_str())
     {
@@ -4321,16 +4896,32 @@ pub(crate) fn cooperative_mapping(
             "cooperative execution must be a canonical lowercase hyphenated UUID",
         ));
     }
-    type RowColumns = Option<(String, Option<String>, i64, i64, Option<String>, i64, i64)>;
+    type RowColumns = Option<(
+        String,
+        Option<String>,
+        i64,
+        i64,
+        Option<String>,
+        i64,
+        i64,
+        i64,
+    )>;
     let row: RowColumns = db.query_row(
-        "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch,h.invalidation_revision FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
-        [claim.seat.as_str()], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
-    let Some((state, target, generation, revision, boot, epoch, invalidation)) = row else {
+        "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch,h.invalidation_revision,h.host_id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1",
+        [claim.seat.as_str()], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
+    let Some((state, target, generation, revision, boot, epoch, invalidation, host_id)) = row
+    else {
         return Err(api_error(
             ErrorCode::CallerUnverified,
             "cooperative seat missing",
         ));
     };
+    if host_id != host.get() {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative seat sits on another Herdr server",
+        ));
+    }
     if state != "resolved" || target.as_deref() != Some(claim.target.as_str()) {
         return Err(api_error(
             ErrorCode::CallerUnverified,
@@ -4352,9 +4943,9 @@ pub(crate) fn cooperative_mapping(
         };
         return Err(api_error(code, "cooperative binding generation changed"));
     }
-    let held: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND released_at IS NULL)",
-        params![claim.instance,claim.target.as_str()], |r|r.get(0)).map_err(store_error)?;
-    let observation = effective::effective_observation(db, &claim.instance, claim.target.as_str())?;
+    let held: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE host_id=?1 AND target_id=?2 AND released_at IS NULL)",
+        params![host.get(),claim.target.as_str()], |r|r.get(0)).map_err(store_error)?;
+    let observation = effective::effective_observation(db, host, claim.target.as_str())?;
     if held
         || observation.as_ref().is_none_or(|o| {
             o.structural_generation != revision
@@ -4419,10 +5010,11 @@ pub(crate) fn cooperative_mapping(
 /// instead and uses `cooperative_mapping`.
 pub(crate) fn cooperative_bound_mapping(
     db: &Connection,
+    host: HostId,
     claim: &crate::protocol::authority::CallerClaim,
     mode: Option<crate::protocol::commands::CheckInMode>,
 ) -> Result<CooperativeMapping, ApiError> {
-    let mapping = cooperative_mapping(db, claim, mode)?;
+    let mapping = cooperative_mapping(db, host, claim, mode)?;
     if super::queries::open_binding_for(db, &bindings::BindingKey::from_claim(claim))?.is_none() {
         return Err(api_error(
             ErrorCode::CallerUnverified,
@@ -4446,7 +5038,7 @@ pub(crate) fn issue_bootstrap_begin_permit(
         .validate()
         .map_err(ApiError::invalid_request)?;
     super::topology_handoff::encode_identity(canonical, &command.identity)?;
-    cooperative_instance(db, instance, &command.identity.claim)?;
+    let host = cooperative_claim(db, context, instance, &command.identity.claim)?;
     let current = super::topology_handoff::current(db, canonical, &command.identity)?;
     let mapping = if current
         .is_some_and(|v| v.state == crate::protocol::handoff::BootstrapState::Completed)
@@ -4454,7 +5046,7 @@ pub(crate) fn issue_bootstrap_begin_permit(
         // Historical replay cannot consume a live deciding fence.
         (0, 0)
     } else {
-        let mapping = cooperative_mapping(db, &command.identity.claim, None)?;
+        let mapping = cooperative_mapping(db, host, &command.identity.claim, None)?;
         (mapping.revision, mapping.invalidation_revision)
     };
     let request = crate::store::cooperative_permit_request(
@@ -4478,7 +5070,7 @@ pub(crate) fn issue_cooperative_permit(
     mut request: crate::ports::CooperativePermitRequest,
     budget: &CallBudget,
 ) -> Result<MutationPermit, ApiError> {
-    cooperative_instance(db, instance, &request.claim)?;
+    let host = cooperative_claim(db, context, instance, &request.claim)?;
     let stored: Option<Vec<u8>> = db
         .query_row(
             "SELECT digest FROM operations WHERE actor_scope=?1 AND operation_key=?2",
@@ -4507,7 +5099,7 @@ pub(crate) fn issue_cooperative_permit(
                     .ok_or_else(|| api_error(ErrorCode::NotFound, "current invitation missing"))?;
             request.obligation = ObligationRef::Invitation(invitation);
         }
-        let mapping = cooperative_mapping(db, &request.claim, request.check_in_mode)?;
+        let mapping = cooperative_mapping(db, host, &request.claim, request.check_in_mode)?;
         (mapping.revision, mapping.invalidation_revision)
     };
     Ok(MutationPermit::cooperative(
@@ -4528,6 +5120,7 @@ pub fn check_in_payload(command: &CheckIn) -> impl serde::Serialize + '_ {
 // Allowed: one deciding mutation: transaction, permit, claim, mode and the obligation it proves.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_cooperative(
+    ctx: &StoreContext,
     tx: &Transaction<'_>,
     at: DecisionInstant,
     instance: &str,
@@ -4539,7 +5132,7 @@ pub(crate) fn decide_cooperative(
     digest: &[u8; 32],
 ) -> Result<(CooperativeMapping, bindings::Resolution), ApiError> {
     let mapping = decide_cooperative_fence(
-        tx, at, instance, permit, claim, mode, operation, obligation, digest,
+        ctx, tx, at, instance, permit, claim, mode, operation, obligation, digest,
     )?;
     let resolution = resolve_cooperative(tx, at, claim, mode, &mapping)?;
     Ok((mapping, resolution))
@@ -4550,6 +5143,7 @@ pub(crate) fn decide_cooperative(
 /// binding write (`register_available`) call this and [`resolve_cooperative`] separately.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_cooperative_fence(
+    ctx: &StoreContext,
     tx: &Transaction<'_>,
     at: DecisionInstant,
     instance: &str,
@@ -4560,11 +5154,12 @@ pub(crate) fn decide_cooperative_fence(
     obligation: &ObligationRef,
     digest: &[u8; 32],
 ) -> Result<CooperativeMapping, ApiError> {
-    cooperative_instance(tx, instance, claim)?;
-    let mapping = cooperative_mapping(tx, claim, mode)?;
+    let host = cooperative_claim(tx, ctx, instance, claim)?;
+    let mapping = cooperative_mapping(tx, host, claim, mode)?;
     let fence = crate::protocol::authority::CooperativeDecisionFence {
         now: at.monotonic,
         instance: instance.into(),
+        host: claim.host.clone(),
         seat: claim.seat.clone(),
         target: claim.target.clone(),
         mapping_revision: mapping.revision,
@@ -4750,10 +5345,14 @@ pub fn register_available(
         &scope,
         command.operation.as_str(),
         idempotency_digest,
-        |tx| cooperative_instance(tx, &claim.instance, claim),
-        |tx| cooperative_mapping(tx, claim, Some(command.mode)).map(|_| ()),
+        |tx| cooperative_claim(tx, context, &claim.instance, claim).map(|_| ()),
+        |tx| {
+            let host = cooperative_claim(tx, context, &claim.instance, claim)?;
+            cooperative_mapping(tx, host, claim, Some(command.mode)).map(|_| ())
+        },
         |tx, at| {
             let mapping = decide_cooperative_fence(
+                context,
                 tx,
                 at,
                 &claim.instance,
@@ -4853,8 +5452,8 @@ pub fn register_available(
                 // open binding's catch-up alone (ht-54r.22).
                 catch_up::supersede_ended_bindings(tx, seat, at.utc)?;
                 if let Some(actor) = operator {
-                    tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_human_override',?4,?5,?6,?7,?8)",
-                        params![claim.instance,claim.target.as_str(),seat.as_str(),at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,actor.audit_label()]).map_err(store_error)?;
+                    tx.execute("INSERT INTO allocation_decisions(host_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES ((SELECT host_id FROM seats WHERE id=?2),?1,?2,'operator_human_override',?3,?4,?5,?6,?7)",
+                        params![claim.target.as_str(),seat.as_str(),at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,actor.audit_label()]).map_err(store_error)?;
                 }
                 // A lifecycle check-in starts this session's offer frontier over; the seat's other
                 // bindings keep theirs (ht-54r.9).
@@ -4982,16 +5581,16 @@ pub fn record_managed_launch(
     context.execute_decision(
         conn,
         |tx| {
-            type SeatColumns = Option<(String, Option<String>, i64, i64, Option<String>, i64)>;
+            type SeatColumns = Option<(String, Option<String>, i64, i64, Option<String>, i64, i64)>;
             let row: SeatColumns = tx
                 .query_row(
-                    "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2",
+                    "SELECT s.state,s.target_id,s.generation,s.target_generation,h.host_boot,h.host_epoch,h.host_id FROM seats s JOIN herdr_hosts h ON h.host_id=s.host_id WHERE s.id=?1 AND s.instance_id=?2",
                     params![command.seat.as_str(), instance],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
                 )
                 .optional()
                 .map_err(store_error)?;
-            let Some((state, target, generation, seat_target_generation, boot, epoch)) = row else {
+            let Some((state, target, generation, seat_target_generation, boot, epoch, host_id)) = row else {
                 return Err(api_error(ErrorCode::NotFound, "launched seat not found"));
             };
             if state != "resolved" || target.as_deref() != Some(command.target.as_str()) {
@@ -5000,15 +5599,16 @@ pub fn record_managed_launch(
                     "launched seat is no longer resolved onto the launch pane",
                 ));
             }
+            let host = HostId::from_row(host_id);
             let held: bool = tx
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND released_at IS NULL)",
-                    params![instance, command.target.as_str()],
+                    "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE host_id=?1 AND target_id=?2 AND released_at IS NULL)",
+                    params![host.get(), command.target.as_str()],
                     |r| r.get(0),
                 )
                 .map_err(store_error)?;
             let observation =
-                effective::effective_observation(tx, instance, command.target.as_str())?;
+                effective::effective_observation(tx, host, command.target.as_str())?;
             let Some(observation) = observation.filter(|o| {
                 !held
                     && o.structural_generation == seat_target_generation
@@ -5116,7 +5716,10 @@ pub fn hook_plain_reconnect(
 ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
     context.execute_decision(
         conn,
-        |tx| cooperative_mapping(tx, claim, None),
+        |tx| {
+            let host = cooperative_claim(tx, context, instance, claim)?;
+            cooperative_mapping(tx, host, claim, None)
+        },
         |tx, at, mapping| {
             resolve_cooperative(tx, at, claim, None, &mapping)?;
             let view = if presentation {
@@ -5183,8 +5786,8 @@ fn mod_seat_view_mode(
     let held = match target {
         Some(target) => db
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND released_at IS NULL)",
-                params![instance, target],
+                "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE host_id=(SELECT host_id FROM seats WHERE id=?1) AND target_id=?2 AND released_at IS NULL)",
+                params![seat.as_str(), target],
                 |r| r.get::<_, bool>(0),
             )
             .map_err(store_error)?,
@@ -5401,6 +6004,7 @@ pub fn nudge_threshold(
     db: &Connection,
     seat: &SeatId,
 ) -> Result<crate::protocol::priority::NudgeThreshold, ApiError> {
+    require_local_threshold_seat(db, seat)?;
     let stored: Option<i64> = db
         .query_row(
             "SELECT nudge_threshold FROM seats WHERE id=?1",
@@ -5504,6 +6108,9 @@ fn write_threshold(
         return Err(api_error(ErrorCode::InvalidRequest, subagent_refusal));
     }
     let seat = claim.seat.clone();
+    // Before the transaction: its claim precheck would refuse a remote seat with the less useful
+    // "cooperative seat is not local".
+    require_local_threshold_seat(conn, &seat)?;
     let obligation = ObligationRef::CheckIn(seat.clone());
     schema::execute_accountable_transaction(
         context,
@@ -5516,6 +6123,7 @@ fn write_threshold(
         |_| Ok(()),
         |tx, at| {
             control::decide_accountable(
+                context,
                 tx,
                 at,
                 &mut permit,

@@ -336,7 +336,7 @@ class Suite:
 
     def wake_rows(self, seat_id):
         """Read-only view of the seat's durable wake history and its overdue warnings."""
-        path = self.daemon.instance_dir() / "threads.sqlite3"
+        path = self.daemon.instance_dir() / "herdr-threads.db"
         connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
         connection.row_factory = sqlite3.Row
         try:

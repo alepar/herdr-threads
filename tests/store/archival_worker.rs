@@ -118,6 +118,27 @@ impl HostPort for Host {
         unreachable!()
     }
 }
+/// The fixture's one attached host: `test_host_id()` with this port and reachability.
+fn single_host(
+    port: Arc<Host>,
+    reachability: Arc<HostReachability>,
+) -> Arc<dyn herdr_threads::service::archival::ArchivalHosts> {
+    Arc::new(herdr_threads::service::archival::StaticHosts(vec![
+        herdr_threads::service::archival::ArchivalHost {
+            host_id: herdr_threads::test_support::test_host_id(),
+            port,
+            reachability,
+        },
+    ]))
+}
+/// The reachability of the worker's one fixture host.
+fn reach(worker: &ArchivalWorker) -> Arc<HostReachability> {
+    worker
+        .hosts
+        .get(herdr_threads::test_support::test_host_id())
+        .unwrap()
+        .reachability
+}
 struct RunningClock(std::time::Instant);
 impl Clock for RunningClock {
     fn utc_now(&self) -> UtcMillis {
@@ -159,17 +180,20 @@ fn worker_fixture_from_store(
         None,
     )
     .unwrap();
-    let paths = herdr_threads::daemon::paths::InstancePaths::resolve_read_only(&context).unwrap();
-    std::fs::create_dir_all(&paths.instance_dir).unwrap();
-    let source =
-        herdr_threads::archival_legacy::Source::new(&paths, "i".into(), Default::default());
+    let paths =
+        herdr_threads::daemon::paths::NodePaths::resolve_read_only(&context.state_dir).unwrap();
+    std::fs::create_dir_all(&paths.node_dir).unwrap();
+    let source = herdr_threads::archival_legacy::Source::new(
+        &paths,
+        "34750f98bd59fcfc946da45aaabe933b".into(),
+        Default::default(),
+    );
     let reachability = Arc::new(HostReachability::default());
     reachability.mark_archival_published(100);
     let worker = ArchivalWorker {
         store: Arc::new(fixture.store),
-        host: host.clone(),
+        hosts: single_host(host.clone(), reachability),
         writer,
-        reachability,
         source,
         boot: "worker".into(),
         after_ms: 3_600_000,
@@ -195,7 +219,7 @@ fn archival_worker_host_read_releases_both_writers_and_shutdown_owns_cancellatio
 #[test]
 fn archival_worker_initial_unknown_does_not_read_host_and_parked_lane_stops() {
     let (mut worker, host, _db, _directory) = worker_fixture();
-    worker.reachability.mark_archival_uncertain();
+    reach(&worker).mark_archival_uncertain();
     assert!(!worker.run_page().unwrap());
     assert_eq!(host.calls.load(Ordering::SeqCst), 0);
     worker.after_ms = 0;
@@ -314,9 +338,10 @@ fn archival_worker_before_host_admission_waits_for_safety_tick() {
     let pacer = Arc::new(Pacer::new("archival", clock.clone(), cancellation.clone()));
     let kicks = Arc::new(CommitKicks::default());
     kicks.register(Lane::Archival, pacer.clone());
+    // The host row does not exist yet: it appears below, at host admission.
     let store = SqliteStore::new(
-        StoreContext::new(path.clone(), clock.clone()),
-        "i",
+        StoreContext::new(path.clone(), clock.clone()).with_pending_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         StoreSettings::default(),
     )
     .unwrap()
@@ -329,7 +354,7 @@ fn archival_worker_before_host_admission_waits_for_safety_tick() {
             _directory: directory,
         });
     worker.cancellation = cancellation.clone();
-    worker.reachability.mark_archival_uncertain();
+    reach(&worker).mark_archival_uncertain();
     let store = worker.store.clone();
     let (idle_tx, idle_rx) = mpsc::channel();
     pacer.set_idle_hook(Box::new(move |n| {
@@ -350,9 +375,11 @@ fn archival_worker_before_host_admission_waits_for_safety_tick() {
         .unwrap()
     };
     assert_eq!(count(), 0, "boot pass precedes canonical host admission");
+    herdr_threads::test_support::attach_test_host_to_connection(&db);
     store
         .begin_host_observation(
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
+            herdr_threads::test_support::test_host_id(),
             &CallBudget {
                 deadline: MonoInstant(10_000),
                 cancellation,
@@ -431,18 +458,17 @@ fn archival_worker_negative_survives_failed_persistence_before_next_final_decisi
             mono: 0,
             utc: UtcMillis(0),
             after_ms: 100,
-            host_generation: 1,
-            coherent: true,
-            valid_until_mono: None,
+            hosts: herdr_threads::test_support::test_host_evidence(1, true),
             legacy_source: Some("covered".into()),
         };
-        archival::advance(&db, "i", &rt).unwrap();
+        archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
         for at in [0, 100] {
             rt.mono = at;
             rt.utc = UtcMillis(at);
-            let ticket = archival::observation_ticket(&db, "i", "s", &rt)
-                .unwrap()
-                .unwrap();
+            let ticket =
+                archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
+                    .unwrap()
+                    .unwrap();
             let mut sample = super::channel_archival::sample(at, HostUiState::Idle);
             // A synthetic certificate precondition remains an honest
             // canonical association, never a manufactured native occupant.
@@ -465,7 +491,7 @@ fn archival_worker_negative_survives_failed_persistence_before_next_final_decisi
             if phase == 4 {
                 break;
             }
-            archival::advance(&db, "i", &rt).unwrap();
+            archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
         }
         assert_eq!(
             db.query_row(
@@ -516,7 +542,7 @@ fn archival_worker_negative_survives_failed_persistence_before_next_final_decisi
         host.negative_failure.store(0, Ordering::SeqCst);
         host.cancel_on_read.store(false, Ordering::SeqCst);
         // Even a coherent observer publication between turns must not erase the negative generation.
-        worker.reachability.mark_archival_published(100);
+        reach(&worker).mark_archival_published(100);
         let _ = worker.run_page();
         assert!(
             !db.query_row("SELECT archived FROM threads WHERE id='t'", [], |r| r
@@ -546,8 +572,8 @@ fn archival_worker_negative_recovery_cycles_do_not_rediscover_retained_history()
         host.negative_failure.store(3, Ordering::SeqCst);
         db.execute_batch("BEGIN").unwrap();
         for n in 0..size {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at) VALUES(?1,'i','retired','native',1,0,0)",[format!("history{n:08}")]).unwrap();
-            db.execute("INSERT INTO threads(id,instance_id,topic,goal,archived,created_at,updated_at) VALUES(?1,'i','history','done',1,0,0)",[format!("history{n:08}")]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','retired','native',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[format!("history{n:08}")]).unwrap();
+            db.execute("INSERT INTO threads(id,instance_id,topic,goal,archived,created_at,updated_at,journaled) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','history','done',1,0,0,0)",[format!("history{n:08}")]).unwrap();
         }
         db.execute_batch("COMMIT").unwrap();
         let rt = Runtime {
@@ -555,13 +581,11 @@ fn archival_worker_negative_recovery_cycles_do_not_rediscover_retained_history()
             mono: 100,
             utc: UtcMillis(100),
             after_ms: 3_600_000,
-            host_generation: 1,
-            coherent: true,
-            valid_until_mono: None,
+            hosts: herdr_threads::test_support::test_host_evidence(1, true),
             legacy_source: Some("covered".into()),
         };
         for _ in 0..size / archival::PAGE + 3 {
-            archival::advance(&db, "i", &rt).unwrap();
+            archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
         }
         let original_epoch: i64 = db
             .query_row(
@@ -574,7 +598,7 @@ fn archival_worker_negative_recovery_cycles_do_not_rediscover_retained_history()
         for cycle in 1..=3 {
             let now = 100 + cycle * 60_000;
             clock.0.store(now, Ordering::SeqCst);
-            worker.reachability.mark_archival_published(now);
+            reach(&worker).mark_archival_published(now);
             // One stable working read followed by committed negative/recovery and
             // all advertised continuation passes, through the actual worker.
             let before = host.calls.load(Ordering::SeqCst);
@@ -585,7 +609,7 @@ fn archival_worker_negative_recovery_cycles_do_not_rediscover_retained_history()
                 }
             }
             assert_eq!(host.calls.load(Ordering::SeqCst), before + 1);
-            worker.reachability.mark_archival_published(now);
+            reach(&worker).mark_archival_published(now);
             for _ in 0..size / archival::PAGE + 8 {
                 turns += 1;
                 if !worker.run_page().unwrap() {
@@ -627,11 +651,11 @@ fn archival_worker_busy_member_does_not_reset_unrelated_all_left_grace() {
     let fixture = super::handoff_fences::store_fixture_with_clock(clock.clone());
     let (mut worker, host, db, _directory) = worker_fixture_from_store(fixture);
     host.negative_failure.store(3, Ordering::SeqCst);
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('quiet','i','quiet','done',0,0)", []).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES('quiet','34750f98bd59fcfc946da45aaabe933b','quiet','done',0,0,0)", []).unwrap();
     for minute in 0..=60 {
         let now = 100 + minute * 60_000;
         clock.0.store(now, Ordering::SeqCst);
-        worker.reachability.mark_archival_published(now);
+        reach(&worker).mark_archival_published(now);
         for turn in 0..32 {
             if !worker.run_page().unwrap() {
                 break;
@@ -669,7 +693,7 @@ type JournalWorkerFixture = (
     Arc<Host>,
     rusqlite::Connection,
     super::archival_legacy::Temp,
-    herdr_threads::daemon::paths::InstancePaths,
+    herdr_threads::daemon::paths::NodePaths,
 );
 fn journal_worker_fixture() -> JournalWorkerFixture {
     let (directory, paths, source) = super::archival_legacy::source();
@@ -678,8 +702,9 @@ fn journal_worker_fixture() -> JournalWorkerFixture {
         herdr_threads::store::connection::StoreContext::new(
             paths.database_path.clone(),
             Arc::new(JournalClock),
-        ),
-        "i",
+        )
+        .with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap();
@@ -695,9 +720,8 @@ fn journal_worker_fixture() -> JournalWorkerFixture {
     });
     let worker = ArchivalWorker {
         store: Arc::new(store),
-        host: host.clone(),
+        hosts: single_host(host.clone(), Arc::new(HostReachability::default())),
         writer,
-        reachability: Arc::new(HostReachability::default()),
         source,
         boot: "worker".into(),
         after_ms: 60000,
@@ -705,10 +729,10 @@ fn journal_worker_fixture() -> JournalWorkerFixture {
     };
     (worker, host, db, directory, paths)
 }
-fn distinct_journals(paths: &herdr_threads::daemon::paths::InstancePaths) {
+fn distinct_journals(paths: &herdr_threads::daemon::paths::NodePaths) {
     use herdr_threads::cli::journal::{Journal, SemanticMutation};
     let reference = super::archival_legacy::compound(paths);
-    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(paths.node_dir.join("intents")).unwrap();
     let pending = journal.load(&reference).unwrap();
     let SemanticMutation::Frozen { claim, mutation } = pending.semantic else {
         panic!("frozen")
@@ -740,7 +764,7 @@ fn drain_worker_traversal(worker: &mut ArchivalWorker) {
 }
 fn legacy_veto(db: &rusqlite::Connection) -> bool {
     db.query_row(
-        "SELECT bootstrap_veto FROM archival_instances WHERE instance_id='i'",
+        "SELECT bootstrap_veto FROM archival_instances WHERE instance_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
         |r| r.get(0),
     )
@@ -811,7 +835,7 @@ fn archival_worker_deciding_bootstrap_veto_reaches_next_consumer() {
     // several pages: drain each one rather than assume a single page.
     drain_worker_traversal(&mut worker);
     super::archival_legacy::modern_compound(&paths, true, false);
-    worker.reachability.mark_archival_published(100);
+    reach(&worker).mark_archival_published(100);
     db.execute("UPDATE seat_archival SET next_mono=999999", [])
         .unwrap();
     drain_worker_traversal(&mut worker);
@@ -831,7 +855,7 @@ fn archival_worker_deciding_bootstrap_veto_reaches_next_consumer() {
 fn archival_worker_deciding_bootstrap_veto_reaches_sample_consumer() {
     let (mut worker, host, db, _directory, paths) = journal_worker_fixture();
     super::archival_legacy::modern_compound(&paths, true, false);
-    worker.reachability.mark_archival_published(100);
+    reach(&worker).mark_archival_published(100);
     worker.run_page().unwrap();
     assert_eq!(
         host.calls.load(Ordering::SeqCst),
@@ -887,8 +911,9 @@ fn archival_worker_consumed_page_preserves_deadline_cancel_runtime_and_rollback_
                         herdr_threads::store::connection::StoreContext::new(
                             paths.database_path.clone(),
                             clock,
-                        ),
-                        "i",
+                        )
+                        .with_test_host(),
+                        "34750f98bd59fcfc946da45aaabe933b",
                         Default::default(),
                     )
                     .unwrap(),
@@ -933,8 +958,9 @@ fn archival_worker_consumed_page_preserves_deadline_cancel_runtime_and_rollback_
                 herdr_threads::store::connection::StoreContext::new(
                     paths.database_path.clone(),
                     Arc::new(JournalClock),
-                ),
-                "i",
+                )
+                .with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 Default::default(),
             )
             .unwrap(),
@@ -971,7 +997,7 @@ fn archival_worker_consumed_page_preserves_deadline_cancel_runtime_and_rollback_
 #[test]
 fn archival_worker_fresh_absence_recovers_after_consumed_runtime_failure() {
     let (mut worker, host, db, _directory, paths) = journal_worker_fixture();
-    assert!(!paths.instance_dir.join("intents").exists());
+    assert!(!paths.node_dir.join("intents").exists());
     worker.after_ms = u64::MAX;
     assert_eq!(
         worker.run_page().unwrap_err().code,
@@ -984,4 +1010,68 @@ fn archival_worker_fresh_absence_recovers_after_consumed_runtime_failure() {
         "every absent-root scan is a complete fresh traversal, not a permanent old error veto"
     );
     assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+}
+
+/// The lane lists h1 and h2 as attached, but h1's session is gone when the sample
+/// is routed (`get` finds none).
+struct VanishedSession(herdr_threads::service::archival::StaticHosts);
+impl herdr_threads::service::archival::ArchivalHosts for VanishedSession {
+    fn attached(&self) -> Vec<herdr_threads::service::archival::ArchivalHost> {
+        self.0.attached()
+    }
+    fn get(&self, id: HostId) -> Option<herdr_threads::service::archival::ArchivalHost> {
+        (id != herdr_threads::test_support::test_host_id())
+            .then(|| self.0.get(id))
+            .flatten()
+    }
+}
+#[test]
+fn sample_for_seat_without_session_marks_nothing_else_uncertain() {
+    use herdr_threads::service::archival::{ArchivalHost, StaticHosts};
+    let (mut worker, host, db, _directory) = worker_fixture();
+    let now = worker.store.clock().monotonic_now().0;
+    let h1 = reach(&worker);
+    let h2 = Arc::new(HostReachability::default());
+    h1.mark_archival_published(now);
+    h2.mark_archival_published(now);
+    let h2_port = Arc::new(Host {
+        path: host.path.clone(),
+        writer: host.writer.clone(),
+        calls: AtomicUsize::new(0),
+        cancel: Cancellation::default(),
+        cancel_on_read: false.into(),
+        negative_failure: AtomicUsize::new(0),
+    });
+    worker.hosts = Arc::new(VanishedSession(StaticHosts(vec![
+        ArchivalHost {
+            host_id: herdr_threads::test_support::test_host_id(),
+            port: host.clone(),
+            reachability: h1.clone(),
+        },
+        ArchivalHost {
+            host_id: herdr_threads::test_support::host_id_for_test(2),
+            port: h2_port.clone(),
+            reachability: h2.clone(),
+        },
+    ])));
+    // The seat's host is listed (coherent) but has no session to sample through.
+    let error = worker.run_page().unwrap_err();
+    assert_eq!(error.code, ErrorCode::HostUnavailable);
+    assert_eq!(host.calls.load(Ordering::SeqCst), 0, "no port was read");
+    assert_eq!(h2_port.calls.load(Ordering::SeqCst), 0);
+    let coherent = |r: &HostReachability| r.archival_state(now).coherent;
+    assert!(coherent(&h2), "the other host's evidence is untouched");
+    assert!(
+        coherent(&h1),
+        "no session, so no reachability to mark: nothing else turns uncertain"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM seat_archival WHERE idle_mono IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
 }

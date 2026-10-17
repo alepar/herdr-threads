@@ -63,6 +63,10 @@ mod hermes_enrollment_smoke;
 #[cfg(feature = "test-support")]
 #[path = "integration/hermes_enrollment_sweep.rs"]
 mod hermes_enrollment_sweep;
+/// ht-5fr.2.8: the daemon composes HostSessions: startup attach, sweep, stop.
+#[cfg(feature = "test-support")]
+#[path = "integration/host_sessions_daemon.rs"]
+mod host_sessions_daemon;
 /// ht-p03.1: the isolated named Herdr test-session fixture's self-test.
 #[cfg(feature = "test-support")]
 #[path = "integration/isolated_herdr_fixture.rs"]
@@ -85,10 +89,20 @@ mod latency;
 #[cfg(feature = "test-support")]
 #[path = "integration/mod_delivery.rs"]
 mod mod_delivery;
+/// ht-5fr.2.12: dispatch by claim host over two fake Herdr servers: lazy attach, per-server
+/// wake workers and outage freeze, C1 across servers, and the hook in a pane of a second server.
+#[cfg(feature = "test-support")]
+#[path = "daemon/multi_host.rs"]
+mod multi_host;
 /// ht-p03.131: no test-spawned process outlives its run (panic, SIGTERM, SIGKILL).
 #[cfg(feature = "test-support")]
 #[path = "integration/no_leaks.rs"]
 mod no_leaks;
+/// ht-5fr.1.11: the node layout end to end (store-only start, layout modes, legacy tree
+/// untouched, restart identity, key-missing remedy) through the real binary.
+#[cfg(feature = "test-support")]
+#[path = "daemon/node_layout.rs"]
+mod node_layout;
 /// ht-p03.9.5: the observation lane's backoff and quiet Herdr-down, against an
 /// isolated Herdr stopped and restarted under the running lane.
 #[cfg(feature = "test-support")]
@@ -109,6 +123,10 @@ mod operator_ux;
 #[cfg(feature = "test-support")]
 #[path = "integration/pane_close_retirement.rs"]
 mod pane_close_retirement;
+/// ht-5fr.5.9: `peer --stdio`, the stateless ssh-side pump, against a daemon it starts.
+#[cfg(feature = "test-support")]
+#[path = "cli/peer_stdio.rs"]
+mod peer_stdio;
 /// ht-54r.25: session-binding flows the smoke configurations do not assert (settle once, one-shot).
 #[cfg(feature = "test-support")]
 #[path = "integration/session_bindings_e2e.rs"]
@@ -140,6 +158,20 @@ mod sweep;
 #[cfg(feature = "test-support")]
 #[path = "integration/sweep_remaining.rs"]
 mod sweep_remaining;
+/// ht-5fr.8: the operator and status CLI for sync (`peer`, `sync ...`) against real daemons.
+#[cfg(feature = "test-support")]
+#[path = "cli/sync_cli.rs"]
+mod sync_cli;
+/// ht-5fr.7: peer discovery: a fake `herdr machine list` target is upserted, linked and
+/// converged through `sync.dial_command`.
+#[cfg(feature = "test-support")]
+#[path = "daemon/sync_discovery.rs"]
+mod sync_discovery;
+/// ht-5fr.5.10: two real daemons linked through `sync.dial_command`: genesis exchange,
+/// convergence, the composed Apply lane, backoff and reconnect, dial-child reaping.
+#[cfg(feature = "test-support")]
+#[path = "daemon/sync_link.rs"]
+mod sync_link;
 /// ht-4is.8.18: compact agent-facing machine text (short cursors, one line
 /// per message, no page blobs), measured through the installed executable.
 #[path = "integration/token_diet.rs"]

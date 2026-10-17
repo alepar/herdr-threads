@@ -131,11 +131,14 @@ fn top_level_session_start_enrolls_and_prints_the_startup_check_in() {
     let hook = run(&fx, &home, "SessionStart", "session-start-top");
     let text = system_message(&hook);
     assert!(
-        text.starts_with("Use inbox; follow its next: commands"),
+        text.starts_with("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"),
         "{text}"
     );
     assert!(text.contains(herdr_threads::harness::agy::AGY_COMMAND_GUIDANCE.trim_end()));
-    assert!(!text.contains("unavailable"), "{text}");
+    assert!(
+        !text.contains("herdr-threads: check-in unavailable ("),
+        "{text}"
+    );
     assert!(
         text.len() <= 4096,
         "the startup context stays within the encode bound"
@@ -156,7 +159,10 @@ fn a_child_session_start_in_an_enrolled_pane_leaves_the_binding_alone() {
     let child = run(&fx, &home, "SessionStart", "session-start-child");
     let text = system_message(&child);
     assert!(text.to_lowercase().contains("subagent"), "{text}");
-    assert!(!text.starts_with("Use inbox"), "{text}");
+    assert!(
+        !text.starts_with("Complete hook/channel deliveries"),
+        "{text}"
+    );
     assert_eq!(generation(&fx), generation_before);
     assert_eq!(live_binding(&fx, TOP), 1, "the top-level binding stays");
     assert_eq!(live_bindings(&fx), 1);
@@ -179,7 +185,10 @@ fn clear_rotates_the_generation_and_binds_the_new_conversation() {
         "SessionStart",
         "session-start-after-clear",
     ));
-    assert!(text.starts_with("Use inbox"), "{text}");
+    assert!(
+        text.starts_with("Complete hook/channel deliveries"),
+        "{text}"
+    );
     // Session-keyed bindings: the new conversation is a new binding at the same seat generation;
     // the earlier one, of the same agy process, is superseded (disconnected, never ended).
     assert_eq!(generation(&fx), enrolled);
@@ -215,7 +224,7 @@ fn inv0_resume_reattaches_the_seat_by_c1_from_the_first_turn_start() {
         "a lifecycle from a turn start carries the supersede line: {text}"
     );
     assert!(
-        text[LIFECYCLE_PREFIX.len()..].starts_with("Use inbox"),
+        text[LIFECYCLE_PREFIX.len()..].starts_with("Complete hook/channel deliveries"),
         "{text}"
     );
     assert_eq!(
@@ -335,7 +344,7 @@ fn a_resume_of_an_earlier_conversation_with_a_state_file_rebinds_by_c1() {
     ));
     assert!(text.starts_with(LIFECYCLE_PREFIX), "{text}");
     assert!(
-        text[LIFECYCLE_PREFIX.len()..].starts_with("Use inbox"),
+        text[LIFECYCLE_PREFIX.len()..].starts_with("Complete hook/channel deliveries"),
         "{text}"
     );
     assert_eq!(
@@ -372,7 +381,10 @@ fn a_session_start_without_a_presence_lock_enrolls_nothing() {
     let before = (generation(&fx), fx.check_ins.load(Ordering::SeqCst));
     let hook = run(&fx, &home, "SessionStart", "session-start-top");
     let text = system_message(&hook);
-    assert!(!text.starts_with("Use inbox"), "{text}");
+    assert!(
+        !text.starts_with("Complete hook/channel deliveries"),
+        "{text}"
+    );
     assert_eq!(live_bindings(&fx), 0);
     assert_eq!(
         (generation(&fx), fx.check_ins.load(Ordering::SeqCst)),
@@ -441,7 +453,10 @@ fn daemon_down_prints_one_check_in_unavailable_message(cases: &[(&str, &str, &st
             text.contains("herdr-threads: check-in unavailable ("),
             "{layout} {name}: {text}"
         );
-        assert!(!text.contains("Use inbox"), "{layout} {name}: {text}");
+        assert!(
+            !text.contains("Complete hook/channel deliveries"),
+            "{layout} {name}: {text}"
+        );
         assert!(
             text.len()
                 <= herdr_threads::cli::hook::MAX_CONTEXT
@@ -558,7 +573,10 @@ fn agy_lazy_row_settles_only_through_the_transcript_confirm_never_hook_context()
         "SessionStart",
         "session-start-after-clear",
     ));
-    assert!(text.starts_with("Use inbox"), "{text}");
+    assert!(
+        text.starts_with("Complete hook/channel deliveries"),
+        "{text}"
+    );
     assert!(
         !text.contains("passive hello") && !text.contains(INBOX_HEADER),
         "the lifecycle context carries no lazy body or inbox block: {text}"
@@ -617,103 +635,6 @@ fn agy_lazy_row_settles_only_through_the_transcript_confirm_never_hook_context()
         .unwrap();
     assert_eq!(passed, 1, "exactly the confirming binding passed the row");
     assert_eq!(lazy_row_state(&fx, &lazy), "pending");
-}
-
-// Kills: classifying Lazy invitation as passive but losing its complete
-// pending item between canonical inbox paging and the registered turn hook.
-// The CLI can no longer create a lazy invitation (an agent `invite` always requires acceptance,
-// message-priority D6); a lazy one only survives from before the upgrade. The fixture builds that
-// legacy shape by sending the lazy `Invite` straight to the daemon with the peer's canonical claim.
-#[test]
-fn agy_turn_hook_carries_lazy_invitation_without_accepting_or_confirming_it() {
-    use herdr_threads::protocol::{
-        authority::{CallerClaim, CallerRole, LivenessFingerprint},
-        commands::{Command, InvitationConfirmation, Invite},
-        ids::{ExecutionId, HostTargetId, NativeSessionId, OperationId, SeatId},
-    };
-    let fx = Fixture::start();
-    let home = home_with(&fx, "top-level");
-    system_message(&run(&fx, &home, "SessionStart", "session-start-top"));
-    let peer = fx.hook("w9:p2", &start("peer-sess"));
-    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
-    // Prime the hook's quiet attention-version cache before the invitation arrives.
-    let quiet = run(&fx, &home, "PreInvocation", "pre-invocation-inv1");
-    assert_eq!(quiet.code, Some(0), "{}", quiet.stderr);
-    assert!(quiet.stdout.is_empty(), "{:?}", quiet.stdout);
-    let thread = data(cooperative_as(
-        &fx,
-        "claude",
-        "peer",
-        "w9:p2",
-        &[
-            "thread",
-            "create",
-            "--topic",
-            "passive invitation for review",
-            "--goal",
-            "review recipient remit before acceptance",
-        ],
-    ));
-    // Legacy shape: a lazy invitation sent by the peer's canonical claim straight to the daemon.
-    let claim: CallerClaim = rusqlite::Connection::open(&fx.db)
-        .unwrap()
-        .query_row(
-            "SELECT seat_id,generation,execution_id,liveness_pid,liveness_start FROM occupant_bindings WHERE target_id='w9:p2' AND harness='claude' AND native_session='peer-sess' AND role='top_level' AND agent_id='' AND ended_at IS NULL",
-            [],
-            |row| {
-                let liveness = match (row.get::<_, Option<i64>>(3)?, row.get::<_, Option<i64>>(4)?) {
-                    (Some(pid), Some(start)) => Some(LivenessFingerprint {
-                        pid: u32::try_from(pid).unwrap(),
-                        start: u64::try_from(start).unwrap(),
-                    }),
-                    _ => None,
-                };
-                Ok(CallerClaim {
-                    instance: fx.descriptor.instance_uuid.to_string(),
-                    seat: SeatId::new(row.get::<_, String>(0)?),
-                    binding_generation: u64::try_from(row.get::<_, i64>(1)?).unwrap(),
-                    role: CallerRole::TopLevel,
-                    harness: herdr_threads::protocol::authority::Harness::Claude,
-                    native_session: NativeSessionId::new("peer-sess"),
-                    execution: ExecutionId::new(row.get::<_, String>(2)?),
-                    target: HostTargetId::new("w9:p2"),
-                    agent_id: None,
-                    liveness,
-                })
-            },
-        )
-        .unwrap();
-    fx.call(Command::Invite(Invite {
-        confirmation: Some(InvitationConfirmation::Lazy),
-        thread: herdr_threads::protocol::ids::ThreadId::new(thread.clone()),
-        seat: SeatId::new("seat"),
-        deadline_millis: None,
-        operation: OperationId::new("lazy-invite"),
-        claim,
-    }))
-    .unwrap();
-    let text = system_message(&run(&fx, &home, "PreInvocation", "pre-invocation-inv1"));
-    assert!(text.contains("passive invitation for review"), "{text}");
-    assert!(
-        text.contains("review recipient remit before acceptance"),
-        "{text}"
-    );
-    assert!(text.contains(&thread), "{text}");
-    assert!(text.contains("accept"), "{text}");
-    assert!(!text.contains("] attention "), "{text}");
-    assert_eq!(fx.count("SELECT count(*) FROM invitations WHERE seat_id='seat' AND state='pending' AND confirmation='lazy'"), 1);
-    assert_eq!(
-        fx.count("SELECT count(*) FROM memberships WHERE seat_id='seat' AND state='joined'"),
-        0
-    );
-    assert_eq!(
-        fx.count("SELECT count(*) FROM receipts WHERE seat_id='seat'"),
-        0
-    );
-    assert_eq!(
-        fx.count("SELECT count(*) FROM wake_work WHERE seat_id='seat' AND attention_version>0"),
-        0
-    );
 }
 
 /// Registered bridge activation evidence. The daemon is the elected production
@@ -792,7 +713,7 @@ mod activation {
 
     impl Observer {
         fn start(fx: &continuity::Fixture, fault: Fault) -> Self {
-            let descriptor_path = fx.instance_dir.join("endpoint.json");
+            let descriptor_path = fx.node_dir.join("endpoint.json");
             let original_descriptor = fs::read(&descriptor_path).unwrap();
             let mut descriptor: EndpointDescriptor =
                 serde_json::from_slice(&original_descriptor).unwrap();
@@ -1116,11 +1037,11 @@ mod activation {
             }
         }
         fn adapter_state(&self) -> PathBuf {
-            self.fx.instance_dir.join("adapter-state/agy")
+            self.fx.node_dir.join("adapter-state/agy")
         }
         fn downgrade(&self, age_ms: u64) {
             let state = self.adapter_state();
-            for directory in [self.fx.instance_dir.join("adapter-state"), state.clone()] {
+            for directory in [self.fx.node_dir.join("adapter-state"), state.clone()] {
                 if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&directory) {
                     assert_eq!(
                         error.kind(),
@@ -1213,7 +1134,7 @@ mod activation {
                     (None, None) => None,
                     _ => panic!("canonical binding fingerprint is complete or absent"),
                 };
-                Ok(CallerClaim { instance: self.fx.instance.to_string(), seat: herdr_threads::protocol::ids::SeatId::new(row.get::<_,String>(0)?), binding_generation: u64::try_from(row.get::<_, i64>(1)?).expect("canonical binding generation is nonnegative"),
+                Ok(CallerClaim { host: self.fx.host_locator(), instance: self.fx.instance.to_string(), seat: herdr_threads::protocol::ids::SeatId::new(row.get::<_,String>(0)?), binding_generation: u64::try_from(row.get::<_, i64>(1)?).expect("canonical binding generation is nonnegative"),
                     role: herdr_threads::protocol::authority::CallerRole::TopLevel, harness: herdr_threads::protocol::authority::Harness::Claude,
                     native_session: herdr_threads::protocol::ids::NativeSessionId::new("origin-session"), execution: herdr_threads::protocol::ids::ExecutionId::new(row.get::<_,String>(2)?), target: herdr_threads::protocol::ids::HostTargetId::new("w9:p2"), agent_id: None, liveness })
             }).unwrap();
@@ -1599,569 +1520,22 @@ mod activation {
         round_trip(true);
     }
 
-    // Kills: public Ensure loses its Lazy selection, registered Hook falls back,
-    // full context disappears, or physical presentation settles participation.
+    // Kills: an agy `hook-event` claim without the pane's Herdr server (or carrying a default
+    // one): the claim the hook sends names the server the pane belongs to.
     #[test]
-    fn modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement() {
-        use herdr_threads::protocol::{
-            authority::CallerRole,
-            delivery::{PresentationConsumer, PresentationRenderRequest},
-            results::DirectThreadEnsureOutcome,
-        };
-        use rusqlite::params;
-
+    fn agy_hook_event_claim_carries_pane_host() {
         let elected = Elected::start();
-        let argv = installed_argv(
-            BIN,
-            Some(elected.state.to_str().unwrap()),
-            None,
-            Harness::Claude,
-        );
-        let registered = herdr_threads::harness::setup::shell_command(&argv).unwrap();
-        let startup_observer = Observer::start(&elected.fx, Fault::None);
-        let startup = elected.claude_parent.run(
-            &registered,
-            &continuity::session_start("claude", "origin-session", "startup"),
-            false,
-        );
-        assert_eq!(startup.code, Some(0), "{}", startup.stderr);
-        assert!(!startup.stdout.is_empty(), "{}", startup.stderr);
-        let origin = startup_observer
-            .take()
-            .into_iter()
-            .find_map(|exchange| match exchange.result {
-                Some(Ok(CommandResult::CheckedIn(checked))) => Some(checked.context),
-                _ => None,
-            })
-            .expect("installed sender SessionStart reaches canonical CheckIn");
-        drop(startup_observer);
-        assert_eq!(origin.target.as_str(), "w9:p2");
-        assert_eq!(origin.role, CallerRole::TopLevel);
-        assert_eq!(origin.harness, OccupantHarness::Claude);
-        assert_eq!(origin.native_session.as_str(), "origin-session");
-        assert_eq!(origin.instance, elected.recipient.instance);
-        assert_eq!(elected.recipient.target.as_str(), PANE);
-        assert_eq!(elected.recipient.role, CallerRole::TopLevel);
-        assert_eq!(elected.recipient.harness.as_str(), "agy");
-        assert_eq!(elected.recipient.native_session.as_str(), TOP);
-        assert_ne!(origin.seat, elected.recipient.seat);
-        let quiet = elected.run("PreInvocation", false);
-        assert_eq!(quiet.code, Some(0), "{}", quiet.stderr);
-        assert!(quiet.stdout.is_empty(), "{:?}", quiet.stdout);
-
-        let observer = Observer::start(&elected.fx, Fault::None);
-        let body = "direct Ensure body remains pending after Hook presentation";
-        let sent: Value = {
-            // Preserve the actual registered sender session/fingerprint. The
-            // shared helper selects its unrelated claude/sess-1 fixture.
-            let _origin = herdr_threads::cli::caller::fix_origin(
-                herdr_threads::cli::caller::CallerOrigin::Agent(
-                    herdr_threads::harness::caller_env::EnvClaim {
-                        harness: origin.harness,
-                        native_session: origin.native_session.clone(),
-                        agent_id: origin.agent_id.clone(),
-                        role: origin.role,
-                        fingerprint: origin.liveness.expect("registered sender fingerprint"),
-                        provenance:
-                            herdr_threads::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE,
-                    },
-                ),
-            );
-            let args = [
-                "herdr-threads",
-                "--json",
-                "--state-dir",
-                elected.state.to_str().unwrap(),
-                "--host-endpoint",
-                elected.fx.host.to_str().unwrap(),
-                "--cooperative-seat",
-                origin.seat.as_str(),
-                "--cooperative-target",
-                origin.target.as_str(),
-                "--cooperative-harness",
-                origin.harness.as_str(),
-                "--cooperative-role",
-                "top-level",
-                "send",
-                "--seat",
-                elected.recipient.seat.as_str(),
-                "--body",
-                body,
-            ];
-            let mut output = Vec::new();
-            herdr_threads::cli::run(args, &mut output).unwrap();
-            serde_json::from_slice(&output).unwrap()
-        };
-        let producer = observer.take();
-        assert_eq!(
-            producer
-                .iter()
-                .filter(|exchange| matches!(exchange.command, Command::EnsureDirectThread(_)))
-                .count(),
-            1,
-            "retain the first public Ensure decision, without a second Ensure"
-        );
-        let (ensure, actual) = producer
-            .iter()
-            .find_map(|exchange| match (&exchange.command, &exchange.result) {
-                (
-                    Command::EnsureDirectThread(request),
-                    Some(Ok(CommandResult::DirectThreadEnsured(result))),
-                ) => Some((request.clone(), result.clone())),
-                _ => None,
-            })
-            .expect("parsed direct send executes modern Ensure and observes its actual result");
-        assert_eq!(ensure.claim, origin);
-        assert_eq!(ensure.recipient, elected.recipient.seat);
-        let policy = ensure
-            .creation_policy
-            .as_ref()
-            .expect("modern creation policy");
-        assert_eq!(policy.confirmation, InvitationConfirmation::Lazy);
-        assert_eq!(policy.deadline_millis, None);
-        assert_eq!(actual.outcome, DirectThreadEnsureOutcome::Created);
-        assert_eq!(actual.recipient, elected.recipient.seat);
-        let invitation = actual
-            .invitation
-            .as_ref()
-            .expect("actual selected invitation");
-        assert_eq!(invitation.confirmation, InvitationConfirmation::Lazy);
-        assert_eq!(invitation.effective_deadline_at, None);
-        assert_eq!(invitation.episode, 1);
-        assert_eq!(invitation.inviter.as_ref(), Some(&origin.seat));
-        assert_eq!(
-            sent["version"],
-            herdr_threads::protocol::wire::PROTOCOL_VERSION
-        );
-        let result = sent
-            .get("result")
-            .filter(|result| result.is_object())
-            .expect("versioned direct-send result object");
-        assert_eq!(result["kind"], "message_sent");
-        assert_eq!(result["thread"], json!(actual.thread));
-        assert_eq!(result["selection"]["outcome"], "created");
-        assert_eq!(result["selection"]["invitation"], json!(invitation));
-        assert_eq!(
-            producer
-                .iter()
-                .filter(|exchange| matches!(exchange.command, Command::SendMessage(_)))
-                .count(),
-            1
-        );
-        let (send, message) = producer
-            .iter()
-            .find_map(|exchange| match (&exchange.command, &exchange.result) {
-                (Command::SendMessage(request), Some(Ok(CommandResult::MessageSent(id)))) => {
-                    Some((request, id))
-                }
-                _ => None,
-            })
-            .expect("actual public SendMessage result");
-        assert_eq!(send.claim, origin);
-        assert_eq!(send.thread, actual.thread);
-        assert_eq!(send.body, body);
-        // The daemon advertises send.priority_v1: the default send carries priority 1 (the
-        // passive class) and no legacy delivery mode.
-        assert_eq!(send.priority.map(|p| p.get()), Some(1));
-        assert_eq!(send.delivery_mode, DeliveryMode::Ordinary);
-        assert_eq!(send.deadline_millis, None);
-        assert_eq!(
-            send.direct_recipient.as_ref(),
-            Some(&elected.recipient.seat)
-        );
-        assert_eq!(result["data"], json!(message));
-        assert_eq!(
-            serde_json::from_value::<CommandResult>(result.clone()).unwrap(),
-            CommandResult::MessageSent(message.clone())
-        );
-        assert!(
-            !producer
-                .iter()
-                .any(|exchange| matches!(exchange.command, Command::Invite(_)))
-        );
-
-        let db = elected.fx.db();
-        let mut pair = [origin.seat.as_str(), elected.recipient.seat.as_str()];
-        pair.sort();
-        let pair_rows: i64 = db.query_row(
-            "SELECT count(*) FROM direct_threads WHERE instance_id=?1 AND seat_a=?2 AND seat_b=?3 AND thread_id=?4",
-            params![origin.instance, pair[0], pair[1], actual.thread.as_str()],
-            |row| row.get(0),
-        ).unwrap();
-        assert_eq!(pair_rows, 1);
-        let (topic, goal, topic_revision): (String, String, i64) = db
-            .query_row(
-                "SELECT topic,goal,topic_revision FROM threads WHERE id=?1",
-                [actual.thread.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        let literal_context = format!("1:1 {} {}", pair[0], pair[1]);
-        assert_eq!(topic, literal_context);
-        assert_eq!(goal, literal_context);
-        assert!(topic_revision >= 0);
-        let invitation_state = || {
-            db.query_row(
-                "SELECT thread_id,seat_id,episode,state,confirmation,inviter_seat_id,command_context_epoch,deadline_at FROM invitations WHERE id=?1",
-                [invitation.id.as_str()],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, Option<String>>(5)?, row.get::<_, i64>(6)?, row.get::<_, i64>(7)?)),
-            ).unwrap()
-        };
-        let before_invitation = invitation_state();
-        assert_eq!(before_invitation.0, actual.thread.as_str());
-        assert_eq!(before_invitation.1, elected.recipient.seat.as_str());
-        assert_eq!(before_invitation.2, 1);
-        assert_eq!(before_invitation.3, "pending");
-        assert_eq!(before_invitation.4, "lazy");
-        assert_eq!(before_invitation.5.as_deref(), Some(origin.seat.as_str()));
-        assert!(before_invitation.6 >= 0);
-        // Physical legacy timing stays retained; the effective Lazy deadline is absent.
-        let command_epoch = before_invitation.6.to_string();
-        let topic_revision = topic_revision.to_string();
-        let membership_state = || {
-            db.query_row(
-                "SELECT episode,state,joined_at,left_at,retired_at FROM memberships WHERE thread_id=?1 AND seat_id=?2",
-                params![actual.thread.as_str(), elected.recipient.seat.as_str()],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i64>>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, Option<i64>>(4)?)),
-            ).unwrap()
-        };
-        let before_membership = membership_state();
-        assert_eq!(before_membership, (1, "invited".into(), None, None, None));
-        let lazy_state = || {
-            db.query_row(
-                "SELECT ordinal,preparation_id,thread_id,state FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2",
-                params![message.as_str(), elected.recipient.seat.as_str()],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)),
-            ).unwrap()
-        };
-        let before_lazy = lazy_state();
-        assert_eq!(before_lazy.2, actual.thread.as_str());
-        assert_eq!(before_lazy.3, "pending");
-        let binding = || {
-            db.query_row(
-                "SELECT generation,execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-                [elected.recipient.seat.as_str()],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-            ).unwrap()
-        };
-        let before_binding = binding();
-        assert_eq!(
-            u64::try_from(before_binding.0).unwrap(),
-            elected.recipient.binding_generation
-        );
-        assert_eq!(before_binding.1, elected.recipient.execution.as_str());
-        let assert_pending_without_wake = || {
-            let receipts: i64 = db.query_row(
-                "SELECT (SELECT count(*) FROM receipts WHERE seat_id=?1)+(SELECT count(*) FROM receipt_state WHERE seat_id=?1)",
-                [elected.recipient.seat.as_str()], |row| row.get(0),
-            ).unwrap();
-            assert_eq!(receipts, 0);
-            let logical_receipts: i64 = db.query_row(
-                "SELECT count(*) FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id WHERE pr.seat_id=?1 AND COALESCE(rs.state,'pending')='pending' AND pr.ack_required=1",
-                [elected.recipient.seat.as_str()], |row| row.get(0),
-            ).unwrap();
-            assert_eq!(
-                logical_receipts, 0,
-                "Lazy presentation creates no published logical ACK obligation"
-            );
-            let intervals: i64 = db
-                .query_row(
-                    "SELECT count(*) FROM membership_intervals WHERE thread_id=?1 AND seat_id=?2",
-                    params![actual.thread.as_str(), elected.recipient.seat.as_str()],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(intervals, 0);
-            let frontier: i64 = db
-                .query_row(
-                    "SELECT COALESCE(MAX(attention_version),0) FROM wake_work WHERE seat_id=?1",
-                    [elected.recipient.seat.as_str()],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(frontier, 0);
-            let wake_on: String = db
-                .query_row(
-                    "SELECT wake_on FROM seats WHERE id=?1",
-                    [elected.recipient.seat.as_str()],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(wake_on, "nudge", "no Lazy opt-in promotion");
-        };
-        assert_pending_without_wake();
-
-        // Failure-local observation only. The binding selection uses the exact
-        // registered seat/harness/session. Every other relation is looked up by
-        // the captured message, thread, invitation, preparation or binding key.
-        // Keep this predicate byte-identical to binding_lazy_unread_sql! so the
-        // witness separates reader eligibility from publication/continuation.
-        let lazy_diagnostic = || {
-            let snapshot: String = db.query_row(
-                r#"WITH b AS (SELECT * FROM occupant_bindings
-                    WHERE seat_id=?2 AND harness=?6 AND native_session=?7
-                    AND generation=?8 AND execution_id=?9 AND target_id=?10
-                    AND agent_id='' AND ended_at IS NULL)
-                SELECT json_object(
-                    'binding',(SELECT json_object('id',binding_id,'seat',seat_id,
-                        'generation',generation,'execution',execution_id,'session',native_session,
-                        'role',role,'liveness',liveness,'pid',liveness_pid,'start',liveness_start,
-                        'registered_at',registered_at,'observed_at',observed_at) FROM b),
-                    'membership',(SELECT json_object('episode',episode,'state',state,
-                        'joined_at',joined_at,'left_at',left_at,'retired_at',retired_at)
-                        FROM memberships WHERE thread_id=?3 AND seat_id=?2),
-                    'invitation',(SELECT json_object('id',id,'episode',episode,'state',state,
-                        'confirmation',confirmation,'created_decision',created_decision_seq)
-                        FROM invitations WHERE id=?5 AND thread_id=?3 AND seat_id=?2),
-                    'cursor',(SELECT json_object('binding',c.binding_id,'thread',c.thread_id,'seq',c.seq)
-                        FROM binding_cursors c JOIN b ON b.binding_id=c.binding_id WHERE c.thread_id=?3),
-                    'lazy',(SELECT json_object('ordinal',ordinal,'preparation',preparation_id,
-                        'message',message_id,'thread',thread_id,'seat',seat_id,'state',state,
-                        'legacy_pending',legacy_pending)
-                        FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2),
-                    'message',(SELECT json_object('id',id,'instance',instance_id,'thread',thread_id,
-                        'kind',kind,'mode',delivery_mode,'sequence',sequence,'decision',decision_seq,
-                        'body_bytes',length(CAST(body AS BLOB)),'body_excerpt',substr(body,1,256))
-                        FROM messages WHERE id=?1),
-                    'manifest',(SELECT json_object('preparation',preparation_id,'message',message_id,
-                        'instance',instance_id,'thread',thread_id,'decision',decision_seq,
-                        'base_sequence',base_sequence,'recipient_count',recipient_count,
-                        'warning_count',warning_count,'interval_high',interval_high_water)
-                        FROM send_manifests WHERE message_id=?1),
-                    'preparation',(SELECT json_object('id',p.id,'status',p.status,
-                        'mode',p.delivery_mode,'recipient_count',p.recipient_count,
-                        'recipient_cursor',p.recipient_cursor,'recipient_high',p.recipient_high_water)
-                        FROM lazy_recipients r JOIN send_preparations p ON p.id=r.preparation_id
-                        WHERE r.message_id=?1 AND r.seat_id=?2),
-                    'send_attention',(SELECT json_object('id',j.id,'status',j.status,
-                        'position',j.position,'high_water',j.high_water,'last_error',j.last_error)
-                        FROM lazy_recipients r JOIN work_jobs j ON j.kind='send_attention'
-                        AND j.subject_id=r.preparation_id WHERE r.message_id=?1 AND r.seat_id=?2),
-                    'head',(SELECT decision_seq FROM host_instances WHERE id=?4),
-                    'reader_gate',(SELECT json_object(
-                        'has_cursor',EXISTS(SELECT 1 FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=r.thread_id),
-                        'joined',EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=r.thread_id AND mb.seat_id=r.seat_id AND mb.state='joined'),
-                        'past_cursor',m.sequence>COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=r.thread_id),0),
-                        'legacy_pending',r.legacy_pending,
-                        'binding_lazy_unread',((m.sequence>COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=r.thread_id),0) AND (EXISTS(SELECT 1 FROM binding_cursors c2 WHERE c2.binding_id=b.binding_id AND c2.thread_id=r.thread_id) OR EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=r.thread_id AND mb.seat_id=r.seat_id AND mb.state='joined'))) OR (r.legacy_pending=1 AND b.role='top_level')))
-                        FROM b JOIN lazy_recipients r ON r.seat_id=b.seat_id JOIN messages m ON m.id=r.message_id
-                        WHERE r.message_id=?1 AND r.thread_id=?3),
-                    'consumer',(SELECT json_object('binding',c.binding_id,'generation',c.generation,
-                        'execution',c.execution,'ordinary_done',c.ordinary_done,
-                        'ordinary_version',c.ordinary_version,'ordinary_cursor',c.ordinary_cursor,
-                        'ordinary_pending_items',json_array_length(c.ordinary_pending,'$.items'),
-                        'ordinary_partial_bytes',length(CAST(c.ordinary_partial AS BLOB)),
-                        'ordinary_skip_body',c.ordinary_skip_body,
-                        'publication_after',c.ordinary_publication_after,'publication_high',c.ordinary_publication_high,
-                        'passive_generation',c.ordinary_passive_generation,'scan_passive_generation',c.ordinary_scan_passive_generation,
-                        'outbox_token',c.outbox_token,'last_token',c.last_token,'outbox_more',c.outbox_more,
-                        'retired_mask',c.outbox_retired_mask,'confirmed_mask',c.outbox_confirmed_mask)
-                        FROM invitation_presentation_consumers c JOIN b ON b.binding_id=c.binding_id
-                        WHERE c.consumer='hook'))"#,
-                params![message.as_str(), elected.recipient.seat.as_str(), actual.thread.as_str(),
-                    elected.recipient.instance, invitation.id.as_str(), elected.recipient.harness.as_str(),
-                    elected.recipient.native_session.as_str(), before_binding.0, elected.recipient.execution.as_str(),
-                    elected.recipient.target.as_str()],
-                |row| row.get(0),
-            ).unwrap();
-            let canonical: Value = serde_json::from_str(&snapshot).unwrap();
-            json!({"message":message,"thread":actual.thread,"recipient":elected.recipient,
-                "expected_body":body,"canonical":canonical})
-        };
-        let lazy_before_hook = lazy_diagnostic();
-
-        let hook = elected.run("PreInvocation", false);
-        assert_eq!(hook.code, Some(0), "{}", hook.stderr);
-        let consumer = observer.take();
-        let page = actual_page(&consumer, &hook, &elected.adapter_state());
-        assert!(
-            !consumer
-                .iter()
-                .any(|exchange| matches!(exchange.command, Command::DeliveryPull(_)))
-        );
-        let pulls: Vec<_> = consumer
-            .iter()
-            .filter_map(|exchange| match &exchange.command {
-                Command::DeliveryPullV2(request) => Some(request),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(pulls.len(), 1);
-        let pull = pulls[0];
-        assert_eq!(pull.claim, elected.recipient);
-        assert_eq!(pull.consumer, PresentationConsumer::Hook);
-        assert_eq!(pull.presentation_lease, None);
-        assert_eq!(
-            pull.render,
-            PresentationRenderRequest::Hook {
-                confirmable_selector: 0,
-                passive_selector: 0
-            }
-        );
-        assert_eq!(
-            page.render,
-            PresentationRenderSelection::Hook { selector: 0 }
-        );
-        assert!(page.items.len() <= 32);
-        assert!(!hook.stdout.is_empty() && hook.stdout.len() <= 65_536);
-        assert_eq!(page.output_bytes as usize, hook.stdout.len());
-        let expected_native =
-            json!({"injectSteps":[{"systemMessage":{"systemMessage":page.text}}]});
-        assert_eq!(
-            serde_json::from_slice::<Value>(&hook.stdout).unwrap(),
-            expected_native
-        );
-        assert_eq!(hook.stdout, serde_json::to_vec(&expected_native).unwrap());
-
-        let invitations: Vec<_> = page
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                PresentationItemV2::Invitation { id, content } => Some((id, content)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(invitations.len(), 1);
-        let (id, content) = invitations[0];
-        assert_eq!(id, &invitation.id);
-        assert_eq!(content.thread, actual.thread);
-        assert!(!content.truncated && !content.wakes);
-        assert_eq!(
-            content.topic_revision.as_deref(),
-            Some(topic_revision.as_str())
-        );
-        assert_eq!(
-            content.command_context_epoch.as_deref(),
-            Some(command_epoch.as_str())
-        );
-        let lines: Vec<_> = content.body.lines().collect();
-        assert_eq!(
-            lines.len(),
-            3,
-            "full context and one usable command, no deadline or continuation"
-        );
-        assert_eq!(lines[0], topic);
-        let goal_line = format!("goal: {goal}");
-        assert_eq!(lines[1], goal_line);
-        let command = lines[2].strip_prefix("next: ").expect("usable command");
-        let argv = shlex::split(command).expect("quoted acceptance argv");
-        assert!(
-            !pull.marker_prefix.is_empty(),
-            "actual registered command prefix"
-        );
-        let mut expected_argv = pull.marker_prefix.clone();
-        expected_argv.extend(["accept".into(), actual.thread.as_str().into()]);
-        assert_eq!(argv, expected_argv);
-        herdr_threads::cli::commands::parse_argv(argv)
-            .expect("parse acceptance without executing it");
-        assert!(page.text.contains(&format!(
-            "[herdr-threads] invitation {} in {}",
-            invitation.id.as_str(),
-            actual.thread.as_str()
-        )));
-        assert!(
-            page.text
-                .contains(&format!("\n  {topic}\n  {goal_line}\n  next: {command}"))
-        );
-        let messages: Vec<_> = page
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                PresentationItemV2::Message { id, lazy, content } => Some((id, lazy, content)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            messages.len(),
-            1,
-            "exact Lazy body missing; before={lazy_before_hook}; after={}; pull={pull:?}; page={page:?}; native={:?}; confirm={:?}; exchange_count={}",
-            lazy_diagnostic(),
-            String::from_utf8_lossy(&hook.stdout),
-            consumer.iter().find(|exchange| matches!(
-                exchange.command,
-                Command::DeliveryPresentationConfirmV2(_)
-            )),
-            consumer.len()
-        );
-        let (id, lazy, content) = messages[0];
-        assert_eq!(id, message);
-        assert!(*lazy);
-        assert_eq!(content.thread, actual.thread);
-        assert_eq!(content.sender.as_ref(), Some(&origin.seat));
-        assert_eq!(content.body, body);
-        assert_eq!(content.body_len, body.len() as u64);
-        assert!(!content.truncated && !content.ack_required);
-        assert!(page.text.contains(&format!(
-            "[herdr-threads] message {} in {}",
-            message.as_str(),
-            actual.thread.as_str()
-        )));
-        assert!(page.text.contains(&format!("\n  {body}")));
-        assert!(!page.items.iter().any(|item| matches!(
-            item,
-            PresentationItemV2::Attention { .. } | PresentationItemV2::AttentionCleared { .. }
-        )));
-        assert!(page.emitted_controls.is_empty());
-
-        assert_eq!(
-            consumer
-                .iter()
-                .filter(|exchange| matches!(
-                    exchange.command,
-                    Command::DeliveryPresentationConfirmV2(_)
-                ))
-                .count(),
-            1
-        );
-        let completed = confirm(&consumer);
-        let Command::DeliveryPresentationConfirmV2(request) = &completed.command else {
-            unreachable!()
-        };
-        assert_eq!(request.claim, elected.recipient);
-        assert_eq!(request.consumer, PresentationConsumer::Hook);
-        assert_eq!(request.presentation_lease, None);
-        let token = page
-            .presentation_token
-            .as_ref()
-            .expect("actual physical-output token");
-        assert_eq!(&request.token, token);
-        assert_eq!(request.emitted_controls, page.emitted_controls);
-        let Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) = &completed.result
-        else {
-            panic!("canonical explicit confirmation: {completed:?}")
-        };
-        assert_eq!(reply.status, DeliveryPresentationConfirmationV2::Confirmed);
-        assert_eq!(reply.acknowledged_controls, page.emitted_controls);
-        let canonical_tokens: (Option<String>, Option<String>) = db.query_row(
-            "SELECT outbox_token,last_token FROM invitation_presentation_consumers WHERE seat_id=?1 AND consumer='hook' AND generation=?2 AND execution=?3",
-            params![elected.recipient.seat.as_str(), before_binding.0, before_binding.1],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
-        assert_eq!(canonical_tokens, (None, Some(token.clone())));
-        let complete: i64 = db.query_row(
-            "SELECT complete_count FROM invitation_presentation_items WHERE seat_id=?1 AND invitation_id=?2 AND consumer='hook' AND generation=?3 AND execution=?4",
-            params![elected.recipient.seat.as_str(), invitation.id.as_str(), before_binding.0, before_binding.1],
-            |row| row.get(0),
-        ).unwrap();
-        assert_eq!(complete, 1);
-        assert_eq!(invitation_state(), before_invitation);
-        assert_eq!(membership_state(), before_membership);
-        assert_eq!(lazy_state(), before_lazy);
-        assert_eq!(binding(), before_binding);
-        assert_pending_without_wake();
-        assert!(!consumer.iter().any(|exchange| matches!(
-            exchange.command,
-            Command::Accept(_)
-                | Command::AcceptRequired(_)
-                | Command::Ack(_)
-                | Command::AckDisplayed(_)
-                | Command::AckModDelivered(_)
-                | Command::DeliveryConfirm(_)
-                | Command::CompleteInboxDelivery(_)
-        )));
-        // This host has no safe native wake target: eligibility/work is proved,
-        // while native composer uptake and model consumption remain unobserved.
-        drop(observer);
+        let host = elected.fx.host.canonicalize().unwrap_or_else(|_| {
+            elected
+                .fx
+                .host
+                .parent()
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+                .join(elected.fx.host.file_name().unwrap())
+        });
+        assert_eq!(elected.recipient.host.as_str(), host.to_str().unwrap());
     }
 
     // Kills: failed actual stdout emission still commits the canonical page.

@@ -3,7 +3,7 @@ use herdr_threads::{
     client::local::LocalSocketClient,
     daemon::{
         ownership::{EndpointDescriptor, OwnerLock},
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     ports::*,
     protocol::{
@@ -92,7 +92,7 @@ impl HostPort for Host {
             .expect("operator host I/O held SQLite writer");
         assert!(
             db.query_row(
-                "SELECT observation_admission_sequence FROM host_instances WHERE id=?1",
+                "SELECT observation_admission_sequence FROM herdr_hosts WHERE node_id=?1",
                 [&self.instance],
                 |r| r.get::<_, i64>(0)
             )
@@ -112,7 +112,11 @@ impl HostPort for Host {
         if self.invalidate.swap(false, Ordering::SeqCst) {
             let newer = self
                 .store
-                .begin_host_observation(&self.instance, &context.budget)
+                .begin_host_observation(
+                    &self.instance,
+                    herdr_threads::test_support::test_host_id(),
+                    &context.budget,
+                )
                 .unwrap();
             self.store
                 .invalidate_host_observation(
@@ -177,8 +181,10 @@ impl HostPort for Host {
     }
 }
 struct Fixture {
+    /// The fixture's Herdr server: the one the daemon attaches, which commands name.
+    claim_host: herdr_threads::protocol::ids::HostLocator,
     root: PathBuf,
-    paths: InstancePaths,
+    paths: NodePaths,
     host: Arc<Host>,
     clock: Arc<dyn Clock>,
     descriptor: EndpointDescriptor,
@@ -198,26 +204,25 @@ impl Fixture {
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let runtime =
             RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-        let paths = InstancePaths::resolve(&runtime).unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        let instance = owner.instance_uuid().to_string();
+        let paths = NodePaths::resolve(&runtime.state_dir).unwrap();
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        let instance = owner.node_uuid().unwrap().to_string();
         drop(owner);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        // The fixture's Herdr server: the endpoint the daemon attaches and the CLI claims name.
+        let claim_host = runtime.claim_host().unwrap();
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(paths.database_path.clone(), clock.clone()),
+                StoreContext::new(paths.database_path.clone(), clock.clone())
+                    .with_attached_host(&claim_host)
+                    .with_node_seed(herdr_threads::test_support::node_seed_for(&instance)),
                 &instance,
                 StoreSettings::default(),
             )
             .unwrap(),
         );
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-            [&instance],
-        )
-        .unwrap();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('saved',?1,'unresolved','native',1,0)",[&instance]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('saved',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[&instance]).unwrap();
         drop(db);
         let host = Arc::new(Host {
             path: paths.database_path.clone(),
@@ -243,7 +248,11 @@ impl Fixture {
             .unwrap();
         let admission = host
             .store
-            .begin_host_observation(&host.instance, &budget)
+            .begin_host_observation(
+                &host.instance,
+                herdr_threads::test_support::test_host_id(),
+                &budget,
+            )
             .unwrap();
         let stage = host
             .store
@@ -280,6 +289,7 @@ impl Fixture {
         let thread_paths = paths.clone();
         let thread_clock = clock.clone();
         let thread_host = host.clone();
+        let thread_endpoint = runtime.require_host().unwrap().to_path_buf();
         let thread_stop = stop.clone();
         let daemon = std::thread::spawn(move || {
             tokio::runtime::Builder::new_current_thread()
@@ -291,7 +301,7 @@ impl Fixture {
                     thread_clock,
                     thread_stop,
                     ServiceConfig::default(),
-                    thread_host,
+                    herdr_threads::test_support::single_host_plan_at(thread_host, thread_endpoint),
                     move |d| {
                         tx.send(d.clone()).unwrap();
                         Ok(())
@@ -303,13 +313,13 @@ impl Fixture {
             Err(error) => {
                 stop.cancel();
                 let outcome = daemon.join();
-                let log =
-                    fs::read_to_string(paths.instance_dir.join("daemon.log")).unwrap_or_default();
+                let log = fs::read_to_string(paths.node_dir.join("daemon.log")).unwrap_or_default();
                 let _ = fs::remove_dir_all(&root);
                 panic!("private operator daemon not ready: {error}; {outcome:?}; {log}");
             }
         };
         Self {
+            claim_host,
             root,
             paths,
             host,
@@ -324,7 +334,7 @@ impl Fixture {
         let client = LocalSocketClient::new(
             self.descriptor.endpoint.clone(),
             self.clock.clone(),
-            self.descriptor.instance_uuid,
+            self.descriptor.node_uuid,
             Some(self.descriptor.boot_id),
         );
         client.call(
@@ -336,10 +346,11 @@ impl Fixture {
         )
     }
     fn db(&self) -> rusqlite::Connection {
-        rusqlite::Connection::open(&self.paths.database_path).unwrap()
+        herdr_threads::test_support::open_test_connection(&self.paths.database_path)
     }
     fn fresh(&self, target: &str, operation: &str) -> Result<CommandResult, ApiError> {
         self.call(Command::OperatorFreshSeat(OperatorFreshSeat {
+            host: self.claim_host.clone(),
             target: HostTargetId::new(target),
             operation: OperationId::new(operation),
         }))
@@ -358,11 +369,12 @@ impl Drop for Fixture {
 fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() {
     let f = Fixture::new();
     let history = f.db();
-    history.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('history',?1,'original topic','original goal',0,0,2)",[f.descriptor.instance_uuid.to_string()]).unwrap();
+    history.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('history',?1,'original topic','original goal',0,0,2,0)",[f.descriptor.node_uuid.to_string()]).unwrap();
     history.execute_batch("INSERT INTO memberships(thread_id,seat_id,state,episode) VALUES ('history','saved','invited',1);").unwrap();
-    history.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('old-message',?1,'history',1,'ordinary','unresolved history',1,0)",[f.descriptor.instance_uuid.to_string()]).unwrap();
+    history.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('old-message',?1,'history',1,'ordinary','unresolved history',1,0)",[f.descriptor.node_uuid.to_string()]).unwrap();
     history.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('old-message','history','saved','pending',90000);").unwrap();
     let rebind = Command::OperatorRebind(OperatorRebind {
+        host: f.claim_host.clone(),
         seat: SeatId::new("saved"),
         target: HostTargetId::new("w1:p1"),
         operation: OperationId::new("rebind"),
@@ -378,7 +390,7 @@ fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() 
         )
         .unwrap();
     use std::os::unix::fs::MetadataExt;
-    let uid = fs::metadata(&f.paths.instance_dir).unwrap().uid();
+    let uid = fs::metadata(&f.paths.node_dir).unwrap().uid();
     assert_eq!(label, format!("operator:local-user:{uid}"));
     assert_eq!(
         db.query_row("SELECT count(*) FROM occupant_bindings", [], |r| r
@@ -405,6 +417,7 @@ fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() 
     )
     .unwrap();
     let retired = Command::OperatorRebind(OperatorRebind {
+        host: f.claim_host.clone(),
         seat: SeatId::new("saved"),
         target: HostTargetId::new("w1:p3"),
         operation: OperationId::new("retired"),
@@ -438,7 +451,7 @@ fn elected_operator_rebind_and_fresh_preserve_history_and_replay_without_host() 
 fn elected_operator_orphan_invites_atomically_without_join_or_target_capture() {
     let f = Fixture::new();
     let db = f.db();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread',?1,'topic','goal',0,0)",[f.descriptor.instance_uuid.to_string()]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('thread',?1,'topic','goal',0,0,0)",[f.descriptor.node_uuid.to_string()]).unwrap();
     let invite = OperatorOrphanInvite {
         thread: ThreadId::new("thread"),
         seat: SeatId::new("saved"),
@@ -662,7 +675,7 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
     assert_eq!(rebound["result"]["kind"], "operator_rebound");
     assert_eq!(rebound["result"]["data"], "saved");
     use std::os::unix::fs::MetadataExt;
-    let uid = fs::metadata(&f.paths.instance_dir).unwrap().uid();
+    let uid = fs::metadata(&f.paths.node_dir).unwrap().uid();
     let labels: Vec<String> = f
         .db()
         .prepare("SELECT operator_label FROM allocation_decisions ORDER BY kind")
@@ -1140,7 +1153,7 @@ fn operator_label_for_daemon(f: &Fixture) -> String {
     use std::os::unix::fs::MetadataExt;
     format!(
         "operator:local-user:{}",
-        fs::metadata(&f.paths.instance_dir).unwrap().uid()
+        fs::metadata(&f.paths.node_dir).unwrap().uid()
     )
 }
 
@@ -1209,6 +1222,7 @@ fn elected_operator_replace_over_ipc() {
     };
     let replace = |operation: &str, replace: &SeatId| {
         Command::OperatorReplace(OperatorReplace {
+            host: f.claim_host.clone(),
             seat: SeatId::new("saved"),
             target: HostTargetId::new("w1:p2"),
             replace: replace.clone(),

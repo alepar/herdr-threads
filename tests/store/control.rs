@@ -10,6 +10,141 @@ use crate::{
     store::connection::StoreContext,
 };
 use rusqlite::Connection;
+
+/// Every retirement start in this suite runs (in test-support builds) with the
+/// write guard armed on its connection: the fence's replicated seat write goes through its own scope
+/// and nothing else in it touches a replicated table (ht-5fr.4.7).
+fn begin_retirement(
+    context: &StoreContext,
+    conn: &mut Connection,
+    seat: SeatId,
+    proof: crate::ports::ClosureEvidence,
+) -> Result<crate::ports::RetirementJob, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::begin_retirement(context, conn, seat, proof)
+}
+/// `join`, `leave` and `create_thread` author membership facts, so every call in
+/// this suite runs (in test-support builds) with the write guard armed: they
+/// reach `memberships` and `membership_intervals` only through the fact
+/// (ht-5fr.4.9).
+fn join(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &crate::protocol::commands::Join,
+    permit: MutationPermit,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::join(context, conn, budget, command, permit)
+}
+
+fn leave(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &Leave,
+    permit: MutationPermit,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::leave(context, conn, budget, command, permit)
+}
+
+fn create_thread(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &CreateThread,
+    permit: MutationPermit,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::create_thread(context, conn, budget, command, permit)
+}
+/// `invite`, `accept`, `reject`, `accept_required`, `operator_orphan_invite`
+/// author invitation facts (or write through the
+/// local-only route), so every call in this suite runs (in test-support builds)
+/// with the write guard armed: they reach `invitations`,
+/// `invitation_rejections`, `memberships` and `membership_intervals` only
+/// through a materializer (ht-5fr.4.10).
+fn invite(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &Invite,
+    permit: MutationPermit,
+    installation_default_ms: Option<u64>,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::invite(
+        context,
+        conn,
+        budget,
+        command,
+        permit,
+        installation_default_ms,
+    )
+}
+
+fn accept(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &Accept,
+    permit: MutationPermit,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::accept(context, conn, budget, command, permit)
+}
+
+fn reject(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &crate::protocol::commands::Reject,
+    permit: MutationPermit,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::reject(context, conn, budget, command, permit)
+}
+
+fn accept_required(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &AcceptRequired,
+    permit: MutationPermit,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::accept_required(context, conn, budget, command, permit)
+}
+
+fn operator_orphan_invite(
+    context: &StoreContext,
+    conn: &mut Connection,
+    instance: &str,
+    command: &OperatorOrphanInvite,
+    actor: OperatorActor,
+    installation_default_ms: Option<u64>,
+) -> Result<CommandResult, crate::protocol::results::ApiError> {
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(conn);
+    super::operator_orphan_invite(
+        context,
+        conn,
+        instance,
+        command,
+        actor,
+        installation_default_ms,
+    )
+}
+
 use std::{
     path::PathBuf,
     sync::{
@@ -34,16 +169,24 @@ fn fixture(at: i64) -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
         uuid::Uuid::new_v4()
     ));
     let clock = Arc::new(FixedClock(AtomicI64::new(at)));
-    let context = StoreContext::new(path.clone(), clock.clone());
-    let conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id, created_at, host_boot, host_epoch) VALUES ('i', 0, 'b', 1)",
-        [],
+    let context = StoreContext::new(path.clone(), clock.clone()).with_test_host();
+    let mut conn = context.open_writer().unwrap();
+    // Thread creation and metadata commands author facts: the journal is open.
+    crate::store::journal::open(
+        &context,
+        &mut conn,
+        Arc::new(crate::node::NodeIdentity::from_seed(
+            crate::test_support::TEST_NODE_SEED,
+        )),
+        "test",
+        crate::sync::facts::FactRegistry::builtins(),
     )
     .unwrap();
+    conn.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
     for seat in ["s1", "s2"] {
-        conn.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, target_generation, created_at) VALUES (?1, 'i', 'resolved', 'native', ?1, 1, 1, 0)", [seat]).unwrap();
-        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
+        conn.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, target_generation, created_at,home_node,is_local,host_id) VALUES (?1, '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', ?1, 1, 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat]).unwrap();
+        conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
     }
     (context, conn, path, clock)
 }
@@ -148,8 +291,22 @@ fn host_admission_orders_late_success_and_failure_without_false_absence() {
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
     };
-    let older = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
-    let newer = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let older = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
+    let newer = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let first = snapshot_for_test(2, &["s1"]);
     let newer_stage = staged_test_snapshot(&context, &mut conn, newer, &first, &budget);
     let publication =
@@ -166,15 +323,29 @@ fn host_admission_orders_late_success_and_failure_without_false_absence() {
         .is_none()
     );
     assert_eq!(
-        effective::effective_observation(&conn, "i", "s1")
+        effective::effective_observation(&conn, crate::test_support::test_host_id(), "s1")
             .unwrap()
             .unwrap()
             .source,
         effective::EffectiveObservationSource::Published
     );
 
-    let late_success = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
-    let newer_failure = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let late_success = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
+    let newer_failure = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let second = snapshot_for_test(3, &["s1"]);
     let old_stage = staged_test_snapshot(&context, &mut conn, late_success, &second, &budget);
     let invalidation = seats::invalidate_host_observation(
@@ -188,7 +359,7 @@ fn host_admission_orders_late_success_and_failure_without_false_absence() {
     .unwrap();
     assert!(invalidation.invalidation_revision() > publication.invalidation_revision);
     assert!(
-        effective::effective_observation(&conn, "i", "s1")
+        effective::effective_observation(&conn, crate::test_support::test_host_id(), "s1")
             .unwrap()
             .is_none()
     );
@@ -214,7 +385,7 @@ fn saved_seats_page_counts_physical_rows_and_uses_published_index() {
     for index in 3..=18 {
         let seat = format!("s{index}");
         conn.execute(
-            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1,1,1,0)",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
             [&seat],
         )
         .unwrap();
@@ -223,7 +394,14 @@ fn saved_seats_page_counts_physical_rows_and_uses_published_index() {
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let snapshot = snapshot_for_test(2, &["s1", "s2", "s3"]);
     let stage = staged_test_snapshot(&context, &mut conn, admission, &snapshot, &budget);
     let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
@@ -272,7 +450,14 @@ fn discarded_stage_cleans_up_in_bounded_reopenable_quanta() {
     let names: Vec<_> = (0..17).map(|n| format!("discard-{n}")).collect();
     let names: Vec<_> = names.iter().map(String::as_str).collect();
     let snapshot = snapshot_for_test(2, &names);
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = seats::begin_snapshot_stage(
         &context,
         &mut conn,
@@ -338,7 +523,14 @@ fn denied_observation_marks_saved_seat_unresolved_without_retirement() {
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let fence = seats::invalidate_host_observation(
         &context,
         &mut conn,
@@ -388,12 +580,26 @@ fn guarded_reconciliation_rejects_stale_publication_and_binding() {
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
     };
-    let first_admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let first_admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let first = snapshot_for_test(2, &["s1"]);
     let first_stage = staged_test_snapshot(&context, &mut conn, first_admission, &first, &budget);
     let first_publication =
         seats::publish_snapshot_stage(&context, &mut conn, &first_stage, &budget).unwrap();
-    let newer_admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let newer_admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let newer = snapshot_for_test(3, &["s1"]);
     let newer_stage = staged_test_snapshot(&context, &mut conn, newer_admission, &newer, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &newer_stage, &budget).unwrap();
@@ -474,7 +680,14 @@ fn invalidation_seat_page_is_bounded_and_rejects_a_newer_host_decision() {
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let fence = seats::invalidate_host_observation(
         &context,
         &mut conn,
@@ -490,7 +703,14 @@ fn invalidation_seat_page_is_bounded_and_rejects_a_newer_host_decision() {
     assert_eq!(page.visited, 2);
     assert_eq!(page.seats.len(), 2);
     assert!(page.seats.iter().all(|seat| seat.observed_match.is_none()));
-    let newer = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let newer = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     seats::invalidate_host_observation(
         &context,
         &mut conn,
@@ -535,7 +755,14 @@ fn guarded_absence_retirement_commits_one_fence_and_rejects_invalidation() {
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let empty = snapshot_for_test(2, &[]);
     let stage = staged_test_snapshot(&context, &mut conn, admission, &empty, &budget);
     let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
@@ -549,7 +776,14 @@ fn guarded_absence_retirement_commits_one_fence_and_rejects_invalidation() {
             absent_target: HostTargetId::new("s1"),
         },
     };
-    let denied = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let denied = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     seats::invalidate_host_observation(
         &context,
         &mut conn,
@@ -570,7 +804,14 @@ fn guarded_absence_retirement_commits_one_fence_and_rejects_invalidation() {
             .unwrap(),
         0
     );
-    let recovered = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let recovered = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let new_empty = snapshot_for_test(3, &[]);
     let recovered_stage = staged_test_snapshot(&context, &mut conn, recovered, &new_empty, &budget);
     let recovered_publication =
@@ -641,7 +882,14 @@ fn guarded_move_preserves_binding() {
         });
         snapshot
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let first = observed(2, "execution-1");
     let stage = staged_test_snapshot(&context, &mut conn, admission, &first, &budget);
     let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
@@ -711,7 +959,14 @@ fn move_with_absent_occupant_evidence(
     let mut absent = snapshot_for_test(2, &["moved-target"]);
     absent.targets[0].terminal = Some(TerminalId::new("terminal-1"));
     absent.targets[0].occupancy = StructuralOccupancy::EmptyShell;
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = staged_test_snapshot(&context, &mut conn, admission, &absent, &budget);
     let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
     let outcome = seats::apply_reconciliation_transition(
@@ -788,54 +1043,88 @@ fn first_published_baseline_hold_survives_later_snapshots_and_operator_release()
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let first = snapshot_for_test(1, &["new-target"]);
     let baseline = staged_test_snapshot(&context, &mut conn, admission, &first, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &baseline, &budget).unwrap();
     assert_eq!(
-        effective::effective_recovery_disposition(&conn, "i", "new-target").unwrap(),
+        effective::effective_recovery_disposition(
+            &conn,
+            crate::test_support::test_host_id(),
+            "new-target"
+        )
+        .unwrap(),
         effective::EffectiveRecoveryDisposition::BaselineHeld
     );
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let second = snapshot_for_test(2, &["new-target", "later-target"]);
     let stage = staged_test_snapshot(&context, &mut conn, admission, &second, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
     let retained: String = conn
         .query_row(
-            "SELECT recovery_baseline_generation_id FROM host_instances WHERE id='i'",
+            "SELECT recovery_baseline_generation_id FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
         .unwrap();
     assert_eq!(retained, baseline.as_str());
     assert_eq!(
-        effective::effective_recovery_disposition(&conn, "i", "new-target").unwrap(),
+        effective::effective_recovery_disposition(
+            &conn,
+            crate::test_support::test_host_id(),
+            "new-target"
+        )
+        .unwrap(),
         effective::EffectiveRecoveryDisposition::BaselineHeld
     );
     assert_eq!(
-        effective::effective_recovery_disposition(&conn, "i", "later-target").unwrap(),
+        effective::effective_recovery_disposition(
+            &conn,
+            crate::test_support::test_host_id(),
+            "later-target"
+        )
+        .unwrap(),
         effective::EffectiveRecoveryDisposition::CreatedAfterBaseline
     );
     let mut fresh = first.targets[0].clone();
     fresh.provenance = crate::ports::ObservationProvenance::FreshCurrentTarget;
     fresh.observation_sequence = 3;
     conn.execute(
-        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','new-target','b',1,1,3,100,'fresh','term-'||'new-target','inc','coherent_enumeration',1)",
+        "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'new-target','b',1,1,3,100,'fresh','term-'||'new-target','inc','coherent_enumeration',1)",
         [],
     )
     .unwrap();
     let command = OperatorFreshSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("new-target"),
         operation: OperationId::new("release-baseline"),
     };
-    let guard =
-        OperatorTargetGuard::try_new("i", &OperatorCommand::FreshSeat(command.clone()), fresh)
-            .unwrap();
+    let guard = OperatorTargetGuard::try_new(
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &OperatorCommand::FreshSeat(command.clone()),
+        fresh,
+    )
+    .unwrap();
     let actor = OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap();
     let CommandResult::OperatorFreshSeat(new_seat) = seats::mutate_operator(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         OperatorRequest::FreshSeat(command, guard),
         actor,
         None,
@@ -845,7 +1134,7 @@ fn first_published_baseline_hold_survives_later_snapshots_and_operator_release()
     };
     let release_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM recovery_baseline_releases WHERE instance_id='i' AND baseline_generation_id=?1 AND target_id='new-target'",
+            "SELECT COUNT(*) FROM recovery_baseline_releases WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND baseline_generation_id=?1 AND target_id='new-target'",
             [baseline.as_str()],
             |r| r.get(0),
         )
@@ -857,7 +1146,12 @@ fn first_published_baseline_hold_survives_later_snapshots_and_operator_release()
     )
     .unwrap();
     assert_eq!(
-        effective::effective_recovery_disposition(&conn, "i", "new-target").unwrap(),
+        effective::effective_recovery_disposition(
+            &conn,
+            crate::test_support::test_host_id(),
+            "new-target"
+        )
+        .unwrap(),
         effective::EffectiveRecoveryDisposition::Released
     );
     drop(conn);
@@ -877,7 +1171,14 @@ fn large_snapshot_resumes_after_reopen_and_duplicate_rows_roll_back_the_quantum(
     let names: Vec<_> = (0..205).map(|n| format!("large-{n}")).collect();
     let names: Vec<_> = names.iter().map(String::as_str).collect();
     let snapshot = snapshot_for_test(2, &names);
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = seats::begin_snapshot_stage(
         &context,
         &mut conn,
@@ -915,7 +1216,14 @@ fn large_snapshot_resumes_after_reopen_and_duplicate_rows_roll_back_the_quantum(
     assert_eq!(count, 205);
 
     let duplicate = snapshot_for_test(3, &["duplicate", "duplicate"]);
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let duplicate_stage = seats::begin_snapshot_stage(
         &context,
         &mut conn,
@@ -948,7 +1256,14 @@ fn large_snapshot_resumes_after_reopen_and_duplicate_rows_roll_back_the_quantum(
     let mut duplicate_terminal = snapshot_for_test(4, &["one", "two"]);
     duplicate_terminal.targets[0].terminal = Some(TerminalId::new("same-terminal"));
     duplicate_terminal.targets[1].terminal = Some(TerminalId::new("same-terminal"));
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let terminal_stage = seats::begin_snapshot_stage(
         &context,
         &mut conn,
@@ -984,7 +1299,14 @@ fn old_fresh_row_cannot_authorize_direct_retirement_after_empty_publication() {
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let empty = snapshot_for_test(2, &[]);
     let stage = staged_test_snapshot(&context, &mut conn, admission, &empty, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
@@ -1048,11 +1370,25 @@ fn invalidated_seat_reconfirms_moved_terminal_without_restoring_registration() {
         });
         snapshot
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let first = observed(2, "s1", "execution-1");
     let stage = staged_test_snapshot(&context, &mut conn, admission, &first, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
-    let failed = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let failed = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let fence = seats::invalidate_host_observation(
         &context,
         &mut conn,
@@ -1087,7 +1423,14 @@ fn invalidated_seat_reconfirms_moved_terminal_without_restoring_registration() {
         held,
         ("unresolved".into(), Some("host_invalidation".into()), 2)
     );
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let moved = observed(3, "moved-target", "execution-2");
     let stage = staged_test_snapshot(&context, &mut conn, admission, &moved, &budget);
     let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
@@ -1172,12 +1515,26 @@ fn fresh_coherent_absence_retires_a_host_invalidated_seat() {
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let mut first = snapshot_for_test(2, &["s1"]);
     first.targets[0].terminal = Some(TerminalId::new("terminal-1"));
     let stage = staged_test_snapshot(&context, &mut conn, admission, &first, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
-    let failed = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let failed = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let fence = seats::invalidate_host_observation(
         &context,
         &mut conn,
@@ -1203,7 +1560,14 @@ fn fresh_coherent_absence_retires_a_host_invalidated_seat() {
         .unwrap(),
         ReconciliationOutcome::Applied
     );
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let empty = snapshot_for_test(3, &[]);
     let stage = staged_test_snapshot(&context, &mut conn, admission, &empty, &budget);
     let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
@@ -1289,7 +1653,14 @@ fn snapshot_stage_is_hidden_bounded_and_allows_a_foreground_writer() {
         },
         targets: targets.clone(),
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
     let stage = seats::begin_snapshot_stage(&context, &mut conn, header, &budget).unwrap();
     let admission = DurableWorkAdmission::new(16).unwrap();
@@ -1312,14 +1683,14 @@ fn snapshot_stage_is_hidden_bounded_and_allows_a_foreground_writer() {
         ErrorCode::StaleHostObservation
     );
     assert!(
-        effective::effective_observation(&conn, "i", "stage-0")
+        effective::effective_observation(&conn, crate::test_support::test_host_id(), "stage-0")
             .unwrap()
             .is_none()
     );
     let foreground = context.open_writer().unwrap();
     foreground
         .execute(
-            "UPDATE host_instances SET duration_config_revision=duration_config_revision+1 WHERE id='i'",
+            "UPDATE local_node SET duration_config_revision=duration_config_revision+1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
         )
         .unwrap();
@@ -1336,14 +1707,14 @@ fn snapshot_stage_is_hidden_bounded_and_allows_a_foreground_writer() {
     assert_eq!(second.visited, 1);
     seats::seal_snapshot_stage(&context, &mut conn, &stage.id, &budget).unwrap();
     assert!(
-        effective::effective_observation(&conn, "i", "stage-0")
+        effective::effective_observation(&conn, crate::test_support::test_host_id(), "stage-0")
             .unwrap()
             .is_none()
     );
     let published = seats::publish_snapshot_stage(&context, &mut conn, &stage.id, &budget).unwrap();
     assert_eq!(published.target_count, 17);
     assert_eq!(
-        effective::effective_observation(&conn, "i", "stage-0")
+        effective::effective_observation(&conn, crate::test_support::test_host_id(), "stage-0")
             .unwrap()
             .unwrap()
             .structural_generation,
@@ -1356,7 +1727,8 @@ fn snapshot_stage_is_hidden_bounded_and_allows_a_foreground_writer() {
 
 fn claim(seat: &str) -> CallerClaim {
     CallerClaim {
-        instance: "i".into(),
+        host: crate::test_support::test_host_locator(),
+        instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         seat: SeatId::new(seat),
         binding_generation: 1,
         role: crate::protocol::authority::CallerRole::TopLevel,
@@ -1429,6 +1801,87 @@ impl crate::ports::ServiceAuthorityGate for GraphGate {
     }
 }
 
+// Kills: a service invitation (ordinary or required) of a remote seat on a
+// managed thread, which is node-local and never holds a remote seat
+// (ht-5fr.4.10). Neither writes an invitation, a membership or a journal entry.
+#[test]
+fn managed_thread_refuses_a_remote_invitee_for_both_service_constraints() {
+    use crate::ports::ServiceAuthorityGate;
+    use crate::protocol::service::*;
+    use sha2::Digest;
+    let (context, mut conn, _path, _clock) = bound_fixture(100);
+    conn.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,published) \
+         VALUES ('rseat','34750f98bd59fcfc946da45aaabe933b','remote','native',0,0,?1,0,'agent',1)",
+        [&"ab".repeat(16)],
+    )
+    .unwrap();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let author = ServiceAuthorId::new(format!(
+        "graph:{:x}",
+        sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+    ));
+    let gate = GraphGate(author.clone());
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
+    let operate = |conn: &mut Connection, operation: ServiceOperation| {
+        crate::store::service_controls::operate(
+            &context,
+            conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            operation,
+            &connection,
+            &gate,
+            &budget,
+            None,
+        )
+    };
+    let thread = ThreadId::new("managed-remote-refusal");
+    operate(
+        &mut conn,
+        ServiceOperation::EnsureThread(EnsureManagedThread {
+            thread: thread.clone(),
+            topic: "topic".into(),
+            goal: "goal".into(),
+            operation: OperationId::new("ensure-remote-refusal"),
+        }),
+    )
+    .unwrap();
+    let journal_before: i64 = conn
+        .query_row("SELECT count(*) FROM journal", [], |r| r.get(0))
+        .unwrap();
+    for (constraint, key) in [
+        (InvitationConstraint::Ordinary, "ordinary-remote-refusal"),
+        (InvitationConstraint::Required, "required-remote-refusal"),
+    ] {
+        let error = operate(
+            &mut conn,
+            ServiceOperation::Invite(ServiceInvite {
+                thread: thread.clone(),
+                seat: SeatId::new("rseat"),
+                constraint,
+                deadline_millis: Some(500),
+                operation: OperationId::new(key),
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported, "{constraint:?}");
+        assert_eq!(error.detail, "service threads are node-local");
+    }
+    let rows: (i64, i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM invitations WHERE seat_id='rseat'),(SELECT count(*) FROM memberships WHERE seat_id='rseat'),(SELECT count(*) FROM journal)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(rows, (0, 0, journal_before));
+}
+
 #[test]
 fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
     use crate::ports::ServiceAuthorityGate;
@@ -1439,14 +1892,19 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
     };
-    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+    let author = ServiceAuthorId::new(format!(
+        "graph:{:x}",
+        sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+    ));
     let gate = GraphGate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
     let operate = |conn: &mut Connection, operation: ServiceOperation| {
         crate::store::service_controls::operate(
             &context,
             conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             operation,
             &connection,
             &gate,
@@ -1499,6 +1957,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
         expected_revision: requirement.revision,
         operation: OperationId::new("accept-required-two"),
         claim: CallerClaim {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s2"),
             ..claim("s2")
         },
@@ -1566,9 +2025,13 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
             topic_contains: None,
             page: Default::default(),
         });
-    let CommandResult::Directory(threads) =
-        crate::store::queries::query(&context, "i", &directory, &budget).unwrap()
-    else {
+    let CommandResult::Directory(threads) = crate::store::queries::query(
+        &context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &directory,
+        &budget,
+    )
+    .unwrap() else {
         panic!()
     };
     assert!(threads.items.iter().any(|item| item.thread == thread));
@@ -1579,9 +2042,13 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
         seat: Some(SeatId::new("s2")),
         page: Default::default(),
     });
-    let CommandResult::Inbox(before) =
-        crate::store::queries::query(&context, "i", &inbox, &budget).unwrap()
-    else {
+    let CommandResult::Inbox(before) = crate::store::queries::query(
+        &context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &inbox,
+        &budget,
+    )
+    .unwrap() else {
         panic!()
     };
     assert_eq!(
@@ -1654,9 +2121,13 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
         .unwrap(),
         ("accepted".into(), 130, "s2".into())
     );
-    let CommandResult::Inbox(after) =
-        crate::store::queries::query(&context, "i", &inbox, &budget).unwrap()
-    else {
+    let CommandResult::Inbox(after) = crate::store::queries::query(
+        &context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &inbox,
+        &budget,
+    )
+    .unwrap() else {
         panic!()
     };
     // Acceptance settles the obligation; unread open and clear warning events
@@ -1819,6 +2290,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
         expected_revision: reverse_requirement.revision,
         operation: OperationId::new("accept-required-reverse"),
         claim: CallerClaim {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s2"),
             ..claim("s2")
         },
@@ -1880,14 +2352,19 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
     };
-    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+    let author = ServiceAuthorId::new(format!(
+        "graph:{:x}",
+        sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+    ));
     let gate = GraphGate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
     let operate = |conn: &mut Connection, operation: ServiceOperation| {
         crate::store::service_controls::operate(
             &context,
             conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             operation,
             &connection,
             &gate,
@@ -1986,6 +2463,7 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
         expected_revision: req.revision,
         operation: OperationId::new("accept-required-native-offer"),
         claim: CallerClaim {
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s2"),
             ..claim("s2")
         },
@@ -2066,14 +2544,19 @@ fn managed_required_upgrade_preserves_deadline_and_demands_native_revision() {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
     };
-    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+    let author = ServiceAuthorId::new(format!(
+        "graph:{:x}",
+        sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+    ));
     let gate = GraphGate(author.clone());
-    let connection = gate.register("i", "boot", author.clone()).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author.clone())
+        .unwrap();
     let operate = |conn: &mut Connection, operation: ServiceOperation| {
         crate::store::service_controls::operate(
             &context,
             conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             operation,
             &connection,
             &gate,
@@ -2319,14 +2802,19 @@ fn managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history(
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
     };
-    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+    let author = ServiceAuthorId::new(format!(
+        "graph:{:x}",
+        sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+    ));
     let gate = GraphGate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
     let operate = |conn: &mut Connection, operation: ServiceOperation| {
         crate::store::service_controls::operate(
             &context,
             conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             operation,
             &connection,
             &gate,
@@ -2640,9 +3128,14 @@ fn managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history(
         &crate::protocol::commands::PermitMutation::Accept(ordinary_accept.clone()),
     )
     .unwrap();
-    let ordinary_permit =
-        crate::store::seats::issue_cooperative_permit(&context, &conn, "i", request, &budget)
-            .unwrap();
+    let ordinary_permit = crate::store::seats::issue_cooperative_permit(
+        &context,
+        &conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        request,
+        &budget,
+    )
+    .unwrap();
     assert_eq!(
         crate::store::control::accept(
             &context,
@@ -2672,9 +3165,13 @@ fn managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history(
         page: Default::default(),
         claim: None,
     });
-    let CommandResult::Inbox(page) =
-        crate::store::queries::query(&context, "i", &inbox, &budget).unwrap()
-    else {
+    let CommandResult::Inbox(page) = crate::store::queries::query(
+        &context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &inbox,
+        &budget,
+    )
+    .unwrap() else {
         panic!("inbox expected")
     };
     assert!(
@@ -2697,14 +3194,19 @@ fn managed_required_controls_preserve_left_history_and_independent_ordinary_invi
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
     };
-    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+    let author = ServiceAuthorId::new(format!(
+        "graph:{:x}",
+        sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+    ));
     let gate = GraphGate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
     let operate = |conn: &mut Connection, operation: ServiceOperation| {
         crate::store::service_controls::operate(
             &context,
             conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             operation,
             &connection,
             &gate,
@@ -2776,9 +3278,13 @@ fn managed_required_controls_preserve_left_history_and_independent_ordinary_invi
             caller: None,
         },
     );
-    let CommandResult::Participants(participants) =
-        crate::store::queries::query(&context, "i", &native_participants, &budget).unwrap()
-    else {
+    let CommandResult::Participants(participants) = crate::store::queries::query(
+        &context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &native_participants,
+        &budget,
+    )
+    .unwrap() else {
         panic!()
     };
     let previous = participants
@@ -2884,14 +3390,19 @@ fn managed_release_cancels_only_required_invitation_and_replay_retains_history()
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
     };
-    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+    let author = ServiceAuthorId::new(format!(
+        "graph:{:x}",
+        sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+    ));
     let gate = GraphGate(author.clone());
-    let connection = gate.register("i", "boot", author.clone()).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author.clone())
+        .unwrap();
     let operate = |conn: &mut Connection, operation: ServiceOperation| {
         crate::store::service_controls::operate(
             &context,
             conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             operation,
             &connection,
             &gate,
@@ -2930,7 +3441,7 @@ fn managed_release_cancels_only_required_invitation_and_replay_retains_history()
         ErrorCode::OperationPayloadMismatch
     );
     let ordinary = ThreadId::new("ordinary-2");
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',100,100)",
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',100,100,0)",
         [ordinary.as_str()]).unwrap();
     let ordinary_invite = ServiceOperation::Invite(ServiceInvite {
         thread: ordinary.clone(),
@@ -3062,9 +3573,13 @@ fn managed_release_cancels_only_required_invitation_and_replay_retains_history()
             topic_contains: None,
             page: Default::default(),
         });
-    let CommandResult::Directory(directory) =
-        crate::store::queries::query(&context, "i", &native_directory, &budget).unwrap()
-    else {
+    let CommandResult::Directory(directory) = crate::store::queries::query(
+        &context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &native_directory,
+        &budget,
+    )
+    .unwrap() else {
         panic!()
     };
     assert!(!directory.items.iter().any(|item| item.thread == thread));
@@ -3075,9 +3590,13 @@ fn managed_release_cancels_only_required_invitation_and_replay_retains_history()
             caller: None,
         },
     );
-    let CommandResult::Participants(participants) =
-        crate::store::queries::query(&context, "i", &native_participants, &budget).unwrap()
-    else {
+    let CommandResult::Participants(participants) = crate::store::queries::query(
+        &context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &native_participants,
+        &budget,
+    )
+    .unwrap() else {
         panic!()
     };
     assert!(
@@ -3092,9 +3611,13 @@ fn managed_release_cancels_only_required_invitation_and_replay_retains_history()
             page: Default::default(),
             caller: None,
         });
-    let CommandResult::Thread(details) =
-        crate::store::queries::query(&context, "i", &native_thread, &budget).unwrap()
-    else {
+    let CommandResult::Thread(details) = crate::store::queries::query(
+        &context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &native_thread,
+        &budget,
+    )
+    .unwrap() else {
         panic!()
     };
     assert_eq!(details.participant_count, 0);
@@ -3179,14 +3702,19 @@ fn joined_voluntary_requirement_waits_for_new_acceptance_and_can_leave_first() {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
     };
-    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+    let author = ServiceAuthorId::new(format!(
+        "graph:{:x}",
+        sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+    ));
     let gate = GraphGate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
     let operate = |conn: &mut Connection, operation: ServiceOperation| {
         crate::store::service_controls::operate(
             &context,
             conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             operation,
             &connection,
             &gate,
@@ -3373,14 +3901,19 @@ fn retirement_cutover_makes_pending_requirement_terminal_before_bounded_cleanup(
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
     };
-    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+    let author = ServiceAuthorId::new(format!(
+        "graph:{:x}",
+        sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+    ));
     let gate = GraphGate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
     let operate = |conn: &mut Connection, operation: ServiceOperation| {
         crate::store::service_controls::operate(
             &context,
             conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             operation,
             &connection,
             &gate,
@@ -3508,11 +4041,11 @@ fn create_thread_persists_joined_creator_and_creation_audit() {
         panic!("wrong result")
     };
     assert!(
-        is_short_public_id(prefix::THREAD, thread.as_str()),
+        is_public_id(prefix::THREAD, thread.as_str()),
         "new thread IDs are short: {}",
         thread.as_str()
     );
-    let inbox_revision: i64 = conn.query_row("SELECT COALESCE((SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='s1'),0)",[],|r|r.get(0)).unwrap();
+    let inbox_revision: i64 = conn.query_row("SELECT COALESCE((SELECT revision FROM filter_revisions WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND scope_kind='inbox' AND scope_key='s1'),0)",[],|r|r.get(0)).unwrap();
     assert_eq!(inbox_revision, 1);
     let state: String = conn
         .query_row(
@@ -3566,7 +4099,7 @@ fn create_thread_persists_joined_creator_and_creation_audit() {
     )
     .unwrap();
     assert_eq!(replay, CommandResult::ThreadCreated(thread));
-    assert_eq!(conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='s1'",[],|r|r.get::<_,i64>(0)).unwrap(),inbox_revision);
+    assert_eq!(conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND scope_kind='inbox' AND scope_key='s1'",[],|r|r.get::<_,i64>(0)).unwrap(),inbox_revision);
     let changed = CreateThread {
         name: None,
         topic: "changed".into(),
@@ -3659,6 +4192,9 @@ fn joined_member_changes_topic_with_scoped_revision_and_audit() {
         claim: claim("s1"),
     };
     let hash = cooperative_payload_hash("set_topic", &command).unwrap();
+    // The converted command reaches replicated tables only through the fact.
+    #[cfg(feature = "test-support")]
+    let _guard = crate::test_support::write_guard::arm(&conn);
     assert_eq!(
         set_topic(
             &context,
@@ -3690,7 +4226,7 @@ fn joined_member_changes_topic_with_scoped_revision_and_audit() {
     assert!(revision > 0);
     assert_eq!(
         conn.query_row(
-            "SELECT count(*) FROM messages WHERE thread_id=?1 AND event_key LIKE 'set_topic:%'",
+            "SELECT count(*) FROM messages WHERE thread_id=?1 AND event_key LIKE 'register:%:topic:%'",
             [thread.as_str()],
             |r| r.get::<_, i64>(0)
         )
@@ -3831,7 +4367,7 @@ fn operator_orphan_invite_uses_configured_duration_and_keeps_pending_deadline() 
         commands::OperatorOrphanInvite,
     };
     let (context, mut conn, path, _) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,archived) VALUES ('orphan','i','topic','goal',0,0,1)",[]).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,archived,journaled) VALUES ('orphan','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,1,0)",[]).unwrap();
     let actor = OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap();
     let command = OperatorOrphanInvite {
         thread: ThreadId::new("orphan"),
@@ -3842,7 +4378,7 @@ fn operator_orphan_invite_uses_configured_duration_and_keeps_pending_deadline() 
     let CommandResult::OperatorInvited(id) = operator_orphan_invite(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &command,
         actor.clone(),
         Some(120_000),
@@ -3851,7 +4387,7 @@ fn operator_orphan_invite_uses_configured_duration_and_keeps_pending_deadline() 
         panic!()
     };
     assert!(
-        is_short_public_id(prefix::INVITATION, id.as_str()),
+        is_public_id(prefix::INVITATION, id.as_str()),
         "new invitation IDs are short: {}",
         id.as_str()
     );
@@ -3868,7 +4404,15 @@ fn operator_orphan_invite_uses_configured_duration_and_keeps_pending_deadline() 
         operation: OperationId::new("operator-invite-2"),
         ..command
     };
-    let result = operator_orphan_invite(&context, &mut conn, "i", &again, actor, None).unwrap();
+    let result = operator_orphan_invite(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &again,
+        actor,
+        None,
+    )
+    .unwrap();
     assert_eq!(result, CommandResult::OperatorInvited(id.clone()));
     assert_eq!(
         conn.query_row("SELECT archived FROM threads WHERE id='orphan'", [], |r| {
@@ -3925,7 +4469,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         thread: thread.clone(),
         seat: SeatId::new("s2"),
         deadline_millis: None,
-        operation: OperationId::new("i"),
+        operation: OperationId::new("34750f98bd59fcfc946da45aaabe933b"),
         claim: claim("s1"),
     };
     let hash = cooperative_payload_hash("invite", &invitation_request).unwrap();
@@ -3937,7 +4481,13 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
             cancellation: Default::default(),
         },
         &invitation_request,
-        permit("s1", "i", ObligationRef::Control(thread.clone()), hash, 100),
+        permit(
+            "s1",
+            "34750f98bd59fcfc946da45aaabe933b",
+            ObligationRef::Control(thread.clone()),
+            hash,
+            100,
+        ),
         None,
     )
     .unwrap() else {
@@ -3949,17 +4499,22 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         claim: claim("s1"),
     };
     let hash = cooperative_payload_hash("archive", &archive_request).unwrap();
-    archive(
-        &context,
-        &mut conn,
-        &crate::protocol::time::CallBudget {
-            deadline: MonoInstant(u64::MAX),
-            cancellation: Default::default(),
-        },
-        &archive_request,
-        permit("s1", "a", ObligationRef::Control(thread.clone()), hash, 100),
-    )
-    .unwrap();
+    {
+        // The converted command reaches replicated tables only through the fact.
+        #[cfg(feature = "test-support")]
+        let _guard = crate::test_support::write_guard::arm(&conn);
+        archive(
+            &context,
+            &mut conn,
+            &crate::protocol::time::CallBudget {
+                deadline: MonoInstant(u64::MAX),
+                cancellation: Default::default(),
+            },
+            &archive_request,
+            permit("s1", "a", ObligationRef::Control(thread.clone()), hash, 100),
+        )
+        .unwrap();
+    }
     clock.0.store(300_100, Ordering::SeqCst);
     let accept_request = Accept {
         thread: thread.clone(),
@@ -4059,7 +4614,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         [thread.as_str()], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
     assert!(joined_seq > 0);
     assert_eq!(left_seq, None);
-    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m',?1,100,'ordinary','body',0,100)", [thread.as_str()]).unwrap();
+    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m',?1,100,'ordinary','body',0,100)", [thread.as_str()]).unwrap();
     conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m',?1,'s2','pending',300000)", [thread.as_str()]).unwrap();
     let leave_request = Leave {
         thread: thread.clone(),
@@ -4067,7 +4622,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         claim: claim("s2"),
     };
     let hash = cooperative_payload_hash("leave", &leave_request).unwrap();
-    let inbox_before_leave: i64 = conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='s2'",[],|r|r.get(0)).unwrap();
+    let inbox_before_leave: i64 = conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND scope_kind='inbox' AND scope_key='s2'",[],|r|r.get(0)).unwrap();
     leave(
         &context,
         &mut conn,
@@ -4085,7 +4640,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         ),
     )
     .unwrap();
-    assert_eq!(conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='s2'",[],|r|r.get::<_,i64>(0)).unwrap(),inbox_before_leave+1);
+    assert_eq!(conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND scope_kind='inbox' AND scope_key='s2'",[],|r|r.get::<_,i64>(0)).unwrap(),inbox_before_leave+1);
     let closed_seq: i64 = conn
         .query_row(
             "SELECT left_seq FROM membership_intervals WHERE thread_id=?1 AND seat_id='s2'",
@@ -4166,16 +4721,39 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
         enumeration: EnumerationEvidence::Partial,
         ..snapshot.clone()
     };
-    assert!(seats::record_snapshot(&context, &mut conn, "i", partial).is_err());
+    assert!(
+        seats::record_snapshot(
+            &context,
+            &mut conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            partial
+        )
+        .is_err()
+    );
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(1000),
         cancellation: crate::protocol::time::Cancellation::default(),
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = staged_test_snapshot(&context, &mut conn, admission, &snapshot, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
     observation.observation_sequence = 2;
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     assert!(
         seats::publish_current_target_observation(
             &context,
@@ -4188,7 +4766,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
     );
     let eligibility_revision: i64 = conn
         .query_row(
-            "SELECT send_eligibility_revision FROM host_instances WHERE id='i'",
+            "SELECT send_eligibility_revision FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -4200,12 +4778,18 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
         2
     );
     assert_eq!(
-        crate::store::effective::effective_recovery_disposition(&conn, "i", "p1").unwrap(),
+        crate::store::effective::effective_recovery_disposition(
+            &conn,
+            crate::test_support::test_host_id(),
+            "p1"
+        )
+        .unwrap(),
         crate::store::effective::EffectiveRecoveryDisposition::BaselineHeld
     );
     drop(conn);
     let mut conn = context.open_writer().unwrap();
     let ordinary = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("p1"),
         operation: OperationId::new("resolve"),
     };
@@ -4216,7 +4800,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
         seats::resolve_seat(
             &context,
             &mut conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             ordinary,
             crate::ports::OrdinaryResolutionAttempt::Observed(guard),
             &budget,
@@ -4226,11 +4810,13 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
         ErrorCode::TargetUnresolved
     );
     let fresh = OperatorFreshSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("p1"),
         operation: OperationId::new("fresh"),
     };
     let guard = OperatorTargetGuard::try_new(
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &crate::protocol::commands::OperatorCommand::FreshSeat(fresh.clone()),
         observation.clone(),
     )
@@ -4239,7 +4825,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
     let result = seats::mutate_operator(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         OperatorRequest::FreshSeat(fresh, guard),
         actor,
         None,
@@ -4268,7 +4854,7 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
     );
     let after_repair_revision: i64 = conn
         .query_row(
-            "SELECT send_eligibility_revision FROM host_instances WHERE id='i'",
+            "SELECT send_eligibility_revision FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -4289,66 +4875,8 @@ fn recovery_snapshot_holds_all_unclaimed_targets_until_explicit_fresh_choice() {
             .unwrap(),
         "unresolved"
     );
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('j',0,'b',2)",
-        [],
-    )
-    .unwrap();
-    let mut cross_snapshot = snapshot_for_test(1, &["p1"]);
-    cross_snapshot.epoch = 2;
-    cross_snapshot.incarnation = IncarnationEvidence::Verified {
-        identity: "incarnation".into(),
-        evidence_kind: EvidenceKind::CoherentEnumeration,
-    };
-    cross_snapshot.targets = vec![HostObservation {
-        observation_sequence: 1,
-        ..observation.clone()
-    }];
-    let admission = seats::begin_host_observation(&context, &mut conn, "j", &budget).unwrap();
-    let stage = staged_test_snapshot(&context, &mut conn, admission, &cross_snapshot, &budget);
-    seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
-    let admission = seats::begin_host_observation(&context, &mut conn, "j", &budget).unwrap();
-    assert!(
-        seats::publish_current_target_observation(
-            &context,
-            &mut conn,
-            &admission,
-            &observation,
-            &budget
-        )
-        .unwrap()
-    );
-    let cross = crate::protocol::commands::OperatorFreshSeat {
-        target: HostTargetId::new("p1"),
-        operation: OperationId::new("fresh"),
-    };
-    let cross_guard = OperatorTargetGuard::try_new(
-        "j",
-        &crate::protocol::commands::OperatorCommand::FreshSeat(cross.clone()),
-        observation,
-    )
-    .unwrap();
-    let cross_actor = OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap();
-    let CommandResult::OperatorFreshSeat(cross_seat) = seats::mutate_operator(
-        &context,
-        &mut conn,
-        "j",
-        OperatorRequest::FreshSeat(cross, cross_guard),
-        cross_actor,
-        None,
-    )
-    .unwrap() else {
-        panic!("cross-instance operator allocation missing")
-    };
-    assert_eq!(
-        conn.query_row(
-            "SELECT instance_id FROM seats WHERE id=?1",
-            [cross_seat.as_str()],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "j"
-    );
+    // The former cross-instance allocation (same target, a second instance) is
+    // gone with the second instance: a store holds exactly one node.
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
@@ -4397,11 +4925,25 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let captured = snapshot_for_test(1, &["p3"]);
     let stage = staged_test_snapshot(&context, &mut conn, admission, &captured, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     assert!(
         seats::publish_current_target_observation(
             &context,
@@ -4413,6 +4955,7 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
         .unwrap()
     );
     let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("p3"),
         operation: OperationId::new("resolve-once"),
     };
@@ -4421,7 +4964,7 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
     let Outcome::Resolved(seat) = seats::resolve_seat(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         request.clone(),
         Attempt::Observed(guard()),
         &budget,
@@ -4429,6 +4972,17 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
     .unwrap() else {
         panic!("seat missing")
     };
+    // The ordinary-allocation insert writes the local home, the local flag and
+    // the fixture host.
+    assert_eq!(
+        conn.query_row(
+            "SELECT home_node=(SELECT id FROM local_node), is_local, host_id=(SELECT MIN(host_id) FROM herdr_hosts) FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+        )
+        .unwrap(),
+        (1, 1, 1)
+    );
     conn.execute(
         "UPDATE seats SET state='retired',retired_at=100 WHERE id=?1",
         [seat.as_str()],
@@ -4438,7 +4992,7 @@ fn ordinary_allocation_replay_returns_original_seat_after_retirement() {
         seats::resolve_seat(
             &context,
             &mut conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             request.clone(),
             Attempt::Observed(guard()),
             &budget,
@@ -4505,12 +5059,26 @@ fn ordinary_allocation_refuses_a_moved_terminal_until_its_seat_follows() {
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let captured = snapshot_for_test(1, &["p3", "p9"]);
     let stage = staged_test_snapshot(&context, &mut conn, admission, &captured, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
     let resolve = |conn: &mut Connection, target: &str, sequence: u64, operation: &str| {
-        let admission = seats::begin_host_observation(&context, conn, "i", &budget).unwrap();
+        let admission = seats::begin_host_observation(
+            &context,
+            conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &budget,
+        )
+        .unwrap();
         let observation = observed(target, "terminal-moved", sequence);
         assert!(
             seats::publish_current_target_observation(
@@ -4523,6 +5091,7 @@ fn ordinary_allocation_refuses_a_moved_terminal_until_its_seat_follows() {
             .unwrap()
         );
         let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: HostTargetId::new(target),
             operation: OperationId::new(operation),
         };
@@ -4530,7 +5099,7 @@ fn ordinary_allocation_refuses_a_moved_terminal_until_its_seat_follows() {
         seats::resolve_seat(
             &context,
             conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             request,
             Attempt::Observed(guard),
             &budget,
@@ -4588,10 +5157,18 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
     };
     let mut first = snapshot_for_test(1, &["p3"]);
     first.targets[0].terminal = Some(TerminalId::new("terminal-p3"));
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = staged_test_snapshot(&context, &mut conn, admission, &first, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
     let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("p3"),
         operation: OperationId::new("ordinary-empty-proof"),
     };
@@ -4619,7 +5196,14 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
         started_at_mono: MonoInstant(100),
         completed_at_mono: MonoInstant(100),
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     assert!(
         seats::publish_current_target_observation(
             &context,
@@ -4634,7 +5218,7 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
     let OrdinaryResolutionOutcome::Resolved(seat) = seats::resolve_seat(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         request,
         OrdinaryResolutionAttempt::Observed(guard),
         &budget,
@@ -4655,7 +5239,14 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
     let mut conn = context.open_writer().unwrap();
     let mut second = snapshot_for_test(3, &["p3"]);
     second.targets[0].terminal = Some(TerminalId::new("terminal-p3"));
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = staged_test_snapshot(&context, &mut conn, admission, &second, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
     let page = seats::saved_seats_page(&context, &conn, &stage, 0, None, 16, &budget).unwrap();
@@ -4669,7 +5260,14 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
     assert!(saved.binding_execution.is_none());
     let mut moved_snapshot = snapshot_for_test(4, &["moved-p3"]);
     moved_snapshot.targets[0].terminal = Some(TerminalId::new("terminal-p3"));
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = staged_test_snapshot(&context, &mut conn, admission, &moved_snapshot, &budget);
     let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
     assert_eq!(
@@ -4710,7 +5308,14 @@ fn ordinary_empty_allocation_retains_structural_identity_without_occupant_bindin
         .unwrap(),
         0
     );
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let absent = snapshot_for_test(5, &[]);
     let stage = staged_test_snapshot(&context, &mut conn, admission, &absent, &budget);
     let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
@@ -4771,7 +5376,8 @@ fn coherent_target_change_updates_structural_generation() {
     seats::record_snapshot(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         HostSnapshot {
             boot: HostBootId::new("b"),
             epoch: 1,
@@ -4851,18 +5457,20 @@ fn coherent_snapshots_keep_per_target_order_and_accept_ordered_empty_enumeration
     seats::record_snapshot(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         snapshot(5, vec![target("s1", 1, 4), target("s2", 2, 5)]),
     )
     .unwrap();
     seats::record_snapshot(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         snapshot(6, vec![target("s1", 2, 6), target("s2", 99, 4)]),
     )
     .unwrap();
-    let saved:(i64,i64)=conn.query_row("SELECT generation,observation_sequence FROM observed_targets WHERE instance_id='i' AND target_id='s2'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    let saved:(i64,i64)=conn.query_row("SELECT generation,observation_sequence FROM observed_targets WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND target_id='s2'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
     assert_eq!(saved, (2, 5));
     assert_eq!(
         conn.query_row(
@@ -4873,33 +5481,65 @@ fn coherent_snapshots_keep_per_target_order_and_accept_ordered_empty_enumeration
         .unwrap(),
         2
     );
-    seats::record_snapshot(&context, &mut conn, "i", snapshot(7, vec![])).unwrap();
+    seats::record_snapshot(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        snapshot(7, vec![]),
+    )
+    .unwrap();
     assert_eq!(
         conn.query_row(
-            "SELECT observation_sequence FROM host_instances WHERE id='i'",
+            "SELECT observation_sequence FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
         7
     );
-    assert!(seats::record_snapshot(&context, &mut conn, "i", snapshot(6, vec![])).is_err());
-    assert!(seats::record_snapshot(&context, &mut conn, "i", snapshot(7, vec![])).is_err());
+    assert!(
+        seats::record_snapshot(
+            &context,
+            &mut conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            snapshot(6, vec![])
+        )
+        .is_err()
+    );
+    assert!(
+        seats::record_snapshot(
+            &context,
+            &mut conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            snapshot(7, vec![])
+        )
+        .is_err()
+    );
     let mut new_boot_target = target("s2", 4, 1);
     new_boot_target.host_boot = HostBootId::new("c");
     let mut new_boot = snapshot(1, vec![new_boot_target]);
     new_boot.boot = HostBootId::new("c");
-    seats::record_snapshot(&context, &mut conn, "i", new_boot).unwrap();
+    seats::record_snapshot(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        new_boot,
+    )
+    .unwrap();
     assert_eq!(
         conn.query_row(
-            "SELECT host_boot,observation_sequence FROM host_instances WHERE id='i'",
+            "SELECT host_boot,observation_sequence FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
         )
         .unwrap(),
         ("c".to_owned(), 1)
     );
-    assert_eq!(conn.query_row("SELECT generation,observation_sequence FROM observed_targets WHERE instance_id='i' AND target_id='s2'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap(),(4,1));
+    assert_eq!(conn.query_row("SELECT generation,observation_sequence FROM observed_targets WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND target_id='s2'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap(),(4,1));
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
@@ -4915,7 +5555,7 @@ fn restoring_current_target_observation_bumps_send_eligibility_revision() {
     };
     let (context, mut conn, path, _) = fixture(100);
     conn.execute(
-        "DELETE FROM observed_targets WHERE instance_id='i' AND target_id='s2'",
+        "DELETE FROM observed_targets WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND target_id='s2'",
         [],
     )
     .unwrap();
@@ -4942,7 +5582,7 @@ fn restoring_current_target_observation_bumps_send_eligibility_revision() {
     };
     let initial: i64 = conn
         .query_row(
-            "SELECT send_eligibility_revision FROM host_instances WHERE id='i'",
+            "SELECT send_eligibility_revision FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -4950,7 +5590,8 @@ fn restoring_current_target_observation_bumps_send_eligibility_revision() {
     seats::record_snapshot(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         HostSnapshot {
             boot: HostBootId::new("b"),
             epoch: 1,
@@ -4967,7 +5608,7 @@ fn restoring_current_target_observation_bumps_send_eligibility_revision() {
     .unwrap();
     let latest: i64 = conn
         .query_row(
-            "SELECT send_eligibility_revision FROM host_instances WHERE id='i'",
+            "SELECT send_eligibility_revision FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
@@ -4987,7 +5628,7 @@ fn snapshot_rejects_nonrepresentable_host_numbers_without_changing_state() {
     let (context, mut conn, path, _) = fixture(100);
     let before: (String, i64, i64) = conn
         .query_row(
-            "SELECT host_boot,host_epoch,observation_sequence FROM host_instances WHERE id='i'",
+            "SELECT host_boot,host_epoch,observation_sequence FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -5030,14 +5671,20 @@ fn snapshot_rejects_nonrepresentable_host_numbers_without_changing_state() {
         make(1, 1, u64::MAX),
     ] {
         assert_eq!(
-            seats::record_snapshot(&context, &mut conn, "i", snapshot)
-                .unwrap_err()
-                .code,
+            seats::record_snapshot(
+                &context,
+                &mut conn,
+                "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
+                snapshot
+            )
+            .unwrap_err()
+            .code,
             ErrorCode::InvalidRequest
         );
         let after: (String, i64, i64) = conn
             .query_row(
-                "SELECT host_boot,host_epoch,observation_sequence FROM host_instances WHERE id='i'",
+                "SELECT host_boot,host_epoch,observation_sequence FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -5055,13 +5702,14 @@ fn snapshot_rejects_nonrepresentable_host_numbers_without_changing_state() {
     seats::record_snapshot(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         make(i64::MAX as u64, i64::MAX as u64, i64::MAX as u64),
     )
     .unwrap();
     let accepted: (i64, i64, i64) = conn
         .query_row(
-            "SELECT h.host_epoch,h.observation_sequence,o.generation FROM host_instances h JOIN observed_targets o ON o.instance_id=h.id WHERE h.id='i' AND o.target_id='overflow-target'",
+            "SELECT h.host_epoch,h.observation_sequence,o.generation FROM herdr_hosts h JOIN observed_targets o ON o.host_id=h.host_id WHERE h.node_id='34750f98bd59fcfc946da45aaabe933b' AND o.target_id='overflow-target'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -5322,8 +5970,9 @@ fn operator_rebind_rejects_exhausted_binding_generation() {
         [i64::MAX],
     )
     .unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','free','b',1,1,1,100,'fresh','term-'||'free','inc','coherent_enumeration',1)",[]).unwrap();
+    conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'free','b',1,1,1,100,'fresh','term-'||'free','inc','coherent_enumeration',1)",[]).unwrap();
     let command = OperatorRebind {
+        host: crate::test_support::test_host_locator(),
         seat: SeatId::new("s1"),
         target: HostTargetId::new("free"),
         operation: OperationId::new("rebind-exhausted"),
@@ -5349,14 +5998,18 @@ fn operator_rebind_rejects_exhausted_binding_generation() {
         started_at_mono: MonoInstant(100),
         completed_at_mono: MonoInstant(100),
     };
-    let guard =
-        OperatorTargetGuard::try_new("i", &OperatorCommand::Rebind(command.clone()), observation)
-            .unwrap();
+    let guard = OperatorTargetGuard::try_new(
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &OperatorCommand::Rebind(command.clone()),
+        observation,
+    )
+    .unwrap();
     let actor = OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap();
     let error = seats::mutate_operator(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         OperatorRequest::Rebind(command, guard),
         actor,
         None,
@@ -5390,7 +6043,7 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
     };
     let (context, mut conn, path, clock) = fixture(100);
     for thread in ["retire-a", "retire-b"] {
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [thread]).unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", [thread]).unwrap();
     }
     conn.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('retire-a','s2','joined',0)", []).unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('retire-a','s2',1,1)", []).unwrap();
@@ -5399,14 +6052,14 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('retire-invite','retire-b','s2',1,'pending',0,90,90,1)", []).unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq,origin_node) VALUES ('retire-invite','retire-b','s2',1,'pending',0,90,90,1,(SELECT id FROM local_node))", []).unwrap();
     for n in 0..18 {
         let id = format!("retire-message-{n}");
-        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'retire-a',?2,'ordinary','body',0,?2)", rusqlite::params![id,n+1]).unwrap();
+        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'retire-a',?2,'ordinary','body',0,?2)", rusqlite::params![id,n+1]).unwrap();
         conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES (?1,'retire-a','s2',?2,90,0,?3,?4,?5,?6,?7)",
             rusqlite::params![id,if n==0 {"acked"} else {"pending"},if n==17 {101} else {90},if n==0 {Some("s2")} else {None},if n==0 {Some(1)} else {None},if n==0 {Some("verified")} else {None},if n==0 {Some(50)} else {None}]).unwrap();
     }
-    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','retire-b-message','retire-b',1,'ordinary','body',0,19)", []).unwrap();
+    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','retire-b-message','retire-b',1,'ordinary','body',0,19)", []).unwrap();
     conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('retire-b-message','retire-b','s2','pending',90,0,90)", []).unwrap();
     for (n, (name, duration, eligible)) in [
         ("overdue", 90, 1),
@@ -5420,13 +6073,13 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
     {
         let prep = format!("retire-prep-{name}");
         let message = format!("retire-logical-{name}");
-        conn.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES (?1,'i','seat:s1',?2,zeroblob(32),'retire-a',0,0,0,0,0,0,0,1,'sealed')",
+        conn.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','seat:s1',?2,zeroblob(32),'retire-a',0,0,0,0,0,0,0,1,'sealed')",
             rusqlite::params![prep,format!("retire-op-{name}")]).unwrap();
         conn.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES (?1,'retire-a','s2',1,?2,?3)",
             rusqlite::params![prep,duration,eligible]).unwrap();
-        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'retire-a',?2,'ordinary','body',0,?3)",
+        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'retire-a',?2,'ordinary','body',0,?3)",
             rusqlite::params![message,19+n as i64,20+n as i64]).unwrap();
-        conn.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,'retire-a',?3,0,?4,0,1,0)",
+        conn.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,'retire-a',?3,0,?4,0,1,0)",
             rusqlite::params![prep,message,20+n as i64,19+n as i64]).unwrap();
     }
     conn.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES ('retire-logical-acked','s2','acked','s2',1,'verified',50)",[]).unwrap();
@@ -5437,8 +6090,11 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
     .unwrap();
     conn.execute("UPDATE threads SET next_sequence=2 WHERE id='retire-b'", [])
         .unwrap();
-    conn.execute("UPDATE host_instances SET decision_seq=30 WHERE id='i'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=30 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let job = begin_retirement(
         &context,
         &mut conn,
@@ -5513,10 +6169,11 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
             .unwrap(),
         0
     );
-    drop(conn);
-    let mut conn = context.open_writer().unwrap();
+    // The fault trigger is not part of the node schema: drop it before the reopen audit.
     conn.execute_batch("DROP TRIGGER fail_retire_selection;")
         .unwrap();
+    drop(conn);
+    let mut conn = context.open_writer().unwrap();
     let first = advance_retirement(
         &context,
         &mut conn,
@@ -5625,8 +6282,6 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
     conn.execute_batch("DROP TRIGGER fail_retire_cursor;")
         .unwrap();
     conn.execute_batch("CREATE TRIGGER fail_retire_audit BEFORE INSERT ON retirement_audits WHEN NEW.thread_id='retire-b' BEGIN SELECT RAISE(ABORT,'injected audit failure'); END;").unwrap();
-    drop(conn);
-    let mut conn = context.open_writer().unwrap();
     let mut audit_failure_seen = false;
     for _ in 0..8 {
         let before: (i64,String,i64,i64) = conn.query_row("SELECT thread_ordinal,phase,obligation_ordinal,processed_units FROM retirements WHERE id=?1",[job.id.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
@@ -5760,14 +6415,17 @@ fn retirement_fence_allows_orphan_invite_before_membership_cleanup() {
     };
     let (context, mut conn, path, _) = fixture(100);
     for thread in ["new-orphan", "still-joined"] {
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)",[thread]).unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)",[thread]).unwrap();
         conn.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES (?1,'s2','joined',0)",[thread]).unwrap();
         conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,'s2',1,1)",[thread]).unwrap();
     }
     conn.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('still-joined','s1','joined',0)",[]).unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('still-joined','s1',1,1)",[]).unwrap();
-    conn.execute("UPDATE host_instances SET decision_seq=1 WHERE id='i'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let actor = OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap();
     let invite = OperatorOrphanInvite {
         thread: ThreadId::new("new-orphan"),
@@ -5776,9 +6434,16 @@ fn retirement_fence_allows_orphan_invite_before_membership_cleanup() {
         operation: OperationId::new("after-fence"),
     };
     assert_eq!(
-        operator_orphan_invite(&context, &mut conn, "i", &invite, actor.clone(), None)
-            .unwrap_err()
-            .code,
+        operator_orphan_invite(
+            &context,
+            &mut conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &invite,
+            actor.clone(),
+            None
+        )
+        .unwrap_err()
+        .code,
         ErrorCode::ThreadNotOrphaned
     );
     let job = begin_retirement(
@@ -5812,7 +6477,15 @@ fn retirement_fence_allows_orphan_invite_before_membership_cleanup() {
         "pending"
     );
     assert!(matches!(
-        operator_orphan_invite(&context, &mut conn, "i", &invite, actor.clone(), None).unwrap(),
+        operator_orphan_invite(
+            &context,
+            &mut conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &invite,
+            actor.clone(),
+            None
+        )
+        .unwrap(),
         CommandResult::OperatorInvited(_)
     ));
     let guarded = OperatorOrphanInvite {
@@ -5821,9 +6494,16 @@ fn retirement_fence_allows_orphan_invite_before_membership_cleanup() {
         ..invite
     };
     assert_eq!(
-        operator_orphan_invite(&context, &mut conn, "i", &guarded, actor, None)
-            .unwrap_err()
-            .code,
+        operator_orphan_invite(
+            &context,
+            &mut conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &guarded,
+            actor,
+            None
+        )
+        .unwrap_err()
+        .code,
         ErrorCode::ThreadNotOrphaned
     );
     drop(conn);
@@ -5837,18 +6517,21 @@ fn retirement_fence_is_immediate_and_cleanup_is_bounded_with_ordered_warnings() 
         protocol::time::{CallBudget, Cancellation},
     };
     let (context, mut conn, path, _) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s2','joined',0)",
         [],
     )
     .unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s2',1,1)",[]).unwrap();
-    conn.execute("UPDATE host_instances SET decision_seq=1 WHERE id='i'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=1 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     for n in 0..25 {
         let id = format!("m{n}");
-        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','body',0,?2)", rusqlite::params![id,n+1]).unwrap();
+        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'t',?2,'ordinary','body',0,?2)", rusqlite::params![id,n+1]).unwrap();
         conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','s2','pending',100,0,?2)",
             rusqlite::params![id, if n < 12 { 100 } else { 101 }]).unwrap();
     }
@@ -5867,7 +6550,7 @@ fn retirement_fence_is_immediate_and_cleanup_is_bounded_with_ordered_warnings() 
     )
     .unwrap();
     let (cutover_seq, eligibility_revision): (Option<i64>, i64) = conn.query_row(
-        "SELECT s.retired_seq,h.send_eligibility_revision FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id='s2'",
+        "SELECT s.retired_seq,h.send_eligibility_revision FROM seats s JOIN local_node h ON h.id=s.instance_id WHERE s.id='s2'",
         [], |r|Ok((r.get(0)?,r.get(1)?))).unwrap();
     assert!(cutover_seq.unwrap_or_default() > 0);
     assert!(eligibility_revision > 0);
@@ -5971,25 +6654,28 @@ fn retirement_materializes_unprojected_manifest_receipts_in_bounded_turns() {
         protocol::time::{CallBudget, Cancellation},
     };
     let (context, mut conn, path, _) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('logical','i','topic','goal',0,0)",[]).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('logical','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)",[]).unwrap();
     conn.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('logical','s2','joined',0)",[]).unwrap();
     for n in 0..20 {
         let prep = format!("p{n}");
         let message = format!("lm{n}");
         let op = format!("op{n}");
-        conn.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES (?1,'i','seat:s1',?2,zeroblob(32),'logical',0,0,0,0,0,0,0,1,'sealed')",
+        conn.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','seat:s1',?2,zeroblob(32),'logical',0,0,0,0,0,0,0,1,'sealed')",
             rusqlite::params![prep,op]).unwrap();
         conn.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES (?1,'logical','s2',1,100,1)",[prep.as_str()]).unwrap();
-        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'logical',?2,'ordinary','body',0,?2)",rusqlite::params![message,n+1]).unwrap();
-        conn.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,'logical',?3,0,?3,0,1,0)",rusqlite::params![prep,message,n+1]).unwrap();
+        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'logical',?2,'ordinary','body',0,?2)",rusqlite::params![message,n+1]).unwrap();
+        conn.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,'logical',?3,0,?3,0,1,0)",rusqlite::params![prep,message,n+1]).unwrap();
     }
     conn.execute("INSERT INTO receipt_state(message_id,seat_id,state,acked_at) VALUES ('lm0','s2','acked',50)",[]).unwrap();
-    conn.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES ('unstarted','i','seat:s1','unstarted-op',zeroblob(32),'logical',0,0,0,0,0,0,0,1,'sealed')",[]).unwrap();
+    conn.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_count,status) VALUES ('unstarted','34750f98bd59fcfc946da45aaabe933b','seat:s1','unstarted-op',zeroblob(32),'logical',0,0,0,0,0,0,0,1,'sealed')",[]).unwrap();
     conn.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('unstarted','logical','s2',1,100,1)",[]).unwrap();
     conn.execute("UPDATE threads SET next_sequence=21 WHERE id='logical'", [])
         .unwrap();
-    conn.execute("UPDATE host_instances SET decision_seq=30 WHERE id='i'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=30 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let job = begin_retirement(
         &context,
         &mut conn,
@@ -6087,12 +6773,12 @@ fn retirement_materializes_unprojected_manifest_receipts_in_bounded_turns() {
 }
 
 fn seed_structural_continuity_obligations(conn: &Connection) {
-    conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('fix3-thread','i','topic','goal',0,0);
+    conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('fix3-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('fix3-thread','s1','invited');
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('fix3-invite','fix3-thread','s1',1,'pending',0,(SELECT decision_seq+1 FROM host_instances WHERE id='i'),300,300);
-        UPDATE host_instances SET decision_seq=decision_seq+1 WHERE id='i';
-        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('fix3-message','i','fix3-thread',1,'ordinary','body',(SELECT decision_seq+1 FROM host_instances WHERE id='i'),0);
-        UPDATE host_instances SET decision_seq=decision_seq+1 WHERE id='i';
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('fix3-invite','fix3-thread','s1',1,'pending',0,(SELECT decision_seq+1 FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'),300,300,(SELECT id FROM local_node));
+        UPDATE local_node SET decision_seq=decision_seq+1 WHERE id='34750f98bd59fcfc946da45aaabe933b';
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('fix3-message','34750f98bd59fcfc946da45aaabe933b','fix3-thread',1,'ordinary','body',(SELECT decision_seq+1 FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'),0);
+        UPDATE local_node SET decision_seq=decision_seq+1 WHERE id='34750f98bd59fcfc946da45aaabe933b';
         UPDATE threads SET next_sequence=2 WHERE id='fix3-thread';
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('fix3-message','fix3-thread','s1','pending',300);").unwrap();
 }
@@ -6191,7 +6877,14 @@ fn review_operator_rebind_new_incarnation_then_absence() {
     };
     capture.targets[0].epoch = 2;
     capture.targets[0].terminal = Some(TerminalId::new("new-terminal"));
-    let a = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let a = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = staged_test_snapshot(&context, &mut conn, a, &capture, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
     let mut fresh = capture.targets[0].clone();
@@ -6201,24 +6894,37 @@ fn review_operator_rebind_new_incarnation_then_absence() {
         identity: "new-incarnation".into(),
         evidence_kind: EvidenceKind::NativeCurrentTarget,
     };
-    let a = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let a = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     assert!(
         seats::publish_current_target_observation(&context, &mut conn, &a, &fresh, &budget)
             .unwrap()
     );
     let command = OperatorRebind {
+        host: crate::test_support::test_host_locator(),
         seat: SeatId::new("s1"),
         target: fresh.target.clone(),
         operation: OperationId::new("review-rebind"),
     };
-    let guard = OperatorTargetGuard::try_new("i", &OperatorCommand::Rebind(command.clone()), fresh)
-        .unwrap();
+    let guard = OperatorTargetGuard::try_new(
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &OperatorCommand::Rebind(command.clone()),
+        fresh,
+    )
+    .unwrap();
     let actor = OperatorActor::from_peer(PeerIdentity::from_kernel(501), 501).unwrap();
     assert!(matches!(
         seats::mutate_operator(
             &context,
             &mut conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             OperatorRequest::Rebind(command, guard),
             actor,
             None
@@ -6239,7 +6945,14 @@ fn review_operator_rebind_new_incarnation_then_absence() {
     let mut absent = snapshot_for_test(4, &[]);
     absent.epoch = 2;
     absent.incarnation = capture.incarnation.clone();
-    let a = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let a = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = staged_test_snapshot(&context, &mut conn, a, &absent, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
     let page = seats::saved_seats_page(&context, &conn, &stage, 0, None, 16, &budget).unwrap();
@@ -6339,9 +7052,16 @@ fn ordinary_resolution_guard_rejects_unqualified_or_mismatched_read() {
         deadline: MonoInstant(1000),
         cancellation: Cancellation::default(),
     };
-    let admission =
-        crate::store::seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = crate::store::seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("pane-new"),
         operation: OperationId::new("resolve"),
     };
@@ -6385,14 +7105,20 @@ fn ordinary_resolution_fixture() -> (
     };
     let mut snapshot = snapshot_for_test(1, &["pane-new"]);
     snapshot.targets[0].terminal = Some(TerminalId::new("terminal-new"));
-    let admission =
-        crate::store::seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = crate::store::seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = staged_test_snapshot(&context, &mut conn, admission, &snapshot, &budget);
     crate::store::seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
     let store = Arc::new(
         crate::store::SqliteStore::new(
-            StoreContext::new(path.clone(), clock),
-            "i",
+            StoreContext::new(path.clone(), clock).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             crate::store::StoreSettings::default(),
         )
         .unwrap(),
@@ -6416,7 +7142,13 @@ fn ordinary_resolution_read(
     crate::ports::HostObservationAdmission,
 ) {
     use crate::ports::StorePort;
-    let admission = store.begin_host_observation("i", budget).unwrap();
+    let admission = store
+        .begin_host_observation(
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            budget,
+        )
+        .unwrap();
     let observation = crate::ports::HostObservation {
         observation_sequence: sequence,
         ..observation.clone()
@@ -6438,6 +7170,7 @@ fn ordinary_resolution_returns_existing_owner_and_replays_through_host_loss_and_
     use crate::protocol::{commands::ResolveSeat, results::ErrorCode};
     let (context, mut conn, path, store, observation, budget) = ordinary_resolution_fixture();
     let first = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: observation.target.clone(),
         operation: OperationId::new("first-resolve"),
     };
@@ -6466,7 +7199,7 @@ fn ordinary_resolution_returns_existing_owner_and_replays_through_host_loss_and_
         ..first.clone()
     };
     let (current, admission) = ordinary_resolution_read(&store, &observation, 3, &budget);
-    let before: (i64,i64,i64) = conn.query_row("SELECT send_eligibility_revision,lifecycle_revision,(SELECT count(*) FROM allocation_decisions) FROM host_instances WHERE id='i'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    let before: (i64,i64,i64) = conn.query_row("SELECT n.send_eligibility_revision,h.lifecycle_revision,(SELECT count(*) FROM allocation_decisions) FROM local_node n JOIN herdr_hosts h ON h.node_id=n.id WHERE n.id='34750f98bd59fcfc946da45aaabe933b'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
     let guard = OrdinaryResolutionGuard::try_new(&second, current.clone(), &admission).unwrap();
     assert_eq!(
         store
@@ -6475,7 +7208,7 @@ fn ordinary_resolution_returns_existing_owner_and_replays_through_host_loss_and_
         Outcome::Resolved(seat.clone())
     );
 
-    let after: (i64,i64,i64) = conn.query_row("SELECT send_eligibility_revision,lifecycle_revision,(SELECT count(*) FROM allocation_decisions) FROM host_instances WHERE id='i'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    let after: (i64,i64,i64) = conn.query_row("SELECT n.send_eligibility_revision,h.lifecycle_revision,(SELECT count(*) FROM allocation_decisions) FROM local_node n JOIN herdr_hosts h ON h.node_id=n.id WHERE n.id='34750f98bd59fcfc946da45aaabe933b'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
     assert_eq!(before, after);
     for table in [
         "occupant_bindings",
@@ -6504,7 +7237,13 @@ fn ordinary_resolution_returns_existing_owner_and_replays_through_host_loss_and_
         },
     )
     .unwrap();
-    let failed = store.begin_host_observation("i", &budget).unwrap();
+    let failed = store
+        .begin_host_observation(
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            &budget,
+        )
+        .unwrap();
     store
         .invalidate_host_observation(&failed, HostInvalidationReason::HostUnavailable, &budget)
         .unwrap();
@@ -6574,6 +7313,7 @@ fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
         let barrier = barrier.clone();
         let budget = budget.clone();
         let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: current.target.clone(),
             operation: OperationId::new(key),
         };
@@ -6605,7 +7345,7 @@ fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
     );
     assert_eq!(
         conn.query_row(
-            "SELECT count(*) FROM operations WHERE actor_scope='service-allocation:i'",
+            "SELECT count(*) FROM operations WHERE actor_scope='service-allocation:34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get::<_, i64>(0)
         )
@@ -6613,6 +7353,7 @@ fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
         2
     );
     let replay = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: current.target.clone(),
         operation: OperationId::new("concurrent-a"),
     };
@@ -6620,7 +7361,7 @@ fn ordinary_resolution_two_keys_share_allocation_and_operation_namespace() {
         crate::store::seats::resolve_seat(
             &context,
             &mut conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             replay,
             Attempt::ReplayOnly,
             &budget,
@@ -6651,6 +7392,7 @@ fn final_resolved_target_check_rejects_hold_retirement_and_changed_structure() {
     ] {
         let (context, mut conn, path, store, observation, budget) = ordinary_resolution_fixture();
         let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: observation.target.clone(),
             operation: OperationId::new("resolve"),
         };
@@ -6681,7 +7423,7 @@ fn final_resolved_target_check_rejects_hold_retirement_and_changed_structure() {
             .unwrap();
         let expected = match change {
             "hold" => {
-                conn.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','pane-new','b',1,'explicit operator hold')",[]).unwrap();
+                conn.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane-new','b',1,'explicit operator hold')",[]).unwrap();
                 ErrorCode::TargetUnresolved
             }
             "retire" => {
@@ -6705,7 +7447,7 @@ fn final_resolved_target_check_rejects_hold_retirement_and_changed_structure() {
                     [seat.as_str()],
                 )
                 .unwrap();
-                conn.execute("UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1 WHERE id='i'", []).unwrap();
+                conn.execute("UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'", []).unwrap();
                 ErrorCode::TargetUnresolved
             }
             "generation" => {
@@ -6722,12 +7464,18 @@ fn final_resolved_target_check_rejects_hold_retirement_and_changed_structure() {
                     [seat.as_str()],
                 )
                 .unwrap();
-                conn.execute("UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1 WHERE id='i'", []).unwrap();
+                conn.execute("UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'", []).unwrap();
                 ErrorCode::StaleHostObservation
             }
             "wrong-seat" => ErrorCode::TargetUnresolved,
             "superseded" => {
-                store.begin_host_observation("i", &budget).unwrap();
+                store
+                    .begin_host_observation(
+                        "34750f98bd59fcfc946da45aaabe933b",
+                        crate::test_support::test_host_id(),
+                        &budget,
+                    )
+                    .unwrap();
                 ErrorCode::StaleHostObservation
             }
             _ => unreachable!(),
@@ -6809,9 +7557,10 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
             observation.terminal = Some(TerminalId::new("terminal-created-after"));
         }
         if state == "unresolved-target-after" {
-            conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at) VALUES ('prior-seat','i','unresolved','native','created-after',1,0)", []).unwrap();
+            conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at,home_node,is_local,host_id) VALUES ('prior-seat','34750f98bd59fcfc946da45aaabe933b','unresolved','native','created-after',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
         }
         let request = ResolveSeat {
+            host: crate::test_support::test_host_locator(),
             target: observation.target.clone(),
             operation: OperationId::new("resolve"),
         };
@@ -6819,20 +7568,20 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
         match state {
             "unknown-baseline" => {
                 conn.execute(
-                    "UPDATE host_instances SET recovery_baseline_generation_id=NULL WHERE id='i'",
+                    "UPDATE herdr_hosts SET recovery_baseline_generation_id=NULL WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
                     [],
                 )
                 .unwrap();
             }
             "held-baseline" => {
                 conn.execute(
-                    "UPDATE host_instances SET baseline_hold_unclaimed=1 WHERE id='i'",
+                    "UPDATE herdr_hosts SET baseline_hold_unclaimed=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
                     [],
                 )
                 .unwrap();
             }
             "released" => {
-                conn.execute("INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) SELECT 'i',recovery_baseline_generation_id,'pane-new',1 FROM host_instances WHERE id='i'",[]).unwrap();
+                conn.execute("INSERT INTO recovery_baseline_releases(host_id,baseline_generation_id,target_id,decision_seq) SELECT host_id,recovery_baseline_generation_id,'pane-new',1 FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",[]).unwrap();
             }
             _ => (),
         }
@@ -6888,6 +7637,7 @@ fn ordinary_resolution_cancelled_writer_wait_has_no_seat_or_operation_effect() {
     use crate::protocol::{commands::ResolveSeat, results::ErrorCode};
     let (_context, conn, path, store, observation, budget) = ordinary_resolution_fixture();
     let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: observation.target.clone(),
         operation: OperationId::new("cancelled-resolve"),
     };
@@ -6929,16 +7679,19 @@ fn retirement_quantum_failure_retains_bounded_error_until_successful_progress() 
         protocol::time::{CallBudget, Cancellation},
     };
     let (context, mut conn, path, clock) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('fail-thread','i','topic','goal',0,0,3)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('fail-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,3,0)", []).unwrap();
     conn.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('fail-thread','s2','joined',0)", []).unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('fail-thread','s2',1,1)", []).unwrap();
     for n in 1..=2 {
         let id = format!("fail-message-{n}");
-        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'fail-thread',?2,'ordinary','body',0,?2)", rusqlite::params![id, n]).unwrap();
+        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'fail-thread',?2,'ordinary','body',0,?2)", rusqlite::params![id, n]).unwrap();
         conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'fail-thread','s2','pending',90,0,90)", [&id]).unwrap();
     }
-    conn.execute("UPDATE host_instances SET decision_seq=10 WHERE id='i'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=10 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let job = begin_retirement(
         &context,
         &mut conn,
@@ -7037,11 +7790,12 @@ fn retirement_quantum_failure_retains_bounded_error_until_successful_progress() 
     );
 
     // The error survives reopen, and a later successful quantum clears it.
+    // The fault trigger is not part of the node schema: drop it before the reopen audit.
+    conn.execute_batch("DROP TRIGGER fail_retire_receipt;")
+        .unwrap();
     drop(conn);
     let mut conn = context.open_writer().unwrap();
     assert_eq!(durable(&conn).3.as_deref(), Some(error.as_str()));
-    conn.execute_batch("DROP TRIGGER fail_retire_receipt;")
-        .unwrap();
     let recovered = advance_retirement(
         &context,
         &mut conn,
@@ -7078,16 +7832,19 @@ fn partial_retirement_progress_after_failure_clears_error_before_completion() {
         protocol::time::{CallBudget, Cancellation},
     };
     let (context, mut conn, path, clock) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('long-thread','i','topic','goal',0,0,31)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('long-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,31,0)", []).unwrap();
     conn.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('long-thread','s2','joined',0)", []).unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('long-thread','s2',1,1)", []).unwrap();
     for n in 1..=30 {
         let id = format!("long-message-{n}");
-        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'long-thread',?2,'ordinary','body',0,?2)", rusqlite::params![id, n]).unwrap();
+        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'long-thread',?2,'ordinary','body',0,?2)", rusqlite::params![id, n]).unwrap();
         conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'long-thread','s2','pending',90,0,90)", [&id]).unwrap();
     }
-    conn.execute("UPDATE host_instances SET decision_seq=40 WHERE id='i'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=40 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let job = begin_retirement(
         &context,
         &mut conn,
@@ -7178,16 +7935,19 @@ fn idle_retirement_quantum_returns_and_keeps_retained_error() {
         protocol::time::{CallBudget, Cancellation},
     };
     let (context, mut conn, path, clock) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('idle-thread','i','topic','goal',0,0,3)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('idle-thread','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,3,0)", []).unwrap();
     conn.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('idle-thread','s2','joined',0)", []).unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('idle-thread','s2',1,1)", []).unwrap();
     for n in 1..=2 {
         let id = format!("idle-message-{n}");
-        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'idle-thread',?2,'ordinary','body',0,?2)", rusqlite::params![id, n]).unwrap();
+        conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,'idle-thread',?2,'ordinary','body',0,?2)", rusqlite::params![id, n]).unwrap();
         conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'idle-thread','s2','pending',90,0,90)", [&id]).unwrap();
     }
-    conn.execute("UPDATE host_instances SET decision_seq=10 WHERE id='i'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=10 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let job = begin_retirement(
         &context,
         &mut conn,
@@ -7236,7 +7996,8 @@ fn idle_retirement_quantum_returns_and_keeps_retained_error() {
     let idle_context = StoreContext::new(
         path.clone(),
         Arc::new(IdleQuantumClock(std::sync::atomic::AtomicU64::new(1_000))),
-    );
+    )
+    .with_test_host();
     let mut idle_conn = idle_context.open_writer().unwrap();
     let idle = advance_retirement(
         &idle_context,
@@ -7466,7 +8227,14 @@ fn b5_published_baseline(
     )
     .unwrap();
     let budget = b5_budget();
-    let admission = seats::begin_host_observation(context, conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        context,
+        conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let snapshot = snapshot_for_test(1, targets);
     let stage = staged_test_snapshot(context, conn, admission, &snapshot, &budget);
     seats::publish_snapshot_stage(context, conn, &stage, &budget).unwrap()
@@ -7474,7 +8242,7 @@ fn b5_published_baseline(
 
 fn b5_hold_state(conn: &Connection) -> (i64, i64) {
     conn.query_row(
-        "SELECT baseline_hold_unclaimed,(SELECT count(*) FROM recovery_holds WHERE instance_id='i' AND released_at IS NULL) FROM host_instances WHERE id='i'",
+        "SELECT baseline_hold_unclaimed,(SELECT count(*) FROM recovery_holds WHERE host_id=(SELECT min(host_id) FROM herdr_hosts) AND released_at IS NULL) FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )
@@ -7483,7 +8251,7 @@ fn b5_hold_state(conn: &Connection) -> (i64, i64) {
 
 fn b5_set_marker_to_recovery(conn: &Connection) {
     conn.execute(
-        "UPDATE host_instances SET reconciled_boot=recovery_boot,reconciled_epoch=recovery_epoch WHERE id='i'",
+        "UPDATE herdr_hosts SET reconciled_boot=recovery_boot,reconciled_epoch=recovery_epoch WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -7492,15 +8260,20 @@ fn b5_set_marker_to_recovery(conn: &Connection) {
 fn b5_lift(context: &StoreContext, conn: &mut Connection) -> bool {
     let _ = context;
     let tx = conn.transaction().unwrap();
-    let lifted =
-        crate::store::seats::lift_baseline_hold_if_clear(&tx, "i", UtcMillis(100)).unwrap();
+    let lifted = crate::store::seats::lift_baseline_hold_if_clear(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        UtcMillis(100),
+    )
+    .unwrap();
     tx.commit().unwrap();
     lifted
 }
 
 fn b5_add_hold(conn: &Connection, instance: &str, target: &str) {
     conn.execute(
-        "INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES (?1,?2,'b',1,'unresolved saved seat continuity')",
+        "INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),?2,'b',1,'unresolved saved seat continuity')",
         rusqlite::params![instance, target],
     )
     .unwrap();
@@ -7510,12 +8283,12 @@ fn b5_add_hold(conn: &Connection, instance: &str, target: &str) {
 fn lift_requires_reconciliation_marker_for_current_recovery_boot_epoch() {
     let (context, mut conn, path, _) = fixture(100);
     b5_published_baseline(&context, &mut conn, &["new-target"]);
-    conn.execute(
-        "INSERT INTO host_instances(id, created_at, host_boot, host_epoch, baseline_hold_unclaimed) VALUES ('other', 0, 'b', 1, 1)",
-        [],
+    // Rows of another instance reference no node row (a store has one).
+    conn.execute_batch(
+        "PRAGMA foreign_keys=OFF; INSERT INTO herdr_hosts(node_id,endpoint,created_at,host_boot,host_epoch,baseline_hold_unclaimed) VALUES ('other','other-host',0,'b',1,1)",
     )
     .unwrap();
-    b5_add_hold(&conn, "i", "new-target");
+    b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "new-target");
     b5_add_hold(&conn, "other", "other-target");
     conn.execute(
         "UPDATE seats SET state='retired',retired_at=1 WHERE id='s1'",
@@ -7528,7 +8301,7 @@ fn lift_requires_reconciliation_marker_for_current_recovery_boot_epoch() {
     assert_eq!(b5_hold_state(&conn), (1, 1));
     // Marker for another epoch: still lagging.
     conn.execute(
-        "UPDATE host_instances SET reconciled_boot=recovery_boot,reconciled_epoch=recovery_epoch+1 WHERE id='i'",
+        "UPDATE herdr_hosts SET reconciled_boot=recovery_boot,reconciled_epoch=recovery_epoch+1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -7539,7 +8312,7 @@ fn lift_requires_reconciliation_marker_for_current_recovery_boot_epoch() {
     assert_eq!(b5_hold_state(&conn), (0, 0));
     let other: (i64, i64) = conn
         .query_row(
-            "SELECT baseline_hold_unclaimed,(SELECT count(*) FROM recovery_holds WHERE instance_id='other' AND released_at IS NULL) FROM host_instances WHERE id='other'",
+            "SELECT baseline_hold_unclaimed,(SELECT count(*) FROM recovery_holds WHERE host_id=(SELECT host_id FROM herdr_hosts WHERE node_id='other') AND released_at IS NULL) FROM herdr_hosts WHERE node_id='other'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -7555,7 +8328,7 @@ fn lift_requires_reconciliation_marker_for_current_recovery_boot_epoch() {
 fn lift_does_not_fire_while_an_unresolved_seat_remains() {
     let (context, mut conn, path, _) = fixture(100);
     b5_published_baseline(&context, &mut conn, &["new-target"]);
-    b5_add_hold(&conn, "i", "new-target");
+    b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "new-target");
     b5_set_marker_to_recovery(&conn);
     assert!(!b5_lift(&context, &mut conn), "s1 is still unresolved");
     assert_eq!(b5_hold_state(&conn), (1, 1));
@@ -7568,14 +8341,19 @@ fn explicit_hold_pane_resolves_after_last_unresolved_seat_is_retired() {
     use crate::store::{effective, effective::EffectiveRecoveryDisposition as Disposition, seats};
     let (context, mut conn, path, _) = fixture(100);
     b5_published_baseline(&context, &mut conn, &["pane-h"]);
-    b5_add_hold(&conn, "i", "pane-h");
+    b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "pane-h");
     b5_set_marker_to_recovery(&conn);
     assert_eq!(
-        effective::effective_recovery_disposition(&conn, "i", "pane-h").unwrap(),
+        effective::effective_recovery_disposition(
+            &conn,
+            crate::test_support::test_host_id(),
+            "pane-h"
+        )
+        .unwrap(),
         Disposition::ExplicitHold
     );
     conn.execute(
-        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane-h','b',1,1,1,100,'fresh','term-pane-h','inc','coherent_enumeration',1)",
+        "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pane-h','b',1,1,1,100,'fresh','term-pane-h','inc','coherent_enumeration',1)",
         [],
     )
     .unwrap();
@@ -7587,14 +8365,19 @@ fn explicit_hold_pane_resolves_after_last_unresolved_seat_is_retired() {
     seats::mutate_operator(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         crate::ports::OperatorRequest::Retire(command),
         b5_actor(),
         None,
     )
     .unwrap();
     assert_eq!(b5_hold_state(&conn), (0, 0));
-    let disposition = effective::effective_recovery_disposition(&conn, "i", "pane-h").unwrap();
+    let disposition = effective::effective_recovery_disposition(
+        &conn,
+        crate::test_support::test_host_id(),
+        "pane-h",
+    )
+    .unwrap();
     assert!(
         !matches!(
             disposition,
@@ -7615,7 +8398,7 @@ fn operator_fresh_seat_lifts_when_no_unresolved_remains() {
     };
     let (context, mut conn, path, _) = fixture(100);
     b5_published_baseline(&context, &mut conn, &["new-target"]);
-    b5_add_hold(&conn, "i", "new-target");
+    b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "new-target");
     b5_set_marker_to_recovery(&conn);
     // The unresolved seat is retired by other means; the hold lingers.
     conn.execute(
@@ -7624,16 +8407,18 @@ fn operator_fresh_seat_lifts_when_no_unresolved_remains() {
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
+        "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
         [],
     )
     .unwrap();
     let command = OperatorFreshSeat {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new("new-target"),
         operation: OperationId::new("fresh-lift"),
     };
     let guard = OperatorTargetGuard::try_new(
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::FreshSeat(command.clone()),
         b5_fresh_observation("new-target"),
     )
@@ -7641,7 +8426,7 @@ fn operator_fresh_seat_lifts_when_no_unresolved_remains() {
     seats::mutate_operator(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         OperatorRequest::FreshSeat(command, guard),
         b5_actor(),
         None,
@@ -7661,21 +8446,23 @@ fn operator_rebind_of_last_unresolved_seat_lifts_holds_in_same_transaction() {
     };
     let (context, mut conn, path, _) = fixture(100);
     b5_published_baseline(&context, &mut conn, &["new-target", "held-elsewhere"]);
-    b5_add_hold(&conn, "i", "held-elsewhere");
+    b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "held-elsewhere");
     // Marker lags: the rebind must not lift.
     conn.execute(
-        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
+        "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
         [],
     )
     .unwrap();
     let rebind = |operation: &str| OperatorRebind {
+        host: crate::test_support::test_host_locator(),
         seat: SeatId::new("s1"),
         target: HostTargetId::new("new-target"),
         operation: OperationId::new(operation),
     };
     let command = rebind("rebind-lag");
     let guard = OperatorTargetGuard::try_new(
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::Rebind(command.clone()),
         b5_fresh_observation("new-target"),
     )
@@ -7683,7 +8470,7 @@ fn operator_rebind_of_last_unresolved_seat_lifts_holds_in_same_transaction() {
     seats::mutate_operator(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         OperatorRequest::Rebind(command, guard),
         b5_actor(),
         None,
@@ -7697,16 +8484,17 @@ fn operator_rebind_of_last_unresolved_seat_lifts_holds_in_same_transaction() {
     // Same shape with the marker current: the rebind itself lifts.
     let (context, mut conn2, path2, _) = fixture(100);
     b5_published_baseline(&context, &mut conn2, &["new-target", "held-elsewhere"]);
-    b5_add_hold(&conn2, "i", "held-elsewhere");
+    b5_add_hold(&conn2, "34750f98bd59fcfc946da45aaabe933b", "held-elsewhere");
     b5_set_marker_to_recovery(&conn2);
     conn2.execute(
-        "INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
+        "INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'new-target','b',1,1,3,100,'fresh','term-new-target','inc','coherent_enumeration',1)",
         [],
     )
     .unwrap();
     let command = rebind("rebind-lift");
     let guard = OperatorTargetGuard::try_new(
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::Rebind(command.clone()),
         b5_fresh_observation("new-target"),
     )
@@ -7714,7 +8502,7 @@ fn operator_rebind_of_last_unresolved_seat_lifts_holds_in_same_transaction() {
     seats::mutate_operator(
         &context,
         &mut conn2,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         OperatorRequest::Rebind(command, guard),
         b5_actor(),
         None,
@@ -7734,7 +8522,7 @@ fn record_reconciliation_pass_writes_marker_only_for_current_recovery_publicatio
     let first = b5_published_baseline(&context, &mut conn, &["t1"]);
     let marker = |conn: &Connection| -> (Option<String>, Option<i64>) {
         conn.query_row(
-            "SELECT reconciled_boot,reconciled_epoch FROM host_instances WHERE id='i'",
+            "SELECT reconciled_boot,reconciled_epoch FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -7759,21 +8547,28 @@ fn record_reconciliation_pass_writes_marker_only_for_current_recovery_publicatio
         [],
     )
     .unwrap();
-    b5_add_hold(&conn, "i", "t1");
+    b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "t1");
     conn.execute(
-        "UPDATE host_instances SET reconciled_boot=NULL,reconciled_epoch=NULL WHERE id='i'",
+        "UPDATE herdr_hosts SET reconciled_boot=NULL,reconciled_epoch=NULL WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
     assert!(seats::record_reconciliation_pass(&context, &mut conn, &first, &budget).unwrap());
     assert_eq!(b5_hold_state(&conn), (0, 0));
     // A superseded publication writes nothing.
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let second = snapshot_for_test(2, &["t1"]);
     let stage = staged_test_snapshot(&context, &mut conn, admission, &second, &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
     conn.execute(
-        "UPDATE host_instances SET reconciled_boot=NULL,reconciled_epoch=NULL WHERE id='i'",
+        "UPDATE herdr_hosts SET reconciled_boot=NULL,reconciled_epoch=NULL WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -7794,14 +8589,14 @@ fn daemon_start_clears_stuck_flag_and_open_holds_when_marker_matches() {
             [],
         )
         .unwrap();
-        b5_add_hold(&conn, "i", "t1");
+        b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "t1");
         if marker_matches {
             b5_set_marker_to_recovery(&conn);
         }
         assert_eq!(b5_hold_state(&conn), (1, 1));
         let store = SqliteStore::new(
-            StoreContext::new(path.clone(), clock),
-            "i",
+            StoreContext::new(path.clone(), clock).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap();
@@ -7815,14 +8610,15 @@ fn daemon_start_clears_stuck_flag_and_open_holds_when_marker_matches() {
         drop(conn);
         let _ = std::fs::remove_file(path);
     }
-    // A fresh store without the instance row starts cleanly.
-    let (context, conn, path, _) = fixture(100);
-    // Remove this fixture's derived archival children before its seeded seats.
-    conn.execute("DELETE FROM seat_archival", []).unwrap();
-    conn.execute("DELETE FROM seats", []).unwrap();
-    conn.execute("DELETE FROM observed_targets", []).unwrap();
-    conn.execute("DELETE FROM host_instances", []).unwrap();
-    SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    // A store with no attached Herdr host has no hold to lift and starts cleanly.
+    let (context, conn, path, clock) = fixture(100);
+    drop(context);
+    SqliteStore::new(
+        StoreContext::new(path.clone(), clock),
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
@@ -7838,17 +8634,24 @@ fn reconciliation_retirement_of_last_unresolved_seat_lifts() {
     )
     .unwrap();
     let budget = b5_budget();
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let empty = snapshot_for_test(2, &[]);
     let stage = staged_test_snapshot(&context, &mut conn, admission, &empty, &budget);
     let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
     // Stuck state: a flag and a hold with no unresolved seat, marker current.
     conn.execute(
-        "UPDATE host_instances SET baseline_hold_unclaimed=1 WHERE id='i'",
+        "UPDATE herdr_hosts SET baseline_hold_unclaimed=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
-    b5_add_hold(&conn, "i", "s1");
+    b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "s1");
     b5_set_marker_to_recovery(&conn);
     assert_eq!(b5_hold_state(&conn), (1, 1));
     let outcome = seats::apply_reconciliation_transition(
@@ -7901,10 +8704,24 @@ fn reconfirm_structure_of_last_unresolved_seat_lifts_and_not_before() {
         }
         snapshot
     };
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = staged_test_snapshot(&context, &mut conn, admission, &production(2), &budget);
     seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let fence = seats::invalidate_host_observation(
         &context,
         &mut conn,
@@ -7932,10 +8749,17 @@ fn reconfirm_structure_of_last_unresolved_seat_lifts_and_not_before() {
             ReconciliationOutcome::Applied
         );
     }
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = staged_test_snapshot(&context, &mut conn, admission, &production(3), &budget);
     let publication = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
-    b5_add_hold(&conn, "i", "s1");
+    b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "s1");
     b5_set_marker_to_recovery(&conn);
     assert_eq!(b5_hold_state(&conn), (1, 1));
     let reconfirm = |seat: &str, conn: &mut Connection| {
@@ -7968,7 +8792,7 @@ fn reconfirm_structure_of_last_unresolved_seat_lifts_and_not_before() {
 fn b5_seed_obligations(conn: &Connection, seat: &str, tag: &str) {
     let (joined, invited) = (format!("{tag}-joined"), format!("{tag}-invited"));
     for thread in [&joined, &invited] {
-        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [thread]).unwrap();
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", [thread]).unwrap();
     }
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES (?1,?2,'joined',0)",
@@ -7985,12 +8809,15 @@ fn b5_seed_obligations(conn: &Connection, seat: &str, tag: &str) {
         [&invited, seat],
     )
     .unwrap();
-    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES (?1,?2,?3,1,'pending',0,90,90,1)",
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq,origin_node) VALUES (?1,?2,?3,1,'pending',0,90,90,1,(SELECT id FROM local_node))",
         [&format!("{tag}-invite"), &invited, seat]).unwrap();
     let message = format!("{tag}-message");
-    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,?2,1,'ordinary','body',0,?3)", rusqlite::params![message, joined, if tag == "new" { 2 } else { 3 }]).unwrap();
-    conn.execute("UPDATE host_instances SET decision_seq=30 WHERE id='i'", [])
-        .unwrap();
+    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b',?1,?2,1,'ordinary','body',0,?3)", rusqlite::params![message, joined, if tag == "new" { 2 } else { 3 }]).unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=30 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,?2,?3,'pending',90,0,90)", [&message, &joined, seat]).unwrap();
     conn.execute("UPDATE threads SET next_sequence=2 WHERE id=?1", [&joined])
         .unwrap();
@@ -8059,7 +8886,7 @@ fn operator_retire_retires_settles_and_audits() {
         seats::mutate_operator(
             &context,
             conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             OperatorRequest::Retire(command.clone()),
             b5_actor(),
             None,
@@ -8180,13 +9007,15 @@ fn b5_replace_request(
         protocol::commands::{OperatorCommand, OperatorReplace},
     };
     let command = OperatorReplace {
+        host: crate::test_support::test_host_locator(),
         seat: SeatId::new(old),
         target: HostTargetId::new(pane),
         replace: SeatId::new(new),
         operation: OperationId::new(operation),
     };
     let guard = OperatorTargetGuard::try_new(
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::Replace(command.clone()),
         b5_fresh_observation(pane),
     )
@@ -8210,7 +9039,7 @@ fn operator_replace_retires_new_and_rebinds_old_atomically() {
     let result = seats::mutate_operator(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         b5_replace_request("s1", "s2", "s2", "replace-1"),
         b5_actor(),
         None,
@@ -8289,7 +9118,7 @@ fn operator_replace_retires_new_and_rebinds_old_atomically() {
         seats::mutate_operator(
             &context,
             &mut conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             b5_replace_request("s1", "s2", "s2", "replace-1"),
             b5_actor(),
             None,
@@ -8311,12 +9140,12 @@ fn operator_replace_retires_new_and_rebinds_old_atomically() {
 fn operator_replace_refuses_when_new_does_not_own_the_pane_and_writes_nothing() {
     use crate::store::seats;
     let (context, mut conn, path, _) = b5_replace_fixture();
-    conn.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, target_generation, created_at) VALUES ('s3', 'i', 'resolved', 'native', 's3', 1, 1, 0)", []).unwrap();
+    conn.execute("INSERT INTO seats(id, instance_id, state, role, target_id, generation, target_generation, created_at,home_node,is_local,host_id) VALUES ('s3', '34750f98bd59fcfc946da45aaabe933b', 'resolved', 'native', 's3', 1, 1, 0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     for (new, operation) in [("s3", "replace-wrong-owner"), ("s1", "replace-self")] {
         let error = seats::mutate_operator(
             &context,
             &mut conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             b5_replace_request("s1", "s2", new, operation),
             b5_actor(),
             None,
@@ -8345,12 +9174,14 @@ fn rebind_onto_owned_target_lists_both_resolutions() {
     };
     let (context, mut conn, path, _) = b5_replace_fixture();
     let command = OperatorRebind {
+        host: crate::test_support::test_host_locator(),
         seat: SeatId::new("s1"),
         target: HostTargetId::new("s2"),
         operation: OperationId::new("rebind-owned"),
     };
     let guard = OperatorTargetGuard::try_new(
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         &OperatorCommand::Rebind(command.clone()),
         b5_fresh_observation("s2"),
     )
@@ -8358,7 +9189,7 @@ fn rebind_onto_owned_target_lists_both_resolutions() {
     let error = seats::mutate_operator(
         &context,
         &mut conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         OperatorRequest::Rebind(command, guard),
         b5_actor(),
         None,
@@ -8387,7 +9218,7 @@ fn rebind_onto_owned_target_lists_both_resolutions() {
 
 fn c1_observe(conn: &Connection, target: &str) {
     conn.execute(
-        "INSERT OR REPLACE INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,3,100,'fresh','term-'||?1,'inc','coherent_enumeration',1)",
+        "INSERT OR REPLACE INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,3,100,'fresh','term-'||?1,'inc','coherent_enumeration',1)",
         [target],
     )
     .unwrap();
@@ -8402,7 +9233,7 @@ fn c1_bind(conn: &Connection, seat: &str, generation: i64, harness: &str, sessio
 }
 
 fn c1_unresolved_seat(conn: &Connection, seat: &str, harness: &str, session: &str) {
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','unresolved','native',NULL,1,1,0)", [seat]).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','unresolved','native',NULL,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat]).unwrap();
     c1_bind(conn, seat, 1, harness, session);
 }
 
@@ -8412,6 +9243,7 @@ fn c1_command(
     operation: &str,
 ) -> crate::protocol::commands::ContinuityCheckIn {
     crate::protocol::commands::ContinuityCheckIn {
+        host: crate::test_support::test_host_locator(),
         target: HostTargetId::new(target),
         harness: Harness::Claude,
         native_session: NativeSessionId::new(session),
@@ -8432,7 +9264,8 @@ fn c1_decide(
     diagnostic: &'static str,
 ) -> Result<CommandResult, crate::protocol::results::ApiError> {
     let guard = crate::ports::ContinuityTargetGuard::try_new(
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
         command,
         b5_fresh_observation(command.target.as_str()),
     )
@@ -8440,7 +9273,7 @@ fn c1_decide(
     crate::store::seats::decide_continuity(
         context,
         conn,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         crate::ports::ContinuityRequest {
             command: command.clone(),
             guard,
@@ -8455,7 +9288,7 @@ fn c1_fixture() -> (StoreContext, Connection, PathBuf) {
     let (context, mut conn, path, _) = fixture(100);
     b5_published_baseline(&context, &mut conn, &["held-pane"]);
     c1_bind(&conn, "s1", 1, "claude", "sess-1");
-    b5_add_hold(&conn, "i", "held-pane");
+    b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "held-pane");
     c1_observe(&conn, "held-pane");
     (context, conn, path)
 }
@@ -8613,7 +9446,12 @@ fn continuity_opens_successor_cooperative_binding_in_the_deciding_transaction() 
         .unwrap();
     assert_eq!(decisions, 1);
     assert_eq!(
-        crate::store::schema::effective_registered_availability(&conn, "s1", Some("i")).unwrap(),
+        crate::store::schema::effective_registered_availability(
+            &conn,
+            "s1",
+            Some("34750f98bd59fcfc946da45aaabe933b")
+        )
+        .unwrap(),
         Some("cooperative_top_level".into())
     );
     let anchors: i64 = conn
@@ -8641,7 +9479,7 @@ fn continuity_without_match_is_retryable_until_reconciled() {
     use crate::protocol::results::ErrorCode;
     let (context, mut conn, path) = c1_fixture();
     conn.execute(
-        "UPDATE host_instances SET recovery_boot='b',recovery_epoch=2,reconciled_boot='b',reconciled_epoch=1 WHERE id='i'",
+        "UPDATE herdr_hosts SET recovery_boot='b',recovery_epoch=2,reconciled_boot='b',reconciled_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -8665,7 +9503,7 @@ fn continuity_without_match_is_retryable_until_reconciled() {
         "a retryable refusal stores nothing under the key"
     );
     conn.execute(
-        "UPDATE host_instances SET reconciled_boot=recovery_boot,reconciled_epoch=recovery_epoch WHERE id='i'",
+        "UPDATE herdr_hosts SET reconciled_boot=recovery_boot,reconciled_epoch=recovery_epoch WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -8745,7 +9583,7 @@ fn continuity_never_matches_retired_sentinel_human_or_empty_sessions() {
     use crate::store::seats::continuity_candidates;
     let (_context, mut conn, path) = c1_fixture();
     // Retired seat with the session.
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq) VALUES ('s-retired','i','retired','native',NULL,1,1,0,5,1)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES ('s-retired','34750f98bd59fcfc946da45aaabe933b','retired','native',NULL,1,1,0,5,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     c1_bind(&conn, "s-retired", 1, "claude", "sess-r");
     // Sentinel, human and empty values on unresolved seats.
     c1_unresolved_seat(&conn, "s-sentinel", "claude", "plugin_context:abc");
@@ -8757,7 +9595,7 @@ fn continuity_never_matches_retired_sentinel_human_or_empty_sessions() {
     c1_bind(&conn, "s-old", 2, "claude", "sess-new");
     let tx = conn.transaction().unwrap();
     let ask = |harness: &str, session: &str| {
-        continuity_candidates(&tx, "i", harness, session)
+        continuity_candidates(&tx, "34750f98bd59fcfc946da45aaabe933b", harness, session)
             .unwrap()
             .into_iter()
             .map(|seat| seat.as_str().to_owned())
@@ -8809,7 +9647,7 @@ fn c1_history(conn: &Connection, messages: i64) {
 
 /// [`c1_history`] with every message body the SQL expression `body` (messages are immutable).
 fn c1_history_body(conn: &Connection, messages: i64, body: &str) {
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('ct','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('ct','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('ct','s1','joined')",
         [],
@@ -8817,10 +9655,10 @@ fn c1_history_body(conn: &Connection, messages: i64, body: &str) {
     .unwrap();
     for n in 1..=messages {
         conn.execute_batch(&format!(
-            "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','cm{n}','ct',{n},'ordinary',{body},{n},{n});
-             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('cp{n}','i','actor','cm{n}',zeroblob(32),'ct',0,0,0,0,0,0,1,'sealed');
+            "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','cm{n}','ct',{n},'ordinary',{body},{n},{n});
+             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('cp{n}','34750f98bd59fcfc946da45aaabe933b','actor','cm{n}',zeroblob(32),'ct',0,0,0,0,0,0,1,'sealed');
              INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('cp{n}','ct','s1',1,300,1);
-             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('cp{n}','cm{n}','i','ct',{n},{n},{n},0,1,0);"
+             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('cp{n}','cm{n}','34750f98bd59fcfc946da45aaabe933b','ct',{n},{n},{n},0,1,0);"
         ))
         .unwrap();
     }
@@ -8988,8 +9826,13 @@ fn continuity_replay_returns_the_recorded_fast_forward() {
     assert!(reply.fast_forward.is_some());
     let again = c1_decide(&context, &mut conn, &command, "match").unwrap();
     assert_eq!(again, first, "the replay carries the gap report");
-    let replayed =
-        crate::store::seats::replay_continuity(&context, "i", &command, &b5_budget()).unwrap();
+    let replayed = crate::store::seats::replay_continuity(
+        &context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &command,
+        &b5_budget(),
+    )
+    .unwrap();
     assert_eq!(replayed, Some(first));
     assert_eq!(
         read_cursors::cursor_for(&conn, &BindingId::new(ended), &ThreadId::new("ct")).unwrap(),
@@ -9013,8 +9856,13 @@ fn continuity_prefers_the_seat_where_the_session_was_live_at_unresolve() {
         )
         .unwrap();
         let tx = conn.transaction().unwrap();
-        let candidates =
-            crate::store::seats::continuity_candidates(&tx, "i", "claude", "sess-1").unwrap();
+        let candidates = crate::store::seats::continuity_candidates(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            "claude",
+            "sess-1",
+        )
+        .unwrap();
         drop(tx);
         assert_eq!(candidates, vec![SeatId::new("s1")], "{reason}");
         let CommandResult::ContinuityReattached(reply) = c1_decide(
@@ -9178,7 +10026,7 @@ fn continuity_on_owned_target_is_retryable_until_reconciled() {
     use crate::protocol::results::ErrorCode;
     let (context, mut conn, path) = c1_fixture();
     conn.execute(
-        "UPDATE host_instances SET recovery_boot='b',recovery_epoch=2,reconciled_boot='b',reconciled_epoch=1 WHERE id='i'",
+        "UPDATE herdr_hosts SET recovery_boot='b',recovery_epoch=2,reconciled_boot='b',reconciled_epoch=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
@@ -9246,8 +10094,13 @@ fn continuity_replay_returns_recorded_seat_and_generation() {
     let (context, mut conn, path) = c1_fixture();
     let command = c1_command("held-pane", "sess-1", "c1-replay");
     let first = c1_decide(&context, &mut conn, &command, "match").unwrap();
-    let replayed =
-        crate::store::seats::replay_continuity(&context, "i", &command, &b5_budget()).unwrap();
+    let replayed = crate::store::seats::replay_continuity(
+        &context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &command,
+        &b5_budget(),
+    )
+    .unwrap();
     assert_eq!(replayed, Some(first.clone()));
     // The same key and payload decided again is the recorded result.
     let again = c1_decide(&context, &mut conn, &command, "absent").unwrap();
@@ -9275,15 +10128,20 @@ fn continuity_replay_returns_recorded_seat_and_generation() {
     // Another payload under the same key is refused, not replayed.
     let other = c1_command("held-pane", "sess-2", "c1-replay");
     assert_eq!(
-        crate::store::seats::replay_continuity(&context, "i", &other, &b5_budget())
-            .unwrap_err()
-            .code,
+        crate::store::seats::replay_continuity(
+            &context,
+            "34750f98bd59fcfc946da45aaabe933b",
+            &other,
+            &b5_budget()
+        )
+        .unwrap_err()
+        .code,
         crate::protocol::results::ErrorCode::OperationPayloadMismatch
     );
     assert_eq!(
         crate::store::seats::replay_continuity(
             &context,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &c1_command("held-pane", "sess-1", "c1-never-used"),
             &b5_budget()
         )
@@ -9546,7 +10404,14 @@ fn spent_snapshot_quantum_commits_its_prefix_and_staging_resumes() {
         cancellation: Cancellation::default(),
     };
     let snapshot = snapshot_for_test(2, &["q-1", "q-2", "q-3"]);
-    let admission = seats::begin_host_observation(&context, &mut conn, "i", &budget).unwrap();
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
     let stage = seats::begin_snapshot_stage(
         &context,
         &mut conn,
@@ -9557,7 +10422,8 @@ fn spent_snapshot_quantum_commits_its_prefix_and_staging_resumes() {
     let stepping = StoreContext::new(
         path.clone(),
         Arc::new(SteppingClock(std::sync::atomic::AtomicU64::new(0))),
-    );
+    )
+    .with_test_host();
     let mut offset = 0usize;
     while offset < snapshot.targets.len() {
         let progress = seats::stage_snapshot_targets(
@@ -9829,15 +10695,6 @@ fn rejection_offer_with_policy(
     InvitationId,
 ) {
     let (context, mut conn, path, clock) = bound_fixture_recipient_harness(100, recipient);
-    if confirmation == Some(crate::protocol::commands::InvitationConfirmation::Lazy) {
-        // A pre-upgrade Lazy invitation.
-        conn.pragma_update(
-            None,
-            "application_id",
-            crate::store::control::LEGACY_PAIR_MARKER,
-        )
-        .unwrap();
-    }
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(u64::MAX),
         cancellation: Default::default(),
@@ -10051,7 +10908,7 @@ fn invitation_rejection_delivers_reason_once_as_a_thread_warning() {
     };
     let CommandResult::InboxBatch(batch) = crate::store::queries::query(
         &context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &crate::protocol::commands::Command::InboxBatch(crate::protocol::commands::InboxQuery {
             pushed: false,
             thread: None,
@@ -10074,7 +10931,7 @@ fn invitation_rejection_delivers_reason_once_as_a_thread_warning() {
 
     let CommandResult::Message(detail) = crate::store::queries::query(
         &context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         &crate::protocol::commands::Command::Message(crate::protocol::commands::MessageQuery {
             message: MessageId::new(&id),
             body: crate::protocol::commands::BodyReadRequest {
@@ -10354,7 +11211,7 @@ fn invitation_rejection_frozen_members_and_binding_scoped_prefix() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('later','i','resolved','native','later',1,1,100)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('later','34750f98bd59fcfc946da45aaabe933b','resolved','native','later',1,1,100,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,'later',1,?2)", params![thread.as_str(),seq+1]).unwrap();
     conn.execute(
         "UPDATE membership_intervals SET left_seq=?1 WHERE thread_id=?2 AND seat_id='s1'",
@@ -10387,7 +11244,7 @@ fn invitation_rejection_frozen_members_and_binding_scoped_prefix() {
         0
     );
     // A second exact invitation can be independently refused, producing a new notice.
-    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,state,created_at,deadline_at,episode,created_decision_seq,frozen_duration_ms) SELECT 'second-refusal',thread_id,seat_id,'pending',created_at,deadline_at,episode+1,created_decision_seq,frozen_duration_ms FROM invitations WHERE id=?1", [invitation.as_str()]).unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,state,created_at,deadline_at,episode,created_decision_seq,frozen_duration_ms,origin_node,inviter_seat_id) SELECT 'second-refusal',thread_id,seat_id,'pending',created_at,deadline_at,episode+1,created_decision_seq,frozen_duration_ms,(SELECT id FROM local_node),COALESCE(inviter_seat_id,seat_id) FROM invitations WHERE id=?1", [invitation.as_str()]).unwrap();
     let mut second = command.clone();
     second.invitation = InvitationId::new("second-refusal");
     second.operation = OperationId::new("second-refusal");
@@ -10715,7 +11572,7 @@ fn rejection_required_upgrade(
     required_only: bool,
 ) {
     conn.execute(
-        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('owner','i',0)",
+        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('owner','34750f98bd59fcfc946da45aaabe933b',0)",
         [],
     )
     .unwrap();
@@ -10797,7 +11654,7 @@ fn invitation_rejection_refuses_required_upgrade_and_cancelled_or_retired_episod
 #[test]
 fn invitation_rejection_leaves_message_receipts_and_deadlines_unchanged() {
     let (context, mut conn, path, _, thread, invitation) = rejection_offer();
-    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','owed',?1,100,'ordinary','explicitly addressed',0,100)", [thread.as_str()]).unwrap();
+    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','owed',?1,100,'ordinary','explicitly addressed',0,100)", [thread.as_str()]).unwrap();
     conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('owed',?1,'s2','pending',300000,100,300100)", [thread.as_str()]).unwrap();
     let command = crate::protocol::commands::Reject {
         thread: thread.clone(),
@@ -10823,7 +11680,7 @@ fn invitation_rejection_leaves_message_receipts_and_deadlines_unchanged() {
 fn invitation_rejection_history_does_not_expand_due_scan_work() {
     let (context, mut conn, path, _, thread, invitation) = rejection_offer();
     // Fill retained terminal history without involving clocks or external processes.
-    conn.execute("WITH RECURSIVE n(v) AS (SELECT 2 UNION ALL SELECT v+1 FROM n WHERE v<2000) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) SELECT 'history-'||v,?1,'s2',v,'pending',100,v,10,110 FROM n", [thread.as_str()]).unwrap();
+    conn.execute("WITH RECURSIVE n(v) AS (SELECT 2 UNION ALL SELECT v+1 FROM n WHERE v<2000) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,origin_node,inviter_seat_id) SELECT 'history-'||v,?1,'s2',v,'pending',100,v,10,110,(SELECT id FROM local_node),'s2' FROM n", [thread.as_str()]).unwrap();
     conn.execute("INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) SELECT id,'outside role',100,'s2',1,'cooperative_top_level:test' FROM invitations WHERE thread_id=?1",[thread.as_str()]).unwrap();
     let mut statement = conn
         .prepare(crate::store::invitation_due::INVITATION_DUE_SELECTION)
@@ -11034,7 +11891,7 @@ mod topology_attachment;
 /// disconnected (`end_event`), each with a cursor row on thread `t`.
 fn multi_binding_retirement_fixture() -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
     let (context, conn, path, clock) = fixture(100);
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     for (id, session, live) in [
         ("b1", "sess-1", true),
         ("b2", "sess-2", true),
@@ -11143,7 +12000,7 @@ fn retirement_with_two_bindings_retires_memberships_settles_receipts_closes_invi
         protocol::time::{CallBudget, Cancellation},
     };
     let (context, mut conn, path, clock) = multi_binding_retirement_fixture();
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('u','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s2','joined',0)",
         [],
@@ -11155,13 +12012,16 @@ fn retirement_with_two_bindings_retires_memberships_settles_receipts_closes_invi
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('inv','u','s2',1,'pending',0,90,90,1)", []).unwrap();
-    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m1','t',1,'ordinary','body',0,2)", []).unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq,origin_node) VALUES ('inv','u','s2',1,'pending',0,90,90,1,(SELECT id FROM local_node))", []).unwrap();
+    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m1','t',1,'ordinary','body',0,2)", []).unwrap();
     conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m1','t','s2','pending',90,0,90)", []).unwrap();
     conn.execute("UPDATE threads SET next_sequence=5 WHERE id='t'", [])
         .unwrap();
-    conn.execute("UPDATE host_instances SET decision_seq=30 WHERE id='i'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE local_node SET decision_seq=30 WHERE id='34750f98bd59fcfc946da45aaabe933b'",
+        [],
+    )
+    .unwrap();
     let job = retire_s2(&context, &mut conn);
     clock.0.store(200, Ordering::SeqCst);
     let budget = CallBudget {
@@ -11219,17 +12079,17 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
     for recent in [false, true] {
         for changed in ["first", "later"] {
             let (context, conn, path, clock) = bound_fixture(100);
-            conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('first','i','needle','goal',0,0),('later','i','needle','goal',0,0);
+            conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('first','34750f98bd59fcfc946da45aaabe933b','needle','goal',0,0,0),('later','34750f98bd59fcfc946da45aaabe933b','needle','goal',0,0,0);
                 INSERT INTO memberships(thread_id,seat_id,state) VALUES ('first','s1','joined'),('later','s1','joined');").unwrap();
             conn.execute(
                 "UPDATE threads SET topic='unrelated' WHERE id=?1",
                 [changed],
             )
             .unwrap();
-            conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('anchor-a','i','needle','goal',0,0),('anchor-b','i','needle','goal',0,0);").unwrap();
+            conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('anchor-a','34750f98bd59fcfc946da45aaabe933b','needle','goal',0,0,0),('anchor-b','34750f98bd59fcfc946da45aaabe933b','needle','goal',0,0,0);").unwrap();
             let store = SqliteStore::new(
-                StoreContext::new(path.clone(), clock),
-                "i",
+                StoreContext::new(path.clone(), clock).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings::default(),
             )
             .unwrap();
@@ -11253,7 +12113,7 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
             let first = |filtered| {
                 let CommandResult::Directory(page) = super::super::queries::query(
                     &context,
-                    "i",
+                    "34750f98bd59fcfc946da45aaabe933b",
                     &directory(None, filtered),
                     &budget,
                 )
@@ -11288,7 +12148,7 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
                 mutate(op, name);
                 let error = super::super::queries::query(
                     &context,
-                    "i",
+                    "34750f98bd59fcfc946da45aaabe933b",
                     &directory(Some(cursor), true),
                     &budget,
                 )
@@ -11304,7 +12164,7 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
                     assert!(
                         super::super::queries::query(
                             &context,
-                            "i",
+                            "34750f98bd59fcfc946da45aaabe933b",
                             &directory(Some(unfiltered.clone()), false),
                             &budget
                         )
@@ -11315,7 +12175,7 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
                     assert_eq!(
                         super::super::queries::query(
                             &context,
-                            "i",
+                            "34750f98bd59fcfc946da45aaabe933b",
                             &directory(Some(unfiltered), false),
                             &budget
                         )
@@ -11328,9 +12188,13 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
                 if let crate::protocol::commands::Command::Directory(q) = &mut fresh {
                     q.page.limit = 10;
                 }
-                let CommandResult::Directory(matches) =
-                    super::super::queries::query(&context, "i", &fresh, &budget).unwrap()
-                else {
+                let CommandResult::Directory(matches) = super::super::queries::query(
+                    &context,
+                    "34750f98bd59fcfc946da45aaabe933b",
+                    &fresh,
+                    &budget,
+                )
+                .unwrap() else {
                     panic!()
                 };
                 assert_eq!(
@@ -11345,7 +12209,7 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
                 assert!(
                     super::super::queries::query(
                         &context,
-                        "i",
+                        "34750f98bd59fcfc946da45aaabe933b",
                         &directory(Some(cursor), true),
                         &budget
                     )
@@ -11356,14 +12220,14 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
                 assert!(
                     super::super::queries::query(
                         &context,
-                        "i",
+                        "34750f98bd59fcfc946da45aaabe933b",
                         &directory(Some(cursor), true),
                         &budget
                     )
                     .is_ok()
                 );
             }
-            assert_eq!(conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='directory' AND scope_key='name/all'",[],|r|r.get::<_,i64>(0)).unwrap(),4);
+            assert_eq!(conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='34750f98bd59fcfc946da45aaabe933b' AND scope_kind='directory' AND scope_key='name/all'",[],|r|r.get::<_,i64>(0)).unwrap(),4);
             if !recent {
                 let cursor = first(true);
                 let mutation = PermitMutation::Join(crate::protocol::commands::Join {
@@ -11381,7 +12245,7 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
                 assert!(
                     super::super::queries::query(
                         &context,
-                        "i",
+                        "34750f98bd59fcfc946da45aaabe933b",
                         &directory(Some(cursor), true),
                         &budget
                     )
@@ -11405,7 +12269,7 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
             assert_eq!(
                 super::super::queries::query(
                     &context,
-                    "i",
+                    "34750f98bd59fcfc946da45aaabe933b",
                     &directory(Some(cursor), true),
                     &budget
                 )
@@ -11425,12 +12289,6 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
 #[test]
 fn invitation_confirmation_creates_frozen_policy_and_only_timed_wake() {
     let (context, mut conn, path, _) = bound_fixture(100);
-    conn.pragma_update(
-        None,
-        "application_id",
-        crate::store::control::LEGACY_PAIR_MARKER,
-    )
-    .unwrap(); // a pre-upgrade Lazy invitation
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(u64::MAX),
         cancellation: Default::default(),
@@ -11459,13 +12317,8 @@ fn invitation_confirmation_creates_frozen_policy_and_only_timed_wake() {
     .unwrap() else {
         panic!()
     };
-    for (index, confirmation) in [
-        crate::protocol::commands::InvitationConfirmation::Lazy,
-        crate::protocol::commands::InvitationConfirmation::RequireAck,
-    ]
-    .into_iter()
-    .enumerate()
     {
+        let confirmation = crate::protocol::commands::InvitationConfirmation::RequireAck;
         let command = Invite {
             confirmation: Some(confirmation),
             thread: thread.clone(),
@@ -11499,206 +12352,22 @@ fn invitation_confirmation_creates_frozen_policy_and_only_timed_wake() {
         assert_eq!(
             saved,
             (
-                Some(if index == 0 { "lazy" } else { "require_ack" }.into()),
+                Some("require_ack".into()),
                 Some("s1".into()),
                 300_000,
                 300_100
             )
         );
         let waking = crate::store::attention::wake_seat_attention(&conn, "s2").unwrap();
-        assert_eq!(waking.attention.has_pending_invitation, index == 1);
+        assert!(waking.attention.has_pending_invitation);
         let digest =
             crate::store::attention::pending_invitations(&conn, "s2", None, i64::MAX).unwrap();
         assert_eq!(
             digest.items.len(),
             1,
-            "lazy invitations remain discoverable"
+            "a pending invitation is discoverable"
         );
-        // A new episode is needed before changing policy.
-        conn.execute("INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) VALUES (?1,'new episode',100,'s2',1,'test-observation')", [invitation.as_str()]).unwrap();
-        conn.execute("DELETE FROM wake_work WHERE seat_id='s2'", [])
-            .unwrap();
     }
-    drop(conn);
-    drop(context);
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
-fn invitation_confirmation_required_service_gets_fresh_timed_episode_without_mutating_lazy() {
-    use crate::ports::ServiceAuthorityGate;
-    use crate::protocol::{
-        commands::{InvitationConfirmation, Join},
-        service::*,
-    };
-    use sha2::Digest;
-    let (context, mut conn, path, clock) = bound_fixture(100);
-    conn.pragma_update(
-        None,
-        "application_id",
-        crate::store::control::LEGACY_PAIR_MARKER,
-    )
-    .unwrap(); // a pre-upgrade Lazy invitation
-    let budget = crate::protocol::time::CallBudget {
-        deadline: MonoInstant(u64::MAX),
-        cancellation: Default::default(),
-    };
-    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
-    let gate = GraphGate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
-    let operate = |conn: &mut Connection, op| {
-        crate::store::service_controls::operate(
-            &context,
-            conn,
-            "i",
-            op,
-            &connection,
-            &gate,
-            &budget,
-            None,
-        )
-        .unwrap()
-    };
-    let thread = ThreadId::new("managed-lazy-confirmation");
-    operate(
-        &mut conn,
-        ServiceOperation::EnsureThread(EnsureManagedThread {
-            thread: thread.clone(),
-            topic: "topic".into(),
-            goal: "goal".into(),
-            operation: OperationId::new("ensure-lazy-confirmation"),
-        }),
-    );
-    let join_command = Join {
-        thread: thread.clone(),
-        operation: OperationId::new("join-managed"),
-        claim: claim("s1"),
-    };
-    let hash = cooperative_payload_hash("join", &join_command).unwrap();
-    join(
-        &context,
-        &mut conn,
-        &budget,
-        &join_command,
-        permit(
-            "s1",
-            "join-managed",
-            ObligationRef::Control(thread.clone()),
-            hash,
-            100,
-        ),
-    )
-    .unwrap();
-    let invite_command = Invite {
-        confirmation: Some(InvitationConfirmation::Lazy),
-        thread: thread.clone(),
-        seat: SeatId::new("s2"),
-        deadline_millis: None,
-        operation: OperationId::new("lazy-before-required"),
-        claim: claim("s1"),
-    };
-    let hash = cooperative_payload_hash("invite", &invite_command).unwrap();
-    let CommandResult::Invitation(lazy) = invite(
-        &context,
-        &mut conn,
-        &budget,
-        &invite_command,
-        permit(
-            "s1",
-            "lazy-before-required",
-            ObligationRef::Control(thread.clone()),
-            hash,
-            100,
-        ),
-        None,
-    )
-    .unwrap() else {
-        panic!()
-    };
-    let saved: (String, String, i64, i64) = conn
-        .query_row(
-            "SELECT confirmation,inviter_seat_id,deadline_at,episode FROM invitations WHERE id=?1",
-            [lazy.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .unwrap();
-    let ServiceResult::Invitation(required) = operate(
-        &mut conn,
-        ServiceOperation::Invite(ServiceInvite {
-            thread: thread.clone(),
-            seat: SeatId::new("s2"),
-            constraint: InvitationConstraint::Required,
-            deadline_millis: Some(50),
-            operation: OperationId::new("required-after-lazy"),
-        }),
-    ) else {
-        panic!()
-    };
-    assert_ne!(
-        required.invitation, lazy,
-        "required consent cannot turn an immutable lazy episode into a timed obligation"
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT confirmation,inviter_seat_id,deadline_at,episode FROM invitations WHERE id=?1",
-            [lazy.as_str()],
-            |r| Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)?
-            ))
-        )
-        .unwrap(),
-        saved
-    );
-    assert!(
-        crate::store::attention::wake_seat_attention(&conn, "s2")
-            .unwrap()
-            .attention
-            .has_pending_invitation
-    );
-    clock.0.store(150, Ordering::SeqCst);
-    let batch =
-        crate::store::invitation_due::scan_invitation_due_batch(&context, &mut conn, None, 100)
-            .unwrap();
-    assert_eq!(batch.warnings_added, 1);
-    let requirement = required.requirement.unwrap();
-    operate(
-        &mut conn,
-        ServiceOperation::ReleaseRequirement(ReleaseRequirement {
-            thread: thread.clone(),
-            seat: SeatId::new("s2"),
-            requirement: requirement.requirement,
-            operation: OperationId::new("release-fresh-required"),
-        }),
-    );
-    assert!(
-        !crate::store::attention::wake_seat_attention(&conn, "s2")
-            .unwrap()
-            .attention
-            .has_pending_invitation,
-        "release leaves the original lazy episode silent"
-    );
-    let hash = cooperative_payload_hash("invite", &invite_command).unwrap();
-    assert_eq!(
-        invite(
-            &context,
-            &mut conn,
-            &budget,
-            &invite_command,
-            permit(
-                "s1",
-                "lazy-before-required",
-                ObligationRef::Control(thread),
-                hash,
-                150
-            ),
-            None
-        )
-        .unwrap(),
-        CommandResult::Invitation(lazy)
-    );
     drop(conn);
     drop(context);
     let _ = std::fs::remove_file(path);
@@ -11864,56 +12533,12 @@ fn invitation_confirmation_registration_never_settles_or_restarts_and_late_accep
 }
 
 #[test]
-fn invitation_confirmation_lazy_rejection_still_publishes_attributed_notice() {
-    use crate::protocol::commands::{InvitationConfirmation, Reject};
-    let (context, mut conn, path, clock, thread, invitation) =
-        rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::Lazy));
-    clock.0.store(400_000, Ordering::SeqCst);
-    let command = Reject {
-        thread,
-        invitation: invitation.clone(),
-        reason: "outside my role".into(),
-        operation: OperationId::new("lazy-reject"),
-        claim: claim("s2"),
-    };
-    rejection_call(&context, &mut conn, &command, 400_000).unwrap();
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM messages WHERE kind='warn' AND event_key=?1",
-            [format!("reject:{}", invitation.as_str())],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM warning_conditions WHERE condition_kind='invitation'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0,
-        "rejection cannot manufacture a lazy overdue condition"
-    );
-    assert!(
-        !crate::store::attention::seat_pending_warnings(&conn, "s1", &|| Ok(()))
-            .unwrap()
-            .items
-            .is_empty()
-    );
-    drop(conn);
-    drop(context);
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
 fn invitation_confirmation_duplicate_caller_cannot_change_origin_policy_deadline_or_wake() {
     use crate::protocol::commands::{InvitationConfirmation, Join};
     let (context, mut conn, path, _, thread, invitation) =
         rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::RequireAck));
-    conn.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s3','i','resolved','native','s3',1,1,0);
-        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','s3','b',1,1,0,'fresh','term-s3','inc','coherent_enumeration',1);
+    conn.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('s3','34750f98bd59fcfc946da45aaabe933b','resolved','native','s3',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
+        INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'s3','b',1,1,0,'fresh','term-s3','inc','coherent_enumeration',1);
         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s3',1,'s3','b',1,1,'codex','n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'term-s3','inc');").unwrap();
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(u64::MAX),
@@ -12074,7 +12699,7 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
         .collect();
     assert_eq!(carried.len(), 1);
     let tx = conn.transaction().unwrap();
-    tx.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT ?1,'s1',decision_seq FROM host_instances WHERE id='i'", [origin_binding.as_str()]).unwrap();
+    tx.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT ?1,'s1',decision_seq FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'", [origin_binding.as_str()]).unwrap();
     attention::settle_carried_notices(&tx, "s1", &origin_binding, &carried).unwrap();
     tx.commit().unwrap();
     assert!(
@@ -12097,9 +12722,16 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
     )
     .unwrap();
     if discovery_path {
-        let discovery =
-            crate::store::discover_wake_candidates(&conn, "i", 0, discovery_high, 100, &|| Ok(()))
-                .unwrap();
+        let discovery = crate::store::discover_wake_candidates(
+            &conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            0,
+            discovery_high,
+            100,
+            &|| Ok(()),
+        )
+        .unwrap();
         assert!(
             discovery
                 .items
@@ -12111,7 +12743,7 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
     if mod_path {
         let view = crate::store::seats::mod_binding_view(
             &conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &origin,
             crate::ports::ModBindingRef::Id(&origin_binding),
         )
@@ -12130,7 +12762,7 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
         );
         let candidate = crate::store::wake::load_candidate(
             &conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &origin,
             &scan.attention,
             scan.decision_seq,
@@ -12144,7 +12776,8 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
             crate::store::wake::reserve(
                 &context,
                 &mut conn,
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
                 &candidate,
                 uuid::Uuid::new_v4(),
                 30_000
@@ -12189,7 +12822,7 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
     assert_eq!(
         crate::store::seats::mod_binding_view(
             &conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &origin,
             crate::ports::ModBindingRef::Id(&origin_binding)
         )
@@ -12201,9 +12834,16 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
         "clear is passive for mod attention"
     );
     if discovery_path {
-        let discovery =
-            crate::store::discover_wake_candidates(&conn, "i", 0, discovery_high, 100, &|| Ok(()))
-                .unwrap();
+        let discovery = crate::store::discover_wake_candidates(
+            &conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            crate::test_support::test_host_id(),
+            0,
+            discovery_high,
+            100,
+            &|| Ok(()),
+        )
+        .unwrap();
         assert!(
             !discovery
                 .items
@@ -12240,172 +12880,6 @@ fn invitation_confirmation_discovery_survives_committed_notice_offer_and_complet
 }
 
 #[test]
-fn invitation_confirmation_late_lazy_accept_has_no_overdue_condition_or_wake() {
-    use crate::protocol::commands::InvitationConfirmation;
-    let (context, mut conn, path, clock, thread, invitation) =
-        rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::Lazy));
-    clock.0.store(400_000, Ordering::SeqCst);
-    let budget = crate::protocol::time::CallBudget {
-        deadline: MonoInstant(u64::MAX),
-        cancellation: Default::default(),
-    };
-    let command = Accept {
-        thread: thread.clone(),
-        claim: claim("s2"),
-        operation: OperationId::new("late-lazy-accept"),
-    };
-    let hash = cooperative_payload_hash("accept", &command).unwrap();
-    assert!(matches!(
-        accept(
-            &context,
-            &mut conn,
-            &budget,
-            &command,
-            permit(
-                "s2",
-                "late-lazy-accept",
-                ObligationRef::Invitation(invitation.clone()),
-                hash,
-                400_000
-            )
-        )
-        .unwrap(),
-        CommandResult::Accepted(_)
-    ));
-    let stored: (String, i64, String, i64) = conn.query_row(
-        "SELECT state,accepted_at,accepted_actor_seat_id,accepted_generation FROM invitations WHERE id=?1",
-        [invitation.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
-    assert_eq!(stored, ("accepted".into(), 400_000, "s2".into(), 1));
-    assert_eq!(
-        conn.query_row(
-            "SELECT state FROM memberships WHERE thread_id=?1 AND seat_id='s2'",
-            [thread.as_str()],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "joined"
-    );
-    assert_no_lazy_overdue_effects(&conn, &invitation);
-    drop(conn);
-    drop(context);
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
-fn invitation_confirmation_late_lazy_retirement_has_no_overdue_condition_or_wake() {
-    use crate::{
-        ports::{ClosureEvidence, WorkAdmission},
-        protocol::commands::InvitationConfirmation,
-    };
-    let (context, mut conn, path, clock, _, invitation) =
-        rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::Lazy));
-    clock.0.store(400_000, Ordering::SeqCst);
-    let job = begin_retirement(
-        &context,
-        &mut conn,
-        SeatId::new("s2"),
-        ClosureEvidence {
-            host_boot: HostBootId::new("b"),
-            epoch: 1,
-            target: HostTargetId::new("s2"),
-            generation: 1,
-        },
-    )
-    .unwrap();
-    let budget = crate::protocol::time::CallBudget {
-        deadline: MonoInstant(u64::MAX),
-        cancellation: Default::default(),
-    };
-    let mut complete = false;
-    for _ in 0..20 {
-        let progress = advance_retirement(
-            &context,
-            &mut conn,
-            job.id.clone(),
-            WorkAdmission::Background,
-            &budget,
-        )
-        .unwrap();
-        assert!(progress.last_error.is_none());
-        if progress.complete {
-            complete = true;
-            break;
-        }
-    }
-    assert!(complete, "the real bounded retirement route must finish");
-    assert_eq!(
-        conn.query_row(
-            "SELECT state,retired_at FROM invitations WHERE id=?1",
-            [invitation.as_str()],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-        )
-        .unwrap(),
-        ("recipient_retired".into(), 400_000)
-    );
-    assert_eq!(
-        conn.query_row("SELECT state FROM seats WHERE id='s2'", [], |r| r
-            .get::<_, String>(0))
-            .unwrap(),
-        "retired"
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM invitations WHERE id=?1 AND accepted_at IS NOT NULL",
-            [invitation.as_str()],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    assert_no_lazy_overdue_effects(&conn, &invitation);
-    drop(conn);
-    drop(context);
-    let _ = std::fs::remove_file(path);
-}
-
-fn assert_no_lazy_overdue_effects(conn: &Connection, invitation: &InvitationId) {
-    assert_eq!(conn.query_row("SELECT count(*) FROM warning_conditions WHERE condition_kind='invitation' AND condition_id=?1",[invitation.as_str()],|r|r.get::<_,i64>(0)).unwrap(),0);
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM messages WHERE kind='warn' AND source_invitation_id=?1",
-            [invitation.as_str()],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM wake_work WHERE seat_id='s1' AND reason_bits!=0",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    assert!(
-        crate::store::attention::wake_seat_attention(conn, "s1")
-            .unwrap()
-            .attention
-            .latest_warning_seq
-            .is_none()
-    );
-    assert_eq!(
-        crate::store::seats::mod_binding_view(
-            conn,
-            "i",
-            &SeatId::new("s1"),
-            crate::ports::ModBindingRef::Id(&invitation_policy_binding(conn, "s1"))
-        )
-        .unwrap()
-        .unwrap()
-        .fingerprint
-        .other_pending,
-        0
-    );
-}
-
-#[test]
 fn same_invitation_requirement_attach_release_replacement_has_distinct_context_epochs() {
     use crate::ports::ServiceAuthorityGate;
     use crate::protocol::service::*;
@@ -12415,14 +12889,19 @@ fn same_invitation_requirement_attach_release_replacement_has_distinct_context_e
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
     };
-    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+    let author = ServiceAuthorId::new(format!(
+        "graph:{:x}",
+        sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+    ));
     let gate = GraphGate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+        .unwrap();
     let operate = |conn: &mut Connection, operation: ServiceOperation| {
         crate::store::service_controls::operate(
             &context,
             conn,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             operation,
             &connection,
             &gate,
@@ -12612,176 +13091,6 @@ fn same_invitation_requirement_attach_release_replacement_has_distinct_context_e
 }
 
 #[test]
-fn service_requirement_uses_an_independent_episode_without_mutating_native_lazy_invitation() {
-    use crate::ports::ServiceAuthorityGate;
-    use crate::protocol::{
-        commands::{InvitationConfirmation, Join},
-        service::*,
-    };
-    use sha2::Digest;
-    let (context, mut conn, path, _) = bound_fixture(100);
-    conn.pragma_update(
-        None,
-        "application_id",
-        crate::store::control::LEGACY_PAIR_MARKER,
-    )
-    .unwrap(); // a pre-upgrade Lazy invitation
-    let budget = crate::protocol::time::CallBudget {
-        deadline: MonoInstant(1000),
-        cancellation: Default::default(),
-    };
-    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
-    let gate = GraphGate(author.clone());
-    let connection = gate.register("i", "boot", author).unwrap();
-    let operate = |conn: &mut Connection, operation: ServiceOperation| {
-        crate::store::service_controls::operate(
-            &context,
-            conn,
-            "i",
-            operation,
-            &connection,
-            &gate,
-            &budget,
-            None,
-        )
-        .unwrap()
-    };
-    let thread = ThreadId::new("independent-lazy-required");
-    operate(
-        &mut conn,
-        ServiceOperation::EnsureThread(EnsureManagedThread {
-            thread: thread.clone(),
-            topic: "topic".into(),
-            goal: "goal".into(),
-            operation: OperationId::new("independent-lazy-ensure"),
-        }),
-    );
-    let joined = Join {
-        thread: thread.clone(),
-        operation: OperationId::new("independent-lazy-join"),
-        claim: claim("s1"),
-    };
-    let hash = cooperative_payload_hash("join", &joined).unwrap();
-    join(
-        &context,
-        &mut conn,
-        &budget,
-        &joined,
-        permit(
-            "s1",
-            "independent-lazy-join",
-            ObligationRef::Control(thread.clone()),
-            hash,
-            100,
-        ),
-    )
-    .unwrap();
-    let invitation = Invite {
-        thread: thread.clone(),
-        seat: SeatId::new("s2"),
-        confirmation: Some(InvitationConfirmation::Lazy),
-        deadline_millis: None,
-        operation: OperationId::new("independent-lazy-invite"),
-        claim: claim("s1"),
-    };
-    let hash = cooperative_payload_hash("invite", &invitation).unwrap();
-    let CommandResult::Invitation(lazy) = invite(
-        &context,
-        &mut conn,
-        &budget,
-        &invitation,
-        permit(
-            "s1",
-            "independent-lazy-invite",
-            ObligationRef::Control(thread.clone()),
-            hash,
-            100,
-        ),
-        None,
-    )
-    .unwrap() else {
-        panic!("native Lazy missing")
-    };
-    let frozen = |conn: &Connection| {
-        conn.query_row("SELECT confirmation,deadline_at,inviter_seat_id,command_context_epoch FROM invitations WHERE id=?1",[lazy.as_str()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?))).unwrap()
-    };
-    let before = frozen(&conn);
-    assert_eq!(before.0, "lazy");
-    assert_eq!(before.2, "s1");
-    let required_request = ServiceInvite {
-        thread: thread.clone(),
-        seat: SeatId::new("s2"),
-        constraint: InvitationConstraint::Required,
-        deadline_millis: Some(500),
-        operation: OperationId::new("independent-required-invite"),
-    };
-    let ServiceResult::Invitation(required) = operate(
-        &mut conn,
-        ServiceOperation::Invite(required_request.clone()),
-    ) else {
-        panic!("required missing")
-    };
-    assert_ne!(
-        required.invitation, lazy,
-        "required consent gets its own timed episode"
-    );
-    assert_eq!(
-        frozen(&conn),
-        before,
-        "Lazy policy/deadline/origin/command stay frozen"
-    );
-    let requirement = required.requirement.unwrap();
-    let epoch: i64 = conn
-        .query_row(
-            "SELECT command_context_epoch FROM invitations WHERE id=?1",
-            [required.invitation.as_str()],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(epoch > 0);
-    operate(&mut conn, ServiceOperation::Invite(required_request));
-    assert_eq!(
-        conn.query_row(
-            "SELECT command_context_epoch FROM invitations WHERE id=?1",
-            [required.invitation.as_str()],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        epoch
-    );
-    operate(
-        &mut conn,
-        ServiceOperation::ReleaseRequirement(ReleaseRequirement {
-            thread,
-            seat: SeatId::new("s2"),
-            requirement: requirement.requirement,
-            operation: OperationId::new("independent-required-release"),
-        }),
-    );
-    assert_eq!(frozen(&conn), before);
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM digest_pending_invitations WHERE invitation_id=?1",
-            [lazy.as_str()],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM digest_pending_invitations WHERE invitation_id=?1",
-            [required.invitation.as_str()],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    drop(conn);
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
 fn invitation_command_epoch_corruption_and_exhaustion_roll_back_required_attach() {
     use crate::{ports::ServiceAuthorityGate, protocol::service::*};
     use sha2::Digest;
@@ -12794,14 +13103,19 @@ fn invitation_command_epoch_corruption_and_exhaustion_roll_back_required_attach(
             deadline: MonoInstant(1000),
             cancellation: Default::default(),
         };
-        let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+        let author = ServiceAuthorId::new(format!(
+            "graph:{:x}",
+            sha2::Sha256::digest(b"34750f98bd59fcfc946da45aaabe933b")
+        ));
         let gate = GraphGate(author.clone());
-        let connection = gate.register("i", "boot", author).unwrap();
+        let connection = gate
+            .register("34750f98bd59fcfc946da45aaabe933b", "boot", author)
+            .unwrap();
         let operate = |conn: &mut Connection, operation| {
             crate::store::service_controls::operate(
                 &context,
                 conn,
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 operation,
                 &connection,
                 &gate,
@@ -12885,27 +13199,33 @@ fn restore_hold_health_names_unowned_targets_and_excludes_released_owned_and_for
         &["held-a", "held-b", "released", "owned"],
     );
     conn.execute(
-        "UPDATE host_instances SET baseline_hold_unclaimed=1 WHERE id='i'",
+        "UPDATE herdr_hosts SET baseline_hold_unclaimed=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
     conn.execute("UPDATE seats SET target_id='owned' WHERE id='s2'", [])
         .unwrap();
-    conn.execute("INSERT INTO recovery_baseline_releases(instance_id,baseline_generation_id,target_id,decision_seq) SELECT 'i',recovery_baseline_generation_id,'released',1 FROM host_instances WHERE id='i'", []).unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('foreign',0,'b',1)",
-        [],
+    conn.execute("INSERT INTO recovery_baseline_releases(host_id,baseline_generation_id,target_id,decision_seq) SELECT host_id,recovery_baseline_generation_id,'released',1 FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'", []).unwrap();
+    // Rows of another node reference no node row (a store has one).
+    conn.execute_batch(
+        "PRAGMA foreign_keys=OFF; INSERT INTO herdr_hosts(node_id,endpoint,created_at,host_boot,host_epoch) VALUES ('foreign','foreign-host',0,'b',1)",
     )
     .unwrap();
     b5_add_hold(&conn, "foreign", "foreign-held");
     // A stale explicit hold from a previous boot must not count.
-    conn.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','stale-held','old',1,'stale')", []).unwrap();
+    conn.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) SELECT min(host_id),'stale-held','old',1,'stale' FROM herdr_hosts WHERE node_id='34750f98bd59fcfc946da45aaabe933b'", []).unwrap();
     // An explicit hold on a baseline-held target counts once.
-    b5_add_hold(&conn, "i", "held-a");
-    let summary =
-        crate::store::queries::unresolved_seat_summary(&context, "i", &b5_budget()).unwrap();
-    let mut inputs =
-        crate::daemon::health::HealthInputs::unknown(uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "held-a");
+    let summary = crate::store::queries::unresolved_seat_summary(
+        &context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &b5_budget(),
+    )
+    .unwrap();
+    let mut inputs = crate::daemon::health::HealthInputs::unknown(
+        crate::node::NodeUuid::new_v4(),
+        uuid::Uuid::new_v4(),
+    );
     inputs.unresolved = Some(summary);
     let health = inputs.assemble();
     assert_eq!(health.held_targets, Some(2));
@@ -12923,16 +13243,17 @@ fn restore_hold_refusal_names_cause_blockers_and_exact_operator_repairs() {
     use crate::protocol::commands::ResolveSeat;
     let (_context, conn, path, store, observation, budget) = ordinary_resolution_fixture();
     let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: observation.target.clone(),
         operation: OperationId::new("held-resolve"),
     };
     let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
     conn.execute(
-        "UPDATE host_instances SET baseline_hold_unclaimed=1 WHERE id='i'",
+        "UPDATE herdr_hosts SET baseline_hold_unclaimed=1 WHERE node_id='34750f98bd59fcfc946da45aaabe933b'",
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('blocking-seat','i','unresolved','native',1,0)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('blocking-seat','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
     let err = store
         .resolve_seat(
             request.clone(),
@@ -12973,11 +13294,12 @@ fn restore_hold_explicit_refusal_carries_exact_repair_guidance() {
     use crate::protocol::commands::ResolveSeat;
     let (_context, conn, path, store, observation, budget) = ordinary_resolution_fixture();
     let request = ResolveSeat {
+        host: crate::test_support::test_host_locator(),
         target: observation.target.clone(),
         operation: OperationId::new("explicit-resolve"),
     };
     let (current, admission) = ordinary_resolution_read(&store, &observation, 2, &budget);
-    b5_add_hold(&conn, "i", "pane-new");
+    b5_add_hold(&conn, "34750f98bd59fcfc946da45aaabe933b", "pane-new");
     let err = store
         .resolve_seat(
             request.clone(),

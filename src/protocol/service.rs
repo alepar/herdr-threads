@@ -362,9 +362,7 @@ impl ServiceWireRequest {
         {
             return Err("invalid request id");
         }
-        if uuid::Uuid::parse_str(&self.expected_instance).map_or(true, |id| {
-            id.hyphenated().to_string() != self.expected_instance
-        }) {
+        if !crate::protocol::wire::valid_instance(&self.expected_instance) {
             return Err("invalid expected instance");
         }
         match &self.service {
@@ -485,7 +483,7 @@ mod contract_tests {
     };
     use serde_json::{Value, json};
 
-    const INSTANCE: &str = "123e4567-e89b-12d3-a456-426614174000";
+    const INSTANCE: &str = "123e4567e89b12d3a456426614174000";
     const BOOT: &str = "123e4567-e89b-12d3-a456-426614174001";
 
     fn registration() -> ServiceWireRequest {
@@ -803,7 +801,7 @@ mod contract_tests {
                 "thread": "thread-1", "invitation": "invite-1",
                 "requirement": "requirement-1", "expected_revision": 4,
                 "operation": "accept-1", "claim": {
-                    "instance": INSTANCE, "seat": "seat-1", "binding_generation": 1,
+                    "instance": INSTANCE, "host": "/host.sock", "seat": "seat-1", "binding_generation": 1,
                     "role": "top_level", "harness": "codex", "native_session": "native-1",
                     "execution": "execution-1", "target": "target-1"
                 }
@@ -905,6 +903,7 @@ mod contract_tests {
             expected_revision: 1,
             operation: OperationId::new("accept-1"),
             claim: CallerClaim {
+                host: crate::test_support::test_host_locator(),
                 instance: INSTANCE.into(),
                 seat: current.seat.clone(),
                 binding_generation: 1,

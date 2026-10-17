@@ -18,7 +18,7 @@ fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Comma
     command
 }
 
-const WIRE_FIXTURE_INSTANCE: &str = "00000000-0000-4000-8000-000000000001";
+const WIRE_FIXTURE_INSTANCE: &str = "00000000000040008000000000000001";
 
 fn wire_fixture(command: serde_json::Value) -> serde_json::Value {
     serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r1","expected_instance":WIRE_FIXTURE_INSTANCE,"command":command})
@@ -135,7 +135,7 @@ fn wake_attention_cursor_roundtrips_all_source_high_waters_under_wire_cap() {
 fn health_settings_are_typed_and_unknown_until_resolved() {
     use herdr_threads::protocol::results::{Health, HealthSettings};
     let mut health = Health::unknown(
-        uuid::Uuid::new_v4().to_string(),
+        herdr_threads::node::NodeUuid::new_v4().to_string(),
         uuid::Uuid::new_v4().to_string(),
         "v".into(),
         1,
@@ -246,7 +246,7 @@ fn wire_instance_mismatch_and_uuid_boot_are_typed() {
     let request = WireRequest {
         version: PROTOCOL_VERSION,
         request_id: "r".into(),
-        expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+        expected_instance: "00000000000040008000000000000001".into(),
         expected_boot: None,
         output: None,
         command: Command::Health,
@@ -270,7 +270,7 @@ fn wire_instance_mismatch_and_uuid_boot_are_typed() {
 fn wire_request_expected_boot_is_optional_validated_and_typed() {
     let base = |boot: &str| {
         format!(
-            r#"{{"version":{PROTOCOL_VERSION},"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001"{boot},"command":{{"kind":"health"}}}}"#
+            r#"{{"version":{PROTOCOL_VERSION},"request_id":"r","expected_instance":"00000000000040008000000000000001"{boot},"command":{{"kind":"health"}}}}"#
         )
     };
     let absent: WireRequest = serde_json::from_str(&base("")).unwrap();
@@ -307,7 +307,7 @@ fn cli_directory_accept_and_body_offset_have_explicit_wire_contracts() {
     assert_eq!(directory.membership.unwrap().as_str(), "seat-1");
     let accept: Accept = serde_json::from_value(serde_json::json!({
         "thread":"thread-1", "operation":"op-1",
-        "claim":{"instance":"i","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n","execution":"e","target":"p"}
+        "claim":{"instance":"i","host":"/host.sock","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n","execution":"e","target":"p"}
     }))
     .unwrap();
     assert_eq!(accept.thread.as_str(), "thread-1");
@@ -335,7 +335,7 @@ fn cli_directory_accept_and_body_offset_have_explicit_wire_contracts() {
 fn ordinary_seat_resolution_has_a_private_operation_key() {
     use herdr_threads::protocol::commands::ResolveSeat;
     let request: ResolveSeat = serde_json::from_value(serde_json::json!({
-        "target":"pane","operation":"op"
+        "target":"pane","host":"/host.sock","operation":"op"
     }))
     .unwrap();
     assert_eq!(request.operation.as_str(), "op");
@@ -367,6 +367,7 @@ fn registration_request_binds_operation_and_selected_offer_context() {
             lineage_parent: None,
             mode: herdr_threads::protocol::commands::CheckInMode::Current,
             claim: CallerClaim {
+                host: herdr_threads::test_support::test_host_locator(),
                 instance: "i".into(),
                 seat: SeatId::new("legacy-fixture"),
                 binding_generation: 0,
@@ -495,12 +496,12 @@ fn omitted_topic_and_preview_keep_exact_detail_routes() {
 
 #[test]
 fn command_bounds_goal_operator_deadline_and_search_work() {
-    let claim = serde_json::json!({"instance":"i","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n","execution":"e","target":"p"});
-    let create = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"create_thread","args":{"topic":"topic","goal":"x".repeat(1025),"operation":"o","claim":claim}}});
+    let claim = serde_json::json!({"instance":"i","host":"/host.sock","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n","execution":"e","target":"p"});
+    let create = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000000040008000000000000001","command":{"kind":"create_thread","args":{"topic":"topic","goal":"x".repeat(1025),"operation":"o","claim":claim}}});
     assert!(WireRequest::decode(create.to_string().as_bytes()).is_err());
-    let orphan = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"operator_orphan_invite","args":{"thread":"t","seat":"s","deadline_millis":1000,"operation":"o"}}});
+    let orphan = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000000040008000000000000001","command":{"kind":"operator_orphan_invite","args":{"thread":"t","seat":"s","deadline_millis":1000,"operation":"o"}}});
     assert!(WireRequest::decode(orphan.to_string().as_bytes()).is_ok());
-    let search = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"search","args":{"literal":"word","thread":null,"page":{"cursor":null,"limit":20,"max_bytes":16384},"max_candidates":101}}});
+    let search = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000000040008000000000000001","command":{"kind":"search","args":{"literal":"word","thread":null,"page":{"cursor":null,"limit":20,"max_bytes":16384},"max_candidates":101}}});
     assert!(WireRequest::decode(search.to_string().as_bytes()).is_err());
 }
 
@@ -520,7 +521,7 @@ fn compound_and_range_read_commands_have_strict_wire_shapes() {
             serde_json::json!({"thread":"t","page":page,"initial":{"kind":"after","sequence":3}}),
         ),
     ] {
-        let request = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":kind,"args":args}});
+        let request = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000000040008000000000000001","command":{"kind":kind,"args":args}});
         assert!(
             WireRequest::decode(request.to_string().as_bytes()).is_ok(),
             "rejected {kind}"
@@ -702,15 +703,15 @@ fn selected_output_context_is_bounded_and_json_is_the_direct_default() {
 
 #[test]
 fn wire_request_carries_expected_instance_without_granting_authority() {
-    let valid = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"health"}});
+    let valid = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","expected_instance":"00000000000040008000000000000001","command":{"kind":"health"}});
     let request = WireRequest::decode(valid.to_string().as_bytes()).unwrap();
     assert_eq!(
         request.expected_instance,
-        "00000000-0000-4000-8000-000000000001"
+        "00000000000040008000000000000001"
     );
     let missing = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r","command":{"kind":"health"}});
     assert!(WireRequest::decode(missing.to_string().as_bytes()).is_err());
-    let too_long = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r".repeat(129),"expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"health"}});
+    let too_long = serde_json::json!({"version":PROTOCOL_VERSION,"request_id":"r".repeat(129),"expected_instance":"00000000000040008000000000000001","command":{"kind":"health"}});
     assert!(WireRequest::decode(too_long.to_string().as_bytes()).is_err());
 }
 
@@ -720,7 +721,7 @@ fn wire_response_is_bounded_and_correlates_actual_identity() {
     let request = WireRequest {
         version: PROTOCOL_VERSION,
         request_id: "r".into(),
-        expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+        expected_instance: "00000000000040008000000000000001".into(),
         expected_boot: None,
         output: None,
         command: Command::Health,
@@ -728,11 +729,11 @@ fn wire_response_is_bounded_and_correlates_actual_identity() {
     let response = WireResponse {
         version: PROTOCOL_VERSION,
         request_id: "r".into(),
-        instance: "00000000-0000-4000-8000-000000000001".into(),
+        instance: "00000000000040008000000000000001".into(),
         daemon_boot: "00000000-0000-4000-8000-000000000002".into(),
         result: Ok(herdr_threads::protocol::results::CommandResult::Health(
             Health::unknown(
-                "00000000-0000-4000-8000-000000000001".into(),
+                "00000000000040008000000000000001".into(),
                 "00000000-0000-4000-8000-000000000002".into(),
                 "1".into(),
                 1,
@@ -977,8 +978,8 @@ fn request_wire_rejects_authority_and_unknown_versions() {
         r#"{"version":1,"request_id":"r1","command":{"kind":"health"},"mutation_permit":{"seat":"forged"}}"#,
         r#"{"version":1,"request_id":"r1","command":{"kind":"health"},"trusted_decision_at":1}"#,
         r#"{"version":99,"request_id":"r1","command":{"kind":"health"}}"#,
-        r#"{"version":1,"request_id":"r1","command":{"kind":"operator_fresh_seat","args":{"target":"p1","operation":"o1","operator_actor":{"uid":0}}}}"#,
-        r#"{"version":1,"request_id":"r1","command":{"kind":"check_in","args":{"mode":{"kind":"current"},"operation":"o1","claim":{"instance":"i","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n1","execution":"e1","target":"p1","verified":true}}}}"#,
+        r#"{"version":1,"request_id":"r1","command":{"kind":"operator_fresh_seat","args":{"target":"p1","host":"/host.sock","operation":"o1","operator_actor":{"uid":0}}}}"#,
+        r#"{"version":1,"request_id":"r1","command":{"kind":"check_in","args":{"mode":{"kind":"current"},"operation":"o1","claim":{"instance":"i","host":"/host.sock","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n1","execution":"e1","target":"p1","verified":true}}}}"#,
     ] {
         // The fixtures spell version 1; stamp the current protocol so only the
         // field under test (or the explicit version 99) is invalid.
@@ -1020,7 +1021,7 @@ fn request_wire_rejects_authority_and_unknown_versions() {
     let good = WireRequest {
         version: PROTOCOL_VERSION,
         request_id: "r1".into(),
-        expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+        expected_instance: "00000000000040008000000000000001".into(),
         expected_boot: None,
         output: None,
         command: Command::Health,
@@ -1284,7 +1285,7 @@ fn wire_rejects_malformed_cursor_in_page_command() {
 #[test]
 fn health_distinguishes_software_protocol_boot_and_mismatch() {
     let mut health = Health::unknown(
-        "00000000-0000-4000-8000-000000000001".into(),
+        "00000000000040008000000000000001".into(),
         "00000000-0000-4000-8000-000000000002".into(),
         "0.1.0".into(),
         1,
@@ -1311,7 +1312,7 @@ fn direct_request_deserialization_enforces_version_and_page_validation() {
     assert!(serde_json::from_value::<WireRequest>(good.clone()).is_ok());
     assert!(WireRequest::decode(good.to_string().as_bytes()).is_ok());
     let mut bad_version = good;
-    bad_version["version"] = serde_json::json!(9);
+    bad_version["version"] = serde_json::json!(PROTOCOL_VERSION + 1);
     assert!(
         serde_json::from_value::<WireRequest>(bad_version.clone())
             .unwrap_err()
@@ -1362,7 +1363,7 @@ fn production_entry_rejects_missing_command_without_creating_state() {
 #[test]
 fn empty_opaque_id_is_rejected_at_wire_boundary() {
     let mut request = wire_fixture(
-        serde_json::json!({"kind":"operator_fresh_seat","args":{"target":"p1","operation":"o1"}}),
+        serde_json::json!({"kind":"operator_fresh_seat","args":{"target":"p1","host":"/host.sock","operation":"o1"}}),
     );
     assert!(WireRequest::decode(request.to_string().as_bytes()).is_ok());
     request["command"]["args"]["target"] = serde_json::json!("");
@@ -1384,7 +1385,7 @@ fn exact_internal_time_and_retirement_limits_are_exposed() {
 fn all_command_variants_round_trip_without_actor_fields() {
     use serde_json::{Value, json};
     let p = json!({"cursor":null,"limit":20,"max_bytes":16384});
-    let c = json!({"instance":"i","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n1","execution":"e1","target":"p1"});
+    let c = json!({"instance":"i","host":"/host.sock","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n1","execution":"e1","target":"p1"});
     let cases: Vec<(&str, Option<Value>)> = vec![
         ("health", None),
         (
@@ -1427,7 +1428,7 @@ fn all_command_variants_round_trip_without_actor_fields() {
         ("retirement_jobs", Some(json!({"page":p}))),
         (
             "resolve_seat",
-            Some(json!({"target":"p1","operation":"o1"})),
+            Some(json!({"target":"p1","host":"/host.sock","operation":"o1"})),
         ),
         (
             "check_in",
@@ -1486,11 +1487,11 @@ fn all_command_variants_round_trip_without_actor_fields() {
         ),
         (
             "operator_rebind",
-            Some(json!({"seat":"s1","target":"p1","operation":"o1"})),
+            Some(json!({"seat":"s1","target":"p1","host":"/host.sock","operation":"o1"})),
         ),
         (
             "operator_fresh_seat",
-            Some(json!({"target":"p1","operation":"o1"})),
+            Some(json!({"target":"p1","host":"/host.sock","operation":"o1"})),
         ),
         (
             "operator_orphan_invite",
@@ -1502,7 +1503,7 @@ fn all_command_variants_round_trip_without_actor_fields() {
         if let Some(args) = args {
             command["args"] = args;
         }
-        let raw = json!({"version":PROTOCOL_VERSION,"request_id":"r1","expected_instance":"00000000-0000-4000-8000-000000000001","command":command});
+        let raw = json!({"version":PROTOCOL_VERSION,"request_id":"r1","expected_instance":"00000000000040008000000000000001","command":command});
         let parsed: WireRequest =
             serde_json::from_value(raw.clone()).unwrap_or_else(|e| panic!("{kind}: {e}"));
         let out = serde_json::to_value(&parsed).unwrap();
@@ -1513,7 +1514,7 @@ fn all_command_variants_round_trip_without_actor_fields() {
 #[test]
 fn send_message_relays_user_is_optional_and_round_trips() {
     use serde_json::json;
-    let c = json!({"instance":"i","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n1","execution":"e1","target":"p1"});
+    let c = json!({"instance":"i","host":"/host.sock","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n1","execution":"e1","target":"p1"});
     let mut send = json!({"thread":"t1","body":"body","invited_recipients":["s1"],"deadline_millis":null,"operation":"o1","claim":c});
     let Command::SendMessage(plain) =
         serde_json::from_value::<Command>(json!({"kind":"send_message","args":send.clone()}))
@@ -1538,7 +1539,7 @@ fn send_message_relays_user_is_optional_and_round_trips() {
 #[test]
 fn summary_commands_accept_subagent_claims() {
     use serde_json::json;
-    let claim = |role: &str| json!({"instance":"i","seat":"s1","binding_generation":0,"role":role,"harness":"codex","native_session":"n1","execution":"e1","target":"p1"});
+    let claim = |role: &str| json!({"instance":"i","host":"/host.sock","seat":"s1","binding_generation":0,"role":role,"harness":"codex","native_session":"n1","execution":"e1","target":"p1"});
     let submission =
         json!({"submission_schema":1,"narrative":"n","prompt_version":"p","model":"m"});
     let commands = [
@@ -1647,7 +1648,7 @@ fn wire_rejects_unbounded_search_and_recipient_batches() {
     }
     let recipients: Vec<String> = (0..100).map(|n| format!("s{n}")).collect();
     let mut send = wire_fixture(
-        json!({"kind":"send_message","args":{"thread":"t1","body":"body","invited_recipients":recipients,"deadline_millis":null,"operation":"o1","claim":{"instance":"i","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n1","execution":"e1","target":"p1"}}}),
+        json!({"kind":"send_message","args":{"thread":"t1","body":"body","invited_recipients":recipients,"deadline_millis":null,"operation":"o1","claim":{"instance":"i","host":"/host.sock","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n1","execution":"e1","target":"p1"}}}),
     );
     assert!(WireRequest::decode(send.to_string().as_bytes()).is_ok());
     send["command"]["args"]["invited_recipients"]
@@ -1673,7 +1674,7 @@ fn all_result_variants_round_trip_with_compact_payloads() {
         (
             "health",
             serde_json::to_value(Health::unknown(
-                "00000000-0000-4000-8000-000000000001".into(),
+                "00000000000040008000000000000001".into(),
                 "00000000-0000-4000-8000-000000000002".into(),
                 "0.1.0".into(),
                 1,
@@ -1713,7 +1714,7 @@ fn all_result_variants_round_trip_with_compact_payloads() {
         ("seat_resolved", json!("s1")),
         (
             "checked_in",
-            json!({"context_disposition":"current","context":{"instance":"i","seat":"s1","binding_generation":1,"role":"top_level","harness":"codex","target":"p1","native_session":"n1","execution":"e1"},"seat":"s1","offered_through":null,"warning_count":0,"warning_count_has_more":false,"warnings":page,"inbox":page}),
+            json!({"context_disposition":"current","context":{"instance":"i","host":"/host.sock","seat":"s1","binding_generation":1,"role":"top_level","harness":"codex","target":"p1","native_session":"n1","execution":"e1"},"seat":"s1","offered_through":null,"warning_count":0,"warning_count_has_more":false,"warnings":page,"inbox":page}),
         ),
         ("thread_created", json!("t1")),
         ("invitation", json!("i1")),
@@ -1749,6 +1750,7 @@ fn operator_boundary_only_accepts_three_administrative_commands() {
         messages: vec![MessageId::new("m1")],
         operation: OperationId::new("o1"),
         claim: herdr_threads::protocol::authority::CallerClaim {
+            host: herdr_threads::test_support::test_host_locator(),
             instance: "i".into(),
             seat: SeatId::new("legacy-fixture"),
             binding_generation: 0,
@@ -1764,10 +1766,12 @@ fn operator_boundary_only_accepts_three_administrative_commands() {
     assert!(OperatorCommand::try_from(native).is_err());
     for command in [
         Command::OperatorFreshSeat(OperatorFreshSeat {
+            host: herdr_threads::test_support::test_host_locator(),
             target: HostTargetId::new("p1"),
             operation: OperationId::new("o1"),
         }),
         Command::OperatorRebind(OperatorRebind {
+            host: herdr_threads::test_support::test_host_locator(),
             seat: SeatId::new("s1"),
             target: HostTargetId::new("p1"),
             operation: OperationId::new("o1"),
@@ -1823,7 +1827,7 @@ fn retirement_status_limits_last_error_size() {
 fn command_envelope_rejects_extra_actor_and_time_fields() {
     for payload in [
         r#"{"version":1,"request_id":"r1","command":{"kind":"health","verified_actor":{"seat":"s1"}}}"#,
-        r#"{"version":1,"request_id":"r1","command":{"kind":"ack","args":{"messages":["m1"],"operation":"o1","claim":{"instance":"i","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n1","execution":"e1","target":"p1"}},"operator_actor":{"uid":0}}}"#,
+        r#"{"version":1,"request_id":"r1","command":{"kind":"ack","args":{"messages":["m1"],"operation":"o1","claim":{"instance":"i","host":"/host.sock","seat":"s1","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n1","execution":"e1","target":"p1"}},"operator_actor":{"uid":0}}}"#,
         r#"{"version":1,"request_id":"r1","command":{"kind":"health","trusted_decision_at":123}}"#,
     ] {
         // The fixtures spell version 1; stamp the current protocol so only the
@@ -1894,7 +1898,7 @@ fn body_continuation_is_message_scoped_and_diagnostics_has_distinct_scope() {
     .unwrap();
     let request = |message: &str, cursor: &str, max_bytes: u32| {
         json!({
-            "version":PROTOCOL_VERSION,"request_id":"r1","expected_instance":"00000000-0000-4000-8000-000000000001","command":{"kind":"message","args":{
+            "version":PROTOCOL_VERSION,"request_id":"r1","expected_instance":"00000000000040008000000000000001","command":{"kind":"message","args":{
                 "message":message,"body":{"cursor":cursor,"offset":null,"max_bytes":max_bytes}
             }}
         })
@@ -1948,6 +1952,7 @@ fn ordinary_seat_resolve_cannot_enter_native_permit_mutation_route() {
         ids::HostTargetId,
     };
     let ordinary = Command::ResolveSeat(ResolveSeat {
+        host: herdr_threads::test_support::test_host_locator(),
         target: HostTargetId::new("p1"),
         operation: herdr_threads::protocol::ids::OperationId::new("o1"),
     });
@@ -1980,7 +1985,7 @@ fn diagnostics_request_rejects_another_query_scope() {
 fn cooperative_check_in_wire_preserves_context_and_rejects_declared_children() {
     use herdr_threads::protocol::commands::Command;
     let wire = serde_json::json!({"kind":"check_in", "args": {
-        "claim": {"instance":"i", "seat":"s", "binding_generation":0,
+        "claim": {"instance":"i", "host":"/host.sock","seat":"s", "binding_generation":0,
             "role":"top_level", "harness":"codex", "target":"p",
             "native_session":"plugin_context:n", "execution":"e"},
         "mode":{"kind":"lifecycle", "expected_binding_generation":0},
@@ -2025,7 +2030,7 @@ fn pending_warning_count_flags_are_on_the_wire_and_default_to_false() {
     );
     let page = serde_json::json!({"items":[],"next_cursor":null,"next_argv":null,"has_more":false,"stop_reason":"complete","consistency":"bounded_live","high_water_ordinal":0,"scope_revision":null});
     let checked_in: herdr_threads::protocol::results::CheckInResult =
-        serde_json::from_value(serde_json::json!({"context_disposition":"current","context":{"instance":"i","seat":"s1","binding_generation":1,"role":"top_level","harness":"codex","target":"p1","native_session":"n1","execution":"e1"},"seat":"s1","offered_through":null,"warning_count":3,"warnings":page,"inbox":page}))
+        serde_json::from_value(serde_json::json!({"context_disposition":"current","context":{"instance":"i","host":"/host.sock","seat":"s1","binding_generation":1,"role":"top_level","harness":"codex","target":"p1","native_session":"n1","execution":"e1"},"seat":"s1","offered_through":null,"warning_count":3,"warnings":page,"inbox":page}))
             .unwrap();
     assert_eq!(
         (checked_in.warning_count, checked_in.warning_count_has_more),
@@ -2284,7 +2289,7 @@ fn health_v2_command_is_strict_and_preserves_frozen_health_commands() {
         r#"{"kind":"harness_health_v2","extra":true}"#,
     ] {
         let request = format!(
-            r#"{{"version":{},"request_id":"health-v2","expected_instance":"00000000-0000-4000-8000-000000000001","command":{bad}}}"#,
+            r#"{{"version":{},"request_id":"health-v2","expected_instance":"00000000000040008000000000000001","command":{bad}}}"#,
             herdr_threads::protocol::wire::PROTOCOL_VERSION
         );
         assert!(
@@ -2655,7 +2660,7 @@ fn direct_thread_protocol_is_strict_accountable_and_guarded() {
         capabilities::{ADVERTISED, AUTOMATIC_HANDOFF_V1, DIRECT_THREADS_V1},
         commands::PermitMutation,
     };
-    let claim = serde_json::json!({"instance":"i","seat":"a","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n","execution":"e","target":"p"});
+    let claim = serde_json::json!({"instance":"i","host":"/host.sock","seat":"a","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n","execution":"e","target":"p"});
     let value = serde_json::json!({"kind":"ensure_direct_thread","args":{"recipient":"b","operation":"o","claim":claim}});
     let command: Command = serde_json::from_value(value.clone()).unwrap();
     command.validate().unwrap();
@@ -2710,7 +2715,7 @@ fn direct_thread_protocol_is_strict_accountable_and_guarded() {
 #[test]
 fn direct_recipient_send_preserves_historical_bytes_and_roundtrips() {
     use sha2::{Digest, Sha256};
-    let historical = r#"{"kind":"send_message","args":{"thread":"t","body":"body","invited_recipients":[],"deadline_millis":null,"operation":"o","claim":{"instance":"i","seat":"a","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n","execution":"e","target":"p"}}}"#;
+    let historical = r#"{"kind":"send_message","args":{"thread":"t","body":"body","invited_recipients":[],"deadline_millis":null,"operation":"o","claim":{"instance":"i","host":"/host.sock","seat":"a","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n","execution":"e","target":"p"}}}"#;
     let command: Command = serde_json::from_str(historical).unwrap();
     assert_eq!(serde_json::to_string(&command).unwrap(), historical);
     assert_eq!(

@@ -59,7 +59,7 @@ fn msg(thread: &str, n: i64) -> MessageId {
 
 fn add_thread(db: &Connection, thread: &str) {
     db.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)",
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)",
         [thread],
     )
     .unwrap();
@@ -74,7 +74,7 @@ fn add_thread(db: &Connection, thread: &str) {
 /// `note_published`, which copies the decision onto the row.
 fn publish(db: &mut Connection, rows: &[Row]) {
     db.execute(
-        "INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('a','i','resolved','native',1,0)",
+        "INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
         [],
     )
     .unwrap();
@@ -83,10 +83,10 @@ fn publish(db: &mut Connection, rows: &[Row]) {
         let d = &(d + DBASE);
         let id = format!("{thread}-{n}");
         let prep = format!("prep-{id}");
-        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'i','scope',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy',?3)",params![prep,thread,p]).unwrap();
+        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','scope',?1,zeroblob(32),?2,0,0,0,0,0,0,0,'building','lazy',?3)",params![prep,thread,p]).unwrap();
         tx.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES(?1,?2,?3,'s',?4)",params![prep,format!("msg-{id}"),thread,p]).unwrap();
-        tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,actor_seat_id,priority) VALUES(?1,'i',?2,?3,'ordinary',?4,'passive',0,'lazy','a',?5)",params![format!("msg-{id}"),thread,n,d,p]).unwrap();
-        tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'i',?3,?4,0,?4,0,1,0)",params![prep,format!("msg-{id}"),thread,d]).unwrap();
+        tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,actor_seat_id,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b',?2,?3,'ordinary',?4,'passive',0,'lazy','a',?5)",params![format!("msg-{id}"),thread,n,d,p]).unwrap();
+        tx.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'34750f98bd59fcfc946da45aaabe933b',?3,?4,0,?4,0,1,0)",params![prep,format!("msg-{id}"),thread,d]).unwrap();
         note_published(&tx, &prep).unwrap();
     }
     tx.commit().unwrap();
@@ -98,7 +98,16 @@ fn seek(
     after: Option<DeliveryRowsPosition>,
     max_visits: usize,
 ) -> SeekResult {
-    seek_pending(db, "i", &s(), filter, after, DH, max_visits).unwrap()
+    seek_pending(
+        db,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &s(),
+        filter,
+        after,
+        DH,
+        max_visits,
+    )
+    .unwrap()
 }
 
 /// Every row the filter accepts, in seek order, one visit at a time.
@@ -147,7 +156,14 @@ fn marks(db: &Connection, binding: &BindingId) -> Vec<String> {
 
 fn complete(db: &mut Connection, binding: &BindingId, ids: &[MessageId]) {
     let tx = db.transaction().unwrap();
-    complete_for_binding(&tx, "i", &s(), Some(binding), ids).unwrap();
+    complete_for_binding(
+        &tx,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &s(),
+        Some(binding),
+        ids,
+    )
+    .unwrap();
     tx.commit().unwrap();
 }
 
@@ -186,8 +202,8 @@ fn p0_row_behind_500_p1_rows_is_first_in_one_visit() {
 fn unpublished_backlog_is_never_visited() {
     let mut db = db();
     enroll_binding(&db, "sess-A", None);
-    db.execute("INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('a','i','resolved','native',1,0)", []).unwrap();
-    db.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000) INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) SELECT 'prep-stg'||i,'i','scope','prep-stg'||i,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1 FROM n", []).unwrap();
+    db.execute("INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+    db.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000) INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) SELECT 'prep-stg'||i,'34750f98bd59fcfc946da45aaabe933b','scope','prep-stg'||i,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1 FROM n", []).unwrap();
     db.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000) INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) SELECT 'prep-stg'||i,'msg-stg'||i,'t','s' FROM n", []).unwrap();
     let staged: i64 = db
         .query_row(
@@ -287,7 +303,7 @@ fn resume_after_a_position() {
     let low = |after| {
         seek_pending(
             &db,
-            "i",
+            "34750f98bd59fcfc946da45aaabe933b",
             &s(),
             RowFilter::Seat,
             after,
@@ -380,11 +396,11 @@ fn thread_binding_seek_stops_below_the_first_unread_receipt_row() {
     );
     // An ordinary message 5 owing the seat a receipt: the display walk cannot pass it.
     db.execute_batch(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,actor_seat_id) VALUES('ord-5','i','t',5,'ordinary',5,'b',0,'a');
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,actor_seat_id) VALUES('ord-5','34750f98bd59fcfc946da45aaabe933b','t',5,'ordinary',5,'b',0,'a');
          INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES('ord-5','t','s','pending',100);
-         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('prep-ord-5','i','actor','prep-ord-5',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
+         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('prep-ord-5','34750f98bd59fcfc946da45aaabe933b','actor','prep-ord-5',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
          INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('prep-ord-5','t','s',1,100,1);
-         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-ord-5','ord-5','i','t',5,0,5,0,1,0);",
+         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-ord-5','ord-5','34750f98bd59fcfc946da45aaabe933b','t',5,0,5,0,1,0);",
     )
     .unwrap();
     let (tid, seat) = (t("t"), s());
@@ -444,7 +460,13 @@ fn private_presentation_filter_matches_today() {
         .filter(|m| {
             db.query_row(
                 crate::store::queries::PRIVATE_LAZY_ELIGIBILITY_SQL,
-                params!["s", m.as_str(), b.as_str(), "i", DH as i64],
+                params![
+                    "s",
+                    m.as_str(),
+                    b.as_str(),
+                    "34750f98bd59fcfc946da45aaabe933b",
+                    DH as i64
+                ],
                 |r| r.get::<_, bool>(0),
             )
             .unwrap()

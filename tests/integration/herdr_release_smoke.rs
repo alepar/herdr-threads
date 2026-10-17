@@ -24,7 +24,8 @@
 //!   its work through its own hooks.
 //! - `herdr_release_wake`: nudge threshold, wake typed by Herdr into an idle
 //!   agent's composer (and no wake below the threshold), in-turn delivery,
-//!   ACK from the agent, and an overdue required ACK.
+//!   automatic ACK on complete hook display, and an overdue request whose
+//!   body exceeds the hook display bound until text inbox completes it.
 //! - `herdr_release_busy`: a p0 sent to a working agent is delivered inside
 //!   its turn and never typed as a wake.
 //! - `herdr_release_move`: renames, a move inside the workspace, and moves to
@@ -314,17 +315,24 @@ impl Matrix {
         assert_eq!(launched["outcome"], "started", "{launched}");
         assert_eq!(launched["pane"], pane, "{launched}");
         let seat = launched["seat"].as_str().unwrap().to_owned();
-        wait_for("codex stand-in checked in", Duration::from_secs(20), || {
-            let log = self.log_of(pane);
-            if log
-                .iter()
-                .any(|e| e["kind"] == "hook" && e["event"] == "SessionStart" && e["rc"] == 0)
-            {
-                Ok(())
-            } else {
-                Err(format!("{log:?}"))
-            }
-        });
+        wait_for(
+            "codex stand-in checked in and ready",
+            Duration::from_secs(20),
+            || {
+                let log = self.log_of(pane);
+                if log
+                    .iter()
+                    .any(|e| e["kind"] == "hook" && e["event"] == "SessionStart" && e["rc"] == 0)
+                    && log.iter().any(|e| e["kind"] == "ready")
+                {
+                    Ok(())
+                } else {
+                    // SessionStart is logged before tty.setraw, whose default
+                    // input flush can discard a prompt submitted before ready.
+                    Err(format!("{log:?}"))
+                }
+            },
+        );
         seat
     }
 
@@ -501,8 +509,8 @@ fn herdr_release_smoke() {
     let resolved = m.ht(&["seat", "resolve", "--pane", &pa]);
     assert_eq!(id(&resolved), a, "{resolved}");
 
-    // Thread, invitation and the agent's acceptance; a required ACK the agent
-    // gives by displaying it in its own text inbox; receipts.
+    // Thread, invitation and explicit acceptance; complete hook display
+    // automatically settles a required receipt without a later inbox call.
     let thread = id(&m.person(&pa, &["thread", "create", "--topic", "matrix core"]));
     m.person(&pa, &["invite", &thread, "--seat", &b]);
     m.agent_ht(&pb, &format!("accept {thread}"));
@@ -522,13 +530,22 @@ fn herdr_release_smoke() {
             }
         })
     };
-    recipients("pending");
-    let pending = m.person(&pa, &["pending-receipts", "--seat", &b]);
-    assert!(pending.to_string().contains(&message), "{pending}");
-    let shown = m.agent_run(&pb, "herdr-threads inbox");
-    assert_eq!(shown["rc"], 0, "{shown}");
-    assert!(shown["stdout"].as_str().unwrap().contains(&body), "{shown}");
+    // The p0 may already have woken B. An ordinary turn also gives a hook
+    // opportunity, so either path must have injected the actual body.
+    m.turn(&pb, "receive core mail");
+    let log = m.log_of(&pb);
+    assert!(
+        log.iter().any(|event| {
+            event["kind"] == "hook"
+                && event["context"].as_str().is_some_and(|context| {
+                    context.contains(&format!("message {message} ")) && context.contains(&body)
+                })
+        }),
+        "the hook must display the body: {log:?}"
+    );
     recipients("acknowledged");
+    let pending = m.person(&pa, &["pending-receipts", "--seat", &b]);
+    assert!(!pending.to_string().contains(&message), "{pending}");
     let members = m.person(&pa, &["participants", &thread]);
     assert!(members.to_string().contains(&b), "{members}");
     let joined = m.person(&pa, &["thread", "list", "--joined"]);
@@ -766,7 +783,7 @@ fn herdr_release_wake() {
             "--require-ack",
             &agent,
             "--deadline",
-            "4",
+            "300",
         ],
     ));
     let diagnose = || {
@@ -799,20 +816,104 @@ fn herdr_release_wake() {
             }
         },
     );
-    // Unacknowledged past its deadline: overdue for the sender.
+    // Complete wake-turn display ACKs without a separate command.
+    wait_for("wake display ACK", Duration::from_secs(15), || {
+        let receipt = m.person(&sender_pane, &["delivery", "recipients", &ack]);
+        let rows = data(&receipt)["items"].as_array().unwrap();
+        if rows.len() == 1 && rows[0]["seat"] == agent && rows[0]["status"] == "acknowledged" {
+            Ok(())
+        } else {
+            Err(receipt.to_string())
+        }
+    });
+    let pending = m.person(&sender_pane, &["pending-receipts", "--seat", &agent]);
+    assert!(!pending.to_string().contains(&ack), "{pending}");
+
+    // A separate body exceeds the bounded hook page/context, so in-turn
+    // attempts cannot complete its display. Unlike the small wake request,
+    // this receipt must remain pending and become overdue.
+    let end_marker = format!("complete-overdue-body-{}", m.version);
+    let large_body = format!(
+        "undisplayed-overdue-{} {}\n{end_marker}",
+        m.version,
+        "x".repeat(16_384)
+    );
+    let undisplayed = id(&m.person(
+        &sender_pane,
+        &[
+            "send",
+            "--seat",
+            &agent,
+            "--body",
+            &large_body,
+            "--require-ack",
+            &agent,
+            "--deadline",
+            "4",
+        ],
+    ));
+    let incomplete = m.turn(&agent_pane, "bounded overdue delivery");
+    assert!(
+        incomplete.iter().any(|event| {
+            event["kind"] == "hook"
+                && event["context"]
+                    .as_str()
+                    .is_some_and(|context| context.contains("More inbox content may remain: run "))
+        }),
+        "the hook must report incomplete delivery: {incomplete:?}"
+    );
+    let pending = m.person(&sender_pane, &["pending-receipts", "--seat", &agent]);
+    assert!(pending.to_string().contains(&undisplayed), "{pending}");
     wait_for("overdue ACK", Duration::from_secs(30), || {
         let overdue = m.person(&sender_pane, &["overdue"]);
-        if overdue.to_string().contains(&ack) {
+        if overdue.to_string().contains(&undisplayed) {
             Ok(())
         } else {
             Err(overdue.to_string())
         }
     });
-    // The agent ACKs it itself.
-    let acked = m.agent_ht(&agent_pane, &format!("ack {ack}"));
-    assert!(acked.to_string().contains(&ack), "{acked}");
+    // Text inbox is bounded too: follow its exact continuation to complete
+    // the body. A partial page must not settle the receipt.
+    let mut command = "herdr-threads inbox".to_owned();
+    let mut saw_end = false;
+    for page in 0..8 {
+        let shown = m.agent_run(&agent_pane, &command);
+        assert_eq!(shown["rc"], 0, "{shown}");
+        // The stand-in retains only the last 4 KiB of tool stdout in its log.
+        let stdout = shown["stdout"].as_str().unwrap();
+        saw_end |= stdout.contains(&end_marker);
+        let next = stdout.lines().find_map(|line| line.strip_prefix("next: "));
+        if page == 0 {
+            assert!(
+                !saw_end && next.is_some(),
+                "the first page must be partial: {shown}"
+            );
+            let pending = m.person(&sender_pane, &["pending-receipts", "--seat", &agent]);
+            assert!(
+                pending.to_string().contains(&undisplayed),
+                "partial display must not ACK: {pending}"
+            );
+        }
+        match next {
+            Some(next) => command = next.to_owned(),
+            None => {
+                command.clear();
+                break;
+            }
+        }
+    }
+    assert!(
+        command.is_empty() && saw_end,
+        "inbox must finish the body within eight pages"
+    );
     let pending = m.person(&sender_pane, &["pending-receipts", "--seat", &agent]);
-    assert!(!pending.to_string().contains(&ack), "{pending}");
+    assert!(!pending.to_string().contains(&undisplayed), "{pending}");
+    let receipt = m.person(&sender_pane, &["delivery", "recipients", &undisplayed]);
+    assert_eq!(
+        data(&receipt)["items"][0]["status"],
+        "acknowledged",
+        "{receipt}"
+    );
 
     // The agent raises its threshold to 3: a p3 send now wakes it (after the
     // per-seat wake spacing), a p5 send does not.

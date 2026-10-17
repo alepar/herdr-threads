@@ -11,6 +11,7 @@ pub mod priority;
 pub mod results;
 pub mod service;
 pub mod summary;
+pub mod sync_admin;
 pub mod time;
 pub mod watch;
 pub mod wire;

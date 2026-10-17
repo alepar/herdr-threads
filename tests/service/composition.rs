@@ -4,8 +4,8 @@ use herdr_threads::{
     app::SystemClock,
     client::local::LocalSocketClient,
     daemon::{
-        ownership::{OwnerLock, read_descriptor, read_existing_namespace},
-        paths::{InstancePaths, RuntimeContext},
+        ownership::{OwnerLock, read_descriptor, read_node_uuid_hint},
+        paths::{NodePaths, RuntimeContext},
     },
     protocol::{
         commands::{Command, DirectoryMembership, DirectoryQuery},
@@ -70,7 +70,7 @@ fn configured_timing_reaches_store_and_rejects_unsafe_wake_spacing() {
 
 #[test]
 fn selected_wire_output_is_optional_bounded_and_never_an_authority_field() {
-    let instance = Uuid::new_v4().to_string();
+    let instance = herdr_threads::node::NodeUuid::new_v4().to_string();
     let default = WireRequest {
         version: PROTOCOL_VERSION,
         request_id: "r".into(),
@@ -113,13 +113,13 @@ fn private_instance_settings_load_overrides_and_reject_unsafe_files() {
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
     let defaults = ServiceConfig::load(&paths)
         .unwrap()
         .store_settings(Uuid::new_v4());
     assert_eq!(defaults.invitation_default_ms, Some(300_000));
-    paths.prepare_instance_dir().unwrap();
-    let file = paths.instance_dir.join("settings.json");
+    paths.prepare_node_dir().unwrap();
+    let file = paths.node_dir.join("settings.json");
     fs::write(&file, br#"{"invitation_default_ms":120000,"receipt_default_ms":240000,"minimum_wake_delay_ms":45000}"#).unwrap();
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
@@ -171,7 +171,8 @@ fn private_instance_settings_load_overrides_and_reject_unsafe_files() {
     fs::set_permissions(&nested_file, fs::Permissions::from_mode(0o600)).unwrap();
     std::os::unix::fs::symlink(&real_parent, root.join("alias")).unwrap();
     let mut aliased = paths.clone();
-    aliased.instance_dir = root.join("alias/instance");
+    aliased.state_dir = root.join("alias");
+    aliased.node_dir = root.join("alias/instance");
     assert!(ServiceConfig::load(&aliased).is_err());
     fs::remove_dir_all(root).unwrap();
 }
@@ -186,7 +187,7 @@ fn summary_settings_load_from_the_instance_settings_file() {
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
     let boot = Uuid::new_v4();
     assert_eq!(
         ServiceConfig::load(&paths)
@@ -195,8 +196,8 @@ fn summary_settings_load_from_the_instance_settings_file() {
             .summary,
         SummarySettings::default()
     );
-    paths.prepare_instance_dir().unwrap();
-    let file = paths.instance_dir.join("settings.json");
+    paths.prepare_node_dir().unwrap();
+    let file = paths.node_dir.join("settings.json");
     let write = |body: &str| {
         fs::write(&file, body).unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
@@ -246,16 +247,12 @@ fn daemon_rejects_invalid_instance_settings_before_endpoint_publication() {
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    fs::create_dir_all(&paths.instance_dir).unwrap();
-    for directory in [
-        &context.state_dir,
-        &context.state_dir.join("instances"),
-        &paths.instance_dir,
-    ] {
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    fs::create_dir_all(&paths.node_dir).unwrap();
+    for directory in [&context.state_dir, &paths.node_dir] {
         fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
     }
-    let settings = paths.instance_dir.join("settings.json");
+    let settings = paths.node_dir.join("settings.json");
     fs::write(&settings, br#"{"minimum_wake_delay_ms":1}"#).unwrap();
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
@@ -410,25 +407,26 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     let state = root.join("state");
     let host = root.join("host.sock");
     let context = RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
-    let instance = owner.instance_uuid();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = owner.node_uuid().unwrap();
     drop(owner);
-    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
+    let claim_host = context.claim_host().unwrap();
+    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()))
+        .with_attached_host(&claim_host)
+        .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
     let db = setup.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
-        [instance.to_string()],
-    )
-    .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat',?1,'resolved','native','w1:p1',1,0,0)", [instance.to_string()]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'w1:p1','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'w1:p1','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient',?1,'resolved','native','w1:p2',1,0,0)", [instance.to_string()]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'w1:p2','b',1,0,2,'fresh','unknown','unknown',0,0,'term-'||'w1:p2','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
+    db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+        .unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('seat',?1,'resolved','native','w1:p1',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'w1:p1','b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||'w1:p1','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('recipient',?1,'resolved','native','w1:p2',1,0,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'w1:p2','b',1,0,2,'fresh','unknown','unknown',0,0,'term-'||'w1:p2','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
     drop(db);
     let stop = Cancellation::default();
     let worker_stop = stop.clone();
     let worker_paths = paths.clone();
+    let worker_claim_host = claim_host.clone();
     let check_in_dispatches = Arc::new(AtomicU64::new(0));
     let counted = Arc::clone(&check_in_dispatches);
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -457,7 +455,11 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
                 move |instance, boot, cancellation| {
                     let store: Arc<dyn StorePort> = Arc::new(
                         SqliteStore::new(
-                            StoreContext::new(database, Arc::clone(&service_clock)),
+                            StoreContext::new(database, Arc::clone(&service_clock))
+                                .with_attached_host(&worker_claim_host)
+                                .with_node_seed(herdr_threads::test_support::node_seed_for(
+                                    instance,
+                                )),
                             instance.to_string(),
                             StoreSettings::default(),
                         )
@@ -488,7 +490,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
             .unwrap();
     });
     let descriptor = ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert_eq!(descriptor.instance_uuid, instance);
+    assert_eq!(descriptor.node_uuid, instance);
     let args = [
         "herdr-threads",
         "--state-dir",
@@ -632,6 +634,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
             // The execution is no longer part of a call's identity (ht-54r.3); a claim from a
             // different mapping generation is what the daemon fences.
             claim: herdr_threads::protocol::authority::CallerClaim {
+                host: claim_host.clone(),
                 binding_generation: prior.binding_generation + 1,
                 ..prior.clone()
             },
@@ -680,7 +683,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     ];
     assert!(herdr_threads::cli::run(lost_args, &mut LostOutput).is_err());
     let context_dir = paths
-        .instance_dir
+        .node_dir
         .canonicalize()
         .unwrap()
         .join("contexts")
@@ -691,11 +694,13 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         "recipient",
         Duration::from_secs(1),
     )
+    .map(|journal| journal.with_host(claim_host.clone()))
     .unwrap();
     // An agent's identity is its harness environment: the CLI saved no context for it.
     assert!(contexts.current().unwrap().is_none());
     // Another caller advances the service: a direct lifecycle CheckIn of a different session.
     let next_claim = herdr_threads::protocol::authority::CallerClaim {
+        host: claim_host.clone(),
         native_session: herdr_threads::protocol::ids::NativeSessionId::new("direct-successor"),
         execution: herdr_threads::protocol::ids::ExecutionId::new(Uuid::new_v4().to_string()),
         // Its own (live) process: sharing the CLI session's fingerprint would supersede it.
@@ -745,7 +750,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     );
     assert!(contexts.current().unwrap().is_none());
     let journal =
-        herdr_threads::cli::journal::Journal::open(paths.instance_dir.join("intents")).unwrap();
+        herdr_threads::cli::journal::Journal::open(paths.node_dir.join("intents")).unwrap();
     assert!(
         journal
             .page(&herdr_threads::protocol::pagination::PageRequest {
@@ -854,9 +859,9 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
 #[test]
 fn health_unknown_settings_stay_absent_and_resolved_settings_are_forwarded() {
     use herdr_threads::{daemon::health::HealthInputs, protocol::results::HealthSettings};
-    let mut inputs = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4());
+    let mut inputs = HealthInputs::unknown(herdr_threads::node::NodeUuid::new_v4(), Uuid::new_v4());
     assert!(inputs.assemble().settings.is_none());
-    inputs = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4());
+    inputs = HealthInputs::unknown(herdr_threads::node::NodeUuid::new_v4(), Uuid::new_v4());
     inputs.settings = Some(HealthSettings {
         invitation_default_ms: 120_000,
         receipt_default_ms: 240_000,
@@ -887,28 +892,25 @@ fn elected_service_fixture(custom_settings: bool) {
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
-    let instance = owner.instance_uuid();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = owner.node_uuid().unwrap();
     drop(owner);
-    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
+    let setup = StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()))
+        .with_test_host()
+        .with_node_seed(herdr_threads::test_support::node_seed_for(instance));
     let db = setup.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-        [instance.to_string()],
-    )
-    .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2',?1,'resolved','native',1,0)", [instance.to_string()]).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s2',?1,'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t',?1,'topic','goal',0,0,0)", [instance.to_string()]).unwrap();
     db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s2','invited');
-        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms)
-        VALUES ('inv','t','s2',1,'pending',0,1,100,100);").unwrap();
+        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node)
+        VALUES ('inv','t','s2',1,'pending',0,1,100,100,(SELECT id FROM local_node));").unwrap();
     if custom_settings {
-        db.execute_batch("CREATE TRIGGER health_due_failure BEFORE INSERT ON messages WHEN NEW.kind='warn' BEGIN SELECT RAISE(ABORT,'health fixture due failure'); END;").unwrap();
+        db.execute_batch("CREATE TRIGGER ht_test_fault_health_due_failure BEFORE INSERT ON messages WHEN NEW.kind='warn' BEGIN SELECT RAISE(ABORT,'health fixture due failure'); END;").unwrap();
     }
     drop(db);
     if custom_settings {
-        let file = paths.instance_dir.join("settings.json");
+        let file = paths.node_dir.join("settings.json");
         fs::write(&file, br#"{"invitation_default_ms":120000,"receipt_default_ms":240000,"minimum_wake_delay_ms":45000,"harness_manifest":"off"}"#).unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
     }
@@ -940,7 +942,7 @@ fn elected_service_fixture(custom_settings: bool) {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let deadline = Instant::now() + Duration::from_secs(5);
     let descriptor = loop {
-        if let Some(instance) = read_existing_namespace(&paths).unwrap()
+        if let Some(instance) = read_node_uuid_hint(&paths).unwrap()
             && let Ok(descriptor) = read_descriptor(&paths, instance)
         {
             break descriptor;
@@ -962,7 +964,7 @@ fn elected_service_fixture(custom_settings: bool) {
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
     );
     let budget = || CallBudget {
@@ -1009,7 +1011,8 @@ fn elected_service_fixture(custom_settings: bool) {
             std::thread::sleep(Duration::from_millis(10));
         }
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-        db.execute_batch("DROP TRIGGER health_due_failure").unwrap();
+        db.execute_batch("DROP TRIGGER ht_test_fault_health_due_failure")
+            .unwrap();
     }
     let warning_deadline =
         Instant::now() + Duration::from_secs(if custom_settings { 8 } else { 3 });
@@ -1033,14 +1036,14 @@ fn elected_service_fixture(custom_settings: bool) {
     }
     // Elected composition of the observation worker's WorkerStatus: the
     // host socket never exists, so the real observation worker started by
-    // `app.rs` records `Frozen(HostUnavailable)`: Herdr is unavailable, so
+    // `HostSessions` records `Frozen(HostUnavailable)`: Herdr is unavailable, so
     // nothing is invalidated (TRUST-POLICY C4, ht-yms). It must reach the
     // Health builder through the *same* shared WorkerStatus, rendered only
     // as its redacted class, with no private path text anywhere in Health.
     //
-    // Kills: passing a fresh `WorkerStatus` (instead of
-    // `factory_observation_status`) to `start_observation_worker` in
-    // `src/app.rs`: the observation lane's failure is then absent from
+    // Kills: composing the health lane statuses from a fresh `WorkerStatus`
+    // instead of the startup session's observation status in `src/app.rs`:
+    // the observation lane's failure is then absent from
     // elected Health and this wait times out.
     let observation_deadline = Instant::now() + Duration::from_secs(8);
     let root_text = root.to_str().unwrap().to_owned();
@@ -1054,8 +1057,13 @@ fn elected_service_fixture(custom_settings: bool) {
             !health
                 .limitations
                 .iter()
-                // The one deliberate path: the daemon-log pointer (ht-p03.27).
+                // The deliberate paths: the daemon-log pointer (ht-p03.27) and
+                // the operator-facing `Herdr server <endpoint> unreachable`
+                // line (ht-5fr.2.10).
                 .filter(|detail| !detail.starts_with("degraded: "))
+                .filter(|detail| {
+                    !(detail.starts_with("Herdr server ") && detail.ends_with(" unreachable"))
+                })
                 .any(|detail| detail.contains(&root_text) || detail.contains("host.sock")),
             "private host path reached elected Health: {:?}",
             health.limitations
@@ -1083,7 +1091,7 @@ fn elected_service_fixture(custom_settings: bool) {
         panic!("missing health");
     };
     assert_eq!(health.state, HealthState::Degraded);
-    assert_eq!(health.instance_id, descriptor.instance_uuid.to_string());
+    assert_eq!(health.instance_id, descriptor.node_uuid.to_string());
     if custom_settings {
         assert!(
             !health
@@ -1161,7 +1169,7 @@ fn elected_service_fixture(custom_settings: bool) {
     };
     assert_eq!(page.items.len(), 1);
     let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2',?1,?2,'goal',1,1)", rusqlite::params![instance.to_string(), "second \"topic\"\n\u{2028}"]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t2',?1,?2,'goal',1,1,0)", rusqlite::params![instance.to_string(), "second \"topic\"\n\u{2028}"]).unwrap();
     drop(db);
     let selected = OutputSpec {
         format: OutputFormat::Text,
@@ -1303,7 +1311,7 @@ fn elected_service_fixture(custom_settings: bool) {
     let output: serde_json::Value = serde_json::from_slice(&rendered).unwrap();
     assert_eq!(
         output["result"]["data"]["instance_id"],
-        descriptor.instance_uuid.to_string()
+        descriptor.node_uuid.to_string()
     );
     assert_eq!(output["result"]["data"]["state"], "degraded");
     let binary = super::scrubbed_command(env!("CARGO_BIN_EXE_herdr-threads"))
@@ -1346,7 +1354,7 @@ fn elected_service_fixture(custom_settings: bool) {
     assert!(view.starts_with("herdr-threads view\n"));
     assert!(view.contains("health"));
     let error = herdr_threads::ports::LocalClient::call(&client, Command::CheckIn(
-        serde_json::from_value(serde_json::json!({"claim":{"instance":"unconfigured-fixture","seat":"s","binding_generation":0,"role":"top_level","harness":"codex","native_session":"s","execution":"e","target":"p"},"mode":{"kind":"current"},"operation":"op"})).unwrap()
+        serde_json::from_value(serde_json::json!({"claim":{"instance":"unconfigured-fixture","host":"/host.sock","seat":"s","binding_generation":0,"role":"top_level","harness":"codex","native_session":"s","execution":"e","target":"p"},"mode":{"kind":"current"},"operation":"op"})).unwrap()
     ), &budget()).unwrap_err();
     assert_eq!(error.code, ErrorCode::CallerUnverified);
     // A liveness bound for the shutdown: the daemon is a subprocess, and a
@@ -1457,6 +1465,123 @@ impl herdr_threads::ports::HostPort for HungWakeHost {
     }
 }
 
+/// An empty host plan on a store with no remembered live host: the
+/// daemon binds, publishes a descriptor, answers Health
+/// and Stop, spawns no host workers (wake, observation, archival lanes are
+/// never registered, the deadline lane is) and refuses host-bound commands
+/// with `HostUnavailable`.
+#[test]
+fn store_only_daemon_serves_without_host_workers() {
+    if herdr_threads::test_support::spawn::ran_in_own_process(
+        module_path!(),
+        "store_only_daemon_serves_without_host_workers",
+    ) {
+        return;
+    }
+    let _stdio_guard = super::IN_PROCESS_DAEMON
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    use herdr_threads::{
+        protocol::commands::{ResolveSeat, StopRequest},
+        protocol::ids::OperationId,
+        service::kicks::Lane,
+    };
+    let root = herdr_threads::test_support::scratch::temp_path(format!(
+        "herdr-store-only-{}",
+        Uuid::new_v4()
+    ));
+    fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+    struct Root(std::path::PathBuf);
+    impl Drop for Root {
+        fn drop(&mut self) {
+            super::print_daemon_logs_if_panicking(&self.0);
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _root = Root(root.clone());
+    let paths = NodePaths::resolve(&root.join("state")).unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let lanes = herdr_threads::app::LaneProbe::default();
+    let (daemon_paths, daemon_clock, daemon_lanes) =
+        (paths.clone(), Arc::clone(&clock), lanes.clone());
+    let shutdown = Cancellation::default();
+    let fallback_stop = shutdown.clone();
+    let daemon = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(herdr_threads::app::run_elected_probed(
+                &daemon_paths,
+                daemon_clock,
+                shutdown,
+                ServiceConfig::default(),
+                herdr_threads::test_support::fake_host_plan(&[], None),
+                daemon_lanes,
+                move |descriptor| {
+                    ready_tx.send(descriptor.clone()).unwrap();
+                    Ok(())
+                },
+            ))
+    });
+    let descriptor = match ready_rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(descriptor) => descriptor,
+        Err(error) => {
+            fallback_stop.cancel();
+            panic!("store-only daemon not ready: {error}; {:?}", daemon.join());
+        }
+    };
+    let client = LocalSocketClient::new(
+        descriptor.endpoint.clone(),
+        Arc::clone(&clock),
+        descriptor.node_uuid,
+        Some(descriptor.boot_id),
+    );
+    let budget = || CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + 5_000),
+        cancellation: Cancellation::default(),
+    };
+    assert!(matches!(
+        herdr_threads::ports::LocalClient::call(&client, Command::Health, &budget()).unwrap(),
+        CommandResult::Health(_)
+    ));
+    assert!(lanes.registered(Lane::Deadlines));
+    for host_lane in [Lane::Wakes, Lane::Observation, Lane::Archival] {
+        assert!(
+            !lanes.registered(host_lane),
+            "{host_lane:?} must not run without a host"
+        );
+    }
+    let refused = herdr_threads::ports::LocalClient::call(
+        &client,
+        Command::ResolveSeat(ResolveSeat {
+            host: herdr_threads::test_support::test_host_locator(),
+            target: HostTargetId::new("p"),
+            operation: OperationId::new("op"),
+        }),
+        &budget(),
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::HostUnavailable, "{refused:?}");
+    assert!(matches!(
+        herdr_threads::ports::LocalClient::call(
+            &client,
+            Command::Stop(StopRequest {
+                expected_boot: descriptor.boot_id.to_string()
+            }),
+            &budget()
+        )
+        .unwrap(),
+        CommandResult::StopAccepted(_)
+    ));
+    assert!(daemon.join().unwrap().unwrap());
+    let log = fs::read_to_string(paths.node_dir.join("daemon.log")).unwrap_or_default();
+    assert!(log.contains("store-only"), "{log}");
+    // Every lane that runs is healthy: no lane error lines in the log.
+    assert!(!log.contains("lane "), "{log}");
+}
+
 #[test]
 fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
     // Seconds of in-process daemon time: runs beside, not behind, IN_PROCESS_DAEMON.
@@ -1481,19 +1606,24 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
-    let instance = owner.instance_uuid();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = owner.node_uuid().unwrap();
     drop(owner);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let db = StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
+        .with_test_host()
+        .with_node_seed(herdr_threads::test_support::node_seed_for(instance))
         .open_writer()
         .unwrap();
-    db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES (?1,0,'host',1,1)", [instance.to_string()]).unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('wake',?1,'resolved','native','pane',1,1,0)", [instance.to_string()]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'pane','host',1,1,0,'fresh','occupied','idle','exec',1,'term-'||'pane','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [instance.to_string()]).unwrap();
-    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','wake','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('inv','t','wake',1,'pending',0,1,9223372036854775807,300000);").unwrap();
+    db.execute("UPDATE herdr_hosts SET host_boot='host',host_epoch=1", [])
+        .unwrap();
+    db.execute("UPDATE local_node SET decision_seq=1", [])
+        .unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('wake',?1,'resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'pane','host',1,1,0,'fresh','occupied','idle','exec',1,'term-'||'pane','inc','coherent_enumeration',1)", [instance.to_string()]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t',?1,'topic','goal',0,0,0)", [instance.to_string()]).unwrap();
+    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','wake','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('inv','t','wake',1,'pending',0,1,9223372036854775807,300000,(SELECT id FROM local_node));").unwrap();
     drop(db);
     let (entered_tx, entered_rx) = mpsc::sync_channel(1);
     let release = Arc::new(AtomicBool::new(false));
@@ -1516,7 +1646,7 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
                 daemon_clock,
                 shutdown,
                 ServiceConfig::default(),
-                host,
+                herdr_threads::test_support::single_host_plan(host),
                 move |descriptor: &herdr_threads::daemon::ownership::EndpointDescriptor| {
                     ready_tx.send(descriptor.clone()).unwrap();
                     Ok(())
@@ -1557,12 +1687,12 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
         .unwrap();
     assert!(!reserved.is_empty());
     // Make a different invitation overdue only after the host call is held.
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('due',?1,'unresolved','native',1,0)", [instance.to_string()]).unwrap();
-    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('due-inv','t','due',1,'pending',0,2,100,100);").unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('due',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
+    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('due-inv','t','due',1,'pending',0,2,100,100,(SELECT id FROM local_node));").unwrap();
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
     );
     let budget = || CallBudget {
@@ -1609,7 +1739,7 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
         "daemon released owned hung attempt"
     );
     assert!(
-        OwnerLock::acquire(&paths).is_err(),
+        OwnerLock::acquire_with_test_hint(&paths).is_err(),
         "elected lease released before wake join"
     );
     cleanup.release.store(true, Ordering::SeqCst);
@@ -1623,7 +1753,7 @@ fn elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined() {
         .unwrap();
     assert_eq!(settled, (None, "outcome_unknown".into()));
     drop(db);
-    drop(OwnerLock::acquire(&paths).unwrap());
+    drop(OwnerLock::acquire_with_test_hint(&paths).unwrap());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1637,7 +1767,7 @@ impl Drop for ActualNativeRoot {
 }
 struct ActualNativeFixture {
     _root: ActualNativeRoot,
-    paths: InstancePaths,
+    paths: NodePaths,
     clock: Arc<dyn Clock>,
     descriptor: herdr_threads::daemon::ownership::EndpointDescriptor,
     stop: Cancellation,
@@ -1673,24 +1803,23 @@ impl ActualNativeFixture {
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let root_cleanup = ActualNativeRoot(root.clone());
         let endpoint = root.join("host.sock");
-        let paths = InstancePaths::resolve(
-            &RuntimeContext::explicit(root.join("state"), endpoint.clone(), None).unwrap(),
+        let paths = NodePaths::resolve(
+            &RuntimeContext::explicit(root.join("state"), endpoint.clone(), None)
+                .unwrap()
+                .state_dir,
         )
         .unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        let instance = owner.instance_uuid();
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        let instance = owner.node_uuid().unwrap();
         drop(owner);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let db = StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
+            .with_test_host()
+            .with_node_seed(herdr_threads::test_support::node_seed_for(instance))
             .open_writer()
             .unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-            [instance.to_string()],
-        )
-        .unwrap();
         for n in 0..saved {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![format!("saved-{n}"),instance.to_string(),format!("absent-{n}")]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![format!("saved-{n}"),instance.to_string(),format!("absent-{n}")]).unwrap();
         }
         drop(db);
         let listener = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
@@ -1849,7 +1978,7 @@ impl ActualNativeFixture {
                     thread_clock,
                     thread_stop,
                     ServiceConfig::default(),
-                    host,
+                    herdr_threads::test_support::single_host_plan(host),
                     thread_lanes,
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
@@ -1937,7 +2066,7 @@ impl ActualNativeFixture {
                     clock,
                     stop,
                     ServiceConfig::default(),
-                    host,
+                    herdr_threads::test_support::single_host_plan(host),
                     lanes,
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
@@ -1956,6 +2085,7 @@ impl ActualNativeFixture {
         herdr_threads::ports::LocalClient::call(
             &self.client(),
             Command::ResolveSeat(herdr_threads::protocol::commands::ResolveSeat {
+                host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new(pane),
                 operation: herdr_threads::protocol::ids::OperationId::new(operation),
             }),
@@ -1981,12 +2111,12 @@ impl ActualNativeFixture {
         LocalSocketClient::new(
             self.descriptor.endpoint.clone(),
             self.clock.clone(),
-            self.descriptor.instance_uuid,
+            self.descriptor.node_uuid,
             Some(self.descriptor.boot_id),
         )
     }
     fn db(&self) -> rusqlite::Connection {
-        rusqlite::Connection::open(&self.paths.database_path).unwrap()
+        herdr_threads::test_support::open_test_connection(&self.paths.database_path)
     }
 }
 impl Drop for ActualNativeFixture {
@@ -2001,7 +2131,7 @@ impl Drop for ActualNativeFixture {
             let _ = worker.join();
         }
         if std::thread::panicking()
-            && let Ok(log) = fs::read_to_string(self.paths.instance_dir.join("daemon.log"))
+            && let Ok(log) = fs::read_to_string(self.paths.node_dir.join("daemon.log"))
         {
             eprintln!("{log}");
         }
@@ -2050,10 +2180,10 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
         std::thread::sleep(Duration::from_millis(5));
     }
     let db = fixture.db();
-    let instance = fixture.descriptor.instance_uuid.to_string();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('due',?1,'unresolved','native',1,0)", [&instance]).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [&instance]).unwrap();
-    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('due-inv','t','due',1,'pending',0,1,100,100);").unwrap();
+    let instance = fixture.descriptor.node_uuid.to_string();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('due',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&instance]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t',?1,'topic','goal',0,0,0)", [&instance]).unwrap();
+    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('due-inv','t','due',1,'pending',0,1,100,100,(SELECT id FROM local_node));").unwrap();
     assert!(matches!(
         herdr_threads::ports::LocalClient::call(
             &fixture.client(),
@@ -2085,7 +2215,7 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(!fixture.peer_eof.load(Ordering::SeqCst));
-    assert!(OwnerLock::acquire(&fixture.paths).is_err());
+    assert!(OwnerLock::acquire_with_test_hint(&fixture.paths).is_err());
     // Frozen captures perform no SQLite maintenance. Hold the actual worker
     // at its next idle boundary, after the cancelled NativeCli call returns.
     // Declared after the fixture: panic releases the worker before teardown.
@@ -2133,7 +2263,7 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
     }
     assert!(!fixture.daemon.as_ref().unwrap().is_finished());
     assert!(
-        OwnerLock::acquire(&fixture.paths).is_err(),
+        OwnerLock::acquire_with_test_hint(&fixture.paths).is_err(),
         "owner released before observation worker joined"
     );
     joined_pass.0.cancel();
@@ -2142,9 +2272,9 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
         fixture.native.upgrade().is_none(),
         "elected runtime retained NativeCli after join"
     );
-    assert!(OwnerLock::acquire(&fixture.paths).is_ok());
+    assert!(OwnerLock::acquire_with_test_hint(&fixture.paths).is_ok());
     let active: Option<String> = db
-        .query_row("SELECT active_snapshot_id FROM host_instances", [], |r| {
+        .query_row("SELECT active_snapshot_id FROM herdr_hosts", [], |r| {
             r.get(0)
         })
         .unwrap();
@@ -2180,7 +2310,7 @@ fn actual_native_verified_baseline_holds_targets_and_cannot_retire_proofless_sea
     assert_eq!(counts, (0, 0));
     let baselines: (Option<String>, Option<String>, i64) = db
         .query_row(
-            "SELECT active_snapshot_id,recovery_baseline_generation_id,baseline_hold_unclaimed FROM host_instances",
+            "SELECT active_snapshot_id,recovery_baseline_generation_id,baseline_hold_unclaimed FROM herdr_hosts",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -2198,7 +2328,7 @@ fn actual_native_verified_baseline_holds_targets_and_cannot_retire_proofless_sea
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 fn host_state(db: &rusqlite::Connection) -> (Option<String>, i64, i64) {
     db.query_row(
-        "SELECT active_snapshot_id,host_epoch,invalidation_revision FROM host_instances",
+        "SELECT active_snapshot_id,host_epoch,invalidation_revision FROM herdr_hosts",
         [],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )
@@ -2224,7 +2354,7 @@ fn actual_native_verified_snapshot_resolves_live_pane_and_retires_it_after_close
         panic!("resolve did not return a seat");
     };
     assert!(
-        herdr_threads::protocol::ids::is_short_public_id("s", seat.as_str()),
+        herdr_threads::protocol::ids::is_public_id("s", seat.as_str()),
         "new seat IDs are short: {}",
         seat.as_str()
     );
@@ -2414,6 +2544,7 @@ fn request_with_previous_boot_after_restart_is_daemon_boot_changed() {
     assert_ne!(fixture.descriptor.boot_id, old_boot);
     let resolve = || {
         Command::ResolveSeat(herdr_threads::protocol::commands::ResolveSeat {
+            host: herdr_threads::test_support::test_host_locator(),
             target: HostTargetId::new("w4:p1"),
             operation: herdr_threads::protocol::ids::OperationId::new("stale-boot"),
         })
@@ -2464,7 +2595,7 @@ fn restart_keeps_registered_seat_available(provenance: &str) {
             herdr_threads::test_support::isolation::stand_in_fingerprint("claude", "x");
         let db = fixture.db();
         db.execute(
-            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT s.id,s.generation,s.target_generation,s.target_id,h.host_boot,h.host_epoch,'claude','plugin_context:x','exec-x',?2,1,1,s.structural_terminal_id,s.structural_incarnation,?3,?4 FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT s.id,s.generation,s.target_generation,s.target_id,h.host_boot,h.host_epoch,'claude','plugin_context:x','exec-x',?2,1,1,s.structural_terminal_id,s.structural_incarnation,?3,?4 FROM seats s JOIN herdr_hosts h ON h.node_id=s.instance_id WHERE s.id=?1",
             // A live fingerprint: the liveness worker (decision 9) disconnects a binding without one.
             rusqlite::params![
                 seat.as_str(),
@@ -2489,7 +2620,7 @@ fn restart_keeps_registered_seat_available(provenance: &str) {
     assert_eq!(available(&db).as_deref(), Some(provenance));
     let (binding_epoch, host_epoch, ended): (i64, i64, Option<i64>) = db
         .query_row(
-            "SELECT b.host_epoch,h.host_epoch,b.ended_at FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id JOIN host_instances h ON h.id=s.instance_id WHERE b.seat_id=?1",
+            "SELECT b.host_epoch,h.host_epoch,b.ended_at FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id JOIN herdr_hosts h ON h.node_id=s.instance_id WHERE b.seat_id=?1",
             [seat.as_str()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -2545,31 +2676,30 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
     let _remove = Remove(root.clone());
     let context =
         RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
-    let instance = owner.instance_uuid().to_string();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+    let instance = owner.node_uuid().unwrap().to_string();
     drop(owner);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     drop(
         StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
+            .with_test_host()
+            .with_node_seed(herdr_threads::test_support::node_seed_for(&instance))
             .open_writer()
             .unwrap(),
     );
     {
         // A pre-invariant store: raw connection, so no evidence guard.
         let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
-            [&instance],
-        )
-        .unwrap();
+        db.execute("UPDATE herdr_hosts SET host_boot='b',host_epoch=1", [])
+            .unwrap();
         for seat in ["healable", "noproof"] {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native','p-'||?1,1,1,0)", [seat, instance.as_str()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native','p-'||?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat, instance.as_str()]).unwrap();
             db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES (?1,1,1,'p-'||?1,'b',1,'codex','n','e-'||?1,'cooperative_top_level',1,1)", [seat]).unwrap();
         }
         db.execute("UPDATE seats SET structural_terminal_id='term',structural_incarnation='inc',structural_incarnation_kind='coherent_enumeration',structural_host_boot='b',structural_host_epoch=1,structural_connection_epoch=1,structural_observation_sequence=1 WHERE id='healable'", []).unwrap();
         // One unresolved seat for the unresolved-seat channel.
-        db.execute("INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at) VALUES ('stuck',?1,'unresolved','other','native','p-stuck',2,1,0)", [instance.as_str()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,unresolved_reason,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('stuck',?1,'unresolved','other','native','p-stuck',2,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.as_str()]).unwrap();
     }
     let host = Arc::new(herdr_threads::host::native::NativeCli::new(
         root.join("absent-herdr.sock"),
@@ -2590,7 +2720,7 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
                 thread_clock,
                 thread_stop,
                 ServiceConfig::default(),
-                host,
+                herdr_threads::test_support::single_host_plan(host),
                 move |descriptor| {
                     ready.send(descriptor.clone()).unwrap();
                     Ok(())
@@ -2617,7 +2747,7 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
     let client = LocalSocketClient::new(
         descriptor.endpoint.clone(),
         Arc::clone(&clock),
-        descriptor.instance_uuid,
+        descriptor.node_uuid,
         Some(descriptor.boot_id),
     );
     // The observation lane captures at once and, host being absent, freezes:
@@ -2742,7 +2872,7 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
     // the same line.
     stop.cancel();
     assert!(join.daemon.take().unwrap().join().unwrap().unwrap());
-    let log = fs::read_to_string(paths.instance_dir.join("daemon.log")).unwrap();
+    let log = fs::read_to_string(paths.node_dir.join("daemon.log")).unwrap();
     assert!(log.contains(expected), "{log}");
 }
 

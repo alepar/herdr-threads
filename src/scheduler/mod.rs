@@ -512,6 +512,8 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
                 break;
             };
             match self.wakes.store.clear_wake_batch_if_empty(&seat, budget) {
+                // Rebound to another host: that host's worker owns the window.
+                Err(err) if err.code == ErrorCode::Conflict => {}
                 Ok(empty) => {
                     if empty {
                         self.wakes
@@ -592,6 +594,8 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
             match self.wakes.store.recover_wake_reservation(request, budget) {
                 Ok(WakeRecoveryOutcome::Recovered) => outcome.recovered += 1,
                 Ok(WakeRecoveryOutcome::AlreadySettled | WakeRecoveryOutcome::Stale) => {}
+                // Rebound to another host: that host's worker recovers it.
+                Err(err) if err.code == ErrorCode::Conflict => {}
                 Err(err) => {
                     scan.pending.push_front(candidate);
                     return Err(err);
@@ -602,6 +606,16 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
             scan.complete = true;
         }
         Ok(scan.complete)
+    }
+}
+
+/// A per-seat wake write answers `Conflict` for a seat that is not on this
+/// worker's host (rebound mid-pass): the seat is skipped, with no refusal
+/// recorded and no retry scheduled. `None` is that skip.
+fn skip_if_rebound<T>(result: Result<T, ApiError>) -> Result<Option<T>, ApiError> {
+    match result {
+        Err(err) if err.code == ErrorCode::Conflict => Ok(None),
+        other => other.map(Some),
     }
 }
 
@@ -841,7 +855,10 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         {
             return Ok(None);
         }
-        let window = self.store.wake_batch_window(candidate, budget)?;
+        let window = match skip_if_rebound(self.store.wake_batch_window(candidate, budget))? {
+            Some(window) => window,
+            None => return Ok(None),
+        };
         if !state.dispatch.batch_eligible(
             &seat,
             window,
@@ -889,7 +906,8 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             return Ok(None);
         }
         self.store.before_wake_decision(&seat, budget)?;
-        let Some(reservation) = self.store.reserve_wake(candidate, budget)? else {
+        let Some(Some(reservation)) = skip_if_rebound(self.store.reserve_wake(candidate, budget))?
+        else {
             return Ok(None);
         };
         // A crash here leaves only the committed reservation behind.
@@ -1075,7 +1093,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         // Like a wake: the store's liveness re-check runs after in-memory admission and before
         // the durable reservation, so `reserve_poke` decides against the updated presence.
         self.store.before_wake_decision(&seat, budget)?;
-        let Some(reserved) = self.store.reserve_poke(due, budget)? else {
+        let Some(Some(reserved)) = skip_if_rebound(self.store.reserve_poke(due, budget))? else {
             state
                 .dispatch
                 .poke_unreserved(&seat, self.store.clock().monotonic_now());
@@ -1226,6 +1244,12 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
                 refused_restore,
                 budget,
             ),
+        };
+        // A seat rebound to another host mid-flight can never be settled by
+        // this worker: drop the record rather than retry it forever.
+        let result = match result {
+            Err(err) if err.code == ErrorCode::Conflict => Ok(false),
+            other => other,
         };
         let mut state = self
             .state

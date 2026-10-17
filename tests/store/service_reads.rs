@@ -99,26 +99,37 @@ fn fixture() -> Fixture {
         "herdr-service-reads-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
     let mut conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
-        [],
+    conn.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
     )
     .unwrap();
     for seat in ["s1", "s2", "s3"] {
-        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1,1,1,0)", [seat]).unwrap();
-        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat]).unwrap();
+        conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'b',1,1,0,'fresh','term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
     }
     let author = {
         let tx = conn.transaction().unwrap();
-        let author = service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(0)).unwrap();
+        let author = service_substrate::ensure_reserved_author(
+            &tx,
+            "34750f98bd59fcfc946da45aaabe933b",
+            UtcMillis(0),
+        )
+        .unwrap();
         tx.commit().unwrap();
         author
     };
-    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
     let gate = ReadGate(author.clone());
-    let connection = gate.register("i", "b", author.clone()).unwrap();
+    let connection = gate
+        .register("34750f98bd59fcfc946da45aaabe933b", "b", author.clone())
+        .unwrap();
     let thread = ThreadId::new("t");
     store
         .service_operation(
@@ -137,7 +148,8 @@ fn fixture() -> Fixture {
     {
         let tx = conn.transaction().unwrap();
         for seat in ["s1", "s2"] {
-            let joined_seq = schema::next_decision_seq(&tx, "i").unwrap();
+            let joined_seq =
+                schema::next_decision_seq(&tx, "34750f98bd59fcfc946da45aaabe933b").unwrap();
             tx.execute(
                 "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t',?1,'joined',100)",
                 [seat],
@@ -170,7 +182,7 @@ impl Fixture {
 
     /// A second handle on the same database for the test-support writers.
     fn ctx(&self) -> StoreContext {
-        StoreContext::new(self.path.clone(), Arc::new(FixedClock))
+        StoreContext::new(self.path.clone(), Arc::new(FixedClock)).with_test_host()
     }
 
     /// One service-authored, receipt-bearing ordinary message, written as
@@ -196,19 +208,20 @@ impl Fixture {
             .unwrap();
         let (lifecycle, eligibility, config): (i64, i64, i64) = tx
             .query_row(
-                "SELECT lifecycle_revision,send_eligibility_revision,duration_config_revision FROM host_instances WHERE id='i'",
+                "SELECT h.lifecycle_revision,n.send_eligibility_revision,n.duration_config_revision FROM local_node n JOIN herdr_hosts h ON h.node_id=n.id WHERE n.id='34750f98bd59fcfc946da45aaabe933b'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
         let count = recipients.len() as i64;
-        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_cursor,recipient_count,warning_count,status) VALUES (?1,'i',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?11,?12,0,'sealed')",
-            rusqlite::params![prep, format!("service:i:{}", author.as_str()), key, sha2::Sha256::digest(key.as_bytes()).as_slice(), thread, membership, lifecycle, eligibility, timeline, config, high_water, count]).unwrap();
+        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,recipient_cursor,recipient_count,warning_count,status) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?11,?12,0,'sealed')",
+            rusqlite::params![prep, format!("service:34750f98bd59fcfc946da45aaabe933b:{}", author.as_str()), key, sha2::Sha256::digest(key.as_bytes()).as_slice(), thread, membership, lifecycle, eligibility, timeline, config, high_water, count]).unwrap();
         for (ordinal, seat) in recipients.iter().enumerate() {
             tx.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot,availability_provenance) VALUES (?1,?2,?3,?4,?5,1,NULL)",
                 rusqlite::params![prep, thread, seat, ordinal as i64 + 1, duration_ms]).unwrap();
         }
-        let decision_seq = schema::next_decision_seq(&tx, "i").unwrap();
+        let decision_seq =
+            schema::next_decision_seq(&tx, "34750f98bd59fcfc946da45aaabe933b").unwrap();
         let base: i64 = tx
             .query_row(
                 "SELECT next_sequence FROM threads WHERE id=?1",
@@ -258,7 +271,13 @@ impl Fixture {
 
     fn own_send(&mut self, key: &str, recipients: &[&str]) -> MessageId {
         let author = self.author.clone();
-        self.seed_service_send(&author, "i", key, recipients, 60_000)
+        self.seed_service_send(
+            &author,
+            "34750f98bd59fcfc946da45aaabe933b",
+            key,
+            recipients,
+            60_000,
+        )
     }
 
     fn service_history(
@@ -311,7 +330,12 @@ impl Fixture {
             initial,
             full_bodies: false,
         });
-        match queries::query(self.context(), "i", &command, &budget())? {
+        match queries::query(
+            self.context(),
+            "34750f98bd59fcfc946da45aaabe933b",
+            &command,
+            &budget(),
+        )? {
             CommandResult::History(page) => Ok(page),
             other => panic!("unexpected result {other:?}"),
         }
@@ -351,7 +375,14 @@ impl Fixture {
             message: message.clone(),
             page,
         });
-        match queries::query(self.context(), "i", &command, &budget()).unwrap() {
+        match queries::query(
+            self.context(),
+            "34750f98bd59fcfc946da45aaabe933b",
+            &command,
+            &budget(),
+        )
+        .unwrap()
+        {
             CommandResult::DeliveryInspect(inspection) => inspection,
             other => panic!("unexpected result {other:?}"),
         }
@@ -645,7 +676,7 @@ fn service_receipts_scoping() {
     // rejects any other), so "a different author" is a connection whose author
     // is not the one that wrote the message.
     let other = ServiceConnectionAuthority::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         "b".into(),
         1,
         ServiceAuthorId::new("graph:other"),
@@ -733,9 +764,13 @@ fn search_hit_on_a_service_message_keeps_its_actor_label() {
         page: page_of(10, None),
         max_candidates: 100,
     });
-    let CommandResult::Search(result) =
-        queries::query(fx.context(), "i", &command, &budget()).unwrap()
-    else {
+    let CommandResult::Search(result) = queries::query(
+        fx.context(),
+        "34750f98bd59fcfc946da45aaabe933b",
+        &command,
+        &budget(),
+    )
+    .unwrap() else {
         panic!("wrong result")
     };
     let hits: Vec<_> = result

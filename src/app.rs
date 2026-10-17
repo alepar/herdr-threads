@@ -5,10 +5,11 @@ use crate::{
         control::{ControlService, StopController},
         health::{ComponentStatus, HarnessStatus, HealthInputs, RetirementHealth},
         ownership::EndpointDescriptor,
-        paths::InstancePaths,
-        run_elected_with_diagnostics,
+        paths::NodePaths,
+        run_elected_with_peers,
     },
-    ports::{HostPort, LocalService, StorePort},
+    node::{NodeIdentity, NodeKeyError},
+    ports::{LocalService, StorePort},
     protocol::{
         authority::Harness,
         results::{CapabilityState, HealthSettings},
@@ -19,14 +20,14 @@ use crate::{
         dispatch::DomainService,
         fair_writer::FairWriter,
         host_evidence::HostEvidenceStatus,
-        host_reachability::HostReachability,
+        host_sessions::{HostAttachPlan, HostSession, HostSessions, SessionDeps},
         kicks::{CommitKicks, Lane},
         mod_channels::ModChannelRegistry,
         pacer::Pacer,
         workers::{
-            WorkerStatus, admission_handle, start_admission_observer,
-            start_deadline_worker_ticking, start_mod_channel_worker, start_observation_worker,
-            start_retention_worker, start_wake_worker_with_liveness,
+            ApplyPostCommit, WorkerStatus, admission_handle, start_admission_observer,
+            start_apply_worker, start_deadline_worker_ticking, start_mod_channel_worker,
+            start_retention_worker,
         },
     },
     store::{SqliteStore, connection::StoreContext},
@@ -97,7 +98,7 @@ pub(crate) fn health_summary_budget(request: &CallBudget, clock: &dyn Clock) -> 
 /// `host` supplies the host fields: they come only from evidence the
 /// observation lane observed, under the adapter's incarnation witness.
 pub(crate) fn elected_health_provider(
-    instance: Uuid,
+    instance: crate::node::NodeUuid,
     boot: Uuid,
     settings: HealthSettings,
     clock: Arc<dyn Clock>,
@@ -136,13 +137,60 @@ pub(crate) struct ElectedHostEvidence {
     pub(crate) release: HostReleaseSource,
 }
 
-/// Where Health reads the observed Herdr release; the default has none.
+impl ElectedHostEvidence {
+    /// The evidence of a composed daemon: the startup session's evidence
+    /// status and static adapter capabilities (`fallback` and the neutral
+    /// answers when no server is attached), and a release source over every
+    /// attached session.
+    pub(crate) fn of_sessions(
+        sessions: &Arc<HostSessions>,
+        primary: Option<&HostSession>,
+        fallback: Arc<HostEvidenceStatus>,
+        harnesses: Arc<Mutex<HarnessObservations>>,
+    ) -> Self {
+        let (status, incarnation_witness, safe_prompt) = match primary {
+            Some(session) => (
+                Arc::clone(session.evidence()),
+                session.port().incarnation_witness(),
+                session.port().safe_prompt_capability(),
+            ),
+            None => (
+                fallback,
+                CapabilityState::Unknown,
+                CapabilityState::Unsupported,
+            ),
+        };
+        Self {
+            status,
+            incarnation_witness,
+            safe_prompt,
+            harnesses,
+            release: HostReleaseSource(Some(Arc::clone(sessions))),
+        }
+    }
+}
+
+/// Where Health reads the attached Herdr servers and their observed release;
+/// the default has none.
 #[derive(Default)]
-pub(crate) struct HostReleaseSource(Option<Arc<dyn HostPort>>);
+pub(crate) struct HostReleaseSource(Option<Arc<HostSessions>>);
 
 impl HostReleaseSource {
+    /// One Health entry per attached server, read on every Health call;
+    /// empty when none is attached (store-only).
+    fn entries(&self) -> Vec<crate::service::host_sessions::HostHealthEntry> {
+        self.0
+            .as_ref()
+            .map_or_else(Vec::new, |sessions| sessions.health_entries())
+    }
+
     fn observed(&self) -> Option<crate::host::compatibility::HostRelease> {
-        self.0.as_ref().and_then(|host| host.observed_release())
+        self.0.as_ref().and_then(|sessions| {
+            sessions
+                .attached()
+                .iter()
+                .find_map(|session| session.port().observed_release())
+        })
     }
 }
 
@@ -187,7 +235,7 @@ impl HarnessObservations {
 }
 
 struct ElectedHealth {
-    instance: Uuid,
+    instance: crate::node::NodeUuid,
     boot: Uuid,
     settings: HealthSettings,
     clock: Arc<dyn Clock>,
@@ -255,6 +303,25 @@ impl ElectedHealth {
         // lane's private diagnostics and durable inspect rows.
         inputs.scheduler = scheduler_status(&self.workers);
         inputs.degraded_lanes = degraded_lanes(&self.workers);
+        // Each attached server reports its own observation and wake lanes
+        // (the shared slots above stay untouched when sessions exist); they
+        // degrade the scheduler like any lane, the first one through its
+        // component line.
+        let (hosts, session_lanes): (Vec<_>, Vec<_>) = self
+            .host
+            .release
+            .entries()
+            .into_iter()
+            .map(|entry| (entry.input, entry.lanes))
+            .unzip();
+        inputs.hosts = hosts;
+        let session_lanes: Vec<_> = session_lanes.into_iter().flatten().collect();
+        if inputs.scheduler == ComponentStatus::Ready
+            && let Some(first) = session_lanes.first()
+        {
+            inputs.scheduler = ComponentStatus::Degraded(first.summary.clone());
+        }
+        inputs.degraded_lanes.extend(session_lanes);
         inputs.transitions_refused = self.host.status.transitions_refused();
         inputs.last_scheduler_tick_at = self.workers.first().and_then(|status| status.last_tick());
         if let Ok(observed) = self.host.harnesses.lock() {
@@ -292,7 +359,7 @@ fn degraded_lanes(workers: &[Arc<WorkerStatus>]) -> Vec<crate::daemon::health::L
             status
                 .health()
                 .map(|health| crate::daemon::health::LaneDegradation {
-                    lane: lane.name(),
+                    lane: lane.name().to_owned(),
                     summary: health.summary(),
                     class: health
                         .failure
@@ -650,6 +717,30 @@ pub(crate) fn start_retention_lane(
     start_retention_worker(store, writer, pacer, stop, status)
 }
 
+/// Starts the Apply lane as the elected factory does: its Pacer is registered
+/// with the commit-kick registry (`journal` commits kick it) and attached to
+/// `status` so Health shows its backoff.
+pub(crate) fn start_apply_lane(
+    kicks: &CommitKicks,
+    clock: Arc<dyn Clock>,
+    stop: Cancellation,
+    store: Arc<SqliteStore>,
+    post_commit: ApplyPostCommit,
+    writer: Arc<FairWriter>,
+    status: Arc<WorkerStatus>,
+) -> io::Result<std::thread::JoinHandle<()>> {
+    let pacer = Arc::new(Pacer::new(Lane::Apply.name(), clock, stop.clone()));
+    kicks.register(Lane::Apply, Arc::clone(&pacer));
+    // When the own-history hold lifts, the entries it held apply at once, not at
+    // the lane's 60 s safety tick.
+    if let Ok(sync) = store.context().sync() {
+        let kick = Arc::clone(&pacer);
+        sync.own_history_hold()
+            .set_release_kick(Arc::new(move || kick.kick()));
+    }
+    start_apply_worker(store, post_commit, writer, pacer, stop, status)
+}
+
 /// Test-only view of one elected daemon's lanes: the store's per-origin commit
 /// counts and flushed kick log, and each registered lane Pacer. It observes;
 /// it changes the daemon only through its explicit test knobs (injected lane
@@ -671,8 +762,8 @@ pub type KickRecord = (crate::service::kicks::LaneSet, Option<Lane>, Instant);
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct LaneFaults {
-    codes: Mutex<[Option<crate::protocol::results::ErrorCode>; 6]>,
-    hits: [std::sync::atomic::AtomicU64; 6],
+    codes: Mutex<[Option<crate::protocol::results::ErrorCode>; Lane::COUNT]>,
+    hits: [std::sync::atomic::AtomicU64; Lane::COUNT],
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -767,8 +858,15 @@ struct ProbeState {
     faults: Arc<LaneFaults>,
     /// Where the lane error log writes instead of the process stderr.
     lane_log_path: Option<std::path::PathBuf>,
-    /// The host reachability the observation lane feeds the wake lane.
-    reachability: Option<Arc<HostReachability>>,
+    /// The daemon's multi-host registry; the host lanes' Pacers and the
+    /// reachability the observation lane feeds the wake lane live in its sessions.
+    sessions: Option<std::sync::Weak<HostSessions>>,
+    /// The sweep period the daemon is composed with (default: production's).
+    host_sweep_interval: Option<Duration>,
+    /// The `herdr` program and pass period discovery runs with (default: `herdr`
+    /// from the environment, every 60 s). Set, the process-table scan is off,
+    /// so a test sees only the targets its fake `herdr` names.
+    discovery: Option<(std::path::PathBuf, Duration)>,
     /// The store commits without fsync (see [`LaneProbe::relax_commit_durability`]).
     relaxed_durability: bool,
 }
@@ -856,16 +954,82 @@ impl LaneProbe {
     fn attach_pacer(&self, lane: Lane, pacer: &Arc<Pacer>) {
         self.state().pacers.push((lane, Arc::clone(pacer)));
     }
-    fn attach_reachability(&self, reachability: &Arc<HostReachability>) {
-        self.state().reachability = Some(Arc::clone(reachability));
+    fn attach_host_sessions(&self, sessions: &Arc<HostSessions>) {
+        self.state().sessions = Some(Arc::downgrade(sessions));
     }
-    /// Whether the observation lane has the host marked down (the wake lane
-    /// is frozen); false before the daemon is attached.
-    pub fn host_down(&self) -> bool {
+    /// The period of the daemon's host sweep (set by
+    /// [`LaneProbe::set_host_sweep_period`]); call the setter before the
+    /// daemon starts.
+    fn host_sweep_period(&self) -> Duration {
         self.state()
-            .reachability
-            .as_ref()
-            .is_some_and(|reachability| reachability.is_down())
+            .host_sweep_interval
+            .unwrap_or(crate::service::host_sessions::DEFAULT_SWEEP_INTERVAL)
+    }
+    /// Shortens the host sweep so a test sees a socket that appears after
+    /// start attached within milliseconds. Call before the daemon starts.
+    pub fn set_host_sweep_period(&self, interval: Duration) {
+        self.state().host_sweep_interval = Some(interval);
+    }
+    /// The program and period of the discovery worker (set by
+    /// [`LaneProbe::set_discovery`]).
+    fn discovery(&self) -> (Option<std::path::PathBuf>, Duration) {
+        match self.state().discovery.clone() {
+            Some((program, period)) => (Some(program), period),
+            // A spawned daemon of a cluster test (ht-5fr.11) cannot be handed a
+            // probe: its environment shortens the cadence instead.
+            None => (
+                None,
+                std::env::var("HT_TEST_DISCOVERY_PERIOD_MS")
+                    .ok()
+                    .and_then(|ms| ms.parse::<u64>().ok())
+                    .map_or(crate::sync::discovery::POLL_PERIOD, Duration::from_millis),
+            ),
+        }
+    }
+    /// Runs peer discovery with `herdr` at `program` every `period`, and without
+    /// the `herdr --remote` process scan (the machine's real clients are not the
+    /// test's). Call before the daemon starts.
+    pub fn set_discovery(&self, program: std::path::PathBuf, period: Duration) {
+        self.state().discovery = Some((program, period));
+    }
+    /// The session of the attached server `locator`, once the daemon attached it.
+    fn session_of(&self, locator: &crate::protocol::ids::HostLocator) -> Option<Arc<HostSession>> {
+        self.host_sessions()?.by_locator(locator)
+    }
+    /// The host-lane Pacer of the server `locator`: its observation or wake
+    /// worker's. `None` for any other lane, or while the server is unattached.
+    pub fn host_pacer(
+        &self,
+        locator: &crate::protocol::ids::HostLocator,
+        lane: Lane,
+    ) -> Option<Arc<Pacer>> {
+        let session = self.session_of(locator)?;
+        match lane {
+            Lane::Observation => Some(Arc::clone(session.observation().pacer())),
+            Lane::Wakes => Some(Arc::clone(session.wake().pacer())),
+            _ => None,
+        }
+    }
+    /// The first attached server's Pacer for a host lane.
+    fn first_host_pacer(&self, lane: Lane) -> Option<Arc<Pacer>> {
+        let session = self.host_sessions()?.attached().into_iter().next()?;
+        match lane {
+            Lane::Observation => Some(Arc::clone(session.observation().pacer())),
+            Lane::Wakes => Some(Arc::clone(session.wake().pacer())),
+            _ => None,
+        }
+    }
+    /// The daemon's host registry while the daemon lives (the probe holds it
+    /// weakly, so a stopped daemon's hosts are released).
+    pub fn host_sessions(&self) -> Option<Arc<HostSessions>> {
+        self.state().sessions.as_ref()?.upgrade()
+    }
+    /// Whether the first attached server's observation lane has it marked
+    /// down (its wake lane is frozen); false before the daemon is attached.
+    pub fn host_down(&self) -> bool {
+        self.host_sessions()
+            .and_then(|sessions| sessions.attached().into_iter().next())
+            .is_some_and(|session| session.reachability().is_down())
     }
     /// Whether the daemon's store and both worker-lane Pacers are attached.
     pub fn attached(&self) -> bool {
@@ -969,13 +1133,14 @@ impl LaneProbe {
     /// commit hook) and still wants the lane to see it at once.
     pub fn kick(&self, lane: Lane) {
         // The newest registration wins (a restarted daemon re-registers).
-        let pacer = self
+        let registered = self
             .state()
             .pacers
             .iter()
             .rev()
             .find(|(candidate, _)| *candidate == lane)
             .map(|(_, pacer)| Arc::clone(pacer));
+        let pacer = registered.or_else(|| self.first_host_pacer(lane));
         if let Some(pacer) = pacer {
             pacer.kick();
         }
@@ -987,6 +1152,13 @@ impl LaneProbe {
             .registry
             .as_ref()
             .is_some_and(|kicks| kicks.registered(lane))
+    }
+    /// How many Pacers the elected factory registered for `lane`.
+    pub fn registered_count(&self, lane: Lane) -> usize {
+        self.state()
+            .registry
+            .as_ref()
+            .map_or(0, |kicks| kicks.pacer_count(lane))
     }
     /// Whether `lane`'s `WorkerStatus` (the one Health reads) has its Pacer
     /// attached; false until the lane thread started.
@@ -1112,11 +1284,15 @@ impl LaneProbe {
     }
     /// How many times `lane`'s thread has entered a wait (finished a pass).
     pub fn idle_events(&self, lane: Lane) -> u64 {
-        self.state()
+        let registered = self
+            .state()
             .pacers
             .iter()
             .find(|(candidate, _)| *candidate == lane)
-            .map_or(0, |(_, pacer)| pacer.idle_events())
+            .map(|(_, pacer)| Arc::clone(pacer));
+        registered
+            .or_else(|| self.first_host_pacer(lane))
+            .map_or(0, |pacer| pacer.idle_events())
     }
 }
 
@@ -1126,7 +1302,13 @@ impl LaneProbe {
     fn attach_store(&self, _: &Arc<SqliteStore>) {}
     fn attach_registry(&self, _: &Arc<CommitKicks>, _: Vec<Arc<WorkerStatus>>) {}
     fn attach_pacer(&self, _: Lane, _: &Arc<Pacer>) {}
-    fn attach_reachability(&self, _: &Arc<HostReachability>) {}
+    fn attach_host_sessions(&self, _: &Arc<HostSessions>) {}
+    fn host_sweep_period(&self) -> Duration {
+        crate::service::host_sessions::DEFAULT_SWEEP_INTERVAL
+    }
+    fn discovery(&self) -> (Option<std::path::PathBuf>, Duration) {
+        (None, crate::sync::discovery::POLL_PERIOD)
+    }
     fn lane_log(&self, clock: Arc<dyn Clock>) -> crate::daemon::logs::RateLimitedLaneLog {
         crate::daemon::logs::RateLimitedLaneLog::to_stderr(clock)
     }
@@ -1135,11 +1317,11 @@ impl LaneProbe {
 /// The lifecycle calls the factory only after ownership election and socket
 /// bind. The matching instance and boot are injected into SQLite and control.
 pub async fn run_elected<R>(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     config: ServiceConfig,
-    host: Arc<dyn HostPort>,
+    plan: HostAttachPlan,
     on_ready: R,
 ) -> io::Result<bool>
 where
@@ -1150,7 +1332,7 @@ where
         clock,
         shutdown,
         config,
-        host,
+        plan,
         None,
         LaneProbe::default(),
         on_ready,
@@ -1163,106 +1345,238 @@ where
 /// log and each lane's idle count.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn run_elected_probed<R>(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     config: ServiceConfig,
-    host: Arc<dyn HostPort>,
+    plan: HostAttachPlan,
     probe: LaneProbe,
     on_ready: R,
 ) -> io::Result<bool>
 where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
-    run_elected_impl(paths, clock, shutdown, config, host, None, probe, on_ready).await
+    run_elected_impl(paths, clock, shutdown, config, plan, None, probe, on_ready).await
 }
 
-/// Production native composition retains its required scoped observer before erasure.
-#[allow(clippy::too_many_arguments)]
+/// Production native composition: `plan.factory` builds each attached host,
+/// and a host with `HostGuardedStart` retains its required scoped observer for
+/// guarded bootstrap.
 pub async fn run_elected_guarded<R>(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     context: &crate::daemon::paths::RuntimeContext,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     config: ServiceConfig,
-    host: Arc<dyn HostPort>,
-    observer: Arc<dyn crate::ports::BootstrapObserver>,
+    plan: HostAttachPlan,
     on_ready: R,
 ) -> io::Result<bool>
 where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
-    let selected_paths = InstancePaths::resolve_read_only(context)?;
-    if selected_paths.instance_dir.as_os_str() != paths.instance_dir.as_os_str()
-        || selected_paths.locator != paths.locator
-    {
+    let selected_paths = NodePaths::resolve_read_only(&context.state_dir)?;
+    if selected_paths.node_dir.as_os_str() != paths.node_dir.as_os_str() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "guarded runtime paths differ from selected context",
         ));
     }
-    if host.native_launch_capability() != crate::ports::NativeLaunchCapability::HostGuardedStart {
-        return run_elected_impl(
-            paths,
-            clock,
-            shutdown,
-            config,
-            host,
-            None,
-            LaneProbe::default(),
-            on_ready,
-        )
-        .await;
-    }
-    let selected = (
-        context.state_dir.clone(),
-        context.host_endpoint.clone(),
-        observer,
-    );
     run_elected_impl(
         paths,
         clock,
         shutdown,
         config,
-        host,
-        Some(selected),
+        plan,
+        Some(context.state_dir.clone()),
         LaneProbe::default(),
         on_ready,
     )
     .await
 }
 
+/// The longest `host_label` the journal records, in bytes.
+const HOST_LABEL_MAX_BYTES: usize = 255;
+
+/// This machine's hostname, lossy UTF-8, for the genesis `host_label`.
+fn host_label() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is valid for `buf.len()` bytes; gethostname writes at
+    // most that many and may omit the terminator when it truncates.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return String::new();
+    }
+    let len = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    truncate_label(&String::from_utf8_lossy(&buf[..len]))
+}
+
+/// `text` cut to at most [`HOST_LABEL_MAX_BYTES`] bytes at a char boundary.
+fn truncate_label(text: &str) -> String {
+    let mut end = text.len().min(HOST_LABEL_MAX_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
+/// Load or create the node key and publish the `node.json` hint. A refused
+/// key is a one-line start failure naming the `NodeKeyError` variant.
+fn load_node_identity(paths: &NodePaths) -> io::Result<NodeIdentity> {
+    paths.prepare_node_dir()?;
+    let identity =
+        NodeIdentity::load_or_create(paths, paths.database_path.exists()).map_err(|error| {
+            let kind = match error {
+                NodeKeyError::Unreadable { .. } => io::ErrorKind::Other,
+                _ => io::ErrorKind::InvalidData,
+            };
+            io::Error::new(
+                kind,
+                format!("node key refused ({}): {error}", error.variant()),
+            )
+        })?;
+    publish_node_json(paths, &identity)?;
+    Ok(identity)
+}
+
+/// Writes `node.json` from the identity's current tag and `tag_k`, keeping the
+/// recorded `created_at` of an earlier hint for the same node.
+fn publish_node_json(paths: &NodePaths, identity: &NodeIdentity) -> io::Result<()> {
+    crate::node::json::publish_identity(&paths.node_json_path, identity).map(|_| ())
+}
+
+/// The start check of the node's identity against its store (Daemon start
+/// order step 3): the store's `local_node.id` must be the key's uuid, else the
+/// start is refused with `NodeKeyError::IdentityMismatch`; the stored `tag_k`
+/// becomes the identity's.
+fn check_store_identity(
+    conn: &rusqlite::Connection,
+    identity: &NodeIdentity,
+    key_path: &std::path::Path,
+) -> io::Result<()> {
+    // A database without a node table or row (a file the store has not
+    // initialized yet) is not this store's to judge: opening it creates or
+    // reports it. Any other failure (busy, corrupt) fails the start.
+    let (stored, tag_k): (String, u32) =
+        match conn.query_row("SELECT id, tag_k FROM local_node", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        }) {
+            Ok(found) => found,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                if message.starts_with("no such table: local_node") =>
+            {
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(io::Error::other(format!(
+                    "store startup: identity check: {error}"
+                )));
+            }
+        };
+    let stored_uuid: crate::node::NodeUuid = stored.parse().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("store startup: local_node id {stored:?} is not a node uuid"),
+        )
+    })?;
+    if stored_uuid != identity.uuid() {
+        let error = NodeKeyError::IdentityMismatch {
+            path: key_path.to_path_buf(),
+            store: stored_uuid,
+            key: identity.uuid(),
+        };
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("node key refused ({}): {error}", error.variant()),
+        ));
+    }
+    identity.set_tag_k(tag_k);
+    Ok(())
+}
+
+/// The daemon's registry and the links that stop it with the service.
+struct ComposedSessions {
+    sessions: Arc<HostSessions>,
+    _links: Vec<crate::protocol::time::CancelSubscription>,
+}
+
+/// The running coordinator: its facade (idle exit and the deadline lane's
+/// `signals()` reach it here) and the actor task the stop path awaits.
+struct ComposedSync {
+    handle: crate::sync::coordinator::SyncHandle,
+    join: tokio::task::JoinHandle<()>,
+    /// Peer discovery (ends on the daemon's stop token, before the coordinator).
+    discovery: tokio::task::JoinHandle<()>,
+}
+
+/// The incarnations repair thread (ht-5fr.6.13) and the token that ends it.
+/// Shutdown cancels `stop` only after the coordinator has stopped, so the
+/// coordinator never feeds a sink whose worker is gone.
+struct ComposedIncarnations {
+    stop: Cancellation,
+    join: std::thread::JoinHandle<()>,
+}
+
+/// How long shutdown waits for the discovery worker to notice the stop.
+const DISCOVERY_STOP_BOUND: Duration = Duration::from_secs(2);
+
+/// How long shutdown waits for the coordinator to close its links.
+const SYNC_STOP_BOUND: Duration = Duration::from_secs(3);
+
 #[allow(clippy::too_many_arguments)]
 async fn run_elected_impl<R>(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     config: ServiceConfig,
-    host: Arc<dyn HostPort>,
-    bootstrap: Option<(
-        std::path::PathBuf,
-        std::path::PathBuf,
-        Arc<dyn crate::ports::BootstrapObserver>,
-    )>,
+    // The startup hint and how hosts are built (spec §3 Startup).
+    plan: HostAttachPlan,
+    // Set by `run_elected_guarded`: the state dir of the guarded handoff
+    // namespace, used when the attached host has `HostGuardedStart`.
+    guarded_state_dir: Option<std::path::PathBuf>,
     probe: LaneProbe,
     on_ready: R,
 ) -> io::Result<bool>
 where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
+    // Step 0: a pending `sync resync` backs up and moves the damaged store
+    // aside, so every later step runs against a missing store (the key is
+    // loaded, not created). The plan is composed once the journal is open:
+    // dial targets, the pinned rx source and the salvage job.
+    let resync_plan = crate::sync::resync::resume_at_start(paths, clock.as_ref())?;
+    if let Some(plan) = &resync_plan {
+        eprintln!(
+            "resync: rebuilding from {}; backup at {}",
+            plan.from,
+            plan.backup_db.display()
+        );
+    }
+    // The node's identity comes from its key, loaded (or created for a new
+    // node) before election; the descriptor and the store `instance` string
+    // carry its uuid. node.json is a derived hint, written here so clients
+    // can find the daemon; it is rewritten after the store's identity check.
+    let identity = Arc::new(load_node_identity(paths)?);
     // Instance settings and the offline switch are read once, here: the
     // manifest fetch policy is fixed for this daemon's lifetime. An invalid
     // settings file refuses the start with a message naming the file.
-    let instance_settings = crate::daemon::settings::load(&paths.instance_dir)
+    let instance_settings = crate::daemon::settings::load(&paths.node_dir)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
     let manifest_policy = crate::harness::manifest::policy_from(
         &instance_settings,
         std::env::var_os("HERDR_THREADS_OFFLINE").as_deref(),
     );
-    let manifest_cache_dir = crate::harness::manifest::cache_dir(&paths.instance_dir);
+    let manifest_cache_dir = crate::harness::manifest::cache_dir(&paths.node_dir);
     let mod_delivery = instance_settings.mod_delivery;
     let database_path = paths.database_path.clone();
     let archival_paths = paths.clone();
+    let identity_paths = paths.clone();
+    let sync_admin_paths = paths.clone();
+    // The operator handler runs on a blocking thread and awaits the sync
+    // coordinator through the daemon's runtime.
+    let sync_admin_runtime = tokio::runtime::Handle::current();
+    let identity_db_path = paths.database_path.clone();
+    let identity_key_path = paths.key_path.clone();
     let factory_log_path = crate::daemon::logs::daemon_log_path(paths);
     let factory_clock = Arc::clone(&clock);
     let worker_slot = Arc::new(Mutex::new(Vec::new()));
@@ -1276,12 +1590,39 @@ where
     let wake_status = Arc::new(WorkerStatus::default());
     let factory_wake_status = Arc::clone(&wake_status);
     let factory_retention_status = Arc::new(WorkerStatus::default());
+    let factory_apply_status = Arc::new(WorkerStatus::default());
     let factory_archival_status = Arc::new(WorkerStatus::default());
+    let factory_sync_status = Arc::new(WorkerStatus::default());
     let admission_status = Arc::new(WorkerStatus::default());
     let factory_admission_status = Arc::clone(&admission_status);
     // One rate-limited logger for the daemon; every lane's status reports to it.
     let rate_limited_log = Arc::new(probe.lane_log(Arc::clone(&clock)));
     let lane_log: Arc<dyn crate::daemon::logs::LaneErrorLog> = rate_limited_log.clone();
+    let factory_lane_log = Arc::clone(&lane_log);
+    let HostAttachPlan {
+        hint: factory_hint,
+        factory: mut host_factory,
+    } = plan;
+    // The startup hint is the operator's explicit choice: it attaches whether
+    // or not its socket exists yet (the session then reports the server down
+    // and the observation lane reconnects), as the single-host daemon always
+    // did. Every other server attaches only once its socket exists.
+    if let Some(hint) = factory_hint.clone() {
+        let exists = Arc::clone(&host_factory.exists);
+        host_factory.exists =
+            Arc::new(move |path: &std::path::Path| path == hint.as_path() || exists(path));
+    }
+    // Filled by the factory; the stop path takes it to stop every session.
+    let sessions_slot: Arc<Mutex<Option<ComposedSessions>>> = Arc::new(Mutex::new(None));
+    // The sync coordinator: filled by the factory, awaited by the stop path.
+    // The intake and gauge reach the accept loop through `peers`.
+    let sync_slot: Arc<Mutex<Option<ComposedSync>>> = Arc::new(Mutex::new(None));
+    let factory_sync_slot = Arc::clone(&sync_slot);
+    let incarnations_slot: Arc<Mutex<Option<ComposedIncarnations>>> = Arc::new(Mutex::new(None));
+    let factory_incarnations_slot = Arc::clone(&incarnations_slot);
+    let peers = crate::daemon::transport::PeerWiring::default();
+    let factory_peers = peers.clone();
+    let factory_sessions = Arc::clone(&sessions_slot);
     // Hook payloads the optimistic recipes could not parse: counted for
     // Health and logged through the same rate-limited logger.
     let hook_parse_failures = Arc::new(crate::daemon::logs::HookParseFailures::new(Arc::clone(
@@ -1295,22 +1636,176 @@ where
         &factory_retention_status,
         &factory_archival_status,
         &admission_status,
+        &factory_apply_status,
+        &factory_sync_status,
     ] {
         status.set_error_log(Arc::clone(&lane_log));
     }
     let host_evidence = Arc::new(HostEvidenceStatus::default());
     let factory_host_evidence = Arc::clone(&host_evidence);
     let factory_probe = probe;
-    run_elected_with_diagnostics(
+    run_elected_with_peers(
         paths,
+        peers,
         clock,
         shutdown,
         move |instance, boot, cancellation| {
-            let context = StoreContext::new(database_path, Arc::clone(&factory_clock));
+            if instance != identity.uuid() {
+                return Err(io::Error::other(
+                    "node.json hint does not match the loaded node key",
+                ));
+            }
+            // Created before the context; HostSessions will publish into it.
+            let host_index = Arc::new(crate::store::hosts::HostIndex::new());
+            let context = StoreContext::with_host_index(
+                database_path,
+                Arc::clone(&factory_clock),
+                Arc::clone(&host_index),
+            )
+            .with_node_seed(crate::store::schema::NodeSeed {
+                uuid: identity.uuid(),
+                tag: crate::node::tag_for(identity.uuid(), 0),
+                tag_k: 0,
+            });
+            // Daemon start order step 3-4: an existing store's node row must
+            // belong to the key (checked before anything is written to it, and
+            // on a read-only connection so the writer's startup evidence
+            // backfill stays with the store's own open); adopt its tag_k and
+            // regenerate node.json with it. A new store is created from the
+            // identity itself.
+            if identity_db_path.exists() {
+                let conn = rusqlite::Connection::open_with_flags(
+                    &identity_db_path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .map_err(|error| io::Error::other(format!("store startup: {error}")))?;
+                conn.busy_timeout(std::time::Duration::from_secs(5))
+                    .map_err(|error| io::Error::other(format!("store startup: {error}")))?;
+                check_store_identity(&conn, &identity, &identity_key_path)?;
+            }
+            publish_node_json(&identity_paths, &identity)?;
+            // The marker of a pending rebuild, once its dial targets are back.
+            let mut resync_start: Option<(crate::sync::resync::ResyncPlan, std::path::PathBuf)> =
+                None;
+            // Daemon start order: the journal opens once, after the node.json
+            // step and before any host attaches. A refused open (a violated
+            // journal invariant) refuses the start.
+            {
+                let mut conn = context.open_writer().map_err(|error| {
+                    io::Error::other(format!(
+                        "store startup: journal open: {:?}: {}",
+                        error.code, error.detail
+                    ))
+                })?;
+                context.pin_binding_evidence();
+                let report = crate::store::journal::open(
+                    &context,
+                    &mut conn,
+                    Arc::clone(&identity),
+                    &host_label(),
+                    crate::sync::facts::FactRegistry::builtins(),
+                )
+                .map_err(|error| {
+                    io::Error::other(format!(
+                        "store startup: journal open: {:?}: {}",
+                        error.code, error.detail
+                    ))
+                })?;
+                // Once per start: a local upgrade resets targets stopped by
+                // an older version (a foreground writer turn).
+                {
+                    let sync_error = |error: crate::protocol::results::ApiError| {
+                        io::Error::other(format!(
+                            "store startup: sync dial targets: {:?}: {}",
+                            error.code, error.detail
+                        ))
+                    };
+                    let tx = conn
+                        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                        .map_err(|error| io::Error::other(format!("store startup: {error}")))?;
+                    crate::store::sync_dial_targets::clear_stale_stops(
+                        &tx,
+                        env!("CARGO_PKG_VERSION"),
+                    )
+                    .map_err(sync_error)?;
+                    // A pending `sync resync` (spec §11, after `journal::open`):
+                    // the marker's dial targets come back, which restores the
+                    // path to `from`, and the marker moves to `salvaging`.
+                    let marker = match resync_plan {
+                        Some(_) => Some(
+                            crate::sync::resync::ResyncMarker::read(&identity_paths)
+                                .map_err(io::Error::from)?
+                                .ok_or_else(|| {
+                                    io::Error::other("resync: marker vanished before the rebuild")
+                                })?,
+                        ),
+                        None => None,
+                    };
+                    if let Some(marker) = &marker {
+                        let now = context.clock().utc_now().0;
+                        for target in &marker.targets {
+                            if let Err(error) = crate::store::sync_dial_targets::add_explicit(
+                                &tx,
+                                &target.ssh_dest,
+                                target.remote_command.as_deref(),
+                                now,
+                            ) {
+                                rate_limited_log.write_line(&format!(
+                                    "resync: dial target {} not restored: {}",
+                                    target.ssh_dest, error.detail
+                                ));
+                            }
+                        }
+                    }
+                    tx.commit()
+                        .map_err(|error| io::Error::other(format!("store startup: {error}")))?;
+                    if let (Some(plan), Some(marker)) = (resync_plan, marker) {
+                        crate::sync::resync::mark_salvaging(&identity_paths)
+                            .map_err(io::Error::from)?;
+                        rate_limited_log.write_line(&format!(
+                            "resync: rebuilding from {} requested by {}; {} dial targets restored; salvaging {}",
+                            plan.from,
+                            marker.operator,
+                            marker.targets.len(),
+                            plan.backup_db.display()
+                        ));
+                        resync_start = Some((plan, identity_paths.node_dir.clone()));
+                    }
+                }
+                // A crash between a retag's commit and its node.json
+                // regeneration left the identity behind the committed tag.
+                let budget = crate::protocol::time::CallBudget {
+                    deadline: crate::protocol::time::MonoInstant(
+                        context.clock().monotonic_now().0.saturating_add(5_000),
+                    ),
+                    cancellation: crate::protocol::time::Cancellation::default(),
+                };
+                crate::sync::facts::publish_committed_tag(
+                    &context,
+                    &identity,
+                    &identity_paths.node_json_path,
+                    &budget,
+                )
+                .map_err(|error| {
+                    io::Error::other(format!("store startup: publish committed tag: {error}"))
+                })?;
+                rate_limited_log.write_line(&format!(
+                    "journal open: log {:?} counter {} bootstrapped {} parked_unknown {} parked_dep {} failed {}",
+                    report.self_log,
+                    report.counter,
+                    report.bootstrapped,
+                    report.parked_unknown,
+                    report.parked_dep,
+                    report.failed
+                ));
+            }
             factory_probe.configure_store(&context);
             // One registry per elected daemon: the store's commit hooks kick
             // through it and every lane registers its Pacer here at start.
             let kicks = Arc::new(CommitKicks::default());
+            // The one background-turn admission: the store's sync-table writes
+            // wait on it like every other lane's.
+            let writer = Arc::new(FairWriter::new(32));
             let sqlite = Arc::new(
                 SqliteStore::new(context, instance.to_string(), config.store_settings(boot))
                     .map_err(|error| {
@@ -1319,10 +1814,19 @@ where
                             error.code, error.detail
                         ))
                     })?
-                    .with_commit_kicks(Arc::clone(&kicks)),
+                    .with_commit_kicks(Arc::clone(&kicks))
+                    .with_sync_admission(Arc::clone(&writer)),
             );
             factory_probe.attach_store(&sqlite);
+            let remembered_store = Arc::clone(&sqlite);
             let bootstrap_store = sqlite.clone();
+            let apply_store = sqlite.clone();
+            let apply_identity = Arc::clone(&identity);
+            let sync_identity = Arc::clone(&identity);
+            let sync_store = sqlite.clone();
+            let discovery_store = sqlite.clone();
+            let first_attach_store = sqlite.clone();
+            let apply_node_json = identity_paths.node_json_path.clone();
             let store: Arc<dyn StorePort> = sqlite;
             // The manifest policy, logged after election (stderr is the daemon
             // log from here on).
@@ -1350,25 +1854,6 @@ where
                     crate::daemon::health::binding_evidence_line(report)
                 );
             }
-            // Daemon restart creates a new host connection epoch above the
-            // previous boot's durable publication before any host observation.
-            let persisted_epoch = store
-                .persisted_host_epoch(
-                    &instance.to_string(),
-                    &CallBudget {
-                        deadline: MonoInstant(
-                            factory_clock.monotonic_now().0.saturating_add(2_000),
-                        ),
-                        cancellation: Cancellation::default(),
-                    },
-                )
-                .map_err(|error| {
-                    io::Error::other(format!("store startup: {:?}: {}", error.code, error.detail))
-                })?;
-            host.resume_after_epoch(persisted_epoch);
-            let incarnation_witness = host.incarnation_witness();
-            let safe_prompt = host.safe_prompt_capability();
-            let writer = Arc::new(FairWriter::new(32));
             // The admission observer fills this slot; the wake lane reads poke
             // capabilities from the versions it observed.
             let harnesses = Arc::new(Mutex::new(HarnessObservations::default()));
@@ -1382,10 +1867,20 @@ where
                 factory_probe.attach_pacer(lane, &pacer);
                 pacer
             };
-            let mut workers = factory_slot
-                .lock()
-                .map_err(|_| io::Error::other("worker slot poisoned"))?;
-            let worker = start_deadline_worker_ticking(
+            // HostSessions hands its own worker handles to this slot, so the
+            // lock is held only for a push.
+            let push_worker = |handle: std::thread::JoinHandle<()>| -> io::Result<()> {
+                factory_slot
+                    .lock()
+                    .map_err(|_| io::Error::other("worker slot poisoned"))?
+                    .push(handle);
+                Ok(())
+            };
+            // Filled once the sync runtime is composed below; until then (and
+            // for at most 60 s) the lane holds overdue emission (spec §7).
+            let deadline_sync_hold: Arc<crate::scheduler::deadlines::SyncHoldSlot> =
+                Arc::default();
+            push_worker(start_deadline_worker_ticking(
                 Arc::clone(&store),
                 Arc::clone(&writer),
                 register_lane(Lane::Deadlines),
@@ -1394,12 +1889,8 @@ where
                 config.lane_tick(Duration::from_millis(
                     crate::scheduler::deadlines::TICK_MILLIS,
                 )),
-            )?;
-            workers.push(worker);
-            // Shared by the observation lane (writer) and the wake lane: the
-            // wake lane freezes while Herdr is unavailable and the observation
-            // lane's first answered capture kicks it (ht-72q).
-            let reachability = Arc::new(HostReachability::default());
+                Some(Arc::clone(&deadline_sync_hold)),
+            )?)?;
             // The one registry of live mod delivery channels (spec D2, D7),
             // shared by the wake lane (routing), the domain service (digest
             // flag and watch registration) and setup-status. It is the sole
@@ -1428,36 +1919,97 @@ where
             let mod_channels: Arc<dyn crate::ports::ModChannels> = mod_registry.clone();
             let delivery_pull =
                 Arc::new(crate::service::delivery_pull::DeliveryPullState::default());
-            let wake_pacer = register_lane(Lane::Wakes);
-            reachability.attach_wake_pacer(Arc::clone(&wake_pacer));
-            factory_probe.attach_reachability(&reachability);
-            // Binding liveness (spec §3, decision 9): the host process table backs both the
-            // periodic re-check thread and the re-check before each wake decision.
+            // Binding liveness (spec §3, decision 9): the host process table backs
+            // both the periodic re-check thread and the re-check before each
+            // wake decision of every session's wake worker.
             let liveness = Arc::new(crate::service::liveness::LivenessWorker::new(
                 Arc::clone(&store) as Arc<dyn crate::ports::StorePort>,
                 Arc::clone(&writer),
                 Arc::new(crate::host::process_table::HostProcessTable),
             ));
-            workers.push(start_wake_worker_with_liveness(
-                Arc::clone(&store),
-                Arc::clone(&writer),
-                Arc::clone(&host),
-                instance.to_string(),
-                boot,
-                config.retry_config(),
-                wake_pacer,
-                factory_stop.clone(),
-                Arc::clone(&factory_wake_status),
-                Arc::new(ObservedPokeCapabilities::new(Arc::clone(&harnesses))),
-                Arc::clone(&reachability),
-                Arc::clone(&mod_channels),
-                Arc::clone(&delivery_pull) as Arc<dyn crate::ports::HookPullOutlook>,
-                Some(Arc::clone(&liveness)),
-                config.lane_tick(Duration::from_millis(
-                    crate::service::workers::WAKE_SAFETY_TICK_MILLIS,
-                )),
-            )?);
-            workers.push(crate::service::liveness::start_liveness_worker(
+            // The multi-host registry (spec §2, §3): built after the journal
+            // opened and before the listener serves. Startup attaches the plan's
+            // hint, then every remembered server whose socket exists, and starts
+            // the sweep; a failure is one log line and never fatal.
+            // Sessions stop when the service shuts down (their identities'
+            // detached compensation never holds the owner's shutdown) and when
+            // the daemon drains.
+            let session_stop = Cancellation::default();
+            let links = vec![
+                cancellation.on_cancel({
+                    let session_stop = session_stop.clone();
+                    Arc::new(move || session_stop.cancel())
+                }),
+                factory_stop.on_cancel({
+                    let session_stop = session_stop.clone();
+                    Arc::new(move || session_stop.cancel())
+                }),
+            ];
+            let host_sessions = Arc::new(HostSessions::new(
+                Arc::clone(&host_index),
+                host_factory,
+                SessionDeps {
+                    store: Arc::clone(&store),
+                    writer: Arc::clone(&writer),
+                    kicks: Arc::clone(&kicks),
+                    clock: Arc::clone(&factory_clock),
+                    node_uuid: instance.to_string(),
+                    boot,
+                    state_dir: guarded_state_dir.clone(),
+                    retry: config.retry_config(),
+                    liveness: Some(Arc::clone(&liveness)),
+                    mod_channels: Arc::clone(&mod_channels),
+                    poke_capabilities: Arc::new(ObservedPokeCapabilities::new(Arc::clone(
+                        &harnesses,
+                    ))),
+                    hook_pull: Arc::clone(&delivery_pull)
+                        as Arc<dyn crate::ports::HookPullOutlook>,
+                    worker_slot: Arc::clone(&factory_slot),
+                    stop: session_stop,
+                    log: {
+                        let log = Arc::clone(&rate_limited_log);
+                        Arc::new(move |line: &str| log.write_line(line))
+                    },
+                    lane_log: Some(Arc::clone(&factory_lane_log)),
+                    remembered: Arc::new(move |budget: &CallBudget| {
+                        let db = remembered_store.context().open_query(budget.clone())?;
+                        crate::store::hosts::remembered(&db, usize::MAX)
+                    }),
+                    sweep_interval: factory_probe.host_sweep_period(),
+                    wake_safety_tick: config.lane_tick(Duration::from_millis(
+                        crate::service::workers::WAKE_SAFETY_TICK_MILLIS,
+                    )),
+                    observation_cadence: config
+                        .lane_tick(crate::service::workers::OBSERVATION_CADENCE),
+                    // Production attaches only a locator that is its own
+                    // canonical path on disk; fake locators are not on disk.
+                    check_canonical: cfg!(not(any(test, feature = "test-support"))),
+                },
+            ));
+            *factory_sessions
+                .lock()
+                .map_err(|_| io::Error::other("host sessions slot poisoned"))? =
+                Some(ComposedSessions {
+                    sessions: Arc::clone(&host_sessions),
+                    _links: links,
+                });
+            factory_probe.attach_host_sessions(&host_sessions);
+            host_sessions.attach_startup(factory_hint.as_ref())?;
+            // The service routes by claim host (`DomainService::attached_host`);
+            // Health and archival still follow the startup session (`None`
+            // when no server is attached at startup: store-only).
+            let primary = host_sessions.startup_primary(factory_hint.as_ref());
+            rate_limited_log.write_line(&match &primary {
+                Some(session) => format!(
+                    "herdr host attached: {} (host {})",
+                    session.locator().as_str(),
+                    session.host_id().get()
+                ),
+                None => "no Herdr server attached: store-only".to_owned(),
+            });
+            // Sessions attach lazily on the request path, so the liveness
+            // re-check runs whether or not a server attached at startup.
+            push_worker(crate::service::liveness::start_liveness_worker(
                 liveness,
                 Arc::new(Pacer::new(
                     "liveness",
@@ -1470,14 +2022,8 @@ where
                     Arc::new(move |line: &str| log.write_line(line))
                 },
                 config.lane_tick(crate::scheduler::config::LIVENESS_RECHECK_INTERVAL),
-            )?);
-            let observation_pacer = Arc::new(Pacer::new(
-                Lane::Observation.name(),
-                Arc::clone(&factory_clock),
-                factory_stop.clone(),
-            ));
-            kicks.register(Lane::Observation, Arc::clone(&observation_pacer));
-            workers.push(start_mod_channel_worker(
+            )?)?;
+            push_worker(start_mod_channel_worker(
                 Arc::clone(&mod_registry),
                 Arc::new(Pacer::new(
                     "mod-channels",
@@ -1490,28 +2036,235 @@ where
                     let log = Arc::clone(&rate_limited_log);
                     Arc::new(move |line: &str| log.write_line(line))
                 },
-            )?);
-            let identity = Arc::new(
-                crate::identity::repair::OrdinaryIdentity::new(
-                    instance.to_string(),
-                    Arc::clone(&store),
-                    Arc::clone(&host),
-                    Arc::clone(&factory_clock),
-                    Arc::clone(&writer),
-                )
-                // Detached invalidation compensation outlives request cancellation
-                // but never the owner: shutdown cancels its bounded wait.
-                .with_service_cancellation(cancellation.clone())
-                .with_observation_pacer(Arc::clone(&observation_pacer)),
-            );
-            workers.push(start_retention_lane(
+            )?)?;
+            push_worker(start_retention_lane(
                 &kicks,
                 Arc::clone(&factory_clock),
                 factory_stop.clone(),
                 Arc::clone(&store),
                 Arc::clone(&writer),
                 Arc::clone(&factory_retention_status),
-            )?);
+            )?)?;
+            // The Apply lane applies ingested journal entries. Its post-commit
+            // hook brings the identity cache and node.json up to a tag the
+            // pass moved (the node kinds own the effect).
+            let post_commit: ApplyPostCommit = {
+                let store = Arc::clone(&apply_store);
+                let identity = Arc::clone(&apply_identity);
+                let node_json = apply_node_json.clone();
+                let clock = Arc::clone(&factory_clock);
+                let log = Arc::clone(&rate_limited_log);
+                Box::new(move |progress| {
+                    if progress.self_tag_k.is_none() {
+                        return;
+                    }
+                    let budget = CallBudget {
+                        deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
+                        cancellation: Cancellation::default(),
+                    };
+                    if let Err(error) = crate::sync::facts::publish_committed_tag(
+                        store.context(),
+                        &identity,
+                        &node_json,
+                        &budget,
+                    ) {
+                        log.write_line(&format!("apply: publish committed tag: {error}"));
+                    }
+                })
+            };
+            push_worker(start_apply_lane(
+                &kicks,
+                Arc::clone(&factory_clock),
+                factory_stop.clone(),
+                apply_store,
+                post_commit,
+                Arc::clone(&writer),
+                Arc::clone(&factory_apply_status),
+            )?)?;
+            // The sync runtime (peer-link spec §15): after the journal, the
+            // host sessions and the Apply lane, before the listener serves.
+            // The coordinator builds its Dialer; the intake goes to the
+            // accept loop through the wiring.
+            let sync_pacer = register_lane(Lane::Sync);
+            factory_sync_status.attach_pacer(Arc::clone(&sync_pacer));
+            let sync_log: crate::sync::coordinator::LogFn = {
+                let log = Arc::clone(&rate_limited_log);
+                Arc::new(move |line: &str| log.write_line(line))
+            };
+            let own_history = Arc::clone(
+                sync_store
+                    .context()
+                    .sync()
+                    .map_err(|error| {
+                        io::Error::other(format!("store startup: sync state: {}", error.detail))
+                    })?
+                    .own_history_hold(),
+            );
+            // The incarnations sink is the coordinator's fork sink; its
+            // worker starts right after the coordinator, because it needs the
+            // coordinator's `SyncSignals` and jobs queue until then.
+            let incarnations_sink = Arc::new(crate::sync::incarnations::IncarnationsSink::new(
+                sync_store.clone(),
+                Arc::clone(&factory_clock),
+                sync_log.clone(),
+            ));
+            let incarnations_store = sync_store.clone();
+            let resync_pin = resync_start.as_ref().map(|(plan, _)| {
+                crate::sync::coordinator::ResyncPin {
+                    from: plan.from,
+                    logs: plan.logs.clone(),
+                }
+            });
+            if let Some((plan, node_dir)) = &resync_start
+                && !incarnations_sink.enqueue(crate::sync::incarnations::Job::Salvage {
+                    backup_db: plan.backup_db.clone(),
+                    node_dir: node_dir.clone(),
+                })
+            {
+                return Err(io::Error::other("resync: salvage job could not be queued"));
+            }
+            let (sync_handle, peer_intake, sync_join) = crate::sync::coordinator::SyncCoordinator::start(
+                crate::sync::coordinator::CoordinatorDeps {
+                    journal: sync_store.clone(),
+                    sync_store,
+                    identity: sync_identity,
+                    boot,
+                    writer: Arc::clone(&writer),
+                    clock: Arc::clone(&factory_clock),
+                    pacer: Arc::clone(&sync_pacer),
+                    status: Arc::clone(&factory_sync_status),
+                    log: sync_log.clone(),
+                    fork_sink: incarnations_sink.clone(),
+                    own_history: Arc::clone(&own_history),
+                    dial: crate::sync::dialer::DialConfig::from(&config),
+                    resync_pin,
+                    cancel: factory_stop.clone(),
+                },
+            );
+            factory_peers.set_intake(peer_intake);
+            let apply_epochs = Arc::clone(
+                incarnations_store
+                    .context()
+                    .sync()
+                    .map_err(|e| std::io::Error::other(format!("{e:?}")))?
+                    .apply_epochs(),
+            );
+            let _ = deadline_sync_hold.set(Arc::new(crate::scheduler::deadlines::SyncHoldReadiness {
+                sync: sync_handle.clone(),
+                epochs: apply_epochs,
+            }));
+            let incarnations_stop = Cancellation::default();
+            let discovery_status = Arc::new(crate::sync::discovery::DiscoveryStatus::default());
+            let sync_admin = Arc::new(crate::service::sync_admin::SyncAdmin {
+                store: Arc::clone(&incarnations_store),
+                sync: sync_handle.clone(),
+                sink: Arc::clone(&incarnations_sink),
+                clock: Arc::clone(&factory_clock),
+                paths: sync_admin_paths.clone(),
+                shutdown: cancellation.clone(),
+                writer: Arc::clone(&writer),
+                log: sync_log.clone(),
+                runtime: sync_admin_runtime.clone(),
+                discovery: Some(Arc::clone(&discovery_status)),
+            });
+            let incarnations_join = crate::sync::incarnations::IncarnationsWorker::start(
+                crate::sync::incarnations::WorkerDeps {
+                    sink: incarnations_sink,
+                    journal: incarnations_store.clone(),
+                    store: incarnations_store,
+                    writer: Arc::clone(&writer),
+                    status: Arc::clone(&factory_sync_status),
+                    own_history,
+                    signals: sync_handle.signals(),
+                    sync_pacer: Some(sync_pacer),
+                    clock: Arc::clone(&factory_clock),
+                    log: sync_log.clone(),
+                    cancel: incarnations_stop.clone(),
+                },
+            )
+            .map_err(|error| io::Error::other(format!("incarnations worker: {error}")))?;
+            sync_log("sync: incarnations worker started");
+            *factory_incarnations_slot
+                .lock()
+                .map_err(|_| io::Error::other("incarnations slot poisoned"))? =
+                Some(ComposedIncarnations {
+                    stop: incarnations_stop,
+                    join: incarnations_join,
+                });
+            // Idle exit (spec §15): a store-only daemon with no host, link,
+            // target or client stops through the same shutdown as `Stop`.
+            {
+                let idle_stop = Cancellation::default();
+                let subscriptions = [&cancellation, &factory_stop].map(|token| {
+                    let idle_stop = idle_stop.clone();
+                    token.on_cancel(Arc::new(move || idle_stop.cancel()))
+                });
+                let idle = crate::daemon::idle_exit::IdleExit::new(
+                    crate::daemon::idle_exit::ActivityProbe {
+                        hosts: Arc::clone(&host_sessions),
+                        sync: sync_handle.clone(),
+                        gauge: factory_peers.gauge(),
+                    },
+                    Arc::clone(&factory_clock),
+                    config.idle_exit_after(),
+                    cancellation.clone(),
+                    {
+                        let log = Arc::clone(&rate_limited_log);
+                        Arc::new(move |line: &str| log.write_line(line))
+                    },
+                );
+                std::thread::Builder::new()
+                    .name("idle-exit".into())
+                    .spawn(move || {
+                        idle.run(&idle_stop);
+                        drop(subscriptions);
+                    })
+                    .map_err(|error| io::Error::other(format!("idle exit monitor: {error}")))?;
+            }
+            // Peer discovery (spec §11): after the coordinator, so a pass that
+            // adds a target can ask its Dialer to reload.
+            let (discovery_program, discovery_period) = factory_probe.discovery();
+            let scan_clients = discovery_program.is_none();
+            let discovery_join = crate::sync::discovery::DiscoveryWorker::spawn(
+                crate::sync::discovery::DiscoveryDeps {
+                    enabled: config.sync_discover(),
+                    host_attached: {
+                        let sessions = Arc::clone(&host_sessions);
+                        Arc::new(move || sessions.any_reachable())
+                    },
+                    machines: Arc::new(match discovery_program {
+                        Some(program) => crate::sync::discovery::HerdrCli::new(program),
+                        None => crate::sync::discovery::HerdrCli::from_env(),
+                    }),
+                    remote_clients: Arc::new(move || {
+                        if scan_clients {
+                            crate::sync::discovery::scan_remote_clients()
+                        } else {
+                            Vec::new()
+                        }
+                    }),
+                    store: discovery_store,
+                    reload: {
+                        let handle = sync_handle.clone();
+                        Arc::new(move || handle.reload_targets())
+                    },
+                    clock: Arc::clone(&factory_clock),
+                    log: {
+                        let log = Arc::clone(&rate_limited_log);
+                        Arc::new(move |line: &str| log.write_line(line))
+                    },
+                    status: discovery_status,
+                    period: discovery_period,
+                    cancel: factory_stop.clone(),
+                },
+            );
+            *factory_sync_slot
+                .lock()
+                .map_err(|_| io::Error::other("sync slot poisoned"))? = Some(ComposedSync {
+                handle: sync_handle,
+                join: sync_join,
+                discovery: discovery_join,
+            });
             // The harness version manifest: cache, embedded fallback and the
             // detached fetch policy. One log line per fetch outcome (at most
             // one fetch per harness per day, so no extra rate limit).
@@ -1540,7 +2293,7 @@ where
             );
             #[cfg(any(test, feature = "test-support"))]
             let admission_fault = factory_probe.admission_fault();
-            workers.extend(admission_handle(
+            if let Some(handle) = admission_handle(
                 start_admission_observer(
                     move |budget| {
                         #[cfg(any(test, feature = "test-support"))]
@@ -1579,83 +2332,139 @@ where
                     Arc::clone(&factory_admission_status),
                 ),
                 &factory_admission_status,
-            ));
-            {
-                let archival_context = crate::protocol::output::ContinuationContext {
-                    state_dir: archival_paths
-                        .instance_dir
-                        .parent()
-                        .and_then(|p| p.parent())
-                        .map(|p| p.to_string_lossy().into_owned()),
-                    host: Some(archival_paths.locator.clone()),
-                };
-                workers.push(crate::service::archival::start(
-                    crate::service::archival::ArchivalWorker {
-                        store: Arc::clone(&store),
-                        host: Arc::clone(&host),
-                        writer: Arc::clone(&writer),
-                        reachability: Arc::clone(&reachability),
-                        source: crate::archival_legacy::Source::new(
-                            &archival_paths,
-                            instance.to_string(),
-                            archival_context,
-                        ),
-                        boot: boot.to_string(),
-                        after_ms: config.archive_after_ms(),
-                        cancellation: factory_stop.clone(),
-                    },
-                    register_lane(Lane::Archival),
-                    Arc::clone(&factory_archival_status),
-                )?);
+            ) {
+                push_worker(handle)?;
             }
-            workers.push(start_observation_worker(
-                Arc::clone(&identity),
-                Arc::clone(&store),
-                Arc::clone(&writer),
-                factory_stop,
-                Arc::clone(&factory_observation_status),
-                Arc::clone(&factory_host_evidence),
-                observation_pacer,
-                reachability,
-                config.lane_tick(crate::service::workers::OBSERVATION_CADENCE),
-            )?);
-            drop(workers);
-            let mut lane_statuses = vec![
+            // One node-wide lane; its evidence and sampling are per host, routed
+            // through the sessions. It starts with the first attached host, once:
+            // at once when a host attached at startup, else on the first lazy
+            // attach or sweep attach of a store-only daemon. The wake and
+            // observation lanes are per-host session workers (started by every
+            // attach), so archival is the only lane gated on an attached host.
+            // The same hook lets the Apply lane re-attempt own seats that
+            // waited for a host.
+            {
+                let store = Arc::clone(&store);
+                let apply_hint_store = first_attach_store;
+                let writer = Arc::clone(&writer);
+                let kicks = Arc::clone(&kicks);
+                let clock = Arc::clone(&factory_clock);
+                let stop = factory_stop.clone();
+                let probe = factory_probe.clone();
+                let paths = archival_paths.clone();
+                let instance = instance.to_string();
+                let boot = boot.to_string();
+                let after_ms = config.archive_after_ms();
+                let status = Arc::clone(&factory_archival_status);
+                let slot = Arc::clone(&factory_slot);
+                let log = Arc::clone(&rate_limited_log);
+                let sessions = Arc::downgrade(&host_sessions);
+                host_sessions.on_first_attach(Box::new(move |session| {
+                    if stop.is_cancelled() {
+                        return;
+                    }
+                    // Own seats that waited for a host apply now.
+                    apply_hint_store.set_apply_hint();
+                    kicks.kick(crate::service::kicks::LaneSet::EMPTY.with(Lane::Apply));
+                    let Some(sessions) = sessions.upgrade() else {
+                        return;
+                    };
+                    let context = crate::protocol::output::ContinuationContext {
+                        state_dir: Some(paths.state_dir.to_string_lossy().into_owned()),
+                        // The legacy journal source is a single-host artifact: its
+                        // namespace names the first attached host's endpoint.
+                        // Evidence and sampling are per host; this is only where
+                        // old intents match.
+                        host: Some(session.locator().as_str().to_owned()),
+                    };
+                    let hosts: Arc<dyn crate::service::archival::ArchivalHosts> = sessions;
+                    let pacer = Arc::new(Pacer::new(
+                        Lane::Archival.name(),
+                        clock,
+                        stop.clone(),
+                    ));
+                    kicks.register(Lane::Archival, Arc::clone(&pacer));
+                    probe.attach_pacer(Lane::Archival, &pacer);
+                    let gate = stop.clone();
+                    let failed_status = Arc::clone(&status);
+                    let started = start_into_slot(&slot, &gate, || {
+                        crate::service::archival::start(
+                            crate::service::archival::ArchivalWorker {
+                                store,
+                                hosts,
+                                writer,
+                                source: crate::archival_legacy::Source::new(
+                                    &paths, instance, context,
+                                ),
+                                boot,
+                                after_ms,
+                                cancellation: stop,
+                            },
+                            pacer,
+                            status,
+                        )
+                    });
+                    match started {
+                        Ok(true) => log.write_line(&format!(
+                            "archival lane started (host {})",
+                            session.host_id().get()
+                        )),
+                        Ok(false) => {}
+                        Err(error) => {
+                            archival_start_failed(&failed_status, &error);
+                            log.write_line(&format!("archival lane: {error}"));
+                        }
+                    }
+                }));
+            }
+            // In `Lane::ALL` order. A lane that has not started (the archival lane
+            // of a store-only daemon before its first host attaches) has an
+            // untouched status and reports ready; the
+            // host lanes report the startup session's (per-host Health: ht-5fr.2.10).
+            let lane_statuses = vec![
                 factory_status.clone(),
-                factory_wake_status.clone(),
-                factory_observation_status.clone(),
+                primary.as_ref().map_or_else(
+                    || factory_wake_status.clone(),
+                    |session| Arc::clone(session.wake().status()),
+                ),
+                primary.as_ref().map_or_else(
+                    || factory_observation_status.clone(),
+                    |session| Arc::clone(session.observation().status()),
+                ),
                 factory_retention_status.clone(),
                 factory_admission_status.clone(),
+                factory_archival_status.clone(),
+                factory_apply_status.clone(),
+                factory_sync_status.clone(),
             ];
-            lane_statuses.push(factory_archival_status.clone());
             factory_probe.attach_registry(&kicks, lane_statuses.clone());
+            // Health reads the wake and observation lanes per attached server
+            // (`HostSessions::health_entries`); the shared slots stay on the
+            // never-started statuses, which report ready.
+            let mut health_lanes = lane_statuses.clone();
+            health_lanes[1] = factory_wake_status.clone();
+            health_lanes[2] = factory_observation_status.clone();
             let health_store = Arc::clone(&store);
             let evidence_store = Arc::clone(&store);
             let states_store = Arc::clone(&store);
             let health_clock = Arc::clone(&factory_clock);
-            let mut domain = DomainService::with_identity(
-                instance.to_string(),
-                store,
-                Arc::clone(&factory_clock),
-                identity,
-            )
-            .with_operator_owner(crate::daemon::paths::effective_uid())
-            .with_cooperative_owner(crate::daemon::paths::effective_uid(), writer)
-            .with_mod_channels(Arc::clone(&mod_channels))
-            .with_delivery_pull(Arc::clone(&delivery_pull));
-            if let Some((state_dir, host_endpoint, observer)) = &bootstrap {
-                domain = domain
-                    .with_bootstrap_runtime(
-                        crate::protocol::handoff::HandoffNamespace {
-                            instance: instance.to_string(),
-                            state_dir: state_dir.clone(),
-                            host_endpoint: host_endpoint.clone(),
-                        },
-                        observer.clone(),
-                        bootstrap_store,
-                    )
-                    .map_err(|error| io::Error::other(error.detail))?;
-            }
+            // The service reaches Herdr servers only through the registry
+            // (`DomainService::attached_host`): a store-only daemon attaches
+            // one when a command first names it.
+            let domain = DomainService::new(instance.to_string(), store, Arc::clone(&factory_clock))
+                .with_sessions(Arc::clone(&host_sessions))
+                .with_operator_owner(crate::daemon::paths::effective_uid())
+                .with_cooperative_owner(crate::daemon::paths::effective_uid(), writer)
+                .with_mod_channels(Arc::clone(&mod_channels))
+                .with_sync_admin(sync_admin)
+                .with_delivery_pull(Arc::clone(&delivery_pull))
+                .with_bootstrap_store(bootstrap_store);
+            // Guarded bootstrap is advertised when the startup server has a
+            // bootstrap runtime.
+            let guarded_host = primary
+                .as_ref()
+                .filter(|session| session.bootstrap().is_some())
+                .map(|session| session.locator().clone());
             let stop = StopController::new(instance, boot, cancellation);
             let provider = elected_health_provider(
                 instance,
@@ -1663,14 +2472,13 @@ where
                 config.health_settings(),
                 health_clock,
                 health_store,
-                lane_statuses,
-                ElectedHostEvidence {
-                    status: factory_host_evidence.clone(),
-                    incarnation_witness,
-                    safe_prompt,
+                health_lanes,
+                ElectedHostEvidence::of_sessions(
+                    &host_sessions,
+                    primary.as_deref(),
+                    factory_host_evidence.clone(),
                     harnesses,
-                    release: HostReleaseSource(Some(Arc::clone(&host))),
-                },
+                ),
             );
             let log_path = factory_log_path.clone();
             let health_harnesses = Arc::clone(&states_harnesses);
@@ -1734,8 +2542,8 @@ where
                 .with_rich_manifest_source(Arc::clone(&manifest)
                     as Arc<dyn crate::daemon::harness_evidence::RichManifestSource>),
             );
-            let control = if bootstrap.is_some() {
-                ControlService::new_guarded(stop, health, domain)
+            let control = if let Some(locator) = &guarded_host {
+                ControlService::new_guarded(stop, health, domain, locator)
                     .map_err(|error| io::Error::other(error.detail))?
             } else {
                 ControlService::new(stop, health, domain)
@@ -1753,12 +2561,75 @@ where
         on_ready,
         move || async move {
             worker_stop.cancel();
+            // The coordinator closes its links (1 s), cancels its dial tasks
+            // and flushes contacts on the cancel; a task still running at the
+            // bound is aborted and logged.
+            let sync = sync_slot
+                .lock()
+                .map_err(|_| io::Error::other("sync slot poisoned"))?
+                .take();
+            if let Some(ComposedSync {
+                handle,
+                mut join,
+                mut discovery,
+            }) = sync
+            {
+                // Discovery holds a handle clone: it ends first (the cancel
+                // above wakes it), or the coordinator would keep a sender.
+                if tokio::time::timeout(DISCOVERY_STOP_BOUND, &mut discovery)
+                    .await
+                    .is_err()
+                {
+                    discovery.abort();
+                    let _ = discovery.await;
+                    eprintln!(
+                        "sync: discovery still running after {} s; aborted",
+                        DISCOVERY_STOP_BOUND.as_secs()
+                    );
+                }
+                drop(handle);
+                if tokio::time::timeout(SYNC_STOP_BOUND, &mut join).await.is_err() {
+                    join.abort();
+                    let _ = join.await;
+                    eprintln!(
+                        "sync: coordinator still running after {} s; aborted",
+                        SYNC_STOP_BOUND.as_secs()
+                    );
+                }
+            }
+            // The worker ends after the coordinator, joined within the same
+            // bound; a thread still running at the bound is detached.
+            let incarnations = incarnations_slot
+                .lock()
+                .map_err(|_| io::Error::other("incarnations slot poisoned"))?
+                .take();
+            if let Some(ComposedIncarnations { stop, join }) = incarnations {
+                stop.cancel();
+                let joined = tokio::task::spawn_blocking(move || join.join());
+                match tokio::time::timeout(SYNC_STOP_BOUND, joined).await {
+                    Ok(Ok(Ok(()))) => eprintln!("sync: incarnations worker stopped"),
+                    Ok(_) => eprintln!("sync: incarnations worker panicked"),
+                    Err(_) => eprintln!(
+                        "sync: incarnations worker still running after {} s; detached",
+                        SYNC_STOP_BOUND.as_secs()
+                    ),
+                }
+            }
+            let sessions = sessions_slot
+                .lock()
+                .map_err(|_| io::Error::other("host sessions slot poisoned"))?
+                .take();
             let workers = std::mem::take(
                 &mut *worker_slot
                     .lock()
                     .map_err(|_| io::Error::other("worker slot poisoned"))?,
             );
             let joined = tokio::task::spawn_blocking(move || {
+                // Sessions stop and join their own threads first; the slot
+                // then holds only the daemon's lanes.
+                if let Some(composed) = sessions {
+                    composed.sessions.stop_all();
+                }
                 let mut failed = false;
                 for worker in workers {
                     failed |= worker.join().is_err();
@@ -2300,5 +3171,199 @@ pub(crate) mod health_v2_observer_tests {
             serde_json::to_string(&legacy).unwrap(),
             r#"{"codex":"unsupported","claude":"cooperative"}"#
         );
+    }
+}
+
+#[cfg(test)]
+mod store_identity_tests {
+    #[test]
+    fn host_label_truncates_at_char_boundary() {
+        // 'é' is two bytes: 128 of them are 256 bytes, so the cut at 255 falls
+        // inside the last char and must back up to 254.
+        let text = "é".repeat(128);
+        let cut = super::truncate_label(&text);
+        assert_eq!(cut.len(), 254);
+        assert!(text.starts_with(&cut));
+        assert_eq!(super::truncate_label("lab"), "lab");
+        assert!(super::host_label().len() <= 255);
+    }
+
+    use super::*;
+    use crate::{
+        node::tag_for,
+        protocol::time::UtcMillis,
+        store::schema::{NodeSeed, initialize},
+    };
+
+    fn store_of(seed: &NodeSeed) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        initialize(&conn, || UtcMillis(1), seed).unwrap();
+        conn
+    }
+
+    // Kills: starting a daemon on a store that belongs to another node's key
+    // (the check accepting or skipping a `local_node.id` that differs).
+    #[test]
+    fn restart_with_foreign_local_node_id_fails_identity_mismatch() {
+        let store_node = crate::test_support::test_node_seed();
+        let conn = store_of(&store_node);
+        let key = NodeIdentity::from_seed([7; 32]);
+        assert_ne!(key.uuid(), store_node.uuid);
+        let key_path = std::path::Path::new("/node/node.key");
+        let error = check_store_identity(&conn, &key, key_path).unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.starts_with("node key refused (IdentityMismatch): "),
+            "{text}"
+        );
+        assert!(text.contains(&store_node.uuid.to_string()), "{text}");
+        assert!(text.contains(&key.uuid().to_string()), "{text}");
+        assert!(text.contains("/node/node.key"), "{text}");
+        assert_eq!(key.tag_k(), 0, "a refused start adopts nothing");
+    }
+
+    // Kills: an identity check that swallows a real read failure (here a
+    // missing column) as "nothing to check".
+    #[test]
+    fn unreadable_node_row_fails_start_but_absent_table_or_row_skips() {
+        let key = NodeIdentity::from_seed([7; 32]);
+        let path = std::path::Path::new("/node/node.key");
+        let empty = rusqlite::Connection::open_in_memory().unwrap();
+        check_store_identity(&empty, &key, path).unwrap();
+        empty
+            .execute_batch("CREATE TABLE local_node (id TEXT, tag_k INTEGER)")
+            .unwrap();
+        check_store_identity(&empty, &key, path).unwrap();
+        let broken = rusqlite::Connection::open_in_memory().unwrap();
+        broken
+            .execute_batch("CREATE TABLE local_node (other TEXT)")
+            .unwrap();
+        let error = check_store_identity(&broken, &key, path).unwrap_err();
+        assert!(error.to_string().contains("identity check"), "{error}");
+    }
+
+    // Kills: a daemon that keeps `tag_k = 0` after a retag, or leaves node.json
+    // carrying the pre-store tag.
+    #[test]
+    fn node_json_regenerated_with_stored_tag() {
+        let key = NodeIdentity::from_seed([7; 32]);
+        let seed = NodeSeed {
+            uuid: key.uuid(),
+            tag: tag_for(key.uuid(), 0),
+            tag_k: 0,
+        };
+        let conn = store_of(&seed);
+        conn.execute("UPDATE local_node SET tag_k=2", []).unwrap();
+        let iso = crate::test_support::isolation::TestIsolation::new("store-identity-json");
+        let paths = crate::test_support::resolve_seeded(iso.state_root());
+        // The pre-store write, as load_node_identity does.
+        publish_node_json(&paths, &key).unwrap();
+        let before = crate::node::json::read_hint(&paths.node_json_path).unwrap();
+        assert_eq!((before.tag_k, before.tag), (0, tag_for(key.uuid(), 0)));
+        check_store_identity(&conn, &key, &paths.key_path).unwrap();
+        assert_eq!(key.tag_k(), 2);
+        publish_node_json(&paths, &key).unwrap();
+        let after = crate::node::json::read_hint(&paths.node_json_path).unwrap();
+        assert_eq!(after.node_uuid, key.uuid());
+        assert_eq!((after.tag_k, after.tag), (2, tag_for(key.uuid(), 2)));
+        assert_eq!(after.created_at, before.created_at);
+    }
+}
+
+/// Starts a worker and stores its handle in `slot` unless the daemon is
+/// stopping. The slot lock is taken before the check and held across the
+/// start and the push, and the stop path cancels before it takes the same
+/// lock to drain the slot: either the push happens before the drain (the
+/// handle is joined) or this sees the cancel and starts nothing, so no
+/// thread is left that nobody joins. `Ok(false)`: stopping, nothing started.
+fn start_into_slot(
+    slot: &Mutex<Vec<std::thread::JoinHandle<()>>>,
+    stop: &Cancellation,
+    start: impl FnOnce() -> io::Result<std::thread::JoinHandle<()>>,
+) -> io::Result<bool> {
+    let mut workers = slot
+        .lock()
+        .map_err(|_| io::Error::other("worker slot poisoned"))?;
+    if stop.is_cancelled() {
+        return Ok(false);
+    }
+    workers.push(start()?);
+    Ok(true)
+}
+
+/// Records that the archival lane could not be started on first attach, so
+/// Health shows it degraded instead of the lane being silently absent.
+fn archival_start_failed(status: &crate::service::workers::WorkerStatus, error: &io::Error) {
+    status.record_spawn_failure(Lane::Archival, error);
+}
+
+#[cfg(test)]
+mod start_into_slot_tests {
+    use super::*;
+    use crate::service::workers::WorkerStatus;
+
+    fn slot() -> Mutex<Vec<std::thread::JoinHandle<()>>> {
+        Mutex::new(Vec::new())
+    }
+
+    #[test]
+    fn start_into_slot_after_cancel_starts_nothing() {
+        let slot = slot();
+        let stop = Cancellation::default();
+        stop.cancel();
+        let mut called = false;
+        let started = start_into_slot(&slot, &stop, || {
+            called = true;
+            Ok(std::thread::spawn(|| {}))
+        });
+        assert!(matches!(started, Ok(false)));
+        assert!(!called, "the start closure ran after the cancel");
+        assert!(slot.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn start_into_slot_pushes_under_the_lock() {
+        let slot = slot();
+        let stop = Cancellation::default();
+        let started = start_into_slot(&slot, &stop, || Ok(std::thread::spawn(|| {})));
+        assert!(matches!(started, Ok(true)));
+        let mut workers = slot.lock().unwrap();
+        assert_eq!(workers.len(), 1);
+        workers.pop().unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn start_into_slot_reports_spawn_failure() {
+        let slot = slot();
+        let stop = Cancellation::default();
+        let started = start_into_slot(&slot, &stop, || Err(io::Error::other("no threads")));
+        assert_eq!(started.unwrap_err().to_string(), "no threads");
+        assert!(slot.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn start_into_slot_reports_a_poisoned_slot_without_starting() {
+        let slot = std::sync::Arc::new(slot());
+        let poisoner = std::sync::Arc::clone(&slot);
+        let _ = std::thread::spawn(move || {
+            let _held = poisoner.lock().unwrap();
+            panic!("poison the slot");
+        })
+        .join();
+        let mut called = false;
+        let started = start_into_slot(&slot, &Cancellation::default(), || {
+            called = true;
+            Ok(std::thread::spawn(|| {}))
+        });
+        assert!(started.is_err());
+        assert!(!called);
+    }
+
+    #[test]
+    fn archival_start_failure_is_degraded() {
+        let status = WorkerStatus::default();
+        assert!(status.health().is_none(), "a fresh lane reports ready");
+        archival_start_failed(&status, &io::Error::other("no threads"));
+        assert!(status.health().is_some_and(|h| h.failure.is_some()));
     }
 }

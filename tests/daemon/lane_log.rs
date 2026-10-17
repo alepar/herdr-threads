@@ -113,7 +113,7 @@ fn hook_parse_failures_are_rate_limited_too() {
 fn injected_failure_in_each_lane_lands_rate_limited() {
     use crate::service::pacer::Pacer;
     let (clock, log, lines) = limiter();
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         let status = WorkerStatus::default();
         status.set_error_log(log.clone());
         let pacer = Arc::new(Pacer::new(
@@ -131,7 +131,7 @@ fn injected_failure_in_each_lane_lands_rate_limited() {
         status.record_failure(lane, &error);
     }
     let lines = lines.lock().unwrap().clone();
-    for lane in Lane::ALL {
+    for lane in Lane::WORKERS {
         let first = format!("lane {}: StoreBusy: injected", lane.name());
         let summary = format!(
             "lane {}: StoreBusy repeated 2 times in the last 30s (attempt 1)",
@@ -148,7 +148,7 @@ fn injected_failure_in_each_lane_lands_rate_limited() {
             "{lines:?}"
         );
     }
-    assert_eq!(lines.len(), 2 * Lane::ALL.len(), "{lines:?}");
+    assert_eq!(lines.len(), 2 * Lane::WORKERS.len(), "{lines:?}");
 }
 
 /// Kills: an unthrottled verification line (one per wake), a limiter shared

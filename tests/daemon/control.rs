@@ -65,16 +65,24 @@ fn retirement_fixture() -> (std::path::PathBuf, String, crate::ports::Retirement
         "herdr-retirement-control-{}.db",
         Uuid::new_v4()
     ));
-    let instance = Uuid::new_v4().to_string();
+    let instance = crate::node::NodeUuid::new_v4().to_string();
     let context = crate::store::connection::StoreContext::new(
         path.clone(),
         std::sync::Arc::new(RetirementClock),
-    );
+    )
+    .with_test_host()
+    .with_node_seed(crate::test_support::node_seed_for(&instance));
     let db = context.open_writer().unwrap();
-    db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES (?1,0,'host-boot',1,30)", [&instance]).unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('retiring',?1,'resolved','native','pane',1,1,0)", [&instance]).unwrap();
-    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES (?1,'pane','host-boot',1,1,0,'fresh')", [&instance]).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('thread',?1,'topic','goal',0,0,25)", [&instance]).unwrap();
+    db.execute(
+        "UPDATE herdr_hosts SET host_boot='host-boot',host_epoch=1",
+        [],
+    )
+    .unwrap();
+    db.execute("UPDATE local_node SET decision_seq=30", [])
+        .unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('retiring',?1,'resolved','native','pane',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&instance]).unwrap();
+    db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'pane','host-boot',1,1,0,'fresh')", [&instance]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence,journaled) VALUES ('thread',?1,'topic','goal',0,0,25,0)", [&instance]).unwrap();
     db.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('thread','retiring','joined',0)", []).unwrap();
     db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('thread','retiring',1,1)", []).unwrap();
     for n in 1..=24 {
@@ -123,14 +131,15 @@ fn retirement_control(
             crate::store::connection::StoreContext::new(
                 path.to_path_buf(),
                 std::sync::Arc::new(RetirementClock),
-            ),
+            )
+            .with_test_host(),
             instance.to_owned(),
             crate::store::StoreSettings::default(),
         )
         .unwrap(),
     );
     let health_store = store.clone();
-    let instance_id = Uuid::parse_str(instance).unwrap();
+    let instance_id = crate::node::NodeUuid::parse_str(instance).unwrap();
     // The shared production Health builder: the retirement read receives
     // `health_summary_budget(request)`, never a budget the double mints.
     let production = crate::app::elected_health_provider(
@@ -460,11 +469,12 @@ fn production_retirement_failure_degrades_health_and_recovery_clears_it() {
     use crate::protocol::results::CleanupState;
     let (path, instance, job) = retirement_fixture();
     // Real SQLite abort inside a cleanup unit; last_error is never seeded.
+    let (service, store) =
+        retirement_control(&path, &instance, Uuid::new_v4(), Cancellation::default());
+    // Injected after the store opened: the node schema audit refuses an unknown trigger.
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch("CREATE TRIGGER fail_retire_receipt BEFORE UPDATE ON receipts WHEN NEW.state='recipient_retired' BEGIN SELECT RAISE(ABORT,'private receipt storage failure'); END;").unwrap();
     drop(db);
-    let (service, store) =
-        retirement_control(&path, &instance, Uuid::new_v4(), Cancellation::default());
     let budget = CallBudget {
         deadline: MonoInstant(1_000),
         cancellation: Cancellation::default(),
@@ -606,20 +616,23 @@ fn production_health_builder_redacts_retirement_failure_and_clears_on_partial_pr
     use crate::service::workers::WorkerStatus;
     use std::sync::{Arc, atomic::Ordering};
     let (path, instance, job) = retirement_fixture();
-    let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute_batch("CREATE TRIGGER fail_retire_receipt BEFORE UPDATE ON receipts WHEN NEW.state='recipient_retired' BEGIN SELECT RAISE(ABORT,'private receipt storage failure'); END;").unwrap();
-    drop(db);
     let clock = Arc::new(DriverClock(std::sync::atomic::AtomicU64::new(10_000)));
     let store = Arc::new(
         crate::store::SqliteStore::new(
-            crate::store::connection::StoreContext::new(path.clone(), clock.clone()),
+            crate::store::connection::StoreContext::new(path.clone(), clock.clone())
+                .with_test_host()
+                .with_node_seed(crate::test_support::node_seed_for(&instance)),
             instance.clone(),
             crate::store::StoreSettings::default(),
         )
         .unwrap(),
     );
+    // Injected after the store opened: the node schema audit refuses an unknown trigger.
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_retire_receipt BEFORE UPDATE ON receipts WHEN NEW.state='recipient_retired' BEGIN SELECT RAISE(ABORT,'private receipt storage failure'); END;").unwrap();
+    drop(db);
     let status = Arc::new(WorkerStatus::default());
-    let instance_id = Uuid::parse_str(&instance).unwrap();
+    let instance_id = crate::node::NodeUuid::parse_str(&instance).unwrap();
     let boot = Uuid::new_v4();
     let health = crate::app::elected_health_provider(
         instance_id,
@@ -741,13 +754,15 @@ fn production_health_builder_pins_every_elected_field() {
     let (path, instance, _job) = retirement_fixture();
     let store = Arc::new(
         crate::store::SqliteStore::new(
-            crate::store::connection::StoreContext::new(path.clone(), Arc::new(RetirementClock)),
+            crate::store::connection::StoreContext::new(path.clone(), Arc::new(RetirementClock))
+                .with_test_host()
+                .with_node_seed(crate::test_support::node_seed_for(&instance)),
             instance.clone(),
             crate::store::StoreSettings::default(),
         )
         .unwrap(),
     );
-    let instance_id = Uuid::parse_str(&instance).unwrap();
+    let instance_id = crate::node::NodeUuid::parse_str(&instance).unwrap();
     let boot = Uuid::new_v4();
     let settings = crate::service::config::ServiceConfig::default().health_settings();
     let health = crate::app::elected_health_provider(
@@ -796,6 +811,7 @@ fn production_health_builder_pins_every_elected_field() {
         transitions_refused,
         harness_version_lines,
         since_start_ms,
+        hosts,
     } = health(&budget);
     // The version lines come from the production wiring (`run_elected`), not
     // from the provider.
@@ -803,6 +819,8 @@ fn production_health_builder_pins_every_elected_field() {
     // Measured on the provider's monotonic clock from its construction at
     // boot (this fixed clock never advances), so Health can tell `starting`.
     assert_eq!(since_start_ms, Some(0));
+    // No host was handed to the provider (a store-only composition).
+    assert!(hosts.is_empty());
     assert!(degraded_lanes.is_empty());
     assert_eq!(transitions_refused, 0);
     assert_eq!(got_instance, instance_id);
@@ -882,11 +900,15 @@ fn production_health_builder_pins_every_elected_field() {
 
 #[test]
 fn stop_requires_exact_instance_and_boot_before_cancellation() {
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let boot = Uuid::new_v4();
     let cancellation = Cancellation::default();
     let control = StopController::new(instance, boot, cancellation.clone());
-    assert!(control.request_stop(Uuid::new_v4(), boot).is_err());
+    assert!(
+        control
+            .request_stop(crate::node::NodeUuid::new_v4(), boot)
+            .is_err()
+    );
     assert!(!cancellation.is_cancelled());
     assert!(control.request_stop(instance, Uuid::new_v4()).is_err());
     assert!(!cancellation.is_cancelled());
@@ -919,7 +941,7 @@ fn oversized_log_fragment_rotates_to_two_bounded_private_files() {
 
 #[test]
 fn missing_harness_support_and_retirement_error_degrade_health_without_counting_jobs() {
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let boot = Uuid::new_v4();
     let mut inputs = HealthInputs::unknown(instance, boot);
     inputs.database = ComponentStatus::Ready;
@@ -957,7 +979,7 @@ fn missing_harness_support_and_retirement_error_degrade_health_without_counting_
 
 #[test]
 fn health_bounds_large_ascii_unicode_and_escaped_details_before_wire_encoding() {
-    let mut inputs = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4());
+    let mut inputs = HealthInputs::unknown(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     inputs.database = ComponentStatus::Degraded("A".repeat(4_000_000));
     inputs.schema = ComponentStatus::Unavailable("界".repeat(1_000_000));
     inputs.host = ComponentStatus::Degraded("\n".repeat(3_000_000));
@@ -1006,7 +1028,7 @@ fn health_bounds_large_ascii_unicode_and_escaped_details_before_wire_encoding() 
 
 #[test]
 fn health_without_provider_observations_stays_typed_unknown_and_degraded() {
-    let health = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4()).assemble();
+    let health = HealthInputs::unknown(crate::node::NodeUuid::new_v4(), Uuid::new_v4()).assemble();
     assert_eq!(health.state, HealthState::Degraded);
     assert_eq!(
         health.database.state,
@@ -1037,7 +1059,7 @@ fn schema_matched_codex_admission_adds_no_health_line_and_the_provider_forwards_
     let line = "codex 0.159.2: schema-matched, live-unverified: recipe codex-hooks-v1 hook \
                 schemas sha256:86858f2456c999030224a92d8dfb535183fe0edf8601690d8941978fadbb066d; \
                 binary sha256 16593cc2f422d5f3";
-    let mut inputs = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4());
+    let mut inputs = HealthInputs::unknown(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     inputs.set_harness(
         "codex",
         HarnessStatus::Cooperative {
@@ -1057,7 +1079,7 @@ fn schema_matched_codex_admission_adds_no_health_line_and_the_provider_forwards_
         health.limitations,
         health.notes
     );
-    let mut inputs = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4());
+    let mut inputs = HealthInputs::unknown(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     inputs.set_harness(
         "codex",
         HarnessStatus::Cooperative {
@@ -1074,7 +1096,9 @@ fn schema_matched_codex_admission_adds_no_health_line_and_the_provider_forwards_
     let (path, instance, _job) = retirement_fixture();
     let store = Arc::new(
         crate::store::SqliteStore::new(
-            crate::store::connection::StoreContext::new(path.clone(), Arc::new(RetirementClock)),
+            crate::store::connection::StoreContext::new(path.clone(), Arc::new(RetirementClock))
+                .with_test_host()
+                .with_node_seed(crate::test_support::node_seed_for(&instance)),
             instance.clone(),
             crate::store::StoreSettings::default(),
         )
@@ -1082,7 +1106,7 @@ fn schema_matched_codex_admission_adds_no_health_line_and_the_provider_forwards_
     );
     let slot: Arc<std::sync::Mutex<crate::app::HarnessObservations>> = Default::default();
     let provider = crate::app::elected_health_provider(
-        Uuid::parse_str(&instance).unwrap(),
+        crate::node::NodeUuid::parse_str(&instance).unwrap(),
         Uuid::new_v4(),
         crate::service::config::ServiceConfig::default().health_settings(),
         Arc::new(RetirementClock),
@@ -1150,7 +1174,7 @@ impl LocalService for FakeService {
 
 #[test]
 fn control_service_routes_stop_and_health_without_native_authority() {
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let boot = Uuid::new_v4();
     let shutdown = Cancellation::default();
     let service = ControlService::new(
@@ -1235,12 +1259,12 @@ impl LocalClient for FakeClient {
 
 #[test]
 fn compatible_old_software_stops_and_unresponsive_client_fails_without_pid_action() {
-    let instance = Uuid::new_v4();
+    let instance = crate::node::NodeUuid::new_v4();
     let boot = Uuid::new_v4();
     let descriptor = EndpointDescriptor {
         software_version: "0.0.1".into(),
         protocol_version: crate::protocol::wire::PROTOCOL_VERSION,
-        instance_uuid: instance,
+        node_uuid: instance,
         boot_id: boot,
         endpoint: "/does/not/matter".into(),
         pid: std::process::id(),
@@ -1255,9 +1279,10 @@ fn compatible_old_software_stops_and_unresponsive_client_fails_without_pid_actio
         crate::test_support::scratch::temp_path(format!("herdr-stop-skew-{}", Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    let paths = crate::daemon::paths::InstancePaths::resolve(
+    let paths = crate::daemon::paths::NodePaths::resolve(
         &crate::daemon::paths::RuntimeContext::explicit(root.clone(), root.join("host.sock"), None)
-            .unwrap(),
+            .unwrap()
+            .state_dir,
     )
     .unwrap();
     let success = FakeClient {
@@ -1320,16 +1345,18 @@ impl crate::protocol::time::Clock for StopClock {
 #[test]
 fn stop_completion_waits_for_real_owner_lock_after_socket_and_descriptor_disappear() {
     use crate::daemon::ownership::OwnerLock;
-    use crate::daemon::paths::{InstancePaths, RuntimeContext};
+    use crate::daemon::paths::{NodePaths, RuntimeContext};
     let root =
         crate::test_support::scratch::temp_path(format!("herdr-stop-owner-{}", Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    let paths = InstancePaths::resolve(
-        &RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap(),
+    let paths = NodePaths::resolve(
+        &RuntimeContext::explicit(root.clone(), root.join("host.sock"), None)
+            .unwrap()
+            .state_dir,
     )
     .unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let listener = owner.bind_socket().unwrap();
     let descriptor = owner
         .publish_endpoint(
@@ -1408,7 +1435,7 @@ fn expired_stop_budget_cannot_report_completion_from_a_late_probe() {
 #[test]
 fn startup_binding_evidence_lacking_degrades_otherwise_healthy_health() {
     let healthy = || {
-        let mut inputs = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4());
+        let mut inputs = HealthInputs::unknown(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
         inputs.database = ComponentStatus::Ready;
         inputs.schema = ComponentStatus::Ready;
         inputs.host = ComponentStatus::Ready;
@@ -1483,7 +1510,7 @@ fn unresolved_seats_are_counted_named_and_degrade_otherwise_healthy_health() {
     use crate::ports::{UnresolvedReason, UnresolvedSeatSample, UnresolvedSeatSummary};
     use crate::protocol::ids::{HostTargetId, SeatId};
     let healthy = || {
-        let mut inputs = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4());
+        let mut inputs = HealthInputs::unknown(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
         inputs.database = ComponentStatus::Ready;
         inputs.schema = ComponentStatus::Ready;
         inputs.host = ComponentStatus::Ready;
@@ -1600,7 +1627,7 @@ fn unresolved_seats_are_counted_named_and_degrade_otherwise_healthy_health() {
 /// admitted by recipes (Codex schema-matched).
 fn cooperative_inputs() -> HealthInputs {
     use crate::daemon::health::HarnessStatus;
-    let mut inputs = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4());
+    let mut inputs = HealthInputs::unknown(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
     inputs.database = ComponentStatus::Ready;
     inputs.schema = ComponentStatus::Ready;
     inputs.host = ComponentStatus::Ready;

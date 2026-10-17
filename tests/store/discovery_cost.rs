@@ -57,17 +57,14 @@ impl Fixture {
             "herdr-discovery-{}.db",
             uuid::Uuid::new_v4()
         ));
-        let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+        let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
         let db = context.open_writer().unwrap();
-        db.execute(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1)",
-            [],
-        )
+        db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1")
         .unwrap();
         Self { path, context }
     }
     fn reader(&self) -> Connection {
-        Connection::open(&self.path).unwrap()
+        crate::test_support::open_test_connection(&self.path)
     }
 }
 
@@ -87,8 +84,8 @@ fn insert_seats(db: &Connection, prefix: &str, count: u64, retired: bool) {
     };
     db.execute_batch(&format!(
         "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{count}) \
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq) \
-         SELECT '{prefix}'||x,'i','{state}','native',{target},1,1,0,{retired_at},{retired_seq} FROM n"
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) \
+         SELECT '{prefix}'||x,'34750f98bd59fcfc946da45aaabe933b','{state}','native',{target},1,1,0,{retired_at},{retired_seq},(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM n"
     ))
     .unwrap();
 }
@@ -104,13 +101,13 @@ fn observation_fixture(retired: u64, generations: u64) -> Fixture {
     insert_seats(&db, "ra", retired - retired / 2, true);
     db.execute_batch(&format!(
         "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{generations}) \
-         INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) \
-         SELECT 'old'||x,'i','host',1,x,'inc',2,2,'published',0,0,0,0 FROM n;\
+         INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) \
+         SELECT 'old'||x,(SELECT min(host_id) FROM herdr_hosts),'host',1,x,'inc',2,2,'published',0,0,0,0 FROM n;\
          INSERT INTO snapshot_targets(generation_id,target_id,generation,observation_sequence,occupancy,ui_state,observed_at) \
          SELECT g.id,t.t,0,g.observation_sequence,'unknown','unknown',0 FROM snapshot_generations g, (SELECT 'a' AS t UNION ALL SELECT 'b') t;\
-         INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) \
-         VALUES ('active','i','host',1,{},'inc',0,0,'published',0,0,0,0);\
-         UPDATE host_instances SET active_snapshot_id='active' WHERE id='i';",
+         INSERT INTO snapshot_generations(id,host_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) \
+         VALUES ('active',(SELECT min(host_id) FROM herdr_hosts),'host',1,{},'inc',0,0,'published',0,0,0,0);\
+         UPDATE herdr_hosts SET active_snapshot_id='active' WHERE node_id='34750f98bd59fcfc946da45aaabe933b';",
         generations + 1
     ))
     .unwrap();
@@ -138,7 +135,8 @@ fn observation_pass(fixture: &Fixture, db: &Connection) -> (Vec<String>, Vec<Str
     }
     let fence = HostInvalidationFence {
         admission: HostObservationAdmission {
-            instance: "i".to_owned(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".to_owned(),
+            host_id: crate::test_support::test_host_id(),
             sequence: 0,
             expected_active: None,
             expected_boot: None,
@@ -172,7 +170,7 @@ fn observation_pass(fixture: &Fixture, db: &Connection) -> (Vec<String>, Vec<Str
     (
         walked,
         invalidated,
-        seats::has_nonretired_seat(db, "i").unwrap(),
+        seats::has_nonretired_seat(db, crate::test_support::test_host_id()).unwrap(),
     )
 }
 
@@ -229,7 +227,7 @@ fn work_pass(fixture: &Fixture, limit: u16) -> (Vec<String>, u64) {
             pending_work_page_on(
                 &fixture.context,
                 &db,
-                "i",
+                "34750f98bd59fcfc946da45aaabe933b",
                 PageRequest {
                     limit,
                     ..PageRequest::default()
@@ -242,7 +240,10 @@ fn work_pass(fixture: &Fixture, limit: u16) -> (Vec<String>, u64) {
         total += cost;
         ids.extend(page.items.iter().map(|job| job.id.clone()));
         match page.next_cursor {
-            Some(next) => cursor = Some(WorkPageCursor::decode(&next, "i").unwrap()),
+            Some(next) => {
+                cursor =
+                    Some(WorkPageCursor::decode(&next, "34750f98bd59fcfc946da45aaabe933b").unwrap())
+            }
             None => break,
         }
     }
@@ -294,7 +295,7 @@ fn pre_change_work_cursor_still_validates() {
     let page = pending_work_page_on(
         &fixture.context,
         &db,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         PageRequest {
             limit: 100,
             ..PageRequest::default()
@@ -316,12 +317,16 @@ const OLD: &str = "00000000-0000-0000-0000-000000000001";
 /// carry a settled (unreserved) wake_work row.
 fn with_history(history: u64) -> Connection {
     let db = Connection::open_in_memory().unwrap();
-    schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0)")
-        .unwrap();
+    schema::initialize(
+        &db,
+        || crate::protocol::time::UtcMillis(0),
+        &crate::test_support::test_node_seed(),
+    )
+    .unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
     db.execute_batch(&format!("\
         WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{})\
-        INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) SELECT 's'||x,'i',IIF(x%40=0 OR x>40,IIF(x%2=0,'retired','resolved'),'resolved'),'native',1,0,IIF(x%40=0 OR x>40,IIF(x%2=0,0,NULL),NULL),IIF(x%40=0 OR x>40,IIF(x%2=0,x,NULL),NULL) FROM n;\
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) SELECT 's'||x,'34750f98bd59fcfc946da45aaabe933b',IIF(x%40=0 OR x>40,IIF(x%2=0,'retired','resolved'),'resolved'),'native',1,0,IIF(x%40=0 OR x>40,IIF(x%2=0,0,NULL),NULL),IIF(x%40=0 OR x>40,IIF(x%2=0,x,NULL),NULL),(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM n;\
         INSERT INTO wake_work(seat_id,reservation_id,reservation_boot) SELECT id,'r'||ordinal,'{OLD}' FROM seats WHERE ordinal<=40;\
         INSERT INTO wake_work(seat_id) SELECT id FROM seats WHERE ordinal>40 AND ordinal%2=1;\
     ", 40 + history)).unwrap();
@@ -349,7 +354,15 @@ fn new_walk(db: &Connection, after: u64) -> Vec<u64> {
         .unwrap();
     let mut statement = db.prepare(WAKE_RECOVERY_WALK_SQL).unwrap();
     statement
-        .query_map(params!["i", after as i64, high], |r| r.get::<_, i64>(0))
+        .query_map(
+            params![
+                "34750f98bd59fcfc946da45aaabe933b",
+                after as i64,
+                high,
+                crate::test_support::test_host_id().get()
+            ],
+            |r| r.get::<_, i64>(0),
+        )
         .unwrap()
         .map(|r| r.unwrap() as u64)
         .collect()
@@ -377,7 +390,7 @@ fn recovery_walk_is_flat_in_retired_and_unreserved_rows() {
             let high = db
                 .query_row("SELECT MAX(ordinal) FROM seats", [], |r| r.get::<_, i64>(0))
                 .unwrap();
-            old_walk(db, "i", after, high as u64)
+            old_walk(db, "34750f98bd59fcfc946da45aaabe933b", after, high as u64)
                 .into_iter()
                 .map(|row| row.0)
                 .collect()
@@ -392,7 +405,12 @@ fn recovery_walk_is_flat_in_retired_and_unreserved_rows() {
     let plan: String = small
         .query_row(
             &format!("EXPLAIN QUERY PLAN {WAKE_RECOVERY_WALK_SQL}"),
-            params!["i", 0, 1_i64 << 40],
+            params![
+                "34750f98bd59fcfc946da45aaabe933b",
+                0,
+                1_i64 << 40,
+                crate::test_support::test_host_id().get()
+            ],
             |r| r.get(3),
         )
         .unwrap();

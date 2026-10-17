@@ -32,11 +32,17 @@ fn fixture() -> (
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     }
     let j = Journal::open(root.join("intents")).unwrap();
-    let cj =
-        ContextJournal::open(&root, uuid::Uuid::from_u128(1), "seat", CONTEXT_LOCK_WAIT).unwrap();
+    let cj = ContextJournal::open(
+        &root,
+        crate::node::NodeUuid::from_u128(1),
+        "seat",
+        CONTEXT_LOCK_WAIT,
+    )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+    .unwrap();
     let c = OccupantContext {
         format_version: 1,
-        instance: uuid::Uuid::from_u128(1),
+        instance: crate::node::NodeUuid::from_u128(1),
         seat: "seat".into(),
         target: "pane".into(),
         harness: Harness::Codex,
@@ -105,7 +111,9 @@ fn lifecycle_preparation_uses_one_cli_key_and_tagged_fallback_across_restart() {
             .starts_with("plugin_context:")
     );
     drop(cj);
-    let cj = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
+    let cj = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT)
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+        .unwrap();
     assert_eq!(
         prepare_event(&j, &cj, &event, Some(&seed), 3)
             .unwrap()
@@ -261,7 +269,9 @@ fn response_loss_restart_retries_exact_command_and_current_reuses_execution() {
     let frozen = cj.pending().unwrap().unwrap();
     let key = frozen.operation_id;
     drop(cj);
-    let cj = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
+    let cj = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT)
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+        .unwrap();
     run_event(
         &j,
         &cj,
@@ -424,7 +434,7 @@ fn duplicate_concurrent_hook_allocates_one_intent_and_execution() {
 fn edited_payload_cannot_dispatch_and_native_prefix_cannot_impersonate_fallback() {
     let (root, j, cj, mut seed, event) = fixture();
     seed.session = SessionReference::Native("plugin_context:spoof".into());
-    assert!(caller_claim(&seed).is_err());
+    assert!(caller_claim(&seed, crate::test_support::test_host_locator()).is_err());
     seed.session = SessionReference::Native("native".into());
     let mut req = prepare_event(&j, &cj, &event, Some(&seed), 1)
         .unwrap()
@@ -440,9 +450,12 @@ fn hook_emits_compact_instructions_without_ack_and_child_emits_only_summary_guid
     let mut out = vec![];
     run_hook_event(&j, &cj, &event, Some(&seed), 1, &client, &Clock, &mut out).unwrap();
     let text = String::from_utf8(out).unwrap();
-    assert!(text.contains("text inbox ACKs only complete pending agent messages"));
+    assert!(text.contains("Complete hook/channel deliveries and default text inbox displays ACK eligible receipts automatically"));
     assert!(text.contains("after output is written and flushed"));
     assert!(text.contains("Accept invitations separately"));
+    assert!(text.contains("Call inbox only for continuations or unavailable delivery"));
+    assert!(text.contains("JSON/--machine inbox, read and pending-receipts are read-only"));
+    assert!(text.contains("explicitly ACK exact IDs read elsewhere"));
     assert_eq!(client.calls.lock().unwrap().len(), 2);
     event.role = Role::Subagent;
     event.event_id = "child".into();
@@ -560,7 +573,9 @@ fn overview_failure_and_reopen_reuse_cached_check_in_and_pending_intent() {
     assert_eq!(j.page(&Default::default()).unwrap().items.len(), 1);
     assert!(cj.pending().unwrap().is_none());
     drop(cj);
-    let cj = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
+    let cj = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT)
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+        .unwrap();
     client.directory_error = false;
     let mut output = Vec::new();
     run_hook_event(
@@ -1434,8 +1449,14 @@ fn cross_instance_context_diagnostic_precedes_any_new_hook_intent() {
     )
     .unwrap();
     drop(cj);
-    let other =
-        ContextJournal::open(&root, uuid::Uuid::from_u128(999), "seat", CONTEXT_LOCK_WAIT).unwrap();
+    let other = ContextJournal::open(
+        &root,
+        crate::node::NodeUuid::from_u128(999),
+        "seat",
+        CONTEXT_LOCK_WAIT,
+    )
+    .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+    .unwrap();
     assert_eq!(
         prepare_event(&j, &other, &event, Some(&seed), 2),
         Err(ContextError::WrongInstance)
@@ -2091,7 +2112,9 @@ fn qualified_turn_replay_restart_and_stale_order_keep_exact_operation_execution(
             ))
             .is_err()
     );
-    let reopened = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
+    let reopened = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT)
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+        .unwrap();
     assert_eq!(
         prepare_qualified_turn(&journal, &reopened, &event, &turn, Some(&seed), 2)
             .unwrap()
@@ -2399,7 +2422,9 @@ fn qualified_turn_flush_loss_retains_exact_response_and_operation() {
         .unwrap();
     assert_eq!(journal.page(&Default::default()).unwrap().items.len(), 1);
     drop(contexts);
-    let reopened = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
+    let reopened = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT)
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+        .unwrap();
     let mut output = Vec::new();
     run_qualified_hook_event_reporting_notices(
         &journal,
@@ -2463,7 +2488,9 @@ fn qualified_turn_watermarks_are_durable_and_bounded_across_many_nonces() {
         32
     );
     drop(contexts);
-    let reopened = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
+    let reopened = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT)
+        .map(|journal| journal.with_host(crate::test_support::test_host_locator()))
+        .unwrap();
     event.event_id = "retained-stale".into();
     assert_eq!(
         prepare_qualified_turn(

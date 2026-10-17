@@ -180,6 +180,7 @@ mod fixtures {
             active: seat == "seat-b",
             bindings: presence_bindings(seat),
             availability: None,
+            home_unreachable: None,
         }
     }
 
@@ -285,6 +286,7 @@ mod fixtures {
         CheckInResult {
             context_disposition: CheckInContextDisposition::Current,
             context: CallerClaim {
+                host: crate::test_support::test_host_locator(),
                 instance: "instance-1".into(),
                 seat: SeatId::new("seat-a"),
                 binding_generation: 3,

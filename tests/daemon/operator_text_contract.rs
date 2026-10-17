@@ -1,31 +1,28 @@
 use super::*;
-use crate::daemon::paths::{InstancePaths, RuntimeContext};
+use crate::daemon::paths::{NodePaths, RuntimeContext};
 use crate::daemon::remedy::{RemedyContext, remedy};
 use crate::protocol::results::ErrorClass;
 use std::path::PathBuf;
 
-fn paths() -> (PathBuf, InstancePaths) {
+fn paths() -> (PathBuf, NodePaths) {
     use std::os::unix::fs::PermissionsExt;
     let root =
         crate::test_support::scratch::temp_path(format!("herdr-optext-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let context = RuntimeContext::explicit(root.clone(), root.join("host.sock"), None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
     (root, paths)
 }
 
 #[test]
 fn path_accessors_have_the_contract_shape() {
     let (root, paths) = paths();
-    assert_eq!(
-        daemon_log_path(&paths),
-        paths.instance_dir.join("daemon.log")
-    );
-    assert_eq!(startup_logs_dir(&paths), paths.instance_dir.join("logs"));
+    assert_eq!(daemon_log_path(&paths), paths.node_dir.join("daemon.log"));
+    assert_eq!(startup_logs_dir(&paths), paths.node_dir.join("logs"));
     let attempt = StartAttempt::new();
     let path = startup_log_path(&paths, &attempt);
-    assert_eq!(path.parent().unwrap(), paths.instance_dir.join("logs"));
+    assert_eq!(path.parent().unwrap(), paths.node_dir.join("logs"));
     let name = path.file_name().unwrap().to_str().unwrap();
     let middle = name
         .strip_prefix(&format!("startup-{}-", std::process::id()))

@@ -678,7 +678,12 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
         herdr_threads::protocol::results::ApiError,
     > {
         self.result(3, || {
-            herdr_threads::ports::StorePort::wake_candidates(&self.store, page, budget)
+            herdr_threads::ports::StorePort::wake_candidates(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                page,
+                budget,
+            )
         })
     }
     fn wake_batch_seats(
@@ -689,7 +694,13 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
     ) -> Result<Vec<herdr_threads::protocol::ids::SeatId>, herdr_threads::protocol::results::ApiError>
     {
         self.result(6, || {
-            herdr_threads::ports::StorePort::wake_batch_seats(&self.store, after, limit, budget)
+            herdr_threads::ports::StorePort::wake_batch_seats(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                after,
+                limit,
+                budget,
+            )
         })
     }
     fn clear_wake_batch_if_empty(
@@ -698,7 +709,12 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
         budget: &CallBudget,
     ) -> Result<bool, herdr_threads::protocol::results::ApiError> {
         self.result(7, || {
-            herdr_threads::ports::StorePort::clear_wake_batch_if_empty(&self.store, seat, budget)
+            herdr_threads::ports::StorePort::clear_wake_batch_if_empty(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                seat,
+                budget,
+            )
         })
     }
     fn wake_batch_window(
@@ -710,7 +726,12 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
         herdr_threads::protocol::results::ApiError,
     > {
         self.result(8, || {
-            herdr_threads::ports::StorePort::wake_batch_window(&self.store, candidate, budget)
+            herdr_threads::ports::StorePort::wake_batch_window(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                candidate,
+                budget,
+            )
         })
     }
     fn reserve_wake(
@@ -722,7 +743,12 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
         herdr_threads::protocol::results::ApiError,
     > {
         self.result(4, || {
-            herdr_threads::ports::StorePort::reserve_wake(&self.store, candidate, budget)
+            herdr_threads::ports::StorePort::reserve_wake(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                candidate,
+                budget,
+            )
         })
     }
     fn complete_wake(
@@ -738,6 +764,7 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
             }
             herdr_threads::ports::StorePort::complete_wake(
                 &self.store,
+                herdr_threads::test_support::test_host_id(),
                 attempt,
                 outcome,
                 refused_restore,
@@ -754,7 +781,12 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
         herdr_threads::protocol::results::ApiError,
     > {
         self.result(1, || {
-            herdr_threads::ports::StorePort::wake_recovery_candidates(&self.store, page, budget)
+            herdr_threads::ports::StorePort::wake_recovery_candidates(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                page,
+                budget,
+            )
         })
     }
     fn recover_wake_reservation(
@@ -764,7 +796,12 @@ impl herdr_threads::scheduler::WakePort for HealthWakeFixture {
     ) -> Result<herdr_threads::ports::WakeRecoveryOutcome, herdr_threads::protocol::results::ApiError>
     {
         self.result(2, || {
-            herdr_threads::ports::StorePort::recover_wake_reservation(&self.store, request, budget)
+            herdr_threads::ports::StorePort::recover_wake_reservation(
+                &self.store,
+                herdr_threads::test_support::test_host_id(),
+                request,
+                budget,
+            )
         })
     }
 }
@@ -783,27 +820,28 @@ fn health_wake_store(
     clock: Arc<dyn Clock>,
     boot: uuid::Uuid,
 ) -> herdr_threads::store::SqliteStore {
-    let context = herdr_threads::store::connection::StoreContext::new(path.into(), clock);
+    let context =
+        herdr_threads::store::connection::StoreContext::new(path.into(), clock).with_test_host();
     let db = context.open_writer().unwrap();
-    db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);
-        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);").unwrap();
+    db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1;
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);").unwrap();
     for seat in ["a", "b"] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?1,1,1,0)", [seat]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'host',1,1,0,'fresh','occupied','idle','execution',1,'term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',?1,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [seat]).unwrap();
+        db.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),?1,'host',1,1,0,'fresh','occupied','idle','execution',1,'term-'||?1,'inc','coherent_enumeration',1)", [seat]).unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,1,1,?1,'host',1,'codex','session','execution','fresh',0,0,'term-'||?1,'inc')", [seat]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t',?1,'invited')",
             [seat],
         )
         .unwrap();
-        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq) VALUES (?1,'t',?1,1,'pending',0,1000000,1000000,1)", [seat]).unwrap();
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq,origin_node) VALUES (?1,'t',?1,1,'pending',0,1000000,1000000,1,(SELECT id FROM local_node))", [seat]).unwrap();
     }
-    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,target_generation,created_at) VALUES ('old','i','unresolved','native',1,1,0);").unwrap();
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('old','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));").unwrap();
     db.execute("INSERT INTO wake_work(seat_id,reason_bits,retry_step,reservation_id,reservation_boot,last_reservation_id,last_reservation_boot,minimum_delay_ms,effective_delay_ms) VALUES ('old',0,0,'old-attempt',?1,'old-attempt',?1,30000,30000)", [uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000002").unwrap().to_string()]).unwrap();
     drop(db);
     herdr_threads::store::SqliteStore::new(
         context,
-        "i",
+        "34750f98bd59fcfc946da45aaabe933b",
         herdr_threads::store::StoreSettings {
             daemon_boot: Some(boot),
             wake_batch_delay_ms: 0,
@@ -836,7 +874,7 @@ fn wake_health_recovers_only_after_actual_failed_store_operation_retry() {
         let status = WorkerStatus::default();
         let observed = ObservedWakePort::new(&fixture, &status);
         let scheduler = Scheduler::new(
-            "i".into(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             clock.as_ref(),
             &observed,
             &HealthNotifier,
@@ -968,7 +1006,7 @@ fn wake_health_keeps_unsettled_completion_through_local_noop_and_healthy_peer() 
     let status = WorkerStatus::default();
     let observed = ObservedWakePort::new(&fixture, &status);
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         clock.as_ref(),
         &observed,
         &HealthNotifier,
@@ -1235,7 +1273,7 @@ fn wake_health_recovers_exhausted_ingress_budget_on_fresh_valid_admission() {
     let status = WorkerStatus::default();
     let observed = ObservedWakePort::new(&fixture, &status);
     let scheduler = Scheduler::new(
-        "i".into(),
+        "34750f98bd59fcfc946da45aaabe933b".into(),
         clock.as_ref(),
         &observed,
         &HealthNotifier,
@@ -1736,8 +1774,8 @@ mod pacer_lanes {
             });
             let store = Arc::new(
                 SqliteStore::new(
-                    StoreContext::new(path.clone(), clock.clone()),
-                    "i",
+                    StoreContext::new(path.clone(), clock.clone()).with_test_host(),
+                    "34750f98bd59fcfc946da45aaabe933b",
                     StoreSettings {
                         daemon_boot: Some(boot()),
                         // Pacer cases measure retry spacing after an immediate
@@ -1756,24 +1794,24 @@ mod pacer_lanes {
             }
         }
         pub(super) fn db(&self) -> rusqlite::Connection {
-            rusqlite::Connection::open(&self.path).unwrap()
+            herdr_threads::test_support::open_test_connection(&self.path)
         }
         /// `count` resolved seats (`seat0`, `seat1`, ...), each with a pending
         /// invitation and receipt in a thread of its own: the minimum that
         /// makes the wake lane reserve and attempt a wake per seat.
         pub(super) fn seed_wake_seats(&self, count: usize) {
             let db = self.db();
-            db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1)").unwrap();
+            db.execute_batch("UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1").unwrap();
             for n in 0..count {
                 let seq = n + 1;
                 db.execute_batch(&format!("\
-                    INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat{n}','i','resolved','native','target{n}',1,1,0);\
-                    INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','target{n}','host',1,1,0,'fresh','occupied','idle','execution{n}',1,'term-target{n}','inc','coherent_enumeration',1);\
+                    INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('seat{n}','34750f98bd59fcfc946da45aaabe933b','resolved','native','target{n}',1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));\
+                    INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,occupancy,ui_state,verified_execution,top_level_occupant,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'target{n}','host',1,1,0,'fresh','occupied','idle','execution{n}',1,'term-target{n}','inc','coherent_enumeration',1);\
                     INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('seat{n}',1,1,'target{n}','host',1,'codex','session{n}','execution{n}','fresh',0,0,'term-target{n}','inc');\
-                    INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread{n}','i','topic','goal',0,0);\
+                    INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('thread{n}','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);\
                     INSERT INTO memberships(thread_id,seat_id,state) VALUES ('thread{n}','seat{n}','invited');\
-                    INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq) VALUES ('invite{n}','thread{n}','seat{n}',1,'pending',0,100000000,100,1);\
-                    INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('message{n}','i','thread{n}',1,'ordinary','body',{seq},0);\
+                    INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,deadline_at,frozen_duration_ms,created_decision_seq,origin_node) VALUES ('invite{n}','thread{n}','seat{n}',1,'pending',0,100000000,100,1,(SELECT id FROM local_node));\
+                    INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at) VALUES ('message{n}','34750f98bd59fcfc946da45aaabe933b','thread{n}',1,'ordinary','body',{seq},0);\
                     INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('message{n}','thread{n}','seat{n}','pending',100);\
                 ")).unwrap();
             }
@@ -1988,7 +2026,8 @@ mod pacer_lanes {
             f.store.clone(),
             Arc::new(FairWriter::new(16)),
             host.clone(),
-            "i".into(),
+            herdr_threads::test_support::test_host_id(),
+            "34750f98bd59fcfc946da45aaabe933b".into(),
             boot(),
             RetryConfig::default(),
             pacer.clone(),
@@ -2175,8 +2214,8 @@ mod pacer_lanes {
         let kicks = Arc::new(CommitKicks::default());
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(f.path.clone(), f.clock.clone()),
-                "i",
+                StoreContext::new(f.path.clone(), f.clock.clone()).with_test_host(),
+                "34750f98bd59fcfc946da45aaabe933b",
                 StoreSettings {
                     daemon_boot: Some(boot()),
                     wake_batch_delay_ms: 0,
@@ -2203,7 +2242,8 @@ mod pacer_lanes {
                 store.clone(),
                 Arc::new(FairWriter::new(16)),
                 host.clone(),
-                "i".into(),
+                herdr_threads::test_support::test_host_id(),
+                "34750f98bd59fcfc946da45aaabe933b".into(),
                 boot(),
                 RetryConfig::default(),
                 pacer.clone(),
@@ -2223,13 +2263,19 @@ mod pacer_lanes {
         wait_until("the refused attempt", || host.calls().len() == 1);
         wait_until("the lane to block", || pacer.idle_events() >= 1);
         wake_kicks.store(0, Ordering::SeqCst);
-        // A new observation publication commits host_instances (admission) and
+        // A new observation publication commits herdr_hosts (admission) and
         // nothing a wake kick set maps to.
         let budget = CallBudget {
             deadline: MonoInstant(u64::MAX),
             cancellation: Cancellation::default(),
         };
-        store.begin_host_observation("i", &budget).unwrap();
+        store
+            .begin_host_observation(
+                "34750f98bd59fcfc946da45aaabe933b",
+                herdr_threads::test_support::test_host_id(),
+                &budget,
+            )
+            .unwrap();
         host.ready.store(true, Ordering::SeqCst);
         stays("the publication kicked the wake lane", || {
             wake_kicks.load(Ordering::SeqCst) != 0 || host.calls().len() != 1

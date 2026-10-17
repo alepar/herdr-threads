@@ -246,6 +246,7 @@ fn claim() -> crate::protocol::authority::CallerClaim {
     use crate::protocol::authority::{CallerRole, Harness};
     use crate::protocol::ids::{ExecutionId, HostTargetId, NativeSessionId, SeatId};
     crate::protocol::authority::CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "11111111-1111-4111-8111-111111111111".into(),
         seat: SeatId::new("s1"),
         binding_generation: 1,

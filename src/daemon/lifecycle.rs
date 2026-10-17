@@ -10,11 +10,12 @@ use crate::daemon::logs::{
 };
 use crate::daemon::ownership::{
     EndpointDescriptor, OwnerLock, owner_lock_identity, previous_owner_released, read_descriptor,
-    read_existing_namespace,
+    read_node_uuid_hint,
 };
-use crate::daemon::paths::{InstancePaths, RuntimeContext, effective_uid};
+use crate::daemon::paths::{NodePaths, RuntimeContext, effective_uid};
 use crate::daemon::remedy::{RemedyContext, remedy};
 use crate::daemon::transport::{self, ServeOutcome};
+use crate::node::NodeUuid;
 use crate::ports::LocalService;
 use crate::protocol::{
     commands::Command,
@@ -149,8 +150,8 @@ fn io_error(error: io::Error) -> ApiError {
     api_error(code, format!("daemon startup: {error}"))
 }
 
-fn instance_uuid(paths: &InstancePaths) -> io::Result<Option<Uuid>> {
-    read_existing_namespace(paths)
+fn instance_uuid(paths: &NodePaths) -> io::Result<Option<NodeUuid>> {
+    read_node_uuid_hint(paths)
 }
 
 /// The VersionSkew error: `code` stays the caller's (wire vs software skew),
@@ -175,8 +176,8 @@ pub(crate) fn skew_error(code: ErrorCode, daemon_software: &str, daemon_protocol
 /// its owner is still alive. `None` when the owner is gone (stale descriptor,
 /// nothing to skew against). Never decodes anything the daemon wrote.
 pub(crate) fn live_skew(
-    paths: &InstancePaths,
-    instance: Uuid,
+    paths: &NodePaths,
+    instance: NodeUuid,
     descriptor: &EndpointDescriptor,
 ) -> Result<Option<ApiError>, ApiError> {
     let lock_identity = owner_lock_identity(paths).map_err(io_error)?;
@@ -199,7 +200,7 @@ pub(crate) fn live_skew(
 }
 
 async fn handshake(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: Arc<dyn Clock>,
     remaining: Duration,
 ) -> Result<Option<EndpointDescriptor>, ApiError> {
@@ -346,7 +347,7 @@ fn pipe_reader(mut pipe: impl Read + Send + 'static) -> (Arc<Mutex<Vec<u8>>>, Re
 fn spawn_detached(
     executable: &Path,
     context: &RuntimeContext,
-    paths: &InstancePaths,
+    paths: &NodePaths,
     attempt: &StartAttempt,
 ) -> io::Result<Launched> {
     let mut command = ProcessCommand::new(executable);
@@ -354,11 +355,12 @@ fn spawn_detached(
         .arg("daemon")
         .arg("run")
         .arg("--state-dir")
-        .arg(&context.state_dir)
-        .arg("--host-endpoint")
-        .arg(&context.host_endpoint)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null());
+        .arg(&context.state_dir);
+    // The claim host is an attach hint, never part of the node's address.
+    if let Some(host) = &context.host_endpoint {
+        command.arg("--host-endpoint").arg(host);
+    }
+    command.stdin(Stdio::null()).stdout(Stdio::null());
     let file_log = create_startup_log(paths, attempt);
     let fallback_reason = match file_log {
         Ok((file, path)) => {
@@ -424,7 +426,7 @@ impl Launched {
 
     /// The log file the remedy names: the attempt's file, or `daemon.log`
     /// when the attempt had no file.
-    fn remedy_log(&self, paths: &InstancePaths) -> PathBuf {
+    fn remedy_log(&self, paths: &NodePaths) -> PathBuf {
         match &self.stderr {
             StartupStderr::File(path) => path.clone(),
             StartupStderr::Piped { .. } => daemon_log_path(paths),
@@ -459,8 +461,8 @@ pub async fn ensure_running_with_timeout(
     clock: Arc<dyn Clock>,
     timeout: Duration,
 ) -> Result<EndpointDescriptor, ApiError> {
-    let paths = InstancePaths::resolve(context).map_err(io_error)?;
-    paths.prepare_instance_dir().map_err(io_error)?;
+    let paths = NodePaths::resolve(&context.state_dir).map_err(io_error)?;
+    paths.prepare_node_dir().map_err(io_error)?;
     let deadline = Instant::now() + timeout;
     let mut attempt = StartAttempt::new();
     let mut launched: Option<Launched> = None;
@@ -495,7 +497,9 @@ pub async fn ensure_running_with_timeout(
         )
         .await
         {
-            Ok(Some(descriptor)) => return Ok(descriptor),
+            Ok(Some(descriptor)) => {
+                return Ok(descriptor);
+            }
             Ok(None) => {}
             Err(error) if error.code == ErrorCode::DaemonVersionMismatch => return Err(error),
             Err(error) => return Err(error),
@@ -559,7 +563,7 @@ pub async fn ensure_running_with_timeout(
 // Allowed: owner entry point: paths, service, clock, shutdown, sink, limits and two lifecycle hooks.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_owner<S, R, D>(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     handler: Arc<dyn LocalService>,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
@@ -591,7 +595,7 @@ where
 // Allowed: run_owner's inputs with a service factory in place of a built service.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_owner_with_factory<S, F, R, D, Fut>(
-    paths: &InstancePaths,
+    paths: &NodePaths,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     sink: S,
@@ -602,7 +606,43 @@ pub async fn run_owner_with_factory<S, F, R, D, Fut>(
 ) -> io::Result<bool>
 where
     S: DiagnosticSink,
-    F: FnOnce(Uuid, Uuid, Cancellation) -> io::Result<Arc<dyn LocalService>>,
+    F: FnOnce(NodeUuid, Uuid, Cancellation) -> io::Result<Arc<dyn LocalService>>,
+    R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
+    D: FnOnce() -> Fut,
+    Fut: Future<Output = io::Result<()>>,
+{
+    run_owner_with_peers(
+        paths,
+        transport::PeerWiring::default(),
+        clock,
+        shutdown,
+        sink,
+        limits,
+        make_service,
+        on_ready,
+        on_drained,
+    )
+    .await
+}
+
+/// [`run_owner_with_factory`] with the sync runtime's seam: `make_service` fills
+/// the `peers` intake and the accept loop serves with it.
+// Allowed: run_owner_with_factory's inputs with peer wiring.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_owner_with_peers<S, F, R, D, Fut>(
+    paths: &NodePaths,
+    peers: transport::PeerWiring,
+    clock: Arc<dyn Clock>,
+    shutdown: Cancellation,
+    sink: S,
+    limits: BufferLimits,
+    make_service: F,
+    on_ready: R,
+    on_drained: D,
+) -> io::Result<bool>
+where
+    S: DiagnosticSink,
+    F: FnOnce(NodeUuid, Uuid, Cancellation) -> io::Result<Arc<dyn LocalService>>,
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
     D: FnOnce() -> Fut,
     Fut: Future<Output = io::Result<()>>,
@@ -612,6 +652,7 @@ where
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
         Err(error) => return Err(error),
     };
+    let node_uuid = lease.node_uuid()?;
     let mut owner = start_after_election(Some(lease), sink, limits)?.expect("elected owner");
     if let Err(error) = owner.owner_lease().remove_stale_endpoint() {
         record_owner_error(&mut owner, &error);
@@ -623,7 +664,7 @@ where
         .inspect_err(|error| record_owner_error(&mut owner, error))?;
     let mut bound = Some(bound);
     let handler = match make_service(
-        owner.owner_lease().instance_uuid(),
+        node_uuid,
         bound.as_ref().expect("bound listener").boot_id(),
         shutdown.clone(),
     ) {
@@ -662,13 +703,16 @@ where
                 let listener = bound.take().expect("bound listener").into_async();
                 match listener {
                     Ok(listener) => {
-                        let serve_result = transport::serve(
+                        let serve_result = transport::serve_with_gate(
                             listener,
-                            descriptor.instance_uuid,
+                            descriptor.node_uuid,
                             handler.clone(),
                             clock,
                             effective_uid(),
                             shutdown,
+                            Arc::new(crate::service::live_gate::LiveServiceGate::new()),
+                            peers.intake(),
+                            peers.gauge(),
                         )
                         .await;
                         match serve_result {

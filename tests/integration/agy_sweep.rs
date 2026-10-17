@@ -73,7 +73,7 @@ impl Agy {
         let started = agy.hook(rig, "SessionStart", "session-start-top", TOP);
         assert_eq!(started.code, 0, "{}{}", started.stdout, started.stderr);
         assert!(
-            started.stdout.contains("Use inbox"),
+            started.stdout.contains("Complete hook/channel deliveries"),
             "the top-level startup context: {}",
             started.stdout
         );
@@ -439,7 +439,10 @@ fn a_clear_rotation_discards_the_pull_ledger_and_reoffers_the_pending_message() 
     let cleared = agy.hook(&rig, "SessionStart", "session-start-after-clear", CLEAR);
     let startup =
         Agy::injected(&cleared).expect("the /clear lifecycle check-in prints its context");
-    assert!(startup.starts_with("Use inbox"), "{startup}");
+    assert!(
+        startup.starts_with("Complete hook/channel deliveries"),
+        "{startup}"
+    );
     assert_eq!(agy.receipt(&rig, &message).0, "pending");
 
     // The ledger was discarded with the generation: the new conversation is offered `m1` again.

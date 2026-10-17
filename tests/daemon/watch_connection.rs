@@ -124,6 +124,7 @@ impl LocalService for WatchFake {
 
 fn claim() -> CallerClaim {
     CallerClaim {
+        host: crate::test_support::test_host_locator(),
         instance: "ignored".into(),
         seat: SeatId::new("seat-w"),
         binding_generation: 3,
@@ -394,11 +395,11 @@ fn guarded_listener() -> (
     OwnedAsyncListener,
     std::path::PathBuf,
     std::path::PathBuf,
-    uuid::Uuid,
+    crate::node::NodeUuid,
 ) {
     use crate::daemon::{
         ownership::OwnerLock,
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     };
     use std::os::unix::fs::PermissionsExt;
     let root =
@@ -407,25 +408,22 @@ fn guarded_listener() -> (
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let host = root.join("host-placeholder.sock");
     let context = RuntimeContext::explicit(root.clone(), host, None).unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
-    let owner = OwnerLock::acquire(&paths).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
     let bound = owner.bind_socket().unwrap();
     let socket = bound.path().to_owned();
     let listener = bound.into_async().unwrap();
     drop(owner);
-    let instance = uuid::Uuid::parse_str(
-        std::fs::read_to_string(&paths.namespace_path)
-            .unwrap()
-            .trim(),
-    )
-    .unwrap();
+    let instance = crate::daemon::ownership::read_node_uuid_hint(&paths)
+        .unwrap()
+        .unwrap();
     (listener, socket, root, instance)
 }
 
 struct Daemon {
     path: std::path::PathBuf,
     root: std::path::PathBuf,
-    instance: uuid::Uuid,
+    instance: crate::node::NodeUuid,
     boot: uuid::Uuid,
     shutdown: Cancellation,
     fake: Arc<WatchFake>,
@@ -676,4 +674,41 @@ async fn legacy_accepted_wire_omits_even_a_registered_presentation_lease() {
     );
     drop(served.client);
     served.task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn gauge_counts_watch_connections_until_they_close() {
+    let (listener, path, root, instance) = guarded_listener();
+    let boot = listener.boot_id();
+    let owner_uid = UnixStream::pair().unwrap().0.peer_cred().unwrap().uid();
+    let fake = WatchFake::with_ids(Box::new(|_| Ok(1)), instance.to_string(), boot.to_string());
+    let shutdown = Cancellation::default();
+    let gauge = crate::daemon::transport::ConnectionGauge::default();
+    let server = tokio::spawn(crate::daemon::transport::serve_with_gate(
+        listener,
+        instance,
+        fake,
+        Arc::new(TestClock),
+        owner_uid,
+        shutdown.clone(),
+        Arc::new(crate::service::live_gate::LiveServiceGate::new()),
+        None,
+        gauge.clone(),
+    ));
+    let mut stream = UnixStream::connect(&path).await.unwrap();
+    let request = watch_request(&instance.to_string(), Some(&boot.to_string()));
+    send_watch(&mut stream, &request).await;
+    let _reply: WatchReply = read_json(&mut stream).await;
+    assert_eq!(gauge.count(), 1, "an open watch connection is counted");
+    drop(stream);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while gauge.count() != 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a closed watch connection leaves the count");
+    shutdown.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+    let _ = std::fs::remove_dir_all(root);
 }

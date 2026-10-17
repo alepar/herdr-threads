@@ -6,7 +6,7 @@
 //! agy executable identity is downgraded), or prints nothing. At top-level `Stop` it confirms the
 //! same way and keeps the downgrade bookkeeping. Every error path prints nothing.
 //!
-//! State owned here (both under `<instance_dir>/adapter-state/agy/`, mode 0600):
+//! State owned here (both under `<node_dir>/adapter-state/agy/`, mode 0600):
 //! - `conversations/<hash>.json` ([`ConversationState`], at most 4 KiB): created only after a
 //!   `DeliveryPull` that was not refused, deleted on a `session_mismatch` refusal; a file untouched for 30 days is
 //!   deleted when another conversation's file is created.
@@ -182,11 +182,11 @@ pub fn current_identity() -> Identity {
 // State directory
 // ---------------------------------------------------------------------------------------------
 
-/// `<instance_dir>/adapter-state/agy/` for a state root and host endpoint, without creating it.
+/// `<node_dir>/adapter-state/agy/` for a state root and host endpoint, without creating it.
 pub fn adapter_state_dir(state: Option<PathBuf>, host: Option<PathBuf>) -> Option<PathBuf> {
     let context = crate::daemon::paths::RuntimeContext::from_environment(state, host).ok()?;
     Some(
-        crate::daemon::paths::instance_dir(&context)
+        crate::daemon::paths::node_dir(&context.state_dir)
             .join("adapter-state")
             .join("agy"),
     )

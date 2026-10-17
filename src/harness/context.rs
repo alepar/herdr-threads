@@ -81,7 +81,7 @@ pub enum SessionReference {
 #[serde(deny_unknown_fields)]
 pub struct OccupantContext {
     pub format_version: u32,
-    pub instance: Uuid,
+    pub instance: crate::node::NodeUuid,
     pub seat: String,
     pub target: String,
     pub harness: Harness,
@@ -372,7 +372,7 @@ const OPERATOR_MARK_VERSION: u32 = 1;
 #[serde(deny_unknown_fields)]
 struct State {
     version: u32,
-    instance: Uuid,
+    instance: crate::node::NodeUuid,
     seat: String,
     current: Option<OccupantContext>,
     pending: Option<PendingCheckIn>,
@@ -429,10 +429,14 @@ fn prune_kinds(state: &mut State) {
 }
 pub struct ContextJournal {
     directory: PathBuf,
-    instance: Uuid,
+    instance: crate::node::NodeUuid,
     seat: String,
     lock_timeout: Duration,
     agent: Option<AgentCaller>,
+    /// The calling pane's Herdr server, the `host` of every claim this handle builds. The
+    /// persisted context has none (it is the caller's environment, not its identity), so a handle
+    /// that builds claims gets it from the caller's `RuntimeContext` ([`Self::with_host`]).
+    host: Option<crate::protocol::ids::HostLocator>,
 }
 /// The calling agent session, from the harness environment or hook payload (spec §1, decision
 /// 15). It replaces the journal's saved `current` context: an agent's identity is never read
@@ -448,7 +452,7 @@ struct AgentCaller {
 /// always the one its later claims carry, and the session's attention mark has one key. It does
 /// not name a seat: a resumed session may land on another.
 pub fn session_execution(
-    instance: Uuid,
+    instance: crate::node::NodeUuid,
     harness: Harness,
     session: &str,
     agent_id: Option<&str>,
@@ -476,7 +480,7 @@ impl ContextJournal {
     /// Directory must already exist, be private, and contain no symlink ancestors.
     pub fn open(
         directory: &Path,
-        instance: Uuid,
+        instance: crate::node::NodeUuid,
         seat: &str,
         lock_timeout: Duration,
     ) -> Result<Self, ContextError> {
@@ -496,7 +500,17 @@ impl ContextJournal {
             seat: seat.into(),
             lock_timeout,
             agent: None,
+            host: None,
         })
+    }
+    /// Set the claim host (see the `host` field); claims fail without one.
+    pub fn with_host(mut self, host: crate::protocol::ids::HostLocator) -> Self {
+        self.host = Some(host);
+        self
+    }
+    /// The claim host this handle was given; claims cannot be built without one.
+    pub fn claim_host(&self) -> Result<&crate::protocol::ids::HostLocator, ContextError> {
+        self.host.as_ref().ok_or(ContextError::Invalid)
     }
     /// Make this handle act as one agent session: `current()` is that session's context at the
     /// seat's mapping generation, nothing about it is persisted, and claims built through
@@ -528,7 +542,8 @@ impl ContextJournal {
         &self,
         context: &OccupantContext,
     ) -> Result<crate::protocol::authority::CallerClaim, ContextError> {
-        let mut claim = crate::harness::bridge::caller_claim(context)?;
+        let host = self.host.clone().ok_or(ContextError::Invalid)?;
+        let mut claim = crate::harness::bridge::caller_claim(context, host)?;
         if let Some(agent) = &self.agent
             && context.session == agent.current.session
             && context.harness == agent.current.harness
@@ -970,7 +985,7 @@ impl ContextJournal {
     /// Open only existing private state; an observer never creates a context.
     pub fn open_existing(
         directory: &Path,
-        instance: Uuid,
+        instance: crate::node::NodeUuid,
         timeout: Duration,
     ) -> Result<Option<Self>, ContextError> {
         private_metadata(directory, true)?;
@@ -1747,7 +1762,7 @@ mod identity_tests {
             mode: CheckInMode::Current,
             context: OccupantContext {
                 format_version: 1,
-                instance: Uuid::from_u128(1),
+                instance: crate::node::NodeUuid::from_u128(1),
                 seat: "seat".into(),
                 target: "target".into(),
                 harness: Harness::Codex,
@@ -1778,9 +1793,9 @@ mod identity_tests {
             &crate::protocol::output::OutputSpec::default().context,
         )
         .unwrap();
-        assert_eq!(serde_json::to_vec(&request.context).unwrap(), br#"{"format_version":1,"instance":"00000000-0000-0000-0000-000000000001","seat":"seat","target":"target","harness":"Codex","binding_generation":1,"execution":"00000000-0000-0000-0000-000000000003","session":{"PluginContext":"00000000-0000-0000-0000-000000000003"},"role":"TopLevel"}"#);
-        assert_eq!(serde_json::to_vec(&request).unwrap(), br#"{"operation_id":"00000000-0000-0000-0000-000000000002","mode":"Current","context":{"format_version":1,"instance":"00000000-0000-0000-0000-000000000001","seat":"seat","target":"target","harness":"Codex","binding_generation":1,"execution":"00000000-0000-0000-0000-000000000003","session":{"PluginContext":"00000000-0000-0000-0000-000000000003"},"role":"TopLevel"},"expected_generation":null,"event_id":"event","payload_version":1,"payload":[102,114,111,122,101,110,32,114,101,113,117,101,115,116]}"#);
-        assert_eq!(serde_json::to_vec(&reference).unwrap(), br#"{"version":1,"key":{"instance":"00000000-0000-0000-0000-000000000001","seat":"seat","event_id":"event","operation_id":"00000000-0000-0000-0000-000000000002"},"request_sha256":"3d5c439da5297e76f8cc8957d7337460a1ae29192c8b4981604c79c4ab51b013","output_sha256":"f4844e318dbccd47e7dff89fe3ce6b0f37576b4ba90f726b925abc81088f4842","response_meta_sha256":"e998b145a9e31c19c3c3b0511e220ad1158bd33f21fee2aa0604bf1266c28328","selectors_sha256":"d3ab8a526463619ae805f5fc4f3c4661ff23952364ccf6e6c96bdbe7cf958d0c"}"#);
+        assert_eq!(serde_json::to_vec(&request.context).unwrap(), br#"{"format_version":1,"instance":"00000000000000000000000000000001","seat":"seat","target":"target","harness":"Codex","binding_generation":1,"execution":"00000000-0000-0000-0000-000000000003","session":{"PluginContext":"00000000-0000-0000-0000-000000000003"},"role":"TopLevel"}"#);
+        assert_eq!(serde_json::to_vec(&request).unwrap(), br#"{"operation_id":"00000000-0000-0000-0000-000000000002","mode":"Current","context":{"format_version":1,"instance":"00000000000000000000000000000001","seat":"seat","target":"target","harness":"Codex","binding_generation":1,"execution":"00000000-0000-0000-0000-000000000003","session":{"PluginContext":"00000000-0000-0000-0000-000000000003"},"role":"TopLevel"},"expected_generation":null,"event_id":"event","payload_version":1,"payload":[102,114,111,122,101,110,32,114,101,113,117,101,115,116]}"#);
+        assert_eq!(serde_json::to_vec(&reference).unwrap(), br#"{"version":1,"key":{"instance":"00000000000000000000000000000001","seat":"seat","event_id":"event","operation_id":"00000000-0000-0000-0000-000000000002"},"request_sha256":"a708d5bad83bf35ca466417ae7acbdc2b67c209e04717ba6b4c5dba2504585f7","output_sha256":"f4844e318dbccd47e7dff89fe3ce6b0f37576b4ba90f726b925abc81088f4842","response_meta_sha256":"c0273d0332ac6f779c6db8a85d6da3ee182b5a358bf5612a5256478984f091a4","selectors_sha256":"d3ab8a526463619ae805f5fc4f3c4661ff23952364ccf6e6c96bdbe7cf958d0c"}"#);
     }
     #[test]
     fn unknown_context_identity_is_rejected_without_rewriting_file() {
@@ -1794,7 +1809,7 @@ mod identity_tests {
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
         let state = State {
             version: 1,
-            instance: Uuid::from_u128(1),
+            instance: crate::node::NodeUuid::from_u128(1),
             seat: "seat".into(),
             current: Some(fixture().context),
             pending: None,

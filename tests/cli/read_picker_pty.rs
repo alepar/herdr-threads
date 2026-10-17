@@ -2,7 +2,7 @@
 //! rather than snapshots: idle must be silent and interaction must not erase
 //! the entire screen. Each child has an owner and an isolated configuration.
 use herdr_threads::{
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     test_support::{
         isolation::TestIsolation,
         spawn::{OwnedChild, SpawnOwned},
@@ -117,7 +117,7 @@ impl Fixture {
         let host = Host::start(&host_socket);
         let state = iso.path("state");
         let context = RuntimeContext::explicit(state.clone(), host_socket.clone(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
         let mut daemon_command = iso.command(BIN);
         daemon_command
             .args(["daemon", "run", "--state-dir"])
@@ -133,7 +133,7 @@ impl Fixture {
         let instance = loop {
             if paths.descriptor_path.exists() && paths.database_path.exists() {
                 let db = Connection::open(&paths.database_path).unwrap();
-                if let Ok(id) = db.query_row("SELECT id FROM host_instances LIMIT 1", [], |r| {
+                if let Ok(id) = db.query_row("SELECT id FROM local_node LIMIT 1", [], |r| {
                     r.get::<_, String>(0)
                 }) {
                     break id;
@@ -184,7 +184,7 @@ impl Fixture {
         db
     }
     fn thread(&self, id: &str, name: &str, at: i64, archived: bool) {
-        self.db().execute("INSERT INTO threads(id,instance_id,name,topic,goal,created_at,updated_at,archived) VALUES (?1,?2,?3,'private picker fixture','test',?4,?4,?5)", params![id,self.instance,name,at,archived]).unwrap();
+        self.db().execute("INSERT INTO threads(id,instance_id,name,topic,goal,created_at,updated_at,archived,journaled) VALUES (?1,?2,?3,'private picker fixture','test',?4,?4,?5,0)", params![id,self.instance,name,at,archived]).unwrap();
     }
     /// `count` active threads `{prefix}{n:03}` named `channel {n:03}`, created
     /// at `n`, committed in one transaction (one connection, one commit).
@@ -192,7 +192,7 @@ impl Fixture {
         let mut db = self.db();
         let tx = db.transaction().unwrap();
         for n in 0..count {
-            tx.execute("INSERT INTO threads(id,instance_id,name,topic,goal,created_at,updated_at,archived) VALUES (?1,?2,?3,'private picker fixture','test',?4,?4,0)", params![format!("{prefix}{n:03}"),self.instance,format!("channel {n:03}"),n]).unwrap();
+            tx.execute("INSERT INTO threads(id,instance_id,name,topic,goal,created_at,updated_at,archived,journaled) VALUES (?1,?2,?3,'private picker fixture','test',?4,?4,0,0)", params![format!("{prefix}{n:03}"),self.instance,format!("channel {n:03}"),n]).unwrap();
         }
         tx.commit().unwrap();
     }
@@ -205,20 +205,20 @@ impl Fixture {
         )
         .unwrap();
         db.execute(
-            "UPDATE host_instances SET decision_seq=MAX(decision_seq,?2) WHERE id=?1",
+            "UPDATE local_node SET decision_seq=MAX(decision_seq,?2) WHERE id=?1",
             params![self.instance, seq],
         )
         .unwrap();
     }
     fn obligations(&self, thread: &str) {
         let db = self.db();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('sPty',?1,'resolved','native',1,0)", [&self.instance]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('sPty',?1,'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&self.instance]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES (?1,'sPty','invited')",
             [thread],
         )
         .unwrap();
-        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('vPty',?1,'sPty',1,'pending',1,0,60000,9223372036854770000)", [thread]).unwrap();
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,origin_node) VALUES ('vPty',?1,'sPty',1,'pending',1,0,60000,9223372036854770000,(SELECT id FROM local_node))", [thread]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,?2,'sPty','pending',60000,0,9223372036854770000)", params![format!("m{thread}1"),thread]).unwrap();
     }
     fn obligation_states(&self) -> (String, String, String) {
@@ -267,7 +267,7 @@ impl PageGate {
         let context =
             RuntimeContext::explicit(fixture.iso.path("state"), fixture.host_socket.clone(), None)
                 .unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
         let original_descriptor = fs::read(&paths.descriptor_path).unwrap();
         let mut descriptor: Value = serde_json::from_slice(&original_descriptor).unwrap();
         let socket = paths.socket_path;
@@ -889,7 +889,7 @@ fn gate_worker_panic_during_unwind_restores_private_socket_and_daemon_cleanup() 
     let context =
         RuntimeContext::explicit(fixture.iso.path("state"), fixture.host_socket.clone(), None)
             .unwrap();
-    let paths = InstancePaths::resolve(&context).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
     let descriptor = fs::read(&paths.descriptor_path).unwrap();
     let pid = fixture.daemon.id() as libc::pid_t;
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

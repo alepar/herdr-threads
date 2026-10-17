@@ -46,8 +46,8 @@ impl Fx {
         let clock = Arc::new(TestClock(AtomicI64::new(T0)));
         let path = iso.state_root().join("store.db");
         let store = crate::store::SqliteStore::new(
-            StoreContext::new(path, clock.clone()),
-            "i",
+            StoreContext::new(path, clock.clone()).with_test_host(),
+            "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap();

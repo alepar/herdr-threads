@@ -13,7 +13,7 @@ use crate::protocol::{
 };
 use std::sync::Arc;
 
-const INSTANCE: &str = "i";
+const INSTANCE: &str = "34750f98bd59fcfc946da45aaabe933b";
 const OLD_BOOT: &str = "00000000-0000-0000-0000-000000000001";
 const CURRENT_BOOT: &str = "00000000-0000-0000-0000-000000000002";
 
@@ -45,11 +45,11 @@ impl Fixture {
             "herdr-page-seam-{}.db",
             uuid::Uuid::new_v4()
         ));
-        let context = StoreContext::new(path.clone(), Arc::new(FixedClock));
+        let context = StoreContext::new(path.clone(), Arc::new(FixedClock)).with_test_host();
         let db = context.open_writer().unwrap();
         db.execute_batch(
-            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1000000);\
-             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);",
+            "UPDATE herdr_hosts SET host_boot='host',host_epoch=1; UPDATE local_node SET decision_seq=1000000;\
+             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0);",
         )
         .unwrap();
         Self { path, context }
@@ -70,8 +70,8 @@ impl Drop for Fixture {
 fn seed_seats(db: &Connection, count: u64) {
     db.execute_batch(&format!(
         "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{count}) \
-         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) \
-         SELECT 'seat-'||x,'i','resolved','native','pane-'||x,1,1,0 FROM n"
+         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) \
+         SELECT 'seat-'||x,'34750f98bd59fcfc946da45aaabe933b','resolved','native','pane-'||x,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM n"
     ))
     .unwrap();
 }
@@ -286,8 +286,8 @@ fn wake_pages_round_trip_cursors_and_match_the_oracle() {
     let db = fixture.writer();
     seed_seats(&db, 48);
     db.execute_batch(
-        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) \
-         SELECT 'inv-'||id,'t',id,1,'pending',0,1,100,100 FROM seats WHERE ordinal%3!=0",
+        "INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) \
+         SELECT 'inv-'||id,'t',id,1,'pending',0,1,100,100,(SELECT id FROM local_node) FROM seats WHERE ordinal%3!=0",
     )
     .unwrap();
     let all_seats = ordinals(&db, "seats", "id");
@@ -307,6 +307,7 @@ fn wake_pages_round_trip_cursors_and_match_the_oracle() {
             wake_candidates_page(
                 &fixture.context,
                 INSTANCE,
+                crate::test_support::test_host_id(),
                 page_request(cursor, limit, max),
                 &budget(),
             )
@@ -419,6 +420,7 @@ fn recovery_pages_round_trip_cursors_and_match_the_oracle() {
             wake_recovery_page(
                 &fixture.context,
                 INSTANCE,
+                crate::test_support::test_host_id(),
                 Some(elected),
                 page_request(cursor, limit, max),
                 &budget(),
@@ -483,6 +485,7 @@ fn pre_rewrite_wake_cursor_is_rejected() {
     let error = wake_candidates_page(
         &fixture.context,
         INSTANCE,
+        crate::test_support::test_host_id(),
         page_request(Some(raw.clone()), 100, 16_384),
         &budget(),
     )
@@ -503,6 +506,7 @@ fn pre_rewrite_wake_cursor_is_rejected() {
     let page = wake_candidates_page(
         &fixture.context,
         INSTANCE,
+        crate::test_support::test_host_id(),
         page_request(Some(current), 100, 16_384),
         &budget(),
     )

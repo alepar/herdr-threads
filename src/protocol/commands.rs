@@ -149,6 +149,9 @@ pub enum Command {
     BootstrapStatus(Box<crate::protocol::handoff::BootstrapStatus>),
     ResolveBootstrapSeat(Box<crate::protocol::handoff::ResolveBootstrapSeat>),
     RecoverBootstrap(Box<crate::protocol::handoff::RecoverBootstrap>),
+    /// Operator and status commands for cross-node sync (ht-5fr.8). The mutating
+    /// ones are admitted only for the elected owner's peer UID.
+    Sync(crate::protocol::sync_admin::SyncCommand),
 }
 
 /// Longest detail a hook report may carry: the CLI truncates to it
@@ -616,6 +619,7 @@ pub struct RetirementJobsQuery {
 #[serde(deny_unknown_fields)]
 pub struct ResolveSeat {
     pub target: HostTargetId,
+    pub host: HostLocator,
     pub operation: OperationId,
 }
 /// TRUST-POLICY C1. A resumed top-level session asks the daemon to reattach
@@ -627,6 +631,7 @@ pub struct ResolveSeat {
 #[serde(deny_unknown_fields)]
 pub struct ContinuityCheckIn {
     pub target: HostTargetId,
+    pub host: HostLocator,
     pub harness: crate::protocol::authority::Harness,
     pub native_session: NativeSessionId,
     /// Cooperative top-level recovery claim: `resume` for a resumed start,
@@ -950,6 +955,10 @@ pub enum LazyCompletionVia {
 #[serde(deny_unknown_fields)]
 pub struct CompleteInboxDelivery {
     pub messages: Vec<MessageId>,
+    /// Existing receipt obligations whose complete bodies were emitted in native hook context.
+    /// Requires `hook.context_receipts_v1` and `via = hook_context`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub receipt_candidates: Vec<MessageId>,
     pub operation: OperationId,
     pub claim: CallerClaim,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1133,12 +1142,14 @@ pub struct ThreadMutation {
 pub struct OperatorRebind {
     pub seat: SeatId,
     pub target: HostTargetId,
+    pub host: HostLocator,
     pub operation: OperationId,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperatorFreshSeat {
     pub target: HostTargetId,
+    pub host: HostLocator,
     pub operation: OperationId,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1165,6 +1176,7 @@ pub struct OperatorRetire {
 pub struct OperatorReplace {
     pub seat: SeatId,
     pub target: HostTargetId,
+    pub host: HostLocator,
     pub replace: SeatId,
     pub operation: OperationId,
 }
@@ -1197,6 +1209,53 @@ impl Command {
             Self::SetThreadName(v) => Some(&v.claim),
             Self::Archive(v) | Self::Reopen(v) => Some(&v.claim),
             _ => None,
+        }
+    }
+
+    /// The Herdr server this command is about: the one accessor dispatch reads. A claim-bearing
+    /// command returns its claim's `host`; `ResolveSeat`, `ContinuityCheckIn`, `OperatorRebind`,
+    /// `OperatorFreshSeat` and `OperatorReplace` return their explicit `host` (they name a
+    /// `target`, not a claim); every other command (`OperatorRetire`, `OperatorOrphanInvite`,
+    /// seatless queries) is host-free and returns `None`.
+    pub fn host_locator(&self) -> Option<&HostLocator> {
+        match self {
+            Self::ResolveSeat(v) => Some(&v.host),
+            Self::ContinuityCheckIn(v) => Some(&v.host),
+            Self::OperatorRebind(v) => Some(&v.host),
+            Self::OperatorFreshSeat(v) => Some(&v.host),
+            Self::OperatorReplace(v) => Some(&v.host),
+            other => other.host_claim().map(|claim| &claim.host),
+        }
+    }
+
+    /// The claim whose `host` [`Self::host_locator`] answers: every claim-bearing command's
+    /// claim, including the ones [`Self::accountable_claim`] leaves out (reads and handoff or
+    /// bootstrap commands, which carry a claim without being accountable mutations).
+    pub fn host_claim(&self) -> Option<&CallerClaim> {
+        match self {
+            Self::DeliveryPull(v) => Some(&v.claim),
+            Self::DeliveryPullV2(v) => Some(&v.claim),
+            Self::DeliveryPresentationConfirmV2(v) => Some(&v.claim),
+            Self::DeliveryConfirm(v) => Some(&v.claim),
+            Self::AdvanceCursors(v) => Some(&v.claim),
+            Self::BindingEvent(v) => Some(&v.claim),
+            Self::Summary(v) => Some(&v.claim),
+            Self::SummaryJob(v) => Some(&v.claim),
+            Self::SummarySubmit(v) => Some(&v.claim),
+            Self::HandoffDelivery(v) => Some(&v.claim),
+            Self::AutomaticHandoffDelivery(v) => Some(&v.claim),
+            Self::AutomaticBootstrap(v) => Some(&v.identity.claim),
+            Self::BeginBootstrap(v) => Some(&v.identity.claim),
+            Self::ReserveBootstrapAttempt(v) => Some(&v.identity.claim),
+            Self::RecordBootstrapCreated(v) => Some(&v.identity.claim),
+            Self::RecordBootstrapNotSubmitted(v) => Some(&v.identity.claim),
+            Self::AttachBootstrapHandoff(v) => Some(&v.identity.claim),
+            Self::CompleteLinkedBootstrap(v) => Some(&v.identity.claim),
+            Self::CheckBootstrapSubmission(v) => Some(&v.identity.claim),
+            Self::BootstrapStatus(v) => Some(&v.identity.claim),
+            Self::ResolveBootstrapSeat(v) => Some(&v.identity.claim),
+            Self::RecoverBootstrap(v) => Some(&v.identity.claim),
+            other => other.accountable_claim(),
         }
     }
 
@@ -1414,6 +1473,7 @@ impl Command {
             {
                 Err("invalid search candidate bound")
             }
+            Self::Sync(command) => command.validate(),
             Self::Message(query) => query.body.validate(&query.message),
             Self::Diagnostics(query) => {
                 if let Some(encoded) = &query.page.cursor
@@ -1474,8 +1534,13 @@ impl Command {
                 Ok(())
             }
             Self::CompleteInboxDelivery(completion)
-                if completion.messages.is_empty()
-                    || completion.messages.len() > MAX_BATCH_ITEMS =>
+                if completion.messages.len() + completion.receipt_candidates.len() == 0
+                    || completion.messages.len() + completion.receipt_candidates.len()
+                        > MAX_BATCH_ITEMS
+                    || has_duplicate(&completion.messages)
+                    || has_duplicate(&completion.receipt_candidates)
+                    || (!completion.receipt_candidates.is_empty()
+                        && completion.via != Some(LazyCompletionVia::HookContext)) =>
             {
                 Err("invalid inbox delivery completion batch size")
             }
@@ -1638,3 +1703,103 @@ impl TryFrom<Command> for PermitMutation {
 #[cfg(test)]
 #[path = "../../tests/protocol/history_full_bodies.rs"]
 mod history_full_bodies;
+
+#[cfg(test)]
+mod host_locator_tests {
+    use super::*;
+    use crate::protocol::authority::{CallerRole, Harness};
+
+    fn host(path: &str) -> HostLocator {
+        HostLocator::parse(path).unwrap()
+    }
+    fn claim() -> CallerClaim {
+        CallerClaim {
+            instance: "i".into(),
+            host: host("/claim.sock"),
+            seat: SeatId::new("s"),
+            binding_generation: 1,
+            role: CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("n"),
+            execution: ExecutionId::new("e"),
+            target: HostTargetId::new("w1:p1"),
+            agent_id: None,
+            liveness: None,
+        }
+    }
+
+    #[test]
+    fn host_locator_for_claim_and_target_commands() {
+        let op = || OperationId::new("op");
+        let target = || HostTargetId::new("w1:p1");
+        let explicit = host("/explicit.sock");
+        // Claim-bearing commands answer with the claim's host, never a default.
+        let check_in = Command::CheckIn(CheckIn {
+            claim: claim(),
+            mode: CheckInMode::Current,
+            operation: op(),
+            lineage_parent: None,
+        });
+        assert_eq!(check_in.host_locator(), Some(&host("/claim.sock")));
+        let archive = Command::Archive(ThreadMutation {
+            thread: ThreadId::new("t"),
+            operation: op(),
+            claim: claim(),
+        });
+        assert_eq!(archive.host_locator(), Some(&host("/claim.sock")));
+        // The five target-bearing commands answer with their explicit host.
+        let target_bearing = [
+            Command::ResolveSeat(ResolveSeat {
+                target: target(),
+                host: explicit.clone(),
+                operation: op(),
+            }),
+            Command::ContinuityCheckIn(ContinuityCheckIn {
+                target: target(),
+                host: explicit.clone(),
+                harness: Harness::Codex,
+                native_session: NativeSessionId::new("n"),
+                source: "resume".into(),
+                operation: op(),
+                execution: ExecutionId::new("e"),
+                liveness: None,
+            }),
+            Command::OperatorRebind(OperatorRebind {
+                seat: SeatId::new("s"),
+                target: target(),
+                host: explicit.clone(),
+                operation: op(),
+            }),
+            Command::OperatorFreshSeat(OperatorFreshSeat {
+                target: target(),
+                host: explicit.clone(),
+                operation: op(),
+            }),
+            Command::OperatorReplace(OperatorReplace {
+                seat: SeatId::new("s"),
+                target: target(),
+                host: explicit.clone(),
+                replace: SeatId::new("r"),
+                operation: op(),
+            }),
+        ];
+        for command in &target_bearing {
+            assert_eq!(command.host_locator(), Some(&explicit), "{command:?}");
+        }
+        // Retire and orphan invite name no pane: host-free.
+        let retire = Command::OperatorRetire(OperatorRetire {
+            seat: SeatId::new("s"),
+            operation: op(),
+        });
+        let orphan = Command::OperatorOrphanInvite(OperatorOrphanInvite {
+            thread: ThreadId::new("t"),
+            seat: SeatId::new("s"),
+            deadline_millis: None,
+            operation: op(),
+        });
+        assert_eq!(retire.host_locator(), None);
+        assert_eq!(orphan.host_locator(), None);
+        // A host-free read.
+        assert_eq!(Command::Health.host_locator(), None);
+    }
+}

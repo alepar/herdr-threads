@@ -8,6 +8,7 @@ scripts/linux-e2e/run self-test                       # wake-e2e driver --self-t
 scripts/linux-e2e/run release-smoke [--versions 0.9.3]  # scripts/herdr-release-smoke, every listed Herdr by default
 scripts/linux-e2e/run doctor [--hide-harnesses]       # static musl release -> install.sh -> doctor in/out of a pane
 scripts/linux-e2e/run wake-e2e [creds] [--live] [-- DRIVER ARGS]   # the live wake matrix (see Credentials)
+scripts/linux-e2e/run real-ssh [-- DRIVER ARGS]       # pre-release: two nodes link over the default ssh transport
 scripts/linux-e2e/run clean [--all [--keep-image]]    # leftovers of this worktree (--all: every labelled object)
 scripts/linux-e2e/run --self-test                     # this script's own tests, fake docker, no Docker needed
 ```
@@ -105,6 +106,32 @@ evidence to `leftovers/` and removes it) or `clean`; recover its evidence with t
   and `--evidence-dir` (`container/wake-e2e/`) itself and refuses them, and any abbreviation of a driver option
   (`--harn`), there; it passes `--harness` on in canonical form. `--live` refuses a dirty worktree unless
   `--allow-dirty` (untracked files count as dirty too, deliberately: `git status --porcelain`).
+
+## real-ssh (pre-release, never CI)
+
+`scripts/linux-e2e/run real-ssh` checks that two nodes link over the DEFAULT ssh transport, which every other test
+replaces with `sync.dial_command` (peer-link design, `TransportCommand::build`). It builds the runner image
+(openssh client and server included) and `bin/herdr-threads` in the usual container, copies the binary out, and
+runs [real-ssh-e2e.py](real-ssh-e2e.py) on the host. The driver starts, per variant, two containers of the image on
+a private Docker network (A dials; B runs sshd as root with key-only auth and only the capabilities privilege
+separation needs, login user `tester`), each with its own headless Herdr server and daemon. Variant `local-bin`
+installs herdr-threads only at `~/.local/bin` on B (not on sshd's non-interactive PATH), `on-path` only at
+`/usr/local/bin`. Rows: BatchMode with no accepted key ends in `backoff`/`stopped` with the ssh error as
+`last_error` within a bound (no prompt hang); the default remote command resolves in both variants and the target
+links; the vectors of both nodes converge; a `--require-ack` send between person seats on A and B is displayed on B
+and acknowledged on A; `peer add --remote-command C` runs C (a wrapper leaving a marker on B); `daemon stop` on A
+kills and reaps the ssh child (no process, no zombie); no herdr-threads, ssh or pump process is left in either
+container; every container and network the run created is gone. Exit 0 only when every row is present and passed
+and cleanup is verified; 1 otherwise; 2 when Docker, the image or the binary is missing. Evidence
+(`report.md`, `results.json`, `host.log`, per-node daemon logs and `ps`) is under `<evidence-dir>/real-ssh/evidence`.
+
+Prerequisites: Docker, outbound network for the image build, no credentials (no harness runs; keys are generated
+inside the containers and never leave them; nothing outside Docker objects is touched). It is optional
+pre-release evidence run by a person (or an agent the person asked) from a checkout of the release SHA; it costs an
+image build plus a cargo build (see Costs) and a few minutes of run time. Driver arguments follow `--`
+(`--cases ROW,...` for a partial, non-gating run; `--docker`, `--image`, `--bin`, `--platform` and `--evidence-dir`
+are set by the runner). `python3 scripts/linux-e2e/real-ssh-e2e.py --self-test` checks the driver's argv
+construction, row completeness and cleanup bookkeeping with a fake docker and ssh on PATH, without Docker.
 
 ## Credentials (wake-e2e only)
 

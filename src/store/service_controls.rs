@@ -25,6 +25,8 @@ use super::{
     schema::{self, EventInput},
     service_substrate,
 };
+use crate::sync::facts::invitation::InvitationCreatedPayload;
+use crate::sync::facts::payload::InviterKind;
 
 // Allowed: service control entry: request, connection authority, gate, budget and default.
 #[allow(clippy::too_many_arguments)]
@@ -108,10 +110,28 @@ pub fn operate(
     }
     let at = context.clock().utc_now();
     let result = match &operation {
-        ServiceOperation::EnsureThread(v) => ensure_thread(tx, instance, &author, v, at)?,
-        ServiceOperation::Invite(v) => {
-            invite(tx, instance, &author, v, at, installation_default_ms)?
-        }
+        ServiceOperation::EnsureThread(v) => ensure_thread(
+            tx,
+            instance,
+            &author,
+            v,
+            super::connection::DecisionInstant {
+                utc: at,
+                monotonic: context.clock().monotonic_now(),
+            },
+        )?,
+        ServiceOperation::Invite(v) => invite(
+            tx,
+            context,
+            instance,
+            &author,
+            v,
+            super::connection::DecisionInstant {
+                utc: at,
+                monotonic: context.clock().monotonic_now(),
+            },
+            installation_default_ms,
+        )?,
         ServiceOperation::SetTopic(v) => {
             require_owner(tx, instance, &v.thread, &author)?;
             let old: String = tx
@@ -249,7 +269,7 @@ fn ensure_thread(
     instance: &str,
     author: &crate::protocol::ids::ServiceAuthorId,
     v: &crate::protocol::service::EnsureManagedThread,
-    at: UtcMillis,
+    decision: super::connection::DecisionInstant,
 ) -> Result<ServiceResult, ApiError> {
     super::control::guard_pair_service_owner(tx, &v.thread)?;
     if v.topic.is_empty() || v.topic.len() > 1024 || v.goal.is_empty() || v.goal.len() > 1024 {
@@ -272,9 +292,22 @@ fn ensure_thread(
             tx, &v.thread, author,
         )?));
     }
-    tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,managed_owner_author_id) VALUES (?1,?2,?3,?4,?5,?5,?6)",
-        params![v.thread.as_str(),instance,v.topic,v.goal,at.0,author.as_str()]).map_err(store_error)?;
-    schema::bump_filter_revision(tx, instance, "directory", "all")?;
+    // A managed thread is node-local: the creation materializer through the
+    // local-only route, `journaled = 0`, no registers and no journal entry.
+    let input = super::materialize::local_only(tx, decision)?;
+    super::control::materialize_thread_created(
+        tx,
+        &input,
+        &super::control::NewThread {
+            thread: &v.thread,
+            topic: &v.topic,
+            goal: &v.goal,
+            name: None,
+            creator: None,
+            managed_owner: Some(author),
+            journaled: false,
+        },
+    )?;
     Ok(ServiceResult::ThreadEnsured(managed_thread(
         tx, &v.thread, author,
     )?))
@@ -282,12 +315,14 @@ fn ensure_thread(
 
 fn invite(
     tx: &Transaction<'_>,
+    context: &StoreContext,
     instance: &str,
     author: &crate::protocol::ids::ServiceAuthorId,
     v: &crate::protocol::service::ServiceInvite,
-    at: UtcMillis,
+    decision: super::connection::DecisionInstant,
     default_ms: Option<u64>,
 ) -> Result<ServiceResult, ApiError> {
+    let at = decision.utc;
     super::control::guard_pair_member(tx, &v.thread, &v.seat)?;
     let (thread_instance, owner): (String, Option<String>) = tx
         .query_row(
@@ -324,14 +359,6 @@ fn invite(
             "invite target missing, retired, or outside instance",
         ));
     }
-    let prior: Option<(i64, String)> = tx
-        .query_row(
-            "SELECT episode,state FROM memberships WHERE thread_id=?1 AND seat_id=?2",
-            params![v.thread.as_str(), v.seat.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(store_error)?;
     let current = service_substrate::current_requirement(tx, &v.thread, &v.seat)?;
     let voluntary = service_substrate::effective_membership(tx, &v.thread, &v.seat)?.voluntary;
     if v.constraint == InvitationConstraint::Required {
@@ -395,32 +422,73 @@ fn invite(
         || (v.constraint == InvitationConstraint::Required
             && pending.as_ref().is_some_and(|(_, _, _, lazy)| *lazy));
     let (invitation, episode, created_seq) = if new_invitation {
-        let episode = next_invitation_episode(tx, &v.thread, &v.seat)?;
-        if v.constraint == InvitationConstraint::Required {
-            if prior.is_none() {
-                tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,?2,?3,'invited','absent')",
-                    params![v.thread.as_str(),v.seat.as_str(),episode]).map_err(store_error)?;
-            } else if prior.as_ref().is_some_and(|(_, state)| state == "left") {
-                tx.execute("UPDATE memberships SET state='invited',voluntary_state='left' WHERE thread_id=?1 AND seat_id=?2",
-                    params![v.thread.as_str(),v.seat.as_str()]).map_err(store_error)?;
-            }
-        } else if prior.is_none() {
-            tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES (?1,?2,?3,'invited','invited')",
-                params![v.thread.as_str(),v.seat.as_str(),episode]).map_err(store_error)?;
-        } else {
-            tx.execute("UPDATE memberships SET state='invited',episode=?1,voluntary_state='invited',joined_at=NULL,left_at=NULL WHERE thread_id=?2 AND seat_id=?3",
-                params![episode,v.thread.as_str(),v.seat.as_str()]).map_err(store_error)?;
-        }
         let id = InvitationId::new(crate::store::public_ids::fresh(
             tx,
             prefix::INVITATION,
             &[("invitations", "id", prefix::INVITATION)],
         )?);
-        let seq = schema::next_decision_seq(tx, instance)? as i64;
         let deadline = schema::checked_deadline(at, duration)?;
-        tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8)",
-            params![id.as_str(),v.thread.as_str(),v.seat.as_str(),episode,at.0,seq,duration,deadline.0]).map_err(store_error)?;
-        (id, episode, seq)
+        let invitee_n: i64 = tx
+            .query_row(
+                "SELECT COALESCE((SELECT home_transition FROM memberships WHERE thread_id=?1 AND seat_id=?2),0)",
+                params![v.thread.as_str(), v.seat.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        let payload = InvitationCreatedPayload {
+            invitation: id.clone(),
+            thread: v.thread.clone(),
+            inviter: None,
+            inviter_kind: InviterKind::Service,
+            invitee: v.seat.clone(),
+            invitee_n: u64::try_from(invitee_n).unwrap_or(0),
+            created_at: at.0,
+            duration_ms: duration,
+            deadline_at: deadline.0,
+            actor_label: Some(author.as_str().to_owned()),
+        };
+        if v.constraint == InvitationConstraint::Required {
+            // A requirement lives on a managed thread: node-local, so the
+            // invitation goes through the local-only route, placed the way a
+            // requirement places its seat (the voluntary state is kept). Its
+            // derived event carries the requirement and is appended below.
+            let remote: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND is_local=0)",
+                    [v.seat.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            if remote {
+                return Err(api_error(
+                    ErrorCode::Unsupported,
+                    "service threads are node-local",
+                ));
+            }
+            let input = super::materialize::local_only(tx, decision)?;
+            let episode = super::control::insert_invitation(
+                tx,
+                &input,
+                &payload,
+                super::control::Placement::Required,
+                false,
+            )?
+            .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "fresh invitation id exists"))?;
+            (id, episode, input.decision_seq as i64)
+        } else {
+            // An ordinary service invitation replicates when its thread is
+            // journaled (the seat is any node's); on a managed thread the same
+            // fact goes through the local-only route and refuses a remote seat.
+            super::control::author_invitation(tx, context, decision, &payload)?;
+            let (episode, seq): (i64, i64) = tx
+                .query_row(
+                    "SELECT episode,created_decision_seq FROM invitations WHERE id=?1",
+                    [id.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(store_error)?;
+            (id, episode, seq)
+        }
     } else {
         let (id, episode, seq, _) = pending.expect("existing pending invitation");
         (InvitationId::new(id), episode, seq)
@@ -472,8 +540,7 @@ fn invite(
         },
         EventAuthor::Programmatic(author.clone()),
     )?;
-    tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
-        [v.seat.as_str()]).map_err(store_error)?;
+    super::delivery_tail::DeliveryTail::invitation(tx, &v.seat)?;
     schema::bump_membership_revision(tx, &v.thread)?;
     schema::bump_filter_revision(tx, instance, "directory", "all")?;
     schema::bump_filter_revision(

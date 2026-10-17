@@ -1,6 +1,5 @@
 //! Seat reconciliation decisions from ordered host observations.
 
-use crate::ports::SnapshotGenerationId;
 use crate::ports::{
     DurableWorkAdmission, GuardedInvalidationTransition, GuardedSeatTransition, HostCallContext,
     HostInvalidationFence, HostInvalidationReason, HostObservationAdmission, HostPort,
@@ -8,6 +7,7 @@ use crate::ports::{
     RecoveryDisposition, SeatState, SnapshotHeader, SnapshotSavedSeat, SnapshotSeatPage,
     SnapshotTargetMatch, UnresolvedReason,
 };
+use crate::ports::{HostId, SnapshotGenerationId};
 use crate::ports::{
     HostObservation, InvalidationSeatPage, SnapshotCleanupProgress, SnapshotStage,
     SnapshotStageProgress,
@@ -20,12 +20,32 @@ use crate::protocol::{
 
 pub mod observation_store {
     use super::*;
-    /// Narrow persistence surface for ordered capture and bounded reconciliation.
+    /// ObservationStore: the narrow persistence surface for ordered capture and
+    /// bounded reconciliation of ONE Herdr server at a time.
+    ///
+    /// Owns: the per-host observation order (admission, hidden snapshot stage,
+    /// seal, atomic publish, invalidation), the bounded saved-seat pages and the
+    /// guarded seat transitions that follow a publication, and the recovery
+    /// baseline of that server. [`ObservationStore::begin_host_observation`]
+    /// takes the [`HostId`]; every later call carries it through the admission,
+    /// snapshot header, publication or fence it is given, so each statement
+    /// filters `host_id = ?` plus `LOCAL_SEAT`. A coherent snapshot of one server
+    /// therefore resolves, unresolves or retires only that server's seats and
+    /// never touches another server's seats, recovery holds or baseline rows
+    /// (target ids are unique only within one server).
+    /// Does not own: which servers are attached (`HostSessions`), the
+    /// cooperative caller path (its own claim names the host), or wake,
+    /// delivery and archival scope.
+    /// Role: implemented by the scheduled store of each host's observation
+    /// worker. A new per-host query takes a `HostId` (or a seat row's `host_id`)
+    /// and adds `host_id = ?` and `LOCAL_SEAT` to its seat predicate; it never
+    /// reads a node-wide host.
     pub trait ObservationStore: Send + Sync {
         fn clock(&self) -> &dyn crate::protocol::time::Clock;
         fn begin_host_observation(
             &self,
             instance: &str,
+            host: HostId,
             budget: &CallBudget,
         ) -> Result<HostObservationAdmission, ApiError>;
         fn invalidate_host_observation(
@@ -493,11 +513,12 @@ pub fn observe_and_publish(
     store: &(impl observation_store::ObservationStore + ?Sized),
     lane: &mut ObservationLane,
     instance: &str,
+    host_id: HostId,
     context: &HostCallContext,
     maintenance_budget: &CallBudget,
 ) -> Result<ObservationOutcome, ApiError> {
     let ticket = lane.begin_observation()?;
-    let admission = match store.begin_host_observation(instance, &context.budget) {
+    let admission = match store.begin_host_observation(instance, host_id, &context.budget) {
         Ok(admission) => admission,
         Err(error) => {
             lane.mark_unavailable();
@@ -644,6 +665,7 @@ fn publish_captured(
         did_publish = true;
         if published.id != stage.id
             || published.instance != header.instance
+            || published.host_id != header.host_id
             || published.boot != header.boot
             || published.epoch != header.epoch
             || published.observation_sequence != header.observation_sequence

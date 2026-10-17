@@ -11,13 +11,40 @@ use std::{
     ops::Deref,
     path::PathBuf,
     sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        Arc, OnceLock,
+        atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
     },
     time::Duration,
 };
 
-use super::schema;
+use super::schema::{self, NodeSeed};
+use crate::node::NodeIdentity;
+use crate::sync::facts::FactRegistry;
+use crate::sync::hlc::Hlc;
+
+/// Stamps the `herdr_hosts` row of `endpoint` as attached at `now`, creating it
+/// for this node when it does not exist, and returns its `host_id`. Update
+/// first and insert only when absent, so a re-attach never advances the
+/// AUTOINCREMENT sequence.
+pub(crate) fn upsert_host(conn: &Connection, endpoint: &str, now: i64) -> rusqlite::Result<i64> {
+    use rusqlite::OptionalExtension;
+    if let Some(host_id) = conn
+        .query_row(
+            "UPDATE herdr_hosts SET last_attached_at=?2 WHERE endpoint=?1 RETURNING host_id",
+            rusqlite::params![endpoint, now],
+            |row| row.get(0),
+        )
+        .optional()?
+    {
+        return Ok(host_id);
+    }
+    conn.query_row(
+        "INSERT INTO herdr_hosts(node_id,endpoint,created_at,last_attached_at) \
+         SELECT id,?1,?2,?2 FROM local_node RETURNING host_id",
+        rusqlite::params![endpoint, now],
+        |row| row.get(0),
+    )
+}
 
 /// Decides, from the calling thread's lane origin, whether a store access
 /// fails (test hook).
@@ -32,12 +59,363 @@ const IDLE_QUERY_CONNECTIONS: usize = 4;
 
 type IdleQueries = Arc<std::sync::Mutex<Vec<Connection>>>;
 
+/// Free space below which ingest stores nothing (`Headroom`): 256 MiB.
+pub const INGEST_HEADROOM_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The journal's per-daemon runtime, installed once by `journal::open` into
+/// [`StoreContext`].
+///
+/// Owns: the node's `Arc<NodeIdentity>`, the `Mutex<Hlc>`, the
+/// `&'static FactRegistry`, the ingest headroom threshold, the incarnation
+/// draw source and the "journal is open" gate (a store has a `SyncState` only
+/// after `open`). Hides: whether a given store has a journal; callers ask
+/// [`StoreContext::sync`], which answers `Unsupported "journal not open"` (a
+/// programming error, distinct from every store and fact error) before open.
+/// Must not: be locked outside `src/store/journal.rs` (only Journal ticks or
+/// folds the Hlc, and only inside a writer transaction), or be replaced after
+/// install (a registry upgrade is a reopen with a new `StoreContext`).
+/// Role: read by Journal, ApplyEngine (registry) and the commit guard. New
+/// journal runtime state (the own-history hold, ht-5fr.3.16) is a field here.
+/// Responsibility: owns the two counters that say whether the Apply lane has
+/// applied (or parked) every entry ingested so far. Ingest bumps `ingested`
+/// after it commits a pending row; the Apply lane records `drained` after a
+/// full pass that began at that `ingested` value. The deadline lane's sync
+/// hold reads both. It never touches the store.
+#[derive(Debug)]
+pub struct ApplyEpochs {
+    ingested: AtomicU64,
+    drained: AtomicU64,
+}
+
+impl ApplyEpochs {
+    /// `ingested` starts at 1: a reopened store may hold `pending` rows from a
+    /// previous process, so the first full drain must come before a release.
+    pub(crate) fn new() -> Self {
+        Self {
+            ingested: AtomicU64::new(1),
+            drained: AtomicU64::new(0),
+        }
+    }
+
+    /// Count of ingests that stored pending rows (plus the startup epoch).
+    pub fn ingested(&self) -> u64 {
+        self.ingested.load(Ordering::Acquire)
+    }
+
+    /// Highest ingest epoch a full Apply drain has covered.
+    pub fn drained(&self) -> u64 {
+        self.drained.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn note_ingested(&self) {
+        self.ingested.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn note_drained(&self, epoch: u64) {
+        self.drained.fetch_max(epoch, Ordering::AcqRel);
+    }
+}
+
+pub struct SyncState {
+    /// Ingest and Apply-drain epochs the deadline lane's sync hold reads.
+    pub(crate) apply_epochs: Arc<ApplyEpochs>,
+    pub(crate) identity: Arc<NodeIdentity>,
+    pub(crate) hlc: std::sync::Mutex<Hlc>,
+    pub(crate) registry: &'static FactRegistry,
+    pub(crate) headroom_bytes: AtomicU64,
+    /// Most `journal_forked` rows `serve_branch` walks before giving up.
+    pub(crate) branch_walk_bound: AtomicU64,
+    pub(crate) incarnation_rng: std::sync::Mutex<XorShift>,
+    /// When (UTC ms) the hourly skew line of each log was last written.
+    pub(crate) skew_logged: std::sync::Mutex<std::collections::HashMap<crate::sync::LogKey, i64>>,
+    /// Set when entries may be waiting to apply (startup, an ingest that stored
+    /// a pending row, an apply pass that hit its limit); cleared by the Apply
+    /// lane before each kicked pass. Authoring leaves it clear: it applies
+    /// inline, so a lane kick it causes finds nothing to do and takes no
+    /// writer turn.
+    pub(crate) apply_hint: Arc<AtomicBool>,
+    /// While active, `apply_pass` applies only the active self log.
+    pub(crate) own_history_hold: Arc<OwnHistoryHold>,
+    /// Set by every `journal::begin_incarnation` after `open` (not by `open`'s
+    /// own bootstrap): this daemon process has rotated its active log since it
+    /// started. `restore_successor` needs it clear (incarnations design 6).
+    pub(crate) rotated_since_start: AtomicBool,
+}
+
+impl SyncState {
+    /// The ingest and drain epochs of the Apply lane.
+    pub fn apply_epochs(&self) -> &Arc<ApplyEpochs> {
+        &self.apply_epochs
+    }
+
+    /// Whether this process has started a new incarnation since `open`.
+    pub fn rotated_since_start(&self) -> bool {
+        self.rotated_since_start.load(Ordering::Acquire)
+    }
+
+    /// The free-space floor below which ingest stores nothing.
+    pub fn headroom_bytes(&self) -> u64 {
+        self.headroom_bytes.load(Ordering::Relaxed)
+    }
+
+    /// The most `journal_forked` rows `serve_branch` walks before it answers
+    /// `None`.
+    pub fn branch_walk_bound(&self) -> u64 {
+        self.branch_walk_bound.load(Ordering::Relaxed)
+    }
+
+    /// The hold SyncCoordinator and IncarnationsWorker set; shared by `Arc`.
+    pub fn own_history_hold(&self) -> &Arc<OwnHistoryHold> {
+        &self.own_history_hold
+    }
+
+    /// Marks entries as possibly waiting to apply.
+    pub fn set_apply_hint(&self) {
+        self.apply_hint.store(true, Ordering::Release);
+    }
+
+    /// Clears the hint and returns whether it was set.
+    pub fn take_apply_hint(&self) -> bool {
+        self.apply_hint.swap(false, Ordering::AcqRel)
+    }
+}
+
+/// Longest the own-history hold filters: 5 minutes, in monotonic ms.
+pub const OWN_HISTORY_HOLD_MAX: u64 = 5 * 60 * 1000;
+
+/// Who holds the own-history hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldSource {
+    /// SyncCoordinator: this node's links have not all been tried yet.
+    Links,
+    /// IncarnationsWorker: pulling back this node's own old incarnations.
+    Branches,
+}
+
+#[derive(Default)]
+struct HoldState {
+    links: bool,
+    branches: bool,
+    started: Option<MonoInstant>,
+    expiry_logged: bool,
+}
+
+impl HoldState {
+    fn any(&self) -> bool {
+        self.links || self.branches
+    }
+}
+
+/// Makes `apply_pass` wait with every log but the active self log.
+///
+/// Responsibility: owns the two hold flags ([`HoldSource`]), the hold's start
+/// instant and the 5-minute cap ([`OWN_HISTORY_HOLD_MAX`]). Why: catch-up
+/// suppression ([`crate::store::apply::ApplyContext::delivery_suppressed`]) is settled-only, so a
+/// message may be offered only after the settlement that would suppress it
+/// has been ingested. After a wipe or restore this node's own settlements sit
+/// in its own old incarnations, which it pulls back from peers; applying a
+/// foreign or own-old head before that pull finishes would redeliver settled
+/// history (root spec section 7, journal-core step 3a). So while a flag is set
+/// and the hold is younger than the cap, those heads stay `pending` (no
+/// `blocked_on` write). Guarantees: a fresh node with no flag set never waits,
+/// and no hold outlasts 5 minutes, so a silent peer cannot stall apply
+/// forever (a settlement arriving after the cap cannot suppress; accepted
+/// limit in TRUST-POLICY). The start instant is set when the first flag sets
+/// while both are clear and re-arms only after both have cleared. Must not:
+/// touch the store. Role: set by SyncCoordinator and IncarnationsWorker,
+/// read by `apply_pass` and by the FactRoute restore-window authoring hold
+/// ([`active`](Self::active)). When the last flag clears or the cap expires
+/// it sets the shared apply hint and runs the kick hook, which
+/// `start_apply_lane` installs (a `Lane::Apply` kick); the lane also calls
+/// `active` on its tick and bounds its wait by [`remaining`](Self::remaining),
+/// so held entries apply at the cap even with no further ingest.
+pub struct OwnHistoryHold {
+    state: std::sync::Mutex<HoldState>,
+    apply_hint: Arc<AtomicBool>,
+    kick: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    expiry_logs: AtomicU64,
+}
+
+impl OwnHistoryHold {
+    /// A hold that sets `apply_hint` when it lifts. `SyncState` builds the
+    /// daemon's one; a coordinator test rig builds its own.
+    pub fn new(apply_hint: Arc<AtomicBool>) -> Self {
+        Self {
+            state: std::sync::Mutex::default(),
+            apply_hint,
+            kick: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            expiry_logs: AtomicU64::new(0),
+        }
+    }
+
+    /// Installs the callback that kicks `Lane::Apply` when the hold lifts;
+    /// `start_apply_lane` installs it.
+    pub fn set_release_kick(&self, kick: Arc<dyn Fn() + Send + Sync>) {
+        if let Ok(mut slot) = self.kick.lock() {
+            *slot = Some(kick);
+        }
+    }
+
+    /// Sets or clears `source`'s flag at `now`.
+    pub fn set(&self, source: HoldSource, on: bool, now: MonoInstant) {
+        let released = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let was = state.any();
+            match source {
+                HoldSource::Links => state.links = on,
+                HoldSource::Branches => state.branches = on,
+            }
+            if !was && state.any() {
+                state.started = Some(now);
+                state.expiry_logged = false;
+            }
+            let released = was && !state.any();
+            if released {
+                state.started = None;
+            }
+            released
+        };
+        if released {
+            self.release();
+        }
+    }
+
+    /// True while a flag is set and the hold is younger than the cap. The
+    /// call that first sees the cap passed logs once and kicks the Apply lane.
+    pub fn active(&self, now: MonoInstant) -> bool {
+        let expired = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(started) = state.started.filter(|_| state.any()) else {
+                return false;
+            };
+            if now.0.saturating_sub(started.0) < OWN_HISTORY_HOLD_MAX {
+                return true;
+            }
+            !std::mem::replace(&mut state.expiry_logged, true)
+        };
+        if expired {
+            eprintln!("sync: own-history hold expired after 5 min; applying foreign entries");
+            #[cfg(test)]
+            self.expiry_logs.fetch_add(1, Ordering::SeqCst);
+            self.release();
+        }
+        false
+    }
+
+    /// How long until the cap lifts the hold, while a flag is set and the hold
+    /// has not expired yet; `None` when no hold is active. The Apply lane
+    /// bounds its wait by it.
+    pub fn remaining(&self, now: MonoInstant) -> Option<Duration> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let started = state
+            .started
+            .filter(|_| state.any() && !state.expiry_logged)?;
+        let elapsed = now.0.saturating_sub(started.0);
+        Some(Duration::from_millis(
+            OWN_HISTORY_HOLD_MAX.saturating_sub(elapsed),
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expiry_logs(&self) -> u64 {
+        self.expiry_logs.load(Ordering::SeqCst)
+    }
+
+    fn release(&self) {
+        self.apply_hint.store(true, Ordering::Release);
+        let kick = self.kick.lock().ok().and_then(|slot| slot.clone());
+        if let Some(kick) = kick {
+            kick();
+        }
+    }
+}
+
+/// A tiny xorshift64* generator behind incarnation draws.
+///
+/// Unless fixed by [`StoreContext::seed_incarnations`] it re-seeds its state
+/// from `getrandom` at every draw, so a memory-preserving copy of a running
+/// daemon (a VM snapshot, a restored image) does not repeat the draw of its
+/// original.
+#[derive(Clone, Debug)]
+pub struct XorShift {
+    state: u64,
+    reseed: bool,
+}
+
+impl XorShift {
+    /// A generator that re-seeds from the OS at every draw.
+    pub fn from_os() -> Self {
+        Self {
+            state: 0,
+            reseed: true,
+        }
+    }
+
+    /// A reproducible sequence from `seed`; never re-seeds.
+    pub fn fixed(seed: u64) -> Self {
+        Self {
+            state: seed | 1,
+            reseed: false,
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        if self.reseed {
+            let mut bytes = [0u8; 8];
+            // A failing OS source falls back to the current state and time
+            // rather than a fixed value.
+            if getrandom::fill(&mut bytes).is_ok() {
+                self.state = u64::from_le_bytes(bytes) | 1;
+            } else {
+                self.state ^= std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0x9e37_79b9, |d| d.as_nanos() as u64)
+                    | 1;
+            }
+        }
+        let mut x = self.state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.state = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// An incarnation drawn uniformly from `1..=u32::MAX`.
+    pub fn draw_incarnation(&mut self) -> u32 {
+        loop {
+            let value = (self.next_u64() >> 32) as u32;
+            if value != 0 {
+                return value;
+            }
+        }
+    }
+}
+
 pub struct StoreContext {
     path: PathBuf,
     clock: Arc<dyn Clock>,
+    /// The store's view of attached hosts (see [`StoreContext::hosts`]).
+    hosts: Arc<super::hosts::HostIndex>,
+    /// The identity a fresh store is created with; an existing store keeps its
+    /// own. Production sets it from the loaded node key; test builds default to
+    /// the fixed test node.
+    node_seed: Option<NodeSeed>,
+    /// Test hook: the key seed `SqliteStore::new` opens the journal with, so
+    /// every test store runs against an opened journal. Test builds default to
+    /// the fixed test node; `with_node_seed` (production identity) clears it,
+    /// because the daemon calls `journal::open` itself with its own key.
+    #[cfg(any(test, feature = "test-support"))]
+    auto_journal: Option<[u8; 32]>,
     idle_queries: IdleQueries,
     /// The last writer open's binding-evidence verification result.
     binding_evidence: std::sync::Mutex<Option<crate::ports::BindingEvidenceStartup>>,
+    /// Set once the daemon's early journal-open writer produced the startup
+    /// report: later writer opens (the store's own) no longer replace it, so
+    /// the report keeps the backfill the first open did.
+    binding_evidence_pinned: AtomicBool,
     /// Seats whose latest binding still lacked evidence after the last
     /// writer open. Only these are rechecked for Health; the set only
     /// shrinks, because every new live binding must carry evidence.
@@ -49,6 +427,21 @@ pub struct StoreContext {
     /// missing or does not cover every target (restart, eviction, another
     /// process staging, a differing target).
     snapshot_stage_matches: std::sync::Mutex<Vec<SnapshotStageMatch>>,
+    /// The journal runtime, installed once by `journal::open` (see
+    /// [`SyncState`]).
+    sync: OnceLock<SyncState>,
+    /// Test hook: the fixed incarnation sequence a later `journal::open` (or
+    /// the open `SyncState`) draws from (see `seed_incarnations`).
+    #[cfg(any(test, feature = "test-support"))]
+    incarnation_seed: std::sync::Mutex<Option<u64>>,
+    /// Test hook: every writer open attaches the fixture Herdr host (see
+    /// `with_test_host`).
+    #[cfg(any(test, feature = "test-support"))]
+    test_host: bool,
+    /// Test hook: the server every writer open attaches and publishes (see
+    /// `with_attached_host`).
+    #[cfg(any(test, feature = "test-support"))]
+    attached_host: Option<crate::protocol::ids::HostLocator>,
     /// Test hook: fails store access on lane-owned threads (see `set_lane_fault`).
     #[cfg(any(test, feature = "test-support"))]
     lane_fault: std::sync::Mutex<Option<LaneFault>>,
@@ -199,13 +592,38 @@ impl StoreContext {
     }
 
     pub fn new(path: PathBuf, clock: Arc<dyn Clock>) -> Self {
+        Self::with_host_index(path, clock, Arc::default())
+    }
+
+    /// [`StoreContext::new`] sharing `hosts` with `HostSessions`, the only
+    /// writer of the index. `new` gives the context a private, empty index.
+    pub fn with_host_index(
+        path: PathBuf,
+        clock: Arc<dyn Clock>,
+        hosts: Arc<super::hosts::HostIndex>,
+    ) -> Self {
         Self {
             path,
             clock,
+            hosts,
+            #[cfg(any(test, feature = "test-support"))]
+            node_seed: Some(crate::test_support::test_node_seed()),
+            #[cfg(not(any(test, feature = "test-support")))]
+            node_seed: None,
+            #[cfg(any(test, feature = "test-support"))]
+            auto_journal: Some(crate::test_support::TEST_NODE_SEED),
             idle_queries: Arc::default(),
+            sync: OnceLock::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            incarnation_seed: std::sync::Mutex::new(None),
             binding_evidence: std::sync::Mutex::new(None),
+            binding_evidence_pinned: AtomicBool::new(false),
             binding_evidence_lacking: std::sync::Mutex::new(Vec::new()),
             snapshot_stage_matches: std::sync::Mutex::new(Vec::new()),
+            #[cfg(any(test, feature = "test-support"))]
+            test_host: false,
+            #[cfg(any(test, feature = "test-support"))]
+            attached_host: None,
             #[cfg(any(test, feature = "test-support"))]
             lane_fault: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
@@ -219,6 +637,189 @@ impl StoreContext {
             #[cfg(test)]
             rollback_journal: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// The directory holding the database file, for the free-space probe.
+    pub(crate) fn database_dir(&self) -> PathBuf {
+        match self.path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+            _ => PathBuf::from("."),
+        }
+    }
+
+    /// Test hook: the free-space floor below which ingest stores nothing
+    /// (`u64::MAX` makes every ingest `Headroom`). A no-op before
+    /// `journal::open`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_ingest_headroom(&self, bytes: u64) {
+        if let Some(state) = self.sync.get() {
+            state.headroom_bytes.store(bytes, Ordering::Relaxed);
+        }
+    }
+
+    /// Test hook: the most `journal_forked` rows `serve_branch` walks before it
+    /// answers `None`. A no-op before `journal::open`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_branch_walk_bound(&self, steps: u64) {
+        if let Some(state) = self.sync.get() {
+            state.branch_walk_bound.store(steps, Ordering::Relaxed);
+        }
+    }
+
+    /// The journal runtime, or `Unsupported "journal not open"` before
+    /// `journal::open` installed it.
+    pub fn sync(&self) -> Result<&SyncState, ApiError> {
+        self.sync
+            .get()
+            .ok_or_else(|| api_error(ErrorCode::Unsupported, "journal not open"))
+    }
+
+    /// Installs the journal runtime; `false` when one is already installed
+    /// (it is never replaced). Only `journal::open` calls this.
+    pub(crate) fn install_sync(&self, state: SyncState) -> bool {
+        self.sync.set(state).is_ok()
+    }
+
+    /// Whether `journal::open` has installed the journal runtime.
+    pub fn journal_open(&self) -> bool {
+        self.sync.get().is_some()
+    }
+
+    /// The incarnation source a new `SyncState` starts with: re-seeding from
+    /// the OS, unless a test fixed the sequence.
+    pub(crate) fn new_incarnation_rng(&self) -> XorShift {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(seed) = self.incarnation_seed.lock().ok().and_then(|slot| *slot) {
+            return XorShift::fixed(seed);
+        }
+        XorShift::from_os()
+    }
+
+    /// Test hook: fixes the incarnation sequence to `seed` and turns
+    /// re-seeding off, for this context before or after `journal::open`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_incarnations(&self, seed: u64) {
+        if let Ok(mut slot) = self.incarnation_seed.lock() {
+            *slot = Some(seed);
+        }
+        if let Some(state) = self.sync.get()
+            && let Ok(mut rng) = state.incarnation_rng.lock()
+        {
+            *rng = XorShift::fixed(seed);
+        }
+    }
+
+    /// The store's read view of attached hosts.
+    ///
+    /// Owns: the one answer to "is this claim's Herdr server attached, and
+    /// what is its `HostId`" (`HostIndex::attached_id`; a miss is
+    /// `HostUnavailable`). Does not own: the `herdr_hosts` rows, a host's
+    /// session or reachability, or any per-seat routing (the seat row's
+    /// `host_id` does that). Role: replaces the single-host seam.
+    /// Only `cooperative_claim` and C1 continuity resolve a locator through
+    /// it; every other query takes its host from the seat row or from the
+    /// worker that owns the host. Read-only here; only `HostSessions` (and
+    /// the fixture compositions of `DomainService`) publishes into it.
+    pub fn hosts(&self) -> &Arc<super::hosts::HostIndex> {
+        &self.hosts
+    }
+
+    /// The identity a fresh store file is created with. An existing store
+    /// keeps the identity it was created with; a fresh store with no seed is an
+    /// error, never a silent default.
+    #[must_use]
+    pub fn with_node_seed(mut self, seed: NodeSeed) -> Self {
+        self.node_seed = Some(seed);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.auto_journal = None;
+        }
+        self
+    }
+
+    /// Test hook: a store whose node is the one `NodeIdentity::from_seed(seed)`
+    /// names, with the journal opened under that key by `SqliteStore::new`, so
+    /// `local_node.id` and the journal identity agree. For multi-store and
+    /// oracle tests that need a distinct identity.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_journal_seed(mut self, seed: [u8; 32]) -> Self {
+        let uuid = crate::node::NodeIdentity::from_seed(seed).uuid();
+        self.node_seed = Some(NodeSeed {
+            uuid,
+            tag: crate::node::tag_for(uuid, 0),
+            tag_k: 0,
+        });
+        self.auto_journal = Some(seed);
+        self
+    }
+
+    /// The key seed `SqliteStore::new` auto-opens the journal with, if any.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn auto_journal(&self) -> Option<[u8; 32]> {
+        self.auto_journal
+    }
+
+    /// Test hook: a store whose Herdr host is the fixture host
+    /// (`test_support::TEST_HOST_ENDPOINT`). Every writer open upserts its
+    /// `herdr_hosts` row and publishes it into the context's [`HostIndex`]
+    /// under `test_support::test_host_locator()`, so a fixture sets host
+    /// columns with `UPDATE herdr_hosts` and never inserts the row. A store
+    /// built without it has no attached host (`HostUnavailable`).
+    ///
+    /// [`HostIndex`]: super::hosts::HostIndex
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_test_host(mut self) -> Self {
+        self.test_host = true;
+        // Published at once (the first row of a fresh store is `test_host_id()`), so a context
+        // that is handed a connection some other opener created still resolves the fixture host.
+        self.hosts.publish(
+            crate::test_support::test_host_locator(),
+            crate::test_support::test_host_id(),
+        );
+        self
+    }
+
+    /// Test hook: a store whose Herdr host is the server at `locator`, for a fixture whose claims
+    /// name that server instead of the fixture host. Every writer open upserts its
+    /// `herdr_hosts` row and publishes it into the context's [`HostIndex`] under `locator`, as the
+    /// daemon does (the row, then the index entry); the order of builder calls does not matter.
+    ///
+    /// [`HostIndex`]: super::hosts::HostIndex
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_attached_host(mut self, locator: &crate::protocol::ids::HostLocator) -> Self {
+        self.attached_host = Some(locator.clone());
+        self
+    }
+
+    /// Test hook: the fixture host is published as id 1, the id the first
+    /// `herdr_hosts` row of a fresh store gets, before that row exists. A test
+    /// inserts the row later (see `test_support::attach_test_host_to_connection`)
+    /// to model the moment a host is first admitted.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_pending_test_host(self) -> Self {
+        self.hosts.publish(
+            crate::test_support::test_host_locator(),
+            crate::ports::HostId::from_row(1),
+        );
+        self
+    }
+
+    /// Attaches the Herdr server at `endpoint`: upserts its `herdr_hosts` row
+    /// for this node (stamping `last_attached_at`) and returns its id. It
+    /// creates and verifies the store when it is new but opens no writer, so
+    /// the writer's startup invariant report is still produced once, by the
+    /// store that opens next. It does not publish into the [`HostIndex`]: that
+    /// is the composition's step, once the host's workers run.
+    ///
+    /// [`HostIndex`]: super::hosts::HostIndex
+    pub fn attach_host(&self, endpoint: &str) -> Result<i64, ApiError> {
+        let conn = self.open_initialized()?;
+        let now = self.clock.utc_now().0;
+        upsert_host(&conn, endpoint, now).map_err(store_error)
     }
 
     /// Test hook: installs (or clears) the lane fault `lane_fault_check` consults.
@@ -298,9 +899,12 @@ impl StoreContext {
         self.path.display().to_string()
     }
 
-    pub fn open_writer(&self) -> Result<Connection, ApiError> {
+    /// A connection to the store, created and verified when it is new: foreign
+    /// keys on, `schema::initialize` run. The shared
+    /// start of the writer open and the host attach.
+    fn open_initialized(&self) -> Result<Connection, ApiError> {
         #[cfg(any(test, feature = "test-support"))]
-        if test_fast_paths() {
+        if test_fast_paths() && self.node_seed == Some(crate::test_support::test_node_seed()) {
             fresh_schema_template::seed(&self.path);
         }
         let conn = Connection::open(&self.path).map_err(store_error)?;
@@ -313,7 +917,23 @@ impl StoreContext {
             .map_err(store_error)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(store_error)?;
-        schema::initialize(&conn, || self.clock.utc_now())?;
+        schema::initialize_with(&conn, || self.clock.utc_now(), self.node_seed.as_ref())?;
+        #[cfg(any(test, feature = "test-support"))]
+        if self.test_host {
+            crate::test_support::attach_test_host(self, &conn);
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(locator) = &self.attached_host {
+            let id = upsert_host(&conn, locator.as_str(), self.clock.utc_now().0)
+                .map_err(store_error)?;
+            self.hosts
+                .publish(locator.clone(), crate::ports::HostId::from_row(id));
+        }
+        Ok(conn)
+    }
+
+    pub fn open_writer(&self) -> Result<Connection, ApiError> {
+        let conn = self.open_initialized()?;
         #[cfg(test)]
         let journal_mode = if self
             .rollback_journal
@@ -337,6 +957,8 @@ impl StoreContext {
         let synchronous = "FULL";
         conn.pragma_update(None, "synchronous", synchronous)
             .map_err(store_error)?;
+        conn.pragma_update(None, "journal_size_limit", 67_108_864_i64)
+            .map_err(store_error)?;
         let (backfilled, still_lacking) = schema::guard_binding_evidence(&conn)?;
         let report = crate::ports::BindingEvidenceStartup {
             backfilled: backfilled as u64,
@@ -347,13 +969,23 @@ impl StoreContext {
         } else {
             Vec::new()
         };
-        if let Ok(mut slot) = self.binding_evidence.lock() {
-            *slot = Some(report);
-        }
-        if let Ok(mut slot) = self.binding_evidence_lacking.lock() {
-            *slot = lacking;
+        if !self.binding_evidence_pinned.load(Ordering::SeqCst) {
+            if let Ok(mut slot) = self.binding_evidence.lock() {
+                *slot = Some(report);
+            }
+            if let Ok(mut slot) = self.binding_evidence_lacking.lock() {
+                *slot = lacking;
+            }
         }
         Ok(conn)
+    }
+
+    /// Keeps the binding-evidence report of the writer opens so far as the
+    /// startup report. The daemon calls it after the early writer it opens
+    /// for `journal::open`, so the store's own later open (which has nothing
+    /// left to backfill) does not replace the report of the first open.
+    pub fn pin_binding_evidence(&self) {
+        self.binding_evidence_pinned.store(true, Ordering::SeqCst);
     }
 
     /// The startup report with `still_lacking` recomputed now: each seat
@@ -519,7 +1151,10 @@ impl StoreContext {
             return Err(error);
         }
         guard.disable();
+        let publication = super::seats::PublicationScope::begin();
         let result = apply(&tx, decision, prepared)?;
+        publication.publish(&tx, self, decision)?;
+        super::journal::check_self_applied(&tx)?;
         tx.commit().map_err(store_error)?;
         Ok(result)
     }
@@ -540,7 +1175,10 @@ impl StoreContext {
             utc: self.clock.utc_now(),
             monotonic: self.clock.monotonic_now(),
         };
+        let publication = super::seats::PublicationScope::begin();
         let result = apply(&tx, decision, prepared)?;
+        publication.publish(&tx, self, decision)?;
+        super::journal::check_self_applied(&tx)?;
         tx.commit().map_err(store_error)?;
         Ok(result)
     }
@@ -898,7 +1536,7 @@ mod fresh_schema_template {
         let path = exe.with_file_name(format!(
             "{}.schema-v{}-{}-{}.db",
             exe.file_name()?.to_str()?,
-            schema::LATEST_VERSION,
+            schema::NODE_SCHEMA_VERSION,
             meta.len(),
             built.as_nanos()
         ));
@@ -906,18 +1544,18 @@ mod fresh_schema_template {
             return Some(path);
         }
         let staging = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        let clock_read = std::cell::Cell::new(false);
+        // The template holds the fixed test node and `created_at = 0`; a
+        // store created through it differs from ordinary creation only in the
+        // node row's creation time, which nothing reads.
         let built = Connection::open(&staging).ok().and_then(|conn| {
-            schema::initialize(&conn, || {
-                clock_read.set(true);
-                UtcMillis(0)
-            })
+            schema::initialize(
+                &conn,
+                || UtcMillis(0),
+                &crate::test_support::test_node_seed(),
+            )
             .ok()
         });
-        // A creation path that reads the clock is not reproducible from a
-        // template: keep ordinary creation.
-        let renamed =
-            built.is_some() && !clock_read.get() && std::fs::rename(&staging, &path).is_ok();
+        let renamed = built.is_some() && std::fs::rename(&staging, &path).is_ok();
         let _ = std::fs::remove_file(&staging);
         renamed.then_some(path)
     }
@@ -930,8 +1568,8 @@ mod fresh_schema_template {
 /// `Sync`, the mutex provides the ordering.
 #[derive(Default)]
 pub(super) struct KickHooks {
-    pending: AtomicU8,
-    sealed: AtomicU8,
+    pending: AtomicU16,
+    sealed: AtomicU16,
     /// A table of `kicks::MOD_NOTIFY_TABLES` changed in the open / last
     /// commit; sealed separately from the lane set (spec D2).
     mod_pending: AtomicBool,
@@ -1025,11 +1663,11 @@ impl KickHooks {
         #[cfg(any(test, feature = "test-support"))]
         self.commits[origin.map_or(kicks::Lane::INTERNAL_ALL.len(), |lane| lane as usize)]
             .fetch_add(1, Ordering::SeqCst);
-        if !kicks::origin_discards_kicks(origin) {
-            self.sealed.fetch_or(pending, Ordering::SeqCst);
-            if mod_pending {
-                self.mod_sealed.store(true, Ordering::SeqCst);
-            }
+        let kicked = kicks::kicks_for_commit(origin, LaneSet::from_bits(pending));
+        self.sealed.fetch_or(kicked.to_bits(), Ordering::SeqCst);
+        // Mod notification follows the origin guard only for Retention.
+        if mod_pending && origin != Some(kicks::Lane::Retention) {
+            self.mod_sealed.store(true, Ordering::SeqCst);
         }
     }
 

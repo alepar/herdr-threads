@@ -195,7 +195,8 @@ mod tests {
         let mut v = original.clone();
         v.claim.seat = crate::protocol::ids::SeatId::new("other-sender");
         v.scope = crate::cli::journal::IntentScope::Cooperative {
-            instance: "i".into(),
+            host: crate::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: v.claim.seat.clone(),
         };
         changes.push(v);

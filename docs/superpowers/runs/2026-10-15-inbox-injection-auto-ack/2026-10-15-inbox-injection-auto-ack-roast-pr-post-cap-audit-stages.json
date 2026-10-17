@@ -1,0 +1,147 @@
+{
+  "modelSubstitution": "Inherited GPT for unavailable opus/sonnet/fable; same-family only. Fresh isolated subagents used fork_turns=none.",
+  "stages": {
+    "triage": {
+      "lanes": [
+        "api-contract",
+        "testing",
+        "hygiene-docs"
+      ],
+      "domains": []
+    },
+    "scout:correctness": {
+      "findings": []
+    },
+    "scout:security": {
+      "findings": []
+    },
+    "scout:premortem": {
+      "findings": []
+    },
+    "scout:simplicity-design": {
+      "findings": []
+    },
+    "scout:hot-path-perf": {
+      "findings": []
+    },
+    "scout:concurrency-async": {
+      "findings": []
+    },
+    "scout:regression": {
+      "findings": []
+    },
+    "scout:api-contract": {
+      "findings": []
+    },
+    "scout:testing": {
+      "findings": []
+    },
+    "scout:hygiene-docs": {
+      "findings": []
+    },
+    "reporter": {
+      "verdict": "clean (0 nits) [converged]",
+      "reportMarkdown": "---\nsuper-roast verdict: clean (0 nits) [converged]\nmode: pr        iteration: post-cap audit\nprofile (assumed): Production local cooperative multi-agent messaging plugin. Receipt attribution and durable delivery are real user data, with network replication under integration. Trust policy rejects invented provenance and seat merges. This audit covers fixture repairs, merge adapters, and two-node public-path proofs, not the unrelated p2p epic.\ninputs: SCOPED: source4274f130 vs d51ca797 + combined22924c79 resolution seams + proof9c85b90d..79fbbcb3; exact scope post-cap-audit-scope.md and .superpowers/post-cap-{feature,combined,proof-tests}.diff\ndelta vs prior: 0 new confirmed (0 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 0 resolved \u00b7 0 regressed (0 Blocking) \u00b7 2 punch-listed (open)\ncoverage: scouts 10/10 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, regression, api-contract, testing, hygiene-docs) \u00b7 raw 0 \u2192 deduped 0 \u2192 panel 0 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion n/a (no panels) \u00b7 remainder-capped: 0\nindependence: same-family (GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\n\nAll 10 scouts returned no material findings. No deduper, judges, spot checks or actual panels ran because there were no raw findings. This empty later round supports convergence within the stated post-cap audit scope. No fix loop was triggered.\nThe run inherited GPT substitutions for unavailable Opus, Sonnet and Fable tiers. The independence line describes the configured same-family seat roles, not family independence or evidence from an actual panel.\n\nThe exact scope is recorded in post-cap-audit-scope.md: source4274f130 versus d51ca797 fixture deltas, combined22924c79 resolution seams, and proof9c85b90d..79fbbcb3 tests. This report does not review the entire unfinished peer epic.\nCaller-recorded verification in final-verification.md reports 1572 affected feature tests passing and static gates passing. combined-node-verification.md reports 76 focused Rust tests and 154 mod tests passing, combined static gates passing, and clean run-scoped process/temp checks. The reviewers did not rerun these checks.\nThe proof exercises public store completion routes and signed-fact transfer, plus real two-daemon text CLI and passive JSON reads. It does not establish paid live multi-harness network e2e, full channel-service admission e2e, a full-suite run, or release readiness.\n\nPrior finding tracking:\n- Punch-listed (open): [Nit] TRUST-POLICY.md:1702 \u2014 The prior normative-policy wording item remains deliberately unfixed. It is not resolved.\n- Punch-listed (open): [Nit] src/protocol/commands.rs:114; src/protocol/commands.rs:1588 \u2014 The prior operation-documentation item remains deliberately unfixed. Its prior evidence was a single refute-seat spot check, not full-panel confirmation. It is not resolved.\n- The missing sibling regression coverage was already recorded as resolved in round2. This audit adds no newly resolved finding.\n\n## Confirmed findings\n\n- none\n\n## Not verified (beyond panel cap)\n\n- none\n\n## Not verified (dedupe failed or judge lost)\n\n- none\n\n## Beyond remainder cap (count only)\n\n- none\n\n## Rejected (with reason)\n\n- none\n\n## Unverified nits (spot-checked)\n\n- none newly reviewed; the prior spot-only Nit remains punch-listed (open) above.\n\n## Escalations (need human)\n\n- none\n---\n",
+      "confirmedCount": 0,
+      "escalations": []
+    }
+  },
+  "engine": {
+    "verdict": "clean (0 nits) [converged]",
+    "reportMarkdown": "---\nsuper-roast verdict: clean (0 nits) [converged]\nmode: pr        iteration: post-cap audit\nprofile (assumed): Production local cooperative multi-agent messaging plugin. Receipt attribution and durable delivery are real user data, with network replication under integration. Trust policy rejects invented provenance and seat merges. This audit covers fixture repairs, merge adapters, and two-node public-path proofs, not the unrelated p2p epic.\ninputs: SCOPED: source4274f130 vs d51ca797 + combined22924c79 resolution seams + proof9c85b90d..79fbbcb3; exact scope post-cap-audit-scope.md and .superpowers/post-cap-{feature,combined,proof-tests}.diff\ndelta vs prior: 0 new confirmed (0 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 0 resolved \u00b7 0 regressed (0 Blocking) \u00b7 2 punch-listed (open)\ncoverage: scouts 10/10 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, regression, api-contract, testing, hygiene-docs) \u00b7 raw 0 \u2192 deduped 0 \u2192 panel 0 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion n/a (no panels) \u00b7 remainder-capped: 0\nindependence: same-family (GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nlane-yield (found/confirmed/unique/refuted): correctness 0/0/0/0 \u00b7 security 0/0/0/0 \u00b7 premortem 0/0/0/0 \u00b7 simplicity-design 0/0/0/0 \u00b7 hot-path-perf 0/0/0/0 \u00b7 concurrency-async 0/0/0/0 \u00b7 regression 0/0/0/0 \u00b7 api-contract 0/0/0/0 \u00b7 testing 0/0/0/0 \u00b7 hygiene-docs 0/0/0/0\n\nAll 10 scouts returned no material findings. No deduper, judges, spot checks or actual panels ran because there were no raw findings. This empty later round supports convergence within the stated post-cap audit scope. No fix loop was triggered.\nThe run inherited GPT substitutions for unavailable Opus, Sonnet and Fable tiers. The independence line describes the configured same-family seat roles, not family independence or evidence from an actual panel.\n\nThe exact scope is recorded in post-cap-audit-scope.md: source4274f130 versus d51ca797 fixture deltas, combined22924c79 resolution seams, and proof9c85b90d..79fbbcb3 tests. This report does not review the entire unfinished peer epic.\nCaller-recorded verification in final-verification.md reports 1572 affected feature tests passing and static gates passing. combined-node-verification.md reports 76 focused Rust tests and 154 mod tests passing, combined static gates passing, and clean run-scoped process/temp checks. The reviewers did not rerun these checks.\nThe proof exercises public store completion routes and signed-fact transfer, plus real two-daemon text CLI and passive JSON reads. It does not establish paid live multi-harness network e2e, full channel-service admission e2e, a full-suite run, or release readiness.\n\nPrior finding tracking:\n- Punch-listed (open): [Nit] TRUST-POLICY.md:1702 \u2014 The prior normative-policy wording item remains deliberately unfixed. It is not resolved.\n- Punch-listed (open): [Nit] src/protocol/commands.rs:114; src/protocol/commands.rs:1588 \u2014 The prior operation-documentation item remains deliberately unfixed. Its prior evidence was a single refute-seat spot check, not full-panel confirmation. It is not resolved.\n- The missing sibling regression coverage was already recorded as resolved in round2. This audit adds no newly resolved finding.\n\n## Confirmed findings\n\n- none\n\n## Not verified (beyond panel cap)\n\n- none\n\n## Not verified (dedupe failed or judge lost)\n\n- none\n\n## Beyond remainder cap (count only)\n\n- none\n\n## Rejected (with reason)\n\n- none\n\n## Unverified nits (spot-checked)\n\n- none newly reviewed; the prior spot-only Nit remains punch-listed (open) above.\n\n## Escalations (need human)\n\n- none\n---\n",
+    "confirmedCount": 0,
+    "escalations": [],
+    "reporterFailed": false,
+    "enforcement": [
+      "header: lane-yield inserted"
+    ],
+    "fixRegressions": [],
+    "coverage": {
+      "triageDead": false,
+      "scoutsDispatched": 10,
+      "scoutsDead": 0,
+      "unknownLanes": [],
+      "domainsDropped": [],
+      "rawFindings": 0,
+      "dedupedFindings": 0,
+      "dedupeOrphans": 0,
+      "beyondCap": 0,
+      "beyondPanelCap": 0,
+      "dedupeDead": false,
+      "panelCount": 0,
+      "spotCount": 0,
+      "promotedCount": 0,
+      "judgeLost": 0,
+      "spotLost": 0,
+      "laneYield": {
+        "correctness": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "security": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "premortem": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "simplicity-design": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "hot-path-perf": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "concurrency-async": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "regression": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "api-contract": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "testing": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        },
+        "hygiene-docs": {
+          "found": 0,
+          "confirmed": 0,
+          "unique": 0,
+          "refuted": 0
+        }
+      },
+      "judgeCompletionPct": 0,
+      "lowCoverage": false,
+      "panelCappedTag": "",
+      "emptyLateRound": true,
+      "convergenceEligible": true
+    },
+    "routeCounts": {},
+    "seatAgreement": ""
+  }
+}

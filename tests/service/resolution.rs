@@ -3,7 +3,7 @@ use herdr_threads::{
     client::local::LocalSocketClient,
     daemon::{
         ownership::{EndpointDescriptor, OwnerLock},
-        paths::{InstancePaths, RuntimeContext},
+        paths::{NodePaths, RuntimeContext},
     },
     ports::*,
     protocol::{
@@ -139,7 +139,7 @@ impl HostPort for ResolutionHost {
             .expect("host I/O was called under SQLite writer");
         let issued: i64 = db
             .query_row(
-                "SELECT observation_admission_sequence FROM host_instances",
+                "SELECT observation_admission_sequence FROM herdr_hosts",
                 [],
                 |r| r.get(0),
             )
@@ -154,7 +154,7 @@ impl HostPort for ResolutionHost {
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
         {
-            db.execute_batch("UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1")
+            db.execute_batch("UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1")
                 .unwrap();
         }
         let _ = self.entered.try_send(());
@@ -310,7 +310,7 @@ impl Drop for HeldSqliteWriter<'_> {
 
 struct Fixture {
     root: PathBuf,
-    paths: InstancePaths,
+    paths: NodePaths,
     clock: Arc<dyn Clock>,
     store: Arc<SqliteStore>,
     host: Arc<ResolutionHost>,
@@ -350,13 +350,15 @@ impl Fixture {
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let runtime_context =
             RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
-        let paths = InstancePaths::resolve(&runtime_context).unwrap();
-        let owner = OwnerLock::acquire(&paths).unwrap();
-        let instance = owner.instance_uuid();
+        let paths = NodePaths::resolve(&runtime_context.state_dir).unwrap();
+        let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
+        let instance = owner.node_uuid().unwrap();
         drop(owner);
         let store = Arc::new(
             SqliteStore::new(
-                StoreContext::new(paths.database_path.clone(), Arc::clone(&clock)),
+                StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
+                    .with_test_host()
+                    .with_node_seed(herdr_threads::test_support::node_seed_for(instance)),
                 instance.to_string(),
                 StoreSettings::default(),
             )
@@ -384,12 +386,7 @@ impl Fixture {
         });
         if hold_baseline {
             let db = rusqlite::Connection::open(&paths.database_path).unwrap();
-            db.execute(
-                "INSERT INTO host_instances(id,created_at) VALUES (?1,0)",
-                [instance.to_string()],
-            )
-            .unwrap();
-            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('saved',?1,'unresolved','native',1,0)", [instance.to_string()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('saved',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [instance.to_string()]).unwrap();
         }
         if seed {
             let budget = CallBudget {
@@ -409,7 +406,11 @@ impl Fixture {
                 targets: vec![host.observation(1)],
             };
             let admission = store
-                .begin_host_observation(&instance.to_string(), &budget)
+                .begin_host_observation(
+                    &instance.to_string(),
+                    herdr_threads::test_support::test_host_id(),
+                    &budget,
+                )
                 .unwrap();
             let stage = store
                 .begin_snapshot_stage(
@@ -445,7 +446,7 @@ impl Fixture {
                     thread_clock,
                     thread_stop,
                     ServiceConfig::default(),
-                    thread_host,
+                    herdr_threads::test_support::single_host_plan(thread_host),
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
                         Ok(())
@@ -494,7 +495,7 @@ impl Fixture {
                     clock,
                     stop,
                     ServiceConfig::default(),
-                    host,
+                    herdr_threads::test_support::single_host_plan(host),
                     move |descriptor| {
                         ready.send(descriptor.clone()).unwrap();
                         Ok(())
@@ -513,7 +514,7 @@ impl Fixture {
         LocalSocketClient::new(
             self.descriptor.endpoint.clone(),
             Arc::clone(&self.clock),
-            self.descriptor.instance_uuid,
+            self.descriptor.node_uuid,
             Some(self.descriptor.boot_id),
         )
     }
@@ -521,6 +522,7 @@ impl Fixture {
         LocalClient::call(
             &self.client(),
             Command::ResolveSeat(ResolveSeat {
+                host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
                 operation: OperationId::new(operation),
             }),
@@ -528,7 +530,7 @@ impl Fixture {
         )
     }
     fn db(&self) -> rusqlite::Connection {
-        rusqlite::Connection::open(&self.paths.database_path).unwrap()
+        herdr_threads::test_support::open_test_connection(&self.paths.database_path)
     }
 }
 impl Drop for Fixture {
@@ -541,7 +543,7 @@ impl Drop for Fixture {
             let _ = worker.join();
         }
         if std::thread::panicking()
-            && let Ok(log) = fs::read_to_string(self.paths.instance_dir.join("daemon.log"))
+            && let Ok(log) = fs::read_to_string(self.paths.node_dir.join("daemon.log"))
         {
             eprintln!("{log}");
         }
@@ -636,6 +638,7 @@ fn first_contact_read_waits_for_the_lane_capture_it_needs() {
             LocalClient::call(
                 &client,
                 Command::ResolveSeat(ResolveSeat {
+                    host: herdr_threads::test_support::test_host_locator(),
                     target: HostTargetId::new("w1:p1"),
                     operation: OperationId::new("first-contact"),
                 }),
@@ -649,7 +652,7 @@ fn first_contact_read_waits_for_the_lane_capture_it_needs() {
         .expect("service did not admit target read");
     let published: Option<String> = fixture
         .db()
-        .query_row("SELECT active_snapshot_id FROM host_instances", [], |r| {
+        .query_row("SELECT active_snapshot_id FROM herdr_hosts", [], |r| {
             r.get(0)
         })
         .unwrap();
@@ -693,33 +696,34 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
     for n in 0..25 {
         let thread = format!("selected-thread-{n:02}");
         let invitation = format!("selected-invite-{n:02}");
-        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,?2,'selected topic','goal',0,0)", rusqlite::params![thread, fixture.descriptor.instance_uuid.to_string()]).unwrap();
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES (?1,?2,'selected topic','goal',0,0,0)", rusqlite::params![thread, fixture.descriptor.node_uuid.to_string()]).unwrap();
         db.execute(
             "INSERT INTO memberships(thread_id,seat_id,state) VALUES (?1,?2,'invited')",
             rusqlite::params![thread, seat.as_str()],
         )
         .unwrap();
-        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,?2,?3,1,'pending',0,?4,9223372036854775807,300000)", rusqlite::params![invitation, thread, seat.as_str(), n+1]).unwrap();
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES (?1,?2,?3,1,'pending',0,?4,9223372036854775807,300000,(SELECT id FROM local_node))", rusqlite::params![invitation, thread, seat.as_str(), n+1]).unwrap();
     }
     db.execute(
-        "UPDATE host_instances SET decision_seq=25 WHERE id=?1",
-        [fixture.descriptor.instance_uuid.to_string()],
+        "UPDATE local_node SET decision_seq=25 WHERE id=?1",
+        [fixture.descriptor.node_uuid.to_string()],
     )
     .unwrap();
     drop(db);
     let intents = Journal::open(fixture.root.join("hook-intents")).unwrap();
     let contexts = ContextJournal::open(
         &fixture.root.canonicalize().unwrap(),
-        fixture.descriptor.instance_uuid,
+        fixture.descriptor.node_uuid,
         seat.as_str(),
         Duration::from_millis(500),
     )
+    .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
     .unwrap();
     let execution = Uuid::new_v4();
     // The hook acts as the harness session its payload names (decision 15).
     let seed = OccupantContext {
         format_version: 1,
-        instance: fixture.descriptor.instance_uuid,
+        instance: fixture.descriptor.node_uuid,
         seat: seat.as_str().into(),
         target: "w1:p1".into(),
         harness: Harness::Codex,
@@ -881,10 +885,11 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
     drop(contexts);
     let contexts = ContextJournal::open(
         &fixture.root.canonicalize().unwrap(),
-        fixture.descriptor.instance_uuid,
+        fixture.descriptor.node_uuid,
         seat.as_str(),
         Duration::from_millis(500),
     )
+    .map(|journal| journal.with_host(herdr_threads::test_support::test_host_locator()))
     .unwrap()
     .with_agent_caller(
         seed.clone(),
@@ -988,11 +993,9 @@ fn real_ipc_resolve_preserves_retained_recovery_hold() {
         .unwrap();
     assert_eq!(count, 0);
     let hold: i64 = db
-        .query_row(
-            "SELECT baseline_hold_unclaimed FROM host_instances",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT baseline_hold_unclaimed FROM herdr_hosts", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(hold, 1);
 }
@@ -1007,6 +1010,7 @@ fn real_ipc_late_target_read_cannot_publish_after_newer_invalidation_and_health_
         LocalClient::call(
             &client,
             Command::ResolveSeat(ResolveSeat {
+                host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
                 operation: OperationId::new("late-read"),
             }),
@@ -1028,7 +1032,8 @@ fn real_ipc_late_target_read_cannot_publish_after_newer_invalidation_and_health_
     let admission = fixture
         .store
         .begin_host_observation(
-            &fixture.descriptor.instance_uuid.to_string(),
+            &fixture.descriptor.node_uuid.to_string(),
+            herdr_threads::test_support::test_host_id(),
             &fixture.budget(),
         )
         .unwrap();
@@ -1066,7 +1071,7 @@ fn real_ipc_failed_target_read_freezes_effective_snapshot_without_allocating() {
         ErrorCode::HostUnavailable
     );
     let db = fixture.db();
-    let frozen: (i64,i64) = db.query_row("SELECT invalidation_revision,(SELECT count(*) FROM allocation_decisions) FROM host_instances", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+    let frozen: (i64,i64) = db.query_row("SELECT invalidation_revision,(SELECT count(*) FROM allocation_decisions) FROM herdr_hosts", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
     assert_eq!(frozen, (0, 0));
     // The frozen view is still effective: once Herdr answers, the same target
     // resolves against it.
@@ -1091,7 +1096,7 @@ fn real_ipc_incoherent_target_read_invalidates_effective_snapshot_without_alloca
         ErrorCode::StaleHostObservation
     );
     let db = fixture.db();
-    let invalidated: (i64,i64) = db.query_row("SELECT invalidation_revision,(SELECT count(*) FROM allocation_decisions) FROM host_instances", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+    let invalidated: (i64,i64) = db.query_row("SELECT invalidation_revision,(SELECT count(*) FROM allocation_decisions) FROM herdr_hosts", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
     assert_eq!(invalidated, (1, 0));
 }
 
@@ -1135,10 +1140,10 @@ fn real_ipc_exact_resolution_replay_after_retirement_and_hold_is_historical_with
     // hold protects. One transaction: a pass between the two writes would
     // see the hold with no unresolved seat and lift it.
     let hold = db.unchecked_transaction().unwrap();
-    hold.execute("UPDATE host_instances SET baseline_hold_unclaimed=1", [])
+    hold.execute("UPDATE herdr_hosts SET baseline_hold_unclaimed=1", [])
         .unwrap();
     hold.execute(
-        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at) SELECT 'still-unresolved',instance_id,'unresolved','other','native',1,0 FROM seats WHERE id=?1",
+        "INSERT INTO seats(id,instance_id,state,unresolved_reason,role,generation,created_at,home_node,is_local,host_id) SELECT 'still-unresolved',instance_id,'unresolved','other','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts) FROM seats WHERE id=?1",
         [first.as_str()],
     )
     .unwrap();
@@ -1178,6 +1183,7 @@ fn real_ipc_reused_resolution_key_for_different_target_rejects_before_host_read(
     let result = LocalClient::call(
         &fixture.client(),
         Command::ResolveSeat(ResolveSeat {
+            host: herdr_threads::test_support::test_host_locator(),
             target: HostTargetId::new("w1:p2"),
             operation: OperationId::new("same-key"),
         }),
@@ -1213,11 +1219,8 @@ fn real_cli_resolve_journals_before_submission_and_exact_retry_survives_output_f
         "--state-dir".into(),
         fixture.root.join("state").to_string_lossy().into_owned(),
         "--host-endpoint".into(),
-        fixture
-            .root
-            .join("host.sock")
-            .to_string_lossy()
-            .into_owned(),
+        // The server the fixture daemon attaches.
+        herdr_threads::test_support::TEST_HOST_ENDPOINT.to_owned(),
         "--json".into(),
         "seat".into(),
         "resolve".into(),
@@ -1226,7 +1229,7 @@ fn real_cli_resolve_journals_before_submission_and_exact_retry_survives_output_f
     ];
     let mut failed = FailedFlush(Vec::new());
     assert!(cli::run(argv, &mut failed).is_err());
-    let journal = Journal::open(fixture.paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(fixture.paths.node_dir.join("intents")).unwrap();
     let reference = journal
         .resolve_recovery_ref("local:1")
         .expect("resolve did not retain its private intent before submission");
@@ -1234,7 +1237,7 @@ fn real_cli_resolve_journals_before_submission_and_exact_retry_survives_output_f
     assert_eq!(
         pending.header.scope,
         IntentScope::ServiceAllocation {
-            instance: fixture.descriptor.instance_uuid.to_string(),
+            instance: fixture.descriptor.node_uuid.to_string(),
             target: HostTargetId::new("w1:p1")
         }
     );
@@ -1255,11 +1258,8 @@ fn real_cli_resolve_journals_before_submission_and_exact_retry_survives_output_f
         "--state-dir".into(),
         fixture.root.join("state").to_string_lossy().into_owned(),
         "--host-endpoint".into(),
-        fixture
-            .root
-            .join("host.sock")
-            .to_string_lossy()
-            .into_owned(),
+        // The server the fixture daemon attaches.
+        herdr_threads::test_support::TEST_HOST_ENDPOINT.to_owned(),
         "--json".into(),
         "retry".into(),
         "local:1".into(),
@@ -1295,11 +1295,8 @@ fn real_cli_resolve_discards_intent_only_after_correlated_definitive_rejection()
     use herdr_threads::cli::{self, journal::Journal};
     let fixture = Fixture::new(false);
     let state = fixture.root.join("state").to_string_lossy().into_owned();
-    let host = fixture
-        .root
-        .join("host.sock")
-        .to_string_lossy()
-        .into_owned();
+    // The server the fixture daemon attaches.
+    let host = herdr_threads::test_support::TEST_HOST_ENDPOINT.to_owned();
     let argv = |tail: &[&str]| {
         let mut argv = vec![
             "herdr-threads".to_owned(),
@@ -1318,7 +1315,7 @@ fn real_cli_resolve_discards_intent_only_after_correlated_definitive_rejection()
         let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
         value
     };
-    let journal = Journal::open(fixture.paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(fixture.paths.node_dir.join("intents")).unwrap();
     fixture.host.fail.store(true, Ordering::SeqCst);
     for (mode, code, recovery) in [
         (1, ErrorCode::NotFound, "local:1"),
@@ -1647,14 +1644,15 @@ fn committed_resolution_with_lost_wire_response_retains_exact_intent_for_explici
     use std::os::unix::net::{UnixListener, UnixStream};
 
     let fixture = Fixture::new(false);
-    let journal = Journal::open(fixture.paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(fixture.paths.node_dir.join("intents")).unwrap();
     let semantic = SemanticMutation::ResolveSeat {
+        host: herdr_threads::test_support::test_host_locator(),
         target: HostTargetId::new("w1:p1"),
     };
     let reference = journal
         .record(
             IntentScope::ServiceAllocation {
-                instance: fixture.descriptor.instance_uuid.to_string(),
+                instance: fixture.descriptor.node_uuid.to_string(),
                 target: HostTargetId::new("w1:p1"),
             },
             semantic.clone(),
@@ -1689,7 +1687,7 @@ fn committed_resolution_with_lost_wire_response_retains_exact_intent_for_explici
     let proxy_client = LocalSocketClient::new(
         proxy_path.clone(),
         fixture.clock.clone(),
-        fixture.descriptor.instance_uuid,
+        fixture.descriptor.node_uuid,
         Some(fixture.descriptor.boot_id),
     );
     let lost = LocalClient::call(&proxy_client, command.clone(), &fixture.budget()).unwrap_err();
@@ -1739,6 +1737,7 @@ fn disconnected_short_budget_cannot_commit_queued_resolution_after_writer_unlock
     #[cfg(feature = "test-support")]
     let held_writer = HeldSqliteWriter(&db);
     let command = Command::ResolveSeat(ResolveSeat {
+        host: herdr_threads::test_support::test_host_locator(),
         target: HostTargetId::new("w1:p1"),
         operation: OperationId::new("expired-queued-resolution"),
     });
@@ -1837,23 +1836,23 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
     let successor_literal = format!("successor-search-{}", Uuid::new_v4().simple());
     let db = fixture.db();
     db.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('search-thread',?1,?2,'goal',0,0)",
-        rusqlite::params![fixture.descriptor.instance_uuid.to_string(), literal],
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('search-thread',?1,?2,'goal',0,0,0)",
+        rusqlite::params![fixture.descriptor.node_uuid.to_string(), literal],
     ).unwrap();
     db.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('successor-thread',?1,?2,'goal',0,0)",
-        rusqlite::params![fixture.descriptor.instance_uuid.to_string(), successor_literal],
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('successor-thread',?1,?2,'goal',0,0,0)",
+        rusqlite::params![fixture.descriptor.node_uuid.to_string(), successor_literal],
     ).unwrap();
     db.execute(
-        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('checkin-seat',?1,'resolved','native','w1:p1',0,1,0)",
-        [fixture.descriptor.instance_uuid.to_string()],
+        "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES ('checkin-seat',?1,'resolved','native','w1:p1',0,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
+        [fixture.descriptor.node_uuid.to_string()],
     ).unwrap();
     db.execute(
-        "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('sender',?1,'resolved','native',1,0)",
-        [fixture.descriptor.instance_uuid.to_string()],
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('sender',?1,'resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
+        [fixture.descriptor.node_uuid.to_string()],
     ).unwrap();
     db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq)
-        SELECT 'search-message',id,'search-thread',1,'ordinary','sender','hello',0,1000 FROM host_instances;
+        SELECT 'search-message',id,'search-thread',1,'ordinary','sender','hello',0,1000 FROM local_node;
         INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at)
         VALUES ('search-message','search-thread','checkin-seat','pending',300000,0,9223372036854775807);
         UPDATE threads SET next_sequence=2 WHERE id='search-thread';").unwrap();
@@ -1887,7 +1886,8 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         CommandResult::Health(_)
     ));
     let claim = CallerClaim {
-        instance: fixture.descriptor.instance_uuid.to_string(),
+        host: herdr_threads::test_support::test_host_locator(),
+        instance: fixture.descriptor.node_uuid.to_string(),
         seat: SeatId::new("checkin-seat"),
         binding_generation: 0,
         role: CallerRole::TopLevel,
@@ -1923,6 +1923,7 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         messages: vec![MessageId::new("search-message")],
         operation: OperationId::new("ack-during-held-search"),
         claim: CallerClaim {
+            host: herdr_threads::test_support::test_host_locator(),
             binding_generation: 0,
             ..claim
         },
@@ -1983,8 +1984,8 @@ fn composed_search_admits_one_active_four_waiters_and_releases_all_slots() {
     let fixture = Fixture::new(false);
     let literal = format!("queue-search-{}", Uuid::new_v4().simple());
     fixture.db().execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('queue-thread',?1,?2,'goal',0,0)",
-        rusqlite::params![fixture.descriptor.instance_uuid.to_string(), literal],
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('queue-thread',?1,?2,'goal',0,0,0)",
+        rusqlite::params![fixture.descriptor.node_uuid.to_string(), literal],
     ).unwrap();
     let query = Command::Search(SearchQuery {
         literal: literal.clone(),
@@ -2072,6 +2073,7 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
     fixture.host.overlap_allowed.store(true, Ordering::SeqCst);
     fixture.host.snapshot_held.store(true, Ordering::SeqCst);
     let request = ResolveSeat {
+        host: herdr_threads::test_support::test_host_locator(),
         target: HostTargetId::new("w1:p1"),
         operation: OperationId::new("historical-resolve"),
     };
@@ -2087,7 +2089,8 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
         std::thread::sleep(Duration::from_millis(5));
     }
     let identity = OrdinaryIdentity::new(
-        fixture.descriptor.instance_uuid.to_string(),
+        fixture.descriptor.node_uuid.to_string(),
+        herdr_threads::test_support::test_host_id(),
         fixture.store.clone(),
         fixture.host.clone(),
         fixture.clock.clone(),
@@ -2098,7 +2101,7 @@ fn identity_final_currentness_check_uses_new_admitted_read_and_rejects_existing_
         .unwrap();
     assert_eq!(fixture.host.calls.load(Ordering::SeqCst), 2);
     let db = fixture.db();
-    db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES (?1,'w1:p1','host',1,'repair')", [fixture.descriptor.instance_uuid.to_string()]).unwrap();
+    db.execute("INSERT INTO recovery_holds(host_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ((SELECT min(host_id) FROM herdr_hosts WHERE node_id=?1),'w1:p1','host',1,'repair')", [fixture.descriptor.node_uuid.to_string()]).unwrap();
     // Exact resolution replay still returns historical data; the independent
     // check must reject the active hold without treating replay as authority.
     assert_eq!(
@@ -2132,7 +2135,7 @@ fn elected_snapshot_driver_establishes_baseline_before_real_ipc_resolution() {
         let baseline: Option<String> = fixture
             .db()
             .query_row(
-                "SELECT recovery_baseline_generation_id FROM host_instances",
+                "SELECT recovery_baseline_generation_id FROM herdr_hosts",
                 [],
                 |r| r.get(0),
             )
@@ -2173,7 +2176,7 @@ fn elected_failed_partial_unknown_captures_cannot_create_allocation_baseline() {
         }
         let db = fixture.db();
         for n in 0..17 {
-            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![format!("denied-{n}"),fixture.descriptor.instance_uuid.to_string(),format!("missing-{n}")]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![format!("denied-{n}"),fixture.descriptor.node_uuid.to_string(),format!("missing-{n}")]).unwrap();
         }
         fixture.host.snapshot_mode.store(mode, Ordering::SeqCst);
         fixture.host.snapshot_held.store(false, Ordering::SeqCst);
@@ -2221,7 +2224,7 @@ fn elected_failed_partial_unknown_captures_cannot_create_allocation_baseline() {
         assert!(fixture.resolve("denied-baseline").is_err());
         let baseline: Option<String> = db
             .query_row(
-                "SELECT recovery_baseline_generation_id FROM host_instances",
+                "SELECT recovery_baseline_generation_id FROM herdr_hosts",
                 [],
                 |r| r.get(0),
             )
@@ -2249,11 +2252,11 @@ fn elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join() 
         assert!(std::time::Instant::now() < until);
         std::thread::sleep(Duration::from_millis(5));
     }
-    let instance = fixture.descriptor.instance_uuid.to_string();
+    let instance = fixture.descriptor.node_uuid.to_string();
     let db = fixture.db();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('due',?1,'unresolved','native',1,0)", [&instance]).unwrap();
-    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('due-thread',?1,'topic','goal',0,0)", [&instance]).unwrap();
-    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('due-thread','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('due-inv','due-thread','due',1,'pending',0,1,100,100);").unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('due',?1,'unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", [&instance]).unwrap();
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('due-thread',?1,'topic','goal',0,0,0)", [&instance]).unwrap();
+    db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state) VALUES ('due-thread','due','invited'); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,origin_node) VALUES ('due-inv','due-thread','due',1,'pending',0,1,100,100,(SELECT id FROM local_node));").unwrap();
     assert!(matches!(
         LocalClient::call(&fixture.client(), Command::Health, &fixture.budget()).unwrap(),
         CommandResult::Health(_)
@@ -2290,16 +2293,16 @@ fn elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join() 
     ));
     std::thread::sleep(Duration::from_millis(50));
     assert!(!fixture.daemon.as_ref().unwrap().is_finished());
-    assert!(OwnerLock::acquire(&fixture.paths).is_err());
+    assert!(OwnerLock::acquire_with_test_hint(&fixture.paths).is_err());
     fixture.host.snapshot_held.store(false, Ordering::SeqCst);
     assert!(fixture.daemon.take().unwrap().join().unwrap().unwrap());
     let active: Option<String> = db
-        .query_row("SELECT active_snapshot_id FROM host_instances", [], |r| {
+        .query_row("SELECT active_snapshot_id FROM herdr_hosts", [], |r| {
             r.get(0)
         })
         .unwrap();
     assert!(active.is_none(), "cancelled capture published a baseline");
-    assert!(OwnerLock::acquire(&fixture.paths).is_ok());
+    assert!(OwnerLock::acquire_with_test_hint(&fixture.paths).is_ok());
 }
 
 #[test]
@@ -2318,6 +2321,7 @@ fn elected_snapshot_and_target_captures_share_one_lane_and_dirty_refresh() {
             LocalClient::call(
                 &client,
                 Command::ResolveSeat(ResolveSeat {
+                    host: herdr_threads::test_support::test_host_locator(),
                     target: HostTargetId::new("w1:p1"),
                     operation: OperationId::new("ordered"),
                 }),
@@ -2355,7 +2359,7 @@ fn elected_driver_reconciles_multiple_saved_pages_and_reopens_with_fresh_capture
     }
     let db = fixture.db();
     for n in 0..33 {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![format!("saved-{n}"),fixture.descriptor.instance_uuid.to_string(),format!("missing-{n}")]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,home_node,is_local,host_id) VALUES (?1,?2,'resolved','native',?3,1,1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![format!("saved-{n}"),fixture.descriptor.node_uuid.to_string(),format!("missing-{n}")]).unwrap();
     }
     fixture.host.snapshot_held.store(false, Ordering::SeqCst);
     loop {
@@ -2387,7 +2391,7 @@ fn elected_driver_reconciles_multiple_saved_pages_and_reopens_with_fresh_capture
         "missing structural proof supplied absence authority"
     );
     let previous: String = db
-        .query_row("SELECT active_snapshot_id FROM host_instances", [], |r| {
+        .query_row("SELECT active_snapshot_id FROM herdr_hosts", [], |r| {
             r.get(0)
         })
         .unwrap();
@@ -2397,7 +2401,7 @@ fn elected_driver_reconciles_multiple_saved_pages_and_reopens_with_fresh_capture
     let until = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let current: Option<String> = db
-            .query_row("SELECT active_snapshot_id FROM host_instances", [], |r| {
+            .query_row("SELECT active_snapshot_id FROM herdr_hosts", [], |r| {
                 r.get(0)
             })
             .unwrap();
@@ -2428,7 +2432,15 @@ fn elected_driver_periodically_refreshes_without_target_requests() {
     let fixture = Fixture::start(false, false, 0);
     let until = std::time::Instant::now() + Duration::from_secs(30);
     loop {
-        let published: Option<i64> = fixture.db().query_row("SELECT observation_sequence FROM host_instances WHERE active_snapshot_id IS NOT NULL", [], |r| r.get(0)).optional().unwrap();
+        let published: Option<i64> = fixture
+            .db()
+            .query_row(
+                "SELECT observation_sequence FROM herdr_hosts WHERE active_snapshot_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
         if published.is_some_and(|sequence| sequence >= 3) {
             break;
         }
@@ -2456,7 +2468,8 @@ fn quiesced_identity(
     assert!(fixture.daemon.take().unwrap().join().unwrap().unwrap());
     let writer = Arc::new(FairWriter::new(32));
     let identity = OrdinaryIdentity::new(
-        fixture.descriptor.instance_uuid.to_string(),
+        fixture.descriptor.node_uuid.to_string(),
+        herdr_threads::test_support::test_host_id(),
         fixture.store.clone(),
         fixture.host.clone(),
         fixture.clock.clone(),
@@ -2497,6 +2510,7 @@ fn queued_incoherent_compensation<'w>(
     let worker = std::thread::spawn(move || {
         let _ = done.send(identity.resolve(
             ResolveSeat {
+                host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
                 operation,
             },
@@ -2530,11 +2544,9 @@ fn queued_incoherent_compensation<'w>(
 fn invalidation_revision(fixture: &Fixture) -> i64 {
     fixture
         .db()
-        .query_row(
-            "SELECT invalidation_revision FROM host_instances",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT invalidation_revision FROM herdr_hosts", [], |r| {
+            r.get(0)
+        })
         .unwrap()
 }
 
@@ -2650,6 +2662,7 @@ fn elected_shutdown_is_not_held_by_invalidation_compensation() {
         let _ = answered.send(LocalClient::call(
             &client,
             Command::ResolveSeat(ResolveSeat {
+                host: herdr_threads::test_support::test_host_locator(),
                 target: HostTargetId::new("w1:p1"),
                 operation: OperationId::new("elected-shutdown-read"),
             }),
@@ -2840,8 +2853,8 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
     };
     let db = fixture.db();
     db.execute(
-        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('handoff',?1,'topic','goal',0,0)",
-        [fixture.descriptor.instance_uuid.to_string()],
+        "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('handoff',?1,'topic','goal',0,0,0)",
+        [fixture.descriptor.node_uuid.to_string()],
     )
     .unwrap();
     let invited = LocalClient::call(
@@ -2893,11 +2906,12 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
     .expect("setup claude");
 
     let client = fixture.client();
-    let journal = Journal::open(fixture.paths.instance_dir.join("intents")).unwrap();
+    let journal = Journal::open(fixture.paths.node_dir.join("intents")).unwrap();
     let resolver = DaemonSeatResolver::new(
         &client,
         &journal,
-        fixture.descriptor.instance_uuid,
+        fixture.descriptor.node_uuid,
+        herdr_threads::test_support::test_host_locator(),
         fixture.clock.as_ref(),
     );
     // No configuration exports from this pane shell.
@@ -2924,7 +2938,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
                 seats: &resolver,
                 handoff: &client,
                 clock: fixture.clock.as_ref(),
-                record_dir: Some(&fixture.paths.instance_dir),
+                record_dir: Some(&fixture.paths.node_dir),
                 shell_probe: &NoShell,
             },
         )
@@ -2970,6 +2984,6 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
         .unwrap();
     assert_eq!(provenance, "managed_launch");
     assert_eq!(registered_at, None);
-    let records = fs::read_to_string(fixture.paths.instance_dir.join("launches.jsonl")).unwrap();
+    let records = fs::read_to_string(fixture.paths.node_dir.join("launches.jsonl")).unwrap();
     assert_eq!(records.lines().count(), 2);
 }

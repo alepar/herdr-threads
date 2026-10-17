@@ -17,12 +17,13 @@
 use super::{
     OutputSpec, detail_argv, format_command_argv, needs_terminal_escape, other_day, text_json,
 };
+use crate::protocol::sync_admin::{StatusReply, SyncReply};
 use crate::protocol::{
     pagination::Page,
     results::{
         CheckInResult, CommandResult, InboxBatchItem, InboxBatchV2Item, InboxItem, MessageContent,
-        MessageDetails, MessageKind, MessageSummary, Participant, PendingReceipt, ThreadDetails,
-        WarningRef,
+        MessageDetails, MessageKind, MessageSummary, Participant, PendingReceipt,
+        PresenceAvailability, ThreadDetails, WarningRef,
     },
     service::EventAuthor,
     time::UtcMillis,
@@ -366,6 +367,7 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
             for participant in &page.items {
                 participant_row(participant, &mut out);
             }
+            unreachable_lines(&page.items, &mut out);
             next("next", page, &mut out);
         }
         CommandResult::Thread(details) => thread(details, &mut out),
@@ -390,6 +392,7 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
             joined.thread.as_str(),
             joined.seat.as_str()
         )),
+        CommandResult::Sync(reply) => sync_reply(reply, spec, &mut out),
         _ => return None,
     }
     Some(out)
@@ -758,11 +761,15 @@ fn participant_row(participant: &Participant, out: &mut String) {
             snake(&participant.physical_state)
         ));
     }
-    out.push_str(if participant.active {
-        " active"
-    } else {
-        " inactive"
-    });
+    out.push_str(
+        if participant.availability == Some(PresenceAvailability::Remote) {
+            " remote"
+        } else if participant.active {
+            " active"
+        } else {
+            " inactive"
+        },
+    );
     if participant.is_self {
         out.push_str(" self");
     }
@@ -785,6 +792,19 @@ fn participant_row(participant: &Participant, out: &mut String) {
         out.push_str(&format!(" cleanup:{}", snake(cleanup)));
     }
     out.push('\n');
+}
+
+/// `node TAG unreachable since TIME` (`node TAG unreachable` when no contact
+/// was ever recorded), one per unreachable home node, after the seat rows;
+/// about 40 bytes each and nothing when every home node is reachable.
+fn unreachable_lines(items: &[Participant], out: &mut String) {
+    for home in items.iter().filter_map(|p| p.home_unreachable.as_ref()) {
+        out.push_str(&format!("node {} unreachable", home.tag));
+        if let Some(since) = home.since {
+            out.push_str(&format!(" since {}", clock(since)));
+        }
+        out.push('\n');
+    }
 }
 
 fn thread(details: &ThreadDetails, out: &mut String) {
@@ -840,6 +860,7 @@ fn thread(details: &ThreadDetails, out: &mut String) {
     for participant in &details.participants.items {
         participant_row(participant, out);
     }
+    unreachable_lines(&details.participants.items, out);
     next("participants.next", &details.participants, out);
 }
 
@@ -1003,6 +1024,260 @@ fn message_body(details: &MessageDetails, out: &mut String) {
             }
         }
     }
+}
+
+/// How long ago `at_ms` was at `now_ms`, in the largest whole unit.
+fn age(now_ms: i64, at_ms: i64) -> String {
+    let secs = (now_ms.saturating_sub(at_ms) / 1000).max(0);
+    match secs {
+        0..=119 => format!("{secs}s"),
+        120..=7_199 => format!("{}m", secs / 60),
+        7_200..=172_799 => format!("{}h", secs / 3_600),
+        _ => format!("{}d", secs / 86_400),
+    }
+}
+
+/// `-` for an absent number.
+fn opt_num(value: Option<u64>) -> String {
+    value.map_or_else(|| "-".to_owned(), |n| n.to_string())
+}
+
+/// The compact form of the sync operator and status replies (ht-5fr.8): one
+/// row per item, service-generated fields first, operator- or peer-supplied
+/// text only after the first `": "` and escaped to one line.
+fn sync_reply(reply: &SyncReply, spec: &OutputSpec, out: &mut String) {
+    use std::fmt::Write as _;
+    match reply {
+        SyncReply::PeerAdded {
+            target_id,
+            ssh_dest,
+        } => {
+            let _ = writeln!(out, "peer_added {target_id}: {}", one_line(ssh_dest));
+        }
+        SyncReply::PeerForgotten { disabled } => {
+            let _ = writeln!(out, "peer_forgotten {disabled}");
+        }
+        SyncReply::Peers { rows, discovery } => {
+            out.push_str("peers\n");
+            if let Some(state) = discovery {
+                let _ = writeln!(out, "discovery {state}");
+            }
+            if rows.is_empty() {
+                out.push_str("empty\n");
+            }
+            for row in rows {
+                let state = match &row.stopped_reason {
+                    Some(reason) => format!("{}/{reason}", row.state),
+                    None => row.state.clone(),
+                };
+                let _ = write!(
+                    out,
+                    "peer {} {state} {}{} node={} reach={} attempts={}: {}",
+                    row.target_id,
+                    row.source,
+                    if row.enabled { "" } else { " off" },
+                    row.node.as_deref().unwrap_or("-"),
+                    row.reach,
+                    row.attempts,
+                    one_line(&row.ssh_dest)
+                );
+                if let Some(command) = &row.remote_command {
+                    let _ = write!(out, " cmd={}", one_line(command));
+                }
+                if let Some(error) = &row.last_error {
+                    let _ = write!(out, " err={}", one_line(error));
+                }
+                out.push('\n');
+            }
+        }
+        SyncReply::Status(status) => sync_status(status, out),
+        SyncReply::Verified { violations } => {
+            if violations.is_empty() {
+                out.push_str("verify ok\n");
+            } else {
+                let _ = writeln!(out, "verify violations={}", violations.len());
+            }
+            for violation in violations {
+                let _ = writeln!(
+                    out,
+                    "violation {} {} counter={}: {}",
+                    violation.invariant,
+                    violation.log.as_deref().unwrap_or("-"),
+                    opt_num(violation.counter),
+                    one_line(&violation.detail)
+                );
+            }
+        }
+        SyncReply::Unapplied(page) => {
+            let _ = writeln!(
+                out,
+                "unapplied parked_unknown={} parked_dep={} failed={}",
+                page.parked_unknown, page.parked_dep, page.failed
+            );
+            for row in &page.rows {
+                let _ = write!(
+                    out,
+                    "{} {} #{} {} {}",
+                    row.ingest_seq,
+                    token(&row.log),
+                    row.counter,
+                    token(&row.kind),
+                    row.state
+                );
+                if let Some(detail) = &row.detail {
+                    let _ = write!(out, ": {}", one_line(detail));
+                }
+                out.push('\n');
+            }
+            if let Some(after) = page.next_after {
+                out.push_str("next: ");
+                out.push_str(&format_command_argv(&detail_argv(
+                    spec,
+                    &["sync", "unapplied", "list", "--after", &after.to_string()],
+                )));
+                out.push('\n');
+            }
+        }
+        SyncReply::Replayed(replay) => {
+            let _ = writeln!(
+                out,
+                "replayed attempted={} applied={} more={}",
+                replay.attempted,
+                replay.applied,
+                if replay.has_more { "yes" } else { "no" }
+            );
+            if replay.has_more {
+                out.push_str("next: ");
+                out.push_str(&format_command_argv(&detail_argv(
+                    spec,
+                    &["sync", "unapplied", "replay"],
+                )));
+                out.push('\n');
+            }
+        }
+        SyncReply::ResyncRequested { from } => {
+            let _ = writeln!(
+                out,
+                "resync_requested: daemon stops now; the next start rebuilds the store from {}",
+                one_line(from)
+            );
+        }
+        SyncReply::CloneCleared { cleared } => {
+            let _ = writeln!(out, "clone_cleared {cleared}");
+        }
+    }
+}
+
+fn sync_status(status: &StatusReply, out: &mut String) {
+    use std::fmt::Write as _;
+    let now = super::render_now().0;
+    out.push_str("sync_status\n");
+    if let Some(state) = &status.discovery {
+        let _ = writeln!(out, "discovery {state}");
+    }
+    for log in &status.logs {
+        let _ = writeln!(
+            out,
+            "log {}/{}{} counter={} head={} applied={} parked={}+{} failed={} frozen={} lag={} skew_ms={}",
+            log.node,
+            log.incarnation,
+            if log.is_self { " self" } else { "" },
+            log.counter,
+            log.head,
+            log.applied_through,
+            log.parked_unknown,
+            log.parked_dep,
+            log.failed,
+            opt_num(log.frozen_at),
+            opt_num(log.lag),
+            log.skew_ahead_ms
+        );
+    }
+    if status.logs_omitted > 0 {
+        let _ = writeln!(
+            out,
+            "logs_omitted {}: narrow with --log NODE",
+            status.logs_omitted
+        );
+    }
+    if status.coordinator_unavailable {
+        out.push_str("links unavailable: the sync coordinator did not answer\n");
+    }
+    for link in &status.links {
+        let _ = write!(
+            out,
+            "link {} {} {} rx_logs={} unsolicited={}",
+            link.node, link.mode, link.role, link.rx_logs, link.unsolicited
+        );
+        let mut sep = ":";
+        if let Some(dest) = &link.dest {
+            let _ = write!(out, "{sep} {}", one_line(dest));
+            sep = "";
+        }
+        if let Some(error) = &link.last_error {
+            let _ = write!(
+                out,
+                "{}{} err={}",
+                sep,
+                if sep.is_empty() { "" } else { " " },
+                one_line(error)
+            );
+        }
+        out.push('\n');
+    }
+    for log in &status.paused_logs {
+        let _ = writeln!(out, "paused {log}");
+    }
+    for repair in &status.repairs {
+        let _ = writeln!(
+            out,
+            "repair {} frozen={} origin={} evidence={} branches={} reissued={} pending={}",
+            repair.log,
+            opt_num(repair.frozen_at),
+            repair.origin.as_deref().unwrap_or("-"),
+            repair.evidence,
+            repair.branches,
+            repair.reissued,
+            repair.pending
+        );
+    }
+    for log in &status.lineage_branches {
+        let _ = writeln!(out, "lineage_branch {log}");
+    }
+    for log in &status.own_unknown_newer {
+        let _ = writeln!(out, "own_unknown_newer {log}");
+    }
+    if let Some(log) = &status.restore_successor {
+        let _ = writeln!(out, "restore_successor {log}");
+    }
+    for row in &status.evidence {
+        let _ = write!(
+            out,
+            "clone_evidence {} {} subject={}",
+            row.ev_ix, row.kind, row.subject
+        );
+        if let Some(log) = &row.log {
+            let _ = write!(out, " log={log}");
+        }
+        let _ = writeln!(
+            out,
+            " detected={} seen={}: {}",
+            age(now, row.detected_at),
+            age(now, row.last_seen_at),
+            one_line(&row.detail)
+        );
+    }
+    for remedy in &status.remedies {
+        let _ = writeln!(out, "remedy: {}", one_line(remedy));
+    }
+    let _ = writeln!(
+        out,
+        "store bytes={} headroom_until={}",
+        status.store_bytes,
+        status
+            .headroom_until
+            .map_or_else(|| "-".to_owned(), |until| until.to_string())
+    );
 }
 
 #[cfg(test)]

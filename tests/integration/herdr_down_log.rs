@@ -2,7 +2,7 @@
 //! one first-occurrence line per error class plus capped summaries in
 //! daemon.log (never the shared server, never a line per backoff step).
 use herdr_threads::{
-    daemon::paths::{InstancePaths, RuntimeContext},
+    daemon::paths::{NodePaths, RuntimeContext},
     test_support::isolated_herdr::IsolatedHerdr,
 };
 use std::{
@@ -62,8 +62,8 @@ impl Scratch {
     fn daemon_log(&self) -> String {
         let context =
             RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap();
-        let paths = InstancePaths::resolve(&context).unwrap();
-        fs::read_to_string(paths.instance_dir.join("daemon.log")).unwrap_or_default()
+        let paths = NodePaths::resolve(&context.state_dir).unwrap();
+        fs::read_to_string(paths.node_dir.join("daemon.log")).unwrap_or_default()
     }
 }
 impl Drop for Scratch {

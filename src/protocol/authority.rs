@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct CallerClaim {
     pub instance: String,
+    /// The Herdr server of the calling pane. Cooperative context like the rest of the claim, not
+    /// attestation: the daemon compares it with fences and handoff namespaces and attaches the
+    /// server lazily, it never trusts it as proof of where the caller runs.
+    pub host: HostLocator,
     pub seat: SeatId,
     pub binding_generation: u64,
     pub role: CallerRole,
@@ -105,6 +109,8 @@ pub const COOPERATIVE_MOD_DELIVERY_PROVENANCE: &str = "cooperative_mod_delivery"
 /// `DeliveryPull` and the hook reported found in the session's transcript
 /// (delivery-policy DP5/DP6). Not proof of reading.
 pub const COOPERATIVE_HOOK_DELIVERY_PROVENANCE: &str = "cooperative_hook_delivery";
+/// Complete native-hook context was written and flushed. Not transcript or cognition proof.
+pub const COOPERATIVE_HOOK_CONTEXT_PROVENANCE: &str = "cooperative_hook_context";
 
 /// TRUST-POLICY A3: a plain cooperative call enrolled its session's binding (and a Codex or
 /// Hermes subagent attached to its parent) from the harness environment, without a hook.
@@ -229,6 +235,7 @@ pub struct DecisionFence {
 pub struct CooperativeDecisionFence {
     pub now: MonoInstant,
     pub instance: String,
+    pub host: HostLocator,
     pub seat: SeatId,
     pub target: HostTargetId,
     pub mapping_revision: u64,
@@ -367,6 +374,7 @@ impl MutationPermit {
         let claim = &self.claim;
         if claim.role != CallerRole::TopLevel
             || claim.instance != fence.instance
+            || claim.host != fence.host
             || claim.seat != fence.seat
             || claim.target != fence.target
             || claim.binding_generation != fence.binding_generation
@@ -473,6 +481,7 @@ mod tests {
     fn cooperative_permit_is_payload_bound_expires_and_single_use() {
         let claim = CallerClaim {
             instance: "i".into(),
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s"),
             binding_generation: 0,
             role: CallerRole::TopLevel,
@@ -499,6 +508,7 @@ mod tests {
         let mut fence = CooperativeDecisionFence {
             now: MonoInstant(350),
             instance: "i".into(),
+            host: claim.host.clone(),
             seat: claim.seat.clone(),
             target: claim.target.clone(),
             mapping_revision: 0,
@@ -548,6 +558,7 @@ mod tests {
     fn base_claim() -> CallerClaim {
         CallerClaim {
             instance: "i".into(),
+            host: crate::test_support::test_host_locator(),
             seat: SeatId::new("s"),
             binding_generation: 0,
             role: CallerRole::TopLevel,
@@ -558,6 +569,52 @@ mod tests {
             agent_id: None,
             liveness: None,
         }
+    }
+
+    #[test]
+    fn consume_cooperative_refuses_changed_host() {
+        let claim = base_claim();
+        let obligation = ObligationRef::CheckIn(claim.seat.clone());
+        let mut permit = MutationPermit::cooperative(
+            claim.clone(),
+            OperationId::new("op"),
+            obligation.clone(),
+            [7; 32],
+            MonoInstant(100),
+            (0, 3),
+            CallBudget {
+                deadline: MonoInstant(1000),
+                cancellation: Default::default(),
+            },
+        );
+        let mut fence = CooperativeDecisionFence {
+            now: MonoInstant(150),
+            instance: claim.instance.clone(),
+            host: HostLocator::parse("/tmp/other-herdr.sock").unwrap(),
+            seat: claim.seat.clone(),
+            target: claim.target.clone(),
+            mapping_revision: 0,
+            binding_generation: 0,
+            invalidation_revision: 3,
+            known_invalidated: false,
+        };
+        assert_eq!(
+            permit.consume_cooperative(&fence, &OperationId::new("op"), &obligation, &[7; 32]),
+            Err("cooperative context changed")
+        );
+        fence.host = claim.host.clone();
+        assert!(
+            permit
+                .consume_cooperative(&fence, &OperationId::new("op"), &obligation, &[7; 32])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn claim_without_host_fails_to_deserialize() {
+        let mut value = serde_json::to_value(base_claim()).unwrap();
+        assert!(value.as_object_mut().unwrap().remove("host").is_some());
+        assert!(serde_json::from_value::<CallerClaim>(value).is_err());
     }
 
     #[test]

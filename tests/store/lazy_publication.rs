@@ -30,17 +30,16 @@ fn budget() -> CallBudget {
 /// A store with one joined cooperative sender `a` in thread `t`, rooted in a
 /// private isolation directory.
 fn setup(iso: &TestIsolation) -> (StoreContext, Connection) {
-    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host();
     let conn = context.open_writer().unwrap();
-    conn.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
-        [],
+    conn.execute_batch(
+        "UPDATE herdr_hosts SET host_boot='b',host_epoch=1; UPDATE local_node SET decision_seq=1",
     )
     .unwrap();
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('a','i','resolved','native','pa',1,1,0,1)", []).unwrap();
-    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pa','b',1,1,0,'fresh','term-pa','inc','coherent_enumeration',1)", []).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode,home_node,is_local,host_id) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native','pa',1,1,0,1,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
+    conn.execute("INSERT INTO observed_targets(host_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ((SELECT min(host_id) FROM herdr_hosts),'pa','b',1,1,0,'fresh','term-pa','inc','coherent_enumeration',1)", []).unwrap();
     conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('a',1,'pa','b',1,1,'codex','n','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',0,'term-pa','inc')", []).unwrap();
-    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,journaled) VALUES ('t','34750f98bd59fcfc946da45aaabe933b','topic','goal',0,0,0)", []).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','a','joined')",
         [],
@@ -65,7 +64,8 @@ fn send_request() -> SendMessage {
         deadline_millis: None,
         operation: OperationId::new("op"),
         claim: CallerClaim {
-            instance: "i".into(),
+            host: herdr_threads::test_support::test_host_locator(),
+            instance: "34750f98bd59fcfc946da45aaabe933b".into(),
             seat: SeatId::new("a"),
             binding_generation: 1,
             role: CallerRole::TopLevel,
@@ -84,8 +84,8 @@ fn send_request() -> SendMessage {
 fn permit(iso: &TestIsolation, request: &SendMessage) -> MutationPermit {
     use herdr_threads::ports::StorePort;
     let store = herdr_threads::store::SqliteStore::new(
-        StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)),
-        "i",
+        StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)).with_test_host(),
+        "34750f98bd59fcfc946da45aaabe933b",
         Default::default(),
     )
     .unwrap();
@@ -172,7 +172,7 @@ fn lazy_publication_rejects_ack_and_deadline_before_preparation() {
 fn lazy_publication_creates_no_receipt_warning_or_attention() {
     let iso = TestIsolation::new("lazy-no-attention");
     let (context, mut conn) = setup(&iso);
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('b','i','unresolved','native',1,0)",[]).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES('b','34750f98bd59fcfc946da45aaabe933b','unresolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[]).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES('t','b','joined')",
         [],
@@ -300,7 +300,7 @@ fn lazy_publication_notes_attention_only_for_wake_on_all_recipients() {
 }
 
 fn member(conn: &Connection, seat: &str, state: &str, membership: &str) {
-    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES(?1,'i',?2,'native',1,0,CASE WHEN ?2='retired' THEN 0 END,CASE WHEN ?2='retired' THEN 1 END)", rusqlite::params![seat,state]).unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq,home_node,is_local,host_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b',?2,'native',1,0,CASE WHEN ?2='retired' THEN 0 END,CASE WHEN ?2='retired' THEN 1 END,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", rusqlite::params![seat,state]).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES('t',?1,?2)",
         rusqlite::params![seat, membership],
@@ -513,10 +513,12 @@ fn ordinary_publication_positive_control() {
 #[test]
 fn lazy_publication_fences_every_canonical_revision() {
     for (table, column) in [
-        ("threads", "timeline_revision"),
-        ("host_instances", "lifecycle_revision"),
-        ("host_instances", "send_eligibility_revision"),
-        ("host_instances", "duration_config_revision"),
+        // The timeline revision fences only preparations with warnings (ht-5fr.4.17); that
+        // and its absence for a lazy send are asserted in `send_fence.rs`.
+        ("threads", "membership_revision"),
+        ("herdr_hosts", "lifecycle_revision"),
+        ("local_node", "send_eligibility_revision"),
+        ("local_node", "duration_config_revision"),
     ] {
         let iso = TestIsolation::new("lazy-fence");
         let (context, mut conn) = setup(&iso);
@@ -573,14 +575,23 @@ fn seat_pending(conn: &Connection, seat: &SeatId) -> Vec<MessageId> {
     use herdr_threads::store::lazy_delivery::{RowFilter, seek_pending};
     let dh: i64 = conn
         .query_row(
-            "SELECT decision_seq FROM host_instances WHERE id='i'",
+            "SELECT decision_seq FROM local_node WHERE id='34750f98bd59fcfc946da45aaabe933b'",
             [],
             |r| r.get(0),
         )
         .unwrap();
     let (mut after, mut out) = (None, Vec::new());
     loop {
-        let seek = seek_pending(conn, "i", seat, RowFilter::Seat, after, dh as u64, 100).unwrap();
+        let seek = seek_pending(
+            conn,
+            "34750f98bd59fcfc946da45aaabe933b",
+            seat,
+            RowFilter::Seat,
+            after,
+            dh as u64,
+            100,
+        )
+        .unwrap();
         out.extend(seek.row.map(|(_, recipient)| recipient.message));
         after = seek.position;
         if seek.exhausted {

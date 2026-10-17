@@ -50,6 +50,8 @@ pub const MESSAGE_DELIVERY_MODES: &str = "messages.delivery_modes_v1";
 /// Lazy rows in the attention digest (`AttentionDigestQuery.lazy`) and
 /// `CompleteInboxDelivery.via = hook_context` (standard hook inbox pages).
 pub const LAZY_HOOK_DELIVERY: &str = "hook.lazy_delivery_v1";
+/// Complete native-hook bodies settle exact existing receipt obligations.
+pub const HOOK_CONTEXT_RECEIPTS_V1: &str = "hook.context_receipts_v1";
 
 /// Per-binding inbox stream: `InboxQuery.claim` selects the reading binding's cursors and
 /// `Command::AdvanceCursors` moves them (ht-54r.7).
@@ -138,6 +140,7 @@ pub const ADVERTISED: &[&str] = &[
     SEAT_WAKE_ON_V1,
     DELIVERY_PULL,
     LAZY_HOOK_DELIVERY,
+    HOOK_CONTEXT_RECEIPTS_V1,
     DELIVERY_PRESENTATION_V2,
     BINDING_CURSORS,
     BINDING_DIGEST,

@@ -1007,8 +1007,8 @@ fn read_capped(path: &Path) -> Option<Vec<u8>> {
 }
 
 /// The cache directory for an instance directory.
-pub fn cache_dir(instance_dir: &Path) -> PathBuf {
-    instance_dir.join(CACHE_DIR)
+pub fn cache_dir(node_dir: &Path) -> PathBuf {
+    node_dir.join(CACHE_DIR)
 }
 
 /// Read `meta.json` from a cache directory (defaults when absent or bad).

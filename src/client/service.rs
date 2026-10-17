@@ -410,7 +410,7 @@ struct Session {
 pub struct PersistentServiceClient {
     path: PathBuf,
     clock: Arc<dyn Clock>,
-    instance: Uuid,
+    instance: crate::node::NodeUuid,
     expected_boot: Option<Uuid>,
     journal: ServiceIntentJournal,
     session: Mutex<Option<Session>>,
@@ -419,7 +419,7 @@ impl PersistentServiceClient {
     pub fn new(
         path: PathBuf,
         clock: Arc<dyn Clock>,
-        instance: Uuid,
+        instance: crate::node::NodeUuid,
         expected_boot: Option<Uuid>,
         journal: ServiceIntentJournal,
     ) -> Self {
@@ -950,7 +950,7 @@ mod tests {
     };
     use tokio::net::UnixListener;
 
-    const INSTANCE: &str = "123e4567-e89b-12d3-a456-426614174000";
+    const INSTANCE: &str = "123e4567e89b12d3a456426614174000";
     const BOOT: &str = "123e4567-e89b-12d3-a456-426614174001";
     const OTHER_BOOT: &str = "123e4567-e89b-12d3-a456-426614174002";
 
@@ -994,7 +994,7 @@ mod tests {
         PersistentServiceClient::new(
             socket,
             Arc::new(FixedClock),
-            Uuid::parse_str(INSTANCE).unwrap(),
+            crate::node::NodeUuid::parse_str(INSTANCE).unwrap(),
             None,
             ServiceIntentJournal::open(root).unwrap(),
         )
@@ -1105,7 +1105,7 @@ mod tests {
         let client = Arc::new(PersistentServiceClient::new(
             socket,
             progress.clone(),
-            Uuid::parse_str(INSTANCE).unwrap(),
+            crate::node::NodeUuid::parse_str(INSTANCE).unwrap(),
             None,
             ServiceIntentJournal::open(root.join("intents")).unwrap(),
         ));
@@ -1208,7 +1208,7 @@ mod tests {
         let client = Arc::new(PersistentServiceClient::new(
             root.join("unused-socket"),
             clock.clone(),
-            Uuid::parse_str(INSTANCE).unwrap(),
+            crate::node::NodeUuid::parse_str(INSTANCE).unwrap(),
             None,
             ServiceIntentJournal::open(root.join("intents")).unwrap(),
         ));
