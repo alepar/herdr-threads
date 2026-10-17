@@ -10,6 +10,7 @@ Control files live in DIR: ``scenario.json`` (read, hot-swappable),
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.server
 import json
 import os
@@ -27,6 +28,15 @@ LOOPBACK = "127.0.0.1"
 USAGE = {"promptTokenCount": 32, "candidatesTokenCount": 2, "totalTokenCount": 34}
 MODELS = {"models": [{"name": "models/gemini-3.8-flash",
                       "supportedGenerationMethods": ["generateContent"]}]}
+
+
+def response_hold_path(ctl, label):
+    return os.path.join(ctl, "hold-" + hashlib.sha256(label.encode()).hexdigest())
+
+
+def release_response(ctl, label):
+    with open(response_hold_path(ctl, label) + ".release", "w"):
+        pass
 
 
 def _atomic_write(path, text):
@@ -157,7 +167,7 @@ class State:
             record = {"seq": seq, "t": time.time(), "path": path, "model": model,
                       "kind": kind, "step": None, "unmatched": False,
                       "template_error": None}
-            plan = {"reply": None, "delay_ms": 0, "error": None}
+            plan = {"reply": None, "delay_ms": 0, "hold_ms": 0, "error": None}
             if kind in ("main", "aux"):
                 self._refresh()
             if kind == "main":
@@ -176,6 +186,8 @@ class State:
                     record["unmatched"] = step is None
                     record["template_error"] = bad
                     plan["delay_ms"] = step["delay_ms"] if step else 0
+                    plan["hold_ms"] = step["hold_ms"] if step else 0
+                    plan["hold_label"] = step["label"] if step else None
                     if "error" in reply:
                         plan["error"] = reply["error"]
                     else:
@@ -274,6 +286,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                               "status": "NOT_FOUND"}})
         kind = "aux" if model and "flash-lite" in model else "main"
         plan = state.handle(kind, path, model, raw)
+        if plan["hold_ms"]:
+            hold = response_hold_path(state.ctl, plan["hold_label"])
+            _atomic_write(hold + ".entered", "")
+            end = time.monotonic() + plan["hold_ms"] / 1000
+            while not os.path.exists(hold + ".release"):
+                if time.monotonic() >= end:
+                    _atomic_write(hold + ".expired", "")
+                    return self._error({"http": 503, "status": "UNAVAILABLE",
+                                        "message": "FAKE-GEMINI-HOLD-EXPIRED " + plan["hold_label"]})
+                time.sleep(.01)
         if plan["delay_ms"]:
             time.sleep(plan["delay_ms"] / 1000.0)
         if plan["error"]:

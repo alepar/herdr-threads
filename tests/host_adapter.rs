@@ -760,6 +760,7 @@ fn stalled_request_write_is_cancellable_and_never_reports_submission() {
     let listener = UnixListener::bind(&path).unwrap();
     let call_budget = budget(5000);
     let cancel = call_budget.cancellation.clone();
+    let (finished, operation_finished) = std::sync::mpsc::channel();
     let worker = thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         let request = read_request(&mut stream);
@@ -773,10 +774,26 @@ fn stalled_request_write_is_cancellable_and_never_reports_submission() {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        // Leave request unread so the socket write buffer fills.
-        thread::sleep(Duration::from_millis(40));
+        // Observe a real write without draining the socket: accepting a
+        // connection alone does not mean the client has written any bytes.
+        use std::os::fd::AsRawFd;
+        let mut byte = 0u8;
+        // SAFETY: the stream owns a live fd and `byte` is writable for one byte.
+        let received = unsafe {
+            libc::recv(
+                stream.as_raw_fd(),
+                std::ptr::from_mut(&mut byte).cast(),
+                1,
+                libc::MSG_PEEK,
+            )
+        };
         cancel.cancel();
-        thread::sleep(Duration::from_millis(30));
+        assert_eq!(received, 1, "the request write must have begun");
+        // Keep the request unread until cancellation has closed the client;
+        // draining sooner could unblock its remaining writes.
+        operation_finished
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
         let mut bytes = Vec::new();
         let mut chunk = [0; 8192];
         loop {
@@ -793,11 +810,10 @@ fn stalled_request_write_is_cancellable_and_never_reports_submission() {
         );
     });
     let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
-    assert_eq!(
-        cli.prompt("w4:p1", &"x".repeat(900_000), &call_budget),
-        PromptOutcome::Unknown
-    );
+    let outcome = cli.prompt("w4:p1", &"x".repeat(900_000), &call_budget);
+    finished.send(()).unwrap();
     cleanup(path, worker);
+    assert_eq!(outcome, PromptOutcome::Unknown);
 }
 
 #[test]

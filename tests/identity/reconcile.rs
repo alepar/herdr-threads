@@ -806,15 +806,17 @@ fn real_store_reconfirms_host_invalidated_seat_from_production_shaped_publicatio
         .unwrap();
         let header = SnapshotHeader::from_captured(admission, &capture).unwrap();
         let stage = seats::begin_snapshot_stage(context, conn, header, budget).unwrap();
-        seats::stage_snapshot_targets(
-            context,
-            conn,
-            &stage.id,
-            0,
-            &capture.targets,
-            DurableWorkAdmission::new(16).unwrap(),
-            budget,
-        )
+        crate::test_support::snapshot::stage_all(&capture.targets, |offset, targets| {
+            seats::stage_snapshot_targets(
+                context,
+                conn,
+                &stage.id,
+                offset,
+                targets,
+                DurableWorkAdmission::new(16).unwrap(),
+                budget,
+            )
+        })
         .unwrap();
         seats::seal_snapshot_stage(context, conn, &stage.id, budget).unwrap();
         seats::publish_snapshot_stage(context, conn, &stage.id, budget).unwrap();
@@ -1141,15 +1143,17 @@ fn real_store_reconfirms_never_registered_seat_from_its_structural_proof() {
         .unwrap();
         let header = SnapshotHeader::from_captured(admission, &capture).unwrap();
         let stage = seats::begin_snapshot_stage(context, conn, header, budget).unwrap();
-        seats::stage_snapshot_targets(
-            context,
-            conn,
-            &stage.id,
-            0,
-            &capture.targets,
-            DurableWorkAdmission::new(16).unwrap(),
-            budget,
-        )
+        crate::test_support::snapshot::stage_all(&capture.targets, |offset, targets| {
+            seats::stage_snapshot_targets(
+                context,
+                conn,
+                &stage.id,
+                offset,
+                targets,
+                DurableWorkAdmission::new(16).unwrap(),
+                budget,
+            )
+        })
         .unwrap();
         seats::seal_snapshot_stage(context, conn, &stage.id, budget).unwrap();
         seats::publish_snapshot_stage(context, conn, &stage.id, budget).unwrap();
@@ -1324,15 +1328,17 @@ fn ordinary_empty_allocation_survives_a_later_coherent_publication() {
         let header = SnapshotHeader::from_captured(admission, &capture).unwrap();
         let stage = seats::begin_snapshot_stage(context, conn, header, budget).unwrap();
         if !capture.targets.is_empty() {
-            seats::stage_snapshot_targets(
-                context,
-                conn,
-                &stage.id,
-                0,
-                &capture.targets,
-                DurableWorkAdmission::new(16).unwrap(),
-                budget,
-            )
+            crate::test_support::snapshot::stage_all(&capture.targets, |offset, targets| {
+                seats::stage_snapshot_targets(
+                    context,
+                    conn,
+                    &stage.id,
+                    offset,
+                    targets,
+                    DurableWorkAdmission::new(16).unwrap(),
+                    budget,
+                )
+            })
             .unwrap();
         }
         seats::seal_snapshot_stage(context, conn, &stage.id, budget).unwrap();
@@ -1603,15 +1609,17 @@ fn real_store_registered_seat_follows_observed_move_with_unsupported_execution()
         .unwrap();
         let header = SnapshotHeader::from_captured(admission, &capture).unwrap();
         let stage = seats::begin_snapshot_stage(context, conn, header, budget).unwrap();
-        seats::stage_snapshot_targets(
-            context,
-            conn,
-            &stage.id,
-            0,
-            &capture.targets,
-            DurableWorkAdmission::new(16).unwrap(),
-            budget,
-        )
+        crate::test_support::snapshot::stage_all(&capture.targets, |offset, targets| {
+            seats::stage_snapshot_targets(
+                context,
+                conn,
+                &stage.id,
+                offset,
+                targets,
+                DurableWorkAdmission::new(16).unwrap(),
+                budget,
+            )
+        })
         .unwrap();
         seats::seal_snapshot_stage(context, conn, &stage.id, budget).unwrap();
         seats::publish_snapshot_stage(context, conn, &stage.id, budget).unwrap()
@@ -3093,15 +3101,17 @@ mod carry_forward {
         let header = SnapshotHeader::from_captured(admission, &capture).unwrap();
         let stage =
             seats::begin_snapshot_stage(&f.context, &mut f.conn, header, &f.budget).unwrap();
-        seats::stage_snapshot_targets(
-            &f.context,
-            &mut f.conn,
-            &stage.id,
-            0,
-            &capture.targets,
-            DurableWorkAdmission::new(16).unwrap(),
-            &f.budget,
-        )
+        crate::test_support::snapshot::stage_all(&capture.targets, |offset, targets| {
+            seats::stage_snapshot_targets(
+                &f.context,
+                &mut f.conn,
+                &stage.id,
+                offset,
+                targets,
+                DurableWorkAdmission::new(16).unwrap(),
+                &f.budget,
+            )
+        })
         .unwrap();
         seats::seal_snapshot_stage(&f.context, &mut f.conn, &stage.id, &f.budget).unwrap();
         seats::publish_snapshot_stage(&f.context, &mut f.conn, &stage.id, &f.budget).unwrap()

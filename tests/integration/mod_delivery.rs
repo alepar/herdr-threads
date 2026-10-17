@@ -1542,6 +1542,8 @@ enum ConfirmFault {
 #[derive(Default)]
 struct CapacityFlowState {
     requests: Vec<(usize, u64)>,
+    hold_request: bool,
+    release_request: bool,
     ready: Vec<usize>,
     released: usize,
     attention_seen: usize,
@@ -1588,8 +1590,45 @@ impl CapacityFlow {
         Ok(state.requests.len())
     }
 
+    /// Hold a real Pull before the daemon receives it, so clear can end its binding.
+    fn before_request(&self) -> bool {
+        let mut state = self.lock();
+        while !state.stop && state.hold_request && !state.release_request {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        !state.stop
+    }
+
+    fn wait_request(&self) {
+        let state = self.lock();
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, STEP, |state| {
+                !state.stop && state.requests.is_empty()
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let observed = !state.requests.is_empty();
+        drop(state);
+        assert!(
+            observed,
+            "real Watch Pull never reached the request barrier"
+        );
+    }
+
+    fn release_request(&self) {
+        let mut state = self.lock();
+        state.release_request = true;
+        self.changed.notify_all();
+    }
+
     fn hold_reply(&self, ordinal: usize, index: usize) -> std::io::Result<bool> {
         let mut state = self.lock();
+        if state.hold_request {
+            return Ok(!state.stop);
+        }
         if state.ready.len() + 1 != ordinal {
             return Err(self.fail(&mut state, "one sequential real Watch consumer".into()));
         }
@@ -1606,6 +1645,10 @@ impl CapacityFlow {
 
     fn forward_attention(&self, downstream: &mut impl Write, body: &[u8]) -> std::io::Result<bool> {
         let mut state = self.lock();
+        if state.hold_request {
+            activation_write(downstream, body)?;
+            return Ok(true);
+        }
         state.attention_seen += 1;
         self.changed.notify_all();
         while !state.stop && state.attention_credits == 0 {
@@ -1851,11 +1894,18 @@ impl ActivationRelay {
                             });
                             index
                         };
-                        let is_pull = log.lock().unwrap()[index].request["command"]["kind"]
-                            == "delivery_pull_v2";
+                        let is_pull = {
+                            let log = log.lock().unwrap();
+                            log[index].request["command"]["kind"] == "delivery_pull_v2"
+                                && log[index].request["command"]["args"]["consumer"] == "watch"
+                        };
                         let pull_ordinal = if let Some(flow) = &capacity {
                             if is_pull {
-                                Some(flow.start_pull(index)?)
+                                let ordinal = flow.start_pull(index)?;
+                                if !flow.before_request() {
+                                    return Ok(());
+                                }
+                                Some(ordinal)
                             } else {
                                 None
                             }
@@ -4656,6 +4706,74 @@ fn clear_rebind_pending_item_restreamed_to_new_session() {
         .find(|line| line["id"] == id)
         .unwrap_or_else(|| panic!("no result line for {id}"));
     assert_eq!(settled["result"], "settled", "{settled}");
+}
+
+/// ht-7ykh / ht-x0b9: the daemon receives a real in-flight Pull only after
+/// clear ended its binding. Its typed refusal must not mask the stream's
+/// binding_changed Close, and pending mail must reach the replacement session.
+#[test]
+fn clear_rebind_inflight_pull_preserves_close_and_pending_mail() {
+    use herdr_threads::protocol::{
+        delivery::{DeliveryPullReplyV2, DeliveryRefusalReason},
+        results::CommandResult,
+        wire::WireResponse,
+    };
+    let rig = Rig::new();
+    let body = "pending across held Pull".repeat(256);
+    let id = rig.send_ordinary(&body);
+    let flow = Arc::new(CapacityFlow::default());
+    flow.lock().hold_request = true;
+    let relay =
+        ActivationRelay::start_with_capacity(&rig, false, ConfirmFault::None, Some(flow.clone()));
+    let mut old = rig.watch(SESSION_B);
+    old.wait_connected();
+    flow.wait_request();
+    rig.set_session_b("SB2");
+    rig.session_start_hook_in_process_of(PANE_B, "SB2", "clear", SESSION_B);
+    flow.release_request();
+    let closing = old.wait_line(
+        "binding_changed after the real Pull refusal",
+        STEP,
+        |line| line["kind"] == "status" && line["state"] == "closing",
+    );
+    assert_eq!(closing["reason"], "binding_changed", "{closing}");
+    assert_eq!(old.exit_code(STEP), 0);
+    let refused = relay
+        .snapshot()
+        .into_iter()
+        .find(|entry| {
+            entry.request["command"]["kind"] == "delivery_pull_v2"
+                && entry.request["command"]["args"]["consumer"] == "watch"
+        })
+        .expect("real Watch Pull exchange");
+    let response: WireResponse =
+        serde_json::from_value(refused.reply.expect("real daemon reply")).unwrap();
+    assert!(
+        matches!(
+            &response.result,
+            Ok(CommandResult::DeliveryPulledV2(
+                DeliveryPullReplyV2::Refused {
+                    reason: DeliveryRefusalReason::NoBinding
+                }
+            ))
+        ),
+        "the ended binding's real Pull must be refused: {:?}",
+        response.result
+    );
+    assert_eq!(rig.receipt_state(&id), "pending");
+    // Restore the socket before the new session starts its ordinary Watch.
+    drop(relay);
+    let mut new = rig.watch_with(PANE_B, "SB2", &[("CLAUDE_CODE_SESSION_ID", "SB2")]);
+    new.wait_connected();
+    assert_eq!(new.wait_item(&id)["body"], body);
+    let (code, lines) = rig.ack_with(
+        "SB2",
+        "context",
+        &[&id],
+        &[("CLAUDE_CODE_SESSION_ID", "SB2")],
+    );
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!(rig.receipt_state(&id), "acked");
 }
 
 /// The exact Watch binding expected by the notice tests, independently of its offer row.

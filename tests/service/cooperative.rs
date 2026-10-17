@@ -1010,15 +1010,17 @@ fn publish_snapshot_at(
     };
     let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
     let stage = seats::begin_snapshot_stage(context, &mut conn, header, &budget()).unwrap();
-    seats::stage_snapshot_targets(
-        context,
-        &mut conn,
-        &stage.id,
-        0,
-        &snapshot.targets,
-        DurableWorkAdmission::new(16).unwrap(),
-        &budget(),
-    )
+    crate::test_support::snapshot::stage_all(&snapshot.targets, |offset, targets| {
+        seats::stage_snapshot_targets(
+            context,
+            &mut conn,
+            &stage.id,
+            offset,
+            targets,
+            DurableWorkAdmission::new(16).unwrap(),
+            &budget(),
+        )
+    })
     .unwrap();
     seats::seal_snapshot_stage(context, &mut conn, &stage.id, &budget()).unwrap();
     seats::publish_snapshot_stage(context, &mut conn, &stage.id, &budget()).unwrap()

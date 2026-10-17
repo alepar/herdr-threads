@@ -17,7 +17,7 @@
                "args": {"CommandLine": "herdr-threads ack {frame.id}", "Cwd": "{var.cwd}",
                         "WaitMsBeforeAsync": 1000, "toolAction": "gate", "toolSummary": "gate"}}},
     {"label": "a-done", "match": {"contains": ["WAKE-N1"]}, "reply": {"text": "WAKE-A-DONE"}},
-    {"label": "c-busy", "match": {"contains": ["WAKE-BUSY-C"]}, "delay_ms": 9000,
+    {"label": "c-busy", "hold_ms": 120000, "match": {"contains": ["WAKE-BUSY-C"]}, "delay_ms": 9000,
      "reply": {"call": "run_command",
                "args": {"CommandLine": "herdr-threads wake-on", "Cwd": "{var.cwd}",
                         "WaitMsBeforeAsync": 1000, "toolAction": "gate", "toolSummary": "gate"}}},

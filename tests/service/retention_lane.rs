@@ -220,14 +220,16 @@ fn publish(store: &SqliteStore, sequence: u64) {
     };
     let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
     let stage = StorePort::begin_snapshot_stage(store, header, &budget()).unwrap();
-    StorePort::stage_snapshot_targets(
-        store,
-        &stage.id,
-        0,
-        &snapshot.targets,
-        DurableWorkAdmission::new(16).unwrap(),
-        &budget(),
-    )
+    crate::test_support::snapshot::stage_all(&snapshot.targets, |offset, targets| {
+        StorePort::stage_snapshot_targets(
+            store,
+            &stage.id,
+            offset,
+            targets,
+            DurableWorkAdmission::new(16).unwrap(),
+            &budget(),
+        )
+    })
     .unwrap();
     StorePort::seal_snapshot_stage(store, &stage.id, &budget()).unwrap();
     StorePort::publish_snapshot_stage(store, &stage.id, &budget()).unwrap();

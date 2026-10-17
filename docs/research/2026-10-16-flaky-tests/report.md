@@ -79,6 +79,103 @@ Retrieval stopped at the bounded search budget (`budget-exhausted`), not coverag
 The multi-host hook flake exposes another distinction: published capture versus completed reconciliation. A temporary service-side diagnostic reproduced3/20 failures and captured `ServiceBusy: recovery reconciliation of the current host epoch has not finished; retry`. [10] The initial test-only correction followed the existing policy but left a real fresh-startup enrollment gap. The user blocked2.0.0 on fixing that gap. The product correction now completes a genuinely empty saved-seat pass atomically with coherent publication; hosts with saved seats still require worker reconciliation, and C1 retry/enrollment guards remain intact.
 
 Worker-free regression `cold_empty_host_continuity_is_decidable_before_the_worker_pass` failed deterministically before the product fix: expected confirmed NotFound but received ServiceBusy with the exact historical reconciliation refusal. [10] It passes after the fix, and the cold integration test again requires enrollment on the first callback. See [contract and reproduction analysis](reproductions.md#product-correction-atomic-empty-recovery-pass-ht-bryo) and [qualification results](validation.md).
+## 2.0.2 backlog follow-up (2026-10-17)
+
+Checkout: `.worktrees/flake-backlog`, branch `fix/flake-backlog`, base `92edebf67`.
+This follow-up dynamically exercises the previously static candidates. All new
+changes are test fixtures, test helpers, gate drivers or diagnostics; no new
+product defect was established. Original assertions and latency contracts remain.
+
+### Bead dispositions and controlled evidence
+
+| Bead | Mechanism and result |
+|---|---|
+| ht-2si | Already fixed by `53179a94f` (ht-54r.73). `src/cli/mod.rs:2117` sends a subagent without its own identity down the read-only wire path before `role_claim`. The unchanged `lazy_display::lazy_display_json_machine_explicit_selector_readonly` passes 20/20 on a freshly compiled binary under four owned CPU workers. Its existing no-completion/no-ACK/no-lazy-progress assertions remain. Closed with evidence; no code change. |
+| ht-86a | `src/store/seats.rs` legitimately returns a committed prefix after its 5ms quantum. A one-shot fixture then seals too early; a fixed 16-target offset can instead skip targets and fail the contiguous-slice guard. A 35-target stepping-clock regression failed deterministically with `StaleHostObservation: snapshot slice is not contiguous`. `test_support::snapshot::stage_all` now follows `visited` and the exact staged count, using the original stage and budget. Thirteen fixture sites across eight files use it. Intentional partial, duplicate, quantum and reopen controls stay explicit. Focused checks: 123; regression plus three identity fixture tests: 20 repetitions each, 80 checks. Four bootstrap-filter tests passed outside the sandbox, including all three native bootstrap fixtures. |
+| ht-7ykh | The original clear/rebind case passes 20/20 under four CPU workers. The new relay holds a real Watch Pull before daemon admission, completes `/clear`, then releases it: the ended binding returns typed `NoBinding`, and the queued lifecycle Close remains `binding_changed`/exit 0, with mail pending and restreamed/ACKed in the new session. This complete new chain passes 20/20 under four CPU workers; relay helper controls pass 5/5 and the existing real capacity test passes. Contrary to the earlier historical qualification above, immutable v1.2.0 already advertises and prefers V2 presentation; a legacy-only path was not established. The preexisting ht-x0b9 unit RED (`exit 1` versus `0`) covers the generic refusal/Close ordering. This does not reconstruct the exact historical CI schedule. |
+| ht-81q | Twenty loaded all-lanes runs plus one fresh build run retain and pass the original three 100ms commit-to-attempt assertions; the historical failure remains unreproduced. Its assertion was never captured, so no production latency cause is claimed. CI and full-suite workflows now preserve `HT_SWEEP_PANIC_FILE`; the hook is installed before Scene setup and restored after the daemon replaces it. A controlled `PATH=/nonexistent` startup failure exits 101 and persists its missing-Herdr panic, proving capture before Scene completion. A successful fresh sweep persists all three `SWEEP_TRACE` records, appended outside the measured interval. Existing nextest full-slot isolation is unchanged. |
+
+### ht-fmww: all ten candidate families
+
+| Family | Controlled schedule and causal correction |
+|---|---|
+| agy wake observation | `tests/integration/agy_sweep.rs`: let wake-on(all)'s wake complete before taking the old observation mark. Capture the mark before the action so the sole legitimate wake remains observable. |
+| Partial socket write | `tests/host_adapter.rs`: a throwaway Clock gates the actual post-connect witness check (`src/host/transport.rs:202`), after the ping exchange, while the server proves no request bytes exist. The old accept-plus-40ms canceller then fails the original `!bytes.is_empty()` assertion 4/4. A pause inside the final write check can legitimately allow one chunk because its cancellation check already ran; an initial clock-ordinal gate therefore was not deterministic and was replaced by the actual boundary witness. The server now observes bytes with `MSG_PEEK` without draining them, cancels, and keeps the request unread until the client returns; the original partial-write/no-submission assertions remain. |
+| Admission wait interval | `tests/store/sync_contacts.rs`: delay the parent 150ms after starting a canceller with a 100ms timer; the original >=90ms assertion fails. Start that same timer only after the writer is actually queued. The elapsed-time assertion remains unchanged. |
+| Own-history kick attribution | `tests/sync/incarnations_worker.rs`: gate startup until after history release and replace the release callback with a no-op. The original test still passes (0.66s), proving a false positive. Await the startup idle event before release and require a new completed idle event afterwards. With the same no-op callback, the strengthened original pass assertion fails after its existing 5s guard. Restore the real callback in final code. |
+| Hermes physical lock lifetime | `src/harness/hermes/assets.rs`: pause the parent 10.2s after lock-ready. The original ten-second child exits and install incorrectly succeeds for the test's intended contention point (`Ok` versus `Conflict`). Keep its stdin pipe owned by the parent until explicit stop; the same delayed schedule then passes. |
+| Hermes cancellation monitor lifetime | `src/harness/hermes/runtime.rs`: pause 3.2s after starting the old three-second watcher. It expires before child entry and yields `Deadline` instead of `Cancelled`. Watch actual child entry until capture completion, then join. The same delayed schedule passes. |
+| Hermes callback ownership | `integrations/hermes/test_bridge.py`: delay the coordinator .4s after child request publication. Three tests receive successful context before the generation/unload action and fail. Hold the actual child until explicit release, freeze the already injected bridge clock for these ownership tests, and release/join in `finally`. |
+| Hermes refresh cadence | In the same Python suite, extend the .1s negative observation to 1.1s: a legitimate refresh gives two reads instead of one. Freeze and advance the injected clock, fence the reader's next cadence decision, and await exact failed-config publication. Controlled Python cases pass 4/4; their 20 focused repetitions pass 80/80; the complete bridge suite passes 43/43. |
+| agy fake busy response | Replay the original response with a 20ms delay and resume publication after 50ms: 20/20 failures (`busy response expired before send commit`). The fake server now supports explicit held-entry/release with expiry classified as infrastructure failure; delivery, wake and equivalent downgrade flows span all sends with that hold. |
+| Release driver busy tool | Replay the original `Recipient.busy_case` with its old sleep compressed to 20ms and publication delayed 50ms: 20/20 failures (`tool exited before send commit`). `BusyBarrier` atomically publishes actual tool entry and holds it through send/invite completion. An independent review found the initial non-atomic PID witness race; the final helper uses write-then-rename and reaps failed-test children. |
+
+The two driver families' final regressions pass 20 repetitions, 160/160 checks.
+Complete offline suites: fake Gemini 90/90 (3.558s), agy gate 140/140 (2.478s),
+exact-final wake driver 147/147 (83.835s). No authenticated live agents were run;
+these results validate fixture/driver boundaries, not a new live release qualification.
+The wake cleanup work on `fix/reenroll-and-e2e-root` touches disjoint functions.
+
+Final clean-source Rust repetitions also pass 20/20 each for partial writes,
+admission waiting, own-history release, native agy wakes and the channel's
+negative native-wake observation. The partial-write fix additionally passes
+20/20 with the original failing post-connect delay still forced.
+
+### Integrated qualification
+
+The full run used `HT_LEAK_RUN_ID=F37976EA-4619-4C71-A479-4933D9C3D78F`:
+`nice cargo nextest run --locked --all-targets --all-features`. It ran 7618
+tests: 7617 passed, one failed, 48 were skipped. The sole failure was the
+inventory's stale exemption for the deleted Hermes ten-second sleep
+(`tests/service/loop_inventory.rs`), not a runtime or latency assertion.
+Removing that obsolete tuple preserves the scanner and every assertion; all
+three `loop_inventory` tests subsequently pass. Independent review confirmed
+the correction does not weaken the inventory.
+
+Wall time was **310.244s**, exceeding the 300s budget. The final release
+failpoint proof took 269.983s; the test-phase start-to-proof completion includes
+the preceding exclusive timing checks. This is an observed budget miss, not
+evidence that the fixture changes caused a performance regression. No budget
+or timeout was raised. The coordinator was informed and explicitly directed
+no second full suite on this branch: the merged 2.0.2 candidate receives full
+qualification. This branch does **not** claim a green full suite or a satisfied
+full-suite speed budget.
+
+After the full run, `scripts/check-no-leaked-processes --run-id
+F37976EA-4619-4C71-A479-4933D9C3D78F` exited 0: no leaked test processes or
+scratch files. Full output is `.tmp/flake-backlog/full-suite.log` in the retained
+worktree. Both clippy variants, the default-feature warning guard, formatting,
+harness neutrality, workflow assertions and actionlint passed before the
+inventory correction. On the final corrected source, `loop_inventory` passes
+3/3 (29.15s incremental compilation, 0.13s execution), all-feature clippy passes
+in 25.63s, default-feature clippy passes in 23.88s, and
+`check-default-features`, `check-harness-neutral`, `cargo fmt --check` and
+`git diff --check` pass. Both independent review scopes report no remaining
+actionable findings. All controlled-delay and missing-kick mutations are removed.
+
+New model-visible fixture text: `BUSY_PROMPT` is 188 fixed bytes plus the tag and
+quoted Python/helper paths; the helper code stays in a scratch file. The fake
+expiry diagnostic is `FAKE-GEMINI-HOLD-EXPIRED ` (25 bytes) plus the step label.
+Neither adds repeated per-message or per-turn explanation.
+
+Local execution records (retained, not external research):
+
+- `.tmp/flake-backlog/lazy-display-fresh-20.log` in this checkout.
+- `/tmp/ht-86a-{before,focused,focused-more,repeat20}.txt`.
+- `/tmp/hermes-flake-evidence/`: original snapshots, delayed-schedule patches,
+  Rust RED/GREEN logs, Python RED/GREEN/repeat logs. Temporary delays are removed
+  from final source.
+- `/private/tmp/ht-rust-evidence/`: controlled Rust schedules and oracle mutation evidence.
+- `/private/tmp/watch-wake-ba9fcd36-1dc3-490d-ba74-980c686983df/`: 20 loaded original
+  watch and all-lanes runs, results and scoped cleanup log.
+- `/private/tmp/watch-wake-f0cb3a9a-3f6a-44d8-9453-22f881d9a7a3/`: 20 fresh held-Pull
+  regressions and scoped cleanup; `/private/tmp/watch-wake-fresh-sweep-diagnostics.log`
+  retains the three successful timing traces. Controlled setup-panic records are
+  in the first watch/wake evidence directory.
+- `/private/tmp/repro_agy_old_hold.py`, `/private/tmp/repro_wake_old_busy.py`,
+  `/private/tmp/repeat_live_gate_selftests.py`,
+  `/private/tmp/live-gate-wake-selftest-exact-final.log`.
+
 ## Bibliography
 
 [1] [Google: flakiness triage and remedies](https://testing.googleblog.com/2021/03/test-flakiness-one-of-main-challenges.html) — primary source, retrieved 2026-10-17.

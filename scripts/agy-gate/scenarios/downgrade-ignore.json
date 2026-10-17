@@ -10,7 +10,7 @@
   },
   "steps": [
     {
-      "label": "ign-busy1",
+      "label": "ign-busy1", "hold_ms": 120000,
       "match": {
         "contains": [
           "DOWN-IBUSY1"
@@ -33,7 +33,7 @@
       }
     },
     {
-      "label": "ign-busy2",
+      "label": "ign-busy2", "hold_ms": 120000,
       "match": {
         "contains": [
           "DOWN-IBUSY2"

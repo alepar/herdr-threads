@@ -5,6 +5,7 @@ inline/replaced readers, lost contextvars, stale publication, ignored child
 caps/deadlines/ack mismatch, and process-local lifecycle authority.
 """
 import contextvars
+from contextlib import contextmanager
 import importlib.util
 import json
 import os
@@ -44,10 +45,9 @@ if mode=='nonzero': sys.exit(7)
 if mode=='invalid': print('{'); sys.exit(0)
 if mode=='duplicate': print('{"context":null,"context":"bad","lifecycle_ack":null}'); sys.exit(0)
 if mode=='context_overflow': print(json.dumps({'context':'é'*2049,'lifecycle_ack':None})); sys.exit(0)
-if mode=='slow': time.sleep(.3)
 if mode=='lifetime_hold':
-    limit=time.monotonic()+3
-    while not (root/'release_child').exists() and time.monotonic()<limit: time.sleep(.002)
+    (root/'child-held').touch()
+    while not (root/'release_child').exists(): time.sleep(.002)
 if request['callback']!='pre_llm_call':
     observer=fixtures['observer']
     observer['lifecycle_ack']['event_id']=request['event_id']
@@ -127,6 +127,34 @@ class PublicationLock:
         self.release()
 
 
+class ObservedWake:
+    """Fence the reader's next cadence decision without advancing real time."""
+    def __init__(self):
+        self.event = threading.Event()
+        self.condition = threading.Condition()
+        self.waits = []
+
+    def set(self):
+        self.event.set()
+
+    def clear(self):
+        self.event.clear()
+
+    def wait(self, delay):
+        with self.condition:
+            self.waits.append(delay)
+            self.condition.notify_all()
+        return self.event.wait(delay)
+
+    def next_decision(self):
+        with self.condition:
+            count = len(self.waits)
+            self.set()
+            if not self.condition.wait_for(lambda: len(self.waits) > count, timeout=2):
+                raise AssertionError("reader did not make its next cadence decision")
+            return self.waits[-1]
+
+
 class BridgeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get("HT_TASK_TMP"), prefix="bridge-")
@@ -201,6 +229,7 @@ class BridgeTests(unittest.TestCase):
         self.readers = []
         self.children = []
         self.clock = None
+        self.observe_wake = False
         self.addCleanup(self.stop_readers)
         self.callbacks = json.loads((DATA / "callbacks.json").read_text())
 
@@ -271,6 +300,8 @@ class BridgeTests(unittest.TestCase):
         def tracked_initialize(reader, provider):
             initialize(reader, provider)
             reader.lock = PublicationLock(reader)
+            if self.observe_wake:
+                reader.wake = ObservedWake()
             self.readers.append(reader)
         module.Reader.__init__ = tracked_initialize
         self.assertTrue(callable(getattr(module, "register", None)), "actual bridge registration is missing")
@@ -324,6 +355,29 @@ class BridgeTests(unittest.TestCase):
                     reader.lock.release()
             time.sleep(.002)
         self.fail(f"target {kind} iteration {iteration} did not publish completion")
+
+    @contextmanager
+    def held_request(self):
+        # These tests exercise generation/ownership, not elapsed-time budgets.
+        # Freeze the already injected module's clock so its real child remains
+        # owned until the test releases it, even if the coordinator is delayed.
+        anchor = self.module.time.monotonic()
+        self.module.time = types.SimpleNamespace(monotonic=lambda: anchor, time=time.time)
+        (self.state / "mode").write_text("lifetime_hold")
+        outcome = []
+        worker = threading.Thread(target=lambda: outcome.append(self.request()))
+        worker.start()
+        try:
+            limit = time.monotonic() + 2
+            while not (self.state / "child-held").exists() and time.monotonic() < limit:
+                time.sleep(.002)
+            self.assertTrue((self.state / "child-held").exists(), "child did not enter hold")
+            self.assertIsNone(self.children[-1].poll(), "held child exited before the action")
+            yield outcome
+        finally:
+            (self.state / "release_child").touch()
+            worker.join(2)
+            self.assertFalse(worker.is_alive(), "held callback leaked")
 
     def request(self, callback="pre_llm_call", payload=None):
         return self.ctx.hooks[callback](**(self.callbacks["qualified"] if payload is None else payload))
@@ -666,17 +720,9 @@ class BridgeTests(unittest.TestCase):
                 pid = int((self.state / "pid").read_text())
                 with self.assertRaises(ProcessLookupError):
                     os.kill(pid, 0)
-        (self.state / "mode").write_text("slow")
-        outcome = []
-        worker = threading.Thread(target=lambda: outcome.append(self.request()))
-        worker.start()
-        self.addCleanup(worker.join, 2)
-        start = time.monotonic()
-        while not (self.state / "mode").exists() or len(self.requests()) < 12:
-            if time.monotonic() - start > 1: self.fail("child not started")
-            time.sleep(.002)
-        self.assertIsNone(self.request(payload={**self.callbacks["qualified"],"turn_id":"newer"}))
-        worker.join(2)
+        with self.held_request() as outcome:
+            self.assertEqual(len(self.requests()), 12)
+            self.assertIsNone(self.request(payload={**self.callbacks["qualified"],"turn_id":"newer"}))
         self.assertEqual(outcome, [None])
 
     def test_deadlines_disabled_small_unknown_and_busy_snapshot(self):
@@ -716,23 +762,16 @@ class BridgeTests(unittest.TestCase):
     def test_reload_cannot_spawn_successor_while_unloaded_bridge_owns_live_child(self):
         self.load()
         first = self.reader()
-        (self.state / "mode").write_text("slow")
-        outcome = []
-        worker = threading.Thread(target=lambda: outcome.append(self.request()))
-        worker.start()
-        self.addCleanup(worker.join, 2)
-        limit = time.monotonic() + 1
-        while not self.requests() and time.monotonic() < limit:
-            time.sleep(.002)
-        self.assertEqual(len(self.requests()), 1)
-        self.ctx.unloads[0]()
-        first.thread.join(2)
-        self.load(wait=False)
-        if self.reader() is not first:
-            self.settle()
-        self.assertIsNone(self.request())
-        self.assertEqual(len(self.requests()), 1)
-        worker.join(2)
+        with self.held_request() as outcome:
+            self.assertEqual(len(self.requests()), 1)
+            self.ctx.unloads[0]()
+            first.thread.join(2)
+            self.load(wait=False)
+            if self.reader() is not first:
+                self.settle()
+            self.assertIs(self.reader(), first, "live child must retain the reader reservation")
+            self.assertIsNone(self.request())
+            self.assertEqual(len(self.requests()), 1)
         self.assertEqual(outcome, [None])
 
     def test_pre_guard_paused_callback_cannot_launch_after_close_or_successor(self):
@@ -1131,33 +1170,31 @@ class BridgeTests(unittest.TestCase):
                 original.wait(child, timeout=2)
 
     def test_refresh_cadence_and_failed_config_unknown_fallback(self):
+        self.clock = 100.0
+        self.observe_wake = True
         self.load()
+        reader = self.reader()
         self.assertEqual(len(self.reads), 1)
-        self.assertTrue(self.reader().next_refresh >= self.reader().observed_at + 1)
-        time.sleep(.1)
+        self.assertTrue(reader.next_refresh >= reader.observed_at + 1)
+        self.clock = 100.9
+        self.assertAlmostEqual(reader.wake.next_decision(), .1)
         self.assertEqual(len(self.reads), 1)
         self.config = self.failed({"plugins":{"hook_callback_timeout":0}})
-        with self.reader().lock:
-            iteration = self.reader().lock.counts["timeout"] + 1
-        self.await_completion(self.reader(), iteration=iteration, quality="failed_config_read")
-        self.assertEqual(self.reader().quality, "failed_config_read")
-        self.assertIsNone(self.reader().fallback)
+        with reader.lock:
+            iteration = reader.lock.counts["timeout"] + 1
+        self.clock = 101.0
+        reader.wake.set()
+        self.await_completion(reader, iteration=iteration, quality="failed_config_read")
+        self.assertEqual(reader.quality, "failed_config_read")
+        self.assertIsNone(reader.fallback)
         self.assertIsNone(self.request())
         self.assertEqual(self.requests(), [])
 
     def test_unload_during_owned_child_blocks_late_context(self):
         self.load()
-        (self.state / "mode").write_text("slow")
-        outcome = []
-        worker = threading.Thread(target=lambda: outcome.append(self.request()))
-        worker.start()
-        self.addCleanup(worker.join, 2)
-        limit = time.monotonic() + 1
-        while not self.requests() and time.monotonic() < limit:
-            time.sleep(.002)
-        self.assertEqual(len(self.requests()), 1)
-        self.ctx.unloads[0]()
-        worker.join(2)
+        with self.held_request() as outcome:
+            self.assertEqual(len(self.requests()), 1)
+            self.ctx.unloads[0]()
         self.assertEqual(outcome, [None])
 
     def test_unload_contended_publication_lock_invalidates_cached_snapshot(self):

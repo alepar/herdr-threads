@@ -163,20 +163,18 @@ fn publish_from(
     let snapshot = host_snapshot(capture, sequence);
     let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
     let stage = seats::begin_snapshot_stage(context, conn, header, &budget).unwrap();
-    let mut offset = 0u64;
-    for chunk in snapshot.targets.chunks(16) {
-        let progress = seats::stage_snapshot_targets(
+    crate::test_support::snapshot::stage_all(&snapshot.targets, |offset, targets| {
+        seats::stage_snapshot_targets(
             context,
             conn,
             &stage.id,
             offset,
-            chunk,
+            targets,
             DurableWorkAdmission::new(16).unwrap(),
             &budget,
         )
-        .unwrap();
-        offset = progress.stage.staged_targets;
-    }
+    })
+    .unwrap();
     seats::seal_snapshot_stage(context, conn, &stage.id, &budget).unwrap();
     let published = seats::publish_snapshot_stage(publishing, conn, &stage.id, &budget).unwrap();
     assert_eq!(published.observation_sequence, sequence);

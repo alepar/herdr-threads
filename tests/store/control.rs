@@ -265,18 +265,18 @@ fn staged_test_snapshot(
     use crate::store::seats;
     let header = SnapshotHeader::from_captured(admission, snapshot).unwrap();
     let stage = seats::begin_snapshot_stage(context, conn, header, budget).unwrap();
-    for (chunk, targets) in snapshot.targets.chunks(16).enumerate() {
+    crate::test_support::snapshot::stage_all(&snapshot.targets, |offset, targets| {
         seats::stage_snapshot_targets(
             context,
             conn,
             &stage.id,
-            (chunk * 16) as u64,
+            offset,
             targets,
             DurableWorkAdmission::new(16).unwrap(),
             budget,
         )
-        .unwrap();
-    }
+    })
+    .unwrap();
     seats::seal_snapshot_stage(context, conn, &stage.id, budget).unwrap();
     stage.id
 }
@@ -465,18 +465,18 @@ fn discarded_stage_cleans_up_in_bounded_reopenable_quanta() {
         &budget,
     )
     .unwrap();
-    for (offset, chunk) in snapshot.targets.chunks(16).enumerate() {
+    crate::test_support::snapshot::stage_all(&snapshot.targets, |offset, targets| {
         seats::stage_snapshot_targets(
             &context,
             &mut conn,
             &stage.id,
-            (offset * 16) as u64,
-            chunk,
+            offset,
+            targets,
             DurableWorkAdmission::new(16).unwrap(),
             &budget,
         )
-        .unwrap();
-    }
+    })
+    .unwrap();
     let first = seats::discard_snapshot_stage(
         &context,
         &mut conn,
@@ -10424,6 +10424,40 @@ impl Clock for SteppingClock {
     fn monotonic_now(&self) -> MonoInstant {
         MonoInstant(self.0.fetch_add(10, std::sync::atomic::Ordering::SeqCst))
     }
+}
+
+#[test]
+fn snapshot_fixture_finishes_every_prefix_before_sealing() {
+    use crate::protocol::time::{CallBudget, Cancellation};
+    use crate::store::seats;
+    let (_, mut conn, path, _) = fixture(100);
+    let context = StoreContext::new(
+        path.clone(),
+        Arc::new(SteppingClock(std::sync::atomic::AtomicU64::new(0))),
+    )
+    .with_test_host();
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX / 2),
+        cancellation: Cancellation::default(),
+    };
+    // Cross the 16-target admission boundary as every writer turn commits
+    // exactly one target: neither chunk boundaries nor time imply completion.
+    let names: Vec<_> = (0..35).map(|n| format!("fixture-{n}")).collect();
+    let names: Vec<_> = names.iter().map(String::as_str).collect();
+    let snapshot = snapshot_for_test(2, &names);
+    let admission = seats::begin_host_observation(
+        &context,
+        &mut conn,
+        "34750f98bd59fcfc946da45aaabe933b",
+        crate::test_support::test_host_id(),
+        &budget,
+    )
+    .unwrap();
+    let stage = staged_test_snapshot(&context, &mut conn, admission, &snapshot, &budget);
+    let published = seats::publish_snapshot_stage(&context, &mut conn, &stage, &budget).unwrap();
+    assert_eq!(published.target_count, 35);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
 }
 
 /// A writer turn whose 5 ms quantum is spent (CPU load, a stall) stages its

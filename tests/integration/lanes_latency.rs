@@ -124,6 +124,8 @@ impl Session {
             .expect("the elected daemon did not publish its endpoint");
         // The elected daemon installs a quiet panic hook; restore visible failures.
         std::panic::set_hook(Box::new(|info| eprintln!("{info}")));
+        // Preserve later Scene setup failures too, before it returns to its caller.
+        crate::sweep_remaining::keep_panics_visible();
         let session = Self {
             herdr,
             state,

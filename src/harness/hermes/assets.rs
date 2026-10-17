@@ -1433,7 +1433,9 @@ mod tests {
         let home = PathBuf::from(home);
         let _held = ProfileLock::acquire(&home, true, false).unwrap();
         fs::write(home.join("lock-ready"), b"ready").unwrap();
-        std::thread::sleep(std::time::Duration::from_secs(10));
+        // Keep the physical lock until the owning parent kills this child.
+        // EOF also releases it if the parent exits before explicit cleanup.
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut Vec::new()).unwrap();
     }
     #[test]
     #[cfg(feature = "test-support")]
@@ -1450,6 +1452,7 @@ mod tests {
                 "--nocapture",
             ])
             .env("HT_ASSET_LOCK_HOME", &f.home)
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         let mut child = command.spawn_owned().unwrap();

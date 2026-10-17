@@ -109,12 +109,6 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
     ),
     (
         "src/harness/hermes/assets.rs",
-        "std::thread::sleep(std::time::Duration::from_secs(10))",
-        "unit-test lock_child: a spawned test process holds the profile lock \
-         until its parent test kills it; not daemon code",
-    ),
-    (
-        "src/harness/hermes/assets.rs",
         "std::thread::sleep(std::time::Duration::from_millis(2))",
         "unit test polling for lock_child's ready file for at most 2 s; not \
          daemon code",

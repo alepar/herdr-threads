@@ -387,9 +387,18 @@ fn sqlite_writes_wait_for_a_background_turn() {
             deadline: MonoInstant(u64::MAX),
             cancellation: cancel.clone(),
         };
+        let admission = Arc::clone(&writer);
         let canceller = std::thread::spawn(move || {
+            // Start the timer only after this write really queued behind the
+            // held turn; a descheduled caller must not start already cancelled.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while admission.waiting() == (0, 0) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let queued = admission.waiting() != (0, 0);
             std::thread::sleep(std::time::Duration::from_millis(100));
             cancel.cancel();
+            queued
         });
         let started = std::time::Instant::now();
         let result = if write == 0 {
@@ -404,7 +413,7 @@ fn sqlite_writes_wait_for_a_background_turn() {
                 &blocked,
             )
         };
-        canceller.join().unwrap();
+        assert!(canceller.join().unwrap(), "write {write} entered admission");
         assert!(
             result.is_err(),
             "write {write} must not bypass the held turn"

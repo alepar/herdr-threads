@@ -39,6 +39,7 @@ jobs:
       # ht-p03.131: every process a step starts carries this id, so the final
       # leak check can tell this run's leftovers from anyone else's.
       HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-tests-${{ matrix.shard }}
+      HT_SWEEP_PANIC_FILE: ${{ github.workspace }}/sweep-panics.log
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -135,6 +136,14 @@ jobs:
             grep -ho 'skipped: no herdr[^<&]*' test.log target/nextest/ci/junit.xml 2>/dev/null | sort -u || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve sweep panic diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sweep-diagnostics-${{ matrix.shard }}
+          path: ${{ env.HT_SWEEP_PANIC_FILE }}
+          if-no-files-found: ignore
 
       - name: No leaked test processes
         # ht-p03.131: every daemon, private Herdr server and helper a test

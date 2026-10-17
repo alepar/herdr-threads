@@ -118,7 +118,7 @@ PLAIN_HINT = (" Your herdr-threads hooks are off: always run herdr-threads by th
               "then handle what it shows as above.")
 # Busy cases send while the recipient is mid-turn (between two tool calls): no wake may be typed or submitted, during
 # the turn or after it, and the item must arrive in that turn at the next tool boundary (Delivery contract rules 3-4).
-BUSY_PROMPT = ("Busy-turn test {tag}: run the shell command `sleep 12`, then run the shell command `sleep 1`, then "
+BUSY_PROMPT = ("Busy-turn test {tag}: run the shell command `{hold}`, then run the shell command `sleep 1`, then "
                "handle any herdr-threads items exactly as your standing instructions say, and finally print BUSY-DONE.")
 BUSY_AFTER_S = 40.0
 # The busy turn's native end: a line of the agent's output that is BUSY-DONE apart from bullets, markup or a final
@@ -926,6 +926,52 @@ def walk(x):
             yield from walk(v)
 
 
+class BusyBarrier:
+    """A tool-entry witness and explicit release spanning the coordinator's publication."""
+    def __init__(self, root, watchdog=TURN_TIMEOUT_MS / 1000):
+        self.path = Path(tempfile.mkdtemp(prefix="busy-hold.", dir=root))
+        self.watchdog = watchdog
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        # Keep witnesses until the run's normal scratch cleanup: the tool may still be polling.
+        (self.path / "release").touch()
+
+    def command(self):
+        helper = self.path / "hold.py"
+        helper.write_text("import os, time\nfrom pathlib import Path\n"
+                          "p = Path(__file__).parent\n"
+                          "(p / 'entered.tmp').write_text(str(os.getpid()))\n"
+                          "(p / 'entered.tmp').replace(p / 'entered')\n"
+                          f"end = time.monotonic() + {self.watchdog!r}\n"
+                          "while not (p / 'release').exists():\n"
+                          "    if time.monotonic() >= end:\n"
+                          "        (p / 'expired').touch()\n"
+                          "        raise SystemExit(1)\n"
+                          "    time.sleep(.02)\n")
+        return shlex.join([sys.executable, str(helper)])
+
+    def wait_entered(self, timeout=60):
+        end = time.monotonic() + timeout
+        while not (self.path / "entered").exists():
+            if time.monotonic() >= end:
+                raise RuntimeError("busy tool did not enter")
+            time.sleep(.02)
+        self.assert_held()
+
+    def assert_held(self):
+        if (self.path / "expired").exists():
+            raise RuntimeError("busy tool barrier expired before publication completed")
+        if (self.path / "release").exists():
+            raise RuntimeError("busy tool barrier released before publication completed")
+        try:
+            os.kill(int((self.path / "entered").read_text()), 0)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("busy tool exited before publication completed") from exc
+
+
 def busy_turn_split(text, anchor):
     """Split the screen at the busy turn's native boundaries: (in_turn, after_turn, end_seen). `in_turn` runs from
     the busy prompt `anchor` to the agent's BUSY-DONE line, `after_turn` is everything later; None if the prompt
@@ -1155,39 +1201,28 @@ class Recipient:
             self.run.stopping.wait(gap)  # spacing ends early when cleanup begins
         self.wait_idle()
         tag = f"{case} {self.run.run_id}"
-        # Codex can swallow a prompt submitted right after a turn ends: confirm the busy turn started, retry once,
-        # and never measure a "busy" case against an idle recipient.
-        for _attempt in range(2):
-            self.run.herdr("agent", "prompt", self.pane, BUSY_PROMPT.format(tag=tag))
-            end = time.time() + 15
-            while self.status() in IDLE and time.time() < end:
-                time.sleep(0.25)
-            if self.status() not in IDLE:
-                break
-            time.sleep(2)
-        else:
-            self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
-                             "result": "BLOCKED", "checks": {"reason": "busy prompt not taken twice"}})
-            return
-        time.sleep(3)  # well inside `sleep 12`: the agent is running a tool
-        busy_at_send = self.status()
-        checks = {"busy_at_send": busy_at_send}
-        role = "main"
-        if kind == "invite" and channel == "1:1":
-            # First contact from the fresh coordinator, mid-turn: the pair auto-joins (no invitation) and the opener
-            # is a p1 message that must arrive inside the turn.
-            role = "fresh"
-            ref = {"message": self.send("p1", f"pair-open-busy {self.run.run_id}", direct=True, role=role)}
-            thread = self.pair_thread(role=role)
-            ref["thread"] = thread
-        elif kind == "invite":
-            name = f"wake-e2e-busy-{self.name}-{self.run.run_id}"
-            thread = self.coord("thread", "create", "--name", name, "--topic", f"wake-e2e busy test thread for {self.name}",
-                                "--goal", "wake e2e test traffic")["result"]["data"]
-            self.coord("invite", thread, "--seat", self.seat)
-            ref = {"thread": thread}
-        else:
-            ref = {"message": self.send(kind, f"{case} {self.run.run_id}", direct=channel == "1:1")}
+        with BusyBarrier(self.run.root) as hold:
+            self.run.herdr("agent", "prompt", self.pane, BUSY_PROMPT.format(tag=tag, hold=hold.command()))
+            hold.wait_entered()
+            busy_at_send = self.status()
+            checks = {"busy_at_send": busy_at_send}
+            role = "main"
+            if kind == "invite" and channel == "1:1":
+                # First contact from the fresh coordinator, mid-turn: the pair auto-joins (no invitation) and the opener
+                # is a p1 message that must arrive inside the turn.
+                role = "fresh"
+                ref = {"message": self.send("p1", f"pair-open-busy {self.run.run_id}", direct=True, role=role)}
+                thread = self.pair_thread(role=role)
+                ref["thread"] = thread
+            elif kind == "invite":
+                name = f"wake-e2e-busy-{self.name}-{self.run.run_id}"
+                thread = self.coord("thread", "create", "--name", name, "--topic", f"wake-e2e busy test thread for {self.name}",
+                                    "--goal", "wake e2e test traffic")["result"]["data"]
+                self.coord("invite", thread, "--seat", self.seat)
+                ref = {"thread": thread}
+            else:
+                ref = {"message": self.send(kind, f"{case} {self.run.run_id}", direct=channel == "1:1")}
+            hold.assert_held()
         anchor = f"Busy-turn test {tag}"
         # The quiet window starts at the busy turn's native end (its BUSY-DONE line, then the first idle status),
         # not after a confirmed-idle wait: that wait would absorb a short wake turn typed right after the turn.

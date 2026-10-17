@@ -23,6 +23,7 @@ pub mod search_barrier;
 #[cfg(feature = "test-support")]
 pub mod server_completion;
 pub mod slow_clock;
+pub mod snapshot;
 pub mod spawn;
 #[cfg(feature = "test-support")]
 pub mod sync_node;

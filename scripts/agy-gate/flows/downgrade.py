@@ -49,13 +49,16 @@ def busy_then(world, pane, sender, thread, label, busy_prompt, busy_step, body, 
     ``go_prompt`` starts, whose first invocation finds the item pending. Returns the message id."""
     if _l6.dismiss_survey(pane):
         world.check("%s: the feedback survey was dismissed" % label, _l6.SURVEY not in _l6.screen_tail(pane, 20))
-    pane.prompt(busy_prompt)
-    served = _l5.await_step(world, busy_step, 30)
-    world.check("%s: the busy turn was served" % label, served is not None)
-    if arm:
-        _l6.arm(world, arm)
-    message = _l6.send(world, sender, thread, body, "--nudge")
-    world.check("%s: the send succeeded" % label, bool(message))
+    with _l6.response_hold(world, busy_step) as assert_held:
+        pane.prompt(busy_prompt)
+        served = _l5.await_step(world, busy_step, 30)
+        world.check("%s: the busy turn was served" % label, served is not None)
+        assert_held()
+        if arm:
+            _l6.arm(world, arm)
+        message = _l6.send(world, sender, thread, body, "--nudge")
+        world.check("%s: the send succeeded" % label, bool(message))
+        assert_held()
     world.check("%s: the busy turn ended" % label, pane.wait("idle", 40))
     if arm_late:
         _l6.arm(world, arm_late)

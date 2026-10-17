@@ -133,30 +133,40 @@ mod bootstrap_recovery {
             host_incarnation: observation.host_boot.clone(),
             witness,
         };
-        let path = crate::test_support::scratch::temp_path(format!("ht-bootstrap-{}.db", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch::temp_path(format!(
+            "ht-bootstrap-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let _files = DatabaseFiles(path.clone());
         let mut db = Connection::open(&path).unwrap();
         schema::initialize(&db, || UtcMillis(0), &crate::test_support::test_node_seed()).unwrap();
         crate::test_support::attach_test_host_to_connection(&db);
-                let store = SqliteStore::new(
+        let store = SqliteStore::new(
             StoreContext::new(path.clone(), cli.clock.clone()).with_test_host(),
             "34750f98bd59fcfc946da45aaabe933b",
             StoreSettings::default(),
         )
         .unwrap();
-        let admission = store.begin_host_observation("34750f98bd59fcfc946da45aaabe933b", crate::test_support::test_host_id(), &context.budget).unwrap();
-        let snapshot = cli.enumerate_targets(&context).unwrap();
-        let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
-        let stage = store.begin_snapshot_stage(header, &context.budget).unwrap();
-        store
-            .stage_snapshot_targets(
-                &stage.id,
-                0,
-                &snapshot.targets,
-                DurableWorkAdmission::new(16).unwrap(),
+        let admission = store
+            .begin_host_observation(
+                "34750f98bd59fcfc946da45aaabe933b",
+                crate::test_support::test_host_id(),
                 &context.budget,
             )
             .unwrap();
+        let snapshot = cli.enumerate_targets(&context).unwrap();
+        let header = SnapshotHeader::from_captured(admission, &snapshot).unwrap();
+        let stage = store.begin_snapshot_stage(header, &context.budget).unwrap();
+        crate::test_support::snapshot::stage_all(&snapshot.targets, |offset, targets| {
+            store.stage_snapshot_targets(
+                &stage.id,
+                offset,
+                targets,
+                DurableWorkAdmission::new(16).unwrap(),
+                &context.budget,
+            )
+        })
+        .unwrap();
         store
             .seal_snapshot_stage(&stage.id, &context.budget)
             .unwrap();

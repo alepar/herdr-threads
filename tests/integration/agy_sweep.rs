@@ -361,8 +361,9 @@ fn wake_on_all_wakes_a_native_hook_pull_seat_for_a_lazy_row_and_nudge_never() {
     assert_eq!(agy.lazy_state(&rig, &first), "pending");
 
     // `wake_on: all` re-judges the pending row: one wake, typed as the minimal wake-up text.
-    agy.wake_on(&rig, "all");
     let mark_all = rig.host.mark();
+    agy.wake_on(&rig, "all");
+    settle_wake_lane(&rig);
     rig.wait_prompt(mark_all, PANE_G);
     assert_eq!(prompts(&rig, mark_all, PANE_G), vec![WAKE_UP.to_owned()]);
     // The lazy row itself is still delivered by the pull, not by the wake.
@@ -404,9 +405,9 @@ fn wake_on_all_promotes_a_lazy_row_on_a_live_channel_instead_of_a_native_wake() 
     rig.assert_no_prompt(mark, QUIET);
 
     // `all`: promoted to a message line, still no ACK, still no native wake.
+    let mark_all = rig.host.mark();
     rig.cli(Some((&rig.b, PANE_B)), &["wake-on", "all"])
         .data("wake-on all");
-    let mark_all = rig.host.mark();
     let loud = rig.send_lazy("promoted lazy");
     let line = watch.wait_item(&loud);
     assert_eq!(line["kind"], "message", "{line}");

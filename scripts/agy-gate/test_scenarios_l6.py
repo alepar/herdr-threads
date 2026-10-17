@@ -37,6 +37,15 @@ def frame(kind, mid, body, thread='tT1 "gate"', sender="sS1"):
 
 
 class L6ScenarioTests(unittest.TestCase):
+    def test_every_busy_send_step_waits_for_publication_release(self):
+        for name, labels in (("delivery", ("busy",)), ("delivery-stop", ("stop-busy",)),
+                             ("delivery-cancel", ("cancel-busy",)), ("delivery-error", ("error-busy",)),
+                             ("downgrade", ("busy1", "busy2", "busy3")),
+                             ("downgrade-ignore", ("ign-busy1", "ign-busy2"))):
+            steps = {step["label"]: step for step in load(name)["steps"]}
+            for label in labels:
+                self.assertGreater(steps[label]["hold_ms"], 0, (name, label))
+
     def test_scenarios_validate(self):
         for name in SCENARIOS:
             self.assertEqual(load(name)["name"], name)

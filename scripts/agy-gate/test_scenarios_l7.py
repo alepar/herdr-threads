@@ -55,9 +55,9 @@ class L7ScenarioTests(unittest.TestCase):
         for reply in calls:
             self.assertTrue({"toolAction", "toolSummary", "Subagents"} <= set(reply["args"]))
 
-    def test_busy_step_holds_long_enough_to_send_into(self):
+    def test_busy_step_waits_for_publication_release(self):
         steps = {s["label"]: s for s in load("wake")["steps"]}
-        self.assertGreaterEqual(steps["c-busy"]["delay_ms"], 8000)
+        self.assertGreater(steps["c-busy"]["hold_ms"], 0)
 
     def test_wake_steps_route_by_their_own_markers(self):
         cursor = scenario.Cursor(load("wake"))

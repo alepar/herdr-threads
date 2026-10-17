@@ -46,11 +46,14 @@ def busy_turn_send(world, pane, sender, thread, prompt, busy_label, sends):
     its end. Returns the sent message ids, in order."""
     if _l6.dismiss_survey(pane):
         world.check("%s: the feedback survey was dismissed" % busy_label, _l6.SURVEY not in _l6.screen_tail(pane, 20))
-    pane.prompt(prompt)
-    served = _l5.await_step(world, busy_label, 30)
-    world.check("%s: the busy turn was served" % busy_label, served is not None)
-    ids = [_l6.send(world, sender, thread, body, *flags) for body, flags in sends]
-    world.check("%s: every send succeeded" % busy_label, all(ids), "ids=%s" % ids)
+    with _l6.response_hold(world, busy_label) as assert_held:
+        pane.prompt(prompt)
+        served = _l5.await_step(world, busy_label, 30)
+        world.check("%s: the busy turn was served" % busy_label, served is not None)
+        assert_held()
+        ids = [_l6.send(world, sender, thread, body, *flags) for body, flags in sends]
+        world.check("%s: every send succeeded" % busy_label, all(ids), "ids=%s" % ids)
+        assert_held()
     world.check("%s: the busy turn ended" % busy_label, pane.wait("idle", 40))
     return ids
 

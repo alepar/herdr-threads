@@ -10,7 +10,7 @@
   },
   "steps": [
     {
-      "label": "error-busy",
+      "label": "error-busy", "hold_ms": 120000,
       "match": {
         "contains": [
           "ERROR-BUSY"

@@ -585,9 +585,8 @@ mod tests {
         // macOS assesses the first exec of every newly written file
         // (syspolicyd): ~0.2 s idle, several seconds while a loaded suite
         // writes new executables. Pay it here, before the budget's clock
-        // starts, so the 5 s budget and the hung-child watcher's 3 s window
-        // measure the probe and not the host's assessment queue. The guard
-        // line exits before the body runs.
+        // starts, so the 5 s budget measures the probe and not the host's
+        // assessment queue. The guard line exits before the body runs.
         use crate::test_support::spawn::SpawnOwned;
         let warm = crate::test_support::spawn::command(&path)
             .arg("--fixture-warm")
@@ -678,10 +677,10 @@ mod tests {
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let watcher_done = done.clone();
         let watcher = std::thread::spawn(move || {
-            let started = Instant::now();
-            while started.elapsed() < Duration::from_secs(3)
-                && !watcher_done.load(std::sync::atomic::Ordering::SeqCst)
-            {
+            // Child entry, rather than an independent timer, triggers cancellation.
+            // The capture's own budget bounds setup; `done` ends this watcher
+            // if capture returns before the child can publish its pid.
+            while !watcher_done.load(std::sync::atomic::Ordering::SeqCst) {
                 if std::fs::read_to_string(&pidfile)
                     .ok()
                     .and_then(|v| v.parse::<i32>().ok())

@@ -32,6 +32,7 @@ jobs:
     timeout-minutes: 45
     env:
       HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-full-suite
+      HT_SWEEP_PANIC_FILE: ${{ github.workspace }}/sweep-panics.log
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -134,6 +135,14 @@ jobs:
             grep -E '^ +Summary|^ +(FAIL|SIGKILL|TIMEOUT|LEAK)' full-suite.log 2>/dev/null | sort -u || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve sweep panic diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sweep-diagnostics-full-suite
+          path: ${{ env.HT_SWEEP_PANIC_FILE }}
+          if-no-files-found: ignore
 
       - name: No leaked test processes
         if: always()

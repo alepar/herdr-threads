@@ -134,7 +134,7 @@ def _validate_reply(r, path):
 
 def _validate_step(step, path, seen):
     _expect_dict(step, path)
-    _check_keys(step, ("label", "match", "delay_ms", "bind", "reply"), path)
+    _check_keys(step, ("label", "match", "delay_ms", "hold_ms", "bind", "reply"), path)
     label = step.get("label")
     if not isinstance(label, str) or not label:
         _fail(path + ".label", "required non-empty string")
@@ -154,6 +154,10 @@ def _validate_step(step, path, seen):
     if not _is_int(delay) or delay < 0:
         _fail(path + ".delay_ms", "expected an integer >= 0")
     out["delay_ms"] = delay
+    hold = step.get("hold_ms", 0)
+    if not _is_int(hold) or hold < 0:
+        _fail(path + ".hold_ms", "expected an integer >= 0")
+    out["hold_ms"] = hold
     if "bind" in step:
         bind = _expect_dict(step["bind"], path + ".bind")
         _check_keys(bind, ("marker", "index"), path + ".bind")

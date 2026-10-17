@@ -53,8 +53,8 @@ struct Scene(lanes_latency::Scene);
 
 impl Scene {
     fn new(case: &str, recipients: usize) -> Option<Self> {
-        let scene = lanes_latency::Scene::new(case, recipients)?;
         keep_panics_visible();
+        let scene = lanes_latency::Scene::new(case, recipients)?;
         wait_lanes_settled_latency(&scene.session);
         Some(Self(scene))
     }
@@ -316,6 +316,14 @@ impl Drop for AttemptDiagnostics {
             kicks
         );
         eprint!("{report}");
+        // Keep producer/observer timing with panic details on CI: stderr belongs
+        // to the private daemon and disappears when the fixture removes its root.
+        if let Some(path) = std::env::var_os("HT_SWEEP_PANIC_FILE") {
+            use std::io::Write;
+            if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = file.write_all(report.as_bytes());
+            }
+        }
         if let Some(dir) = std::env::var_os("HT_FOUR_DIAGNOSTICS_DIR") {
             let path = std::path::PathBuf::from(dir).join(format!(
                 "sweep-{}-{}.log",
@@ -2304,7 +2312,7 @@ fn wait_lanes_settled_latency(s: &lanes_latency::Session) {
 /// The in-process daemon points the process stderr at its daemon.log, so a
 /// failed assertion's message would vanish with the test's scratch directory.
 /// With `HT_SWEEP_PANIC_FILE` set, panics are also appended there.
-fn keep_panics_visible() {
+pub(super) fn keep_panics_visible() {
     let Some(path) = std::env::var_os("HT_SWEEP_PANIC_FILE") else {
         return;
     };

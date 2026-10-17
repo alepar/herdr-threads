@@ -32,6 +32,68 @@ class TempDir(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
 
+class BusyPublicationBarrier(TempDir):
+    def stop_child(self, child):
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=2)
+
+    def test_tool_remains_held_across_delayed_publication(self):
+        with W.BusyBarrier(self.tmp) as hold:
+            child = subprocess.Popen(shlex.split(hold.command()))
+            self.addCleanup(self.stop_child, child)
+            hold.wait_entered(timeout=2)
+            # A coordinator may be delayed arbitrarily after observing tool entry.
+            time.sleep(0.03)
+            self.assertIsNone(child.poll())
+            hold.assert_held()
+        child.wait(timeout=2)
+        self.assertEqual(child.returncode, 0)
+
+    def test_busy_case_holds_tool_until_delayed_send_commits(self):
+        children, rows = [], []
+        def herdr(*args):
+            command = args[-1].split("`", 2)[1]
+            # Controlled expiry of the old sleep fixture, without waiting twelve seconds.
+            command = command.replace("sleep 12", "sleep .02")
+            children.append(subprocess.Popen(shlex.split(command)))
+        def send(*args, **kwargs):
+            time.sleep(.05)  # publication completes after the former fixture expired
+            self.assertIsNone(children[0].poll(), "tool exited before send commit")
+            return "mTEST"
+        run = SimpleNamespace(root=self.tmp, run_id="test", herdr=herdr, record=rows.append)
+        recipient = object.__new__(W.Recipient)
+        recipient.run, recipient.last_wake = run, 0
+        recipient.name, recipient.harness, recipient.threshold, recipient.pane = "test", "codex", 0, "w1:p1"
+        recipient.wait_idle = recipient.settled = lambda: None
+        recipient.status = lambda: "working" if children and children[0].poll() is None else "idle"
+        recipient.send = send
+        recipient.screen = lambda *args: "Busy-turn test busy-send-p0/group test: BUSY-DONE.\nmTEST\nBUSY-DONE"
+        recipient.watch_quiet = lambda seconds: None
+        try:
+            recipient.busy_case("busy-send-p0/group")
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=2)
+        self.assertEqual(rows[0]["result"], "PASS", rows)
+
+    def test_watchdog_expiry_is_setup_failure(self):
+        with W.BusyBarrier(self.tmp, watchdog=0.03) as hold:
+            child = subprocess.Popen(shlex.split(hold.command()))
+            self.addCleanup(self.stop_child, child)
+            child.wait(timeout=2)
+            self.assertTrue((hold.path / "entered").exists())
+            with self.assertRaisesRegex(RuntimeError, "expired"):
+                hold.assert_held()
+
+    def test_busy_status_without_tool_entry_is_insufficient(self):
+        with W.BusyBarrier(self.tmp) as hold:
+            with self.assertRaisesRegex(RuntimeError, "tool did not enter"):
+                hold.wait_entered(timeout=0.01)
+
+
 class CodexAuthCopy(TempDir):
     def setUp(self):
         super().setUp()
@@ -801,11 +863,13 @@ class MixedOrderCase(unittest.TestCase):
             row_, _ = self.run_case(["ack", "p0", "p1", "p5"], threshold=threshold)
             self.assertEqual((row_["result"], row_["threshold"]), ("PASS", threshold))
 
-    def test_busy_case_kinds_map_to_send_flags(self):
+    @mock.patch.object(W, "BusyBarrier", autospec=True)
+    def test_busy_case_kinds_map_to_send_flags(self, barrier):
+        barrier.return_value.__enter__.return_value = barrier.return_value
         for case, kind in (("busy-send-p1/group", "p1"), ("busy-send-p0/1:1", "p0"), ("busy-send-ack/group", "ack")):
             sent = []
             r = object.__new__(W.Recipient)
-            run = SimpleNamespace(run_id="000000-test", record=lambda row_: None, stopping=threading.Event(),
+            run = SimpleNamespace(run_id="000000-test", root=None, record=lambda row_: None, stopping=threading.Event(),
                                   herdr=lambda *a, **k: {})
             r.run, r.name, r.harness, r.threshold, r.pane, r.seat = run, "cl-t0", "claude", 0, "w9:p1", "sREC"
             r.last_wake, r.group, r.pair = 0.0, "tGROUP", None
@@ -1011,7 +1075,9 @@ class BusyQuietWindow(unittest.TestCase):
         W.BUSY_AFTER_S, W.SPACING_S = 3.0, 0.0
         self.rows = []
 
-    def test_post_turn_wake_is_seen_and_the_opener_is_not_in_turn(self):
+    @mock.patch.object(W, "BusyBarrier", autospec=True)
+    def test_post_turn_wake_is_seen_and_the_opener_is_not_in_turn(self, barrier):
+        barrier.return_value.__enter__.return_value = barrier.return_value
         t0 = []
         mid = "mOPENER01"
         tag = "busy-invite/1:1 000000-test"
@@ -1033,7 +1099,7 @@ class BusyQuietWindow(unittest.TestCase):
             if argv[:2] == ("agent", "prompt"):
                 t0.append(time.time())
             return {}
-        run = SimpleNamespace(run_id="000000-test", record=self.rows.append, stopping=threading.Event(), herdr=herdr)
+        run = SimpleNamespace(run_id="000000-test", root=None, record=self.rows.append, stopping=threading.Event(), herdr=herdr)
         r.run, r.name, r.harness, r.threshold, r.pane, r.seat = run, "co-t-1", "codex", -1, "w9:p1", "sREC"
         r.last_wake, r.group, r.pair = 0.0, "tGROUP", None
         r.status = lambda: "working" if any(a <= since() < b for a, b in turns) else "idle"

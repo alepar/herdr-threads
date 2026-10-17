@@ -418,15 +418,19 @@ impl Fixture {
                     &budget,
                 )
                 .unwrap();
-            store
-                .stage_snapshot_targets(
-                    &stage.id,
-                    0,
-                    &captured.targets,
-                    DurableWorkAdmission::new(16).unwrap(),
-                    &budget,
-                )
-                .unwrap();
+            herdr_threads::test_support::snapshot::stage_all(
+                &captured.targets,
+                |offset, targets| {
+                    store.stage_snapshot_targets(
+                        &stage.id,
+                        offset,
+                        targets,
+                        DurableWorkAdmission::new(16).unwrap(),
+                        &budget,
+                    )
+                },
+            )
+            .unwrap();
             store.seal_snapshot_stage(&stage.id, &budget).unwrap();
             store.publish_snapshot_stage(&stage.id, &budget).unwrap();
         }

@@ -6,7 +6,7 @@ One world, one enrolled agy seat on one thread. A wake is a ``<USER_REQUEST>`` t
 a. ACK-required N1 to an idle agy: within 60 s an untyped request arrives and the same request's
    system messages hold N1's frame (the woken turn's first ``PreInvocation`` injected it).
 b. Lazy-only Z1: no new main request within 15 s.
-c. N2 sent during a ``delay_ms`` busy step: no untyped request; N2 is delivered in-turn at the next
+c. N2 sent during an explicitly held busy step: no untyped request; N2 is delivered in-turn at the next
    ``PreInvocation``.
 d. A draft is typed, N3 sent: no wake in 15 s and the draft is intact in the detection text.
 e. The model runs ``herdr-threads wake-on all`` through ``run_command``; lazy Z2 then wakes.
@@ -68,11 +68,14 @@ def phase_b(world, pane, sender, thread, typed):
 
 def phase_c(world, pane, sender, thread, typed):
     base = _l7.untyped_count(world, typed)
-    typed.prompt(pane, "WAKE-BUSY-C go")
-    served = _l5.await_step(world, "c-busy", 30)
-    world.check("c: the busy turn was served", served is not None)
-    n2 = _l6.send(world, sender, thread, "WAKE-N2 mid turn", "--nudge")
-    world.check("c: N2 was sent during the busy step", bool(n2))
+    with _l6.response_hold(world, "c-busy") as assert_held:
+        typed.prompt(pane, "WAKE-BUSY-C go")
+        served = _l5.await_step(world, "c-busy", 30)
+        world.check("c: the busy turn was served", served is not None)
+        assert_held()
+        n2 = _l6.send(world, sender, thread, "WAKE-N2 mid turn", "--nudge")
+        world.check("c: N2 was sent during the busy step", bool(n2))
+        assert_held()
     after = _l5.await_step(world, "c-after", 40)
     world.check("c: N2 is delivered in-turn at the next PreInvocation",
                 after is not None and n2 in _l7.body_frames(world, after),

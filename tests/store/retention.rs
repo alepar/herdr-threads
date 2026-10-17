@@ -236,17 +236,17 @@ fn stage(
     let snap = snapshot(sequence, panes);
     let header = SnapshotHeader::from_captured(admission.clone(), &snap).unwrap();
     let stage = StorePort::begin_snapshot_stage(store, header, &budget()).unwrap();
-    for (chunk, targets) in snap.targets.chunks(16).enumerate() {
+    crate::test_support::snapshot::stage_all(&snap.targets, |offset, targets| {
         StorePort::stage_snapshot_targets(
             store,
             &stage.id,
-            (chunk * 16) as u64,
+            offset,
             targets,
             DurableWorkAdmission::new(16).unwrap(),
             &budget(),
         )
-        .unwrap();
-    }
+    })
+    .unwrap();
     (admission, stage.id)
 }
 

@@ -7,6 +7,8 @@ database (test-infra spec D6 observation 1), transcript reads, and the ``hooks.j
 """
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import re
 import shlex
@@ -32,6 +34,23 @@ OVERSIZE = 10 * 1024  # over the 8 KiB page budget, so the frame is truncated
 
 load_scenario = _l5.load_scenario
 query = _l5.query
+
+
+@contextlib.contextmanager
+def response_hold(world, label):
+    """Keep the scripted response live until all coordinator sends have committed."""
+    path = Path(world.ctl) / ("hold-" + hashlib.sha256(label.encode()).hexdigest())
+    for suffix in (".entered", ".release", ".expired"):
+        Path(str(path) + suffix).unlink(missing_ok=True)
+    def assert_held():
+        if not observe.wait_until(lambda: Path(str(path) + ".entered").exists(), 30):
+            raise RuntimeError("busy response did not enter: " + label)
+        if Path(str(path) + ".expired").exists():
+            raise RuntimeError("busy response expired before publication completed: " + label)
+    try:
+        yield assert_held
+    finally:
+        Path(str(path) + ".release").touch()
 
 
 def data_of(doc):

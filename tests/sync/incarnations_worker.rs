@@ -990,20 +990,34 @@ fn own_history_release_kicks_the_apply_lane() {
     .expect("start the apply lane");
     let sync = node.store.context().sync().expect("journal open");
     let hold = sync.own_history_hold();
-    // Let the lane finish its startup replay and wait; its tick never elapses on
-    // the manual clock, so only a kick can wake it from here.
-    std::thread::sleep(Duration::from_millis(500));
+    // An idle event follows the complete startup drain. Startup must finish
+    // before the release sets its hint, or startup could consume that hint
+    // even if the release kick were missing.
+    let pacer = kicks
+        .pacer(Lane::Apply)
+        .expect("the apply pacer is registered");
+    let startup_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while pacer.idle_events() == 0 && std::time::Instant::now() < startup_deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let startup_idle = pacer.idle_events();
     hold.set(HoldSource::Links, true, node.clock.monotonic_now());
     hold.set(HoldSource::Links, false, node.clock.monotonic_now());
     // The release asks for a pass; the lane takes the hint.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while sync.apply_hint.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+    while (sync.apply_hint.load(Ordering::Acquire) || pacer.idle_events() <= startup_idle)
+        && std::time::Instant::now() < deadline
+    {
         std::thread::sleep(Duration::from_millis(10));
     }
-    let taken = !sync.apply_hint.load(Ordering::Acquire);
+    let taken = !sync.apply_hint.load(Ordering::Acquire) && pacer.idle_events() > startup_idle;
     stop.cancel();
     kicks.kick(crate::service::kicks::LaneSet::EMPTY.with(Lane::Apply));
     lane.join().expect("the apply lane stops");
+    assert!(
+        startup_idle > 0,
+        "the startup drain finished before release"
+    );
     assert!(taken, "the lane ran a pass after the hold lifted");
 }
 

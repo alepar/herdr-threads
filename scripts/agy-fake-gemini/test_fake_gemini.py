@@ -534,6 +534,34 @@ class StreamTests(ServerCase):
         self.assertIn(b"functionCall", data)
 
 
+class ResponseHoldTests(ServerCase):
+    def test_response_stays_held_after_old_delay_until_publication_releases(self):
+        # delay_ms=20 models the former 5/9 s fixture; coordinator resumes after expiry.
+        self.set_scenario(scn([step("busy", delay_ms=20, hold_ms=2000)]))
+        result = []
+        worker = threading.Thread(target=lambda: result.append(self.main_json()))
+        worker.start()
+        self.addCleanup(worker.join, 3)
+        until = time.monotonic() + 2
+        while not self.log() and time.monotonic() < until:
+            time.sleep(.005)
+        self.assertTrue(self.log(), "request entered")
+        time.sleep(.05)
+        try:
+            self.assertTrue(worker.is_alive(), "busy response expired before send commit")
+        finally:
+            # Release even when the assertion fails, so the HTTP worker never leaks.
+            srvmod.release_response(self.ctl, "busy")
+        worker.join(2)
+        self.assertEqual(result[0][0], 200)
+
+    def test_expired_hold_returns_failure_instead_of_a_successful_response(self):
+        self.set_scenario(scn([step("busy", hold_ms=20)]))
+        status, body = self.main_json()
+        self.assertEqual(status, 503)
+        self.assertIn("HOLD-EXPIRED", body["error"]["message"])
+
+
 class DelayAndLogTests(ServerCase):
     def test_record_written_before_delay(self):
         self.set_scenario(scn([step("slow", delay_ms=800)]))
