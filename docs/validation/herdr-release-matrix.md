@@ -4,6 +4,12 @@
 
 There is no provider, model or credential. The Codex agent is a stand-in, `tests/fixtures/herdr-matrix/codex.js` (Python, started in npm Codex's `<interpreter> .../codex.js` shape so Herdr and herdr-threads both recognize it). It draws Codex's composer, footer and terminal title, and it runs the installed `hooks.json` the way Codex does: SessionStart, UserPromptSubmit and PreToolUse with the turn's `turn_id`, Stop and Interrupt, SessionEnd. Every server also has Herdr's own Codex integration installed, as a Herdr user has it. So every binding, delivery and wake in the matrix goes through the real hooks, the real daemon and the release under test. The Claude stand-in only draws Claude's idle screen.
 
+Complete hook injection automatically ACKs requested receipts; a later inbox call need not repeat the body. Core coverage checks the body in the actual hook context and the sender's acknowledged receipt. Wake coverage keeps the small p0 request's wake and in-turn delivery assertions and checks its automatic ACK. Its separate overdue request exceeds the hook's display bound: the hook prints an inbox continuation, the receipt stays pending past its deadline, and a complete text inbox display settles it. No explicit ACK command is needed on these display paths.
+
+The oversized request also spans text inbox pages. The test follows the exact printed `next:` commands, checks that the first partial page leaves the receipt pending, and requires the final body marker before checking acknowledgement.
+
+The stand-in records `ready` after installing raw terminal input and drawing its composer. Launch setup waits for this event as well as SessionStart before submitting test input: SessionStart alone precedes `tty.setraw`, whose input flush could discard the busy test's first prompt.
+
 Wall time: one release is about 130 s, dominated by the per-seat wake spacing of the move test (about 65 s for the others, which run alongside it); the five listed releases take about 4 minutes at `--jobs 3` on an M-series Mac.
 
 Herdr behaviour the move test pins, identical on 0.9.1 through 0.9.5: renames never change ids; a move inside a workspace keeps the pane id; a move to another workspace gives a new pane id with the same terminal id, the running processes keep the old `HERDR_PANE_ID`, and `pane.get`/`pane.current` answer the old id (through any chain of moves) with the pane's current record; ids are never reused within a server. There is no tab-move command.
@@ -23,8 +29,8 @@ The 1.0.1 column is the single smoke test that version shipped. The 1.0.2 column
 | Membership lifecycle | `join`, `leave`, `archive`, `reopen` | no | core |
 | Priorities | `send -p 0/3/9`, `--nudge` | no | core, busy |
 | 1:1 pair, auto-join | `send --seat` | no | core, wake |
-| Required ACK and receipts | `send --require-ack`, text `inbox` ACK on display (by the agent), `ack`, `delivery recipients`, `pending-receipts` | yes (people) | core (agent ACKs by display), wake (agent `ack`) |
-| Overdue required ACK | `--deadline`, `overdue` | no | wake |
+| Required ACK and receipts | `send --require-ack`, complete hook injection and text `inbox` ACK on display, `delivery recipients`, `pending-receipts` | yes (people) | core (hook display), wake (hook and text inbox display) |
+| Overdue required ACK | `--deadline`, `overdue`; an oversized body remains pending until full display | no | wake |
 | Reading never ACKs | `read`, `body`, `search` | no | core |
 | Nudge threshold | `nudge-threshold`, `wake-on` alias | no | core, wake |
 | Wake (Herdr types into the idle composer) | p0 at T = 0, p3 at T = 3; no wake for p1 at T = 0 or p5 at T = 3 | no | wake |
@@ -55,3 +61,17 @@ The 1.0.1 column is the single smoke test that version shipped. The 1.0.2 column
 | `view`, `cached-check-in`, `diagnostics`, other `delivery` views | Read-only views of daemon state with no Herdr dependency | Suite |
 | Hermes and agy launch kinds | Their own gates (`scripts/agy-gate`, the Hermes enrollment smoke) | Those gates |
 | Busy cases beyond one p0 (busy invite, busy ACK request) | One busy case already pins the Herdr-dependent part (working detection, no nudge, tool-boundary delivery) | The real-agent wake e2e busy cases |
+
+## V2 auto ACK repair verification
+
+Verified on 2026-10-16 on macOS arm64, from candidate base `4fc664dc8` plus this test and fixture repair. Command: `HT_LEAK_RUN_ID=8d6d7343-65e1-4b03-8434-b860bf978c61 nice scripts/herdr-release-smoke --jobs 3`. Every listed release and all five cases passed (25 checks); the command exited 0. Both the driver's leak check and the subsequent scoped process/scratch-file check were clean.
+
+| Herdr | Time | Core | Launch and handoff | Wake | Busy | Move |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.9.1 | 140.6 s | PASS | PASS | PASS | PASS | PASS |
+| 0.9.2 | 143.2 s | PASS | PASS | PASS | PASS | PASS |
+| 0.9.3 | 140.3 s | PASS | PASS | PASS | PASS | PASS |
+| 0.9.4 | 133.7 s | PASS | PASS | PASS | PASS | PASS |
+| 0.9.5 | 136.0 s | PASS | PASS | PASS | PASS | PASS |
+
+All-target/all-feature Clippy with warnings denied, the harness-neutral check, the default-feature guard, formatting and whitespace checks passed. Independent read-only review found no remaining issues. Earlier runs exposed the text inbox page bound and the stand-in startup input-flush race described above; those runs also cleaned up their private servers. Product code and model-visible delivery text are unchanged.

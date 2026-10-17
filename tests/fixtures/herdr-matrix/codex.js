@@ -153,6 +153,7 @@ def main():
     tty.setraw(fd)
     try:
         draw()
+        log("ready")  # raw input is installed; tty.setraw's input flush is behind us
         while True:
             if queued:
                 data, queued = queued, ""
