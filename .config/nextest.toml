@@ -120,6 +120,15 @@ test(/::(composer_settle_returns_unknown_when_cancelled|ctrl_c_during_a_call_ret
 threads-required = "num-test-threads"
 priority = 100
 
+# This replay chain must first reach agent.start's scripted refusal through
+# real native pane reads (750 ms each). A preflight timeout leaves zero starts,
+# before the replay assertions are exercised (ht-2b93). Reserve the runner's
+# slots at the front, like the other real-time chains; keep every bound intact.
+[[profile.default.overrides]]
+filter = "binary(integration) & test(=topology_activation::elected_live_registered_phase_replays_recheck_current_caller_recipient_and_payload)"
+threads-required = "num-test-threads"
+priority = 100
+
 # Registered-resume tests driving the in-process hook with Hermes envelopes:
 # each envelope carries the production 1200 ms callback cap for
 # pre_llm_call, which the hook must meet against a spawned fixture service.

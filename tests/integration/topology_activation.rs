@@ -1504,7 +1504,12 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
     let refused_starts = f.starts.load(Ordering::Relaxed);
     // Two seconds at 100 ms spacing bounds the confirmed refusal attempts;
     // subsequent canonical phase replays must add no native requests.
-    assert!((1..=21).contains(&refused_starts));
+    assert!(
+        (1..=21).contains(&refused_starts),
+        "refused starts: {refused_starts}; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
     assert_eq!(
         f.db()
             .query_row("SELECT state FROM bootstrap_handoffs", [], |r| r

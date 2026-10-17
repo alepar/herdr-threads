@@ -176,6 +176,54 @@ Local execution records (retained, not external research):
   `/private/tmp/repeat_live_gate_selftests.py`,
   `/private/tmp/live-gate-wake-selftest-exact-final.log`.
 
+## ht-2b93: topology replay setup depends on native preflight latency (2026-10-17)
+
+Hosted push run `39073803565`, job `117516691036`, tree `c85360686`, failed
+`topology_activation::elected_live_registered_phase_replays_recheck_current_caller_recipient_and_payload`
+in 0.859 s at its `1..=21` refused-start count. The retained host trace contains
+no `agent.start`: the count was zero, not an excess of retries. Its final event
+was a successful `pane.get` reply write. A peer write does not establish that
+the client read and parsed it before its deadline.
+
+`src/host/native.rs::pane_witnessed` bounds the request and parse at 750 ms.
+The test assumes the public chain reaches the scripted `agent_pane_busy`
+refusal before checking canonical phase replays. A timeout at an earlier pane
+read violates that setup assumption even though the product correctly refuses
+to start. No missing canonical readiness boundary was found in the inspected
+fixture and launch path; the fixture already awaits recovery reconciliation.
+
+Controlled reproduction: temporarily delay the fixture's third post-create
+`pane.get` reply by 800 ms. The original count assertion fails with zero;
+added diagnostics show `deadline_exceeded`, phase `launch`, state `attached`,
+`possible_start=false`, and retained invitation/message IDs. The delay was
+removed. This demonstrates the preflight-budget failure mechanism; it does
+**not** establish the exact historical CI schedule. The CI trace's successful
+write also permits client descheduling after the write, unlike the delayed
+server reproduction's final broken pipe. The missing original CLI diagnostics
+prevent a definitive historical attribution.
+
+Mitigation: reserve all nextest runner slots for this exact test at priority
+100, following the existing rules for real-time public chains. Preserve the
+750 ms native cap, `1..=21` assertion, and every canonical replay/retained-state
+assertion. Add CLI stdout/stderr to the count failure, so another occurrence
+identifies the refused phase and error. No product change, timeout increase,
+retry, or broad test-group serialization. Runner isolation reduces contention
+from sibling tests; unrelated external processes can still starve it.
+
+Validation: baseline 20/20 under eight owned CPU workers; all workers terminated
+and reaped. Final nextest exact test passes (4.024 s), followed by five passing
+runs of the final binary. Independent review found no must-fix issue and agreed
+with the qualified attribution above. All-feature clippy passes (1m06s) and
+default-feature clippy passes (1m20s); both exceed the one-minute incremental
+lint target on this newly seeded worktree's first all-target checks. No lint
+budget was raised. Default-feature build guard, harness-neutral, format and
+diff checks pass. Scoped process/temp leak checks pass for both baseline and
+final runs. No full-suite run was performed for this three-file follow-up;
+the merged suite still owns recurrence and total-runtime qualification.
+Evidence: CI `/tmp/ht-ci202-fail.log`,
+local `.tmp/topology-refused-starts/baseline-*.log` and `final-*.log` in the
+`fix/topology-refused-starts` worktree. These scratch logs are not versioned.
+
 ## Bibliography
 
 [1] [Google: flakiness triage and remedies](https://testing.googleblog.com/2021/03/test-flakiness-one-of-main-challenges.html) — primary source, retrieved 2026-10-17.
