@@ -7428,11 +7428,15 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
         "held-baseline",
         "released",
         "created-after",
+        "unresolved-target-after",
     ] {
         let (context, conn, path, store, mut observation, budget) = ordinary_resolution_fixture();
-        if state == "created-after" {
+        if matches!(state, "created-after" | "unresolved-target-after") {
             observation.target = HostTargetId::new("created-after");
             observation.terminal = Some(TerminalId::new("terminal-created-after"));
+        }
+        if state == "unresolved-target-after" {
+            conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at,home_node,is_local,host_id) VALUES ('prior-seat','34750f98bd59fcfc946da45aaabe933b','unresolved','native','created-after',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))", []).unwrap();
         }
         let request = ResolveSeat {
             host: crate::test_support::test_host_locator(),
@@ -7472,11 +7476,26 @@ fn ordinary_resolution_enforces_durable_allocation_classes_after_reopen() {
         if state == "created-after" {
             assert!(matches!(result.unwrap(), Outcome::Resolved(_)));
         } else {
-            assert!(result.is_err(), "{state}");
+            let error = result.unwrap_err();
+            assert_eq!(error.code, ErrorCode::TargetUnresolved, "{state}");
+            if state == "unresolved-target-after" {
+                assert!(
+                    error.detail.contains("unresolved seat mapping"),
+                    "{}",
+                    error.detail
+                );
+                assert!(
+                    error
+                        .detail
+                        .contains("herdr-threads seat inspect prior-seat"),
+                    "{}",
+                    error.detail
+                );
+            }
             assert_eq!(
                 conn.query_row("SELECT count(*) FROM seats", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                0
+                i64::from(state == "unresolved-target-after")
             );
             assert_eq!(
                 conn.query_row("SELECT count(*) FROM operations", [], |r| r

@@ -11,11 +11,16 @@
 - **Breaking: `doctor --json` names the node.** `instance_dir` is now `node_dir`, and the daemon id is a 32-hex node id instead of a hyphenated UUID.
 - **Breaking: v1 retries do not resolve.** A `next: herdr-threads retry <ref>` printed by v1.x refers to the old store.
 
+## v1.2.2
+
+- **`handoff --new-tab` and `launch` wait for a new pane's shell.** On a busy machine Herdr can refuse to start an agent in a just-created tab until its shell is interactive (`agent_pane_busy`), and the handoff or launch failed. The start is now retried, for up to 2 s, only on that exact refusal (nothing has started at that point); a start that may have happened is never retried, and a pane that stays busy still fails cleanly as not started, so `retry` reuses the same tab, pair and message.
+
 ## v1.2.1
 
 - **One-way store upgrade to schema 48.** The first daemon start of 1.2.1 adds an index for open restore holds (`migrations/0048_recovery_hold_health.sql`); v1.2.0 and older then refuse the upgraded store (`unsupported schema version 48`). Back up the state directory first if you might go back to 1.2.0. The wire protocol stays 8, so mixed CLI and daemon versions within 1.x keep working.
 - **Restore holds explain themselves.** After a Herdr restart that holds seats for recovery, the lifecycle hook and CLI errors now say why (baseline hold, explicit hold or missing recovery evidence) and give the exact `seat inspect`, `rebind` or fresh-seat repair command, listing up to three blockers. `daemon health` fills `held_targets`, and `doctor` shows hold counts and how to lift them. Health checks no longer scan the whole hold history (4,000 historical holds exceeded the health work bound before).
-- **A still-running session recovers its seat after a daemon upgrade.** A seat left unresolved by an upgrade now reattaches when the same native harness session sends its next lifecycle or turn event, without restarting the agent or a resumed SessionStart. The same unique-candidate and ownership guards apply, a different session never takes an old seat, and an older daemon (without the `seat.continuity_same_session_v1` capability) keeps its previous behaviour. Ambiguous or owned refusals now name their candidates or owner.
+- **A still-running session recovers its seat after a daemon upgrade.** A seat left unresolved by an upgrade now reattaches when the same native harness session sends its next lifecycle or turn event, without restarting the agent or a resumed SessionStart. The same unique-candidate and ownership guards apply, a different session never takes an old seat, and an older daemon (without the `seat.continuity_same_session_v1` capability) keeps its previous behaviour. Ambiguous or owned refusals now name their candidates or owner. When no seat matches, the hook falls back to ordinary guarded check-in; while recovery is still pending it reports unavailable rather than staying quiet, and never enrolls the session.
+- **Allocation never routes around an unresolved seat.** The daemon now refuses, in the allocating transaction itself, to allocate a seat for a pane that an unresolved seat still names, including panes created after the restore baseline.
 
 ## v1.2.0
 

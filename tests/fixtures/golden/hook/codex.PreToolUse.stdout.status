@@ -1,3 +1,3 @@
 exit: 0
 stderr:
-herdr-threads hook: no resolved seat for pane p1
+herdr-threads hook: native-session continuity pending; retry; no new seat allocated

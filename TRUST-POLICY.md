@@ -124,6 +124,11 @@ resume operation digests stay compatible; `same_session` has a separate digest d
 Hooks send the new claim only when the daemon advertises
 `seat.continuity_same_session_v1`; an older daemon keeps its existing guarded startup
 and resume paths, with no fallback that treats an unsupported claim as continuity.
+On a transient non-resume attempt the hook retains the same durable intent for
+the next eligible event, reports pending recovery and never ordinary-enrolls.
+It does not spend the remaining callback in a retry loop; explicit resume keeps
+its bounded retry window. This leaves fast failed probes time to report advisory
+harness evidence after check-in, under the existing shared callback deadline.
 
 Seats are never merged. Pane labels, saved addresses, terminal-id hints and Herdr's agent field may *suggest*
 candidates in diagnostics; they never move a seat, allocate one, or end a binding.

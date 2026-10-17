@@ -134,6 +134,7 @@ pub(super) struct HostState {
     created: bool,
     agent: Option<Value>,
     lose: Option<&'static str>,
+    busy_starts: usize,
     // Lose one reply only after the original journal publication is visible,
     // so the injected failure is a witnessed post-publication read.
     lose_after_publication: Option<(&'static str, PathBuf)>,
@@ -211,6 +212,17 @@ impl Host {
                         json!({"type":"tab_created","tab":{"tab_id":"w4:t2","workspace_id":"w4"},"root_pane":pane("w4:p3",None)})
                     }
                     "agent.start" => {
+                        if state.busy_starts > 0 {
+                            state.busy_starts -= 1;
+                            let _ = writeln!(
+                                stream,
+                                "{}",
+                                json!({"id":request["id"],"error":{
+                                    "code":"agent_pane_busy","message":"agent target is not an available shell"
+                                }})
+                            );
+                            continue;
+                        }
                         let kind = request["params"]["kind"].as_str().unwrap();
                         assert!(matches!(kind, "claude" | "codex" | "agy"));
                         let argv: Vec<String> =
@@ -969,6 +981,125 @@ fn explicit_pane_preserves_both_harness_configs() {
         assert!(String::from_utf8_lossy(&replay.stderr).contains("intent reference not found"));
         assert_eq!(f.effect_counts(), (0, 1, 1, 1));
     }
+}
+
+// A transient shell-readiness refusal must complete the original automatic
+// handoff, not leave a possible-start journal fence or stage the work twice.
+#[test]
+fn new_pane_readiness_automatic_handoff_completes_once() {
+    let f = Fixture::new();
+    f.setup("codex");
+    f.host.state.lock().unwrap().busy_starts = 1;
+    let binary = f.iso.path("codex");
+    let out = successful(f.run(
+        &[
+            "handoff",
+            "--new-tab",
+            "Peer",
+            "--kind",
+            "codex",
+            "--harness-binary",
+            binary.to_str().unwrap(),
+            "--",
+            BODY,
+        ],
+        "",
+    ));
+    assert_eq!(out["bootstrap"]["outcome"], "started");
+    assert_eq!(f.effect_counts(), (1, 2, 0, 1));
+    assert_eq!(f.host.state.lock().unwrap().helpers.len(), 1);
+    assert_eq!(
+        f.count("SELECT count(*) FROM automatic_bootstrap_parents WHERE state='completed'"),
+        1
+    );
+    let starts = f.host.requests("agent.start");
+    assert_eq!(starts[0]["params"]["pane_id"], "w4:p3");
+    assert_eq!(starts[0]["params"]["name"], starts[1]["params"]["name"]);
+    assert_eq!(starts[0]["params"]["args"], starts[1]["params"]["args"]);
+    let replay = successful(f.run(
+        &["retry", out["bootstrap"]["recovery_ref"].as_str().unwrap()],
+        "",
+    ));
+    assert_eq!(replay, out);
+    assert_eq!(f.effect_counts(), (1, 2, 0, 1));
+}
+
+// Exhausting readiness leaves the existing retry guidance and a proven
+// not-started child; retrying later reuses the staged tab, pair and message.
+#[test]
+fn new_pane_readiness_handoff_exhaustion_preserves_safe_retry() {
+    let f = Fixture::new();
+    f.setup("codex");
+    f.host.state.lock().unwrap().busy_starts = usize::MAX;
+    let binary = f.iso.path("codex");
+    let out = f.run(
+        &[
+            "handoff",
+            "--new-tab",
+            "Peer",
+            "--kind",
+            "codex",
+            "--harness-binary",
+            binary.to_str().unwrap(),
+            "--",
+            BODY,
+        ],
+        "",
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("agent_pane_busy"));
+    let frame: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(frame["bootstrap"]["possible_start"], false);
+    let refused_starts = f.host.requests("agent.start").len();
+    assert!(refused_starts > 1);
+    assert_eq!(f.host.state.lock().unwrap().helpers.len(), 0);
+    assert_eq!(f.effect_counts(), (1, refused_starts, 0, 1));
+    f.host.state.lock().unwrap().busy_starts = 0;
+    let done = successful(f.run(
+        &[
+            "retry",
+            frame["bootstrap"]["recovery_ref"].as_str().unwrap(),
+        ],
+        "",
+    ));
+    assert_eq!(done["bootstrap"]["outcome"], "started");
+    assert_eq!(f.effect_counts(), (1, refused_starts + 1, 0, 1));
+    assert_eq!(f.host.state.lock().unwrap().helpers.len(), 1);
+    assert_eq!(
+        f.count("SELECT count(*) FROM automatic_bootstrap_parents WHERE state='completed'"),
+        1
+    );
+}
+
+// Plain launch into a fresh shell uses the same bounded product retry.
+#[test]
+fn new_pane_readiness_plain_launch_starts_once() {
+    let f = Fixture::new();
+    f.setup("codex");
+    f.host.state.lock().unwrap().busy_starts = 1;
+    let binary = f.iso.path("codex");
+    let mut command = f.command();
+    command
+        .args([
+            "launch",
+            "--pane",
+            "w4:p2",
+            "--kind",
+            "codex",
+            "--harness-binary",
+            binary.to_str().unwrap(),
+            "--",
+            "hello",
+        ])
+        .env("HERDR_THREADS_CODEX_OPTS", "");
+    let out = successful(f.capture(command));
+    assert_eq!(out["launch"]["outcome"], "started");
+    assert_eq!(f.effect_counts(), (0, 2, 0, 0));
+    assert_eq!(f.host.state.lock().unwrap().helpers.len(), 1);
+    let starts = f.host.requests("agent.start");
+    assert_eq!(starts[0]["params"]["pane_id"], "w4:p2");
+    assert_eq!(starts[0]["params"]["args"], json!(["hello"]));
+    assert_eq!(starts[0]["params"]["name"], starts[1]["params"]["name"]);
 }
 
 // Selecting focus instead of caller workspace, copying caller env, or losing

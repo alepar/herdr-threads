@@ -349,8 +349,7 @@ impl Matrix {
     /// turn ended; returns the turn's events.
     fn turn(&self, pane: &str, line: &str) -> Vec<Value> {
         let before = self.log_of(pane).len();
-        self.herdr_input(&["pane", "send-text", pane, line]);
-        self.herdr_input(&["pane", "send-keys", pane, "enter"]);
+        self.submit(pane, line);
         wait_for(
             &format!("turn {line:?} in {pane}"),
             Duration::from_secs(40),
@@ -371,8 +370,15 @@ impl Matrix {
 
     /// Submit one line without waiting for the turn.
     fn start_turn(&self, pane: &str, line: &str) {
-        self.herdr_input(&["pane", "send-text", pane, line]);
-        self.herdr_input(&["pane", "send-keys", pane, "enter"]);
+        self.submit(pane, line);
+    }
+
+    /// Type `line` and its carriage return as one write, so a daemon wake typed
+    /// into the idle composer at the same moment lands before or after this line,
+    /// never inside it (separate send-text and send-keys writes let a wake marker
+    /// slip between the text and its Enter on CI).
+    fn submit(&self, pane: &str, line: &str) {
+        self.herdr_input(&["pane", "send-text", pane, &format!("{line}\r")]);
     }
 
     fn status(&self, pane: &str) -> String {
@@ -846,7 +852,7 @@ fn herdr_release_busy() {
     m.start_turn(&agent_pane, line);
     // Send once the turn's first tool call runs (its PreToolUse hook is done and no tool result
     // yet), so the p0 lands mid-turn, after the turn-start hook, before the next tool boundary.
-    wait_for("first tool call running", Duration::from_secs(10), || {
+    wait_for("first tool call running", Duration::from_secs(30), || {
         let log = m.log_of(&agent_pane);
         let pre = log
             .iter()
