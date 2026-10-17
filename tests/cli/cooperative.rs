@@ -2976,9 +2976,28 @@ mod scoped_runtime {
         )));
     }
 
+    /// The `pane.current` reads the CLI made, by caller id.
+    fn current_reads(runtime: &Runtime) -> Vec<String> {
+        runtime
+            .host_calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call["method"] == "pane.current")
+            .map(|call| {
+                call["params"]["caller_pane_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect()
+    }
+
     #[test]
     fn unmapped_canonical_caller_is_refused_without_host_retarget_or_ack() {
+        // Herdr reports the caller where it claims to be (not moved): one read, no retarget.
         let runtime = Runtime::new(snapshot());
+        *runtime.current.lock().unwrap() = "w1:p99".into();
         runtime.install_context("w1:p2");
         let error = runtime.run_mode(&["inbox", "--human"], false).unwrap_err();
         assert!(
@@ -2988,8 +3007,79 @@ mod scoped_runtime {
         assert!(
             matches!(calls.as_slice(), [Command::Seats(q)] if q.target == Some(HostTargetId::new("w1:p99")))
         );
-        assert!(runtime.host_calls.lock().unwrap().is_empty());
+        assert_eq!(current_reads(&runtime), ["w1:p99"]);
         assert!(!runtime.paths.instance_dir.join("intents").exists());
+    }
+
+    #[test]
+    fn unmapped_caller_with_herdr_down_is_refused_as_before() {
+        let runtime = Runtime::host_down(snapshot());
+        runtime.install_context("w1:p2");
+        let error = runtime.run_mode(&["inbox", "--human"], false).unwrap_err();
+        assert!(
+            matches!(error, crate::cli::RunError::Api(ref error) if error.code == ErrorCode::InvalidRequest)
+        );
+        let calls = runtime.calls.lock().unwrap();
+        assert!(
+            matches!(calls.as_slice(), [Command::Seats(q)] if q.target == Some(HostTargetId::new("w1:p99")))
+        );
+    }
+
+    /// A process keeps its `HERDR_PANE_ID` across a move to another workspace; Herdr resolves
+    /// that old id to the pane's current one, where the daemon already followed the seat.
+    #[test]
+    fn moved_caller_follows_herdr_current_id_to_its_own_inbox_and_display_ack() {
+        for recorded_at in ["w1:p2", "w3:p7"] {
+            let runtime = Runtime::new(snapshot());
+            *runtime.current.lock().unwrap() = "w1:p2".into();
+            // A context written before the move names the old id; one written after, the new.
+            runtime.install_context(recorded_at);
+            runtime
+                .run_mode_in_pane(&["inbox", "--human"], false, "w3:p7")
+                .unwrap();
+            assert_eq!(current_reads(&runtime), ["w3:p7"], "{recorded_at}");
+            let calls = runtime.calls.lock().unwrap();
+            assert!(
+                matches!(calls.as_slice(), [Command::Seats(a), Command::Seats(b), ..]
+                    if a.target == Some(HostTargetId::new("w3:p7"))
+                        && b.target == Some(HostTargetId::new("w1:p2"))),
+                "{recorded_at}: {calls:?}"
+            );
+            assert!(
+                calls
+                    .iter()
+                    .any(|command| matches!(command, Command::AckDisplayed(q)
+                if q.claim.seat.as_str() == "recipient"
+                    && q.claim.target == HostTargetId::new("w1:p2")
+                    && q.messages == vec![MessageId::new("m123")])),
+                "{recorded_at}: {calls:?}"
+            );
+            assert!(
+                !calls
+                    .iter()
+                    .any(|command| matches!(command, Command::ResolveSeat(_)))
+            );
+        }
+    }
+
+    #[test]
+    fn moved_caller_whose_current_pane_is_unmapped_is_still_refused() {
+        let runtime = Runtime::new(snapshot());
+        *runtime.current.lock().unwrap() = "w1:p1".into();
+        runtime.install_context("w1:p2");
+        let error = runtime
+            .run_mode_in_pane(&["inbox", "--human"], false, "w3:p7")
+            .unwrap_err();
+        assert!(
+            matches!(error, crate::cli::RunError::Api(ref error) if error.code == ErrorCode::InvalidRequest),
+            "{error:?}"
+        );
+        assert_eq!(current_reads(&runtime), ["w3:p7"]);
+        let calls = runtime.calls.lock().unwrap();
+        assert!(!calls.iter().any(|command| matches!(
+            command,
+            Command::AckDisplayed(_) | Command::ResolveSeat(_) | Command::InboxBatch(_)
+        )));
     }
 
     #[test]

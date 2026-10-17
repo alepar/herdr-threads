@@ -3108,9 +3108,10 @@ where
                 (Some(selection), _) => Some(selection.seat.clone()),
                 (None, Some(pane)) => parse_pane(pane).ok().and_then(|pane| {
                     let (_, client) = connection.get().ok()?;
-                    pane_seat(client, &parsed.output, &pane, clock.as_ref())
+                    located_pane_seat(client, &parsed.output, &pane, context, clock)
                         .ok()
                         .flatten()
+                        .map(|located| located.seat)
                 }),
                 (None, None) => None,
             };
@@ -3131,8 +3132,8 @@ where
                 (None, Some(pane)) => {
                     let pane = parse_pane(pane)?;
                     let (_, client) = connection.get()?;
-                    match pane_seat(client, &parsed.output, &pane, clock.as_ref())? {
-                        Some(seat) => Some(seat),
+                    match located_pane_seat(client, &parsed.output, &pane, context, clock)? {
+                        Some(located) => Some(located.seat),
                         None if parsed.caller_read_default
                             && matches!(&parsed.action, CliAction::Wire(Command::Diagnostics(q)) if q.page.cursor.is_none()) =>
                         {
@@ -3281,6 +3282,63 @@ fn pane_seat<C: LocalClient + ?Sized>(
     }
 }
 
+/// The caller's seat and the pane address that located it.
+struct LocatedSeat {
+    seat: crate::protocol::ids::SeatId,
+    pane: crate::protocol::ids::HostTargetId,
+    /// The process's own (stale) `HERDR_PANE_ID` when the seat was found by
+    /// following a moved pane.
+    moved_from: Option<crate::protocol::ids::HostTargetId>,
+}
+
+/// [`pane_seat`] for the invoking process's own pane, following a pane Herdr
+/// moved (TRUST-POLICY C1, moved panes): a process keeps its `HERDR_PANE_ID`
+/// across a move to another workspace, which gives the pane a new id. Only
+/// when that id maps to no resolved seat, one Herdr read asks for the current
+/// id of that exact pane ([`moved_pane`]); the lookup is repeated there. The
+/// daemon's mapping still decides the seat. Steady state costs nothing extra.
+fn located_pane_seat<C: LocalClient + ?Sized>(
+    client: &C,
+    output: &OutputSpec,
+    pane: &crate::protocol::ids::HostTargetId,
+    runtime: &RuntimeContext,
+    clock: &Arc<dyn Clock>,
+) -> Result<Option<LocatedSeat>, RunError> {
+    if let Some(seat) = pane_seat(client, output, pane, clock.as_ref())? {
+        return Ok(Some(LocatedSeat {
+            seat,
+            pane: pane.clone(),
+            moved_from: None,
+        }));
+    }
+    let host =
+        crate::host::native::NativeCli::new(runtime.host_endpoint.clone(), Arc::clone(clock));
+    let Some(now) = moved_pane(pane, |stale| {
+        host.current_pane(stale, &cooperative_budget(clock.as_ref()))
+    }) else {
+        return Ok(None);
+    };
+    Ok(
+        pane_seat(client, output, &now, clock.as_ref())?.map(|seat| LocatedSeat {
+            seat,
+            pane: now,
+            moved_from: Some(pane.clone()),
+        }),
+    )
+}
+
+/// The current id Herdr reports for `pane` when it differs (the pane moved to
+/// another workspace). Herdr resolves an earlier id of a pane to that pane's
+/// current record, and answers `pane_not_found` for an id it never issued; it
+/// never substitutes the focused pane for an explicit caller id. Any failure
+/// or the same id is `None`: the caller keeps today's lookup.
+pub(crate) fn moved_pane(
+    pane: &crate::protocol::ids::HostTargetId,
+    current: impl FnOnce(&str) -> Result<crate::protocol::ids::HostTargetId, ApiError>,
+) -> Option<crate::protocol::ids::HostTargetId> {
+    current(pane.as_str()).ok().filter(|now| now != pane)
+}
+
 /// Full selection for a seat-acting action: the pane's current mapping picks
 /// the seat and that seat's private lifecycle context supplies the recorded
 /// harness and role. Nothing is inferred from the focused pane and no seat is
@@ -3303,7 +3361,11 @@ where
     })?;
     let pane = parse_pane(pane)?;
     let (_, client) = connection.get()?;
-    let seat = pane_seat(client, &parsed.output, &pane, clock.as_ref())?
+    let LocatedSeat {
+        seat,
+        pane,
+        moved_from,
+    } = located_pane_seat(client, &parsed.output, &pane, runtime, clock)?
         .ok_or_else(|| no_seat_for_pane(&pane))?;
     let instance = read_existing_namespace(paths)?.ok_or_else(daemon_unavailable)?;
     let origin = caller::active();
@@ -3326,6 +3388,11 @@ where
         return Ok(selection);
     }
     let contexts = seat_contexts(paths, instance, &seat)?;
+    if let Some(stale) = &moved_from {
+        contexts
+            .follow_moved_target(stale.as_str(), pane.as_str())
+            .map_err(context_run_error)?;
+    }
     let context = match contexts.current().map_err(context_run_error)? {
         Some(context) => context,
         None => contexts

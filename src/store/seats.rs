@@ -3153,10 +3153,39 @@ pub(crate) fn ordinary_resolution_apply(
     proof: &DurableStructuralProof,
 ) -> Result<(CommandResult, bool), ApiError> {
     let owner:Option<String>=tx.query_row("SELECT id FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",params![instance,target.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
-    match owner {
-        Some(seat) => Ok((CommandResult::SeatResolved(SeatId::new(seat)), false)),
-        None => insert_ordinary_allocation(tx, at, instance, proof).map(|result| (result, true)),
+    if let Some(seat) = owner {
+        return Ok((CommandResult::SeatResolved(SeatId::new(seat)), false));
     }
+    // TRUST-POLICY C1, moved panes: the observed terminal already belongs to a
+    // resolved seat at another target in this Herdr boot and incarnation, so
+    // the pane moved (a new id after a move to another workspace) and the
+    // reconciliation that follows it (`Move`) has not run yet. Allocating here
+    // would split the role; the retry after that pass resolves the seat itself.
+    let moved: Option<String> = tx
+        .query_row(
+            "SELECT id FROM seats WHERE instance_id=?1 AND state='resolved' AND structural_terminal_id=?2 AND structural_host_boot=?3 AND structural_incarnation=?4 AND target_id IS NOT ?5 LIMIT 1",
+            params![
+                instance,
+                proof.terminal().as_str(),
+                proof.host_boot().as_str(),
+                proof.incarnation(),
+                target.as_str()
+            ],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if let Some(seat) = moved {
+        return Err(api_error(
+            ErrorCode::StaleHostObservation,
+            format!(
+                "pane {} moved: seat {seat} still maps its earlier pane until the daemon follows \
+                 the move; retry",
+                target.as_str()
+            ),
+        ));
+    }
+    insert_ordinary_allocation(tx, at, instance, proof).map(|result| (result, true))
 }
 
 pub fn check_resolved_target(
