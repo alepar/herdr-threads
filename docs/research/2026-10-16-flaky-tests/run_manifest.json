@@ -56,5 +56,13 @@
     "changed_test": "tests/multinode/sweep.rs",
     "verification": "sweep-followup-verification.json",
     "review": "No must-fix findings; recipient applied-message and receipt prerequisites sufficient"
+  },
+  "relay_followup": {
+    "bead": "ht-2b3p",
+    "base_commit": "0478a55c",
+    "changed_test": "tests/multinode/config_relay.rs",
+    "verification": "relay-followup-verification.json",
+    "baseline": "relay-baseline-verification.json",
+    "classification": "Intended conservative audience-snapshot refusal; fixture isolation fix; exact hosted refusal not reproduced"
   }
 }

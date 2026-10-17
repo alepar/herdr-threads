@@ -1,0 +1,25 @@
+{
+  "run_id": "f76dcc79-6428-4246-871e-848894905cef",
+  "stages": [
+    {
+      "name": "stress",
+      "code": 0,
+      "seconds": 33.88
+    },
+    {
+      "name": "leaks",
+      "code": 0,
+      "seconds": 0.25
+    },
+    {
+      "name": "clippy",
+      "code": 0,
+      "seconds": 0.33
+    },
+    {
+      "name": "default",
+      "code": 0,
+      "seconds": 0.12
+    }
+  ]
+}

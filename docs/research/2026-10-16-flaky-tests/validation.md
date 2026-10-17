@@ -18,7 +18,7 @@ Leak run ID: `1bda9736-c1df-478e-9097-874a32bf96ec`. The full run stayed inside 
 
 Controlled failing-first evidence is preserved in [reproductions](reproductions.md). The current V2 product watch defect is ht-x0b9. Historical ht-7ykh remains open because its older v1.2.0 path/schedule was not reconstructed. Broader static candidates remain tracked under ht-fmww.
 
-Research checks: coverage structural validator passed (three rounds, explicit budget-exhausted stop); claim-support checker passed all fourteen factual ledger entries; report surface and package validators passed; external citation URL validator confirmed all nine external URLs accessible. Local execution evidence was checked by reading the retained record and local link validation, not counted as an independent external document. Retrieval saturation and dynamic confirmation of the broader audit candidates are not claimed.
+Research checks: coverage structural validator passed (three rounds, explicit budget-exhausted stop); claim-support checker passed all fifteen factual ledger entries; report surface and package validators passed; external citation URL validator confirmed all nine external URLs accessible. Local execution evidence was checked by reading the retained record and local link validation, not counted as an independent external document. Retrieval saturation and dynamic confirmation of the broader audit candidates are not claimed.
 
 All suite fixtures and helpers completed; run-scoped cleanup found no leaks. Compiler/lint helpers exited when their commands completed. No authenticated release wake gate was run for this non-release patch task.
 
@@ -35,3 +35,11 @@ The test-only `tests/multinode/sweep.rs` follow-up was verified separately after
 - Production code, timeouts, delivery/wake assertions and convergence oracles remain unchanged.
 
 Structured results: sweep-followup-verification.json. The coordinator receives the new commit for the 2.0.1 batch; this is non-blocking for 2.0.0.
+
+## ht-2b3p relay follow-up
+
+Before changing the fixture, verified the intentionally retained audience fence with `send_fence::membership_lifecycle_eligibility_config_bumps_still_conflict` (1/1 passed). The original relay case passed20/20 under four owned low-priority CPU loops; exact hosted CLI refusal was not reproduced. Those load processes were terminated/reaped; baseline leak run `baf318d0-f155-4fc1-8c2a-0c35b7aa5651` passed cleanup. A diagnostic delay through convergence before C's open failed the added independent-open prerequisite (Some1 vs Some0,1.75s), demonstrating the fixture ordering gap rather than claiming an exact CLI-error reproduction.
+
+Final code isolates C-B through both independent pair opens, observes linked then backoff, asserts C has no pair before its open, heals and keeps every original relay oracle. Ten stress iterations of both config_relay tests and neighboring crossed-pair test passed30/30 (32.659s runner;33.88s command). Leak run `f76dcc79-6428-4246-871e-848894905cef` passed (0.25s); all-feature/all-target clippy passed (0.33s cached incremental), default-feature gate passed (0.12s), format/neutral/diff checks passed. Independent review found no must-fix. The earlier full-suite run predates this test-only follow-up; no additional full run was performed, per the project's focused-test instruction. Structured records: relay-baseline-verification.json and relay-followup-verification.json.
+
+Product classification was reported to the coordinator before implementation: changed audience snapshots are intentionally refused; this patch neither weakens that contract nor depends on error retries/recovery argv.

@@ -69,10 +69,27 @@ fn pair_auto_join_facts_relay_through_a_node_with_no_pair_seat() {
         support::wait_seats(&cluster, node, 4);
     }
 
-    // Both ends open the same pair without waiting for each other.
+    // Each end must open independently. Incoming auto-join facts during C's
+    // send preparation can correctly trip the audience snapshot fence.
+    cluster.wait_converged(crate::WAIT);
+    cluster.wait_until("C's relay link to be established", crate::WAIT, || {
+        (cluster.target_state(2).as_deref() == Some("linked")).then_some(())
+    });
+    cluster.partition(2, 1);
+    cluster.wait_until("C's relay dial to be refused", crate::WAIT, || {
+        (cluster.target_state(2).as_deref() == Some("backoff")).then_some(())
+    });
+
+    // Both ends open before either can learn about the other's creation.
     let (t_a, m_a) = support::send(&cluster, &a, &["--seat", &c.id, "--body", "from A"]);
+    assert_eq!(
+        cluster.scalar(2, "SELECT count(*) FROM threads WHERE id LIKE 'd%'", &[]),
+        Some("0".into()),
+        "C must open the pair independently, before A's creation arrives"
+    );
     let (t_c, m_c) = support::send(&cluster, &c, &["--seat", &a.id, "--body", "from C"]);
     assert_eq!(t_a, t_c, "one deterministic pair thread");
+    cluster.heal(2, 1);
     cluster.wait_converged(crate::WAIT);
     for node in 0..3 {
         for seat in [&a, &c] {
