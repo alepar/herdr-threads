@@ -19,7 +19,7 @@ for _dir in (GATE_DIR, GATE_DIR.parent / "agy-sandbox"):
 import observe  # noqa: E402
 
 # Opening words of ``harness::TOP_LEVEL_INSTRUCTION``: the startup check-in a top-level SessionStart injects.
-STARTUP_MARK = "Use inbox; follow its next: commands"
+STARTUP_MARK = "Complete hook/channel deliveries and default text inbox displays ACK"
 # Opening words of ``harness::CHILD_RESTRICTION``: the restriction every role's context carries.
 CHILD_MARK = "Subagents may discover, read and summarize"
 SKILL_PATH = "skills/herdr-threads/SKILL.md"
