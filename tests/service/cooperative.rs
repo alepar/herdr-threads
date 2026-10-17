@@ -4046,3 +4046,73 @@ fn q3_completion_hint_ack_errors_and_rollback_are_inert() {
     );
     assert_eq!(channels.writer.waiting(), (0, 0));
 }
+
+// A recipient liveness pass queued behind the final preparation must run after
+// its publication, rather than invalidating an already sealed send in a gap.
+#[test]
+fn sealed_send_publishes_before_a_queued_liveness_transition() {
+    use crate::test_support::failpoints::Failpoint;
+    use std::time::{Duration, Instant};
+
+    let scenario = SendScenario::new();
+    let writer = scenario
+        .service
+        .cooperative_runtime
+        .as_ref()
+        .unwrap()
+        .1
+        .clone();
+    let pause = Failpoint::pause("send.ready_before_decision", "queued-liveness");
+    let send = Command::SendMessage(scenario.request("queued-liveness"));
+    let replay = send.clone();
+    // Exhaust the foreground allowance so the queued background pass wins
+    // the next admission if the sender releases its sealed preparation.
+    for _ in 0..8 {
+        checked(
+            &scenario.service,
+            lifecycle(scenario.sender.clone(), "sender"),
+        );
+    }
+    let service = &scenario.service;
+    let store = scenario.store.clone();
+    let result = std::thread::scope(|scope| {
+        let sender =
+            scope.spawn(|| service.handle(send, PeerIdentity::from_kernel(501), &budget()));
+        let fired = pause.wait_fired(1, Duration::from_secs(5));
+        if !fired {
+            pause.release();
+        }
+        assert!(fired, "the sender reached its sealed preparation");
+        let worker = crate::service::liveness::LivenessWorker::new(
+            store,
+            writer.clone(),
+            Arc::new(SENDER_ALIVE),
+        );
+        let liveness = scope.spawn(move || worker.pass(&budget()).unwrap());
+        let until = Instant::now() + Duration::from_secs(5);
+        while writer.waiting().1 == 0 && Instant::now() < until {
+            std::thread::yield_now();
+        }
+        let queued = writer.waiting().1;
+        pause.release();
+        assert_eq!(queued, 1, "the real liveness pass is queued");
+        let result = sender.join().unwrap();
+        assert_eq!(liveness.join().unwrap().disconnected, 1);
+        result
+    });
+    let result = result.unwrap();
+    let CommandResult::MessageSent(message) = &result else {
+        panic!("{result:?}");
+    };
+    assert_eq!(scenario.published(message), (true, vec![]));
+    assert_eq!(
+        scenario
+            .service
+            .handle(replay, PeerIdentity::from_kernel(501), &budget())
+            .unwrap(),
+        result,
+        "replay returns the same committed message after the liveness change"
+    );
+    assert_eq!(scenario.count("SELECT count(*) FROM send_manifests"), 1);
+    assert!(!scenario.available(), "the queued liveness pass still ran");
+}

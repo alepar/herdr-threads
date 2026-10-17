@@ -523,28 +523,31 @@ impl DomainService {
                 "caller peer does not match elected owner",
             ));
         }
-        if matches!(
+        let ready_turn = if matches!(
             request.action,
             crate::protocol::handoff::AutomaticDeliveryAction::Send(_)
         ) {
             loop {
-                let progress = {
-                    let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
-                    runtime.store.automatic_delivery_prepare_send_step(
-                        &runtime.canonical,
-                        request,
-                        DurableWorkAdmission::new(16).map_err(ApiError::invalid_request)?,
-                        budget,
-                    )?
-                };
+                let turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+                let progress = runtime.store.automatic_delivery_prepare_send_step(
+                    &runtime.canonical,
+                    request,
+                    DurableWorkAdmission::new(16).map_err(ApiError::invalid_request)?,
+                    budget,
+                )?;
                 match progress {
                     SendPreparationProgress::Committed(result) => return Ok(result),
-                    SendPreparationProgress::Ready { .. } => break,
+                    SendPreparationProgress::Ready { .. } => break Some(turn),
                     SendPreparationProgress::More { .. } => {}
                 }
             }
-        }
-        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        } else {
+            None
+        };
+        let _turn = match ready_turn {
+            Some(turn) => turn,
+            None => writer.enter_foreground(budget, self.clock.as_ref())?,
+        };
         if matches!(
             request.action,
             crate::protocol::handoff::AutomaticDeliveryAction::Status
@@ -611,29 +614,32 @@ impl DomainService {
             let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
             return runtime.store.delivery_query(canonical, request, budget);
         }
-        if matches!(
+        let ready_turn = if matches!(
             request.action,
             crate::protocol::handoff::DeliveryAction::Send(_)
         ) {
             loop {
-                let progress = {
-                    let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
-                    runtime.store.delivery_prepare_send_step(
-                        canonical,
-                        request,
-                        DurableWorkAdmission::new(16)
-                            .map_err(|why| error(ErrorCode::InvalidRequest, why))?,
-                        budget,
-                    )?
-                };
+                let turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+                let progress = runtime.store.delivery_prepare_send_step(
+                    canonical,
+                    request,
+                    DurableWorkAdmission::new(16)
+                        .map_err(|why| error(ErrorCode::InvalidRequest, why))?,
+                    budget,
+                )?;
                 match progress {
                     SendPreparationProgress::Committed(result) => return Ok(result),
-                    SendPreparationProgress::Ready { .. } => break,
+                    SendPreparationProgress::Ready { .. } => break Some(turn),
                     SendPreparationProgress::More { .. } => {}
                 }
             }
-        }
-        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        } else {
+            None
+        };
+        let _turn = match ready_turn {
+            Some(turn) => turn,
+            None => writer.enter_foreground(budget, self.clock.as_ref())?,
+        };
         let permit = self.store.issue_cooperative_permit(
             crate::store::cooperative_permit_request(
                 &request.inner().map_err(ApiError::invalid_request)?,
@@ -999,13 +1005,13 @@ impl DomainService {
         } else {
             None
         };
-        if let PermitMutation::SendMessage(command) = &mutation {
+        let ready_turn = if let PermitMutation::SendMessage(command) = &mutation {
             loop {
+                let turn = writer.enter_foreground(budget, self.clock.as_ref())?;
                 let progress = {
-                    let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
                     let admission = DurableWorkAdmission::new(16)
                         .map_err(|detail| error(ErrorCode::InvalidRequest, detail))?;
-                    if let Some(runtime) = &runtime {
+                    let progress = if let Some(runtime) = &runtime {
                         runtime.store.bootstrap_prepare_send_step(
                             &runtime.canonical,
                             command,
@@ -1014,24 +1020,37 @@ impl DomainService {
                         )?
                     } else {
                         self.store.prepare_send_step(command, admission, budget)?
+                    };
+                    if matches!(progress, SendPreparationProgress::Ready { .. }) {
+                        failpoint!("send.ready_before_decision", command.operation.as_str());
                     }
+                    progress
                 };
                 match progress {
                     SendPreparationProgress::Committed(result) => return Ok(result),
-                    SendPreparationProgress::Ready { .. } => break,
+                    SendPreparationProgress::Ready { .. } => break Some(turn),
                     SendPreparationProgress::More { .. } => {
                         // The writer turn is released between quanta.
+                        drop(turn);
                         failpoint!("send.between_preparation_steps", self.instance);
                     }
                 }
             }
-        }
+        } else {
+            None
+        };
+        // Keep the final preparation's admission through publication: a queued
+        // worker must not stale a sealed send before its deciding transaction.
+        // Earlier preparation quanta still release their turns.
         // Admission precedes the issuer's bounded write. Retain this one turn
         // through the decision; the store rechecks context, budget and permit age.
         let recheck = DeliveryRecheckClass::for_mutation(&mutation)
             .map(|class| (class, request.claim.seat.clone()));
         let result = {
-            let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+            let _turn = match ready_turn {
+                Some(turn) => turn,
+                None => writer.enter_foreground(budget, self.clock.as_ref())?,
+            };
             let permit = self.store.issue_cooperative_permit(request, budget)?;
             let permit = if matches!(
                 mutation,
