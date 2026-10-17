@@ -139,9 +139,10 @@ impl HerdrCli {
     /// dials them (`TestIsolation::command` points it at nothing).
     pub fn from_env() -> Self {
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(program) = std::env::var_os("HT_TEST_MACHINE_LIST_PROGRAM") {
-            return Self::new(program);
+        {
+            Self::new(crate::test_support::isolation::discovery_program())
         }
+        #[cfg(not(any(test, feature = "test-support")))]
         Self::new(std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into()))
     }
 }
@@ -328,12 +329,18 @@ pub struct DiscoveryDeps {
 
 /// The process-table scan of the running daemon.
 pub fn scan_remote_clients() -> Vec<String> {
-    use crate::host::process_table::{HostSource, my_uid};
-    remote_clients_from(&HostSource, my_uid())
+    #[cfg(any(test, feature = "test-support"))]
+    panic!("isolated test daemon attempted real sync discovery process scan; use a fixture source");
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        use crate::host::process_table::{HostSource, my_uid};
+        remote_clients_from(&HostSource, my_uid())
+    }
 }
 
 /// The `herdr --remote` targets among the processes `my_uid` owns; other users' processes are
 /// skipped before their argv is read.
+#[cfg(any(test, not(feature = "test-support")))]
 pub(crate) fn remote_clients_from(
     source: &dyn crate::host::process_table::ProcessSource,
     my_uid: u32,
@@ -499,6 +506,12 @@ mod tests {
     use crate::app::SystemClock;
     use crate::ports::ProcessRecord;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[test]
+    #[should_panic(expected = "isolated test daemon attempted real sync discovery process scan")]
+    fn isolated_discovery_rejects_real_process_scan() {
+        scan_remote_clients();
+    }
 
     #[test]
     fn parse_machine_list_enabled_targets() {

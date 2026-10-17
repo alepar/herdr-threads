@@ -1066,6 +1066,21 @@ class Driver:
 
     def s_scratch(self):
         self.state.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self.args.state_dir:
+            # Caller-owned state is never changed. Missing settings use the unsafe production default.
+            settings_path = self.state / "node/settings.json"
+            try:
+                settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+                discovery_disabled = settings.get("sync", {}).get("discover") is False
+            except (OSError, ValueError, AttributeError):
+                discovery_disabled = False
+            if not discovery_disabled:
+                return FAIL, f"refusing test daemon: {settings_path} must set sync.discover=false", None
+        else:  # only this run's fresh fixture; never rewrite caller-owned state
+            node = self.state / "node"
+            node.mkdir(mode=0o700)
+            (node / "settings.json").write_text('{"sync":{"discover":false}}\n')
+            (node / "settings.json").chmod(0o600)
         self.project.mkdir(mode=0o700)
         self.bindir.mkdir(mode=0o700)
         (self.project / "README.md").write_text(f"herdr-threads native demo scratch project {self.run_id}\n")

@@ -111,6 +111,10 @@ class Suite:
         self.log = CommandLog(self.run_dir / "commands.jsonl")
         self.state_dir = self.run_dir / "s"
         self.state_dir.mkdir(mode=0o700)
+        node = self.state_dir / "node"
+        node.mkdir(mode=0o700)
+        (node / "settings.json").write_text('{"sync":{"discover":false}}\n')
+        (node / "settings.json").chmod(0o600)
         self.host = PrivateHerdr(self.run_dir, self.log, "h")
         self.daemon = TestDaemon(self.binary, self.state_dir, self.host, self.log)
         self.second = None

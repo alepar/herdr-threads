@@ -129,6 +129,11 @@ step_build_release() { # the static musl release archive and a file:// release t
 step_install_release() { # scripts/install.sh from the file:// release tree, like a Linux user
     cd "$SRC"
     local v; v=$(version)
+    local node="$H/.local/state/herdr/plugins/herdr-threads/node"
+    mkdir -p "$node"
+    chmod 700 "${node%/node}" "$node"
+    printf '%s\n' '{"sync":{"discover":false}}' > "$node/settings.json"
+    chmod 600 "$node/settings.json"
     HERDR_THREADS_RELEASE_URL="file://$RUN/rel" bash scripts/install.sh --version "v$v" --setup </dev/null
     herdr-threads --version
     herdr plugin list || true

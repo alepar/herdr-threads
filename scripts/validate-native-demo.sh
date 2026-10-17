@@ -208,6 +208,9 @@ run_cell() {
     pid=$(printf '%s' "$ws" | sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p' | head -n 1)
     [ -n "$wid" ] || { echo "CELL $name sha=$sha outcome=NOT_EXERCISED reason=private Herdr session could not host a workspace: $ws"; return 1; }
     xdg=$out/home/.local/state/herdr-threads
+    case "$flags" in
+        *@XDG_STATE@*) ih_disable_sync_discovery "$xdg" || return 1 ;;
+    esac
     flags=$(printf '%s' "$flags" | sed "s#@XDG_STATE@#$xdg#")
     before=$(cell_versions "$harness_bin")
     rc=0

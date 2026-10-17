@@ -466,6 +466,12 @@ class Live:
         self.notes = []          # per-iteration observations that are not invariants
         for d in (self.state, self.home, self.scratch_cfg, self.work, self.bindir, self.out):
             os.makedirs(d, exist_ok=True)
+        os.chmod(self.state, 0o700)
+        node = os.path.join(self.state, "node")
+        os.mkdir(node, mode=0o700)
+        with open(os.path.join(node, "settings.json"), "w") as settings:
+            json.dump({"sync": {"discover": False}}, settings)
+        os.chmod(os.path.join(node, "settings.json"), 0o600)
 
     # ---- environments
 

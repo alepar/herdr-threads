@@ -563,6 +563,11 @@ class World(object):
         for sub in ("home", "tmp", "ws", "ctl", "ht", "bin", "agybin", "artifacts", "cfg", "st", "rt",
                     "cache", "data"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
+        self.state.chmod(0o700)
+        node = self.state / "node"
+        node.mkdir(mode=0o700)
+        (node / "settings.json").write_text('{"sync":{"discover":false}}\n')
+        (node / "settings.json").chmod(0o600)
         seed_settings(self.root)
         # Every pane shell (a launch or handoff target types `agy` by name) finds the wrapper first.
         (self.root / "home" / ".zshenv").write_text('export PATH=%s:"$PATH"\n' % shlex.quote(str(self.root / "bin")))

@@ -135,6 +135,7 @@ ln -s ../download/v0.2.0 "$stub_rel/latest/download"
 # --- scratch environment ----------------------------------------------------
 home="$root/home"
 mkdir -p "$home" "$root/cfg" "$root/st" "$root/rt" "$root/tools" "$root/cwd"
+ih_disable_sync_discovery "$root/st/herdr/plugins/herdr-threads"
 : > "$root/cfg/herdr.toml"
 tools="$root/tools"
 cat > "$tools/herdr" <<'EOF'

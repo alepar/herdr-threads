@@ -3,10 +3,26 @@
 import json
 import os
 import sys
+import stat
+import tempfile
+from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stress  # noqa: E402
+
+
+class DiscoveryIsolation(unittest.TestCase):
+    def test_live_fixture_disables_discovery_before_setup_or_daemon(self):
+        with tempfile.TemporaryDirectory() as root:
+            args = SimpleNamespace(seed=1, profile='/unused-profile', claude='/unused-claude')
+            live = stress.Live(args, root, object())
+            node = os.path.join(live.state, 'node')
+            with open(os.path.join(node, 'settings.json')) as source:
+                self.assertIs(json.load(source)['sync']['discover'], False)
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(node, "settings.json")).st_mode), 0o600)
+            for path in (live.state, node):
+                self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o700)
 
 
 def row(at, kind, ids=(), via=None, turn=None, reason=None):

@@ -580,6 +580,10 @@ class Run:
                         f"if [ \"$pin_state\" = 1 ]; then set -- --state-dir {q(str(self.state))} \"$@\"; fi\n"
                         f"exec {q(self.bin)} \"$@\"\n")
         shim.chmod(0o700)
+        # Disable both saved-machine and process discovery before the release binary starts.
+        (self.state / "node").mkdir(mode=0o700)
+        (self.state / "node/settings.json").write_text('{"sync":{"discover":false}}\n')
+        (self.state / "node/settings.json").chmod(0o600)
         self.daemon_attempted = True
         self.ht("daemon", "ensure", tag="daemon:ensure", timeout=60)
         self.ht("daemon", "health", tag="daemon:health", timeout=20)

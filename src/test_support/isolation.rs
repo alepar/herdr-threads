@@ -16,6 +16,15 @@ pub const SCRUBBED_PREFIXES: &[&str] = &["HERDR_", "CLAUDE", "CODEX", "ZDOTDIR"]
 /// `sockaddr_un.sun_path` capacity (macOS 104, Linux 108; the smaller wins).
 pub const SUN_PATH_MAX: usize = 104;
 
+/// A missing fixture program disables ambient discovery without consulting the
+/// real Herdr configuration. Shared by spawned commands and in-process daemons.
+pub const NO_MACHINE_LIST_PROGRAM: &str = "/nonexistent/herdr-no-machine-list";
+pub const MACHINE_LIST_PROGRAM_ENV: &str = "HT_TEST_MACHINE_LIST_PROGRAM";
+
+pub fn discovery_program() -> OsString {
+    std::env::var_os(MACHINE_LIST_PROGRAM_ENV).unwrap_or_else(|| NO_MACHINE_LIST_PROGRAM.into())
+}
+
 /// A private state root and short socket base for one test; both are removed
 /// on drop.
 pub struct TestIsolation {
@@ -114,10 +123,7 @@ impl TestIsolation {
 pub fn scrub_env(command: &mut Command) -> &mut Command {
     scrub_inherited(command, std::env::vars_os().map(|(key, _)| key));
     crate::test_support::spawn::tag(command);
-    command.env(
-        "HT_TEST_MACHINE_LIST_PROGRAM",
-        "/nonexistent/herdr-no-machine-list",
-    );
+    command.env(MACHINE_LIST_PROGRAM_ENV, NO_MACHINE_LIST_PROGRAM);
     command
 }
 

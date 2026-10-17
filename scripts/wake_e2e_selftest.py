@@ -1338,7 +1338,14 @@ class HarnessMode(TempDir):
         r.daemon_attempted = False
         (self.tmp / "src").mkdir()
         (self.tmp / "src" / "auth.json").write_bytes(FAKE_AUTH)
-        r.ht = lambda *argv, env=None, **kw: calls.append((argv, dict(env or {}))) or ""
+        def fake_ht(*argv, env=None, **kw):
+            if argv[:2] == ("daemon", "ensure"):
+                settings = json.loads((r.state / "node/settings.json").read_text())
+                self.assertIs(settings["sync"]["discover"], False)
+                self.assertEqual(stat.S_IMODE((r.state / "node/settings.json").stat().st_mode), 0o600)
+            calls.append((argv, dict(env or {})))
+            return ""
+        r.ht = fake_ht
         r.scratch()
         return r, calls
 

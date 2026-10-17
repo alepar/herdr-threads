@@ -373,7 +373,10 @@ class Driver:
             # The state dir an installed plugin leaves behind: the local CLI's default uses it only
             # when it exists (peer --stdio would create it on a fresh node; the plugin case is
             # the one this run models).
-            rc, _, err = n.sh(f"mkdir -p {HOME}/.local/state/herdr/plugins/herdr-threads")
+            node = f"{HOME}/.local/state/herdr/plugins/herdr-threads/node"
+            # This fixture tests explicit peer add over real SSH, never ambient peer discovery.
+            rc, _, err = n.sh(f"mkdir -p {node} && chmod 700 {node.removesuffix('/node')} {node} && "
+                             f"printf '%s\\n' '{{\"sync\":{{\"discover\":false}}}}' > {node}/settings.json && chmod 600 {node}/settings.json")
             if rc != 0:
                 raise RuntimeError(f"{n.name}: state dir: {err.strip()[:200]}")
             n.start_herdr()

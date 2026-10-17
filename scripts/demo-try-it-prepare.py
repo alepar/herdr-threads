@@ -337,6 +337,11 @@ def prepare(args):
     ACTIVE_RUN = root
     for name in ("bin", "home", "project", "claude-config", "codex-home", "tmp"):
         (root / name).mkdir(mode=0o700)
+    (root / "state").mkdir(mode=0o700)
+    node = root / "state/node"
+    node.mkdir(mode=0o700)
+    (node / "settings.json").write_text('{"sync":{"discover":false}}\n')
+    (node / "settings.json").chmod(0o600)
     manifest = {"root": str(root), "run_id": str(uuid.uuid4())}
     env_values = {
         "HOME": str(root / "home"), "CLAUDE_CONFIG_DIR": str(root / "claude-config"),

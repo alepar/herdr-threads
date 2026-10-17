@@ -27,8 +27,31 @@ ih_require_herdr() { # CASE
     return 1
 }
 
+# Seed fixture settings before any production/release daemon can start. Private
+# HOME/XDG dirs do not hide saved machines or the process-wide remote-client scan.
+ih_disable_sync_discovery() { # STATE_DIR (private fixture only)
+    python3 - "$1" <<'PY_SETTINGS'
+import json
+import sys
+from pathlib import Path
+state = Path(sys.argv[1])
+state.mkdir(mode=0o700, parents=True, exist_ok=True)
+state.chmod(0o700)
+node = state / "node"
+node.mkdir(mode=0o700, parents=True, exist_ok=True)
+node.chmod(0o700)
+path = node / "settings.json"
+settings = json.loads(path.read_text()) if path.exists() else {}
+settings.setdefault("sync", {})["discover"] = False
+path.write_text(json.dumps(settings) + "\n")
+path.chmod(0o600)
+PY_SETTINGS
+}
+
 ih_root_new() {
-    r=$(mktemp -d /tmp/ih.XXXXXX) && printf '%s\n' "$HT_TEST_OWNER" > "$r/owner" && echo "$r"
+    r=$(mktemp -d /tmp/ih.XXXXXX) || return 1
+    ih_disable_sync_discovery "$r/st/herdr/plugins/herdr-threads" || { rm -rf "$r"; return 1; }
+    printf '%s\n' "$HT_TEST_OWNER" > "$r/owner" && echo "$r"
 }
 
 ih_tagged_pids() { # OWNER -> pids whose environment carries HT_TEST_OWNER=OWNER

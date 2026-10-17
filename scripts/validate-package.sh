@@ -92,6 +92,13 @@ root = Path(tempfile.mkdtemp(prefix="htpv-", dir="/private/tmp" if sys.platform 
 home, config, state, runtime = (root / name for name in ("home", "cfg", "st", "rt"))
 for directory in (home, config, state, runtime):
     directory.mkdir(mode=0o700)
+# The packaged binary is a production build: isolate discovery before plugin startup.
+plugin_fixture = state / "herdr/plugins" / PLUGIN
+plugin_fixture.mkdir(mode=0o700, parents=True)
+node = plugin_fixture / "node"
+node.mkdir(mode=0o700)
+(node / "settings.json").write_text('{"sync":{"discover":false}}\n')
+(node / "settings.json").chmod(0o600)
 (config / "herdr.toml").write_text("")
 socket = root / "h.sock"
 foreign_target = root / "foreign-cargo-target"

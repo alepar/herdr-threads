@@ -975,10 +975,11 @@ impl LaneProbe {
     fn discovery(&self) -> (Option<std::path::PathBuf>, Duration) {
         match self.state().discovery.clone() {
             Some((program, period)) => (Some(program), period),
-            // A spawned daemon of a cluster test (ht-5fr.11) cannot be handed a
-            // probe: its environment shortens the cadence instead.
+            // Every isolated daemon uses a fixture source, including in-process
+            // daemons without a probe. Some(program) also forbids the real process
+            // scan. A cluster opts in with a fake program and a shorter cadence.
             None => (
-                None,
+                Some(crate::test_support::isolation::discovery_program().into()),
                 std::env::var("HT_TEST_DISCOVERY_PERIOD_MS")
                     .ok()
                     .and_then(|ms| ms.parse::<u64>().ok())
@@ -3365,5 +3366,29 @@ mod start_into_slot_tests {
         assert!(status.health().is_none(), "a fresh lane reports ready");
         archival_start_failed(&status, &io::Error::other("no threads"));
         assert!(status.health().is_some_and(|h| h.failure.is_some()));
+    }
+}
+
+#[cfg(test)]
+mod isolated_discovery_tests {
+    use super::*;
+
+    #[test]
+    fn isolated_discovery_default_never_selects_real_sources() {
+        let (program, _) = LaneProbe::default().discovery();
+        assert!(
+            program.is_some(),
+            "isolated discovery must never select real Herdr or process scanning"
+        );
+    }
+
+    #[test]
+    fn isolated_discovery_probe_keeps_explicit_fixture() {
+        let probe = LaneProbe::default();
+        probe.set_discovery("/fixture/herdr".into(), Duration::from_millis(17));
+        assert_eq!(
+            probe.discovery(),
+            (Some("/fixture/herdr".into()), Duration::from_millis(17))
+        );
     }
 }
