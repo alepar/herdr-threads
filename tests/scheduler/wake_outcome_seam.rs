@@ -333,3 +333,54 @@ fn held_prompt_reports_unsubmitted_and_advances_exactly_one_step() {
         assert_eq!(seam.ladder().0, after.0);
     });
 }
+
+/// ht-qkpn: a submitted wake whose turn never checked in must not make a new
+/// p0 wait on the historical ladder after a long idle gap or beyond the normal
+/// minimum for a new frontier. Only the native
+/// host is scripted; publication, discovery, reservation and completion use SQLite.
+#[test]
+fn new_p0_uses_minimum_spacing_without_observed_turn_even_after_long_idle() {
+    let seam = Seam::new(vec![AgentComposerState::Submitted]);
+    let db = seam.context.open_writer().unwrap();
+    db.execute_batch("DELETE FROM invitations;
+        DELETE FROM wake_work;
+        UPDATE memberships SET state='joined';
+        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('thread','seat',1,1);")
+        .unwrap();
+    let publish = |n: i64| {
+        db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','scope',?1,zeroblob(32),'thread',0,0,0,0,0,0,0,'building','lazy',0)", [format!("prep-{n}")]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','thread',?2,'ordinary',?2,'wake',?3,'lazy',0)", rusqlite::params![format!("msg-{n}"), n, seam.clock.utc_now().0]).unwrap();
+        db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES(?1,?2,'thread','seat',0)", rusqlite::params![format!("prep-{n}"), format!("msg-{n}")]).unwrap();
+        db.execute(
+            "UPDATE lazy_recipients SET decision_seq=?1 WHERE preparation_id=?2",
+            rusqlite::params![n, format!("prep-{n}")],
+        )
+        .unwrap();
+        let views: i64 = db
+            .query_row(
+                "SELECT count(*) FROM binding_pending WHERE decision_seq=?1",
+                [n],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(views, 1, "published into the connected binding view");
+        db.execute("UPDATE local_node SET decision_seq=?1", [n])
+            .unwrap();
+    };
+    publish(2);
+    seam.run(|drive| {
+        assert_eq!(drive().attempted, 1);
+        assert_eq!(seam.ladder().2.as_deref(), Some("submitted"));
+        // No check-in, pull, cursor advance, ACK or observed turn follows.
+        let mut now = START_MS;
+        for (n, gap) in [(3, 31_000), (4, 26 * 60_000), (5, 31_000)] {
+            now += gap;
+            seam.clock.mono.store(now, Ordering::SeqCst);
+            assert_eq!(drive().attempted, 0, "the old row is not woken twice");
+            publish(n);
+            assert_eq!(drive().attempted, 1, "new p0 is due on its first scan");
+            assert_eq!(seam.ladder().2.as_deref(), Some("submitted"));
+        }
+        assert_eq!(seam.host.prompts.load(Ordering::SeqCst), 4);
+    });
+}
