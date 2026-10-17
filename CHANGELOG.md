@@ -2,11 +2,14 @@
 
 ## Unreleased
 
+## v1.2.3
+
 - **Seats survive panes moved to another workspace.** Herdr gives a pane moved to another workspace (`herdr pane move --workspace`/`--new-workspace`) a new pane id, while the agent and shells already running in it keep the old `HERDR_PANE_ID`. The daemon already followed the seat to the new id, but every call from the moved pane then failed: the agent's `inbox`, `send` and other seat commands ("no resolved seat is mapped to pane"), its turn hooks (no in-turn delivery or check-in, "continuity pending") and a person's commands from a moved shell. When the pane id maps to no seat, the CLI and the hooks now ask Herdr once for that pane's current id and continue there; steady calls cost nothing extra and an unmoved, unseated pane is refused as before. Resolving a just-moved pane (`seat resolve`, `launch --pane`, `handoff --pane`) no longer allocates a second seat for it before the daemon has followed the move: it is refused as retryable and then resolves to the pane's own seat. Renames and moves inside a workspace never changed ids and keep working. Covered on every listed Herdr release by the new `move` lane of the release matrix. No schema or protocol change.
 
 ## v1.2.2
 
 - **`handoff --new-tab` and `launch` wait for a new pane's shell.** On a busy machine Herdr can refuse to start an agent in a just-created tab until its shell is interactive (`agent_pane_busy`), and the handoff or launch failed. The start is now retried, for up to 2 s, only on that exact refusal (nothing has started at that point); a start that may have happened is never retried, and a pane that stays busy still fails cleanly as not started, so `retry` reuses the same tab, pair and message.
+
 ## v1.2.1
 
 - **One-way store upgrade to schema 48.** The first daemon start of 1.2.1 adds an index for open restore holds (`migrations/0048_recovery_hold_health.sql`); v1.2.0 and older then refuse the upgraded store (`unsupported schema version 48`). Back up the state directory first if you might go back to 1.2.0. The wire protocol stays 8, so mixed CLI and daemon versions within 1.x keep working.
