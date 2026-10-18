@@ -17,3 +17,5 @@ approvals:
 - coverage-round-1 · 12 findings: 11 applied, 1 rejected (cov-2) — see coverage-ledger.md; requirements: 12 · mapped: 12 · unmapped: 0 · all auto
 - coverage-round-2 · 7 findings, all applied (auto) — see coverage-ledger.md; no round 3 (cap)
 roastDesignRound: 1
+roast-design: 2026-10-18-peer-wire-compat-hardening-roast-design-1.md
+findingsLedgerDesign: findings-ledger-design.md

@@ -1,0 +1,12 @@
+r1 [Should-fix] §3 Wire form and capability gating; §5 Mixed-version behaviour (absent: hello `envelope` field)
+r1 [Should-fix] §4 Storage "Schema bumps to 4 through the existing migration mechanism"; §10 "`v2.2.0` is already branched as `release/2.2.0`"
+r1 [Should-fix] Key abstractions
+r1 [Should-fix] §2 The opaque entry: "causal apply of that log stops at it and later entries of the log park as `parked_unknown` does today ... this is the same outcome one level lower"
+r1 [Should-fix] §4 `journal_opaque(log_ix, counter, raw BLOB, hash, signature, prev_hash)` "with the same guard triggers"; Key abstractions "apply pass (log whose next position is opaque records parked_unknown/blocked_on)"
+r1 [Nit] §2 "re-attempted after an upgrade"; Key abstractions StoredEntry "A generation the node learns to understand becomes a parse into `Known`, never a new variant"
+r1 [Should-fix] Key abstractions
+r1 [Should-fix] §3 `{ "opaque": { node, inc, counter, prev, hash, sig, raw } }` (lowercase hex); Key abstractions OpaqueEntry "raw within bound"
+r1 [Should-fix] §2 "Fork proofs between an opaque and a known entry ... work on prefix fields"; §4 "same guard triggers and fork-freeze semantics as `journal`"
+r1 [Nit] Key abstractions StoredEntry: "An opaque entry at counter 1 of an unknown log is `Corrupt(NotGenesis)`"; §1 "verify the signature with the log's genesis public key"
+r1 [Nit] §6 "runs a deterministic session ... with seeded `NodeIdentity::from_seed` keys and a fixed HLC"; Main challenges (d)
+r1 [Should-fix] Goal "every shipped wire shape stays decodable by CI-frozen fixtures"; §6 "The initial fixture is `2.1.1`"
