@@ -56,6 +56,31 @@ Integration sweep verifies the public main flows, unwired fields, README/help/go
 
 Document this as an unreleased minor feature, proposing 2.1.0 because it adds CLI behavior. Do not bump/tag/release, merge main or push. Caller owns code roast, green integration handoff, full suite and final short office update. Release-only authenticated wake e2e remains the releasing agent's prerequisite.
 
+## Key abstractions
+
+**LaunchDirectoryContext** — new struct, the immutable directory and declared-environment selection retained across new-tab handoff and retry.
+- Owns: canonical requested profile directory, bounded adapter-produced environment projection and selected cwd; shared validation of their bounds and agreement with bootstrap cwd/env.
+- Hides: the difference between a newly captured selection and its exact replay. An absent context preserves historical serialization and empty-env rules.
+- Must not: choose harness environment names, resolve native named profiles, hold credentials, confer seat authority or freeze configuration contents. Adapters own profile semantics; existing daemon identity validation owns authority.
+- Relationships: composed into saved bootstrap and derived launch inputs; consumed by existing creation, preflight and retry orchestration. `LaunchPolicy` produces the profile projection; transport uses the frozen projection unchanged.
+- Lifecycle: captured once before publication, owned by the durable plan and copied into its exact derived child. Immutable, with no process-global state or owned external resources.
+- Errors: malformed or inconsistent retained data is distinct from a selected directory that has disappeared or ceased to be a directory. Structural validation is deterministic; orchestration rechecks filesystem existence before unpublished create/start boundaries without canonicalizing again.
+
+**LaunchPolicy** — extended: owns explicit-directory support and adapter-specific environment mapping, with unsupported as the neutral default. Its existing scope resolution preserves explicit selection over shell hints and continues to resolve Hermes named profiles beneath the selected root. The registry remains the sole adapter selection point.
+
+**SetupEnvironment and LaunchScope** — extended: carry the captured explicit selection through hook inspection, fingerprints, startup composition and prelaunch checks. `LaunchScope` continues to represent the effective setup location, including Hermes’s resolved named profile, separately from the requested root retained by `LaunchDirectoryContext`.
+
+**Existing bootstrap identities and handoff launch orchestration** — extended: retain and compare the optional context across automatic and explicit-thread paths, enforce capability admission before effects, propagate exact cwd/env into tab creation and derived launch, and preserve current retry certainty and configuration revalidation rules.
+
+Variation: harness support and profile mapping vary through registered `LaunchPolicy` implementations; structural directory-context validation stays neutral and shared. Guidance changes extend the existing skill and generated mirrors without a new runtime abstraction.
+
+Walk-through: a new-tab handoff validates and canonicalizes explicit paths, obtains the selected adapter’s environment projection, freezes the context after capability admission, creates the tab with matching cwd/env and preflights its derived launch using that selection. Retry loads the same context and saved argv, checks directory existence and current configuration, then follows existing submission rules. A future harness adds its policy implementation and registry registration; callers never branch on harness names. Future agy support changes only its existing adapter policy.
+
+Per spec “Frozen launch context and canonical compatibility”: absent and present contexts intentionally have different environment-validation rules, preserving historical identity bytes. Per “Adapter profile mapping”: the frozen environment records declared child input; it does not prove shell preservation, native consumption or authenticated account selection.
+
+Digest:
+- LaunchDirectoryContext: owns immutable retained directory selection and its bounded environment projection; shared validation belongs beside the protocol value, while harness behavior belongs in `LaunchPolicy`; callers never reconstruct retry inputs from current defaults or independently choose profile environment names.
+
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
