@@ -18,7 +18,8 @@
 //! - Also (ht-j87z.4): the Opaque capability gate, [`gate_batch`]. Every batch
 //!   a link is served, ordinary or a fork branch, passes through it with the
 //!   link's negotiated `envelope.opaque.v1`; a log whose whole batch it cuts is
-//!   parked on that link (`withheld_logs`) instead of being read again.
+//!   parked on that link instead of being read again. The link status counts
+//!   those parked **logs** (`withheld_logs`), not the entries cut.
 //! - Must not: touch SQLite, wait on a link's queue, or serve a log the
 //!   actor's `local` vector does not yet show (a want for a log not held yet
 //!   stays armed and is served once the log appears).

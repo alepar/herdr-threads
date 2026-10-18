@@ -244,7 +244,7 @@ impl SyncAdmin {
                     role: format!("{:?}", link.role).to_lowercase(),
                     rx_logs: link.rx_logs,
                     unsolicited: link.unsolicited,
-                    withheld: link.withheld,
+                    withheld_logs: link.withheld_logs,
                     dest: link.dest.clone(),
                     last_error,
                 }
