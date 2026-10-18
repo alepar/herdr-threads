@@ -11,6 +11,8 @@ pub struct Request {
     pub selector: PaneSelector,
     pub seat: Option<String>,
     pub cwd: Option<std::path::PathBuf>,
+    /// Canonical explicit profile selection from the public parser; None preserves legacy input.
+    pub profile_dir: Option<std::path::PathBuf>,
     pub thread: Option<String>,
     pub thread_name: Option<String>,
     pub topic: Option<String>,
@@ -42,6 +44,12 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         ids::{HostTargetId, OperationId},
     };
     let fail = super::invalid_request;
+    // Fail closed until launch-context orchestration consumes this selection.
+    if request.profile_dir.is_some() {
+        return Err(super::unsupported(
+            "explicit profile directories require new-tab launch context support",
+        ));
+    }
     if !request.automatic
         || request.new_tab.is_none()
         || request.existing
@@ -250,6 +258,12 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         ids::{HostTargetId, OperationId},
         results::CommandResult,
     };
+    // Fail closed until launch-context orchestration consumes this selection.
+    if request.profile_dir.is_some() {
+        return Err(super::unsupported(
+            "explicit profile directories require new-tab launch context support",
+        ));
+    }
     if request.automatic {
         return Err(super::unsupported(
             "automatic bootstrap producer unavailable",
