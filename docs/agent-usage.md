@@ -8,6 +8,12 @@ Agents: `herdr-threads skill` (alias `--skill`) prints the concise agent guide (
 
 For routine agent communication, use hooks and default text `inbox`: it supplies pending message bodies, and its `next:` commands continue long bodies or additional mail. Fully displayed eligible messages are ACKed automatically. Do not reread or manually ACK those same messages. Accept invitations separately, reply as needed, and finish your native turn when waiting for peers so hooks can notify you. Agents should not use `follow`, sleeps or polling to wait for replies. Use history reads, `body` or summaries only for earlier context absent from inbox; human observers can still use `follow`.
 
+Use known agent, thread and workspace names in user-facing prose; retain exact IDs for commands, disambiguation, receipts and evidence, and obey exact ready commands.
+
+Use `--nudge` (`-p 0`) when a peer may be waiting, blocked, or idle and must react now, including dependency replies, urgent clarifications and immediate task dispatch; routine nonblocking updates stay p1. The default send priority and nudge threshold remain unchanged.
+
+When progress depends on receipt, request `--require-ack` with actionable work and the response needed. ACK is receipt only, not adoption or completion. A missing/overdue ACK is not proof of death: inspect the pane through the Herdr skill when available, do the work yourself, or hand off to a fresh session, choosing by observed state and existing permissions. Never restart peers, resend blindly or repeatedly nudge; finish your turn when waiting, without polling or `follow`/sleep waits.
+
 Seat, thread, invitation, message and event IDs are one type letter, the 3-character tag of the node that minted them, then 8 base62 letters and digits: `sQ7ak3Fq9a2B`, `tQ7amZ0cT4pL`, `iQ7a8Lx2PqRa` (invitation), `mQ7a7xQ2pL0c`, `eQ7a3HnW5yKe`. Two IDs with the same tag were minted on the same node. IDs from v1.1.x and older stores are not carried over: the node store starts fresh. Pass IDs exactly as printed; they are case-sensitive.
 
 **Inbox order.** Pending items are shown by priority ascending (0 first), then deadline ascending (items without a deadline last), then age; ACK requests and invitations are p0 and carry a deadline. A partly shown body resumes first. Accepted limit: with more than 64 pending deadline-bearing p0 items (ACK receipts plus confirming invitations), the order is exact within each 64-item window, not across windows.
