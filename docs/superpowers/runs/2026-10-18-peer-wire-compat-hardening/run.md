@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-18-peer-wire-compat-hardening
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: design
+phase: roast-design
 codeMechanism: Workflow
 runTag: peer-wire-compat-hardening-20261018T171300
 context: Context: claude · planner=200K/167K · implementer=200K/167K · reviewer=200K/167K · finalReview=200K/167K · assembler=200K/167K · warn: planner, finalReview on a 200K model → set ANTHROPIC_DEFAULT_OPUS_MODEL=<model>[1m] or config.models.<role> to a 1M model · warn: implementer, reviewer, assembler on a 200K model → set ANTHROPIC_DEFAULT_SONNET_MODEL=<model>[1m] or config.models.<role> to a 1M model
@@ -16,3 +16,4 @@ approvals:
 - top-split · auto · .1 LEAF, .2 LEAF, .3 LEAF, .4 LEAF (promotion SPLIT applied: .10), .5 LEAF, .6 LEAF, .7 LEAF, .8 LEAF, .9 LEAF
 - coverage-round-1 · 12 findings: 11 applied, 1 rejected (cov-2) — see coverage-ledger.md; requirements: 12 · mapped: 12 · unmapped: 0 · all auto
 - coverage-round-2 · 7 findings, all applied (auto) — see coverage-ledger.md; no round 3 (cap)
+roastDesignRound: 1
