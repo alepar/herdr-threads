@@ -313,4 +313,168 @@ fn literal_name_paths_real_labels() {
             .data()["summary"]["seat"],
         seat
     );
+// An interactive native fork is its own top-level session, not a worker and not a
+// replacement of the original session. Rejecting `fork` or superseding either
+// sibling loses lifecycle-qualified receipt authority when switching conversations.
+#[test]
+fn codex_side_fork_reads_sends_and_settles_with_its_own_binding() {
+    let Some(mut smoke) = Smoke::new("codex_side_fork") else {
+        return;
+    };
+    let (pane, peer_pane) = (smoke.pane(), smoke.pane());
+    let seat = smoke.seat(&pane);
+    let process = smoke.stand_in();
+    let main = Agent::codex("main-session", &pane)
+        .thread("main-session")
+        .in_process(process);
+    let side = Agent::codex("side-session", &pane)
+        .thread("side-session")
+        .in_process(process);
+    let peer = Agent::claude("peer-session", &peer_pane);
+    let start = |session: &str, source: &str| {
+        serde_json::json!({
+            "hook_event_name": "SessionStart", "session_id": session, "source": source,
+            "transcript_path": null, "cwd": "/tmp", "model": "fixture", "permission_mode": "default"
+        })
+    };
+    assert_eq!(
+        smoke
+            .native_hook(&main, &start(&main.session, "startup"))
+            .code,
+        0
+    );
+    assert_eq!(
+        smoke
+            .hook(&peer, &claude_start(&peer.session, "startup"))
+            .code,
+        0
+    );
+    let thread = joined_thread(&smoke, &peer, &main, &seat);
+    let fork = smoke.native_hook(&side, &start(&side.session, "fork"));
+    assert_eq!(fork.code, 0, "{}", fork.text());
+    assert!(
+        fork.stderr.is_empty(),
+        "fork lifecycle refused: {}",
+        fork.text()
+    );
+    let main_binding = smoke.binding(&seat, "codex", &main.session, "");
+    let side_binding = smoke.binding(&seat, "codex", &side.session, "");
+    assert_ne!(main_binding.id, side_binding.id);
+    assert_eq!(main_binding.liveness, "connected");
+    assert_eq!(side_binding.liveness, "connected");
+    assert_eq!(side_binding.role, "top_level");
+    assert_eq!(side_binding.parent, None);
+    let identities: Vec<(String, String, bool)> = smoke.db().prepare(
+        "SELECT execution_id,observation_provenance,concurrent_session FROM occupant_bindings WHERE harness='codex' ORDER BY ordinal"
+    ).unwrap().query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().map(Result::unwrap).collect();
+    assert_ne!(identities[0].0, identities[1].0);
+    assert_eq!(identities[1].1, "cooperative_top_level");
+    assert!(!identities[0].2);
+    assert!(identities[1].2);
+    // A later genuine turn-start still uses Current, without replacing a sibling.
+    let turn = smoke.native_hook(
+        &main,
+        &serde_json::json!({
+            "hook_event_name":"UserPromptSubmit", "session_id":main.session,
+            "turn_id":"return-main", "prompt":"hello", "transcript_path":null,
+            "cwd":"/tmp", "model":"fixture", "permission_mode":"default"
+        }),
+    );
+    assert_eq!(turn.code, 0, "{}", turn.text());
+    assert!(turn.stderr.is_empty(), "{}", turn.text());
+    assert_eq!(
+        smoke.binding(&seat, "codex", &side.session, "").liveness,
+        "connected"
+    );
+
+    let sent = smoke.cli(&side, &["send", &thread, "--body", "side-authored"]);
+    assert_eq!(sent.code, 0, "{}", sent.text());
+    let sent_id = sent.data().as_str().unwrap().to_owned();
+    let sender: String = smoke
+        .db()
+        .query_row(
+            "SELECT sender_binding_id FROM messages WHERE id=?1",
+            [&sent_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(sender, side_binding.id);
+
+    let message = smoke
+        .cli(
+            &peer,
+            &[
+                "send",
+                &thread,
+                "--body",
+                "side-receipt",
+                "--require-ack",
+                &seat,
+            ],
+        )
+        .data()
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let main_before = smoke.cursor(&main_binding.id, &thread);
+    let shown = smoke.text(&side, &["inbox"]);
+    assert_eq!(shown.code, 0, "{}", shown.text());
+    assert!(shown.stdout.contains("side-receipt"), "{}", shown.text());
+    assert_eq!(
+        smoke.receipts(&message, &seat),
+        vec![("acked".into(), Some(side_binding.id.clone()))]
+    );
+    assert_eq!(smoke.cursor(&main_binding.id, &thread), main_before);
+    let parent = smoke.text(&main, &["inbox"]);
+    assert_eq!(parent.code, 0, "{}", parent.text());
+    assert!(parent.stdout.contains("side-receipt"), "{}", parent.text());
+
+    // A mismatched native thread/session remains a worker-shaped claim; it
+    // cannot borrow the other conversation's top-level write authority.
+    let wrong = side.clone().thread(&main.session);
+    let refused = smoke.cli(&wrong, &["send", &thread, "--body", "wrong-session"]);
+    assert_eq!(refused.code, REFUSED, "{}", refused.text());
+    assert!(refused.text().contains("subagent"), "{}", refused.text());
+    // A second interactive fork may have made a plain call before its lifecycle
+    // callback arrived. Promotion preserves that binding and its cursor, and
+    // neither independent session competes with main or the other fork.
+    let second = Agent::codex("side-two", &pane)
+        .thread("side-two")
+        .in_process(process);
+    assert_eq!(smoke.text(&second, &["inbox"]).code, 0);
+    let plain = smoke.binding(&seat, "codex", &second.session, "");
+    let before = smoke.cursor(&plain.id, &thread);
+    let promoted = smoke.native_hook(&second, &start(&second.session, "fork"));
+    assert_eq!(promoted.code, 0, "{}", promoted.text());
+    assert!(promoted.stderr.is_empty(), "{}", promoted.text());
+    let promoted_binding = smoke.binding(&seat, "codex", &second.session, "");
+    assert_eq!(plain.id, promoted_binding.id);
+    assert_eq!(smoke.cursor(&plain.id, &thread), before);
+    for session in [&main.session, &side.session, &second.session] {
+        assert_eq!(
+            smoke.binding(&seat, "codex", session, "").liveness,
+            "connected"
+        );
+    }
+    let ended = smoke.native_hook(
+        &side,
+        &serde_json::json!({
+            "hook_event_name":"SessionEnd", "session_id":side.session, "transcript_path":null,
+            "cwd":"/tmp", "model":"fixture", "permission_mode":"default"
+        }),
+    );
+    assert_eq!(ended.code, 0, "{}", ended.text());
+    assert_eq!(
+        smoke.binding(&seat, "codex", &side.session, "").liveness,
+        "disconnected"
+    );
+    let resumed = smoke.native_hook(&side, &start(&side.session, "resume"));
+    assert_eq!(resumed.code, 0, "{}", resumed.text());
+    assert!(resumed.stderr.is_empty(), "{}", resumed.text());
+    for session in [&main.session, &side.session, &second.session] {
+        assert_eq!(
+            smoke.binding(&seat, "codex", session, "").liveness,
+            "connected"
+        );
+    }
 }

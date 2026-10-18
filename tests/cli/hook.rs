@@ -3296,6 +3296,7 @@ mod continuity_gate {
             source: match kind {
                 EventKind::Resume => "resume",
                 EventKind::Startup => "startup",
+                EventKind::Fork => "fork",
                 EventKind::Clear => "clear",
                 EventKind::Compact => "compact",
                 EventKind::Restart => "retry",
@@ -4521,6 +4522,7 @@ fn recovery_event_of(harness: Harness, kind: EventKind) -> LifecycleEvent {
             EventKind::Resume => "resume",
             EventKind::Clear => "clear",
             EventKind::Startup => "startup",
+            EventKind::Fork => "fork",
             EventKind::Restart => "retry",
             EventKind::Tool => "PreToolUse",
         }

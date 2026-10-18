@@ -113,10 +113,9 @@ for changed mail and empty stdout when there is no change; they never return a
 permission decision or `updatedInput`. Complete native hook displays ACK eligible
 receipts after output flush through the canonical writer. Only incomplete or
 unavailable delivery directs the model to inbox. Children can read and
-summarize; the top-level model accepts invitations separately. SessionStart `source = fork` is valid native input in both
-versions but is a **known-unsupported** input and is refused: no live fork
-payload has been captured, so whether a fork is startup-like or resume-like for
-check-in is uncharacterized. The live captures record `permission_mode:
+summarize; the top-level model accepts invitations separately. SessionStart `source = fork` registers an independent top-level session; its
+binding stays connected beside the source. The [native side capture](../../docs/evidence/codex-side/report.md)
+records this on 0.163.0; the version is evidence, not an operational gate. The live captures record `permission_mode:
 "bypassPermissions"` in every payload even under `-s read-only`: under `codex
 exec` it reflects the approval policy, never the sandbox. The adapter does not
 read `permission_mode` and must never interpret it as a sandbox signal.
@@ -231,3 +230,33 @@ remain eligible for the existing explicit adoption path. Explicit setup migrates
 registrations recoverably, preserving unrelated settings and group order. Status does not migrate.
 Codex may require native review of changed commands. Hook registration never writes native trust
 or permission grants. Unsetup removes only exact unambiguous owned groups and preserves edited or duplicate groups.
+
+## Interactive `/side`
+
+Run Codex in the pane with `--no-daemon`; install `herdr-threads setup codex
+--with-permissions` into that profile and review/trust its native hooks. Open
+`/side` or `/side <question>`, then use ordinary `herdr-threads` commands under
+the side's genuine environment. Its equal CODEX_SESSION_ID/CODEX_THREAD_ID name
+its own native session. Do not export the parent's ID, pass a cooperative
+identity override, or treat the side as a background worker. Background workers
+retain their subagent read-only rules; a mismatched session/thread cannot borrow
+a parent's write authority.
+
+The fork hook establishes an independent lifecycle binding with its own
+execution and read cursors. Both main and side stay connected across normal
+turn switches and liveness sweeps. Memberships and receipt obligations belong
+to the shared seat; the first connected top-level binding to display/ACK a
+message settles it, attributed to that binding, without advancing its sibling's
+cursor. JSON/machine inbox stays read-only. Ordinary replacement sessions and
+Hermes `/branch` successor semantics are unchanged.
+
+The measured `/side` is ephemeral and has no transcript path; native restoration
+after closing it is not promised. The observed Ctrl-C close emits no SessionEnd,
+so the side binding stays connected until a native end event or process exit;
+UI closure is not treated as identity/liveness evidence. Its native `send_message /root` addresses the
+side's own native tree, not the source conversation. An ht send reaches other
+seats with the side's sender attribution; the author seat (including main) is
+excluded from automatic delivery. Main may explicitly read the shared thread's
+history, or another seat can relay back for automatic delivery. A direct send
+to one's own seat is refused. Same-seat sibling delivery is separate follow-up
+work; no implicit native-to-ht bridge is installed.

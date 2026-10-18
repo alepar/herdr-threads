@@ -2916,3 +2916,34 @@ fn notice_delivery_negotiation_negative_paths_preserve_marks_and_tool_authority(
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[test]
+fn independent_fork_replay_preserves_frozen_start_policy_and_generation() {
+    let (root, journal, contexts, mut seed, mut event) = fixture();
+    seed.binding_generation = 7;
+    event.kind = EventKind::Fork;
+    event.source = "fork".into();
+    event.native_session = Some("native-side".into());
+    let first = prepare_event(&journal, &contexts, &event, Some(&seed), 1)
+        .unwrap()
+        .unwrap();
+    drop(contexts);
+    let reopened = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT)
+        .unwrap()
+        .with_host(crate::test_support::test_host_locator());
+    let replay = prepare_event(&journal, &reopened, &event, Some(&seed), 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first, replay);
+    let Command::CheckIn(check) = decode_request(&replay).unwrap() else {
+        panic!("expected check-in")
+    };
+    assert_eq!(
+        check.mode,
+        WireMode::Fork {
+            expected_binding_generation: 7
+        }
+    );
+    assert_eq!(check.claim.native_session.as_str(), "native-side");
+    fs::remove_dir_all(root).unwrap();
+}

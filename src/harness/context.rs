@@ -92,6 +92,8 @@ pub struct OccupantContext {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventKind {
+    /// A new independent session whose source remains running.
+    Fork,
     Startup,
     Restart,
     Resume,

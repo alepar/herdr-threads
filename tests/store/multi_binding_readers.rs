@@ -111,6 +111,7 @@ fn enroll(db: &Connection, session: &str) -> bindings::BindingRow {
         &ResolveRequest {
             claim: &claim,
             lifecycle: true,
+            fork: false,
             placement: &place,
             lineage: None,
         },

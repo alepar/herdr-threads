@@ -421,6 +421,7 @@ mod resolution {
             &ResolveRequest {
                 claim,
                 lifecycle,
+                fork: false,
                 placement: &place,
                 lineage: None,
             },
@@ -592,6 +593,7 @@ mod resolution {
             &ResolveRequest {
                 claim: &child,
                 lifecycle: false,
+                fork: false,
                 placement: &place,
                 lineage: None,
             },
@@ -780,6 +782,7 @@ mod resolution {
                 &ResolveRequest {
                     claim: &c,
                     lifecycle: true,
+                    fork: false,
                     placement: &place,
                     lineage: None,
                 },
@@ -809,6 +812,7 @@ mod resolution {
             &ResolveRequest {
                 claim: &c,
                 lifecycle: false,
+                fork: false,
                 placement: &place,
                 lineage: None,
             },
@@ -989,6 +993,7 @@ mod resolution {
         let request = ResolveRequest {
             claim: &c,
             lifecycle: true,
+            fork: false,
             placement: &place,
             lineage: None,
         };
@@ -1043,6 +1048,7 @@ mod resolution {
             &ResolveRequest {
                 claim: &c,
                 lifecycle: true,
+                fork: false,
                 placement: &place,
                 lineage: None,
             },
@@ -1337,6 +1343,7 @@ mod resolution {
                         &ResolveRequest {
                             claim: &c,
                             lifecycle: true,
+                            fork: false,
                             placement: &place,
                             lineage: None,
                         },
@@ -1468,6 +1475,7 @@ mod exclusivity {
             &ResolveRequest {
                 claim,
                 lifecycle,
+                fork: false,
                 placement: &place,
                 lineage: None,
             },
@@ -2200,6 +2208,7 @@ mod lineage {
             &ResolveRequest {
                 claim,
                 lifecycle: true,
+                fork: false,
                 placement: &place,
                 lineage,
             },
@@ -2339,4 +2348,47 @@ mod registries {
         assert!(names.contains(&"availability_recompute"), "{names:?}");
         assert_eq!(names.len(), 2, "an unlisted hook needs a test: {names:?}");
     }
+}
+
+#[test]
+fn independent_fork_survives_sibling_lifecycle_replacement_and_own_resume() {
+    let db = db();
+    let place = placement();
+    let main_key = key("main", None);
+    let side_key = key("side", None);
+    let main = enrolled(enroll(&db, &request(&main_key, &place), UtcMillis(10)).unwrap()).0;
+    let mut side_request = request(&side_key, &place);
+    side_request.trigger = EnrollTrigger::Fork;
+    let side = enrolled(enroll(&db, &side_request, UtcMillis(20)).unwrap()).0;
+    assert!(side.concurrent_session);
+    assert_eq!(
+        get(&db, &main.binding_id).unwrap().unwrap().liveness,
+        Liveness::Connected
+    );
+    let replacement_key = key("main-clear", None);
+    let replacement =
+        enrolled(enroll(&db, &request(&replacement_key, &place), UtcMillis(30)).unwrap()).0;
+    assert_eq!(
+        get(&db, &main.binding_id).unwrap().unwrap().liveness,
+        Liveness::Disconnected
+    );
+    assert_eq!(
+        get(&db, &side.binding_id).unwrap().unwrap().liveness,
+        Liveness::Connected
+    );
+    run_enroll_hooks(
+        &db,
+        &EnrollEvent {
+            binding: &side,
+            trigger: EnrollTrigger::Lifecycle,
+            created: false,
+        },
+        UtcMillis(40),
+        ENROLL_HOOKS,
+    )
+    .unwrap();
+    assert_eq!(
+        get(&db, &replacement.binding_id).unwrap().unwrap().liveness,
+        Liveness::Connected
+    );
 }

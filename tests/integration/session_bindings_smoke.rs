@@ -397,6 +397,23 @@ impl Smoke {
         Self::finish(command, Some(&serde_json::to_vec(payload).unwrap()))
     }
 
+    /// The production owned native entrypoint, with its declared event registration.
+    pub(super) fn native_hook(&self, who: &Agent, payload: &Value) -> Out {
+        let argv: Vec<String> = self
+            .routing()
+            .into_iter()
+            .chain([
+                "hook-event".to_owned(),
+                who.harness.to_owned(),
+                payload["hook_event_name"].as_str().unwrap().to_owned(),
+            ])
+            .collect();
+        Self::finish(
+            self.agent_command(who, &argv),
+            Some(&serde_json::to_vec(payload).unwrap()),
+        )
+    }
+
     /// A fresh `herdr workspace create` root pane (never a pane we did not make).
     pub(super) fn pane(&mut self) -> String {
         self.labels += 1;

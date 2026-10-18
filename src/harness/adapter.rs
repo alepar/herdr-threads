@@ -1441,7 +1441,9 @@ impl DecodedEvent {
         // A qualified turn's normalized Startup/Clear is not lifecycle evidence.
         if matches!(
             self.intent,
-            EventIntent::Lifecycle(EventKind::Startup | EventKind::Clear | EventKind::Resume)
+            EventIntent::Lifecycle(
+                EventKind::Fork | EventKind::Startup | EventKind::Clear | EventKind::Resume
+            )
         ) && top
             && matches!(self.delivery, DeliveryEligibility::Context)
             && self.can_check_in()
@@ -1737,7 +1739,12 @@ mod tests {
             })
         };
         for policy in [L, W] {
-            for kind in [EventKind::Startup, EventKind::Clear, EventKind::Resume] {
+            for kind in [
+                EventKind::Fork,
+                EventKind::Startup,
+                EventKind::Clear,
+                EventKind::Resume,
+            ] {
                 event.role = EventRole::TopLevel;
                 event.intent = EventIntent::Lifecycle(kind);
                 assert_eq!(event.enrollment(policy), Some(K::Lifecycle));

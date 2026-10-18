@@ -680,3 +680,45 @@ fn the_thread_rechecks_on_its_cadence_and_stops_on_cancel() {
     cancel.cancel();
     handle.join().unwrap();
 }
+
+#[test]
+fn independent_fork_is_not_a_same_process_competitor_but_still_dies_with_process() {
+    let fx = Fx::new("liveness-independent-fork");
+    fx.table.set(100, 5);
+    let main = fx.bind("s", "codex", "main", Some((100, 5)), 10);
+    let side = fx.bind("s", "codex", "side", Some((100, 5)), 20);
+    fx.raw()
+        .execute(
+            "UPDATE occupant_bindings SET concurrent_session=1 WHERE binding_id=?1",
+            [&side],
+        )
+        .unwrap();
+    assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 0);
+    assert!(fx.connected(&main));
+    assert!(fx.connected(&side));
+    let replacement = fx.bind("s", "codex", "clear", Some((100, 5)), 30);
+    assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 1);
+    assert_eq!(fx.state(&main), superseded());
+    assert!(fx.connected(&replacement));
+    assert!(fx.connected(&side));
+    // A stale pre-fork verdict cannot disconnect the now-independent binding.
+    let candidate = fx
+        .store
+        .liveness_candidates(None, &budget())
+        .unwrap()
+        .into_iter()
+        .find(|c| c.binding.binding_id.as_str() == side)
+        .unwrap();
+    let stale = crate::store::bindings::LivenessDecision {
+        binding: candidate.binding.binding_id,
+        fingerprint: candidate.binding.fingerprint,
+        reason: crate::store::bindings::DisconnectReason::Superseded,
+    };
+    assert_eq!(fx.store.apply_liveness(&[stale], &budget()).unwrap(), 0);
+    fx.table.kill(100);
+    assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 2);
+    assert_eq!(
+        fx.state(&side),
+        ("disconnected".into(), Some("liveness_process_exit".into()))
+    );
+}

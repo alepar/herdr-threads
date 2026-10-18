@@ -331,6 +331,9 @@ pub(crate) fn pending_request(
         WireMode::Current => (CheckInMode::Current, None),
         WireMode::Lifecycle {
             expected_binding_generation,
+        }
+        | WireMode::Fork {
+            expected_binding_generation,
         } => (CheckInMode::Lifecycle, Some(*expected_binding_generation)),
     };
     let command = intent
@@ -413,6 +416,9 @@ pub fn prepare_event_as(
                 .map_err(context_io)?;
                 let mode = match event.kind.mode() {
                     CheckInMode::Current => WireMode::Current,
+                    CheckInMode::Lifecycle if event.kind == EventKind::Fork => WireMode::Fork {
+                        expected_binding_generation: seed.binding_generation,
+                    },
                     CheckInMode::Lifecycle => WireMode::Lifecycle {
                         expected_binding_generation: seed.binding_generation,
                     },
@@ -539,6 +545,11 @@ pub fn decode_request(request: &PendingCheckIn) -> Result<Command, ContextError>
     };
     let mode = match request.mode {
         CheckInMode::Current if request.expected_generation.is_none() => WireMode::Current,
+        CheckInMode::Lifecycle if matches!(check.mode, WireMode::Fork { .. }) => WireMode::Fork {
+            expected_binding_generation: request
+                .expected_generation
+                .ok_or(ContextError::Invalid)?,
+        },
         CheckInMode::Lifecycle => WireMode::Lifecycle {
             expected_binding_generation: request
                 .expected_generation

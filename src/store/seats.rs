@@ -4427,6 +4427,7 @@ pub fn decide_continuity(
                 &bindings::ResolveRequest {
                     claim: &claim,
                     lifecycle: true,
+                    fork: false,
                     placement: &placement,
                     lineage: None,
                 },
@@ -4934,9 +4935,22 @@ pub(crate) fn cooperative_mapping(
             "cooperative mapping or generation changed",
         ));
     }
+    if matches!(
+        mode,
+        Some(crate::protocol::commands::CheckInMode::Fork { .. })
+    ) && (claim.is_subagent() || claim.harness == crate::protocol::authority::Harness::Human)
+    {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "independent fork requires a top-level agent",
+        ));
+    }
     let lifecycle_mode = matches!(
         mode,
-        Some(crate::protocol::commands::CheckInMode::Lifecycle { .. })
+        Some(
+            crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                | crate::protocol::commands::CheckInMode::Fork { .. }
+        )
     );
     let claimed = checked_host_number(claim.binding_generation)?;
     // A `managed_launch` placeholder neither bumps the seat generation nor is replaced by a
@@ -4965,9 +4979,14 @@ pub(crate) fn cooperative_mapping(
         ));
     }
     match mode {
-        Some(crate::protocol::commands::CheckInMode::Lifecycle {
-            expected_binding_generation,
-        }) => {
+        Some(
+            crate::protocol::commands::CheckInMode::Lifecycle {
+                expected_binding_generation,
+            }
+            | crate::protocol::commands::CheckInMode::Fork {
+                expected_binding_generation,
+            },
+        ) => {
             if expected_binding_generation != claim.binding_generation {
                 return Err(api_error(
                     ErrorCode::Conflict,
@@ -5286,11 +5305,20 @@ pub(crate) fn resolve_cooperative_with_lineage(
 ) -> Result<bindings::Resolution, ApiError> {
     let lifecycle = matches!(
         mode,
-        Some(crate::protocol::commands::CheckInMode::Lifecycle { .. })
+        Some(
+            crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                | crate::protocol::commands::CheckInMode::Fork { .. }
+        )
     );
     let placement = cooperative_placement(tx, at, claim, lifecycle, mapping)?;
     let predecessor = match lineage_parent {
-        Some(parent) if *parent != claim.native_session && !claim.is_subagent() => {
+        Some(parent)
+            if !matches!(
+                mode,
+                Some(crate::protocol::commands::CheckInMode::Fork { .. })
+            ) && *parent != claim.native_session
+                && !claim.is_subagent() =>
+        {
             bindings::match_claim(
                 tx,
                 &bindings::BindingKey {
@@ -5310,6 +5338,10 @@ pub(crate) fn resolve_cooperative_with_lineage(
         &bindings::ResolveRequest {
             claim,
             lifecycle,
+            fork: matches!(
+                mode,
+                Some(crate::protocol::commands::CheckInMode::Fork { .. })
+            ),
             placement: &placement,
             lineage: predecessor.as_ref(),
         },
@@ -5320,6 +5352,7 @@ pub(crate) fn resolve_cooperative_with_lineage(
     {
         let successor = resolution.binding();
         if successor.role == bindings::BindingRole::TopLevel
+            && !successor.concurrent_session
             && successor.lineage_from.is_none()
             && bindings::validate_lineage(tx, claim, predecessor)?
         {
@@ -5419,6 +5452,7 @@ pub fn register_available(
             let lifecycle = matches!(
                 command.mode,
                 crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                    | crate::protocol::commands::CheckInMode::Fork { .. }
             );
             let human = claim.harness == crate::protocol::authority::Harness::Human;
             if lifecycle

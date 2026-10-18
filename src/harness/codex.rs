@@ -196,8 +196,9 @@ pub const RECIPES: &[CodexRecipe] = &[Recipe {
             SessionStart startup/resume, SubagentStart and root/child Bash PreToolUse input \
             captured, and context-only additionalContext delivery to the model observed for \
             SessionStart and PreToolUse (not SubagentStart). permission_mode is always \
-            bypassPermissions under exec and is not a sandbox signal. SessionStart fork is \
-            known-unsupported (never captured). Transport and receipt are not qualified for \
+            bypassPermissions under exec and is not a sandbox signal. Interactive SessionStart fork \
+            captured on 0.163.0 with an independent session (docs/evidence/codex-side/report.md). \
+            Transport and receipt are not qualified for \
             either; 0.159.3: the ht-p03.20 native matrix manual and managed core-flow cells, run \
             from the fixed install path on the evidence SHA in docs/validation/report.md",
     profile: CodexProfile {
@@ -1096,9 +1097,11 @@ pub fn encode_context(
         return Err(ContextError::TooLarge);
     }
     let event = match kind {
-        EventKind::Startup | EventKind::Resume | EventKind::Clear | EventKind::Compact => {
-            "SessionStart"
-        }
+        EventKind::Fork
+        | EventKind::Startup
+        | EventKind::Resume
+        | EventKind::Clear
+        | EventKind::Compact => "SessionStart",
         EventKind::Tool => "PreToolUse",
         EventKind::Restart => return Err(ContextError::Invalid),
     };
@@ -1123,7 +1126,7 @@ pub fn encode_event_context(
         "SubagentStart" if event.role == Role::Subagent => "SubagentStart",
         "PreToolUse" if event.kind == EventKind::Tool => "PreToolUse",
         "UserPromptSubmit" if event.kind == EventKind::Tool => "UserPromptSubmit",
-        "startup" | "resume" | "clear" | "compact" => "SessionStart",
+        "fork" | "startup" | "resume" | "clear" | "compact" => "SessionStart",
         _ => return Err(ContextError::Invalid),
     };
     encode_native_context(name, context)
@@ -1168,13 +1171,10 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
             let source = required(value, "source")?;
             let kind = match source.as_str() {
                 "startup" => EventKind::Startup,
+                "fork" => EventKind::Fork,
                 "resume" => EventKind::Resume,
                 "clear" => EventKind::Clear,
                 "compact" => EventKind::Compact,
-                // `fork` is valid HooksV1 input but known-unsupported: no
-                // live fork payload has been captured, so whether it carries
-                // a fresh session or the parent's history (startup-like or
-                // resume-like check-in) is uncharacterized.
                 _ => return Err(ContextError::Invalid),
             };
             (source, kind, role)

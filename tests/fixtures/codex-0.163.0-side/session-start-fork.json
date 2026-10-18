@@ -1,0 +1,9 @@
+{
+  "session_id": "side-session",
+  "transcript_path": null,
+  "cwd": "/private/tmp/side-fixture",
+  "hook_event_name": "SessionStart",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "default",
+  "source": "fork"
+}

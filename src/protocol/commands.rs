@@ -718,7 +718,13 @@ pub struct CheckIn {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CheckInMode {
     Current,
-    Lifecycle { expected_binding_generation: u64 },
+    Lifecycle {
+        expected_binding_generation: u64,
+    },
+    /// Independent lifecycle session; never supersedes another session.
+    Fork {
+        expected_binding_generation: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

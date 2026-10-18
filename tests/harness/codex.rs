@@ -551,6 +551,7 @@ fn never(_: &PendingCheckIn) -> Result<CheckInResponse, ContextError> {
 fn lifecycle_sources_map_and_clear_or_resume_reject_stale_session_requests() {
     for (source, kind) in [
         ("startup", EventKind::Startup),
+        ("fork", EventKind::Fork),
         ("resume", EventKind::Resume),
         ("clear", EventKind::Clear),
         ("compact", EventKind::Compact),
@@ -568,7 +569,7 @@ fn lifecycle_sources_map_and_clear_or_resume_reject_stale_session_requests() {
         assert_eq!(e.native_session.as_deref(), Some("native"));
         assert_eq!(e.capability, Capability::ObservedInput);
     }
-    for source in ["fork", "", "Startup"] {
+    for source in ["", "Startup"] {
         assert!(
             codex::parse_event_for_version(&session_start(source, "native"), "id", &pinned())
                 .is_err()
@@ -965,7 +966,7 @@ const CODEX_158_FORK: &[u8] = include_bytes!("../fixtures/codex-0.158.0/05-sessi
 /// schema diverges from HooksV1 (role/kind mapping regressions on these
 /// payloads); the transport gate opening for a 0.158.0 witness; an encoder
 /// emitting a decision or rewrite for 0.158.0 events; silently accepting the
-/// uncharacterized SessionStart `fork` source.
+/// independent SessionStart `fork` source.
 #[cfg(unix)]
 #[test]
 fn codex_158_fixtures_parse_under_the_shared_recipe_and_stay_context_only() {
@@ -1046,11 +1047,11 @@ fn codex_158_fixtures_parse_under_the_shared_recipe_and_stay_context_only() {
         child.scoped_command(),
         Err(TransportError::Context(ContextError::Child))
     );
-    // `fork` is a valid native source in both 0.157.1 and 0.158.0 schemas but
-    // is not characterized for check-in; it stays refused.
     assert_eq!(
-        codex::parse_event_for_version(CODEX_158_FORK, "external", &version),
-        Err(ContextError::Invalid)
+        codex::parse_event_for_version(CODEX_158_FORK, "external", &version)
+            .unwrap()
+            .kind,
+        EventKind::Fork
     );
     let plan = plan_codex_for_version(&[], &["/private/tmp/hook".into()], &version).unwrap();
     assert_eq!(plan.owned.len(), codex::DECLARATION.owned_hooks.len());
@@ -1086,7 +1087,7 @@ const LIVE_158_ROLLOUT: &[u8] =
 /// deliver (extra decision/`updatedInput` keys or a renamed field); the
 /// adapter reading `permission_mode` (refusing `bypassPermissions` or
 /// deriving role/sandbox from it); the transport gate opening on live input;
-/// accepting SessionStart `fork` (known-unsupported: never captured live).
+/// the independent SessionStart `fork` captured by the later side probe.
 #[cfg(unix)]
 #[test]
 fn codex_158_live_payloads_parse_and_match_the_delivered_context_envelope() {
@@ -1250,13 +1251,23 @@ fn codex_158_live_payloads_parse_and_match_the_delivered_context_envelope() {
         vec![29]
     );
 
-    // SessionStart `fork` was never captured live: it stays refused.
-    let mut fork: Value =
-        serde_json::from_slice::<Value>(LIVE_158_RUN2_START).unwrap()["payload"].clone();
-    fork["source"] = json!("fork");
+    let fork = include_bytes!("../fixtures/codex-0.163.0-side/session-start-fork.json");
+    let event =
+        codex::parse_event_for_contract(fork, "side-start", &codex::CodexContract::registered())
+            .unwrap();
+    assert_eq!(event.kind, EventKind::Fork);
+    assert_eq!(event.role, Role::TopLevel);
+    assert_eq!(event.native_session.as_deref(), Some("side-session"));
+    let encoded: Value =
+        serde_json::from_slice(&codex::encode_event_context(&event, "fork-context", true).unwrap())
+            .unwrap();
     assert_eq!(
-        codex::parse_event_for_version(&bytes(&fork), "external", &version),
-        Err(ContextError::Invalid)
+        encoded["hookSpecificOutput"]["hookEventName"],
+        "SessionStart"
+    );
+    assert_eq!(
+        encoded["hookSpecificOutput"]["additionalContext"],
+        "fork-context"
     );
 }
 

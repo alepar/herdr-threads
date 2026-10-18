@@ -60,10 +60,16 @@ pub(crate) struct NodeDelta {
 /// are audited against the baseline plus the deltas in this list, so an edited
 /// delta makes them `IncompatibleSchema`. An entry that is out of order or
 /// misnumbered is refused on open.
-pub(crate) const NODE_DELTAS: &[NodeDelta] = &[NodeDelta {
-    version: 2,
-    sql: include_str!("../../migrations/node/0002_replayed_message_roles.sql"),
-}];
+pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
+    NodeDelta {
+        version: 2,
+        sql: include_str!("../../migrations/node/0002_replayed_message_roles.sql"),
+    },
+    NodeDelta {
+        version: 3,
+        sql: include_str!("../../migrations/node/0003_concurrent_session_bindings.sql"),
+    },
+];
 
 /// Latest `PRAGMA user_version` supported by this binary's production schema.
 pub const NODE_LATEST_SCHEMA_VERSION: i64 = NODE_SCHEMA_VERSION + NODE_DELTAS.len() as i64;

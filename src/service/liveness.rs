@@ -61,7 +61,7 @@ pub fn classify(
                 // `managed_launch` placeholders included: they rank below lifecycle-claimed
                 // sessions and so can lose, never win (ht-54r.87). Keep in step with `store::bindings::is_superseded_now` and
                 // its `supersede_rank`.
-                if binding.role == BindingRole::TopLevel {
+                if binding.role == BindingRole::TopLevel && !binding.concurrent_session {
                     sharing
                         .entry((
                             candidate.instance.clone(),

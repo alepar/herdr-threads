@@ -4675,3 +4675,72 @@ mod legacy_child_execution {
         }
     }
 }
+
+#[test]
+fn independent_fork_rejects_borrowed_execution_and_generation_and_ignores_lineage() {
+    let (store, conn, _) = fixture();
+    let parent_claim = session_claim("main", "00000000-0000-4000-8000-0000000000a1");
+    check_in(&store, lifecycle(parent_claim.clone(), "main-start")).unwrap();
+    let fork = |claim: CallerClaim, operation: &str| CheckIn {
+        mode: CheckInMode::Fork {
+            expected_binding_generation: claim.binding_generation,
+        },
+        claim,
+        operation: OperationId::new(operation),
+        lineage_parent: Some(NativeSessionId::new("main")),
+    };
+    let mut borrowed = parent_claim.clone();
+    borrowed.native_session = NativeSessionId::new("side");
+    assert_eq!(
+        check_in(&store, fork(borrowed.clone(), "borrowed"))
+            .unwrap_err()
+            .code,
+        ErrorCode::CallerUnverified
+    );
+    let mut side_claim = borrowed;
+    side_claim.execution = ExecutionId::new("00000000-0000-4000-8000-0000000000b1");
+    let mut stale = fork(side_claim.clone(), "stale-generation");
+    stale.mode = CheckInMode::Fork {
+        expected_binding_generation: side_claim.binding_generation + 1,
+    };
+    assert_eq!(
+        check_in(&store, stale).unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    let good = fork(side_claim, "side-start");
+    check_in(&store, good.clone()).unwrap();
+    check_in(&store, good.clone()).unwrap(); // exact durable replay preserves fork policy
+    let mut resumed = good;
+    resumed.mode = CheckInMode::Lifecycle {
+        expected_binding_generation: resumed.claim.binding_generation,
+    };
+    resumed.operation = OperationId::new("side-resume-with-parent-hint");
+    let resumed = check_in(&store, resumed).unwrap();
+    let binding: String = conn
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE native_session='side'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    crate::store::bindings::disconnect(
+        &conn,
+        &BindingId::new(binding),
+        crate::store::bindings::DisconnectReason::ProcessExit,
+        UtcMillis(100),
+    )
+    .unwrap();
+    check_in(&store, current(&resumed.context, "side-plain-reconnect")).unwrap();
+    let side: (bool, Option<String>, String) = conn.query_row(
+        "SELECT concurrent_session,lineage_from,liveness FROM occupant_bindings WHERE native_session='side'", [],
+        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!(side, (true, None, "connected".into()));
+    let main: String = conn
+        .query_row(
+            "SELECT liveness FROM occupant_bindings WHERE native_session='main'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(main, "connected");
+}

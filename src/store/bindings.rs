@@ -142,6 +142,7 @@ pub struct BindingRow {
     pub generation: u64,
     pub provenance: String,
     pub ended_at: Option<UtcMillis>,
+    pub concurrent_session: bool,
 }
 
 impl BindingRow {
@@ -168,6 +169,7 @@ impl BindingRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnrollTrigger {
     Lifecycle,
+    Fork,
     PlainCall,
 }
 
@@ -205,7 +207,7 @@ pub const ENROLL_HOOKS: &[(&str, EnrollHook)] = &[
     ("same_pid_supersede", same_pid_supersede),
 ];
 
-const COLUMNS: &str = "ordinal,binding_id,seat_id,harness,native_session,agent_id,role,parent_binding,lineage_from,liveness,disconnected_at,disconnect_reason,liveness_pid,liveness_start,migrated,migrated_session,generation,observation_provenance,ended_at";
+const COLUMNS: &str = "ordinal,binding_id,seat_id,harness,native_session,agent_id,role,parent_binding,lineage_from,liveness,disconnected_at,disconnect_reason,liveness_pid,liveness_start,migrated,migrated_session,generation,observation_provenance,ended_at,concurrent_session";
 
 fn corrupt(detail: &str) -> ApiError {
     api_error(ErrorCode::StoreCorrupt, detail.to_owned())
@@ -237,6 +239,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<BindingRow, ApiError>> 
     let migrated: i64 = r.get(14)?;
     let migrated_session: Option<String> = r.get(15)?;
     let provenance: String = r.get(17)?;
+    let concurrent_session: bool = r.get(19)?;
     let build = || -> Result<BindingRow, ApiError> {
         let fingerprint = match (pid, start) {
             (Some(pid), Some(start)) => Some(LivenessFingerprint {
@@ -272,6 +275,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Result<BindingRow, ApiError>> 
                 .map_err(|_| corrupt("invalid binding generation"))?,
             provenance,
             ended_at: ended_at.map(UtcMillis),
+            concurrent_session,
         })
     };
     Ok(build())
@@ -324,8 +328,8 @@ pub(crate) fn enroll_with_hooks(
     // availability pair (on any path, a plain call's enrollment included).
     super::schema::fence_seat_availability(tx, key.seat.as_str(), || {
         tx.execute(
-        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,role,parent_binding,agent_id,lineage_from,liveness_pid,liveness_start) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,role,parent_binding,agent_id,lineage_from,liveness_pid,liveness_start,concurrent_session) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
         params![
             key.seat.as_str(),
             to_i64(place.generation, "generation")?,
@@ -347,6 +351,7 @@ pub(crate) fn enroll_with_hooks(
             request.lineage.map(BindingId::as_str),
             pid,
             start,
+            request.trigger == EnrollTrigger::Fork,
         ],
     )
     .map_err(store_error)
@@ -710,7 +715,7 @@ pub fn liveness_candidates(
         .map_err(store_error)?;
     let rows = statement
         .query_map([seat.map(SeatId::as_str)], |r| {
-            Ok((row(r)?, r.get::<_, String>(19)?, r.get::<_, i64>(20)?))
+            Ok((row(r)?, r.get::<_, String>(20)?, r.get::<_, i64>(21)?))
         })
         .map_err(store_error)?
         .collect::<Result<Vec<_>, _>>()
@@ -779,13 +784,17 @@ fn supersede_rank(candidate: &LivenessCandidate) -> (bool, i64, i64) {
 /// member may win: a plain-call-only binding or a `managed_launch` placeholder never wins, and a
 /// group with no lifecycle-claimed session is left as it is.
 fn is_superseded_now(current: &[LivenessCandidate], candidate: &LivenessCandidate) -> bool {
-    if candidate.binding.role != BindingRole::TopLevel || candidate.binding.fingerprint.is_none() {
+    if candidate.binding.concurrent_session
+        || candidate.binding.role != BindingRole::TopLevel
+        || candidate.binding.fingerprint.is_none()
+    {
         return false;
     }
     let Some(winner) = current
         .iter()
         .filter(|c| {
             c.binding.role == BindingRole::TopLevel
+                && !c.binding.concurrent_session
                 && c.instance == candidate.instance
                 && c.binding.harness == candidate.binding.harness
                 && c.binding.fingerprint == candidate.binding.fingerprint
@@ -818,6 +827,7 @@ pub fn same_pid_supersede(
     if binding.role != BindingRole::TopLevel
         || binding.liveness != Liveness::Connected
         || binding.provenance == crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE
+        || binding.concurrent_session
         || event.trigger != EnrollTrigger::Lifecycle
     {
         return Ok(());
@@ -826,7 +836,7 @@ pub fn same_pid_supersede(
         tx,
         &format!(
             "SELECT {COLUMNS} FROM occupant_bindings WHERE ended_at IS NULL AND liveness='connected' AND role='top_level' \
-             AND harness=?1 AND liveness_pid=?2 AND liveness_start=?3 AND binding_id<>?4 \
+             AND concurrent_session=0 AND harness=?1 AND liveness_pid=?2 AND liveness_start=?3 AND binding_id<>?4 \
              AND seat_id IN (SELECT id FROM seats WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?5)) ORDER BY ordinal"
         ),
         &[
@@ -859,7 +869,10 @@ pub fn launch_placeholder_replace(
     if binding.role != BindingRole::TopLevel
         || binding.harness == "human"
         || binding.provenance == crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE
-        || event.trigger != EnrollTrigger::Lifecycle
+        || !matches!(
+            event.trigger,
+            EnrollTrigger::Lifecycle | EnrollTrigger::Fork
+        )
     {
         return Ok(());
     }
@@ -1057,6 +1070,8 @@ pub struct ResolveRequest<'a> {
     pub claim: &'a CallerClaim,
     /// A lifecycle check-in: the only claim that (re)connects and supersedes (r2).
     pub lifecycle: bool,
+    /// A genuine independent lifecycle session; no sibling supersede or lineage.
+    pub fork: bool,
     pub placement: &'a BindingPlacement,
     /// Lineage predecessor hint (spec §1), honoured only when [`validate_lineage`] holds.
     /// `seats::resolve_cooperative_with_lineage` passes it for a Hermes `parent_session_id` hint.
@@ -1430,13 +1445,13 @@ fn plain_reconnect_allowed(
     {
         return Ok(false);
     }
-    if row.role != BindingRole::TopLevel {
+    if row.role != BindingRole::TopLevel || row.concurrent_session {
         return Ok(true);
     }
     let held: bool = tx
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE ended_at IS NULL AND liveness='connected' \
-             AND role='top_level' AND binding_id<>?1 AND harness=?2 AND liveness_pid=?3 AND liveness_start=?4 \
+             AND role='top_level' AND concurrent_session=0 AND binding_id<>?1 AND harness=?2 AND liveness_pid=?3 AND liveness_start=?4 \
              AND observation_provenance NOT IN (?5,?7) \
              AND seat_id IN (SELECT id FROM seats WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?6)))",
             params![
@@ -1502,6 +1517,17 @@ fn resolve_claim_inner(
     hooks: &[(&str, EnrollHook)],
 ) -> Result<Resolution, ApiError> {
     let claim = request.claim;
+    if request.fork
+        && (!request.lifecycle
+            || claim.is_subagent()
+            || request.lineage.is_some()
+            || claim.harness == crate::protocol::authority::Harness::Human)
+    {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "independent fork requires a top-level agent",
+        ));
+    }
     let human = claim.harness == crate::protocol::authority::Harness::Human;
     let subagent = claim.role == crate::protocol::authority::CallerRole::Subagent;
     if claim.agent_id.is_some() != subagent {
@@ -1566,6 +1592,13 @@ fn resolve_claim_inner(
         ..request.placement.clone()
     };
     if let Some(existing) = found {
+        if request.fork {
+            tx.execute(
+                "UPDATE occupant_bindings SET concurrent_session=1 WHERE binding_id=?1",
+                [existing.binding_id.as_str()],
+            )
+            .map_err(store_error)?;
+        }
         if !request.lifecycle && readopts {
             // Re-adoption: the plain-call reconnect of a V32-migrated binding, which also
             // refreshes its placement and seeds `Readopt` cursors (TRUST-POLICY A4). Structural
@@ -1668,8 +1701,8 @@ fn resolve_claim_inner(
         // One fence over reopening, reconnecting and refreshing the placement.
         super::schema::fence_seat_availability(tx, key.seat.as_str(), || {
             tx.execute(
-                "UPDATE occupant_bindings SET ended_at=NULL WHERE binding_id=?1",
-                [ended.binding_id.as_str()],
+                "UPDATE occupant_bindings SET ended_at=NULL, concurrent_session=MAX(concurrent_session,?2) WHERE binding_id=?1",
+                params![ended.binding_id.as_str(), request.fork],
             )
             .map_err(store_error)?;
             connect(
@@ -1702,7 +1735,9 @@ fn resolve_claim_inner(
         )?;
         return Ok(Resolution::Reopened(binding));
     }
-    let trigger = if request.lifecycle {
+    let trigger = if request.fork {
+        EnrollTrigger::Fork
+    } else if request.lifecycle {
         EnrollTrigger::Lifecycle
     } else {
         EnrollTrigger::PlainCall

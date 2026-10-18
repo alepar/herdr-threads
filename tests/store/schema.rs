@@ -6039,3 +6039,38 @@ fn replayed_message_backfill_requires_unbound_journal_attribution() {
         assert_eq!(inserted.is_ok(), allowed, "case {n}: {inserted:?}");
     }
 }
+
+#[test]
+fn concurrent_session_delta_upgrades_existing_bindings_and_old_binary_refuses() {
+    let db = Connection::open_in_memory().unwrap();
+    let old = &schema::NODE_DELTAS[..1];
+    open_with(&db, old).unwrap();
+    crate::test_support::attach_test_host_to_connection(&db);
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id)
+        VALUES ('s','34750f98bd59fcfc946da45aaabe933b','resolved','native',4,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));
+        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at)
+        VALUES ('s',4,1,'p','b',1,'codex','existing-session','existing-execution','cooperative_top_level',5,5);").unwrap();
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    let row: (String, String, bool) = db
+        .query_row(
+            "SELECT native_session,execution_id,concurrent_session FROM occupant_bindings",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            "existing-session".into(),
+            "existing-execution".into(),
+            false
+        )
+    );
+    assert!(
+        open_with(&db, old)
+            .unwrap_err()
+            .detail
+            .contains("newer than this binary")
+    );
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+}

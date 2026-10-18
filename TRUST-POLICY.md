@@ -407,7 +407,7 @@ model open work, and summary closure never changes receipt state or installs glo
   disconnected as superseded, by an end event, by seat retirement or unresolve stays disconnected on a
   plain call: the call is served as that binding (attribution and cursor), and its liveness is unchanged,
   so a stale caller never flaps. Same-process supersede: an enrollment by a lifecycle check-in, or a lifecycle check-in, of a
-  top-level binding disconnects every other connected top-level binding of the same instance and harness with the same
+  non-concurrent top-level binding disconnects every other connected non-concurrent top-level binding of the same instance and harness with the same
   process fingerprint (pid and start time). This is structural evidence, not a heuristic (a reused pid
   has a different start time and never matches); the most recent claimer wins, so switching back to an
   older session in the same process disconnects the one just left. A plain call never supersedes: a
@@ -426,6 +426,37 @@ model open work, and summary closure never changes receipt state or installs glo
   supersedes its predecessor only after copying its cursors (except the plain-first late link, see
   *Lineage*). A seat is active while any open binding is
   connected, or while its open human binding sits on a resolved seat.
+- *Independent lifecycle forks (ht-i9a7)*: neutral `EventKind::Fork` maps to a
+  journaled `CheckInMode::Fork` with the same expected-generation and exact execution
+  checks as an ordinary lifecycle. The adapter maps only its native independent-start
+  event to it (Codex `SessionStart source=fork`); no parent identity, agent id, continuity
+  hint or client file supplies that authority. Only a top-level non-human agent qualifies.
+  The binding keeps `cooperative_top_level` provenance and persists `concurrent_session=1`
+  (node schema delta 3); older bindings default to 0. An independent fork is excluded
+  from both sides of same-process supersession: its enrollment, later lifecycle resumes
+  and liveness sweeps neither disconnect its source/siblings nor disconnect it for their
+  claims. A genuine Current/turn-start remains Current and never reclaims or supersedes.
+  Ordinary startup, clear, resume and Hermes successor-lineage semantics remain unchanged
+  among non-concurrent bindings. A fork has its own session-derived execution and Fresh
+  cursor seed at the seat's existing read frontier; it never copies a parent's cursors or
+  links lineage, including a supplied lineage hint. A CLI-first binding is marked only
+  by its own genuine fork lifecycle; its existing cursors stay its own. A later resume
+  or unresolved-seat reopen preserves the canonical bit. Process-exit, end-event,
+  retirement and mapping invalidation still disconnect the fork normally; a plain call
+  may reconnect a process-exit/migrated fork under the existing exact-session/fingerprint
+  conditions without competing with a connected sibling. No other disconnect reason
+  reconnects on a plain call. A stale worker verdict rechecks the concurrent bit inside
+  the deciding transaction. Memberships and receipt obligations remain per seat; ACK
+  attribution and read cursors remain per binding. Schema-2 binaries refuse schema 3;
+  no store downgrade or historical binding rewrite is implied.
+  Accepted lifecycle limit: the observed `/side` is ephemeral with a null transcript path;
+  this does not promise restoration of its native conversation after closing it. The
+  observed Ctrl-C close emits no SessionEnd, so its binding remains connected until an
+  actual native end event or process exit; closure is never inferred from UI state.
+  Closing one never infers an end for its siblings. Native `/root` collaboration is internal
+  to that side's agent tree. An ht send is recorded under its sender binding but excludes
+  the author seat from automatic delivery, including its siblings; sibling relay remains
+  an explicit history read or a peer relay, not a new same-seat delivery right.
 - *Liveness worker (ht-54r.23)*: the daemon re-checks the process fingerprint of every connected,
   open, non-human binding on a cadence (5 s) and, for the candidate's seat, before each wake decision.
   A binding whose process no longer exists, whose pid now has another start time, or that is
@@ -435,7 +466,7 @@ model open work, and summary closure never changes receipt state or installs glo
   through the general resolver: it reopens the session's own binding when the unresolve ended it (its
   cursors kept), else enrolls one at the seat's read position, runs the enroll hooks, and records the
   hook's current fingerprint (a retried intent submits the current one, never the journaled one); a
-  reattachment request without one is refused `liveness_fingerprint_required` (decision 9). Among connected top-level bindings
+  reattachment request without one is refused `liveness_fingerprint_required` (decision 9). Among connected non-concurrent top-level bindings
   of one instance and harness sharing one fingerprint, the latest lifecycle claim stays connected
   and the others, plain-call-only bindings and `managed_launch` placeholders included, are disconnected
   `superseded`; neither of those two kinds ever wins, and a group with no lifecycle-claimed session is
