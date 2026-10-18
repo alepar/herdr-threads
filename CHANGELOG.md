@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased
+## v2.2.0
 
 - **Same-seat sibling delivery.** A Codex `/side` can send to its parent and other sessions through a joined thread. Each binding receives its siblings' sends, excluding only its own `sender_binding_id`; author-seat mail creates no receipt or ACK obligation. Other seats receive the usual delivery. Signed audiences retain the previous author exclusion for older peers. Fresh local sends gain sibling bookkeeping; old messages are not backfilled.
 - **One-way store upgrade to node schema 4.** Publication triggers exclude the exact sender binding from pending views. Older binaries refuse the upgraded local store; the signed message wire shape is unchanged.
+- **`seat inspect` shows the connected top-level binding.** The `open_binding` scalar preferred the newest row regardless of liveness, so it could print `cooperative_env_session` while the top-level row was `cooperative_top_level`. It now prefers a connected top-level binding, then any top-level, then other open rows. Display only; no authority change.
+- **Exact binding details, opt-in.** `herdr-threads --json seat inspect SEAT --binding-details` (capability `seat.binding_details_v1`) adds `binding_id`, `native_session` and `provenance` to each `summary.bindings[]` row so a consumer can attest one exact session. It is a separate opt-in read: default inspection output and older decoders are unchanged.
+- **Installer upgrade race.** The installer keeps the old executable to stop a daemon that a hook re-ensured between the stop and the binary swap, then verifies the live daemon's version and handshake against the installed binary and exits 3 if the restart or the check fails.
 
 ## v2.1.1
 
