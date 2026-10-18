@@ -232,6 +232,7 @@ pub(crate) fn prepare_automatic<C: LocalClient + ?Sized>(
         || !request.existing
         || request.new_tab.is_some()
         || request.cwd.is_some()
+        || request.profile_dir.is_some()
         || request.kind.is_some()
         || request.binary.is_some()
         || request.name.is_some()
@@ -344,6 +345,7 @@ pub fn prepare<C: LocalClient + ?Sized>(
     if !request.existing
         || request.new_tab.is_some()
         || request.cwd.is_some()
+        || request.profile_dir.is_some()
         || request.kind.is_some()
         || request.binary.is_some()
         || request.name.is_some()

@@ -58,6 +58,7 @@ fn request() -> Request {
         selector: PaneSelector::default(),
         seat: None,
         cwd: None,
+        profile_dir: None,
         thread: Some("chosen".into()),
         thread_name: None,
         topic: None,
@@ -67,6 +68,203 @@ fn request() -> Request {
         binary: Some("/bin/quoted path".into()),
         name: Some("peer".into()),
         argv: vec!["--model".into(), "saved value".into()],
+    }
+}
+
+// Missing normalization would retain the symlink (and follow a later retarget on retry).
+#[test]
+fn parser_launch_directories_canonicalize_explicit_paths() {
+    let temp = Temp::new();
+    let target = temp.path().join("profile ' \" space");
+    std::fs::create_dir(&target).unwrap();
+    let link = temp.path().join("selected");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let argv: Vec<std::ffi::OsString> = vec![
+        "ht".into(),
+        "handoff".into(),
+        "--new-tab".into(),
+        "peer".into(),
+        "--kind".into(),
+        "codex".into(),
+        "--profile-dir".into(),
+        link.clone().into_os_string(),
+        "--cwd".into(),
+        link.into_os_string(),
+        "--agent-arg=--profile".into(),
+        "--agent-arg=native-name".into(),
+        "--".into(),
+        "work".into(),
+    ];
+    let parsed = crate::cli::commands::parse_argv(argv)
+        .expect("new-tab accepts an explicit profile directory");
+    let crate::cli::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+        panic!("new-tab route");
+    };
+    assert_eq!(request.cwd, Some(target.canonicalize().unwrap()));
+    assert_eq!(request.profile_dir, Some(target.canonicalize().unwrap()));
+    assert_eq!(request.argv, ["--profile", "native-name"]);
+}
+
+// A parser success would allow invalid explicit cwd to reach recipient resolution.
+#[test]
+fn parser_launch_directories_reject_invalid_paths_before_dispatch() {
+    use std::os::unix::ffi::OsStringExt;
+    let temp = Temp::new();
+    let file = temp.path().join("file");
+    std::fs::write(&file, "x").unwrap();
+    let controls = temp.path().join("has\nnewline");
+    std::fs::create_dir(&controls).unwrap();
+    let control_link = temp.path().join("looks-valid");
+    std::os::unix::fs::symlink(&controls, &control_link).unwrap();
+    let non_utf8 = temp.path().join(std::ffi::OsString::from_vec(vec![255]));
+    for path in [
+        file,
+        temp.path().join("missing"),
+        "relative".into(),
+        controls,
+        control_link,
+        non_utf8,
+        format!("/{}", "x".repeat(4096)).into(),
+    ] {
+        for option in ["--cwd", "--profile-dir"] {
+            let argv: Vec<std::ffi::OsString> = vec![
+                "ht".into(),
+                "handoff".into(),
+                "--new-tab".into(),
+                "peer".into(),
+                "--kind".into(),
+                "codex".into(),
+                option.into(),
+                path.clone().into_os_string(),
+                "--".into(),
+                "work".into(),
+            ];
+            assert!(crate::cli::commands::parse_argv(argv).is_err());
+        }
+    }
+}
+
+#[test]
+fn parser_launch_directories_refuse_panes_and_existing_with_new_tab_guidance() {
+    for option in ["--cwd", "--profile-dir"] {
+        for mode in [
+            vec!["--pane", "missing-pane", "--kind", "codex"],
+            vec!["--existing", "--seat", "missing-seat"],
+        ] {
+            let mut argv = vec!["ht", "handoff"];
+            argv.extend(mode);
+            argv.extend([option, "/missing", "--", "work"]);
+            let error = crate::cli::commands::parse_argv(argv).unwrap_err();
+            assert!(error.detail.contains("--new-tab"), "{error:?}");
+        }
+        assert!(
+            crate::cli::commands::parse_argv([
+                "ht", "launch", "--pane", "peer", "--kind", "codex", option, "/missing",
+            ])
+            .is_err()
+        );
+    }
+    for mode in [
+        vec!["--new-tab", "peer", "--kind", "codex"],
+        vec!["--pane", "peer", "--kind", "codex"],
+        vec!["--existing", "--seat", "peer"],
+    ] {
+        let mut argv = vec!["ht", "handoff"];
+        argv.extend(mode);
+        argv.extend(["--", "work"]);
+        let parsed = crate::cli::commands::parse_argv(argv).unwrap();
+        if let crate::cli::commands::CliAction::TopologyHandoff(request) = parsed.action {
+            assert!(request.cwd.is_none());
+            assert!(request.profile_dir.is_none());
+        }
+    }
+    assert!(
+        crate::cli::commands::parse_argv(["ht", "launch", "--pane", "peer", "--kind", "codex",])
+            .is_ok()
+    );
+}
+
+#[test]
+fn parser_launch_directories_unwired_profile_and_existing_selection_have_zero_calls() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Counter(AtomicUsize);
+    impl LocalClient for Counter {
+        fn call(&self, _: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Err(ApiError::invalid_request(
+                "unexpected recipient lookup or effect",
+            ))
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+    let temp = Temp::new();
+    let client = Counter(AtomicUsize::new(0));
+    let caller = claim();
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: caller.instance.clone(),
+        state_dir: temp.path().into(),
+        host_endpoint: "/host.sock".into(),
+    };
+    let topology = topology();
+    let clock = crate::app::SystemClock::new();
+    for automatic in [false, true] {
+        let mut r = request();
+        r.automatic = automatic;
+        r.profile_dir = Some(temp.path().canonicalize().unwrap());
+        let inputs = Preparation {
+            claim: &caller,
+            namespace: &namespace,
+            topology: &topology,
+            invocation_cwd: temp.path(),
+            options: None,
+            client: &client,
+            clock: &clock,
+        };
+        let result = if automatic {
+            prepare_automatic(&r, inputs).map(|_| ())
+        } else {
+            prepare(&r, inputs).map(|_| ())
+        };
+        assert!(matches!(
+            result,
+            Err(RunError::Api(ApiError {
+                code: crate::protocol::results::ErrorCode::Unsupported,
+                ..
+            }))
+        ));
+        assert_eq!(client.0.load(Ordering::Relaxed), 0);
+
+        r.new_tab = None;
+        r.existing = true;
+        r.kind = None;
+        r.binary = None;
+        r.name = None;
+        r.argv.clear();
+        r.seat = Some("recipient".into());
+        if automatic {
+            r.thread = None;
+        }
+        let inputs = super::super::handoff_delivery::Preparation {
+            claim: &caller,
+            namespace: &namespace,
+            topology: &topology,
+            client: &client,
+            clock: &clock,
+        };
+        let result = if automatic {
+            super::super::handoff_delivery::prepare_automatic(&r, inputs).map(|_| ())
+        } else {
+            super::super::handoff_delivery::prepare(&r, inputs).map(|_| ())
+        };
+        assert!(result.is_err());
+        assert_eq!(client.0.load(Ordering::Relaxed), 0);
     }
 }
 fn topology() -> HostTopology {
