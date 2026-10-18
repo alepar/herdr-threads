@@ -42,8 +42,8 @@ use crate::store::SqliteStore;
 use crate::store::connection::OwnHistoryHold;
 use crate::store::sync_dial_targets::TargetId;
 use crate::sync::coordinator::{
-    CoordinatorDeps, DIAL_REPORT_SLOTS, DialReport, DialedStream, LogFn, PeerIntake, PeerStream,
-    SyncCoordinator, SyncHandle,
+    CoordinatorDeps, CoordinatorOptions, DIAL_REPORT_SLOTS, DialReport, DialedStream, LogFn,
+    PeerIntake, PeerStream, SyncCoordinator, SyncHandle,
 };
 use crate::sync::dialer::DialConfig;
 use crate::sync::incarnations::{IncarnationsSink, IncarnationsWorker, WorkerDeps};
@@ -74,6 +74,23 @@ fn budget() -> CallBudget {
     CallBudget {
         deadline: MonoInstant(u64::MAX),
         cancellation: Cancellation::default(),
+    }
+}
+
+/// How a [`SyncNode`] differs from the default.
+#[derive(Clone, Copy, Debug)]
+pub struct SyncNodeOptions {
+    /// Advertise `envelope.opaque.v1` in the hello (default). Without it the
+    /// node stands in for a release that cannot take opaque entries: peers
+    /// withhold them from it.
+    pub advertise_opaque: bool,
+}
+
+impl Default for SyncNodeOptions {
+    fn default() -> Self {
+        Self {
+            advertise_opaque: true,
+        }
     }
 }
 
@@ -123,6 +140,17 @@ impl SyncNode {
         seed: [u8; 32],
         boot: u128,
     ) -> Self {
+        Self::start_with(store, journal, seed, boot, SyncNodeOptions::default())
+    }
+
+    /// [`start_serving`](Self::start_serving) with `options`.
+    pub fn start_with(
+        store: Arc<SqliteStore>,
+        journal: Arc<dyn JournalPort>,
+        seed: [u8; 32],
+        boot: u128,
+        options: SyncNodeOptions,
+    ) -> Self {
         let identity = Arc::new(NodeIdentity::from_seed(seed));
         let uuid = identity.uuid();
         let clock: Arc<dyn Clock> = Arc::new(RunClock(Instant::now()));
@@ -151,22 +179,27 @@ impl SyncNode {
             clock.clone(),
             log.clone(),
         ));
-        let (handle, intake, coordinator) = SyncCoordinator::start(CoordinatorDeps {
-            journal,
-            sync_store: Arc::new(MemorySyncStore::new()),
-            identity,
-            boot: Uuid::from_u128(boot),
-            writer: writer.clone(),
-            clock: clock.clone(),
-            pacer: pacer.clone(),
-            status: status.clone(),
-            log: log.clone(),
-            fork_sink: sink.clone(),
-            own_history: own_history.clone(),
-            dial: DialConfig::default(),
-            resync_pin: None,
-            cancel: cancel.clone(),
-        });
+        let (handle, intake, coordinator) = SyncCoordinator::start_with(
+            CoordinatorDeps {
+                journal,
+                sync_store: Arc::new(MemorySyncStore::new()),
+                identity,
+                boot: Uuid::from_u128(boot),
+                writer: writer.clone(),
+                clock: clock.clone(),
+                pacer: pacer.clone(),
+                status: status.clone(),
+                log: log.clone(),
+                fork_sink: sink.clone(),
+                own_history: own_history.clone(),
+                dial: DialConfig::default(),
+                resync_pin: None,
+                cancel: cancel.clone(),
+            },
+            CoordinatorOptions {
+                advertise_opaque: options.advertise_opaque,
+            },
+        );
         let worker = IncarnationsWorker::start(WorkerDeps {
             sink: sink.clone(),
             journal: store.clone(),

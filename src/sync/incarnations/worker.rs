@@ -52,8 +52,8 @@ use crate::store::SqliteStore;
 use crate::store::connection::{HoldSource, OwnHistoryHold};
 use crate::store::incarnations::{self as store, BranchVerdict, ReissueLimits, Repair, Rotation};
 use crate::sync::coordinator::{BranchReply, LogFn, uuid8};
-use crate::sync::envelope::{Envelope, StoredEntry, WireEnvelope, hex_decode, hex_encode};
-use crate::sync::frame::{BranchWant, ForkRef, HaveLog, TipRef};
+use crate::sync::envelope::{StoredEntry, hex_decode, hex_encode};
+use crate::sync::frame::{BranchWant, ForkRef, HaveLog, TipRef, WireItem};
 use crate::sync::journal_port::{JournalPort, LogMeta};
 use crate::sync::signals::SyncSignals;
 use crate::sync::{BatchLimits, LogKey, LogState};
@@ -175,7 +175,10 @@ enum Probe {
     Mismatch,
     /// One side of a forwarded [`ForkRef`]; `got` holds the sides fetched so
     /// far.
-    ForkSide { fork: ForkRef, got: Vec<Envelope> },
+    ForkSide {
+        fork: ForkRef,
+        got: Vec<StoredEntry>,
+    },
     /// The peer's entry that extends this node's active head.
     RestoreEntry,
     /// The entry a peer's `Have` names as the tip of a frozen own log. Only a
@@ -1119,7 +1122,7 @@ impl Core {
         &mut self,
         source: NodeUuid,
         fork: &ForkRef,
-        got: Vec<Envelope>,
+        got: Vec<StoredEntry>,
     ) -> Result<(), ApiError> {
         let log = LogKey {
             node: fork.node,
@@ -1135,9 +1138,9 @@ impl Core {
             };
             if let Some(entry) = got
                 .iter()
-                .find(|e| e.counter == side.counter && e.hash == hash)
+                .find(|e| e.counter() == side.counter && e.hash() == hash)
             {
-                sides.push(StoredEntry::from(entry.clone()));
+                sides.push(entry.clone());
             } else if let Some(entry) = self.local_entry(&log, side.counter, hash)? {
                 sides.push(entry);
             } else {
@@ -1202,7 +1205,10 @@ impl Core {
             }
             BranchReply::Entries { entries, more, .. } => (entries, *more),
         };
-        let decoded: Result<Vec<Envelope>, _> = entries.iter().map(decode_wire).collect();
+        let decoded: Result<Vec<StoredEntry>, _> = entries
+            .iter()
+            .map(|item| item.clone().into_stored())
+            .collect();
         let Ok(entries) = decoded else {
             self.d.sink.penalize(source, key.log);
             self.probes.remove(&key);
@@ -1239,7 +1245,7 @@ impl Core {
         source: NodeUuid,
         want: &BranchWant,
         key: &BranchKey,
-        entries: &[Envelope],
+        entries: &[StoredEntry],
     ) -> Result<(), ApiError> {
         let log = key.log;
         let Some(tip_hash) = hex_decode::<32>(&key.tip_hash) else {
@@ -1247,11 +1253,11 @@ impl Core {
         };
         match probe {
             Probe::RestoreEntry => {
-                if let Some(entry) = entries.first().filter(|e| e.counter == want.from) {
+                if let Some(entry) = entries.first().filter(|e| e.counter() == want.from) {
                     let job = Job::Restore {
                         log,
                         source,
-                        entry: Box::new(StoredEntry::from(entry.clone())),
+                        entry: Box::new(entry.clone()),
                     };
                     self.admit(job);
                 }
@@ -1262,9 +1268,9 @@ impl Core {
                     return Ok(());
                 };
                 let proven = entries.iter().any(|e| {
-                    e.log == log
-                        && e.counter == want.tip.counter
-                        && e.hash == tip_hash
+                    e.log() == log
+                        && e.counter() == want.tip.counter
+                        && e.hash() == tip_hash
                         && e.verify(&meta.pubkey).is_ok()
                 });
                 if !proven {
@@ -1282,7 +1288,7 @@ impl Core {
             Probe::Mismatch | Probe::ForkSide { .. } => {
                 let Some(theirs) = entries
                     .iter()
-                    .find(|e| e.counter == want.tip.counter && e.hash == tip_hash)
+                    .find(|e| e.counter() == want.tip.counter && e.hash() == tip_hash)
                 else {
                     self.d.sink.penalize(source, log);
                     return Ok(());
@@ -1299,13 +1305,7 @@ impl Core {
                         let Some(mine) = self.local_main_entry(&log, want.tip.counter)? else {
                             return Ok(());
                         };
-                        self.act_on_pair(
-                            log,
-                            &meta,
-                            &mine,
-                            &StoredEntry::from(theirs.clone()),
-                            source,
-                        )
+                        self.act_on_pair(log, &meta, &mine, theirs, source)
                     }
                 }
             }
@@ -1335,7 +1335,7 @@ impl Core {
         source: NodeUuid,
         key: &BranchKey,
         asked_from: u64,
-        entries: &[Envelope],
+        entries: &[StoredEntry],
         more: bool,
     ) -> Result<(), ApiError> {
         let Some((branch_ix, next_from)) = self.find_branch(key)? else {
@@ -1352,7 +1352,7 @@ impl Core {
             self.d.sink.clear_request(key);
             return self.schedule_pulls();
         }
-        let stored: Vec<StoredEntry> = entries.iter().cloned().map(StoredEntry::from).collect();
+        let stored: Vec<StoredEntry> = entries.to_vec();
         let verdict = quantum!(self, |tx, _ctx, _decision| store::branch_progress(
             tx, branch_ix, source, &stored, more
         ));
@@ -1587,35 +1587,21 @@ fn branch_bytes(job: &Job) -> usize {
     };
     entries
         .iter()
-        .map(|e| {
-            e.payload.get().len()
-                + e.node.len()
-                + e.prev.len()
-                + e.kind.len()
-                + e.deps.len()
-                + e.hash.len()
-                + e.sig.len()
+        .map(|item| match item {
+            WireItem::Known(e) => {
+                e.payload.get().len()
+                    + e.node.len()
+                    + e.prev.len()
+                    + e.kind.len()
+                    + e.deps.len()
+                    + e.hash.len()
+                    + e.sig.len()
+            }
+            WireItem::Opaque(o) => {
+                o.raw.len() + o.node.len() + o.prev.len() + o.hash.len() + o.sig.len()
+            }
         })
         .sum()
-}
-
-/// Decodes a received wire entry without consuming it.
-fn decode_wire(wire: &WireEnvelope) -> Result<Envelope, crate::sync::EnvelopeError> {
-    Envelope::try_from(WireEnvelope {
-        node: wire.node.clone(),
-        inc: wire.inc,
-        counter: wire.counter,
-        prev: wire.prev.clone(),
-        hlc: wire.hlc,
-        kind: wire.kind.clone(),
-        ver: wire.ver,
-        deps: wire.deps.clone(),
-        creates: wire.creates.clone(),
-        needs: wire.needs.clone(),
-        payload: wire.payload.clone(),
-        hash: wire.hash.clone(),
-        sig: wire.sig.clone(),
-    })
 }
 
 fn fork_ref(proof: &Proof, frozen_at: u64) -> ForkRef {

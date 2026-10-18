@@ -393,9 +393,9 @@ pub fn session(envelopes: &[(String, Envelope)]) -> Vec<(&'static str, Vec<u8>)>
     let tip3 = chain[2];
     let rival = conflicting(&a, tip3.prev_hash);
     let head = chain.last().expect("non-empty chain");
-    let wire = |list: &[&Envelope]| -> Vec<WireEnvelope> {
-        list.iter().copied().map(WireEnvelope::from).collect()
-    };
+    // `Into` resolves to `WireEnvelope` in a release whose entries are bare
+    // wire envelopes and to `WireItem` where they are items.
+    let wire = |list: &[&Envelope]| -> Vec<_> { list.iter().copied().map(Into::into).collect() };
     let frames: Vec<(&'static str, PeerFrame)> = vec![
         ("a>b", hello(&a, Role::Dialer, 0xa1, "aa")),
         ("b>a", hello(&b, Role::Dialed, 0xb2, "bb")),

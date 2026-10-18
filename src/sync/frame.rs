@@ -13,7 +13,11 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 use uuid::Uuid;
 
-use super::envelope::WireEnvelope;
+use super::LogKey;
+use super::envelope::{
+    Envelope, EnvelopeError, OpaqueEntry, OpaqueHeader, OpaqueTooLarge, StoredEntry, WireEnvelope,
+    check_opaque_size, hex_decode, hex_decode_vec, hex_encode,
+};
 use crate::daemon::transport::{self, MAX_FRAME_BYTES};
 use crate::node::{NodeTag, NodeUuid};
 
@@ -36,6 +40,10 @@ pub const MAX_HELLO_CAPS: usize = 32;
 pub const MAX_CAP_BYTES: usize = 64;
 /// The capability the fork frames (`branch_*`, `Have.forks`) belong to.
 pub const FORK_CAP: &str = "fork.v1";
+/// Capability: this node accepts `{"opaque": ...}` items in `entries` and
+/// `branch_entries` (entries whose signed layout the receiver may not
+/// understand). A sender never sends one to a peer that did not advertise it.
+pub const OPAQUE_CAP: &str = "envelope.opaque.v1";
 /// Most fork references in one `have` frame.
 pub const MAX_HAVE_FORKS: usize = 64;
 /// Longest `close.detail`, in bytes.
@@ -172,6 +180,161 @@ impl CloseReason {
     }
 }
 
+/// The wire form of an opaque entry; binary fields are lowercase hex.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpaqueWire {
+    pub node: String,
+    pub inc: u32,
+    pub counter: u64,
+    pub prev: String,
+    pub hash: String,
+    pub sig: String,
+    pub raw: String,
+}
+
+/// One item of `entries` / `branch_entries`.
+///
+/// Owns: the item alternative on the wire and its hand-written decode.
+/// `Known` encodes exactly as a bare [`WireEnvelope`] (byte-identical to
+/// 2.1.1); `Opaque` encodes as `{"opaque":{...}}`. Decoded by hand: an object
+/// with an `opaque` key is `Opaque`, anything else a [`WireEnvelope`] (serde
+/// `untagged` cannot hold the `RawValue` payload). Callers never write serde
+/// `untagged` around a `RawValue`.
+#[derive(Debug, Clone)]
+pub enum WireItem {
+    Known(WireEnvelope),
+    // cap: OPAQUE_CAP
+    Opaque(OpaqueWire),
+}
+
+impl Serialize for WireItem {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        match self {
+            Self::Known(wire) => wire.serialize(serializer),
+            Self::Opaque(wire) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("opaque", wire)?;
+                map.end()
+            }
+        }
+    }
+}
+
+/// Why a [`WireItem`] did not become a [`StoredEntry`]. A size refusal is not
+/// evidence of a corrupt source, so it stays apart from the shape errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WireItemError {
+    Envelope(EnvelopeError),
+    TooLarge(OpaqueTooLarge),
+}
+
+impl std::fmt::Display for WireItemError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Envelope(e) => e.fmt(f),
+            Self::TooLarge(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for WireItemError {}
+
+impl From<EnvelopeError> for WireItemError {
+    fn from(e: EnvelopeError) -> Self {
+        Self::Envelope(e)
+    }
+}
+
+impl WireItem {
+    /// Decode one item from its JSON text.
+    pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
+        #[derive(Deserialize)]
+        struct Probe {
+            #[serde(default)]
+            opaque: Option<OpaqueWire>,
+        }
+        match serde_json::from_str::<Probe>(text)
+            .ok()
+            .and_then(|p| p.opaque)
+        {
+            Some(opaque) => Ok(Self::Opaque(opaque)),
+            None => serde_json::from_str::<WireEnvelope>(text).map(Self::Known),
+        }
+    }
+
+    /// The item's counter, as the sender declares it.
+    pub fn counter(&self) -> u64 {
+        match self {
+            Self::Known(wire) => wire.counter,
+            Self::Opaque(wire) => wire.counter,
+        }
+    }
+
+    /// Decode into the entry the journal port takes. An opaque item is size
+    /// checked before its hex is decoded, then shape checked against its
+    /// header (the signature is checked by the store's `check_next`).
+    pub fn into_stored(self) -> Result<StoredEntry, WireItemError> {
+        match self {
+            Self::Known(wire) => Ok(StoredEntry::Known(Envelope::try_from(wire)?)),
+            Self::Opaque(wire) => {
+                let malformed = |field| WireItemError::Envelope(EnvelopeError::Malformed { field });
+                check_opaque_size(wire.raw.len() / 2).map_err(WireItemError::TooLarge)?;
+                let log = LogKey {
+                    node: crate::node::NodeUuid::from_bytes(
+                        hex_decode::<16>(&wire.node).ok_or(malformed("node"))?,
+                    ),
+                    incarnation: wire.inc,
+                };
+                let header = OpaqueHeader {
+                    log,
+                    counter: wire.counter,
+                    prev_hash: hex_decode(&wire.prev).ok_or(malformed("prev"))?,
+                    hash: hex_decode(&wire.hash).ok_or(malformed("hash"))?,
+                    signature: hex_decode(&wire.sig).ok_or(malformed("sig"))?,
+                };
+                let raw = hex_decode_vec(&wire.raw).ok_or(malformed("raw"))?;
+                Ok(StoredEntry::Opaque(OpaqueEntry::new(header, raw)?))
+            }
+        }
+    }
+}
+
+impl From<WireEnvelope> for WireItem {
+    fn from(wire: WireEnvelope) -> Self {
+        Self::Known(wire)
+    }
+}
+
+impl From<&Envelope> for WireItem {
+    fn from(envelope: &Envelope) -> Self {
+        Self::Known(WireEnvelope::from(envelope))
+    }
+}
+
+impl From<&OpaqueEntry> for WireItem {
+    fn from(entry: &OpaqueEntry) -> Self {
+        Self::Opaque(OpaqueWire {
+            node: hex_encode(entry.log().node.as_bytes()),
+            inc: entry.log().incarnation,
+            counter: entry.counter(),
+            prev: hex_encode(&entry.prev_hash()),
+            hash: hex_encode(&entry.hash()),
+            sig: hex_encode(&entry.signature()),
+            raw: hex_encode(entry.raw()),
+        })
+    }
+}
+
+impl From<&StoredEntry> for WireItem {
+    fn from(entry: &StoredEntry) -> Self {
+        match entry {
+            StoredEntry::Known(envelope) => Self::from(envelope),
+            StoredEntry::Opaque(opaque) => Self::from(opaque),
+        }
+    }
+}
+
 /// One peer wire frame. Every struct tolerates unknown fields and an unknown
 /// `t` decodes to [`PeerFrame::Unknown`], so peers add frames and fields
 /// compatibly; senders send a non-base frame only to a peer that advertised
@@ -220,7 +383,7 @@ pub enum PeerFrame {
     Entries {
         node: NodeUuid,
         inc: u32,
-        entries: Vec<WireEnvelope>,
+        entries: Vec<WireItem>,
     },
     /// Fork cap: ask for the conflicting branch of a frozen log, from
     /// counter `from` (`1 <= from <= tip.counter`, checked by `decode`).
@@ -232,7 +395,7 @@ pub enum PeerFrame {
         node: NodeUuid,
         inc: u32,
         tip_hash: String,
-        entries: Vec<WireEnvelope>,
+        entries: Vec<WireItem>,
         more: bool,
     },
     /// Fork cap: the sender no longer has the branch ending at `tip_hash`.
@@ -274,25 +437,35 @@ impl PeerFrame {
         struct Tag {
             t: String,
         }
+        // Items stay raw text until probed: see [`WireItem`].
         #[derive(Deserialize)]
         struct EntriesBody {
             node: NodeUuid,
             inc: u32,
-            entries: Vec<WireEnvelope>,
+            entries: Vec<Box<serde_json::value::RawValue>>,
         }
         #[derive(Deserialize)]
         struct BranchEntriesBody {
             node: NodeUuid,
             inc: u32,
             tip_hash: String,
-            entries: Vec<WireEnvelope>,
+            entries: Vec<Box<serde_json::value::RawValue>>,
             more: bool,
+        }
+        fn items(
+            raw: Vec<Box<serde_json::value::RawValue>>,
+        ) -> Result<Vec<WireItem>, serde_json::Error> {
+            raw.iter().map(|r| WireItem::from_json(r.get())).collect()
         }
         let tag = serde_json::from_slice::<Tag>(bytes).ok();
         match tag.as_ref().map(|tag| tag.t.as_str()) {
             Some("entries") => {
                 let EntriesBody { node, inc, entries } = serde_json::from_slice(bytes)?;
-                return Ok(Self::Entries { node, inc, entries });
+                return Ok(Self::Entries {
+                    node,
+                    inc,
+                    entries: items(entries)?,
+                });
             }
             Some("branch_entries") => {
                 let body: BranchEntriesBody = serde_json::from_slice(bytes)?;
@@ -305,7 +478,7 @@ impl PeerFrame {
                     node: body.node,
                     inc: body.inc,
                     tip_hash: body.tip_hash,
-                    entries: body.entries,
+                    entries: items(body.entries)?,
                     more: body.more,
                 });
             }
@@ -412,6 +585,59 @@ mod tests {
         }
     }
 
+    fn sealed_envelope() -> crate::sync::envelope::Envelope {
+        use crate::node::NodeIdentity;
+        use crate::sync::LogKey;
+        use crate::sync::envelope::{Deps, UnsignedEnvelope};
+        use crate::sync::hlc::HlcStamp;
+        let id = NodeIdentity::from_seed([1; 32]);
+        UnsignedEnvelope {
+            log: LogKey {
+                node: id.uuid(),
+                incarnation: 1,
+            },
+            counter: 7,
+            prev_hash: [0xab; 32],
+            hlc: HlcStamp::from_parts(1_700_000_000_123, 9),
+            kind: "thread.message".into(),
+            kind_version: 2,
+            deps: Deps::empty(),
+            creates: None,
+            needs: vec![],
+            payload: br#"{ "b":1,  "a":[true] }"#.to_vec(),
+        }
+        .seal(&id)
+    }
+
+    #[test]
+    fn entries_frames_golden_bytes() {
+        let mut second = wire_envelope();
+        second.counter = 3;
+        let sealed = WireEnvelope::from(&sealed_envelope());
+        let entries = PeerFrame::Entries {
+            node: node(1),
+            inc: 2,
+            entries: vec![wire_envelope().into(), second.into(), sealed.into()],
+        };
+        let branch = PeerFrame::BranchEntries {
+            node: node(1),
+            inc: 2,
+            tip_hash: "bb".repeat(32),
+            entries: vec![wire_envelope().into()],
+            more: true,
+        };
+        // Captured from the code before `WireItem` existed (ht-j87z.4): a
+        // known-layout entry is the same bytes on the wire as in 2.1.1.
+        assert_eq!(
+            String::from_utf8(entries.encode().unwrap()).unwrap(),
+            r##"{"t":"entries","node":"00000000000000000000000000000001","inc":2,"entries":[{"node":"00000000000000000000000000000000","inc":1,"counter":2,"prev":"0000000000000000000000000000000000000000000000000000000000000000","hlc":5,"kind":"k","ver":1,"deps":"0000","needs":[],"payload":{ "b":1, "a":2 },"hash":"0000000000000000000000000000000000000000000000000000000000000000","sig":"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"},{"node":"00000000000000000000000000000000","inc":1,"counter":3,"prev":"0000000000000000000000000000000000000000000000000000000000000000","hlc":5,"kind":"k","ver":1,"deps":"0000","needs":[],"payload":{ "b":1, "a":2 },"hash":"0000000000000000000000000000000000000000000000000000000000000000","sig":"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"},{"node":"34750f98bd59fcfc946da45aaabe933b","inc":1,"counter":7,"prev":"abababababababababababababababababababababababababababababababab","hlc":111411200008060937,"kind":"thread.message","ver":2,"deps":"0000","needs":[],"payload":{ "b":1,  "a":[true] },"hash":"5944b87d81a846626e1b4b52f6b810e2d98f983b600299c6fb054a78b9ce749b","sig":"e626f50132e0fdab513a9b8753940e1363c09e46447d2a69b02353218c0309c6216bc2a7563261275fb7b3ee7ff7d2c07273e371d47daed394a484d924a9fe01"}]}"##
+        );
+        assert_eq!(
+            String::from_utf8(branch.encode().unwrap()).unwrap(),
+            r##"{"t":"branch_entries","node":"00000000000000000000000000000001","inc":2,"tip_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","entries":[{"node":"00000000000000000000000000000000","inc":1,"counter":2,"prev":"0000000000000000000000000000000000000000000000000000000000000000","hlc":5,"kind":"k","ver":1,"deps":"0000","needs":[],"payload":{ "b":1, "a":2 },"hash":"0000000000000000000000000000000000000000000000000000000000000000","sig":"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"}],"more":true}"##
+        );
+    }
+
     fn all_frames() -> Vec<PeerFrame> {
         vec![
             PeerFrame::Hello(hello()),
@@ -460,7 +686,7 @@ mod tests {
             PeerFrame::Entries {
                 node: node(1),
                 inc: 2,
-                entries: vec![wire_envelope()],
+                entries: vec![wire_envelope().into()],
             },
             PeerFrame::Credit { bytes: 4096 },
             PeerFrame::Ping { n: 1 },
@@ -505,7 +731,7 @@ mod tests {
         let entries = PeerFrame::Entries {
             node: node(1),
             inc: 1,
-            entries: vec![wire_envelope()],
+            entries: vec![wire_envelope().into()],
         }
         .encode()
         .unwrap();
@@ -716,7 +942,7 @@ mod tests {
                 node: node(1),
                 inc: 2,
                 tip_hash: "bb".repeat(32),
-                entries: vec![wire_envelope()],
+                entries: vec![wire_envelope().into()],
                 more: true,
             },
             PeerFrame::BranchNone {
@@ -744,7 +970,7 @@ mod tests {
                 node: node(1),
                 inc: 2,
                 tip_hash: "bb".repeat(32),
-                entries: (0..count).map(|_| wire_envelope()).collect(),
+                entries: (0..count).map(|_| wire_envelope().into()).collect(),
                 more: false,
             };
             assert!(
@@ -843,7 +1069,7 @@ mod tests {
                 node: node(1),
                 inc: 2,
                 tip_hash: "bb".repeat(32),
-                entries: vec![wire_envelope()],
+                entries: vec![wire_envelope().into()],
                 more: false,
             },
             PeerFrame::BranchNone {
@@ -873,5 +1099,163 @@ mod tests {
         assert!(PeerFrame::decode(&want(8, 7)).is_err());
         assert!(PeerFrame::decode(&want(1, 7)).is_ok());
         assert!(PeerFrame::decode(&want(7, 7)).is_ok());
+    }
+
+    // -- WireItem (ht-j87z.4) ----------------------------------------------
+
+    fn opaque_entry_at(counter: u64) -> OpaqueEntry {
+        use crate::node::NodeIdentity;
+        use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
+        let id = NodeIdentity::from_seed([5; 32]);
+        synthetic_entry(&id, &synthetic_unsigned(&id, 1, counter, [0x11; 32]))
+    }
+
+    fn opaque_wire(counter: u64) -> OpaqueWire {
+        match WireItem::from(&opaque_entry_at(counter)) {
+            WireItem::Opaque(wire) => wire,
+            other => panic!("not opaque: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wire_item_known_round_trips_byte_identical() {
+        let sealed = sealed_envelope();
+        let item = WireItem::from(&sealed);
+        let text = serde_json::to_string(&item).unwrap();
+        // The bare 2.1.1 form, byte for byte.
+        assert_eq!(
+            text,
+            serde_json::to_string(&WireEnvelope::from(&sealed)).unwrap()
+        );
+        assert!(text.contains(r#""payload":{ "b":1,  "a":[true] }"#));
+        let back = WireItem::from_json(&text).unwrap();
+        assert!(matches!(back, WireItem::Known(_)), "{back:?}");
+        assert_eq!(serde_json::to_string(&back).unwrap(), text);
+        assert_eq!(back.counter(), 7);
+        assert_eq!(back.into_stored().unwrap(), StoredEntry::Known(sealed));
+    }
+
+    #[test]
+    fn wire_item_opaque_round_trip() {
+        let entry = opaque_entry_at(3);
+        let item = WireItem::from(&entry);
+        let text = serde_json::to_string(&item).unwrap();
+        assert!(text.starts_with(r#"{"opaque":{"node":""#), "{text}");
+        let back = WireItem::from_json(&text).unwrap();
+        assert!(matches!(back, WireItem::Opaque(_)), "{back:?}");
+        assert_eq!(back.counter(), 3);
+        assert_eq!(serde_json::to_string(&back).unwrap(), text);
+        // The raw bytes survive untouched.
+        assert_eq!(back.into_stored().unwrap(), StoredEntry::Opaque(entry));
+    }
+
+    #[test]
+    fn opaque_item_with_unknown_fields_decodes() {
+        let entry = opaque_entry_at(3);
+        let mut value = serde_json::to_value(WireItem::from(&entry)).unwrap();
+        value["opaque"]["future"] = json!({"a": [1]});
+        value["extra"] = json!(true);
+        let item = WireItem::from_json(&value.to_string()).unwrap();
+        assert_eq!(item.into_stored().unwrap(), StoredEntry::Opaque(entry));
+    }
+
+    #[test]
+    fn entries_mixed_items_decode() {
+        let known = sealed_envelope();
+        let opaque = opaque_entry_at(3);
+        let frame = PeerFrame::Entries {
+            node: node(1),
+            inc: 2,
+            entries: vec![
+                WireItem::from(&known),
+                WireItem::from(&opaque),
+                WireItem::from(&known),
+            ],
+        };
+        let bytes = frame.encode().unwrap();
+        let PeerFrame::Entries { entries, .. } = PeerFrame::decode(&bytes).unwrap() else {
+            panic!("not entries");
+        };
+        let kinds: Vec<bool> = entries
+            .iter()
+            .map(|e| matches!(e, WireItem::Opaque(_)))
+            .collect();
+        assert_eq!(kinds, [false, true, false]);
+        let stored: Vec<StoredEntry> = entries
+            .into_iter()
+            .map(|e| e.into_stored().unwrap())
+            .collect();
+        assert_eq!(stored[0], StoredEntry::Known(known.clone()));
+        assert_eq!(stored[1], StoredEntry::Opaque(opaque));
+        assert_eq!(stored[2], StoredEntry::Known(known));
+        // A malformed item anywhere fails the frame decode, as before.
+        let broken = br#"{"t":"entries","node":"00000000000000000000000000000001","inc":1,"entries":[{"counter":1}]}"#;
+        assert!(PeerFrame::decode(broken).is_err());
+    }
+
+    #[test]
+    fn opaque_item_oversize_is_too_large_not_envelope_error() {
+        use crate::sync::envelope::OPAQUE_MAX_BYTES;
+        let mut wire = opaque_wire(3);
+        wire.raw = "00".repeat(OPAQUE_MAX_BYTES + 1);
+        let err = WireItem::Opaque(wire.clone()).into_stored().unwrap_err();
+        assert_eq!(
+            err,
+            WireItemError::TooLarge(OpaqueTooLarge {
+                len: OPAQUE_MAX_BYTES + 1
+            })
+        );
+        // At the bound the size check passes; the shape check refuses the
+        // all-zero prefix instead.
+        wire.raw = "00".repeat(OPAQUE_MAX_BYTES);
+        let err = WireItem::Opaque(wire).into_stored().unwrap_err();
+        assert!(matches!(err, WireItemError::Envelope(_)), "{err:?}");
+    }
+
+    #[test]
+    fn opaque_item_bad_hex_is_malformed() {
+        for (field, edit) in [
+            (
+                "node",
+                (|w: &mut OpaqueWire| w.node = "zz".into()) as fn(&mut OpaqueWire),
+            ),
+            ("prev", |w| w.prev = "AB".repeat(32)),
+            ("hash", |w| w.hash.truncate(62)),
+            ("sig", |w| w.sig = "0".repeat(128) + "0"),
+            ("raw", |w| w.raw = "G".repeat(w.raw.len())),
+        ] {
+            let mut wire = opaque_wire(3);
+            edit(&mut wire);
+            assert_eq!(
+                WireItem::Opaque(wire).into_stored().unwrap_err(),
+                WireItemError::Envelope(EnvelopeError::Malformed { field }),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn branch_entries_count_rule_counts_opaque_items() {
+        let frame = |count: usize| PeerFrame::BranchEntries {
+            node: node(1),
+            inc: 2,
+            tip_hash: "bb".repeat(32),
+            entries: (0..count)
+                .map(|_| WireItem::Opaque(opaque_wire(3)))
+                .collect(),
+            more: false,
+        };
+        for count in [0, MAX_FRAME_ENTRIES + 1] {
+            assert!(
+                PeerFrame::decode(&frame(count).encode().unwrap()).is_err(),
+                "{count}"
+            );
+        }
+        for count in [1, MAX_FRAME_ENTRIES] {
+            assert!(
+                PeerFrame::decode(&frame(count).encode().unwrap()).is_ok(),
+                "{count}"
+            );
+        }
     }
 }

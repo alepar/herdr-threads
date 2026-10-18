@@ -16,6 +16,7 @@ use crate::store::connection::{DecisionInstant, StoreContext};
 use crate::store::journal;
 use crate::sync::EntityKey;
 use crate::sync::coordinator::{CloneKind, CloneReport, ForkSink};
+use crate::sync::envelope::{Envelope, WireEnvelope};
 use crate::sync::facts::Predecessor;
 use crate::sync::facts::{ApplyContext, FactError, FactKind, FactRegistry, GenesisPayload};
 use crate::sync::journal_port::IngestOutcome;
@@ -402,7 +403,7 @@ impl World {
             node: self.log.node,
             inc: self.log.incarnation,
             tip_hash: hex(&self.b3.hash),
-            entries: vec![WireEnvelope::from(&self.b3)],
+            entries: vec![WireItem::from(&self.b3)],
             more: false,
         }
     }
@@ -475,7 +476,7 @@ fn big_reply(byte: u8) -> (BranchWant, BranchReply) {
         node,
         inc: 5,
         tip_hash: tip.hash,
-        entries: vec![big_wire(node, 5)],
+        entries: vec![big_wire(node, 5).into()],
         more: false,
     };
     (want, reply)
@@ -517,7 +518,7 @@ fn prove_b4_tip(w: &World, core: &mut Core, source: NodeUuid) {
             node: w.log.node,
             inc: w.log.incarnation,
             tip_hash: hex(&w.b4.hash),
-            entries: vec![WireEnvelope::from(&w.b4)],
+            entries: vec![WireItem::from(&w.b4)],
             more: false,
         },
     );
@@ -547,7 +548,7 @@ fn cap_8mib_drops_oldest_coalescible_logs_once_per_minute_rerequests() {
             node: w.log.node,
             inc: w.log.incarnation,
             tip_hash: hex(&w.b3.hash),
-            entries: vec![big_wire(w.log.node, w.log.incarnation)],
+            entries: vec![big_wire(w.log.node, w.log.incarnation).into()],
             more: false,
         },
     );
@@ -931,7 +932,7 @@ fn reissue_runs_after_pull_commits() {
         node: w.log.node,
         inc: w.log.incarnation,
         tip_hash: hex(&w.b4.hash),
-        entries: vec![WireEnvelope::from(&w.b3), WireEnvelope::from(&w.b4)],
+        entries: vec![WireItem::from(&w.b3), WireItem::from(&w.b4)],
         more: false,
     };
     w.a.sink.on_branch(s, reply);
@@ -1052,7 +1053,7 @@ fn stale_branch_reply_is_dropped_not_penalized() {
         node: w.log.node,
         inc: w.log.incarnation,
         tip_hash: hex(&w.b4.hash),
-        entries: vec![WireEnvelope::from(&w.b3)],
+        entries: vec![WireItem::from(&w.b3)],
         more: true,
     };
     w.a.sink.on_branch(s, reply());
@@ -1202,7 +1203,7 @@ fn short_branch_reply_moves_to_another_source() {
         node: w.log.node,
         inc: w.log.incarnation,
         tip_hash: hex(&w.b4.hash),
-        entries: vec![WireEnvelope::from(&w.b3)],
+        entries: vec![WireItem::from(&w.b3)],
         more: false,
     };
     w.a.sink.on_branch(asked, reply);
@@ -1508,7 +1509,7 @@ fn have_claiming_a_higher_frozen_own_tip_persists_nothing() {
         node: w.log.node,
         inc: w.log.incarnation,
         tip_hash: hex(&lie2),
-        entries: vec![WireEnvelope::from(&w.b3)],
+        entries: vec![WireItem::from(&w.b3)],
         more: false,
     };
     w.a.sink.on_branch(s, wrong);
@@ -1526,7 +1527,7 @@ fn have_claiming_a_higher_frozen_own_tip_persists_nothing() {
         node: w.log.node,
         inc: w.log.incarnation,
         tip_hash: hex(&forged.hash),
-        entries: vec![WireEnvelope::from(&forged)],
+        entries: vec![WireItem::from(&forged)],
         more: false,
     };
     w.a.sink.on_branch(s, reply);
@@ -1620,7 +1621,7 @@ fn lying_have_triggers_no_restore_rotation() {
                 node: w.i1.node,
                 inc: w.i1.incarnation,
                 tip_hash: hex(&fake),
-                entries: vec![WireEnvelope::from(&bad)],
+                entries: vec![WireItem::from(&bad)],
                 more: false,
             }
         } else {

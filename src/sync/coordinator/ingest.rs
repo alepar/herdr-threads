@@ -20,6 +20,8 @@
 
 use super::*;
 use crate::service::kicks::{Lane, enter_lane};
+use crate::sync::envelope::{OPAQUE_MAX_BYTES, OpaqueTooLarge};
+use crate::sync::frame::WireItemError;
 
 /// How long a source that served corrupt bytes is unwantable for that log (ms).
 pub(super) const CORRUPT_PENALTY_MS: u64 = 600_000;
@@ -34,7 +36,11 @@ pub(super) struct IngestJob {
     /// The node on the other end of `link`, for fork reports.
     pub source: NodeUuid,
     pub log: LogKey,
-    pub entries: Vec<Envelope>,
+    pub entries: Vec<StoredEntry>,
+    /// The frame carried an opaque entry over `OPAQUE_MAX_BYTES` right after
+    /// `entries`: its counter and length. The batch stores `entries` and then
+    /// reports [`IngestOutcome::Oversize`].
+    pub oversize: Option<(u64, usize)>,
     /// The frame's wire length: the credit to return once the batch is done.
     pub len: u32,
 }
@@ -74,6 +80,7 @@ pub(super) fn spawn_worker(
                 source,
                 log,
                 entries,
+                oversize,
                 len,
             }) = job
             else {
@@ -91,6 +98,7 @@ pub(super) fn spawn_worker(
                     cancel,
                     &log,
                     entries,
+                    oversize,
                 )
             })
             .await
@@ -116,13 +124,14 @@ pub(super) fn spawn_worker(
 
 /// One batch on a blocking thread: `Lane::Sync` origin, a `FairWriter`
 /// background turn, then `JournalPort::ingest` under the turn.
-fn ingest_batch(
+pub(super) fn ingest_batch(
     journal: &dyn JournalPort,
     writer: &FairWriter,
     clock: &dyn Clock,
     cancel: Cancellation,
     log: &LogKey,
-    entries: Vec<Envelope>,
+    entries: Vec<StoredEntry>,
+    oversize: Option<(u64, usize)>,
 ) -> Result<IngestOutcome, ApiError> {
     let _origin = enter_lane(Lane::Sync);
     let turn_budget = CallBudget {
@@ -134,8 +143,36 @@ fn ingest_batch(
         deadline: MonoInstant(u64::MAX),
         cancellation: cancel,
     };
-    let entries = entries.into_iter().map(StoredEntry::from).collect();
-    journal.ingest(log, entries, &budget)
+    let outcome = if entries.is_empty() {
+        None
+    } else {
+        Some(journal.ingest(log, entries, &budget)?)
+    };
+    Ok(match (outcome, oversize) {
+        // Everything before the oversize entry stored and it is the next
+        // position: the log stalls there.
+        (Some(IngestOutcome::Stored { stored, head, .. }), Some((counter, len))) => {
+            if head.counter + 1 == counter {
+                IngestOutcome::Oversize {
+                    stored,
+                    counter,
+                    len,
+                }
+            } else {
+                IngestOutcome::Gap {
+                    stored,
+                    expected: head.counter + 1,
+                }
+            }
+        }
+        (None, Some((counter, len))) => IngestOutcome::Oversize {
+            stored: 0,
+            counter,
+            len,
+        },
+        (Some(other), _) => other,
+        (None, None) => unreachable!("an empty batch without an oversize entry is never queued"),
+    })
 }
 
 impl Actor {
@@ -147,7 +184,7 @@ impl Actor {
         link_id: u64,
         node: NodeUuid,
         inc: u32,
-        entries: Vec<WireEnvelope>,
+        entries: Vec<WireItem>,
         wire_len: usize,
     ) {
         let log = LogKey {
@@ -171,14 +208,26 @@ impl Actor {
             }
             return;
         }
-        let decoded: Result<Vec<Envelope>, _> =
-            entries.into_iter().map(Envelope::try_from).collect();
-        let Ok(decoded) = decoded else {
-            self.grant(link_id, len);
-            self.on_corrupt(link_id, log, "malformed entry");
-            return;
-        };
-        if decoded.is_empty() {
+        // In order, up to the first opaque entry over the size bound: that
+        // one is refused (not penalised), the entries before it are kept.
+        let mut decoded = Vec::with_capacity(entries.len());
+        let mut oversize = None;
+        for item in entries {
+            let counter = item.counter();
+            match item.into_stored() {
+                Ok(entry) => decoded.push(entry),
+                Err(WireItemError::TooLarge(OpaqueTooLarge { len: size })) => {
+                    oversize = Some((counter, size));
+                    break;
+                }
+                Err(WireItemError::Envelope(_)) => {
+                    self.grant(link_id, len);
+                    self.on_corrupt(link_id, log, "malformed entry");
+                    return;
+                }
+            }
+        }
+        if decoded.is_empty() && oversize.is_none() {
             self.grant(link_id, len);
             return;
         }
@@ -191,6 +240,7 @@ impl Actor {
             source,
             log,
             entries: decoded,
+            oversize,
             len,
         };
         if self.ingest_jobs.send(job).is_err() {
@@ -249,10 +299,28 @@ impl Actor {
             } => {
                 self.on_corrupt(link, log, &format!("counter {counter}: {reason:?}"));
             }
+            IngestOutcome::Oversize { counter, len, .. } => {
+                self.on_oversize(log, counter, len);
+            }
             IngestOutcome::Headroom => self.on_headroom(),
         }
         // A pause, penalty or freeze can make the rest of a round unwantable.
         self.update_rounds();
+    }
+
+    /// An opaque entry over [`OPAQUE_MAX_BYTES`]: the entries before it are
+    /// stored, the log stalls on this node (no source is penalised, none is
+    /// asked again) and the size is logged once.
+    fn on_oversize(&mut self, log: LogKey, counter: u64, len: usize) {
+        self.drop_rx(log);
+        if self.oversize_logs.insert(log) {
+            (self.deps.log)(&format!(
+                "sync: log {}/{} entry {counter} is an opaque entry of {len} bytes over {OPAQUE_MAX_BYTES}; log stalled on this node",
+                uuid8(&log.node),
+                log.incarnation
+            ));
+        }
+        self.request_local();
     }
 
     /// `Unwant` the log on its rx source and forget the source.

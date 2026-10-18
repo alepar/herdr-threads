@@ -89,6 +89,8 @@ mod local_endpoint;
 mod multi_host;
 #[path = "store/multi_host_wake.rs"]
 mod multi_host_wake;
+#[path = "sync/opaque_wire.rs"]
+mod opaque_wire;
 #[path = "sync/peer_wire_fixtures.rs"]
 mod peer_wire_fixtures;
 #[path = "support/peer_wire_freeze.rs"]
