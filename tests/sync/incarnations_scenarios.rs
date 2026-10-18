@@ -1369,6 +1369,19 @@ async fn s8_clone_detected_held_then_moved_aside_and_cleared() {
     // Then the original, with another boot: C closes this newer link.
     let ra = start(&a, 95, 21);
     ra.link(&rc).await;
+    // Observe the close before the combined convergence check, as an earlier
+    // poll can when the clone evidence has not yet reached both stores. The
+    // report must remain visible to later polls and timeout diagnostics.
+    wait_until(
+        "A to observe the collision close",
+        Duration::from_secs(30),
+        || {
+            ra.ended_links()
+                .iter()
+                .any(|why| why.contains("NodeCollision"))
+        },
+    )
+    .await;
     let c_reports = || {
         c.count(&format!(
             "SELECT count(*) FROM sync_clone_evidence WHERE subject='{}' AND cleared_at IS NULL",

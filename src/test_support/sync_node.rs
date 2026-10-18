@@ -77,6 +77,12 @@ fn budget() -> CallBudget {
     }
 }
 
+/// A dialed link's report stream and retained terminal result.
+struct DialedReports {
+    receiver: mpsc::Receiver<DialReport>,
+    ended: Option<String>,
+}
+
 /// One in-process node's sync runtime. See the module documentation.
 pub struct SyncNode {
     pub store: Arc<SqliteStore>,
@@ -93,7 +99,7 @@ pub struct SyncNode {
     worker: std::thread::JoinHandle<()>,
     pump: JoinHandle<()>,
     /// Reports of the links this node dialed, oldest first.
-    reports: Mutex<Vec<mpsc::Receiver<DialReport>>>,
+    reports: Mutex<Vec<DialedReports>>,
     next_target: Mutex<i64>,
 }
 
@@ -223,7 +229,10 @@ impl SyncNode {
         self.reports
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(report);
+            .push(DialedReports {
+                receiver: report,
+                ended: None,
+            });
         let first = transport::read_frame_with_limit(&mut theirs, MAX_FRAME_BYTES)
             .await
             .expect("the dialer's first frame");
@@ -239,18 +248,21 @@ impl SyncNode {
     }
 
     /// The `DialReport::LinkEnded` reasons of the links this node dialed so
-    /// far (`Debug` of the `LinkError`), oldest first.
+    /// far (`Debug` of the `LinkError`), oldest dial first. Repeated calls
+    /// retain terminal reports for convergence polls and failure diagnostics.
     pub fn ended_links(&self) -> Vec<String> {
-        let mut out = Vec::new();
         let mut reports = self.reports.lock().unwrap_or_else(PoisonError::into_inner);
         for report in reports.iter_mut() {
-            while let Ok(item) = report.try_recv() {
+            while let Ok(item) = report.receiver.try_recv() {
                 if let DialReport::LinkEnded { why, .. } = item {
-                    out.push(format!("{why:?}"));
+                    report.ended = Some(format!("{why:?}"));
                 }
             }
         }
-        out
+        reports
+            .iter()
+            .filter_map(|report| report.ended.clone())
+            .collect()
     }
 
     /// Every log line the coordinator, sink and worker wrote.
