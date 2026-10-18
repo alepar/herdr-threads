@@ -51,6 +51,8 @@ mod facts_receipt;
 mod facts_seat;
 #[path = "sync/facts_thread.rs"]
 mod facts_thread;
+#[path = "sync/forward_compat.rs"]
+mod forward_compat;
 #[path = "golden_surfaces.rs"]
 mod golden_surfaces;
 #[path = "handoff_agy.rs"]
@@ -81,6 +83,8 @@ mod lazy_recovery_context;
 mod lazy_schema;
 #[path = "cli/lazy_send.rs"]
 mod lazy_send;
+#[path = "support/legacy_wire_v211.rs"]
+mod legacy_wire_v211;
 #[path = "lifecycle_ux.rs"]
 mod lifecycle_ux;
 #[path = "local_endpoint.rs"]
