@@ -19,3 +19,4 @@ approvals:
 roastDesignRound: 1
 roast-design: 2026-10-18-peer-wire-compat-hardening-roast-design-1.md
 findingsLedgerDesign: findings-ledger-design.md
+stepBackDesign-round-1: local — shared-cause cluster swept as three rule clusters (chain-union, opaque-apply, cross-generation-contract); two-table choice kept
