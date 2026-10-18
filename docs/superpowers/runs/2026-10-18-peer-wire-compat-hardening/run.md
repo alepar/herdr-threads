@@ -16,7 +16,7 @@ approvals:
 - top-split · auto · .1 LEAF, .2 LEAF, .3 LEAF, .4 LEAF (promotion SPLIT applied: .10), .5 LEAF, .6 LEAF, .7 LEAF, .8 LEAF, .9 LEAF
 - coverage-round-1 · 12 findings: 11 applied, 1 rejected (cov-2) — see coverage-ledger.md; requirements: 12 · mapped: 12 · unmapped: 0 · all auto
 - coverage-round-2 · 7 findings, all applied (auto) — see coverage-ledger.md; no round 3 (cap)
-roastDesignRound: 1
+roastDesignRound: 2
 roast-design: 2026-10-18-peer-wire-compat-hardening-roast-design-1.md
 findingsLedgerDesign: findings-ledger-design.md
 stepBackDesign-round-1: local — shared-cause cluster swept as three rule clusters (chain-union, opaque-apply, cross-generation-contract); two-table choice kept
