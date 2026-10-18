@@ -1234,6 +1234,17 @@ impl StartupInputTemplate {
 }
 
 pub trait LaunchPolicy: Send + Sync {
+    /// Adapter-owned projection for an explicit canonical profile directory.
+    /// Consumers validate the bounded projection with `LaunchDirectoryContext`.
+    fn explicit_directory_env(
+        &self,
+        _: &std::path::Path,
+    ) -> Result<std::collections::BTreeMap<String, String>, crate::protocol::results::ApiError>
+    {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "explicit profile directory unavailable",
+        ))
+    }
     /// Optional pure original-caller grammar. Absence is honest unsupported handoff.
     fn prepare_startup_input(
         &self,

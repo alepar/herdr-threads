@@ -26,6 +26,7 @@ pub(super) fn identity() -> BootstrapIdentity {
         claim,
         digest: "a".repeat(64),
         payload: BootstrapPayload {
+            directory_context: None,
             handoff: HandoffPayload {
                 policy: None,
                 namespace: namespace(),

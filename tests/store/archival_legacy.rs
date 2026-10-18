@@ -187,6 +187,7 @@ fn legacy_compound_with_body(
             goal: new_thread.then(|| "literal-goal".into()),
             body,
             launch: LaunchRequest {
+                directory_context: None,
                 target: HostTargetId::new("p"),
                 harness: serde_json::from_str("\"Codex\"").unwrap(),
                 harness_binary: None,

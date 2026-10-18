@@ -10569,6 +10569,7 @@ fn seam_automatic_bootstrap_identity(
         AutomaticBootstrapPlan {
             version: 2,
             payload: AutomaticBootstrapPayload {
+                directory_context: None,
                 handoff,
                 keys: AutomaticBootstrapKeys::new(compound),
                 workspace: legacy.payload.workspace,

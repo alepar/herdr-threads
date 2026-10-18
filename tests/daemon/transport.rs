@@ -3569,6 +3569,7 @@ fn maximum_automatic_recovery_result(
         AutomaticBootstrapPlan {
             version: 2,
             payload: AutomaticBootstrapPayload {
+                directory_context: None,
                 handoff: AutomaticHandoffPayload::new(
                     ns,
                     OperationId::new("large-child"),

@@ -3262,6 +3262,7 @@ fn parse_cli_in_registry(
                 )));
             }
             CliAction::Launch(super::launch::LaunchRequest {
+                directory_context: None,
                 target: locator_hint(args.selector.pane.expect("explicit pane validated")),
                 harness,
                 harness_binary: args.harness_binary,
@@ -3362,6 +3363,7 @@ fn parse_cli_in_registry(
                     goal: args.goal.map(|s| bounded(s, "goal")).transpose()?,
                     body,
                     launch: super::launch::LaunchRequest {
+                        directory_context: None,
                         target: locator_hint(args.selector.pane.expect("explicit pane validated")),
                         harness: harness_arg(
                             args.kind.as_deref().expect("kind required"),

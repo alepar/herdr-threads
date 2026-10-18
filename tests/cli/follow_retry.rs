@@ -464,6 +464,7 @@ impl CompletedRetryFixture {
                 goal: None,
                 body: "frozen body".into(),
                 launch: LaunchRequest {
+                    directory_context: None,
                     target: HostTargetId::new("w1:p2"),
                     harness: crate::harness::context::Harness::Codex,
                     harness_binary: None,

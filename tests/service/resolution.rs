@@ -2929,6 +2929,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
         };
         let out = execute(
             &LaunchRequest {
+                directory_context: None,
                 target: HostTargetId::new("w1:p1"),
                 harness: ContextHarness::Claude,
                 harness_binary: None,

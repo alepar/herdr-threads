@@ -283,6 +283,7 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
             goal: Some("goal".into()),
             body: "durable assignment".into(),
             launch: LaunchRequest {
+                directory_context: None,
                 target: HostTargetId::new("w1:p2"),
                 harness: herdr_threads::harness::context::Harness::Claude,
                 harness_binary: None,

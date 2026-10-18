@@ -238,6 +238,7 @@ fn configured_options_use_the_same_grammar() {
     let registry = crate::harness::registry::builtins();
     let harness = crate::harness::launch::bootstrap_v2_target(registry, "agy").unwrap();
     let request = |argv: &[&str]| CliRequest {
+        directory_context: None,
         target: crate::protocol::ids::HostTargetId::new("w9:p1"),
         harness,
         harness_binary: None,
