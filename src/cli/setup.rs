@@ -596,6 +596,7 @@ impl SetupEnv {
             host_endpoint: self.host_endpoint.clone(),
             instance_source: self.instance_source.clone(),
             config_roots: self.config_roots.clone(),
+            explicit_profile_directory: None,
             declared: self.declared_environment.clone(),
         }
     }

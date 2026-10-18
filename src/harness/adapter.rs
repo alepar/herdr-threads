@@ -894,6 +894,9 @@ pub struct SetupEnvironment {
     pub host_endpoint: Option<std::path::PathBuf>,
     pub instance_source: serde_json::Value,
     pub config_roots: std::collections::BTreeMap<String, std::path::PathBuf>,
+    /// Explicit canonical launch selection, distinct from inherited config hints.
+    /// Adapters resolve this captured directory without a later pane-shell override.
+    pub explicit_profile_directory: Option<std::path::PathBuf>,
     pub declared: std::collections::BTreeMap<String, OsString>,
 }
 impl Default for SetupEnvironment {
@@ -908,6 +911,7 @@ impl Default for SetupEnvironment {
             host_endpoint: None,
             instance_source: serde_json::Value::Null,
             config_roots: Default::default(),
+            explicit_profile_directory: None,
             declared: Default::default(),
         }
     }

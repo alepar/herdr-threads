@@ -1242,6 +1242,19 @@ impl HarnessAdapter for ClaudeAdapter {
 }
 
 impl LaunchPolicy for ClaudeAdapter {
+    fn explicit_directory_env(
+        &self,
+        directory: &std::path::Path,
+    ) -> Result<std::collections::BTreeMap<String, String>, crate::protocol::results::ApiError>
+    {
+        let directory = directory.to_str().ok_or_else(|| {
+            crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::InvalidRequest,
+                "invalid explicit profile directory",
+            )
+        })?;
+        Ok([("CLAUDE_CONFIG_DIR".into(), directory.into())].into())
+    }
     fn native_options_env(&self) -> Option<&'static str> {
         Some("HERDR_THREADS_CLAUDE_OPTS")
     }
