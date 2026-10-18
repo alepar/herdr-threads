@@ -477,7 +477,9 @@ model open work, and summary closure never changes receipt state or installs glo
   Peer/service rows retain the established pending-mail preservation on rejoin.
   Wake eligibility uses only each reached binding's unread rows: the sender alone owes
   no self-wake, a sibling's display never consumes another sibling's pending row, and
-  shared-process composer safety and priority thresholds remain unchanged.
+  shared-process composer safety and priority thresholds remain unchanged. Publication
+  enqueues author-seat wake work only when a connected top-level sibling has that row
+  in its pending view; a sender-only row must not kick the wake lane.
 - *Liveness worker (ht-54r.23)*: the daemon re-checks the process fingerprint of every connected,
   open, non-human binding on a cadence (5 s) and, for the candidate's seat, before each wake decision.
   A binding whose process no longer exists, whose pid now has another start time, or that is

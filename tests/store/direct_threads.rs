@@ -204,7 +204,9 @@ fn direct_lazy_invited_target_is_frozen_without_receipt() {
             _ => panic!("unexpected replay"),
         }
     }
-    assert_eq!(count(&db, "lazy_recipients"), 1);
+    assert_eq!(count(&db, "lazy_recipients"), 2);
+    assert_eq!(count(&db, "lazy_recipients WHERE seat_id='s1'"), 1);
+    assert_eq!(count(&db, "lazy_recipients WHERE seat_id='s2'"), 1);
     let hash = schema::canonical_digest(&crate::store::messages::send_payload(&v)).unwrap();
     store
         .mutate(
@@ -219,7 +221,9 @@ fn direct_lazy_invited_target_is_frozen_without_receipt() {
             &budget(),
         )
         .unwrap();
-    assert_eq!(count(&db, "lazy_recipients"), 1);
+    assert_eq!(count(&db, "lazy_recipients"), 2);
+    assert_eq!(count(&db, "lazy_recipients WHERE seat_id='s1'"), 1);
+    assert_eq!(count(&db, "lazy_recipients WHERE seat_id='s2'"), 1);
     assert_eq!(count(&db, "receipts"), 0);
     assert_eq!(count(&db, "wake_work"), 0);
     drop(store);
@@ -502,8 +506,11 @@ fn corrupt_lazy_prepared_audience_refuses_publication() {
     prepare(&store, &v).unwrap();
     db.execute_batch("DROP TRIGGER lazy_recipient_identity_immutable;")
         .unwrap();
-    db.execute("UPDATE lazy_recipients SET seat_id='s3'", [])
-        .unwrap();
+    db.execute(
+        "UPDATE lazy_recipients SET seat_id='s3' WHERE seat_id='s2'",
+        [],
+    )
+    .unwrap();
     assert!(publish(&store, v).is_err());
     assert_eq!(
         db.query_row(
@@ -859,7 +866,9 @@ fn bootstrap_adapter_admits_unlinked_direct_and_revalidates_namespace() {
             _ => panic!("unexpected replay"),
         }
     }
-    assert_eq!(count(&db, "lazy_recipients"), 1);
+    assert_eq!(count(&db, "lazy_recipients"), 2);
+    assert_eq!(count(&db, "lazy_recipients WHERE seat_id='s1'"), 1);
+    assert_eq!(count(&db, "lazy_recipients WHERE seat_id='s2'"), 1);
     publish(&store, v).unwrap();
     drop(store);
     drop(db);

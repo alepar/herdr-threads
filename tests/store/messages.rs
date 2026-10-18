@@ -696,6 +696,44 @@ fn send_records_sender_binding_id() {
 }
 
 #[test]
+fn sender_only_passive_row_does_not_schedule_wake_work() {
+    let iso = TestIsolation::new("sender-only-no-wake-work");
+    let (context, mut conn) = setup(&iso);
+    let mut request = send_request();
+    request.priority = Some(crate::protocol::priority::DeliveryPriority::new(0).unwrap());
+    prepare_intent_send(&context, &mut conn, &request);
+    messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget(),
+        || messages::MAX_BODY_BYTES,
+    )
+    .unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id='a'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1,
+        "retain the local sibling bookkeeping"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM wake_work WHERE seat_id='a'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "the sender has no receiving sibling to wake"
+    );
+}
+
+#[test]
 fn sends_reach_sibling_bindings_without_echo_or_self_receipts() {
     use crate::protocol::priority::NudgeThreshold;
     use crate::store::{lazy_delivery, read_cursors};
@@ -739,6 +777,16 @@ fn sends_reach_sibling_bindings_without_echo_or_self_receipts() {
         let crate::protocol::results::CommandResult::MessageSent(id) = result else {
             panic!("unexpected result")
         };
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM wake_work WHERE seat_id='a'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "a connected receiving sibling schedules wake work"
+        );
         assert!(
             lazy_delivery::binding_lazy_unread(&conn, sender, 100)
                 .unwrap()

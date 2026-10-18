@@ -248,6 +248,15 @@ impl Fixture {
             .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
             .unwrap()
     }
+    fn lazy_seats(&self) -> Vec<String> {
+        self.db
+            .prepare("SELECT seat_id FROM lazy_recipients ORDER BY seat_id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
     fn assert_passive(&self) {
         for table in [
             "receipts",
@@ -726,7 +735,7 @@ fn lazy_attention_no_indirect_outstanding_send_work() {
         }
         f.assert_passive();
     }
-    assert_eq!(f.count("lazy_recipients"), 2);
+    assert_eq!(f.lazy_seats(), ["agent", "author", "unavailable"]);
 }
 
 /// Catches delayed attention work and deadline/poke candidates, not just an
@@ -756,7 +765,7 @@ fn lazy_attention_no_wake_poke_prompt_retry_deadline_warning() {
         state = progress.state;
         f.assert_passive();
     }
-    assert_eq!(f.count("lazy_recipients"), 1);
+    assert_eq!(f.lazy_seats(), ["agent", "author"]);
     assert_eq!(f.db.query_row("SELECT count(*) FROM receipts WHERE deadline_at IS NOT NULL OR soft_poked_at IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0);
 }
 
@@ -849,14 +858,7 @@ fn lazy_addressed_survives_leave_retire_archive_and_excludes_postjoin() {
     f.member("retired", "retired", "joined", Harness::Codex);
     let id = f.send("lazy", DeliveryMode::Lazy);
     f.member("later", "resolved", "joined", Harness::Codex);
-    let seats =
-        f.db.prepare("SELECT seat_id FROM lazy_recipients ORDER BY seat_id")
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(0))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-    assert_eq!(seats, ["agent", "human", "unavailable"]);
+    assert_eq!(f.lazy_seats(), ["agent", "author", "human", "unavailable"]);
     assert!(f.inbox("later").is_empty());
     f.mutate(PermitMutation::Leave(Leave {
         thread: ThreadId::new("t"),
