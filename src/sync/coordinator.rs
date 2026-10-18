@@ -509,9 +509,9 @@ pub struct LinkStatus {
     pub throttled: u64,
     /// Logs the peer has armed a subscription for.
     pub subscriptions: u32,
-    /// Logs parked on this link because the peer lacks [`OPAQUE_CAP`] and
-    /// everything it still wants of them is opaque.
-    pub withheld: u64,
+    /// Logs parked on this link: the peer lacks [`OPAQUE_CAP`] and the next
+    /// entry it wants of the log is opaque (not a count of entries).
+    pub withheld_logs: u64,
     pub last_error: Option<String>,
 }
 
@@ -2338,7 +2338,7 @@ impl Actor {
                             unsolicited: entry.unsolicited,
                             throttled: entry.throttled,
                             subscriptions: u32::try_from(entry.subs_out.len()).unwrap_or(u32::MAX),
-                            withheld: entry.withheld_logs.len() as u64,
+                            withheld_logs: entry.withheld_logs.len() as u64,
                             last_error: None,
                         }
                     })
@@ -4992,10 +4992,17 @@ mod tests {
     /// A node holding a foreign log `[known 1, known 2, opaque 3, known 4]`,
     /// the log, and the opaque entry's counter.
     fn node_with_opaque_log() -> (Rig, Arc<TestJournal>, LogKey) {
-        use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
         let (rig, journal) = node(1, 0, 0);
-        let f = foreign(9, 1);
-        let signer = identity(9);
+        let log = ingest_opaque_log(&journal.inner, 9);
+        rig.pacer.kick();
+        (rig, journal, log)
+    }
+
+    /// Ingests the foreign log `[known 1, 2, opaque 3, known 4]` of `seed`.
+    fn ingest_opaque_log(journal: &MemoryJournal, seed: u8) -> LogKey {
+        use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
+        let f = foreign(seed, 1);
+        let signer = identity(seed);
         let opaque = synthetic_entry(
             &signer,
             &synthetic_unsigned(&signer, f.log.incarnation, 3, f.envs[1].hash),
@@ -5004,13 +5011,12 @@ mod tests {
         let mut batch: Vec<StoredEntry> = f.envs.iter().cloned().map(StoredEntry::from).collect();
         batch.push(StoredEntry::from(opaque));
         batch.push(StoredEntry::from(four));
-        let outcome = journal.inner.ingest(&f.log, batch, &open_budget()).unwrap();
+        let outcome = journal.ingest(&f.log, batch, &open_budget()).unwrap();
         assert!(
             matches!(outcome, IngestOutcome::Stored { stored: 4, .. }),
             "{outcome:?}"
         );
-        rig.pacer.kick();
-        (rig, journal, f.log)
+        f.log
     }
 
     /// A node holding a foreign log `[known 1, 2, 3, opaque 4]` (or, with
@@ -5253,8 +5259,44 @@ mod tests {
             "withholding is not an error: {frames:?}"
         );
         let status = snapshot(&rig).await;
-        assert_eq!(status.links[plain.idx].withheld, 1);
-        assert_eq!(status.links[cap.idx].withheld, 0);
+        // Two entries (3 and 4) were withheld, one log is parked.
+        assert_eq!(status.links[plain.idx].withheld_logs, 1);
+        assert_eq!(status.links[cap.idx].withheld_logs, 0);
+        stop(rig).await;
+    }
+
+    // `withheld_logs` counts parked logs, not withheld entries: two logs, each
+    // with two entries the plain peer never gets, count 2 (ht-j87z.33).
+    #[tokio::test(start_paused = true)]
+    async fn withheld_logs_counts_parked_logs_not_entries() {
+        let (rig, journal, p) = node_with_opaque_log();
+        let q = ingest_opaque_log(&journal.inner, 10);
+        rig.pacer.kick();
+        let mut plain = connect(&rig, 0, &fork_hello(2)).await;
+        plain.expect_have().await;
+        for log in [&p, &q] {
+            plain
+                .send(PeerFrame::Want {
+                    node: log.node,
+                    inc: log.incarnation,
+                    from: 1,
+                })
+                .await;
+        }
+        let frames = plain.pump(2_000).await;
+        let mut got: Vec<(NodeUuid, u64)> = Vec::new();
+        for frame in &frames {
+            if let PeerFrame::Entries { node, entries, .. } = frame {
+                got.extend(entries.iter().map(|i| (*node, i.counter())));
+            }
+        }
+        got.sort();
+        let mut want = vec![(p.node, 1), (p.node, 2), (q.node, 1), (q.node, 2)];
+        want.sort();
+        assert_eq!(got, want, "{frames:?}");
+        // Four entries (3 and 4 of each log) were withheld, two logs parked.
+        let status = snapshot(&rig).await;
+        assert_eq!(status.links[plain.idx].withheld_logs, 2);
         stop(rig).await;
     }
 
@@ -5318,7 +5360,7 @@ mod tests {
             .await;
         let frames = plain.pump(2_000).await;
         assert_eq!(entry_counters(&frames), [1, 2], "{frames:?}");
-        assert_eq!(snapshot(&rig).await.links[plain.idx].withheld, 1);
+        assert_eq!(snapshot(&rig).await.links[plain.idx].withheld_logs, 1);
         stop(rig).await;
     }
 
@@ -5373,7 +5415,7 @@ mod tests {
             1,
             "the parked log is not read again: {reads:?}"
         );
-        assert_eq!(snapshot(&rig).await.links[plain.idx].withheld, 1);
+        assert_eq!(snapshot(&rig).await.links[plain.idx].withheld_logs, 1);
         stop(rig).await;
     }
 
@@ -5477,7 +5519,7 @@ mod tests {
         until(|| open_vector_counter(&jb, &log) == 4).await;
         assert_eq!(held_opaque(&jb, &log, 3), held_opaque(&ja, &log, 3));
         assert!(held_opaque(&jb, &log, 3).is_opaque());
-        assert_eq!(snapshot(&a).await.links[0].withheld, 0);
+        assert_eq!(snapshot(&a).await.links[0].withheld_logs, 0);
         stop(a).await;
         stop(b).await;
     }
@@ -5507,7 +5549,7 @@ mod tests {
         assert_eq!(open_vector_counter(&jb, &log), 2, "stuck at the cut");
         let status = snapshot(&a).await;
         assert_eq!(status.links.len(), 1, "the link stays up");
-        assert_eq!(status.links[0].withheld, 1);
+        assert_eq!(status.links[0].withheld_logs, 1);
         assert!(
             report
                 .try_recv()

@@ -157,7 +157,7 @@ async fn opaque_successor_parks_on_relay() {
     };
     let mut parked = false;
     for _ in 0..400 {
-        if withheld(&rr).await.iter().any(|l| l.withheld == 1) {
+        if withheld(&rr).await.iter().any(|l| l.withheld_logs == 1) {
             parked = true;
             break;
         }

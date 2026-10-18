@@ -314,13 +314,13 @@ async fn capless_third_node_is_withheld_and_stays_healthy() {
     let mut withheld = false;
     for _ in 0..400 {
         let links = nr.handle.snapshot(&open_budget()).await.unwrap().links;
-        if links.iter().any(|l| l.withheld >= 1) {
+        if links.iter().any(|l| l.withheld_logs >= 1) {
             withheld = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert!(withheld, "the relay counts the withheld entry");
+    assert!(withheld, "the relay counts the parked log");
 
     assert!(nr.ended_links().is_empty(), "{:?}", nr.ended_links());
     assert!(nc.ended_links().is_empty(), "{:?}", nc.ended_links());

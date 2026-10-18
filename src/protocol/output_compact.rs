@@ -1214,9 +1214,9 @@ fn sync_status(status: &StatusReply, out: &mut String) {
             "link {} {} {} rx_logs={} unsolicited={}",
             link.node, link.mode, link.role, link.rx_logs, link.unsolicited
         );
-        // At most 20 bytes, only on a link that withholds something.
-        if link.withheld > 0 {
-            let _ = write!(out, " withheld={}", link.withheld);
+        // At most 25 bytes, only on a link that parked a log.
+        if link.withheld_logs > 0 {
+            let _ = write!(out, " withheld_logs={}", link.withheld_logs);
         }
         let mut sep = ":";
         if let Some(dest) = &link.dest {

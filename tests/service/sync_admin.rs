@@ -634,21 +634,22 @@ fn status_json_carries_blocked_on() {
     );
 }
 
-// Kills: a withheld count missing from the JSON or the link line, one printed
-// on a link that withholds nothing, and a decode that needs the new field (an
-// older daemon's reply has none).
+// Kills: a withheld_logs count missing from the JSON or the link line, one
+// printed on a link that parked nothing, a decode that needs the field (an
+// older daemon's reply has none) and one that drops the pre-rename `withheld`
+// key.
 #[test]
-fn status_reports_link_withheld() {
+fn status_reports_link_withheld_logs() {
     use crate::protocol::sync_admin::LinkRow;
     let rig = Rig::new(Node::new(SEED_A, 1));
     let mut status = rig.status();
-    let link = |withheld| LinkRow {
+    let link = |withheld_logs| LinkRow {
         node: "aB3".into(),
         mode: "active".into(),
         role: "dialer".into(),
         rx_logs: 1,
         unsolicited: 0,
-        withheld,
+        withheld_logs,
         dest: None,
         last_error: None,
     };
@@ -662,15 +663,26 @@ fn status_reports_link_withheld() {
     let line = rendered.lines().find(|l| l.starts_with("link ")).unwrap();
     assert_eq!(
         line,
-        "link aB3 active dialer rx_logs=1 unsolicited=0 withheld=2"
+        "link aB3 active dialer rx_logs=1 unsolicited=0 withheld_logs=2"
     );
     let json = serde_json::to_value(&status).unwrap();
-    assert_eq!(json["links"][0]["withheld"], 2);
+    assert_eq!(json["links"][0]["withheld_logs"], 2);
 
-    let mut old = json;
-    old["links"][0].as_object_mut().unwrap().remove("withheld");
+    let mut old = json.clone();
+    old["links"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("withheld_logs");
     let decoded: crate::protocol::sync_admin::StatusReply = serde_json::from_value(old).unwrap();
-    assert_eq!(decoded.links[0].withheld, 0);
+    assert_eq!(decoded.links[0].withheld_logs, 0);
+
+    let mut renamed = json;
+    let link = renamed["links"][0].as_object_mut().unwrap();
+    let count = link.remove("withheld_logs").unwrap();
+    link.insert("withheld".into(), count);
+    let decoded: crate::protocol::sync_admin::StatusReply =
+        serde_json::from_value(renamed).unwrap();
+    assert_eq!(decoded.links[0].withheld_logs, 2);
 }
 
 // Kills: a lineage-branch row without its remedy lines.

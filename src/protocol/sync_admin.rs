@@ -166,10 +166,10 @@ pub struct LinkRow {
     pub role: String,
     pub rx_logs: u32,
     pub unsolicited: u64,
-    /// Logs parked on this link because the peer cannot take the opaque
-    /// entries it still wants of them.
-    #[serde(default)]
-    pub withheld: u64,
+    /// Logs parked on this link: the peer lacks `envelope.opaque.v1` and the
+    /// next entry it wants of the log is opaque (not a count of entries).
+    #[serde(default, alias = "withheld")]
+    pub withheld_logs: u64,
     pub dest: Option<String>,
     pub last_error: Option<String>,
 }
