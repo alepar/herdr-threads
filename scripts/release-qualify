@@ -86,7 +86,11 @@ def qualify(evidence: Path, self_test: bool) -> int:
         step('suite', ['nice', 'cargo', 'nextest', 'run', '--locked', '--all-targets', '--all-features'], suite_env, 300)
     finally:
         leak('suite', suite_env)
-    step('candidate', ['nice', 'scripts/build.sh'], env)
+    candidate_ok = step('candidate', ['nice', 'scripts/build.sh'], env)
+
+    def blocked(name):
+        results.append(dict(step=name, command=[], exit=1, seconds=0, status='BLOCKED',
+                            error='candidate build failed'))
 
     def matrix():
         branch = environment('matrix')
@@ -101,7 +105,9 @@ def qualify(evidence: Path, self_test: bool) -> int:
         branch = environment('wake')
         try:
             ready = step('wake-self-test', ['python3', 'scripts/wake-e2e.py', '--self-test'], branch)
-            if not self_test and ready:
+            if not self_test and not candidate_ok:
+                blocked('wake')
+            elif not self_test and ready:
                 step('wake', ['scripts/wake-e2e-herdr', newest_release(ROOT / 'tests/herdr-releases.tsv'),
                               '--evidence-dir', str(evidence / 'wake')], branch)
         finally:
@@ -125,12 +131,22 @@ def qualify(evidence: Path, self_test: bool) -> int:
             argv = ['python3', f'tests/release/installer_{name}_test.py']
             if name == 'terminal':
                 argv.append('bin/herdr-threads')
-            step('installer-' + name, argv, branch)
-        step('installer-shell', ['tests/release/install_test.sh', 'bin/herdr-threads'], branch)
+            if name == 'terminal' and not candidate_ok:
+                blocked('installer-terminal')
+            else:
+                step('installer-' + name, argv, branch)
+        if candidate_ok:
+            step('installer-shell', ['tests/release/install_test.sh', 'bin/herdr-threads'], branch)
+        else:
+            blocked('installer-shell')
     finally:
         leak('package', branch)
     for scratch in scratch_roots:
-        shutil.rmtree(scratch)
+        try:
+            shutil.rmtree(scratch)
+        except OSError as error:
+            results.append(dict(step='scratch-cleanup', command=[], exit=1, seconds=0,
+                                status='FAIL', error=f'{scratch}: {error}'))
     summary = dict(mode='self-test (no live wake qualification)' if self_test else 'live', results=results)
     (evidence / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     print(summary['mode'])

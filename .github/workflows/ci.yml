@@ -48,6 +48,7 @@ jobs:
         run: python3 scripts/ci-changed-paths.py
 
   tests:
+    if: always()
     needs: changes
     name: Tests ${{ matrix.shard }}/4 (Linux x86_64)
     runs-on: ubuntu-24.04
@@ -61,6 +62,14 @@ jobs:
       HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-tests-${{ matrix.shard }}
       HT_SWEEP_PANIC_FILE: ${{ github.workspace }}/sweep-panics.log
     steps:
+      - name: Validate changed-path detector
+        if: always()
+        env:
+          DETECTOR_RESULT: ${{ needs.changes.result }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+        run: |
+          test "$DETECTOR_RESULT" = success || exit 1
+          case "$HEAVY" in true|false) ;; *) exit 1 ;; esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: needs.changes.outputs.heavy == 'true'
 
@@ -188,11 +197,20 @@ jobs:
         run: scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID" --grace 15
 
   release-proof:
+    if: always()
     needs: changes
     name: Release failpoint proof (Linux x86_64)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      - name: Validate changed-path detector
+        if: always()
+        env:
+          DETECTOR_RESULT: ${{ needs.changes.result }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+        run: |
+          test "$DETECTOR_RESULT" = success || exit 1
+          case "$HEAVY" in true|false) ;; *) exit 1 ;; esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: needs.changes.outputs.heavy == 'true'
       - name: Rust toolchain
@@ -220,12 +238,21 @@ jobs:
         run: cargo test --locked --all-features --test package manifest::failpoints_are_compiled_out_of_release_builds -- --exact --nocapture
 
   deterministic:
+    if: always()
     needs: changes
     name: Format, package, installer, Python suites (Linux x86_64)
     runs-on: ubuntu-24.04
     env:
       HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - name: Validate changed-path detector
+        if: always()
+        env:
+          DETECTOR_RESULT: ${{ needs.changes.result }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+        run: |
+          test "$DETECTOR_RESULT" = success || exit 1
+          case "$HEAVY" in true|false) ;; *) exit 1 ;; esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: needs.changes.outputs.heavy == 'true'
 
@@ -466,6 +493,7 @@ jobs:
         run: cat "$RUNNER_TEMP/herdr-releases.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
   linux-e2e:
+    if: always()
     needs: changes
     name: Herdr release smoke and wake-e2e self-test (Linux ${{ matrix.arch }})
     # The no-credential e2e checks on both Linux architectures, every push:
@@ -490,6 +518,14 @@ jobs:
     env:
       HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-linux-e2e-${{ matrix.arch }}
     steps:
+      - name: Validate changed-path detector
+        if: always()
+        env:
+          DETECTOR_RESULT: ${{ needs.changes.result }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+        run: |
+          test "$DETECTOR_RESULT" = success || exit 1
+          case "$HEAVY" in true|false) ;; *) exit 1 ;; esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: needs.changes.outputs.heavy == 'true'
 
@@ -540,6 +576,7 @@ jobs:
 
   clippy:
     # Both OSes: each lints its own platform-gated code.
+    if: always()
     needs: changes
     name: Clippy -D warnings (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
@@ -548,6 +585,14 @@ jobs:
       matrix:
         runner: [macos-15, ubuntu-24.04]
     steps:
+      - name: Validate changed-path detector
+        if: always()
+        env:
+          DETECTOR_RESULT: ${{ needs.changes.result }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+        run: |
+          test "$DETECTOR_RESULT" = success || exit 1
+          case "$HEAVY" in true|false) ;; *) exit 1 ;; esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: needs.changes.outputs.heavy == 'true'
       - name: Rust toolchain
@@ -573,6 +618,7 @@ jobs:
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
   build-targets:
+    if: always()
     needs: changes
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -585,6 +631,14 @@ jobs:
           - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
           - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
     steps:
+      - name: Validate changed-path detector
+        if: always()
+        env:
+          DETECTOR_RESULT: ${{ needs.changes.result }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+        run: |
+          test "$DETECTOR_RESULT" = success || exit 1
+          case "$HEAVY" in true|false) ;; *) exit 1 ;; esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: needs.changes.outputs.heavy == 'true'
 
@@ -629,13 +683,22 @@ jobs:
           cargo build --locked --release --target "$TARGET"
 
   actionlint:
-    needs: changes
+    if: always()
+    needs: [changes, release-proof]
     name: actionlint and workflow assertions
     runs-on: ubuntu-24.04
     env:
       ACTIONLINT_VERSION: 1.7.12
       ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
     steps:
+      - name: Validate changed-path detector
+        if: always()
+        env:
+          DETECTOR_RESULT: ${{ needs.changes.result }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+        run: |
+          test "$DETECTOR_RESULT" = success || exit 1
+          case "$HEAVY" in true|false) ;; *) exit 1 ;; esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: needs.changes.outputs.heavy == 'true'
 
@@ -658,3 +721,8 @@ jobs:
       - name: Workflow assertions
         if: needs.changes.outputs.heavy == 'true'
         run: bash tests/release/workflows_test.sh
+      - name: Release proof result
+        if: always()
+        env:
+          PROOF_RESULT: ${{ needs.release-proof.result }}
+        run: test "$PROOF_RESULT" = success

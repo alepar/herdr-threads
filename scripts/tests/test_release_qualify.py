@@ -4,6 +4,7 @@ import importlib.util
 import tempfile
 import contextlib
 import io
+import shutil
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -63,6 +64,35 @@ class Qualification(unittest.TestCase):
         wake = next(a for a in commands if 'scripts/wake-e2e-herdr' in a)
         self.assertEqual(wake[1], self.load().newest_release(DRIVER.parent.parent / 'tests/herdr-releases.tsv'))
         self.assertLess(commands.index(['python3', 'scripts/wake-e2e.py', '--self-test']), commands.index(wake))
+
+    def test_failed_candidate_blocks_live_wake_and_binary_installers(self):
+        calls, rc, summary = self.run_driver(('scripts/build.sh',), self_test=False)
+        commands = [a for a, _ in calls]
+        self.assertEqual(rc, 1)
+        self.assertFalse(any('scripts/wake-e2e-herdr' in a for a in commands))
+        self.assertFalse(any('tests/release/installer_terminal_test.py' in a for a in commands))
+        self.assertFalse(any('tests/release/install_test.sh' in a for a in commands))
+        self.assertTrue(any('--check-upstream' in a for a in commands))
+        self.assertTrue(any('tests/release/installer_alias_test.py' in a for a in commands))
+        self.assertIn('BLOCKED', summary)
+
+    def test_cleanup_error_preserves_summary(self):
+        module = self.load()
+        def run(argv, **kwargs):
+            return type('Result', (), {'returncode': 0})()
+        created = []
+        original_temp = module.tempfile.mkdtemp
+        original_remove = shutil.rmtree
+        def temp(**kwargs):
+            root = original_temp(**kwargs)
+            created.append(root)
+            return root
+        with tempfile.TemporaryDirectory() as evidence:
+            with patch.object(module.tempfile, 'mkdtemp', temp), patch.object(module.subprocess, 'run', run), patch.object(module.shutil, 'rmtree', side_effect=OSError('cleanup denied')), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(module.qualify(Path(evidence), True), 1)
+                self.assertIn('cleanup denied', (Path(evidence) / 'summary.json').read_text())
+        for root in created:
+            original_remove(root)
 
     def test_branch_exception_is_reported(self):
         module = self.load()

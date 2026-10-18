@@ -99,8 +99,8 @@ check "ci.yml: linux-e2e references no secrets or tokens" bash -c \
 check "ci.yml: linux-e2e ends with an always() leak check" bash -c \
   'test "$(yq ".jobs.linux-e2e.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "$2" \
    && test "$(yq ".jobs.linux-e2e.steps[-1].run" "$1")" = "scripts/check-no-leaked-processes --run-id \"\$HT_LEAK_RUN_ID\" --grace 15"' _ "$ci" "always() && needs.changes.outputs.heavy == 'true'"
-check "ci.yml: linux-e2e runs on every push and pull request (no job-level if)" bash -c \
-  'test "$(yq ".jobs.linux-e2e | has(\"if\")" "$1")" = false \
+check "ci.yml: linux-e2e runs on every push and pull request (always evaluates detector)" bash -c \
+  'test "$(yq ".jobs.linux-e2e.if" "$1")" = "always()" \
    && test "$(yq "(.on | has(\"push\")) and (.on | has(\"pull_request\")) and .on.push == null and .on.pull_request == null" "$1")" = true' _ "$ci"
 
 rust_caches() {
@@ -130,14 +130,38 @@ docs_filter() {
   local job
   test "$(yq '.jobs.changes.outputs.heavy' "$ci")" = '${{ steps.paths.outputs.heavy }}' || return 1
   for job in tests deterministic linux-e2e clippy build-targets actionlint release-proof; do
-    test "$(yq ".jobs.\"$job\".needs" "$ci")" = changes || return 1
-    test "$(yq ".jobs.\"$job\" | has(\"if\")" "$ci")" = false || return 1
+    case "$job" in
+      actionlint) test "$(yq -o=json -I=0 '.jobs.actionlint.needs' "$ci")" = '["changes","release-proof"]' || return 1 ;;
+      *) test "$(yq ".jobs.\"$job\".needs" "$ci")" = changes || return 1 ;;
+    esac
+    test "$(yq ".jobs.\"$job\".if" "$ci")" = "always()" || return 1
     yq ".jobs.\"$job\".steps[].if" "$ci" | while IFS= read -r condition; do
-      case "$condition" in *"needs.changes.outputs.heavy == 'true'"*) ;; *) return 1 ;; esac
+      case "$condition" in "always()"|*"needs.changes.outputs.heavy == 'true'"*) ;; *) return 1 ;; esac
     done || return 1
   done
 }
 check "ci.yml: docs-only filter preserves every stable job and gates its steps" docs_filter
+detector_failure_blocks() {
+  local job script outcome heavy
+  for job in tests deterministic linux-e2e clippy build-targets actionlint release-proof; do
+    script=$(yq ".jobs.\"$job\".steps[0].run" "$ci")
+    for outcome in failure skipped cancelled; do
+      if DETECTOR_RESULT="$outcome" HEAVY=true bash -c "$script"; then return 1; fi
+    done
+    for heavy in '' invalid; do
+      if DETECTOR_RESULT=success HEAVY="$heavy" bash -c "$script"; then return 1; fi
+    done
+    DETECTOR_RESULT=success HEAVY=false bash -c "$script" || return 1
+    DETECTOR_RESULT=success HEAVY=true bash -c "$script" || return 1
+  done
+  test "$(yq '.jobs.actionlint.steps[-1].env.PROOF_RESULT' "$ci")" = '${{ needs.release-proof.result }}' || return 1
+  script=$(yq '.jobs.actionlint.steps[-1].run' "$ci")
+  for outcome in failure skipped cancelled; do
+    if PROOF_RESULT="$outcome" bash -c "$script"; then return 1; fi
+  done
+  PROOF_RESULT=success bash -c "$script"
+}
+check "ci.yml: detector failure/missing output and proof failure fail stable checks" detector_failure_blocks
 check "ci.yml: changed-path detector event semantics" python3 -m unittest discover -s scripts/tests -p test_ci_changed_paths.py
 
 full=.github/workflows/full-suite.yml
