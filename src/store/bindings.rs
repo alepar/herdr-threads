@@ -1119,6 +1119,24 @@ fn subagent_shape_error() -> ApiError {
     )
 }
 
+/// Derive an execution from the claimed native identity, never from another binding's UUID.
+pub(crate) fn derived_execution(
+    claim: &CallerClaim,
+    session: &str,
+    agent: Option<&str>,
+) -> Result<crate::protocol::ids::ExecutionId, ApiError> {
+    let instance = claim.instance.parse().map_err(|_| {
+        api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative node or declared role mismatch",
+        )
+    })?;
+    Ok(crate::protocol::ids::ExecutionId::new(
+        crate::harness::context::session_execution(instance, claim.harness.into(), session, agent)
+            .to_string(),
+    ))
+}
+
 /// The claim of a Hermes delegate child (spec §1 Hermes row): the parent's claim retargeted at the
 /// child session, which is also its agent id, with the subagent role.
 pub fn registered_child_claim(
@@ -1130,6 +1148,8 @@ pub fn registered_child_claim(
         role: crate::protocol::authority::CallerRole::Subagent,
         native_session: child.clone(),
         agent_id: Some(agent),
+        // Registered children make real CLI claims with their own session and no agent id.
+        execution: derived_execution(parent, child.as_str(), None)?,
         ..parent.clone()
     })
 }
@@ -1695,8 +1715,12 @@ fn resolve_claim_inner(
                     agent_id: None,
                     ..key.clone()
                 };
-                let parent_place =
+                let mut parent_place =
                     placed(crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE);
+                parent_place.execution =
+                    derived_execution(claim, claim.native_session.as_str(), None)?
+                        .as_str()
+                        .into();
                 match enroll_with_hooks(
                     tx,
                     &EnrollRequest {

@@ -4551,3 +4551,127 @@ mod cross_server_continuity {
         assert_eq!(row_counts(&s.conn), before, "no refusal wrote a row");
     }
 }
+
+mod legacy_child_execution {
+    use super::*;
+    use crate::protocol::commands::{BindingEvent, BindingEventKind};
+
+    fn parent() -> CallerClaim {
+        parent_for(Harness::Codex)
+    }
+
+    fn parent_for(harness: Harness) -> CallerClaim {
+        let mut c = claim();
+        c.harness = harness;
+        c.execution = ExecutionId::new(
+            crate::harness::context::session_execution(
+                c.instance.parse().unwrap(),
+                c.harness.into(),
+                c.native_session.as_str(),
+                None,
+            )
+            .to_string(),
+        );
+        c
+    }
+
+    // Deliberately submits the 2.0.3 native-hook shape, through the daemon writer.
+    fn legacy_start(store: &SqliteStore, parent: &CallerClaim, agent: &str) -> BindingEvent {
+        let registered = parent.harness.as_str() == "hermes";
+        let mut event = BindingEvent {
+            claim: CallerClaim {
+                role: CallerRole::Subagent,
+                agent_id: Some(AgentId::new(agent)),
+                ..parent.clone()
+            },
+            child_session: None,
+            kind: BindingEventKind::SubagentStart,
+            operation: OperationId::new(format!("old-start-{agent}")),
+        };
+        if registered {
+            event.claim = parent.clone();
+            event.child_session = Some(NativeSessionId::new(agent));
+        }
+        store.binding_event(&event, &budget()).unwrap();
+        event
+    }
+
+    #[test]
+    fn legacy_child_execution_allows_only_its_canonical_parent_lifecycle() {
+        for harness in [
+            Harness::Codex,
+            Harness::Claude,
+            Harness::Agent(
+                crate::harness::registry::builtins()
+                    .agent("hermes")
+                    .unwrap(),
+            ),
+        ] {
+            let (store, conn, _) = fixture();
+            let parent = parent_for(harness);
+            check_in(&store, lifecycle(parent.clone(), "start")).unwrap();
+            obligations(&conn);
+            conn.execute("UPDATE memberships SET state='joined'", [])
+                .unwrap();
+            let event = legacy_start(&store, &parent, "legacy-a");
+            legacy_start(&store, &parent, "legacy-b");
+            if parent.harness.as_str() == "hermes" {
+                // Isolated store fixture in the old parent-carried registration shape.
+                conn.execute(
+                    "UPDATE occupant_bindings SET execution_id=?1 WHERE role='subagent'",
+                    [parent.execution.as_str()],
+                )
+                .unwrap();
+            }
+            let before: String = conn.query_row("SELECT json_group_array(json_array(binding_id,parent_binding,native_session,agent_id,execution_id,observation_provenance)) FROM occupant_bindings WHERE role='subagent'", [], |r|r.get(0)).unwrap();
+            conn.execute("INSERT OR REPLACE INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t',CASE agent_id WHEN '' THEN 0 WHEN 'legacy-a' THEN 1 ELSE 0 END FROM occupant_bindings", []).unwrap();
+            let durable_state = || -> String {
+                conn.query_row("SELECT json_array((SELECT json_group_array(json_array(binding_id,thread_id,seq)) FROM binding_cursors),(SELECT json_group_array(json_array(message_id,seat_id,state,deadline_at)) FROM receipts),(SELECT json_group_array(json_array(thread_id,seat_id,state)) FROM memberships),(SELECT json_group_array(json_array(id,body)) FROM messages))", [], |r|r.get(0)).unwrap()
+            };
+            let state_before = durable_state();
+            let resume = lifecycle(parent.clone(), "resume");
+            check_in(&store, resume.clone()).unwrap();
+            check_in(&store, resume).unwrap();
+            // Exact operation replay remains valid; no child or history is rewritten.
+            store.binding_event(&event, &budget()).unwrap();
+            let after: String = conn.query_row("SELECT json_group_array(json_array(binding_id,parent_binding,native_session,agent_id,execution_id,observation_provenance)) FROM occupant_bindings WHERE role='subagent'", [], |r|r.get(0)).unwrap();
+            assert_eq!(before, after);
+            assert_eq!(durable_state(), state_before);
+            let mut unrelated = parent.clone();
+            unrelated.native_session = NativeSessionId::new("unrelated");
+            assert_eq!(
+                check_in(&store, lifecycle(unrelated, "unrelated"))
+                    .unwrap_err()
+                    .code,
+                ErrorCode::CallerUnverified
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_child_execution_rejects_near_misses() {
+        for mutation in [
+            "UPDATE occupant_bindings SET parent_binding=NULL WHERE role='subagent'",
+            "UPDATE occupant_bindings SET native_session='unrelated' WHERE role='subagent'",
+            "UPDATE occupant_bindings SET harness='claude' WHERE role='subagent'",
+            "UPDATE occupant_bindings SET observation_provenance='managed_launch' WHERE role='subagent'",
+            "UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000001'",
+        ] {
+            let (store, conn, _) = fixture();
+            let mut parent = parent();
+            check_in(&store, lifecycle(parent.clone(), "start")).unwrap();
+            legacy_start(&store, &parent, "legacy");
+            conn.execute(mutation, []).unwrap();
+            if mutation.contains("SET execution_id") {
+                parent.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
+            }
+            assert_eq!(
+                check_in(&store, lifecycle(parent, "resume"))
+                    .unwrap_err()
+                    .code,
+                ErrorCode::CallerUnverified,
+                "{mutation}"
+            );
+        }
+    }
+}

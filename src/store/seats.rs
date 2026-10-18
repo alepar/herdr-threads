@@ -4978,8 +4978,46 @@ pub(crate) fn cooperative_mapping(
             // one execution its claims carry (its binding's `execution_id`, which its later
             // claims must match).
             let agent = claim.agent_id.as_ref().map_or("", |agent| agent.as_str());
-            let used: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND execution_id=?2 AND NOT (harness=?3 AND native_session=?4 AND agent_id=?5))",
-                params![claim.seat.as_str(),claim.execution.as_str(),claim.harness.as_str(),claim.native_session.as_str(),agent], |r|r.get(0)).map_err(store_error)?;
+            let policy =
+                crate::harness::registry::builtins().binding_policy(claim.harness.as_str());
+            // 2.0.3 child-start hooks stored the parent's execution on attached children.
+            // Recognize only that exact canonical shape; do not rewrite history or relax
+            // collisions for another session, harness, agent, or unrelated parent.
+            let legacy_parent = !claim.is_subagent()
+                && claim.harness != crate::protocol::authority::Harness::Human
+                && claim.execution
+                    == bindings::derived_execution(claim, claim.native_session.as_str(), None)?;
+            let child_provenance = if policy.hook_agent_id {
+                crate::protocol::authority::COOPERATIVE_HOOK_AGENT_PROVENANCE
+            } else {
+                crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE
+            };
+            let used: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM occupant_bindings child
+                 WHERE child.seat_id=?1 AND child.execution_id=?2
+                 AND NOT (child.harness=?3 AND child.native_session=?4 AND child.agent_id=?5)
+                 AND NOT (?6 AND child.role='subagent' AND child.agent_id<>''
+                     AND child.harness=?3 AND child.observation_provenance=?7
+                     AND (child.native_session=?4 OR (?8 AND child.native_session=child.agent_id))
+                     AND EXISTS(SELECT 1 FROM occupant_bindings parent
+                         WHERE parent.binding_id=child.parent_binding AND parent.seat_id=?1
+                         AND parent.harness=?3 AND parent.native_session=?4
+                         AND parent.agent_id='' AND parent.role='top_level'
+                         AND parent.execution_id=?2)))",
+                    params![
+                        claim.seat.as_str(),
+                        claim.execution.as_str(),
+                        claim.harness.as_str(),
+                        claim.native_session.as_str(),
+                        agent,
+                        legacy_parent,
+                        child_provenance,
+                        policy.registered_child_sessions
+                    ],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
             if used {
                 return Err(api_error(
                     ErrorCode::CallerUnverified,

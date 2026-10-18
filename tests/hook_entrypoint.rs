@@ -6272,6 +6272,54 @@ mod continuity {
     const ORDINARY_ALLOCATIONS: &str =
         "SELECT count(*) FROM allocation_decisions WHERE kind='ordinary'";
 
+    // Parent-carried delegate callbacks must not store the parent's execution.
+    #[test]
+    fn hermes_child_lifecycle_has_its_own_execution_and_stop_key() {
+        let fx = Fixture::start_hermes(&[(PANE, Agent::NoSession)]);
+        fx.wait_reconciled();
+        fx.hook("hermes", PANE, &hermes_start("fixture-session", 1));
+        hermes_turn_with_context(&fx, PANE, "fixture-session", 2);
+        let rows: serde_json::Value =
+            serde_json::from_slice(include_bytes!("fixtures/hermes/enrollment-envelopes.json"))
+                .unwrap();
+        for (sequence, callback) in ["subagent_start", "subagent_start", "subagent_stop"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut payload = rows[callback].clone();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            payload["event_id"] = format!("{callback}-{sequence}").into();
+            payload["started_at"] = now.into();
+            payload["deadline_at"] = (now + 1200).into();
+            payload["observation_order"]["observed_at_millis"] = now.into();
+            let output = fx.hook("hermes", PANE, &serde_json::to_vec(&payload).unwrap());
+            assert_eq!(output.code, Some(0));
+            assert!(output.stderr.is_empty(), "{}", output.stderr);
+        }
+        assert_eq!(fx.count("SELECT count(*) FROM occupant_bindings WHERE role='subagent' AND native_session='fixture-child' AND agent_id='fixture-child' AND liveness='disconnected' AND disconnect_reason='liveness_end_event'"), 1);
+        assert_eq!(fx.count("SELECT count(*) FROM occupant_bindings child JOIN occupant_bindings parent ON child.parent_binding=parent.binding_id AND child.execution_id=parent.execution_id"), 0);
+        let db = fx.db();
+        let instance: String = db
+            .query_row("SELECT instance_id FROM seats LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let stored: String = db.query_row("SELECT execution_id FROM occupant_bindings WHERE role='subagent' AND native_session='fixture-child'", [], |r| r.get(0)).unwrap();
+        let read_execution = herdr_threads::harness::context::session_execution(
+            instance.parse().unwrap(),
+            herdr_threads::protocol::authority::Harness::Agent(
+                herdr_threads::harness::registry::builtins()
+                    .agent("hermes")
+                    .unwrap(),
+            )
+            .into(),
+            "fixture-child",
+            None,
+        );
+        assert_eq!(stored, read_execution.to_string());
+    }
+
     #[test]
     fn hermes_cli_start_allocates_then_reuses_the_canonical_seat() {
         let fx = Fixture::start_hermes(&[(PANE, Agent::NoSession)]);
@@ -7668,4 +7716,92 @@ fn native_hook_broken_stdout_does_not_settle_or_hide_receipt_mail() {
     assert_eq!(fx.count(&receipt_sql), 1);
     assert!(fx.count(&cursor_sql) > before);
     assert!(fx.hook("w9:p1", &tool("sess-1")).stdout.is_empty());
+}
+
+// Catches native child hooks reusing a parent's execution, including replay/stop.
+#[test]
+fn child_lifecycle_keeps_parent_resume_and_binding_identity() {
+    assert_child_lifecycle(false);
+}
+
+#[test]
+fn legacy_child_execution_recovers_on_native_parent_resume() {
+    assert_child_lifecycle(true);
+}
+
+fn assert_child_lifecycle(legacy_store: bool) {
+    use herdr_threads::cli::hook::installed_event_argv;
+    use herdr_threads::harness::setup::native_event_command;
+    let fx = Fixture::start();
+    for (harness, pane, seat) in [
+        (Harness::Claude, "w9:p1", "seat"),
+        (Harness::Codex, "w9:p3", "cx"),
+    ] {
+        let invoke = |event: &str, payload: Vec<u8>| {
+            let command = native_event_command(
+                &installed_event_argv(
+                    BIN,
+                    Some(fx.state.to_str().unwrap()),
+                    Some(fx.host.to_str().unwrap()),
+                    harness,
+                    event,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let output = run_hook(&command, pane, &fx.host, &payload);
+            assert_eq!(output.code, Some(0));
+            assert!(output.stderr.is_empty(), "{}", output.stderr);
+            output
+        };
+        let parent_start = |source| {
+            let payload = Payload::session_start("lifecycle-parent", source);
+            if harness == Harness::Codex {
+                payload.codex(source).bytes()
+            } else {
+                payload.bytes()
+            }
+        };
+        invoke("SessionStart", parent_start("startup"));
+        for event in ["SubagentStart", "SubagentStart", "SubagentStop"] {
+            for agent in ["child-a", "child-b"] {
+                let payload = serde_json::json!({
+                    "hook_event_name":event, "session_id":"lifecycle-parent", "turn_id":format!("{event}-{agent}"),
+                    "agent_id":agent, "agent_type":"worker", "transcript_path":null,
+                    "cwd":"/tmp", "model":"gpt-test", "permission_mode":"default"
+                });
+                invoke(event, serde_json::to_vec(&payload).unwrap());
+            }
+        }
+        // These are the identities the existing real child-read path derives.
+        for agent in ["child-a", "child-b"] {
+            let read_execution = herdr_threads::harness::context::session_execution(
+                fx.descriptor.node_uuid,
+                harness,
+                "lifecycle-parent",
+                Some(agent),
+            );
+            assert_eq!(fx.count_text(&format!("SELECT execution_id FROM occupant_bindings WHERE seat_id='{seat}' AND native_session='lifecycle-parent' AND agent_id='{agent}'")), read_execution.to_string());
+        }
+        if legacy_store {
+            // Seed only this isolated fixture with the persisted 2.0.3 shape.
+            let db = rusqlite::Connection::open(&fx.db).unwrap();
+            db.execute("UPDATE occupant_bindings SET execution_id=(SELECT execution_id FROM occupant_bindings parent WHERE parent.binding_id=occupant_bindings.parent_binding) WHERE seat_id=?1 AND role='subagent'", [seat]).unwrap();
+            db.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',liveness='disconnected',disconnected_at=1,disconnect_reason='liveness_process_exit' WHERE seat_id=?1 AND role='top_level'", [seat]).unwrap();
+        }
+        let snapshot = || {
+            fx.count_text(&format!("SELECT json_group_array(json_array(binding_id,parent_binding,agent_id,execution_id)) FROM (SELECT * FROM occupant_bindings WHERE seat_id='{seat}' ORDER BY ordinal)"))
+        };
+        let before = snapshot();
+        assert_eq!(fx.count(&format!("SELECT count(*) FROM occupant_bindings child JOIN occupant_bindings parent ON child.parent_binding=parent.binding_id AND child.execution_id=parent.execution_id WHERE child.seat_id='{seat}'")), if legacy_store { 2 } else { 0 });
+        assert_eq!(fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='{seat}' AND role='subagent' AND liveness='disconnected' AND disconnect_reason='liveness_end_event'")), 2);
+        let resumed = invoke("SessionStart", parent_start("resume"));
+        assert!(
+            !context_of(&resumed).contains("CallerUnverified"),
+            "{}",
+            context_of(&resumed)
+        );
+        assert_eq!(snapshot(), before);
+        assert_eq!(fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='{seat}' AND native_session='lifecycle-parent' AND agent_id='' AND observation_provenance='cooperative_top_level' AND liveness='connected'")), 1);
+    }
 }

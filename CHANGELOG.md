@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Parent sessions resume after subagent use.** Child lifecycle hooks now keep separate execution identities. Existing stores affected by shared parent/child execution IDs recover on the next parent lifecycle hook without deleting or rewriting binding history.
+
 ## v2.0.3
 
 - **Sends and handoffs no longer fail with `send preparation snapshot changed`.** A send gave up the store's write lane between its final preparation and publication, so a queued background pass (for example, seat liveness) could change the state in between and the send or handoff failed with `send preparation snapshot changed (conflict)`. The final preparation now keeps the lane through permit issuance and publication, for ordinary sends and both handoff paths; earlier preparation steps still yield and every revision, budget and authority check stays. No schema, protocol or model-visible text change.

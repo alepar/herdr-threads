@@ -570,6 +570,47 @@ mod resolution {
         }
     }
 
+    // Catches child claims inheriting the parent's UUID, and bootstrapping a parent
+    // with its child's UUID when the child is the first observed caller.
+    #[test]
+    fn child_execution_is_distinct_even_when_parent_is_enrolled_first_by_child() {
+        let db = db();
+        let mut child = claim("new-parent", Some("child"));
+        child.execution = ExecutionId::new(
+            crate::harness::context::session_execution(
+                child.instance.parse().unwrap(),
+                crate::harness::context::Harness::Claude,
+                child.native_session.as_str(),
+                Some("child"),
+            )
+            .to_string(),
+        );
+        let mut place = placement();
+        place.execution = child.execution.as_str().into();
+        let row = resolve_claim(
+            &db,
+            &ResolveRequest {
+                claim: &child,
+                lifecycle: false,
+                placement: &place,
+                lineage: None,
+            },
+            UtcMillis(50),
+        )
+        .unwrap()
+        .binding()
+        .clone();
+        assert_eq!(row.role, BindingRole::Subagent);
+        let shared: bool = db.query_row("SELECT child.execution_id=parent.execution_id FROM occupant_bindings child JOIN occupant_bindings parent ON child.parent_binding=parent.binding_id WHERE child.binding_id=?1", [row.binding_id.as_str()], |r|r.get(0)).unwrap();
+        assert!(!shared);
+        let parent = hermes_claim("registered-parent");
+        let registered =
+            registered_child_claim(&parent, &NativeSessionId::new("registered-child")).unwrap();
+        assert_ne!(registered.execution, parent.execution);
+        assert_eq!(registered.native_session.as_str(), "registered-child");
+        assert_eq!(registered.agent_id.unwrap().as_str(), "registered-child");
+    }
+
     #[test]
     fn hermes_cli_claim_of_a_registered_child_resolves_to_the_subagent_binding() {
         let db = db();

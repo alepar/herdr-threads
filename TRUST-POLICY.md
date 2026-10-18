@@ -379,6 +379,23 @@ model open work, and summary closure never changes receipt state or installs glo
   specified under *Lineage* below (ht-54r.20, ht-54r.17). A person and an agent still never hold a seat
   together and the first agent lifecycle check-in replaces `managed_launch` (both below, ended as
   `replaced`, through the enroll-hook registry and the one disconnect transition; ht-54r.4). A plain human call never enrolls a binding. Re-adoption (ht-54r.24) is the plain reconnect of a V32-migrated binding (`migrated`, disconnected for reason `migrated`); it also refreshes the placement and seeds its cursors (`Readopt`), and happens on any agent call whose claim matches its stored session exactly (the key the migration kept), unless a connected lifecycle-claimed binding already holds the call's fingerprint (then the row stays `migrated`); a claim with another session enrolls its own binding and nothing is matched by heuristic.
+- *Child execution identity and legacy compatibility (ht-36fl)*: native child events with an
+  agent id derive execution from (instance, harness, parent native session, agent id), as do
+  that child's own reads. A parent-carried registration of a separate child session instead
+  derives execution from (instance, harness, child native session, no agent id), matching the
+  child's real CLI claim; the registered binding retains its child agent id and parent link.
+  Enrolling an unknown parent from a child claim derives the parent's own execution separately.
+  Lifecycle execution collisions still refuse unrelated bindings. Accepted compatibility limit:
+  a top-level lifecycle claim using its deterministic session execution may coexist with a
+  legacy subagent row carrying that same execution only when the canonical row has a nonempty
+  agent id, the same seat and harness, the adapter's ordinary child provenance, and an exact
+  parent link to a top-level row with that claim's seat, harness, native session, empty agent id
+  and execution. The child's native session must equal the parent's, or, for an adapter that
+  registers separate child sessions, equal its own agent id. This recognizes the persisted
+  2.0.3 child-start shape, including disconnected or ended history, without rewriting it.
+  No binding id, parent link, cursor, membership, receipt, history, provenance or operation
+  record changes through this compatibility check. It confers no lifecycle qualification on
+  plain calls; only a genuine lifecycle check-in can refresh the parent's lifecycle provenance.
 - *Binding liveness (ht-54r.10)*: a binding is connected or disconnected. Disconnection never ends a
   binding, moves a seat or merges seats, and every disconnect (end event, process exit, pane close,
   supersede, seat retirement or unresolve) goes through the one `store::bindings::disconnect`

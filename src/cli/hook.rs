@@ -3696,7 +3696,7 @@ fn report_binding_event(
             instance,
             args.harness,
             session,
-            None,
+            event.agent_id.as_deref(),
         ),
         session: SessionReference::Native(session.to_owned()),
         role: Role::TopLevel,
