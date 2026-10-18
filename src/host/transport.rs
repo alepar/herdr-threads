@@ -777,7 +777,7 @@ fn create_tab_with_provider(
                             "cwd": request.cwd,
                             "label": request.label,
                             "focus": false,
-                            "env": {},
+                            "env": request.env,
                         });
                         let (response, witness) = exchange(
                             socket,

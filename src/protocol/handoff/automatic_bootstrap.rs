@@ -854,7 +854,7 @@ impl AutomaticBootstrapIdentity {
                 let message = CommandResult::MessageSent(MessageId::new(escaped.clone()));
                 for local in [
                     serde_json::json!({"version":2,"identity":self,"attachment":attachment,"thread":thread,"selection":selection,"message":message,"possible_start":true,"launch":summary}),
-                    serde_json::json!({"version":2,"identity":self,"attempt":attempt,"possible_creation":true,"request":crate::ports::CreateTabRequest {correlation:created.correlation.clone(),workspace:p.workspace.clone(),cwd:p.cwd.clone(),label:p.label.clone(),focus:false,env:Default::default(),expected_witness:created.witness.clone()},"creation":created,"not_submitted":false}),
+                    serde_json::json!({"version":2,"identity":self,"attempt":attempt,"possible_creation":true,"request":crate::ports::CreateTabRequest {correlation:created.correlation.clone(),workspace:p.workspace.clone(),cwd:p.cwd.clone(),label:p.label.clone(),focus:false,env:p.env.clone(),directory_context:p.directory_context.clone(),expected_witness:created.witness.clone()},"creation":created,"not_submitted":false}),
                 ] {
                     if serde_json::to_vec(&local)
                         .map_err(|_| "automatic local envelope encoding")?

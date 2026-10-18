@@ -172,6 +172,7 @@ fn load_parent(
                 || r.label != id.plan.payload.label
                 || r.focus
                 || r.env != id.plan.payload.env
+                || r.directory_context != id.plan.payload.directory_context
                 || r.expected_witness.endpoint.as_os_str()
                     != id.plan.payload.handoff.namespace.host_endpoint.as_os_str()
         })
@@ -495,6 +496,7 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
         label: id.plan.payload.label.clone(),
         focus: false,
         env: id.plan.payload.env.clone(),
+        directory_context: id.plan.payload.directory_context.clone(),
         expected_witness: submission.witness.clone(),
     };
     local.possible_creation = true;

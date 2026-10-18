@@ -950,6 +950,7 @@ pub fn resume_to_attachment<
         label: identity.payload.label.clone(),
         focus: identity.payload.focus,
         env: identity.payload.env.clone(),
+        directory_context: identity.payload.directory_context.clone(),
         expected_witness: submission.witness.clone(),
     };
     local.possible_creation = true;
@@ -1274,6 +1275,7 @@ pub(crate) fn preflight_progress_capacity(
             label: identity.payload.label.clone(),
             focus: identity.payload.focus,
             env: identity.payload.env.clone(),
+            directory_context: identity.payload.directory_context.clone(),
             expected_witness: witness.clone(),
         }),
         creation: None,
@@ -1338,6 +1340,7 @@ fn load_bootstrap_progress(
             || request.label != identity.payload.label
             || request.focus != identity.payload.focus
             || request.env != identity.payload.env
+            || request.directory_context != identity.payload.directory_context
             || request.expected_witness.endpoint
                 != identity.payload.handoff.namespace.host_endpoint)
     {
