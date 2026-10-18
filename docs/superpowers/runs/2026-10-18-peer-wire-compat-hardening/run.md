@@ -17,8 +17,8 @@ approvals:
 - coverage-round-1 · 12 findings: 11 applied, 1 rejected (cov-2) — see coverage-ledger.md; requirements: 12 · mapped: 12 · unmapped: 0 · all auto
 - coverage-round-2 · 7 findings, all applied (auto) — see coverage-ledger.md; no round 3 (cap)
 roastDesignRound: 2
-roast-design: 2026-10-18-peer-wire-compat-hardening-roast-design-1.md
 findingsLedgerDesign: findings-ledger-design.md
 stepBackDesign-round-1: local — shared-cause cluster swept as three rule clusters (chain-union, opaque-apply, cross-generation-contract); two-table choice kept
 roast-design: 2026-10-18-peer-wire-compat-hardening-roast-design-1.md, 2026-10-18-peer-wire-compat-hardening-roast-design-2.md
 roastDesignExit: round 2 — 0 Blocking, 5 confirmed (1 Nit, 4 Should-fix, all fix-regressions of round-1 fixes) fixed inline as mechanical spec/bead corrections; no round 3 (corrections, not new design decisions)
+graph-pass: depth 8→6 · width 1.6→2.2 · applied 1 · parked 0 (other 6 candidate edges kept: each names a real consumed artifact)

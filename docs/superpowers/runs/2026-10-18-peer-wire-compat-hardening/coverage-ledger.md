@@ -17,3 +17,4 @@ cov-16 · r2 · GAP · lint negative fixtures · applied — .8 acceptance
 cov-17 · r2 · GAP · golden HTJRNL01 parses under EntryPrefix · applied — .2 acceptance
 cov-18 · r2 · UNOWNED-SEAM · unpark trigger owner · applied — .10 owns API, .13 calls
 cov-19 · r2 · GAP · shadow decoder faithful to v2.1.1 source · applied — .7 acceptance
+cov-20 · graph · GRAPH-EDGE · .10 <- .4 · applied — apply parking/union readers do not consume wire form; status field set ownership moved to .10, .4 now depends on .10
