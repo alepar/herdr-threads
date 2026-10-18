@@ -3,7 +3,7 @@
 //! touches the store.
 
 use super::{
-    BatchLimits, LogHead, LogKey, LogState, Vector, envelope::Envelope, envelope::EnvelopeError,
+    BatchLimits, LogHead, LogKey, LogState, Vector, envelope::EnvelopeError, envelope::StoredEntry,
 };
 use crate::protocol::results::ApiError;
 use crate::protocol::time::CallBudget;
@@ -14,10 +14,10 @@ use crate::protocol::time::CallBudget;
 /// nothing; `Gap`, `Fork` and `Frozen` keep the valid prefix, counted in
 /// `stored`. Does not own: resolving forks or pacing peers, which the caller
 /// decides from the variant. A new outcome is a new variant, handled by every
-/// caller's exhaustive `match`. `E` is `StoredEntry` on the store's entry-level
-/// ingest; the port uses the default until ht-j87z.15.
+/// caller's exhaustive `match`. Fork evidence holds entries as stored, known or
+/// opaque.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum IngestOutcome<E = Envelope> {
+pub enum IngestOutcome {
     /// Every entry was stored or already held; `head` is the new contiguous head.
     Stored {
         stored: usize,
@@ -29,7 +29,7 @@ pub enum IngestOutcome<E = Envelope> {
     /// A validly signed entry contradicts the held chain.
     Fork {
         stored: usize,
-        evidence: ForkEvidence<E>,
+        evidence: ForkEvidence,
     },
     /// An entry lies beyond the counter at which the log froze.
     Frozen { stored: usize, frozen_at: u64 },
@@ -44,19 +44,22 @@ pub enum IngestOutcome<E = Envelope> {
     Headroom,
 }
 
-/// Proof of a fork, for the caller to keep and report. `E` is `StoredEntry` on
-/// the store's entry-level ingest; the port uses the default until ht-j87z.15.
+/// Proof of a fork, for the caller to keep and report. Either side may be an
+/// opaque entry, relayed as stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ForkEvidence<E = Envelope> {
+pub enum ForkEvidence {
     /// A peer holds entries of this node's own active log that this node does
     /// not have.
     AheadOfSelf {
         log: LogKey,
         my_head: LogHead,
-        entry: Box<E>,
+        entry: Box<StoredEntry>,
     },
     /// Two different validly signed entries for one position.
-    Conflict { held: Box<E>, conflicting: Box<E> },
+    Conflict {
+        held: Box<StoredEntry>,
+        conflicting: Box<StoredEntry>,
+    },
 }
 
 /// What one apply pass did.
@@ -123,14 +126,16 @@ pub trait JournalPort: Send + Sync {
         budget: &CallBudget,
     ) -> Result<Option<[u8; 32]>, ApiError>;
 
-    /// Committed entries of `log` from counter `from`, within `limits`.
+    /// Committed entries of `log` from counter `from`, within `limits`. An
+    /// entry may be opaque (a layout this node does not understand); the port
+    /// relays it byte-exact.
     fn serve(
         &self,
         log: &LogKey,
         from: u64,
         limits: BatchLimits,
         budget: &CallBudget,
-    ) -> Result<Vec<Envelope>, ApiError>;
+    ) -> Result<Vec<StoredEntry>, ApiError>;
 
     /// The batch of the branch of `log` that ends at `tip` (counter, hash),
     /// starting at counter `from`, within `limits`.
@@ -148,7 +153,7 @@ pub trait JournalPort: Send + Sync {
         from: u64,
         limits: BatchLimits,
         budget: &CallBudget,
-    ) -> Result<Option<Vec<Envelope>>, ApiError>;
+    ) -> Result<Option<Vec<StoredEntry>>, ApiError>;
 
     /// The public key, ownership and state of `log`, if held.
     ///
@@ -157,13 +162,14 @@ pub trait JournalPort: Send + Sync {
     /// learn a log's pubkey and ownership.
     fn log_meta(&self, log: &LogKey, budget: &CallBudget) -> Result<Option<LogMeta>, ApiError>;
 
-    /// Verify and store a batch of `log`'s entries.
+    /// Verify and store a batch of `log`'s entries, known or opaque. An opaque
+    /// entry joins the hash chain by its prefix fields.
     ///
     /// The caller holds a `FairWriter` background turn.
     fn ingest(
         &self,
         log: &LogKey,
-        entries: Vec<Envelope>,
+        entries: Vec<StoredEntry>,
         budget: &CallBudget,
     ) -> Result<IngestOutcome, ApiError>;
 

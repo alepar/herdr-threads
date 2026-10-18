@@ -27,7 +27,7 @@ use herdr_threads::store::journal;
 use herdr_threads::sync::EntityKey;
 use herdr_threads::sync::LogKey;
 use herdr_threads::sync::coordinator::{CloneKind, CloneReport};
-use herdr_threads::sync::envelope::Envelope;
+use herdr_threads::sync::envelope::StoredEntry;
 use herdr_threads::sync::facts::payload::{ReceiptObligation, SettleHow};
 use herdr_threads::sync::facts::{ApplyContext, FactError, FactKind, FactRegistry};
 use herdr_threads::sync::facts::{GenesisPayload, Predecessor};
@@ -931,7 +931,7 @@ impl JournalPort for CorruptBranches {
         from: u64,
         limits: BatchLimits,
         budget: &CallBudget,
-    ) -> Result<Vec<Envelope>, ApiError> {
+    ) -> Result<Vec<StoredEntry>, ApiError> {
         self.store.serve(log, from, limits, budget)
     }
     fn serve_branch(
@@ -941,12 +941,14 @@ impl JournalPort for CorruptBranches {
         from: u64,
         limits: BatchLimits,
         budget: &CallBudget,
-    ) -> Result<Option<Vec<Envelope>>, ApiError> {
+    ) -> Result<Option<Vec<StoredEntry>>, ApiError> {
         let mut served = self.store.serve_branch(log, tip, from, limits, budget)?;
         if let Some(entries) = served.as_mut().filter(|e| !e.is_empty()) {
             self.served.fetch_add(1, Ordering::SeqCst);
             for entry in entries {
-                entry.signature[0] ^= 0xff;
+                if let StoredEntry::Known(entry) = entry {
+                    entry.signature[0] ^= 0xff;
+                }
             }
         }
         Ok(served)
@@ -957,7 +959,7 @@ impl JournalPort for CorruptBranches {
     fn ingest(
         &self,
         log: &LogKey,
-        entries: Vec<Envelope>,
+        entries: Vec<StoredEntry>,
         budget: &CallBudget,
     ) -> Result<IngestOutcome, ApiError> {
         self.store.ingest(log, entries, budget)

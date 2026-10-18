@@ -48,6 +48,7 @@ use crate::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMil
 use crate::store::connection::StoreContext;
 use crate::store::journal;
 use crate::store::{SqliteStore, StoreSettings};
+use crate::sync::envelope::StoredEntry;
 use crate::sync::facts::FactRegistry;
 use crate::sync::journal_port::{IngestOutcome, JournalPort};
 use crate::sync::{BatchLimits, EntityKey, LogKey};
@@ -402,7 +403,7 @@ pub fn replay_into_empty(src: &SqliteStore) -> OracleStore {
             let batch = src
                 .serve(log, from, BatchLimits::default(), &budget())
                 .expect("serve the source log");
-            let Some(last) = batch.last().map(|e| e.counter) else {
+            let Some(last) = batch.last().map(StoredEntry::counter) else {
                 panic!("source log {log:?} ends before its head {}", head.counter);
             };
             match replay.ingest(log, batch, &budget()).expect("ingest") {
@@ -539,8 +540,12 @@ impl Causality {
                 let batch = store
                     .serve(log, from, BatchLimits::default(), &budget())
                     .expect("serve a log");
-                from = batch.last().expect("a served entry").counter + 1;
-                entries.extend(batch);
+                from = batch.last().expect("a served entry").counter() + 1;
+                // The oracle's fixtures are known layouts only.
+                entries.extend(batch.into_iter().map(|entry| match entry {
+                    StoredEntry::Known(entry) => entry,
+                    StoredEntry::Opaque(_) => panic!("the causality oracle met an opaque entry"),
+                }));
             }
         }
         let creators: HashMap<&EntityKey, Vec<Origin>> =

@@ -32,7 +32,7 @@ const HLC_BASE_MS: u64 = 1_700_000_000_000;
 
 /// The test-only second implementation of [`JournalPort`].
 ///
-/// Owns: `BTreeMap<LogKey, Vec<Envelope>>`, the public key of each log, the
+/// Owns: `BTreeMap<LogKey, Vec<StoredEntry>>`, the public key of each log, the
 /// freeze marks and the per-log "processed" mark, plus `author_raw` for sealing
 /// validly signed entries on its own log. Never skips verification: every
 /// ingested entry goes through [`check_next`] and `Envelope::verify`, exactly
@@ -51,14 +51,14 @@ pub struct MemoryJournal {
 
 #[derive(Default)]
 struct Inner {
-    logs: BTreeMap<LogKey, Vec<Envelope>>,
+    logs: BTreeMap<LogKey, Vec<StoredEntry>>,
     pubkeys: BTreeMap<LogKey, [u8; 32]>,
     /// Last counter a frozen log accepts.
     frozen: BTreeMap<LogKey, u64>,
     /// Highest counter `apply_pending` has marked processed.
     processed: BTreeMap<LogKey, u64>,
     /// Entries of forked branches, by `(log, counter, hash)`.
-    forked: BTreeMap<(LogKey, u64, [u8; 32]), Envelope>,
+    forked: BTreeMap<(LogKey, u64, [u8; 32]), StoredEntry>,
     /// Test hook: the walk bound of `serve_branch`; 0 means the default.
     branch_walk_bound: u64,
 }
@@ -108,7 +108,7 @@ impl MemoryJournal {
             .seal(&log, 1, [0u8; 32], GENESIS_KIND, payload)
             .expect("a genesis payload is well formed");
         inner.pubkeys.insert(log, self.identity.public_key());
-        inner.logs.insert(log, vec![genesis]);
+        inner.logs.insert(log, vec![StoredEntry::from(genesis)]);
         inner.processed.insert(log, 1);
     }
 
@@ -151,13 +151,13 @@ impl MemoryJournal {
         let log = self.self_log();
         let held = &inner.logs[&log];
         let head = held.last().expect("the own log holds its genesis");
-        let entry = self.seal(&log, head.counter + 1, head.hash, kind, payload.into())?;
+        let entry = self.seal(&log, head.counter() + 1, head.hash(), kind, payload.into())?;
         let len = held.len() as u64 + 1;
         inner
             .logs
             .get_mut(&log)
             .expect("the own log exists")
-            .push(entry.clone());
+            .push(StoredEntry::from(entry.clone()));
         inner.processed.insert(log, len);
         Ok(entry)
     }
@@ -172,14 +172,14 @@ impl MemoryJournal {
     /// duplicates, like `journal::store_forked`, and returns how many were
     /// new. The log must be known (`NotFound`); each entry must name it and
     /// verify against its key (`InvalidRequest` otherwise).
-    pub fn store_forked(&self, log: &LogKey, entries: &[Envelope]) -> Result<usize, ApiError> {
+    pub fn store_forked(&self, log: &LogKey, entries: &[StoredEntry]) -> Result<usize, ApiError> {
         let mut inner = self.lock();
         let Some(pubkey) = inner.pubkeys.get(log).copied() else {
             return Err(ApiError::new(ErrorCode::NotFound, "unknown log"));
         };
         let mut inserted = 0;
         for entry in entries {
-            if entry.log != *log {
+            if entry.log() != *log {
                 return Err(ApiError::new(
                     ErrorCode::InvalidRequest,
                     "forked entry names another log",
@@ -190,7 +190,7 @@ impl MemoryJournal {
             })?;
             if inner
                 .forked
-                .insert((*log, entry.counter, entry.hash), entry.clone())
+                .insert((*log, entry.counter(), entry.hash()), entry.clone())
                 .is_none()
             {
                 inserted += 1;
@@ -219,10 +219,10 @@ impl MemoryJournal {
     }
 }
 
-fn head_of(entries: &[Envelope], state: LogState, frozen_at: Option<u64>) -> LogHead {
+fn head_of(entries: &[StoredEntry], state: LogState, frozen_at: Option<u64>) -> LogHead {
     LogHead {
         counter: entries.len() as u64,
-        head_hash: entries.last().map_or([0u8; 32], |e| e.hash),
+        head_hash: entries.last().map_or([0u8; 32], StoredEntry::hash),
         state,
         frozen_at: frozen_at.map(|at| i64::try_from(at).unwrap_or(i64::MAX)),
     }
@@ -276,7 +276,7 @@ impl JournalPort for MemoryJournal {
             .checked_sub(1)
             .and_then(|ix| usize::try_from(ix).ok())
             .and_then(|ix| inner.logs.get(log)?.get(ix))
-            .map(|e| e.hash))
+            .map(StoredEntry::hash))
     }
 
     fn serve(
@@ -285,20 +285,20 @@ impl JournalPort for MemoryJournal {
         from: u64,
         limits: BatchLimits,
         budget: &CallBudget,
-    ) -> Result<Vec<Envelope>, ApiError> {
+    ) -> Result<Vec<StoredEntry>, ApiError> {
         cancelled(budget)?;
         let inner = self.lock();
         let Some(entries) = inner.logs.get(log) else {
             return Ok(Vec::new());
         };
         let start = usize::try_from(from.max(1) - 1).unwrap_or(usize::MAX);
-        let mut out: Vec<Envelope> = Vec::new();
+        let mut out: Vec<StoredEntry> = Vec::new();
         let mut bytes = 0usize;
         for entry in entries.iter().skip(start) {
             if out.len() >= limits.entries.max(1) {
                 break;
             }
-            let size = entry.canonical_bytes().len();
+            let size = entry.size();
             // Always at least one entry, even an oversized one.
             if !out.is_empty() && bytes.saturating_add(size) > limits.bytes {
                 break;
@@ -316,7 +316,7 @@ impl JournalPort for MemoryJournal {
         from: u64,
         limits: BatchLimits,
         budget: &CallBudget,
-    ) -> Result<Option<Vec<Envelope>>, ApiError> {
+    ) -> Result<Option<Vec<StoredEntry>>, ApiError> {
         cancelled(budget)?;
         let inner = self.lock();
         let Some(main) = inner.logs.get(log) else {
@@ -331,8 +331,8 @@ impl JournalPort for MemoryJournal {
         };
         let (tip_counter, tip_hash) = tip;
         // The branch ascending from `from`, whole; limits apply at the end.
-        let mut branch: Vec<&Envelope> = Vec::new();
-        if held(tip_counter).is_some_and(|e| e.hash == tip_hash) {
+        let mut branch: Vec<&StoredEntry> = Vec::new();
+        if held(tip_counter).is_some_and(|e| e.hash() == tip_hash) {
             branch.extend(
                 main.iter()
                     .skip(usize::try_from(from - 1).unwrap_or(usize::MAX)),
@@ -345,7 +345,7 @@ impl JournalPort for MemoryJournal {
                 0 => BRANCH_WALK_MAX_STEPS,
                 bound => bound,
             };
-            let mut forked: Vec<&Envelope> = Vec::new();
+            let mut forked: Vec<&StoredEntry> = Vec::new();
             let mut key = (tip_counter, tip_hash);
             let mut join = None;
             loop {
@@ -356,14 +356,14 @@ impl JournalPort for MemoryJournal {
                     return Ok(None);
                 }
                 forked.push(entry);
-                if entry.counter <= from {
+                if entry.counter() <= from {
                     break;
                 }
-                if held(entry.counter - 1).is_some_and(|e| e.hash == entry.prev_hash) {
-                    join = Some(entry.counter - 1);
+                if held(entry.counter() - 1).is_some_and(|e| e.hash() == entry.prev_hash()) {
+                    join = Some(entry.counter() - 1);
                     break;
                 }
-                key = (entry.counter - 1, entry.prev_hash);
+                key = (entry.counter() - 1, entry.prev_hash());
             }
             if let Some(join) = join {
                 branch.extend(
@@ -373,15 +373,15 @@ impl JournalPort for MemoryJournal {
                 branch
                     .truncate(usize::try_from(join.saturating_sub(from - 1)).unwrap_or(usize::MAX));
             }
-            branch.extend(forked.into_iter().rev().filter(|e| e.counter >= from));
+            branch.extend(forked.into_iter().rev().filter(|e| e.counter() >= from));
         }
-        let mut out: Vec<Envelope> = Vec::new();
+        let mut out: Vec<StoredEntry> = Vec::new();
         let mut bytes = 0usize;
         for entry in branch {
             if out.len() >= limits.entries.max(1) {
                 break;
             }
-            let size = entry.canonical_bytes().len();
+            let size = entry.size();
             if !out.is_empty() && bytes.saturating_add(size) > limits.bytes {
                 break;
             }
@@ -409,27 +409,27 @@ impl JournalPort for MemoryJournal {
             },
             frozen_at,
             contiguous: entries.len() as u64,
-            head: entries.last().map_or([0u8; 32], |e| e.hash),
+            head: entries.last().map_or([0u8; 32], StoredEntry::hash),
         }))
     }
 
     fn ingest(
         &self,
         log: &LogKey,
-        entries: Vec<Envelope>,
+        entries: Vec<StoredEntry>,
         budget: &CallBudget,
     ) -> Result<IngestOutcome, ApiError> {
         cancelled(budget)?;
         if entries.len() > INGEST_BATCH_MAX {
             return Ok(malformed_batch(log, 0, "batch"));
         }
-        if let Some(stray) = entries.iter().find(|entry| entry.log != *log) {
-            return Ok(malformed_batch(log, stray.counter, "log"));
+        if let Some(stray) = entries.iter().find(|entry| entry.log() != *log) {
+            return Ok(malformed_batch(log, stray.counter(), "log"));
         }
         let mut inner = self.lock();
         // Work on copies and write them back at the end, so a `Corrupt` entry
         // anywhere in the batch stores nothing, as the SQLite transaction does.
-        let mut work: Option<Vec<Envelope>> = inner.logs.get(log).cloned();
+        let mut work: Option<Vec<StoredEntry>> = inner.logs.get(log).cloned();
         let mut pubkey = inner.pubkeys.get(log).copied();
         let frozen_at = inner.frozen.get(log).copied();
         let state = if frozen_at.is_some() {
@@ -446,26 +446,26 @@ impl JournalPort for MemoryJournal {
                     (Some(held), Some(pubkey)) => Some(HeldLog {
                         pubkey,
                         contiguous: held.len() as u64,
-                        head_hash: held.last().map_or([0u8; 32], |e| e.hash),
+                        head_hash: held.last().map_or([0u8; 32], StoredEntry::hash),
                         state,
                         frozen_at,
                         is_active_self,
-                        stored_hash: usize::try_from(entry.counter)
+                        stored_hash: usize::try_from(entry.counter())
                             .ok()
                             .and_then(|c| c.checked_sub(1))
                             .and_then(|ix| held.get(ix))
-                            .map(|e| e.hash),
+                            .map(StoredEntry::hash),
                     }),
                     _ => None,
                 };
-                check_next(view.as_ref(), &StoredEntry::from(entry.clone()))
+                check_next(view.as_ref(), entry)
             };
             match step {
                 ChainStep::Duplicate => duplicates += 1,
                 ChainStep::Corrupt(reason) => {
                     return Ok(IngestOutcome::Corrupt {
                         log: *log,
-                        counter: entry.counter,
+                        counter: entry.counter(),
                         reason,
                     });
                 }
@@ -494,10 +494,10 @@ impl JournalPort for MemoryJournal {
                 }
                 ChainStep::Conflict => {
                     let held = work.as_deref().unwrap_or_default();
-                    let held_counter = if entry.counter <= held.len() as u64 {
-                        entry.counter
+                    let held_counter = if entry.counter() <= held.len() as u64 {
+                        entry.counter()
                     } else {
-                        entry.counter - 1
+                        entry.counter() - 1
                     };
                     let Some(held_entry) = usize::try_from(held_counter)
                         .ok()
@@ -519,10 +519,14 @@ impl JournalPort for MemoryJournal {
                     break;
                 }
                 ChainStep::Genesis | ChainStep::Append => {
-                    if let Err(reason) = entry.validate_shape() {
+                    // An opaque entry was shape-checked against its header when
+                    // it was built; only a known entry has a layout to validate.
+                    if let Some(known) = entry.as_known()
+                        && let Err(reason) = known.validate_shape()
+                    {
                         return Ok(IngestOutcome::Corrupt {
                             log: *log,
-                            counter: entry.counter,
+                            counter: entry.counter(),
                             reason,
                         });
                     }
@@ -532,7 +536,7 @@ impl JournalPort for MemoryJournal {
                             Err(reason) => {
                                 return Ok(IngestOutcome::Corrupt {
                                     log: *log,
-                                    counter: entry.counter,
+                                    counter: entry.counter(),
                                     reason,
                                 });
                             }

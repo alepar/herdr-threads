@@ -25,7 +25,7 @@ use crate::sync::coordinator::{
     SyncCoordinator,
 };
 use crate::sync::dialer::DialConfig;
-use crate::sync::envelope::{Envelope, WireEnvelope, hex_encode};
+use crate::sync::envelope::{Envelope, StoredEntry, WireEnvelope, hex_encode};
 use crate::sync::facts::{ApplyContext, FactError, FactKind, FactRegistry, Predecessor};
 use crate::sync::frame::HaveLog;
 use crate::sync::incarnations::{HELD_LINE, IncarnationsWorker, Job, WorkerDeps};
@@ -197,10 +197,14 @@ impl Node {
         self.store
             .serve(log, from, BatchLimits::default(), &budget())
             .unwrap()
+            .into_iter()
+            .map(|entry| entry.as_known().cloned().expect("a known entry"))
+            .collect()
     }
 
     fn ingest(&self, from: &Node, log: &LogKey, first: u64) {
         let entries = from.entries(log, first);
+        let entries = entries.into_iter().map(StoredEntry::from).collect();
         match self.store.ingest(log, entries, &budget()).unwrap() {
             IngestOutcome::Stored { .. } => {}
             other => panic!("ingest of {log:?}: {other:?}"),

@@ -49,7 +49,7 @@ use crate::store::connection::DecisionInstant;
 use crate::store::connection::{StoreContext, SyncState, api_error, store_error};
 use crate::store::journal::{self, BRANCH_ROWS};
 use crate::sync::coordinator::{CloneKind, CloneReport};
-use crate::sync::envelope::{Envelope, GENESIS_KIND};
+use crate::sync::envelope::{Envelope, GENESIS_KIND, StoredEntry};
 use crate::sync::facts::{GenesisPayload, Predecessor};
 use crate::sync::incarnations::{AheadClass, Proof, classify_ahead_of_self};
 use crate::sync::{BatchLimits, LogKey};
@@ -321,7 +321,7 @@ fn reissue_pass_ungated(
             .map_err(|_| api_error(ErrorCode::StoreCorrupt, "stored hash is not 32 bytes"))?;
         let counter = u64::try_from(candidate.counter)
             .map_err(|_| api_error(ErrorCode::StoreCorrupt, "stored counter"))?;
-        let source = journal::serve_branch(
+        let source = journal::serve_branch_entries(
             tx,
             &candidate.log,
             (counter, hash),
@@ -333,6 +333,14 @@ fn reissue_pass_ungated(
         )?
         .and_then(|mut entries| entries.pop())
         .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "re-issue source entry missing"))?;
+        // A re-issue copies a known entry's fields; an opaque source has none
+        // to copy (unreachable until opaque entries are applied).
+        let StoredEntry::Known(source) = source else {
+            return Err(api_error(
+                ErrorCode::StoreCorrupt,
+                "re-issue source is opaque",
+            ));
+        };
         let authored = journal::reissue(tx, ctx, decision, &source)?;
         tx.execute(
             "INSERT INTO sync_reissues(source_log_ix,source_counter,source_hash,target_ingest_seq,reissued_at) \

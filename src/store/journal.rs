@@ -1020,8 +1020,8 @@ pub(crate) enum Rows {
     /// Every row, known and opaque.
     All,
     /// The known rows before the first opaque one; that row is not decoded
-    /// and ends the read. What the `Envelope` port serves until it carries
-    /// `StoredEntry` (ht-j87z.15).
+    /// and ends the read. What the store-level `Envelope` readers (`serve`,
+    /// `serve_branch`, `sync_status`'s rehash) serve.
     KnownPrefix,
 }
 
@@ -1530,7 +1530,7 @@ const INGEST_BATCH_MAX: usize = 256;
 /// Seconds between two skew lines for one log, in ms.
 const SKEW_LOG_INTERVAL_MS: i64 = 3_600_000;
 
-fn malformed_batch<E>(log: &LogKey, counter: u64, field: &'static str) -> IngestOutcome<E> {
+fn malformed_batch(log: &LogKey, counter: u64, field: &'static str) -> IngestOutcome {
     IngestOutcome::Corrupt {
         log: *log,
         counter,
@@ -1567,62 +1567,7 @@ pub fn ingest(
     budget: &CallBudget,
 ) -> Result<IngestOutcome, ApiError> {
     let entries = entries.into_iter().map(StoredEntry::from).collect();
-    known_outcome(ingest_entries(ctx, conn, log, entries, budget)?)
-}
-
-/// The `Envelope` view of an entry-level outcome. A fork whose side is an
-/// opaque entry cannot be expressed by the `Envelope` port, which returns
-/// `Err` instead; the `StoredEntry` port is ht-j87z.15, and production cannot
-/// reach it before then (no wire form carries an opaque entry).
-fn known_outcome(outcome: IngestOutcome<StoredEntry>) -> Result<IngestOutcome, ApiError> {
-    let known = |entry: Box<StoredEntry>| {
-        entry.as_known().cloned().map(Box::new).ok_or_else(|| {
-            corrupt(
-                "journal: fork evidence holds an opaque entry; the StoredEntry port is ht-j87z.15",
-            )
-        })
-    };
-    Ok(match outcome {
-        IngestOutcome::Stored {
-            stored,
-            duplicates,
-            head,
-        } => IngestOutcome::Stored {
-            stored,
-            duplicates,
-            head,
-        },
-        IngestOutcome::Gap { stored, expected } => IngestOutcome::Gap { stored, expected },
-        IngestOutcome::Fork { stored, evidence } => IngestOutcome::Fork {
-            stored,
-            evidence: match evidence {
-                ForkEvidence::AheadOfSelf {
-                    log,
-                    my_head,
-                    entry,
-                } => ForkEvidence::AheadOfSelf {
-                    log,
-                    my_head,
-                    entry: known(entry)?,
-                },
-                ForkEvidence::Conflict { held, conflicting } => ForkEvidence::Conflict {
-                    held: known(held)?,
-                    conflicting: known(conflicting)?,
-                },
-            },
-        },
-        IngestOutcome::Frozen { stored, frozen_at } => IngestOutcome::Frozen { stored, frozen_at },
-        IngestOutcome::Corrupt {
-            log,
-            counter,
-            reason,
-        } => IngestOutcome::Corrupt {
-            log,
-            counter,
-            reason,
-        },
-        IngestOutcome::Headroom => IngestOutcome::Headroom,
-    })
+    ingest_entries(ctx, conn, log, entries, budget)
 }
 
 /// [`ingest`] over [`StoredEntry`]: an opaque append is stored in
@@ -1634,7 +1579,7 @@ pub fn ingest_entries(
     log: &LogKey,
     entries: Vec<StoredEntry>,
     budget: &CallBudget,
-) -> Result<IngestOutcome<StoredEntry>, ApiError> {
+) -> Result<IngestOutcome, ApiError> {
     let sync = ctx.sync()?;
     if budget.is_exhausted(ctx.clock()) {
         return Err(if budget.cancellation.is_cancelled() {
@@ -1666,7 +1611,7 @@ fn ingest_batch(
     conn: &mut Connection,
     log: &LogKey,
     entries: &[StoredEntry],
-) -> Result<IngestOutcome<StoredEntry>, ApiError> {
+) -> Result<IngestOutcome, ApiError> {
     let wall = ctx.clock().utc_now();
     let decision = DecisionInstant {
         utc: wall,
@@ -1678,7 +1623,7 @@ fn ingest_batch(
     let mut row = load_log(&tx, log)?;
     let (mut stored, mut duplicates) = (0usize, 0usize);
     let mut max_ahead: Option<u64> = None;
-    let mut stop: Option<IngestOutcome<StoredEntry>> = None;
+    let mut stop: Option<IngestOutcome> = None;
     for entry in entries {
         let step = {
             let view = match row.as_mut() {
@@ -2120,9 +2065,9 @@ impl crate::sync::journal_port::JournalPort for crate::store::SqliteStore {
         from: u64,
         limits: BatchLimits,
         budget: &CallBudget,
-    ) -> Result<Vec<Envelope>, ApiError> {
+    ) -> Result<Vec<StoredEntry>, ApiError> {
         let db = self.context.open_query(budget.clone())?;
-        serve(&db, log, from, limits)
+        serve_entries(&db, log, from, limits)
     }
 
     fn serve_branch(
@@ -2132,15 +2077,13 @@ impl crate::sync::journal_port::JournalPort for crate::store::SqliteStore {
         from: u64,
         limits: BatchLimits,
         budget: &CallBudget,
-    ) -> Result<Option<Vec<Envelope>>, ApiError> {
+    ) -> Result<Option<Vec<StoredEntry>>, ApiError> {
         let db = self.context.open_query(budget.clone())?;
         let bound = self
             .context
             .sync()
             .map_or(BRANCH_WALK_MAX_STEPS, SyncState::branch_walk_bound);
-        serve_branch_within(&db, log, tip, from, limits, bound, Rows::KnownPrefix)?
-            .map(known_only)
-            .transpose()
+        serve_branch_within(&db, log, tip, from, limits, bound, Rows::All)
     }
 
     fn log_meta(&self, log: &LogKey, budget: &CallBudget) -> Result<Option<LogMeta>, ApiError> {
@@ -2154,11 +2097,11 @@ impl crate::sync::journal_port::JournalPort for crate::store::SqliteStore {
     fn ingest(
         &self,
         log: &LogKey,
-        entries: Vec<Envelope>,
+        entries: Vec<StoredEntry>,
         budget: &CallBudget,
     ) -> Result<IngestOutcome, ApiError> {
         let mut writer = self.writer(budget)?;
-        ingest(&self.context, &mut writer, log, entries, budget)
+        ingest_entries(&self.context, &mut writer, log, entries, budget)
     }
 
     fn apply_pending(&self, budget: &CallBudget) -> Result<ApplyProgress, ApiError> {

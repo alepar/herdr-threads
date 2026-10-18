@@ -21,7 +21,7 @@ use herdr_threads::protocol::results::{ApiError, CommandResult, ErrorCode};
 use herdr_threads::store::journal;
 use herdr_threads::store::materialize::FactRoute;
 use herdr_threads::store::{receipts, schema};
-use herdr_threads::sync::envelope::Envelope;
+use herdr_threads::sync::envelope::StoredEntry;
 use herdr_threads::sync::facts::FactKind;
 use herdr_threads::sync::facts::payload::{
     ReceiptObligation, SettleBatch, SettleHow, receipt_settle_key,
@@ -311,7 +311,7 @@ pub fn drain(store: &herdr_threads::store::SqliteStore) {
 }
 
 /// Every entry of `origin`'s logs held by `from`, log by log, in counter order.
-pub fn origin_entries(from: &Node, origin: NodeUuid) -> Vec<(LogKey, Vec<Envelope>)> {
+pub fn origin_entries(from: &Node, origin: NodeUuid) -> Vec<(LogKey, Vec<StoredEntry>)> {
     from.store
         .vector(&budget())
         .unwrap()
@@ -326,7 +326,7 @@ pub fn origin_entries(from: &Node, origin: NodeUuid) -> Vec<(LogKey, Vec<Envelop
                     .store
                     .serve(&log, next, BatchLimits::default(), &budget())
                     .unwrap();
-                next = batch.last().expect("a log ends before its head").counter + 1;
+                next = batch.last().expect("a log ends before its head").counter() + 1;
                 entries.extend(batch);
             }
             (log, entries)
@@ -335,7 +335,7 @@ pub fn origin_entries(from: &Node, origin: NodeUuid) -> Vec<(LogKey, Vec<Envelop
 }
 
 /// Ingests `entries` of `log` into `to` (no apply pass).
-pub fn ingest(to: &herdr_threads::store::SqliteStore, log: &LogKey, entries: Vec<Envelope>) {
+pub fn ingest(to: &herdr_threads::store::SqliteStore, log: &LogKey, entries: Vec<StoredEntry>) {
     for chunk in entries.chunks(100) {
         match to.ingest(log, chunk.to_vec(), &budget()).unwrap() {
             IngestOutcome::Stored { .. } => {}

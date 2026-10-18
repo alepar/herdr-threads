@@ -216,7 +216,7 @@ fn ship(from: &SqliteStore, to: &SqliteStore, log: LogKey, upto: u64) {
         .serve(&log, 1, BatchLimits::default(), &budget())
         .unwrap()
         .into_iter()
-        .filter(|e| e.counter <= upto)
+        .filter(|e| e.counter() <= upto)
         .collect();
     let outcome = to.ingest(&log, entries, &budget()).unwrap();
     assert!(

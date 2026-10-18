@@ -12,7 +12,7 @@ use crate::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant};
 use crate::sync::coordinator::{
     BranchReply, CloneReport, ForkAck, ForkOutbox, ForkSink, LogFn, uuid8,
 };
-use crate::sync::envelope::Envelope;
+use crate::sync::envelope::{Envelope, StoredEntry};
 use crate::sync::frame::{BranchWant, ForkRef, HaveLog, MAX_HAVE_FORKS};
 use crate::sync::journal_port::{ForkEvidence, JournalPort};
 use crate::sync::{BatchLimits, LogKey};
@@ -151,6 +151,7 @@ struct State {
     requests: RequestTable,
     no_cap_logged: BTreeMap<LogKey, MonoInstant>,
     read_failed_logged: BTreeMap<LogKey, MonoInstant>,
+    opaque_logged: BTreeMap<LogKey, MonoInstant>,
     overflow_logged: Option<MonoInstant>,
 }
 
@@ -408,6 +409,22 @@ impl IncarnationsSink {
         ));
     }
 
+    /// A fork with an opaque side is held, not repaired: repair needs the
+    /// entry's fields, which this node does not understand (interim until the
+    /// opaque fork rules land). One line per log per hour,
+    /// `sync: fork on <log> involves an opaque entry; held`.
+    fn opaque_side_held(&self, log: LogKey) -> ForkAck {
+        let now = self.now();
+        if due_once_per_hour(&mut self.state().opaque_logged, log, now) {
+            (self.log)(&format!(
+                "sync: fork on {}/{} involves an opaque entry; held",
+                uuid8(&log.node),
+                log.incarnation
+            ));
+        }
+        ForkAck::Paused
+    }
+
     /// A journal read in `on_fork` failed or the log is unknown: one line per
     /// log per hour, and the log is resumed so the evidence arrives again.
     fn read_failed(&self, log: LogKey, source: NodeUuid, why: &str) {
@@ -458,7 +475,12 @@ impl IncarnationsSink {
                 bytes: usize::MAX,
             };
             match self.journal.serve(&log, counter, one, &budget) {
-                Ok(batch) => batch.into_iter().next().filter(|e| e.counter == counter),
+                Ok(batch) => batch
+                    .into_iter()
+                    .next()
+                    .filter(|e| e.counter() == counter)
+                    // An opaque entry is not held as a known one.
+                    .and_then(|e| e.as_known().cloned()),
                 Err(_) => {
                     read_error.set(true);
                     None
@@ -528,12 +550,20 @@ fn due_once_per_hour(
 impl ForkSink for IncarnationsSink {
     fn on_fork(&self, log: LogKey, evidence: ForkEvidence, source: NodeUuid) -> ForkAck {
         match evidence {
-            ForkEvidence::AheadOfSelf { entry, .. } => self.on_ahead_of_self(log, &entry, source),
+            ForkEvidence::AheadOfSelf { entry, .. } => match *entry {
+                StoredEntry::Known(entry) => self.on_ahead_of_self(log, &entry, source),
+                StoredEntry::Opaque(_) => self.opaque_side_held(log),
+            },
             ForkEvidence::Conflict { held, conflicting } => {
+                let (StoredEntry::Known(held), StoredEntry::Known(conflicting)) =
+                    (*held, *conflicting)
+                else {
+                    return self.opaque_side_held(log);
+                };
                 let job = Job::Fork {
                     log,
-                    held,
-                    conflicting,
+                    held: Box::new(held),
+                    conflicting: Box::new(conflicting),
                     source,
                 };
                 self.enqueue_or_resume(job, log);
@@ -710,6 +740,9 @@ mod tests {
                 )
                 .unwrap()
                 .remove(0)
+                .as_known()
+                .cloned()
+                .expect("a known entry")
         }
 
         fn ahead(&self, entry: Envelope) -> ForkEvidence {
@@ -721,7 +754,7 @@ mod tests {
                     state: LogState::Active,
                     frozen_at: None,
                 },
-                entry: Box::new(entry),
+                entry: Box::new(StoredEntry::from(entry)),
             }
         }
 
@@ -794,8 +827,8 @@ mod tests {
         let held = rig.entry(2, rig.stored(1).hash, "x");
         let conflicting = rig.entry(2, rig.stored(1).hash, "y");
         let ev = ForkEvidence::Conflict {
-            held: Box::new(held.clone()),
-            conflicting: Box::new(conflicting.clone()),
+            held: Box::new(StoredEntry::from(held.clone())),
+            conflicting: Box::new(StoredEntry::from(conflicting.clone())),
         };
         assert_eq!(rig.sink.on_fork(log, ev, source), ForkAck::Paused);
 
@@ -852,7 +885,7 @@ mod tests {
                 state: LogState::Active,
                 frozen_at: None,
             },
-            entry: Box::new(rig.stored(2)),
+            entry: Box::new(StoredEntry::from(rig.stored(2))),
         };
         assert_eq!(rig.sink.on_fork(unknown, ev, peer(7)), ForkAck::Paused);
         assert_eq!(rig.sink.resumed(), vec![unknown]);
@@ -891,11 +924,72 @@ mod tests {
         assert_eq!(rig.lines().len(), 2);
         let log = rig.journal.self_log();
         let ev = ForkEvidence::Conflict {
-            held: Box::new(rig.stored(2)),
-            conflicting: Box::new(rig.stored(3)),
+            held: Box::new(StoredEntry::from(rig.stored(2))),
+            conflicting: Box::new(StoredEntry::from(rig.stored(3))),
         };
         assert_eq!(rig.sink.on_fork(log, ev, peer(7)), ForkAck::Paused);
         assert_eq!(rig.sink.resumed(), vec![log]);
+    }
+
+    /// A fork with an opaque side is held: `Paused`, no repair job, one line
+    /// per log per hour, for the conflict and the ahead-of-self evidence alike.
+    #[test]
+    fn opaque_fork_side_is_paused_and_logged() {
+        use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
+
+        let rig = rig();
+        let signer = NodeIdentity::from_seed([5; 32]);
+        let log = LogKey {
+            node: peer(9),
+            incarnation: 2,
+        };
+        let mut unsigned = synthetic_unsigned(&signer, 2, 2, [7; 32]);
+        unsigned.log = log;
+        let opaque = StoredEntry::from(synthetic_entry(&signer, &unsigned));
+        let known = StoredEntry::from(rig.entry(2, [7; 32], "k"));
+        let source = peer(7);
+        let line = format!(
+            "sync: fork on {}/2 involves an opaque entry; held",
+            uuid8(&log.node)
+        );
+
+        let held_opaque = ForkEvidence::Conflict {
+            held: Box::new(opaque.clone()),
+            conflicting: Box::new(known.clone()),
+        };
+        assert_eq!(rig.sink.on_fork(log, held_opaque, source), ForkAck::Paused);
+        assert_eq!(rig.lines(), std::slice::from_ref(&line));
+        // The other direction, same log, same hour: paused, no second line.
+        let conflicting_opaque = ForkEvidence::Conflict {
+            held: Box::new(known),
+            conflicting: Box::new(opaque.clone()),
+        };
+        assert_eq!(
+            rig.sink.on_fork(log, conflicting_opaque, source),
+            ForkAck::Paused
+        );
+        assert_eq!(rig.lines(), std::slice::from_ref(&line));
+        let ahead = ForkEvidence::AheadOfSelf {
+            log,
+            my_head: LogHead {
+                counter: 1,
+                head_hash: [0; 32],
+                state: LogState::Active,
+                frozen_at: None,
+            },
+            entry: Box::new(opaque),
+        };
+        assert_eq!(rig.sink.on_fork(log, ahead, source), ForkAck::Paused);
+        assert!(rig.drain_jobs().is_empty(), "nothing is repaired");
+        assert!(rig.sink.resumed().is_empty(), "the log stays held");
+        // An hour later the line is due again.
+        rig.clock.advance(LOG_EVERY_MS);
+        let again = ForkEvidence::Conflict {
+            held: Box::new(StoredEntry::from(rig.entry(2, [7; 32], "k"))),
+            conflicting: Box::new(StoredEntry::Opaque(synthetic_entry(&signer, &unsigned))),
+        };
+        assert_eq!(rig.sink.on_fork(log, again, source), ForkAck::Paused);
+        assert_eq!(rig.lines(), [line.clone(), line]);
     }
 
     #[test]

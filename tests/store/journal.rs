@@ -1217,8 +1217,8 @@ fn ingest_conflict_is_fork_prefix_kept() {
         IngestOutcome::Fork {
             stored: 1,
             evidence: ForkEvidence::Conflict {
-                held: Box::new(entries[2].clone()),
-                conflicting: Box::new(rival),
+                held: Box::new(StoredEntry::from(entries[2].clone())),
+                conflicting: Box::new(StoredEntry::from(rival)),
             },
         }
     );
@@ -1238,8 +1238,8 @@ fn ingest_conflict_is_fork_prefix_kept() {
         IngestOutcome::Fork {
             stored: 0,
             evidence: ForkEvidence::Conflict {
-                held: Box::new(entries[3].clone()),
-                conflicting: Box::new(branch),
+                held: Box::new(StoredEntry::from(entries[3].clone())),
+                conflicting: Box::new(StoredEntry::from(branch)),
             },
         }
     );
@@ -1260,7 +1260,7 @@ fn ingest_own_active_log_is_ahead_of_self() {
             evidence: ForkEvidence::AheadOfSelf {
                 log: own.log,
                 my_head: head(1, own.hash),
-                entry: Box::new(ahead),
+                entry: Box::new(StoredEntry::from(ahead)),
             },
         }
     );
@@ -2159,7 +2159,7 @@ fn ingest_stored(
     conn: &mut Connection,
     log: &LogKey,
     entries: Vec<StoredEntry>,
-) -> Result<IngestOutcome<StoredEntry>, ApiError> {
+) -> Result<IngestOutcome, ApiError> {
     ingest_entries(ctx, conn, log, entries, &budget())
 }
 
@@ -2521,19 +2521,4 @@ fn promote_opaque_moves_row_atomically() {
         (3, s.opaque.hash().to_vec(), "pending")
     );
     verify_invariants(&s.conn).unwrap();
-}
-
-#[test]
-fn envelope_port_ingest_over_opaque_held_is_store_error() {
-    let mut s = with_opaque_three();
-    let rival = signed_entry(&identity(), s.log, 3, s.known[1].hash, r#"{"id":"rival"}"#);
-    let error = ingest(&s.ctx, &mut s.conn, &s.log, vec![rival], &budget()).unwrap_err();
-    assert_eq!(error.code, ErrorCode::StoreCorrupt);
-    assert!(
-        error
-            .detail
-            .contains("fork evidence holds an opaque entry; the StoredEntry port is ht-j87z.15"),
-        "{}",
-        error.detail
-    );
 }

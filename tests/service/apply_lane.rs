@@ -258,7 +258,15 @@ impl LaneFx {
         for chunk in source.entries().chunks(200) {
             let outcome = self
                 .store
-                .ingest(&source.log, chunk.to_vec(), &budget())
+                .ingest(
+                    &source.log,
+                    chunk
+                        .iter()
+                        .cloned()
+                        .map(crate::sync::envelope::StoredEntry::from)
+                        .collect(),
+                    &budget(),
+                )
                 .unwrap();
             assert!(
                 matches!(

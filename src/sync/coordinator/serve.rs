@@ -41,7 +41,22 @@ pub(super) struct ServeDone {
     pub log: LogKey,
     /// The counter the job read from; stale if the subscription moved since.
     pub from: u64,
-    pub result: Result<Vec<Envelope>, ApiError>,
+    pub result: Result<Vec<StoredEntry>, ApiError>,
+}
+
+/// The known entries before the first opaque one, in order.
+///
+/// Interim cut until ht-j87z.4 adds the capability gate, which owns deciding
+/// what a link may be served: no wire form carries an opaque entry yet, so a
+/// batch is sent up to the first one and the rest waits.
+fn known_prefix(batch: Vec<StoredEntry>) -> Vec<Envelope> {
+    batch
+        .into_iter()
+        .map_while(|entry| match entry {
+            StoredEntry::Known(envelope) => Some(envelope),
+            StoredEntry::Opaque(_) => None,
+        })
+        .collect()
 }
 
 /// Encode `envelopes` as frame bodies (built by `build`) no longer than
@@ -89,7 +104,7 @@ pub(super) const MAX_BRANCH_OUTSTANDING: usize = 4;
 pub(super) struct BranchDone {
     pub link: u64,
     pub want: BranchWant,
-    pub result: Result<Option<Vec<Envelope>>, ApiError>,
+    pub result: Result<Option<Vec<StoredEntry>>, ApiError>,
 }
 
 impl Actor {
@@ -200,7 +215,7 @@ impl Actor {
             return;
         }
         let envelopes = match result {
-            Ok(envelopes) => envelopes,
+            Ok(batch) => known_prefix(batch),
             Err(e) => {
                 (self.deps.log)(&format!(
                     "sync: serve {}/{} failed: {:?}",
@@ -418,7 +433,7 @@ impl Actor {
             entry.branch_busy = false;
             if entry.branch_queue.front() == Some(&want) {
                 entry.branch_queue.pop_front();
-                let batch = match result {
+                let batch = match result.map(|batch| batch.map(known_prefix)) {
                     Ok(Some(batch)) if !batch.is_empty() => Some(batch),
                     Ok(_) => None,
                     Err(e) => {

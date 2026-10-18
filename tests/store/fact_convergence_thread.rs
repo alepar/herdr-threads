@@ -277,7 +277,7 @@ fn ingest_logs(dst: &Node, hub: &Node, reverse: bool) {
                 .store
                 .serve(&log, next, BatchLimits::default(), &budget())
                 .expect("serve");
-            let last = batch.last().expect("a batch").counter;
+            let last = batch.last().expect("a batch").counter();
             match dst.store.ingest(&log, batch, &budget()).expect("ingest") {
                 IngestOutcome::Stored { .. } => {}
                 other => panic!("ingest of {log:?}: {other:?}"),

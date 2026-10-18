@@ -17,6 +17,7 @@
 
 use crate::protocol::time::{CallBudget, Cancellation, MonoInstant};
 use crate::store::SqliteStore;
+use crate::sync::envelope::StoredEntry;
 use crate::sync::journal_port::{IngestOutcome, JournalPort};
 use crate::sync::{BatchLimits, LogKey};
 
@@ -61,7 +62,7 @@ fn ship_missing(from: &SqliteStore, to: &SqliteStore) {
             let batch = from
                 .serve(&log, next, BatchLimits::default(), &budget())
                 .expect("serve a log");
-            let Some(last) = batch.last().map(|e| e.counter) else {
+            let Some(last) = batch.last().map(StoredEntry::counter) else {
                 panic!("log {log:?} ends before its head {head}");
             };
             match to.ingest(&log, batch, &budget()).expect("ingest a batch") {

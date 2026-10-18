@@ -1,0 +1,62 @@
+=== nice cargo test --locked --all-features --lib store::
+test store::apply::tests::failed_creator_parks_dependents ... ok
+test store::apply::tests::failed_follow_up_marks_trigger_failed ... ok
+test store::apply::tests::constraint_violation_becomes_failed_not_wedge ... ok
+test store::apply::tests::rejected_is_failed_bounded_message_rows_gone ... ok
+test store::apply::tests::unapplied_failed_reattempts ... ok
+test store::connection::tests::failed_decision_rolls_back_warning_and_wake_together ... ok
+test store::control::tests::mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen ... ok
+test store::harness_evidence::tests::v2_conflicting_descriptor_and_failed_write_rollback_every_side_effect ... ok
+test store::incarnations::tests::handler_rejection_recorded_failed_no_abort ... ok
+test store::invitation_due::tests::failed_warning_job_write_rolls_back_marker_event_and_sequence ... ok
+test store::invitation_due::tests::failed_page_retries_from_its_original_physical_cursor ... ok
+test store::journal::tests::apply_one_records_failed_with_truncated_message_and_rolls_back_handler ... ok
+test store::materialization::tests::failed_unit_keeps_prefix_and_restarts_without_duplicate_recipient ... ok
+test store::receipts::tests::failed_operation_commit_rolls_back_message_receipt_and_wake ... ok
+test store::receipts::tests::failed_ack_event_rolls_back_settlement_warning_and_scoped_revisions ... ok
+test store::receipts::tests::foreground_write_between_preparation_quanta_and_failed_publication_stays_hidden_after_reopen ... ok
+test store::retention::tests::preparation_cleanup_pending_failed_kept ... ok
+test store::service_events::tests::digest_names_a_warn_notice_whose_projection_job_failed ... ok
+test result: ok. 1690 passed; 0 failed; 15 ignored; 0 measured; 4416 filtered out; finished in 24.70s
+=== nice cargo test --locked --all-features --lib sync::chain
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 6098 filtered out; finished in 0.02s
+=== nice cargo test --locked --all-features --lib sync::memory_journal
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6121 filtered out; finished in 0.00s
+=== nice cargo test --locked --all-features --lib sync::resync
+test sync::resync::tests::failed_vacuum_logged_plan_uses_orig_db ... ok
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 6103 filtered out; finished in 0.98s
+=== nice cargo test --locked --all-features --lib sync::coordinator
+test sync::coordinator::tests::a_failed_contact_flush_retries_at_the_next_flush ... ok
+test sync::coordinator::tests::held_genesis_pubkey_mismatch_auth_failed ... ok
+test result: ok. 91 passed; 0 failed; 0 ignored; 0 measured; 6030 filtered out; finished in 0.93s
+=== nice cargo test --locked --all-features --lib sync::incarnations
+test sync::incarnations::requests::tests::answered_request_is_not_failed_over_and_times_out_quietly ... ok
+test result: ok. 62 passed; 0 failed; 0 ignored; 0 measured; 6059 filtered out; finished in 1.89s
+=== nice cargo test --locked --all-features --test combined journal_port_contract
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 1056 filtered out; finished in 1.06s
+=== nice cargo test --locked --all-features --test combined incarnations_
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 1111 filtered out; finished in 8.26s
+=== nice cargo test --locked --all-features --test combined facts_receipt
+test facts_receipt::foreign_origin_settlement_failed_receipt_pending ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 1114 filtered out; finished in 1.23s
+=== nice cargo test --locked --all-features --test service apply_lane
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 101 filtered out; finished in 0.00s
+=== nice cargo test --locked --all-features --test service sync_admin
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 101 filtered out; finished in 0.00s
+=== nice cargo test --locked --all-features --test combined fact_convergence
+test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured; 1046 filtered out; finished in 6.59s
+=== nice cargo test --locked --all-features --test combined journal_oracle
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1122 filtered out; finished in 0.00s
+ALLDONE
+
+=== nice cargo test --locked --all-features --lib service::apply_lane
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6121 filtered out; finished in 0.00s
+=== nice cargo test --locked --all-features --lib service::sync_admin
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 6110 filtered out; finished in 0.23s
+=== nice cargo test --locked --all-features --lib test_support::journal_oracle
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 6110 filtered out; finished in 0.65s
+=== nice cargo test --locked --all-features --lib sync::resync::tests::salvage_carries
+test sync::resync::tests::salvage_carries_opaque_entries ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6120 filtered out; finished in 0.13s
+=== lib apply_lane
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 6107 filtered out; finished in 1.63s

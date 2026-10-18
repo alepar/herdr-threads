@@ -149,6 +149,7 @@ fn public_completion_replicates_only_shown_ids(path: CompletionPath) {
         let facts: Vec<_> = origin_entries(&w.b, w.b.id)
             .into_iter()
             .flat_map(|(_, entries)| entries)
+            .filter_map(|entry| entry.as_known().cloned())
             .filter(|entry| entry.kind == "receipt.settled")
             .collect();
         assert_eq!(facts.len(), 1);

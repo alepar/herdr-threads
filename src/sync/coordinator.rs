@@ -67,7 +67,7 @@ use tokio::time::{Instant, MissedTickBehavior, timeout};
 use uuid::Uuid;
 
 use super::dialer::{DialConfig, DialShared, Dialer, DialerDeps};
-use super::envelope::{Envelope, GENESIS_KIND, WireEnvelope, hex_decode, hex_encode};
+use super::envelope::{Envelope, GENESIS_KIND, StoredEntry, WireEnvelope, hex_decode, hex_encode};
 use super::facts::GenesisPayload;
 use super::frame::{
     BranchWant, CloseReason, FORK_CAP, ForkRef, HaveLog, MAX_HAVE_FORKS, MAX_HAVE_LOGS, PeerFrame,
@@ -2466,8 +2466,10 @@ fn held_genesis_pubkey(
         bytes: BatchLimits::BYTES,
     };
     let first = journal.serve(log, 1, limits, &budget)?;
+    // Counter 1 is always a known HTJRNL01 genesis; an opaque entry has none.
     Ok(first
         .into_iter()
+        .filter_map(|entry| entry.as_known().cloned())
         .find(|entry| entry.kind == GENESIS_KIND)
         .and_then(|entry| serde_json::from_slice::<GenesisPayload>(&entry.payload).ok())
         .and_then(|payload| hex_decode::<32>(&payload.pubkey)))
@@ -2966,8 +2968,8 @@ mod tests {
             _: u64,
             _: BatchLimits,
             _: &CallBudget,
-        ) -> Result<Vec<Envelope>, ApiError> {
-            Ok(vec![self.forged.clone()])
+        ) -> Result<Vec<StoredEntry>, ApiError> {
+            Ok(vec![StoredEntry::from(self.forged.clone())])
         }
         fn serve_branch(
             &self,
@@ -2976,7 +2978,7 @@ mod tests {
             _: u64,
             _: BatchLimits,
             _: &CallBudget,
-        ) -> Result<Option<Vec<Envelope>>, ApiError> {
+        ) -> Result<Option<Vec<StoredEntry>>, ApiError> {
             Ok(None)
         }
         fn log_meta(
@@ -2989,7 +2991,7 @@ mod tests {
         fn ingest(
             &self,
             _: &LogKey,
-            _: Vec<Envelope>,
+            _: Vec<StoredEntry>,
             _: &CallBudget,
         ) -> Result<IngestOutcome, ApiError> {
             Ok(IngestOutcome::Headroom)
@@ -3058,7 +3060,7 @@ mod tests {
             from: u64,
             limits: BatchLimits,
             budget: &CallBudget,
-        ) -> Result<Vec<Envelope>, ApiError> {
+        ) -> Result<Vec<StoredEntry>, ApiError> {
             self.inner.serve(log, from, limits, budget)
         }
         fn serve_branch(
@@ -3068,7 +3070,7 @@ mod tests {
             from: u64,
             limits: BatchLimits,
             budget: &CallBudget,
-        ) -> Result<Option<Vec<Envelope>>, ApiError> {
+        ) -> Result<Option<Vec<StoredEntry>>, ApiError> {
             self.inner.serve_branch(log, tip, from, limits, budget)
         }
         fn log_meta(
@@ -3081,7 +3083,7 @@ mod tests {
         fn ingest(
             &self,
             log: &LogKey,
-            entries: Vec<Envelope>,
+            entries: Vec<StoredEntry>,
             budget: &CallBudget,
         ) -> Result<IngestOutcome, ApiError> {
             self.inner.ingest(log, entries, budget)
@@ -3311,7 +3313,7 @@ mod tests {
                 state: crate::sync::LogState::Active,
                 frozen_at: None,
             },
-            entry: Box::new(
+            entry: Box::new(StoredEntry::from(
                 UnsignedEnvelope {
                     log: a,
                     counter: 2,
@@ -3325,7 +3327,7 @@ mod tests {
                     payload: b"{}".to_vec(),
                 }
                 .seal(&NodeIdentity::from_seed([5; 32])),
-            ),
+            )),
         };
         assert_eq!(sink.on_fork(a, evidence(), source), ForkAck::Paused);
         assert_eq!(sink.on_fork(a, evidence(), source), ForkAck::Paused);
@@ -4481,6 +4483,8 @@ mod tests {
         serve_script: Mutex<VecDeque<ErrorCode>>,
         /// The budget deadline of every `serve` call.
         serve_deadlines: Mutex<Vec<MonoInstant>>,
+        /// The `from` counter of every `serve` call.
+        serve_froms: Mutex<Vec<u64>>,
     }
 
     impl TestJournal {
@@ -4494,6 +4498,7 @@ mod tests {
                 serve_gate: AtomicBool::new(false),
                 serve_script: Mutex::default(),
                 serve_deadlines: Mutex::default(),
+                serve_froms: Mutex::default(),
             })
         }
 
@@ -4524,8 +4529,9 @@ mod tests {
             from: u64,
             limits: BatchLimits,
             budget: &CallBudget,
-        ) -> Result<Vec<Envelope>, ApiError> {
+        ) -> Result<Vec<StoredEntry>, ApiError> {
             self.serve_deadlines.lock().unwrap().push(budget.deadline);
+            self.serve_froms.lock().unwrap().push(from);
             while self.serve_gate.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -4541,7 +4547,7 @@ mod tests {
             from: u64,
             limits: BatchLimits,
             budget: &CallBudget,
-        ) -> Result<Option<Vec<Envelope>>, ApiError> {
+        ) -> Result<Option<Vec<StoredEntry>>, ApiError> {
             while self.branch_gate.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -4557,7 +4563,7 @@ mod tests {
         fn ingest(
             &self,
             log: &LogKey,
-            entries: Vec<Envelope>,
+            entries: Vec<StoredEntry>,
             budget: &CallBudget,
         ) -> Result<IngestOutcome, ApiError> {
             self.ingests.fetch_add(1, Ordering::SeqCst);
@@ -4667,7 +4673,10 @@ mod tests {
         let log = journal.self_log();
         let envs = journal
             .serve(&log, 1, BatchLimits::default(), &open_budget())
-            .unwrap();
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.as_known().cloned().expect("a known entry"))
+            .collect();
         Foreign { log, envs }
     }
 
@@ -4918,6 +4927,92 @@ mod tests {
         stop(rig).await;
     }
 
+    /// A node holding a foreign log `[known 1, known 2, opaque 3, known 4]`,
+    /// the log, and the opaque entry's counter.
+    fn node_with_opaque_log() -> (Rig, Arc<TestJournal>, LogKey) {
+        use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 1);
+        let signer = identity(9);
+        let opaque = synthetic_entry(
+            &signer,
+            &synthetic_unsigned(&signer, f.log.incarnation, 3, f.envs[1].hash),
+        );
+        let four = synthetic_unsigned(&signer, f.log.incarnation, 4, opaque.hash()).seal(&signer);
+        let mut batch: Vec<StoredEntry> = f.envs.iter().cloned().map(StoredEntry::from).collect();
+        batch.push(StoredEntry::from(opaque));
+        batch.push(StoredEntry::from(four));
+        let outcome = journal.inner.ingest(&f.log, batch, &open_budget()).unwrap();
+        assert!(
+            matches!(outcome, IngestOutcome::Stored { stored: 4, .. }),
+            "{outcome:?}"
+        );
+        rig.pacer.kick();
+        (rig, journal, f.log)
+    }
+
+    fn entry_counters(frames: &[PeerFrame]) -> Vec<u64> {
+        frames
+            .iter()
+            .filter_map(|f| match f {
+                PeerFrame::Entries { entries, .. } => Some(entries.iter().map(|e| e.counter)),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    // The serve-side cut before the first opaque entry is interim: ht-j87z.4's
+    // capability gate owns what a link may be served.
+    #[tokio::test(start_paused = true)]
+    async fn serve_stops_before_opaque_entry() {
+        let (rig, journal, log) = node_with_opaque_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        peer.send(PeerFrame::Want {
+            node: log.node,
+            inc: log.incarnation,
+            from: 2,
+        })
+        .await;
+        let frames = peer.pump(2_000).await;
+        assert_eq!(
+            entry_counters(&frames),
+            [2],
+            "the known prefix, not past the opaque 3: {frames:?}"
+        );
+        // The cursor moved past what was sent: the next read starts at 3.
+        let froms = journal.serve_froms.lock().unwrap().clone();
+        assert_eq!(froms.first(), Some(&2), "{froms:?}");
+        assert!(froms.contains(&3), "{froms:?}");
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn all_opaque_batch_sends_nothing_and_stays_armed() {
+        let (rig, journal, log) = node_with_opaque_log();
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        peer.send(PeerFrame::Want {
+            node: log.node,
+            inc: log.incarnation,
+            from: 3,
+        })
+        .await;
+        let frames = peer.pump(2_000).await;
+        assert_eq!(entry_counters(&frames), Vec::<u64>::new(), "{frames:?}");
+        let reads = journal.serve_froms.lock().unwrap().len();
+        assert!(reads >= 1, "the batch was read");
+        // Still armed: the next kick reads the log again from the same place.
+        rig.pacer.kick();
+        let frames = peer.pump(2_000).await;
+        assert_eq!(entry_counters(&frames), Vec::<u64>::new(), "{frames:?}");
+        let froms = journal.serve_froms.lock().unwrap().clone();
+        assert!(froms.len() > reads, "{froms:?}");
+        assert!(froms.iter().all(|from| *from == 3), "{froms:?}");
+        stop(rig).await;
+    }
+
     #[tokio::test(start_paused = true)]
     async fn have_deltas_at_most_1_per_s() {
         let (rig, journal) = node(1, 0, 0);
@@ -5094,8 +5189,8 @@ mod tests {
 
     fn evidence(f: &Foreign) -> ForkEvidence {
         ForkEvidence::Conflict {
-            held: Box::new(f.envs[1].clone()),
-            conflicting: Box::new(f.envs[2].clone()),
+            held: Box::new(StoredEntry::from(f.envs[1].clone())),
+            conflicting: Box::new(StoredEntry::from(f.envs[2].clone())),
         }
     }
 
