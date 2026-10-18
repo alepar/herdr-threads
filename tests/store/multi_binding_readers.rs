@@ -259,6 +259,46 @@ fn participants_and_seat_views_list_the_seat_once() {
     assert_eq!(open.target, HostTargetId::new("p"));
 }
 
+/// A newer plain-call sibling must not mask the connected lifecycle binding.
+#[test]
+fn seat_inspect_prefers_connected_top_level_binding() {
+    let f = fixture();
+    f.db.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session' WHERE native_session<>'sess-A'", []).unwrap();
+    let b = bindings::match_claim(&f.db, &bindings::BindingKey::from_claim(&claim("sess-B")))
+        .unwrap()
+        .unwrap();
+    bindings::disconnect(
+        &f.db,
+        &b.binding_id,
+        bindings::DisconnectReason::ProcessExit,
+        UtcMillis(60),
+    )
+    .unwrap();
+    let CommandResult::SeatInspect(inspection) = query(
+        &f.store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &Command::SeatInspect(SeatInspectQuery {
+            seat: SeatId::new("s"),
+            page: PageRequest { limit: 1, ..page() },
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!("wrong result")
+    };
+    assert_eq!(
+        inspection.open_binding.unwrap().provenance,
+        "cooperative_top_level"
+    );
+    assert_eq!(open_count(&f.db), 3, "inspection must not end bindings");
+    assert_eq!(
+        bindings::list_connected(&f.db, &SeatId::new("s"))
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 fn offer(claim: &CallerClaim) -> CommandResult {
     fn empty<T>() -> Page<T> {
         Page {

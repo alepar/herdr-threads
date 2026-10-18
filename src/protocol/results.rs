@@ -1157,7 +1157,8 @@ pub struct HoldSummary {
     pub reason_data: String,
     pub detail_argv: Vec<String>,
 }
-/// A seat's open (not ended) binding, the single answer every A4 guard reads.
+/// A representative open binding, preferring connected top-level sessions.
+/// This scalar is not evidence about any particular native session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpenBindingSummary {

@@ -1058,7 +1058,9 @@ fn seat_inspect_cursor(
         .map_err(|e| api_error(ErrorCode::InvalidCursor, e))
 }
 
-/// The seat's latest open (not ended) binding, or none: for presentation and the human branch
+/// A representative open (not ended) binding, or none: prefer a connected top-level
+/// binding, then a disconnected top-level binding, then any remaining open binding;
+/// break ties by newest ordinal. For presentation and the human branch
 /// only (launch, wake and the human check-in guard read it). A seat holds many bindings
 /// (ht-54r.3); the cooperative check-in path resolves a claim to its own binding by key and
 /// never reads this.
@@ -1067,7 +1069,7 @@ pub(crate) fn open_binding(
     seat: &str,
 ) -> Result<Option<OpenBindingSummary>, ApiError> {
     db.query_row(
-        "SELECT observation_provenance,harness,target_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1",
+        "SELECT observation_provenance,harness,target_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY CASE WHEN role='top_level' AND liveness='connected' THEN 0 WHEN role='top_level' THEN 1 ELSE 2 END, ordinal DESC LIMIT 1",
         [seat],
         |r| {
             Ok(OpenBindingSummary {
