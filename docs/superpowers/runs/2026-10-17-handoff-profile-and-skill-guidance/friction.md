@@ -12,3 +12,5 @@
 - Build timing: initial task-worktree rebuilds often exceeded one minute; some lint timings exceeded budget during concurrent builds/lock waits. Final integration measurement pending.
 
 - Second assembly: prior unavailable assembly archive had no digest because its producer had failed before writing one; installed review-inputs requires digest.md even for archived unavailable selections. Added explicitly reconstructed diagnostic digests from immutable selection metadata (no original bytes changed, no source omission claims), retained second unavailable selection and fresh bounded review, and collected both histories.
+
+- Code roast round1 uses manual fan-out (Workflow unavailable), same-family inherited seats; canonical engine bridge owns merge/caps/routes/coverage/enforce.
