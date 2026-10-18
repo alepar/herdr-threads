@@ -2140,9 +2140,7 @@ fn open_hlc_resume_ignores_opaque_head() {
 
 // ---- Opaque entries through the store API (ht-j87z.14) ---------------------
 
-use crate::test_support::opaque_entry::{
-    parse_synthetic, synthetic_entry, synthetic_parts, synthetic_unsigned,
-};
+use crate::test_support::opaque_entry::{synthetic_entry, synthetic_parts, synthetic_unsigned};
 
 /// An opaque entry in `log` at `counter` after `prev`; `tag` varies the
 /// bytes, so two tags at one position are two different signed entries.
@@ -2478,47 +2476,4 @@ fn store_forked_keeps_opaque_branch_row() {
         .unwrap()
         .unwrap();
     assert_eq!(known_side, known[..2]);
-}
-
-#[test]
-fn promote_opaque_moves_row_atomically() {
-    let mut s = with_opaque_three();
-    let parsed = parse_synthetic(&s.opaque).unwrap();
-    // A mismatched hash changes nothing.
-    let mut wrong = parsed.clone();
-    wrong.hash[0] ^= 1;
-    let tx = s.conn.transaction().unwrap();
-    let error = promote_opaque(&tx, &s.log, &wrong, decision()).unwrap_err();
-    assert_eq!(error.code, ErrorCode::InvalidRequest);
-    assert!(error.detail.contains("no opaque entry to promote"));
-    drop(tx);
-    assert_eq!(count(&s.conn, "SELECT COUNT(*) FROM journal_opaque"), 1);
-    // Outside promote_opaque the row still cannot be deleted.
-    let refused = s
-        .conn
-        .execute("DELETE FROM journal_opaque", [])
-        .unwrap_err();
-    assert!(refused.to_string().contains("journal_opaque_append_only"));
-
-    let tx = s.conn.transaction().unwrap();
-    let seq = promote_opaque(&tx, &s.log, &parsed, decision()).unwrap();
-    tx.commit().unwrap();
-    assert_eq!(count(&s.conn, "SELECT COUNT(*) FROM journal_opaque"), 0);
-    assert_eq!(
-        count(&s.conn, "SELECT COUNT(*) FROM journal_opaque_promoting"),
-        0
-    );
-    let (counter, hash, state): (i64, Vec<u8>, String) = s
-        .conn
-        .query_row(
-            "SELECT counter,hash,apply_state FROM journal WHERE ingest_seq=?1",
-            [seq],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        (counter, hash, state.as_str()),
-        (3, s.opaque.hash().to_vec(), "pending")
-    );
-    verify_invariants(&s.conn).unwrap();
 }

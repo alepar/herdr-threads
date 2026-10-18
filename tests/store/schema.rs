@@ -6120,7 +6120,6 @@ fn journal_opaque_delta_upgrades_highest_main_store() {
         .unwrap();
     assert_eq!(kept, 2);
     for (kind, name) in [
-        ("table", "journal_opaque_promoting"),
         ("trigger", "journal_opaque_immutable"),
         ("trigger", "journal_opaque_append_only"),
         ("trigger", "journal_opaque_position_taken"),
@@ -6135,6 +6134,14 @@ fn journal_opaque_delta_upgrades_highest_main_store() {
             .unwrap();
         assert_eq!(found, 1, "{kind} {name}");
     }
+    let promoting: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='journal_opaque_promoting'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(promoting, 0);
     assert!(
         open_with(&db, old)
             .unwrap_err()
@@ -6186,28 +6193,29 @@ fn journal_opaque_rows_are_immutable() {
 }
 
 #[test]
-fn journal_opaque_delete_aborts_outside_promotion() {
+fn journal_opaque_rejects_every_delete() {
     let db = journal_db();
     insert_opaque_raw(&db, 2, 3, 7, 0).unwrap();
-    let message = abort_message(db.execute("DELETE FROM journal_opaque", []));
-    assert!(message.contains("journal_opaque_append_only"), "{message}");
-    // A marker for another hash does not exempt the row.
-    db.execute(
-        "INSERT INTO journal_opaque_promoting VALUES (2,3,zeroblob(32))",
-        [],
-    )
-    .unwrap();
-    let message = abort_message(db.execute("DELETE FROM journal_opaque", []));
-    assert!(message.contains("journal_opaque_append_only"), "{message}");
-    // The exact marker does.
-    db.execute("DELETE FROM journal_opaque_promoting", [])
-        .unwrap();
-    db.execute(
-        "INSERT INTO journal_opaque_promoting VALUES (2,3,?1)",
+    insert_opaque_raw(&db, 2, 4, 8, 1).unwrap();
+    for sql in [
+        "DELETE FROM journal_opaque",
+        "DELETE FROM journal_opaque WHERE branch=1",
+    ] {
+        let message = abort_message(db.execute(sql, []));
+        assert!(
+            message.contains("journal_opaque_append_only"),
+            "{sql}: {message}"
+        );
+    }
+    let message = abort_message(db.execute(
+        "DELETE FROM journal_opaque WHERE counter=3 AND hash=?1",
         [opaque_hash(7).as_slice()],
-    )
-    .unwrap();
-    assert_eq!(db.execute("DELETE FROM journal_opaque", []).unwrap(), 1);
+    ));
+    assert!(message.contains("journal_opaque_append_only"), "{message}");
+    let rows: i64 = db
+        .query_row("SELECT COUNT(*) FROM journal_opaque", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 2);
 }
 
 #[test]
@@ -6232,27 +6240,4 @@ fn duplicate_position_across_tables_rejected() {
     // A branch row alone does not take the position.
     insert_opaque_raw(&db, 2, 5, 9, 1).unwrap();
     insert_journal(&db, 5, "pending", None, None).unwrap();
-}
-
-#[test]
-fn promotion_marker_is_empty_at_rest() {
-    let db = fresh_db();
-    crate::store::journal::verify_invariants(&db).unwrap();
-    db.execute(
-        "INSERT INTO journal_opaque_promoting VALUES (2,3,zeroblob(32))",
-        [],
-    )
-    .unwrap();
-    let error = crate::store::journal::verify_invariants(&db).unwrap_err();
-    assert_eq!(
-        error.code,
-        crate::protocol::results::ErrorCode::StoreCorrupt
-    );
-    assert!(
-        error
-            .detail
-            .contains("journal_opaque_promoting is not empty"),
-        "{}",
-        error.detail
-    );
 }
