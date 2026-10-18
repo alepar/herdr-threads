@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-17-handoff-profile-and-skill-guidance
 
 flags: planOneShot=true skipPlanRoast=true skipCodeRoast=false autonomous=true
-phase: roast-code
+phase: report
 codeMechanism: ordinary-subagents
 runTag: handoff-profile-and-skill-guidance-20261018T024112
 context: Context: codex · planner=475K/auto · implementer=475K/auto · reviewer=475K/auto · finalReview=475K/auto · assembler=475K/auto
@@ -147,6 +147,7 @@ approvals:
 - finding-route · {"ref":{"source":"inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14/final","section":"Untested scope","position":1},"owner":"super-auto","deferred":"Historical static-review limitation remains true and this mixed occurrence also carries pending caller verification; preserve whole occurrence until verification assessment."}
 - finding-route · {"ref":{"source":"inv-7506af49-ec8a-4bf3-b2e8-65c91547bf14/final","section":"Deferred OK","position":2},"owner":"super-auto","deferred":"Historical duration and missing causal baseline remain true. Current final integration timing/budget requirement is pending; no blanket nonblocking judgment is justified."}
 - finding-source · {"version":1,"source":"roast-code/round-1","artifact":"2026-10-17-handoff-profile-and-skill-guidance-roast-pr-1.md","kind":"roast","verdict":"clean (1 nits)","occurrences":[{"section":"Rejected (with reason)","position":1,"key":"[FYI] src/protocol/handoff.rs:297","text":"[FYI] src/protocol/handoff.rs:297 \u2014 A previous release cannot decode a pending profile-selected handoff after binary rollback.\n  verdict: rejected (reproduce REJECT / refute REJECT / ground REJECT).\n  reason: All three seats establish the decoding mechanism but reject the asserted compatibility requirement.\n  evidence: The captured base payloads deny unknown fields and lack directory_context; the new publication retains that field. The refute seat cites the design's Frozen launch context and canonical compatibility section, which guarantees historical serialization, digests, empty-env validation and replay for absent context. It does not promise old-binary execution of newly opted-in operations. The ground seat distinguishes docs/release.md:110's store-opening compatibility rule from decoding a new operation. The equipped binary retains the saved selection for recovery; no data loss or historical context-free replay failure is demonstrated.\n  disposition: The default rejection stands. Downgrade guidance is an optional improvement, without a demonstrated violation of the stated contract."},{"section":"Unverified nits (spot-checked)","position":1,"key":"[FYI] src/cli/topology_handoff/automatic.rs:530","text":"[FYI] src/cli/topology_handoff/automatic.rs:530 \u2014 The final directory recheck discards its specific refusal reason and reports a generic retryable bootstrap failure.\n  verdict: unverified-nit; refute-seat spot check REJECT. No panel-strength confirmation.\n  evidence: The seat verifies cause loss at automatic.rs:525\u2013551 and the equivalent explicit-thread path, but cites the design's requirement to retain existing certainty/unknown rules. The explicit-thread writer at topology_handoff.rs:1930\u20131967 intentionally fixes the retryable failure class because saved rearm does not retain typed causes. The added RemoveProfileOnCheck test at tests/cli/topology_handoff.rs:1868\u20131880 demonstrates zero native calls and successful repair/retry. An unrepaired retry reports the directory error before reservation at automatic.rs:437\u2013444.\n  disposition: Specific final-boundary diagnostics could improve clarity. The spot evidence does not establish a material contract violation; generic NotSubmitted cause loss already exists in the base path."}]}
+- finding-source · {"version":1,"source":"roast-code/round-2","artifact":"2026-10-17-handoff-profile-and-skill-guidance-roast-pr-2.md","kind":"roast","verdict":"clean (0 nits) [converged]","occurrences":[{"section":"Rejected (with reason)","position":1,"key":"[FYI] src/protocol/handoff.rs:297","text":"[FYI] src/protocol/handoff.rs:297 \u2014 A previous release cannot decode a pending profile-selected handoff after binary rollback.\n  verdict: previously rejected; rejection stands.\n  reason: The prior panel rejected the asserted old-binary compatibility requirement unanimously. No current packet supplies materially different evidence.\n  evidence: The prior report cites the design's Frozen launch context compatibility section as guaranteeing historical context-free serialization, digests, validation and replay, rather than old-binary execution of newly opted-in operations. Its ground seat distinguishes docs/release.md:110's store-opening rule from decoding a new operation. No historical replay failure or data loss was demonstrated."}]}
 resumeChange: 2026-10-17 · "Account-switch pause lifted; continue saved checkpoint" · same session, existing design adopted; no repeated baseline
 
 
@@ -164,8 +165,10 @@ codeBuckets:
 
 roastCodeRound: 2
 
-roast-code: 2026-10-17-handoff-profile-and-skill-guidance-roast-pr-1.md
+roast-code: 2026-10-17-handoff-profile-and-skill-guidance-roast-pr-1.md, 2026-10-17-handoff-profile-and-skill-guidance-roast-pr-2.md
 findingsLedger: findings-ledger.md
 
 stepBackCode-round-1: local — no confirmed code findings; caller-owned measurement remains for phase6
 scope-filter: 0 in-scope · 0 punch-listed (no confirmed roast keys; no scope filter dispatched)
+
+roastCodeExit: converged

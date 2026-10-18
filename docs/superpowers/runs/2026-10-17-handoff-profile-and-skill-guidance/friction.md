@@ -14,3 +14,5 @@
 - Second assembly: prior unavailable assembly archive had no digest because its producer had failed before writing one; installed review-inputs requires digest.md even for archived unavailable selections. Added explicitly reconstructed diagnostic digests from immutable selection metadata (no original bytes changed, no source omission claims), retained second unavailable selection and fresh bounded review, and collected both histories.
 
 - Code roast round1 uses manual fan-out (Workflow unavailable), same-family inherited seats; canonical engine bridge owns merge/caps/routes/coverage/enforce.
+
+- Code roast round2 uses manual fan-out (Workflow unavailable), fresh same-family inherited seats; canonical engine bridge owns stage order/routes/coverage/enforcement. Raw bridge payloads retained under ignored `.superpowers/sdd/ht-1urq-plan/roast-evidence/r2`; all 13 scouts completed, zero raw findings.
