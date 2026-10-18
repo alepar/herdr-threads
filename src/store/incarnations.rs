@@ -98,12 +98,12 @@ pub fn record_fork(
         .map_err(store_error)?;
     let mut missing = Vec::new();
     for entry in [&proof.held, &proof.conflicting] {
-        let held = journal::held_at(tx, log_ix, entry.counter, &entry.hash, false)?;
+        let held = journal::held_at(tx, log_ix, entry.counter(), &entry.hash(), false)?;
         if !held {
             missing.push(entry.clone());
         }
     }
-    journal::store_forked(tx, &proof.log, &missing, source)?;
+    journal::store_forked_entries(tx, &proof.log, &missing, source)?;
 
     let counter = |c: u64| i64::try_from(c).unwrap_or(i64::MAX);
     let inserted = tx
@@ -113,10 +113,10 @@ pub fn record_fork(
             params![
                 log_ix,
                 counter(proof.x),
-                counter(proof.held.counter),
-                proof.held.hash.as_slice(),
-                counter(proof.conflicting.counter),
-                proof.conflicting.hash.as_slice(),
+                counter(proof.held.counter()),
+                proof.held.hash().as_slice(),
+                counter(proof.conflicting.counter()),
+                proof.conflicting.hash().as_slice(),
                 counter(bound),
                 source.map(|node| node.to_string()),
             ],
@@ -204,10 +204,19 @@ pub struct ReissueProgress {
     pub waiting: usize,
     /// A limit stopped the pass while candidates remained: run it again.
     pub has_more: bool,
+    /// Opaque entries (unknown signed layout) of the frozen own logs above
+    /// their freeze, or on a fork branch: they have no fields to copy, so
+    /// they are never re-issued, and are counted on every pass instead of
+    /// being silently absent.
+    pub cannot_reissue: usize,
 }
 
+/// `CANDIDATES.src` of a `journal_opaque` row: counted, never re-issued.
+const SRC_OPAQUE: i64 = 2;
+
 /// One re-issue candidate: an entry of a frozen own log above its freeze, or
-/// any `journal_forked` entry of one.
+/// any `journal_forked` entry of one; or, with `src` [`SRC_OPAQUE`], an
+/// opaque entry that cannot be re-issued.
 struct Candidate {
     log: LogKey,
     log_ix: i64,
@@ -215,13 +224,15 @@ struct Candidate {
     hash: Vec<u8>,
     prev_hash: Vec<u8>,
     forked: bool,
+    opaque: bool,
 }
 
 /// Every not-yet-re-issued candidate, interleaved: by the log's first sight,
 /// then `log_ix`, then counter (so each branch keeps its own order and the
 /// branches of one counter are adjacent), the `journal` branch before the
 /// forked ones, and a forked branch's rows by arrival. `node.genesis` never
-/// qualifies.
+/// qualifies. The `journal_opaque` rows (main chain above the freeze, and
+/// fork branches) come last with `src = 2`: they are reported, not re-issued.
 const CANDIDATES: &str = "\
 SELECT log_ix,node_uuid,incarnation,counter,hash,prev_hash,src FROM (\
  SELECT l.first_seen_at AS seen,l.log_ix AS log_ix,l.node_uuid AS node_uuid,l.incarnation AS incarnation,\
@@ -233,7 +244,11 @@ SELECT log_ix,node_uuid,incarnation,counter,hash,prev_hash,src FROM (\
  SELECT l.first_seen_at,l.log_ix,l.node_uuid,l.incarnation,f.counter,f.hash,f.prev_hash,1,f.forked_ix \
  FROM sync_logs l JOIN journal_forked f ON f.log_ix=l.log_ix \
  WHERE l.is_self=1 AND l.state='frozen' AND f.kind<>?1 \
-   AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=f.log_ix AND r.source_counter=f.counter AND r.source_hash=f.hash)\
+   AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=f.log_ix AND r.source_counter=f.counter AND r.source_hash=f.hash) \
+ UNION ALL \
+ SELECT l.first_seen_at,l.log_ix,l.node_uuid,l.incarnation,o.counter,o.hash,o.prev_hash,2,0 \
+ FROM sync_logs l JOIN journal_opaque o ON o.log_ix=l.log_ix \
+ WHERE l.is_self=1 AND l.state='frozen' AND (o.branch=1 OR o.counter>l.frozen_at_counter)\
 ) ORDER BY seen,log_ix,counter,src,seq";
 
 /// Re-issues the union of every branch tail of the frozen own logs into the
@@ -301,6 +316,7 @@ fn reissue_pass_ungated(
                 hash,
                 prev_hash,
                 forked: src == 1,
+                opaque: src == SRC_OPAQUE,
             });
         }
         out
@@ -308,6 +324,10 @@ fn reissue_pass_ungated(
 
     let started = ctx.clock().monotonic_now();
     let mut progress = ReissueProgress::default();
+    let (opaque, candidates): (Vec<_>, Vec<_>) = candidates
+        .into_iter()
+        .partition(|candidate| candidate.opaque);
+    progress.cannot_reissue = opaque.len();
     let total = candidates.len();
     for (seen, candidate) in candidates.into_iter().enumerate() {
         if candidate.forked && !forked_ready(tx, &candidate)? {
@@ -334,7 +354,8 @@ fn reissue_pass_ungated(
         .and_then(|mut entries| entries.pop())
         .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "re-issue source entry missing"))?;
         // A re-issue copies a known entry's fields; an opaque source has none
-        // to copy (unreachable until opaque entries are applied).
+        // to copy. The opaque rows were counted above and never reach here,
+        // so this is a store that disagrees with its own candidate list.
         let StoredEntry::Known(source) = source else {
             return Err(api_error(
                 ErrorCode::StoreCorrupt,
@@ -637,8 +658,8 @@ fn active_self(conn: &Connection) -> Result<ActiveSelf, ApiError> {
 }
 
 /// This store's entry of `log` at `counter`, if it holds one.
-fn entry_at(conn: &Connection, log: &LogKey, counter: u64) -> Option<Envelope> {
-    journal::serve(
+fn entry_at(conn: &Connection, log: &LogKey, counter: u64) -> Option<StoredEntry> {
+    journal::serve_entries(
         conn,
         log,
         counter,
@@ -649,7 +670,7 @@ fn entry_at(conn: &Connection, log: &LogKey, counter: u64) -> Option<Envelope> {
     )
     .ok()
     .and_then(|entries| entries.into_iter().next())
-    .filter(|entry| entry.counter == counter)
+    .filter(|entry| entry.counter() == counter)
 }
 
 fn own_host_label(tx: &Transaction<'_>, ctx: &StoreContext) -> Result<String, ApiError> {
@@ -703,7 +724,7 @@ pub fn owner_rotate(
     }
     let pubkey = blob32(pubkey, "pubkey")?;
     let held_here =
-        journal::stored_hash(tx, &proof.log, proof.held.counter)? == Some(proof.held.hash);
+        journal::stored_hash(tx, &proof.log, proof.held.counter())? == Some(proof.held.hash());
     if !held_here {
         return Ok(Repair::Done(Rotation::Stale));
     }
@@ -752,8 +773,8 @@ fn rotate_for_fork(
     let branch_ix = upsert_branch_tip(
         tx,
         &proof.log,
-        proof.conflicting.counter,
-        proof.conflicting.hash,
+        proof.conflicting.counter(),
+        proof.conflicting.hash(),
     )?;
     Ok(Rotation::Forked {
         rotated,
@@ -794,7 +815,7 @@ pub fn restore_rotate(
         (active.contiguous, active.head_hash),
         |counter| entry_at(tx, &active.log, counter),
         &active.pubkey,
-        entry,
+        &StoredEntry::from(entry.clone()),
     );
     match class {
         AheadClass::Corrupt(err) => Err(api_error(
@@ -1182,31 +1203,31 @@ fn note_failure(tx: &Transaction<'_>, branch_ix: i64, error: &str) -> Result<(),
 
 /// Checks one reply against the branch: signatures, contiguity from
 /// `next_from`, bounds by the tip. `Err(reason)` is a `Corrupt` verdict.
-fn verify_reply(branch: &BranchRow, entries: &[Envelope]) -> Result<(), String> {
+fn verify_reply(branch: &BranchRow, entries: &[StoredEntry]) -> Result<(), String> {
     let mut expected = branch.next_from;
-    let mut previous: Option<&Envelope> = None;
+    let mut previous: Option<&StoredEntry> = None;
     for entry in entries {
-        if entry.log != branch.log {
+        if entry.log() != branch.log {
             return Err("entry names another log".into());
         }
         entry
             .verify(&branch.pubkey)
-            .map_err(|e| format!("bad entry {}: {e}", entry.counter))?;
-        if entry.counter != expected {
+            .map_err(|e| format!("bad entry {}: {e}", entry.counter()))?;
+        if entry.counter() != expected {
             return Err(format!(
                 "entry {} where {expected} was requested",
-                entry.counter
+                entry.counter()
             ));
         }
         if let Some(previous) = previous
-            && entry.prev_hash != previous.hash
+            && entry.prev_hash() != previous.hash()
         {
-            return Err(format!("broken chain at {}", entry.counter));
+            return Err(format!("broken chain at {}", entry.counter()));
         }
-        if entry.counter > branch.tip_counter {
-            return Err(format!("entry {} is beyond the tip", entry.counter));
+        if entry.counter() > branch.tip_counter {
+            return Err(format!("entry {} is beyond the tip", entry.counter()));
         }
-        if entry.counter == branch.tip_counter && entry.hash != branch.tip_hash {
+        if entry.counter() == branch.tip_counter && entry.hash() != branch.tip_hash {
             return Err("branch does not end at the advertised tip".into());
         }
         expected += 1;
@@ -1220,12 +1241,18 @@ fn verify_reply(branch: &BranchRow, entries: &[Envelope]) -> Result<(), String> 
 fn chains_on_known(
     tx: &Transaction<'_>,
     branch: &BranchRow,
-    first: &Envelope,
+    first: &StoredEntry,
 ) -> Result<bool, ApiError> {
-    if first.counter == 1 {
-        return Ok(first.prev_hash == [0u8; 32]);
+    if first.counter() == 1 {
+        return Ok(first.prev_hash() == [0u8; 32]);
     }
-    journal::held_at(tx, branch.log_ix, first.counter - 1, &first.prev_hash, true)
+    journal::held_at(
+        tx,
+        branch.log_ix,
+        first.counter() - 1,
+        &first.prev_hash(),
+        true,
+    )
 }
 
 /// Admits one `branch_entries` reply for branch `branch_ix` of a frozen own
@@ -1248,7 +1275,7 @@ pub fn branch_progress(
     tx: &Transaction<'_>,
     branch_ix: i64,
     source: NodeUuid,
-    entries: &[Envelope],
+    entries: &[StoredEntry],
     more: bool,
 ) -> Result<BranchVerdict, ApiError> {
     let branch = load_branch(tx, branch_ix)?;
@@ -1318,7 +1345,7 @@ pub fn branch_progress(
     // chain that differs once never rejoins.
     let mut common = 0;
     for entry in entries {
-        if journal::stored_hash(tx, &branch.log, entry.counter)? == Some(entry.hash) {
+        if journal::stored_hash(tx, &branch.log, entry.counter())? == Some(entry.hash()) {
             common += 1;
         } else {
             break;
@@ -1327,15 +1354,17 @@ pub fn branch_progress(
     let off_chain = &entries[common..];
     let mut frozen_at = branch.frozen_at;
     if let Some(divergent) = off_chain.first() {
-        let divergence = divergent.counter - 1;
+        let divergence = divergent.counter() - 1;
         if divergence < frozen_at {
             journal::freeze(tx, &branch.log, divergence)?;
             frozen_at = divergence;
         }
     }
-    let stored = journal::store_forked(tx, &branch.log, off_chain, Some(source))?;
+    let stored = journal::store_forked_entries(tx, &branch.log, off_chain, Some(source))?;
 
-    let last = entries.last().map_or(branch.next_from - 1, |e| e.counter);
+    let last = entries
+        .last()
+        .map_or(branch.next_from - 1, StoredEntry::counter);
     let complete = last >= branch.tip_counter;
     tx.execute(
         "UPDATE sync_branches SET next_from=?2, search_span=0, attempts=attempts+1, last_error=NULL, \
@@ -1369,7 +1398,7 @@ fn complete_covered_siblings(
     tx: &Transaction<'_>,
     branch: &BranchRow,
     branch_ix: i64,
-    entries: &[Envelope],
+    entries: &[StoredEntry],
 ) -> Result<(), ApiError> {
     let Some(first) = entries.first() else {
         return Ok(());
@@ -1383,9 +1412,9 @@ fn complete_covered_siblings(
             params![
                 branch.log_ix,
                 branch_ix,
-                i64::try_from(entry.counter).unwrap_or(i64::MAX),
-                entry.hash.as_slice(),
-                i64::try_from(first.counter).unwrap_or(i64::MAX),
+                i64::try_from(entry.counter()).unwrap_or(i64::MAX),
+                entry.hash().as_slice(),
+                i64::try_from(first.counter()).unwrap_or(i64::MAX),
             ],
         )
         .map_err(store_error)?;
@@ -1469,6 +1498,9 @@ pub struct LogRepair {
     pub reissued: u32,
     /// Entries still to re-issue (an own frozen log's tail and forked rows).
     pub pending: u32,
+    /// Opaque entries of an own frozen log's tail or fork branches: they
+    /// cannot be re-issued and are not in `pending`.
+    pub cannot_reissue: u32,
 }
 
 /// One `sync_clone_evidence` row.
@@ -1554,6 +1586,46 @@ fn pending_reissues(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u3
     Ok(count_u32(pending))
 }
 
+/// Opaque entries of an own frozen log that no re-issue can copy (the
+/// `CANDIDATES` `src = 2` arm, counted).
+fn cannot_reissue(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u32, ApiError> {
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM journal_opaque o \
+             WHERE o.log_ix=?1 AND (o.branch=1 OR o.counter>?2)",
+            params![log_ix, frozen_at],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    Ok(count_u32(n))
+}
+
+/// The own frozen logs that hold opaque entries no re-issue can copy, with
+/// their counts (the `CANDIDATES` `src = 2` arm, per log).
+pub fn cannot_reissue_logs(conn: &Connection) -> Result<Vec<(LogKey, u32)>, ApiError> {
+    let rows: Vec<(i64, String, u32, i64)> = {
+        let mut statement = conn
+            .prepare(
+                "SELECT log_ix,node_uuid,incarnation,frozen_at_counter FROM sync_logs \
+                 WHERE is_self=1 AND state='frozen' ORDER BY log_ix",
+            )
+            .map_err(store_error)?;
+        statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map_err(store_error)?
+            .collect::<Result<_, _>>()
+            .map_err(store_error)?
+    };
+    let mut out = Vec::new();
+    for (log_ix, node, incarnation, frozen_at) in rows {
+        let n = cannot_reissue(conn, log_ix, frozen_at)?;
+        if n > 0 {
+            out.push((log_key(&node, incarnation)?, n));
+        }
+    }
+    Ok(out)
+}
+
 fn log_repairs(conn: &Connection) -> Result<Vec<LogRepair>, ApiError> {
     let rows: Vec<(i64, String, u32, bool, Option<i64>)> = {
         let mut statement = conn
@@ -1598,9 +1670,12 @@ fn log_repairs(conn: &Connection) -> Result<Vec<LogRepair>, ApiError> {
                 |r| r.get(0),
             )
             .map_err(store_error)?;
-        let pending = match frozen_at {
-            Some(at) if is_self => pending_reissues(conn, log_ix, at)?,
-            _ => 0,
+        let (pending, cannot_reissue) = match frozen_at {
+            Some(at) if is_self => (
+                pending_reissues(conn, log_ix, at)?,
+                cannot_reissue(conn, log_ix, at)?,
+            ),
+            _ => (0, 0),
         };
         out.push(LogRepair {
             log: log_key(&node, incarnation)?,
@@ -1610,6 +1685,7 @@ fn log_repairs(conn: &Connection) -> Result<Vec<LogRepair>, ApiError> {
             branches: branch_statuses(conn, log_ix)?,
             reissued: count_u32(reissued),
             pending,
+            cannot_reissue,
         });
     }
     Ok(out)

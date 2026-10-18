@@ -4951,6 +4951,87 @@ mod tests {
         (rig, journal, f.log)
     }
 
+    /// A node holding a foreign log `[known 1, 2, 3, opaque 4]` (or, with
+    /// `opaque_first`, `[known 1, 2, opaque 3, known 4]`): the log and its
+    /// head `(counter, hash)`.
+    fn node_with_branch(opaque_first: bool) -> (Rig, Arc<TestJournal>, LogKey, (u64, [u8; 32])) {
+        use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 1);
+        let signer = identity(9);
+        let inc = f.log.incarnation;
+        let mut batch: Vec<StoredEntry> = f.envs.iter().cloned().map(StoredEntry::from).collect();
+        let head = if opaque_first {
+            let opaque = synthetic_entry(
+                &signer,
+                &synthetic_unsigned(&signer, inc, 3, f.envs[1].hash),
+            );
+            let four = synthetic_unsigned(&signer, inc, 4, opaque.hash()).seal(&signer);
+            batch.push(StoredEntry::from(opaque));
+            batch.push(StoredEntry::from(four.clone()));
+            (4, four.hash)
+        } else {
+            let three = synthetic_unsigned(&signer, inc, 3, f.envs[1].hash).seal(&signer);
+            let opaque = synthetic_entry(&signer, &synthetic_unsigned(&signer, inc, 4, three.hash));
+            batch.push(StoredEntry::from(three));
+            batch.push(StoredEntry::from(opaque.clone()));
+            (4, opaque.hash())
+        };
+        let outcome = journal.inner.ingest(&f.log, batch, &open_budget()).unwrap();
+        assert!(
+            matches!(outcome, IngestOutcome::Stored { stored: 4, .. }),
+            "{outcome:?}"
+        );
+        (rig, journal, f.log, head)
+    }
+
+    fn branch_want_of(log: LogKey, head: (u64, [u8; 32]), from: u64) -> BranchWant {
+        BranchWant {
+            node: log.node,
+            inc: log.incarnation,
+            tip: crate::sync::frame::TipRef {
+                counter: head.0,
+                hash: hex_encode(&head.1),
+            },
+            from,
+        }
+    }
+
+    // A branch that ends in an opaque entry is served up to the opaque one:
+    // the known prefix, `more: false` (nothing further can follow it here).
+    #[tokio::test(start_paused = true)]
+    async fn branch_entries_cut_before_opaque_toward_peer() {
+        let (rig, _journal, log, head) = node_with_branch(false);
+        let mut peer = connect(&rig, 0, &fork_hello(2)).await;
+        peer.expect_have().await;
+        let want = branch_want_of(log, head, 3);
+        peer.send(PeerFrame::BranchWant(want.clone())).await;
+        let (tip_hash, counters, more) = next_branch_entries(&mut peer).await;
+        assert_eq!(tip_hash, want.tip.hash);
+        assert_eq!(counters, [3], "the known prefix of [3, opaque 4]");
+        assert!(!more);
+        stop(rig).await;
+    }
+
+    // A branch whose first entry is opaque has no known prefix: `branch_none`.
+    #[tokio::test(start_paused = true)]
+    async fn branch_all_opaque_answers_branch_none() {
+        let (rig, _journal, log, head) = node_with_branch(true);
+        let mut peer = connect(&rig, 0, &fork_hello(2)).await;
+        peer.expect_have().await;
+        let want = branch_want_of(log, head, 3);
+        peer.send(PeerFrame::BranchWant(want.clone())).await;
+        let none = peer
+            .find(|f| match f {
+                PeerFrame::BranchNone { tip_hash, .. } => Some(tip_hash.clone()),
+                PeerFrame::BranchEntries { .. } => panic!("an opaque entry was served"),
+                _ => None,
+            })
+            .await;
+        assert_eq!(none, want.tip.hash);
+        stop(rig).await;
+    }
+
     fn entry_counters(frames: &[PeerFrame]) -> Vec<u64> {
         frames
             .iter()

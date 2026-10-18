@@ -200,8 +200,8 @@ fn proof(log: LogKey, x: u64, held: &Envelope, conflicting: Envelope) -> Proof {
     Proof {
         log,
         x,
-        held: held.clone(),
-        conflicting,
+        held: held.clone().into(),
+        conflicting: conflicting.into(),
     }
 }
 
@@ -599,7 +599,8 @@ fn interleave_by_counter_keeps_branch_order() {
         ReissueProgress {
             reissued: 5,
             waiting: 0,
-            has_more: false
+            has_more: false,
+            cannot_reissue: 0
         }
     );
     assert_eq!(
@@ -673,7 +674,8 @@ fn forked_row_waits_for_predecessor_counted_in_waiting() {
         ReissueProgress {
             reissued: 2,
             waiting: 1,
-            has_more: false
+            has_more: false,
+            cannot_reissue: 0
         },
         "the journal tail proceeds, z4 waits"
     );
@@ -688,7 +690,8 @@ fn forked_row_waits_for_predecessor_counted_in_waiting() {
         ReissueProgress {
             reissued: 2,
             waiting: 0,
-            has_more: false
+            has_more: false,
+            cannot_reissue: 0
         },
         "z3 then z4 in one pass: z4 became ready when z3 was re-issued"
     );
@@ -784,7 +787,8 @@ fn crash_between_passes_resumes_consistently() {
         ReissueProgress {
             reissued: 2,
             waiting: 0,
-            has_more: true
+            has_more: true,
+            cannot_reissue: 0
         }
     );
     let committed = o.reissued_order();
@@ -815,7 +819,8 @@ fn crash_between_passes_resumes_consistently() {
         ReissueProgress {
             reissued: 3,
             waiting: 0,
-            has_more: false
+            has_more: false,
+            cannot_reissue: 0
         }
     );
     let order = reissued_order(&conn);
@@ -890,7 +895,8 @@ fn wall_limit_still_makes_progress() {
         ReissueProgress {
             reissued: 1,
             waiting: 0,
-            has_more: true
+            has_more: true,
+            cannot_reissue: 0
         }
     );
 }
@@ -1974,7 +1980,8 @@ fn tip_row(o: &mut Owner, tip: &Envelope) -> i64 {
 
 fn progress(o: &mut Owner, ix: i64, entries: &[Envelope], more: bool) -> BranchVerdict {
     let tx = o.conn.transaction().unwrap();
-    let verdict = branch_progress(&tx, ix, identity_b().uuid(), entries, more).unwrap();
+    let entries: Vec<StoredEntry> = entries.iter().cloned().map(StoredEntry::from).collect();
+    let verdict = branch_progress(&tx, ix, identity_b().uuid(), &entries, more).unwrap();
     tx.commit().unwrap();
     verdict
 }
@@ -2861,12 +2868,12 @@ fn chains_on_known_accepts_opaque_predecessor() {
     };
     let tx = conn.transaction().unwrap();
     let on_main = signed_entry(log, 6, [0x55; 32], r#"{"id":"x6"}"#);
-    assert!(chains_on_known(&tx, &branch, &on_main).unwrap());
+    assert!(chains_on_known(&tx, &branch, &on_main.clone().into()).unwrap());
     // An opaque fork-branch row is a known predecessor too.
     let on_branch = signed_entry(log, 7, [0x66; 32], r#"{"id":"x7"}"#);
-    assert!(chains_on_known(&tx, &branch, &on_branch).unwrap());
+    assert!(chains_on_known(&tx, &branch, &on_branch.clone().into()).unwrap());
     let nowhere = signed_entry(log, 6, [0x77; 32], r#"{"id":"x6"}"#);
-    assert!(!chains_on_known(&tx, &branch, &nowhere).unwrap());
+    assert!(!chains_on_known(&tx, &branch, &nowhere.clone().into()).unwrap());
 }
 
 // Kills: an I2 check blind to opaque fork-branch rows, and one that reads
@@ -2890,4 +2897,198 @@ fn i2_checks_opaque_branch_rows() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].invariant, Invariant::I2);
     assert_eq!(found[0].counter, 2);
+}
+
+// ---- opaque entries in repair (ht-j87z.10) ---------------------------------------
+
+/// An opaque entry of node A's `log`, signed by A.
+fn opaque_a(log: LogKey, counter: u64, prev: [u8; 32], tag: &str) -> StoredEntry {
+    use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
+    let mut unsigned = synthetic_unsigned(&identity_a(), log.incarnation, counter, prev);
+    unsigned.payload = tag.as_bytes().to_vec();
+    StoredEntry::from(synthetic_entry(&identity_a(), &unsigned))
+}
+
+// Kills: an opaque tail row that is re-issued (it has no fields to copy), one
+// silently absent from the tally, a main-chain row below the freeze counted,
+// and an opaque row recorded in sync_reissues.
+#[test]
+fn reissue_reports_opaque_candidate() {
+    let mut o = owner(3, 2); // journal tail: counters 3 and 4
+    let branch_row = opaque_a(o.old, 3, o.entries[1].hash, "branch");
+    let tail_row = opaque_a(o.old, 5, o.entries[3].hash, "tail");
+    let tx = o.conn.transaction().unwrap();
+    journal::store_forked_entries(&tx, &o.old, std::slice::from_ref(&branch_row), None).unwrap();
+    let log_ix: i64 = tx
+        .query_row(
+            "SELECT log_ix FROM sync_logs WHERE node_uuid=?1 AND incarnation=?2",
+            rusqlite::params![o.old.node.to_string(), o.old.incarnation],
+            |r| r.get(0),
+        )
+        .unwrap();
+    journal::insert_opaque(&tx, log_ix, tail_row.as_opaque().unwrap(), false).unwrap();
+    tx.commit().unwrap();
+
+    let before = status(&o.conn, &o.ctx).unwrap();
+    let old = before.logs.iter().find(|l| l.log == o.old).unwrap();
+    assert_eq!(
+        (old.pending, old.cannot_reissue),
+        (2, 2),
+        "the known tail pends; both opaque rows are reported, not pending"
+    );
+
+    let progress = o.pass(ALL);
+    assert_eq!(
+        progress,
+        ReissueProgress {
+            reissued: 2,
+            waiting: 0,
+            has_more: false,
+            cannot_reissue: 2
+        }
+    );
+    assert_eq!(
+        o.reissued_order(),
+        vec![o.entries[2].hash, o.entries[3].hash],
+        "only the known rows"
+    );
+    assert_eq!(
+        count(
+            &o.conn,
+            "SELECT COUNT(*) FROM sync_reissues WHERE source_hash IN (?1, ?2)"
+                .replace("?1", &format!("x'{}'", hex_of(&branch_row.hash())))
+                .replace("?2", &format!("x'{}'", hex_of(&tail_row.hash())))
+                .as_str()
+        ),
+        0,
+        "nothing is recorded for an opaque row"
+    );
+    // The tally is stable: a second pass counts them again and does no work.
+    let again = o.pass(ALL);
+    assert_eq!((again.reissued, again.cannot_reissue), (0, 2));
+    let after = status(&o.conn, &o.ctx).unwrap();
+    let old = after.logs.iter().find(|l| l.log == o.old).unwrap();
+    assert_eq!((old.pending, old.cannot_reissue), (0, 2));
+}
+
+fn hex_of(hash: &[u8; 32]) -> String {
+    hash.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+// Kills: a branch pull that cannot take an opaque entry (the reply would be
+// Corrupt or stop short), an opaque entry stored on the main chain, and a
+// branch walk that does not serve the stored branch row.
+#[test]
+fn pulled_branch_with_opaque_entries_is_stored() {
+    let mut o = owner(3, 2);
+    let x3 = StoredEntry::from(signed_entry(o.old, 3, o.entries[1].hash, r#"{"id":"x3"}"#));
+    let x4 = opaque_a(o.old, 4, x3.hash(), "x4");
+    let tx = o.conn.transaction().unwrap();
+    let ix = upsert_branch_tip(&tx, &o.old, 4, x4.hash()).unwrap();
+    let verdict = branch_progress(
+        &tx,
+        ix,
+        identity_b().uuid(),
+        &[x3.clone(), x4.clone()],
+        false,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        verdict,
+        BranchVerdict::Progress {
+            stored: 2,
+            skipped: 0,
+            complete: true,
+            next_from: 5,
+            frozen_at: 2,
+            short: false
+        }
+    );
+    assert_eq!(count(&o.conn, "SELECT COUNT(*) FROM journal_forked"), 1);
+    assert_eq!(
+        count(
+            &o.conn,
+            "SELECT COUNT(*) FROM journal_opaque WHERE branch=1 AND counter=4"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &o.conn,
+            "SELECT COUNT(*) FROM journal_opaque WHERE branch=0"
+        ),
+        0
+    );
+    let served = journal::serve_branch_entries(
+        &o.conn,
+        &o.old,
+        (4, x4.hash()),
+        3,
+        crate::sync::BatchLimits::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(served, vec![x3, x4], "known and opaque, byte-exact");
+}
+
+// Kills: a fork record that drops an opaque side, stores the held side again,
+// or freezes at the wrong counter; for both directions and the prev-link case.
+#[test]
+fn record_fork_with_opaque_sides_freezes_and_keeps_evidence() {
+    use crate::sync::incarnations::{Classified, classify_pair};
+    let (a_store, b_store) = (Store::new(), Store::new());
+    let (log, entries) = chain_of_a(&a_store, 2); // counters 1..=3
+    let (ctx, mut conn) = node_b_with(&b_store, &log, &entries[..2]);
+    let held_opaque = opaque_a(log, 3, entries[1].hash, "held");
+    let rival = StoredEntry::from(signed_entry(log, 3, entries[1].hash, r#"{"id":"rival"}"#));
+    let outcome =
+        journal::ingest_entries(&ctx, &mut conn, &log, vec![held_opaque.clone()], &budget())
+            .unwrap();
+    assert!(
+        matches!(outcome, IngestOutcome::Stored { .. }),
+        "{outcome:?}"
+    );
+
+    let Classified::Proof(proof) = classify_pair(&identity_a().public_key(), &held_opaque, &rival)
+    else {
+        panic!("an opaque held side proves a fork")
+    };
+    let tx = conn.transaction().unwrap();
+    let record = record_fork(&tx, &proof, None).unwrap();
+    tx.commit().unwrap();
+    assert_eq!((record.new, record.frozen_at), (true, 2));
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM journal_forked"), 1);
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM journal_opaque WHERE counter=3 AND branch=0"
+        ),
+        1,
+        "the held opaque row stays on the chain, once"
+    );
+    assert_eq!(freeze_of(&conn, &log), ("frozen".into(), Some(2)));
+
+    // A prev-link break: an opaque 4 that does not chain on the known 3.
+    let (a_store, b_store) = (Store::new(), Store::new());
+    let (log, entries) = chain_of_a(&a_store, 2);
+    let (_ctx, mut conn) = node_b_with(&b_store, &log, &entries);
+    let breaking = opaque_a(log, 4, [0x42; 32], "break");
+    let held = StoredEntry::from(entries[2].clone());
+    let Classified::Proof(proof) = classify_pair(&identity_a().public_key(), &held, &breaking)
+    else {
+        panic!("a signed break at the next counter is a proof")
+    };
+    assert_eq!((proof.x, proof.freeze_bound()), (3, 2));
+    let tx = conn.transaction().unwrap();
+    record_fork(&tx, &proof, None).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM journal_opaque WHERE counter=4 AND branch=1"
+        ),
+        1
+    );
+    assert_eq!(freeze_of(&conn, &log), ("frozen".into(), Some(2)));
 }

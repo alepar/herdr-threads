@@ -499,6 +499,11 @@ pub fn salvage(
                 break;
             };
             let count = batch.len() as u64;
+            let opaque: Vec<u64> = batch
+                .iter()
+                .filter(|entry| entry.is_opaque())
+                .map(StoredEntry::counter)
+                .collect();
             match ingest(log, batch)? {
                 IngestOutcome::Stored { .. } => {
                     report.entries += count;
@@ -506,9 +511,18 @@ pub fn salvage(
                 }
                 other => {
                     report.headroom |= matches!(other, IngestOutcome::Headroom);
+                    // A store that cannot take an opaque entry is named, not
+                    // just "corrupt": the entry is in the backup and stays
+                    // there.
+                    let named = match &other {
+                        IngestOutcome::Corrupt { counter, .. } if opaque.contains(counter) => {
+                            format!(" (opaque entry at counter {counter})")
+                        }
+                        _ => String::new(),
+                    };
                     report.stopped.push(SalvageStop {
                         log: *log,
-                        why: format!("ingest at counter {from}: {}", outcome_name(&other)),
+                        why: format!("ingest at counter {from}: {}{named}", outcome_name(&other)),
                     });
                     break;
                 }
@@ -1166,6 +1180,43 @@ mod tests {
             report.stopped
         );
         assert!(!report.interrupted && report.unreadable.is_none());
+    }
+
+    /// A store that cannot take an opaque entry stops the log there, and the
+    /// stop names that entry; a corrupt known entry is only "corrupt".
+    #[test]
+    fn salvage_reports_opaque_stop_by_name() {
+        use crate::sync::EnvelopeError;
+        use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
+
+        let (iso, _paths) = node("resync-salvage-opaque-stop");
+        let id = NodeIdentity::from_seed([45; 32]);
+        let (log, mut entries) = foreign(45, 1);
+        let two = entries[1].hash();
+        let opaque = synthetic_entry(&id, &synthetic_unsigned(&id, log.incarnation, 3, two));
+        entries.push(StoredEntry::from(opaque));
+        let backup = iso.path("backup.db");
+        build_store(&backup, &[(log, entries)]);
+
+        for (counter, named) in [(3, true), (2, false)] {
+            let mut ingest = |log: &LogKey, _: Vec<StoredEntry>| {
+                Ok(IngestOutcome::Corrupt {
+                    log: *log,
+                    counter,
+                    reason: EnvelopeError::Malformed { field: "raw" },
+                })
+            };
+            let report = salvage(&backup, &mut ingest, &|| false).unwrap();
+            let stops: Vec<_> = report.stopped.iter().filter(|s| s.log == log).collect();
+            assert_eq!(stops.len(), 1, "{:?}", report.stopped);
+            let why = &stops[0].why;
+            assert!(why.contains("corrupt"), "{why}");
+            assert_eq!(
+                why.contains(&format!("opaque entry at counter {counter}")),
+                named,
+                "{why}"
+            );
+        }
     }
 
     #[test]

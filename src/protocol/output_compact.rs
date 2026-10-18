@@ -1176,7 +1176,7 @@ fn sync_status(status: &StatusReply, out: &mut String) {
         let _ = writeln!(out, "discovery {state}");
     }
     for log in &status.logs {
-        let _ = writeln!(
+        let _ = write!(
             out,
             "log {}/{}{} counter={} head={} applied={} parked={}+{} failed={} frozen={} lag={} skew_ms={}",
             log.node,
@@ -1192,6 +1192,11 @@ fn sync_status(status: &StatusReply, out: &mut String) {
             opt_num(log.lag),
             log.skew_ahead_ms
         );
+        // At most 7 + 200 bytes, only on a blocked log.
+        if let Some(blocked) = &log.blocked_on {
+            let _ = write!(out, " blocked={}", one_line(blocked));
+        }
+        out.push('\n');
     }
     if status.logs_omitted > 0 {
         let _ = writeln!(
@@ -1229,7 +1234,7 @@ fn sync_status(status: &StatusReply, out: &mut String) {
         let _ = writeln!(out, "paused {log}");
     }
     for repair in &status.repairs {
-        let _ = writeln!(
+        let _ = write!(
             out,
             "repair {} frozen={} origin={} evidence={} branches={} reissued={} pending={}",
             repair.log,
@@ -1240,6 +1245,10 @@ fn sync_status(status: &StatusReply, out: &mut String) {
             repair.reissued,
             repair.pending
         );
+        if repair.cannot_reissue > 0 {
+            let _ = write!(out, " cannot_reissue={}", repair.cannot_reissue);
+        }
+        out.push('\n');
     }
     for log in &status.lineage_branches {
         let _ = writeln!(out, "lineage_branch {log}");

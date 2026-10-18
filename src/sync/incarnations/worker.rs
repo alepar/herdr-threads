@@ -197,6 +197,8 @@ struct Core {
     active_heads: BTreeMap<(NodeUuid, LogKey), (u64, [u8; 32])>,
     reissue_due: bool,
     reissue_waiting: usize,
+    /// Opaque-entry counts per own log the re-issue line already reported.
+    cannot_reissue_logged: BTreeMap<LogKey, u32>,
     reissue_next_at: u64,
     evidence_due: bool,
     restore_derive_due: bool,
@@ -237,6 +239,7 @@ impl Core {
             active_heads: BTreeMap::new(),
             reissue_due: false,
             reissue_waiting: 0,
+            cannot_reissue_logged: BTreeMap::new(),
             reissue_next_at: 0,
             evidence_due: false,
             restore_derive_due: false,
@@ -759,8 +762,8 @@ impl Core {
     fn handle_fork(
         &mut self,
         log: LogKey,
-        held: &Envelope,
-        conflicting: &Envelope,
+        held: &StoredEntry,
+        conflicting: &StoredEntry,
         source: NodeUuid,
     ) -> Result<(), ApiError> {
         if let Some(meta) = self.meta(&log)? {
@@ -777,8 +780,8 @@ impl Core {
         &mut self,
         log: LogKey,
         meta: &LogMeta,
-        held: &Envelope,
-        other: &Envelope,
+        held: &StoredEntry,
+        other: &StoredEntry,
         source: NodeUuid,
     ) -> Result<(), ApiError> {
         match classify_pair(&meta.pubkey, held, other) {
@@ -833,13 +836,26 @@ impl Core {
         &mut self,
         log: LogKey,
         source: NodeUuid,
-        entry: &Envelope,
+        entry: &StoredEntry,
     ) -> Result<(), ApiError> {
+        // A restore rotation re-issues the old log's tail into the new one,
+        // which needs every entry's fields: an own entry of a layout this
+        // node does not understand cannot be copied. Reported, the log stays
+        // held (not resumed), no rotation runs.
+        let Some(known) = entry.as_known() else {
+            self.log(&format!(
+                "sync: own log {}/{} entry {} has an unknown layout; cannot re-issue",
+                uuid8(&log.node),
+                log.incarnation,
+                entry.counter()
+            ));
+            return Ok(());
+        };
         let rotation = quantum!(self, |tx, ctx, decision| store::restore_rotate(
             tx,
             ctx,
             decision,
-            entry,
+            known,
             Some(source)
         ));
         match rotation {
@@ -858,14 +874,14 @@ impl Core {
         rotation: Rotation,
         source: Option<NodeUuid>,
         proof: Option<&Proof>,
-        conflicting: &Envelope,
+        conflicting: &StoredEntry,
     ) -> Result<(), ApiError> {
         match rotation {
             Rotation::Forked { fork, .. } => {
                 if let Some(source) = source {
                     self.d
                         .sink
-                        .note_tip_source(log, &hex_encode(&conflicting.hash), source);
+                        .note_tip_source(log, &hex_encode(&conflicting.hash()), source);
                 }
                 self.d.sink.mark_resumed(log);
                 if fork.new
@@ -1082,7 +1098,7 @@ impl Core {
         log: &LogKey,
         counter: u64,
         hash: [u8; 32],
-    ) -> Result<Option<Envelope>, ApiError> {
+    ) -> Result<Option<StoredEntry>, ApiError> {
         let one = BatchLimits {
             entries: 1,
             bytes: usize::MAX,
@@ -1091,11 +1107,9 @@ impl Core {
             self.d
                 .journal
                 .serve_branch(log, (counter, hash), counter, one, &self.read_budget())?;
-        // An opaque entry is not held as a known one.
         Ok(served
             .and_then(|batch| batch.into_iter().next())
-            .filter(|e| e.counter() == counter && e.hash() == hash)
-            .and_then(|e| e.as_known().cloned()))
+            .filter(|e| e.counter() == counter && e.hash() == hash))
     }
 
     /// Obtains both sides of a forwarded fork reference (asking the advertiser
@@ -1123,7 +1137,7 @@ impl Core {
                 .iter()
                 .find(|e| e.counter == side.counter && e.hash == hash)
             {
-                sides.push(entry.clone());
+                sides.push(StoredEntry::from(entry.clone()));
             } else if let Some(entry) = self.local_entry(&log, side.counter, hash)? {
                 sides.push(entry);
             } else {
@@ -1144,21 +1158,21 @@ impl Core {
                 return Ok(());
             }
         }
-        let [first, second] = <[Envelope; 2]>::try_from(sides).map_err(|_| {
+        let [first, second] = <[StoredEntry; 2]>::try_from(sides).map_err(|_| {
             ApiError::new(ErrorCode::StoreCorrupt, "fork reference resolved to a side")
         })?;
         // The held entry is the one this store keeps in `journal`; with
         // neither, the lower (counter, hash).
         let budget = self.read_budget();
-        let in_journal = |e: &Envelope| -> Result<bool, ApiError> {
-            Ok(self.d.journal.stored_hash(&log, e.counter, &budget)? == Some(e.hash))
+        let in_journal = |e: &StoredEntry| -> Result<bool, ApiError> {
+            Ok(self.d.journal.stored_hash(&log, e.counter(), &budget)? == Some(e.hash()))
         };
         let swap = if in_journal(&first)? {
             false
         } else if in_journal(&second)? {
             true
         } else {
-            (second.counter, second.hash) < (first.counter, first.hash)
+            (second.counter(), second.hash()) < (first.counter(), first.hash())
         };
         let (held, other) = if swap {
             (second, first)
@@ -1237,7 +1251,7 @@ impl Core {
                     let job = Job::Restore {
                         log,
                         source,
-                        entry: Box::new(entry.clone()),
+                        entry: Box::new(StoredEntry::from(entry.clone())),
                     };
                     self.admit(job);
                 }
@@ -1285,7 +1299,13 @@ impl Core {
                         let Some(mine) = self.local_main_entry(&log, want.tip.counter)? else {
                             return Ok(());
                         };
-                        self.act_on_pair(log, &meta, &mine, theirs, source)
+                        self.act_on_pair(
+                            log,
+                            &meta,
+                            &mine,
+                            &StoredEntry::from(theirs.clone()),
+                            source,
+                        )
                     }
                 }
             }
@@ -1293,7 +1313,11 @@ impl Core {
     }
 
     /// This store's main-chain entry of `log` at `counter`.
-    fn local_main_entry(&self, log: &LogKey, counter: u64) -> Result<Option<Envelope>, ApiError> {
+    fn local_main_entry(
+        &self,
+        log: &LogKey,
+        counter: u64,
+    ) -> Result<Option<StoredEntry>, ApiError> {
         let one = BatchLimits {
             entries: 1,
             bytes: usize::MAX,
@@ -1302,11 +1326,7 @@ impl Core {
             .d
             .journal
             .serve(log, counter, one, &self.read_budget())?;
-        // An opaque entry is not held as a known one.
-        Ok(batch
-            .into_iter()
-            .find(|e| e.counter() == counter)
-            .and_then(|e| e.as_known().cloned()))
+        Ok(batch.into_iter().find(|e| e.counter() == counter))
     }
 
     /// A reply to a pull of an own log's branch.
@@ -1332,8 +1352,9 @@ impl Core {
             self.d.sink.clear_request(key);
             return self.schedule_pulls();
         }
+        let stored: Vec<StoredEntry> = entries.iter().cloned().map(StoredEntry::from).collect();
         let verdict = quantum!(self, |tx, _ctx, _decision| store::branch_progress(
-            tx, branch_ix, source, entries, more
+            tx, branch_ix, source, &stored, more
         ));
         match verdict {
             BranchVerdict::Progress { short, .. } => {
@@ -1427,6 +1448,9 @@ impl Core {
             }
             Ok(Repair::Done(progress)) => {
                 self.reissue_waiting = progress.waiting;
+                if progress.cannot_reissue > 0 {
+                    self.report_cannot_reissue();
+                }
                 if !progress.has_more {
                     self.reissue_due = false;
                 }
@@ -1434,6 +1458,31 @@ impl Core {
                 self.succeed();
             }
             Err(e) => self.fail(&e),
+        }
+    }
+
+    /// One line per own log whose count of opaque entries (no fields to copy,
+    /// so never re-issued) changed since it was last reported:
+    /// `sync: re-issue: <n> opaque entries of <log> cannot be re-issued`.
+    /// A pass that finds the same count says nothing again.
+    fn report_cannot_reissue(&mut self) {
+        let counts = self
+            .d
+            .store
+            .context()
+            .open_query(self.read_budget())
+            .and_then(|db| store::cannot_reissue_logs(&db));
+        let Ok(counts) = counts else {
+            return;
+        };
+        for (log, n) in counts {
+            if self.cannot_reissue_logged.insert(log, n) != Some(n) {
+                self.log(&format!(
+                    "sync: re-issue: {n} opaque entries of {}/{} cannot be re-issued",
+                    uuid8(&log.node),
+                    log.incarnation
+                ));
+            }
         }
     }
 
@@ -1570,9 +1619,9 @@ fn decode_wire(wire: &WireEnvelope) -> Result<Envelope, crate::sync::EnvelopeErr
 }
 
 fn fork_ref(proof: &Proof, frozen_at: u64) -> ForkRef {
-    let tip = |e: &Envelope| TipRef {
-        counter: e.counter,
-        hash: hex_encode(&e.hash),
+    let tip = |e: &StoredEntry| TipRef {
+        counter: e.counter(),
+        hash: hex_encode(&e.hash()),
     };
     ForkRef {
         node: proof.log.node,

@@ -858,6 +858,65 @@ fn unmet_dep(tx: &Transaction<'_>, head: &Head) -> Result<Option<String>, ApiErr
     Ok(None)
 }
 
+/// The `sync_logs.blocked_on` text of a log whose next chain position holds
+/// an entry of a signed layout this node does not understand. It is the
+/// parking record: the log applies nothing past that position, its
+/// `applied_through` stays, and later entries stay `pending` (not
+/// `parked_unknown`). Dependents of the stalled position block on the
+/// ordinary `deps <node8>/<inc>@<c>` text.
+pub const OPAQUE_LAYOUT: &str = "opaque_layout";
+
+/// The one re-attempt trigger after an opaque position became known
+/// (ht-j87z.13 calls it after `journal::promote_opaque`): clears the
+/// `opaque_layout` stall of `log`, and returns whether it did. The next apply
+/// pass re-reads the head; a log that is still stopped at an opaque position
+/// gets the stall written again.
+pub fn unpark(tx: &Transaction<'_>, log: &LogKey) -> Result<bool, ApiError> {
+    let changed = tx
+        .execute(
+            "UPDATE sync_logs SET blocked_on=NULL \
+             WHERE node_uuid=?1 AND incarnation=?2 AND blocked_on=?3",
+            params![log.node.to_string(), log.incarnation, OPAQUE_LAYOUT],
+        )
+        .map_err(store_error)?;
+    Ok(changed > 0)
+}
+
+/// Records [`OPAQUE_LAYOUT`] on every log whose head position is opaque,
+/// writing only on change. Under the own-history hold only the active self
+/// log is touched, like the known heads.
+fn mark_opaque_heads(
+    tx: &Transaction<'_>,
+    active_log: Option<i64>,
+    only_self_log: bool,
+) -> Result<(), ApiError> {
+    let mut statement = tx
+        .prepare(&format!(
+            "SELECT l.log_ix FROM sync_logs l \
+             JOIN {CHAIN_ROWS} c ON c.log_ix=l.log_ix AND c.counter=l.applied_through+1 \
+             WHERE l.applied_through<l.contiguous_counter AND c.opaque=1 \
+               AND l.blocked_on IS NOT ?1"
+        ))
+        .map_err(store_error)?;
+    let stalled = statement
+        .query_map(params![OPAQUE_LAYOUT], |r| r.get::<_, i64>(0))
+        .map_err(store_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(store_error)?;
+    drop(statement);
+    for log_ix in stalled {
+        if only_self_log && Some(log_ix) != active_log {
+            continue;
+        }
+        tx.execute(
+            "UPDATE sync_logs SET blocked_on=?2 WHERE log_ix=?1",
+            params![log_ix, OPAQUE_LAYOUT],
+        )
+        .map_err(store_error)?;
+    }
+    Ok(())
+}
+
 /// The ready head with the smallest `ingest_seq`, if any. Heads passed over
 /// on the way get their `blocked_on` written, only when it changed.
 fn next_ready_head(tx: &Transaction<'_>, only_self_log: bool) -> Result<Option<i64>, ApiError> {
@@ -867,11 +926,12 @@ fn next_ready_head(tx: &Transaction<'_>, only_self_log: bool) -> Result<Option<i
     } else {
         None
     };
+    mark_opaque_heads(tx, active_log, only_self_log)?;
     let mut statement = tx
         .prepare(
             // Reads the union of chain positions; an opaque head stops its
-            // log and is skipped here (`c.opaque=0`). ht-j87z.10 records
-            // `blocked_on = opaque_layout` for it.
+            // log and is skipped here (`c.opaque=0`); `mark_opaque_heads`
+            // records `blocked_on = opaque_layout` for it.
             &format!(
                 "SELECT l.log_ix,l.node_uuid,l.incarnation,l.blocked_on,j.ingest_seq,j.deps \
                  FROM sync_logs l \

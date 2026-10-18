@@ -1,0 +1,29 @@
+== store::apply
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 6097 filtered out; finished in 1.99s
+== store::sync_status
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 6136 filtered out; finished in 0.66s
+== store::incarnations
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 6083 filtered out; finished in 1.23s
+== sync::chain
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 6117 filtered out; finished in 0.02s
+== sync::resync
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 6125 filtered out; finished in 1.01s
+== sync::coordinator
+test result: ok. 93 passed; 0 failed; 0 ignored; 0 measured; 6051 filtered out; finished in 0.72s
+== sync::incarnations
+test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 6075 filtered out; finished in 2.22s
+== service::sync_admin
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 6132 filtered out; finished in 0.58s
+== combined journal_port_contract
+test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 1056 filtered out; finished in 1.69s
+== combined incarnations_
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 1113 filtered out; finished in 8.81s
+== service sync_admin
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 101 filtered out; finished in 0.00s
+== lib store:: sync:: service:: protocol::
+test result: ok. 1698 passed; 0 failed; 15 ignored; 0 measured; 4431 filtered out; finished in 46.10s
+test result: ok. 349 passed; 0 failed; 0 ignored; 0 measured; 5795 filtered out; finished in 4.42s
+test result: ok. 540 passed; 0 failed; 0 ignored; 0 measured; 5604 filtered out; finished in 33.28s
+test result: ok. 207 passed; 0 failed; 0 ignored; 0 measured; 5937 filtered out; finished in 0.46s
+== combined (all)
+test result: ok. 1122 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 48.28s

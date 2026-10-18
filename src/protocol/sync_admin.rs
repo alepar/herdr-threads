@@ -150,6 +150,11 @@ pub struct LogRow {
     /// advertises the log.
     pub lag: Option<u64>,
     pub skew_ahead_ms: u64,
+    /// Why the log applies nothing further: `opaque_layout` (its next entry
+    /// has a signed layout this node does not understand) or a
+    /// `deps <node8>/<inc>@<c>` wait. `None` when nothing blocks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_on: Option<String>,
 }
 
 /// One link, as `sync status` shows it.
@@ -187,6 +192,10 @@ pub struct RepairRow {
     pub branches: u32,
     pub reissued: u32,
     pub pending: u32,
+    /// Entries of the log that hold an unknown signed layout and cannot be
+    /// re-issued (never silently absent from `pending`).
+    #[serde(default)]
+    pub cannot_reissue: u32,
 }
 
 /// Everything `sync status` reports.

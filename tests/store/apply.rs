@@ -1977,10 +1977,10 @@ fn duplicate_key_entry_is_refused_at_ingest() {
 // ---- opaque chain positions (ht-j87z.11) -------------------------------------
 
 /// A log that stops at an opaque position is passed over: nothing is applied
-/// for it, `blocked_on` stays NULL (ht-j87z.10 records `opaque_layout`), and
-/// another log's ready head still applies in the same pass.
+/// for it, `blocked_on` records `opaque_layout` (ht-j87z.10), and another
+/// log's ready head still applies in the same pass.
 #[test]
-fn opaque_next_position_is_skipped_without_blocked_on_write() {
+fn opaque_next_position_is_skipped_with_opaque_layout_recorded() {
     let mut a = Node::new(11, base());
     a.author::<PutKind>(&put("a1"));
     let mut b = Node::new(12, base());
@@ -2022,7 +2022,7 @@ fn opaque_next_position_is_skipped_without_blocked_on_write() {
     assert_eq!(c.state(&b.log, 1), "applied");
     assert_eq!(
         c.log_row(&a.log),
-        (1, 3, None),
+        (1, 3, Some("opaque_layout".into())),
         "P stops at the opaque entry"
     );
     assert_eq!(c.state(&a.log, 3), "pending");
@@ -2031,4 +2031,200 @@ fn opaque_next_position_is_skipped_without_blocked_on_write() {
     let before = c.conn.total_changes();
     c.pass();
     assert_eq!(c.conn.total_changes(), before);
+}
+
+// ---- opaque stall, cross-log stall and release (ht-j87z.10) ---------------------
+
+/// The cross-log scenario: log P (node A) holds known 1 (applied), an opaque
+/// entry 2 that is really a `test.put` and a known 3; log Q (node B) has a
+/// genesis and an entry 2 that depends on `P@3`.
+struct Stalled {
+    /// The receiving node, with P up to 1 applied and the rest not yet shipped.
+    c: Node,
+    p: LogKey,
+    q: LogKey,
+    opaque: crate::sync::envelope::OpaqueEntry,
+    p3: Envelope,
+    q2: Envelope,
+    b_genesis: Vec<Envelope>,
+}
+
+fn stalled() -> Stalled {
+    use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
+    let a = Node::new(21, base());
+    let b = Node::new(22, base());
+    let identity = NodeIdentity::from_seed([21; 32]);
+    let hash1 = jr::serve(&a.conn, &a.log, 1, BatchLimits::default()).unwrap()[0].hash;
+    let mut unsigned = synthetic_unsigned(&identity, a.log.incarnation, 2, hash1);
+    unsigned.kind = PutKind::NAME.into();
+    unsigned.creates = Some(EntityKey::new("e:a2").unwrap());
+    unsigned.payload = br#"{"id":"a2"}"#.to_vec();
+    let opaque = synthetic_entry(&identity, &unsigned);
+    let p3 = UnsignedEnvelope {
+        log: a.log,
+        counter: 3,
+        prev_hash: opaque.hash(),
+        hlc: HlcStamp::from_parts(1_700_000_000_000, 2),
+        kind: PutKind::NAME.into(),
+        kind_version: PutKind::MAJOR,
+        deps: Deps::empty(),
+        creates: Some(EntityKey::new("e:a3").unwrap()),
+        needs: vec![],
+        payload: br#"{"id":"a3"}"#.to_vec(),
+    }
+    .seal(&identity);
+    let b_genesis = jr::serve(&b.conn, &b.log, 1, BatchLimits::default()).unwrap();
+    let q2 = UnsignedEnvelope {
+        log: b.log,
+        counter: 2,
+        prev_hash: b_genesis[0].hash,
+        hlc: HlcStamp::from_parts(1_700_000_000_000, 3),
+        kind: PutKind::NAME.into(),
+        kind_version: PutKind::MAJOR,
+        deps: Deps::new(vec![(a.log, 3)], &b.log).unwrap(),
+        creates: Some(EntityKey::new("e:b2").unwrap()),
+        needs: vec![],
+        payload: br#"{"id":"b2"}"#.to_vec(),
+    }
+    .seal(&NodeIdentity::from_seed([22; 32]));
+    let mut c = Node::new(23, base());
+    c.ship(&a, a.log, 1);
+    c.pass();
+    Stalled {
+        c,
+        p: a.log,
+        q: b.log,
+        opaque,
+        p3,
+        q2,
+        b_genesis,
+    }
+}
+
+impl Stalled {
+    fn ingest_p_tail(&mut self) {
+        let entries = vec![self.opaque.clone().into(), self.p3.clone().into()];
+        let outcome =
+            jr::ingest_entries(&self.c.ctx, &mut self.c.conn, &self.p, entries, &budget()).unwrap();
+        assert!(
+            matches!(outcome, IngestOutcome::Stored { stored: 2, .. }),
+            "{outcome:?}"
+        );
+    }
+
+    fn ingest_q(&mut self) {
+        let mut entries = self.b_genesis.clone();
+        entries.push(self.q2.clone());
+        let outcome =
+            jr::ingest(&self.c.ctx, &mut self.c.conn, &self.q, entries, &budget()).unwrap();
+        assert!(
+            matches!(outcome, IngestOutcome::Stored { stored: 2, .. }),
+            "{outcome:?}"
+        );
+    }
+}
+
+#[test]
+fn opaque_head_stops_log_with_opaque_layout() {
+    let mut s = stalled();
+    s.ingest_p_tail();
+    let progress = s.c.pass();
+    assert_eq!(progress.applied, 0, "nothing applies for P: {progress:?}");
+    assert_eq!(progress.parked, 0, "{progress:?}");
+    assert_eq!(
+        s.c.log_row(&s.p),
+        (1, 3, Some(OPAQUE_LAYOUT.to_owned())),
+        "applied_through unchanged, stall recorded"
+    );
+    assert_eq!(s.c.state(&s.p, 3), "pending", "not parked_unknown");
+    assert_eq!(
+        s.c.count("SELECT COUNT(*) FROM journal WHERE apply_state='parked_unknown'"),
+        0
+    );
+    // No news: the stall is written once.
+    let before = s.c.conn.total_changes();
+    s.c.pass();
+    assert_eq!(s.c.conn.total_changes(), before);
+}
+
+#[test]
+fn dependent_log_blocks_on_deps_string() {
+    let mut s = stalled();
+    s.ingest_p_tail();
+    s.ingest_q();
+    s.c.pass();
+    assert_eq!(s.c.state(&s.q, 1), "applied");
+    assert_eq!(s.c.state(&s.q, 2), "pending");
+    assert_eq!(
+        s.c.log_row(&s.q),
+        (1, 2, Some(blocked_text(&s.p, 3))),
+        "the ordinary deps text, not a parked state"
+    );
+    assert_eq!(
+        s.c.log_row(&s.p).2.as_deref(),
+        Some(OPAQUE_LAYOUT),
+        "the stalled log keeps its own text"
+    );
+    assert_eq!(
+        s.c.count("SELECT COUNT(*) FROM journal WHERE apply_state='parked_dep'"),
+        0
+    );
+}
+
+#[test]
+fn cross_log_stall_released_after_promotion() {
+    let mut s = stalled();
+    s.ingest_p_tail();
+    s.ingest_q();
+    s.c.pass();
+    let known = crate::test_support::opaque_entry::parse_synthetic(&s.opaque).unwrap();
+    let ctx = &s.c.ctx;
+    let p = s.p;
+    let released = ctx
+        .execute_decision(
+            &mut s.c.conn,
+            |_| Ok(()),
+            |tx, d, ()| {
+                jr::promote_opaque(tx, &p, &known, d)?;
+                unpark(tx, &p)
+            },
+        )
+        .unwrap();
+    assert!(released, "the stall was cleared");
+    assert_eq!(s.c.log_row(&p).2, None);
+    let progress = s.c.pass();
+    assert_eq!(progress.applied, 3, "P@2, P@3 and Q@2: {progress:?}");
+    assert_eq!(s.c.log_row(&p), (3, 3, None));
+    assert_eq!(s.c.log_row(&s.q), (2, 2, None));
+    assert_eq!(s.c.state(&p, 2), "applied");
+    assert_eq!(s.c.state(&s.q, 2), "applied");
+}
+
+#[test]
+fn unpark_is_idempotent_and_noop_without_stall() {
+    let mut s = stalled();
+    let p = s.p;
+    let run = |c: &mut Node| {
+        let ctx = &c.ctx;
+        ctx.execute_decision(&mut c.conn, |_| Ok(()), |tx, _, ()| unpark(tx, &p))
+            .unwrap()
+    };
+    assert!(!run(&mut s.c), "no stall: nothing to clear");
+    s.ingest_p_tail();
+    s.c.pass();
+    assert!(run(&mut s.c), "clears the recorded stall");
+    assert!(!run(&mut s.c), "second call is a no-op");
+    // The opaque entry is still there: the next pass records the stall again.
+    s.c.pass();
+    assert_eq!(s.c.log_row(&p).2.as_deref(), Some(OPAQUE_LAYOUT));
+    // A dependency text is not the unpark's to clear.
+    s.ingest_q();
+    s.c.pass();
+    let q = s.q;
+    let cleared =
+        s.c.ctx
+            .execute_decision(&mut s.c.conn, |_| Ok(()), |tx, _, ()| unpark(tx, &q))
+            .unwrap();
+    assert!(!cleared);
+    assert_eq!(s.c.log_row(&q).2, Some(blocked_text(&p, 3)));
 }

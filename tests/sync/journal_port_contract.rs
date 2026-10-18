@@ -865,6 +865,33 @@ mod cases {
         assert_eq!(head(s, &log), Some(stored_head(2, &entries)));
     }
 
+    pub fn contract_opaque_other_log_is_malformed_log(s: &dyn Subject) {
+        // An opaque entry whose prefix names log B inside a batch for log A is
+        // a typed rejection (`Malformed{log}`), whatever its signature, and
+        // nothing is stored.
+        let id = remote();
+        let log = remote_log(&id);
+        let entries = chain(&id, 2);
+        ingest(s, &log, &entries);
+        let stranger = NodeIdentity::from_seed([8; 32]);
+        let stray = opaque_at(&stranger, 3, entries[1].hash, "stray");
+        assert_ne!(stray.log(), log);
+        assert_eq!(
+            ingest_entries(s, &log, vec![stray]),
+            IngestOutcome::Corrupt {
+                log,
+                counter: 3,
+                reason: EnvelopeError::Malformed { field: "log" }
+            }
+        );
+        assert_eq!(
+            head(s, &log),
+            Some(stored_head(2, &entries)),
+            "nothing stored"
+        );
+        assert_eq!(head(s, &remote_log(&stranger)), None);
+    }
+
     pub fn contract_opaque_counts_toward_vector_head(s: &dyn Subject) {
         let id = remote();
         let log = remote_log(&id);
@@ -1366,6 +1393,7 @@ contract!(
     contract_opaque_append_and_serve_round_trip,
     contract_opaque_conflict_is_fork,
     contract_opaque_counter_one_is_corrupt,
+    contract_opaque_other_log_is_malformed_log,
     contract_opaque_counts_toward_vector_head,
     contract_opaque_prev_continuity,
     contract_serve_branch_with_opaque_branch_row,

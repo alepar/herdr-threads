@@ -266,6 +266,7 @@ impl SyncAdmin {
                 branches: u32::try_from(repaired.branches.len()).unwrap_or(u32::MAX),
                 reissued: repaired.reissued,
                 pending: repaired.pending,
+                cannot_reissue: repaired.cannot_reissue,
             })
             .collect();
         let evidence = repair

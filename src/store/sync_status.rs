@@ -102,7 +102,7 @@ pub fn per_log(
     let mut statement = conn
         .prepare(
             "SELECT l.log_ix,l.node_uuid,l.incarnation,l.is_self,l.contiguous_counter,l.head_hash, \
-             l.applied_through,l.frozen_at_counter,l.skew_ahead_ms,d.tag \
+             l.applied_through,l.frozen_at_counter,l.skew_ahead_ms,d.tag,l.blocked_on \
              FROM sync_logs l LEFT JOIN node_directory d ON d.node_uuid=l.node_uuid \
              WHERE (?1 IS NULL OR l.node_uuid=?1) \
              ORDER BY l.is_self DESC,l.node_uuid,l.incarnation LIMIT ?2",
@@ -122,13 +122,25 @@ pub fn per_log(
                 r.get::<_, Option<i64>>(7)?,
                 r.get::<_, i64>(8)?,
                 r.get::<_, Option<String>>(9)?,
+                r.get::<_, Option<String>>(10)?,
             ))
         })
         .map_err(store_error)?;
     let mut out = Vec::new();
     for row in rows {
-        let (log_ix, node, incarnation, is_self, counter, head, applied, frozen, skew, tag) =
-            row.map_err(store_error)?;
+        let (
+            log_ix,
+            node,
+            incarnation,
+            is_self,
+            counter,
+            head,
+            applied,
+            frozen,
+            skew,
+            tag,
+            blocked_on,
+        ) = row.map_err(store_error)?;
         let count = |state: &str| {
             unapplied
                 .get(&(log_ix, state.to_owned()))
@@ -156,6 +168,7 @@ pub fn per_log(
                 frozen_at: frozen.and_then(|k| u64::try_from(k).ok()),
                 lag: None,
                 skew_ahead_ms: u64::try_from(skew).unwrap_or(0),
+                blocked_on,
             },
         ));
     }

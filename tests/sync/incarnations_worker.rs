@@ -375,8 +375,8 @@ impl World {
         Proof {
             log: self.log,
             x: 3,
-            held: self.a3.clone(),
-            conflicting: self.b3.clone(),
+            held: self.a3.clone().into(),
+            conflicting: self.b3.clone().into(),
         }
     }
 
@@ -784,8 +784,8 @@ fn conflict_job_records_fork_resumes_sets_refs_changed() {
     let mut core = w.c.core();
     w.c.sink.enqueue(Job::Fork {
         log: w.log,
-        held: Box::new(w.a3.clone()),
-        conflicting: Box::new(w.b3.clone()),
+        held: Box::new(w.a3.clone().into()),
+        conflicting: Box::new(w.b3.clone().into()),
         source: peer(11),
     });
     core.work();
@@ -1366,7 +1366,7 @@ impl RestoreWorld {
         self.restored.sink.enqueue(Job::Restore {
             log: self.i1,
             source: self.src,
-            entry: Box::new(self.tail.clone()),
+            entry: Box::new(self.tail.clone().into()),
         });
     }
 }
@@ -1690,7 +1690,7 @@ fn restore_ready_ignores_unproven_advertised_own_logs() {
     w.restored.sink.enqueue(Job::Restore {
         log: w.i1,
         source: w.src,
-        entry: Box::new(w.tail.clone()),
+        entry: Box::new(w.tail.clone().into()),
     });
     core.work();
     w.restored.advance(9_000);
@@ -1700,4 +1700,233 @@ fn restore_ready_ignores_unproven_advertised_own_logs() {
     w.restored.advance(1_000);
     core.tick();
     assert_ne!(w.restored.active_log(), w.i1, "rotates after 10 s");
+}
+
+// ---- Opaque sides of a fork (ht-j87z.10) ----------------------------------------
+
+/// An opaque entry of `log` signed by node A's key (the clone's key too).
+fn opaque_of_a(log: LogKey, counter: u64, prev: [u8; 32], tag: &str) -> StoredEntry {
+    use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
+    let identity = NodeIdentity::from_seed(SEED_A);
+    let mut unsigned = synthetic_unsigned(&identity, log.incarnation, counter, prev);
+    unsigned.payload = tag.as_bytes().to_vec();
+    StoredEntry::from(synthetic_entry(&identity, &unsigned))
+}
+
+/// A third node holding `known` entries of the world's log, in order, then
+/// `extra` stored as given.
+fn holder(w: &World, known: &[Envelope], extra: Vec<StoredEntry>) -> Node {
+    let node = Node::new(SEED_C, 78, ManualClock::new(T0));
+    let entries: Vec<StoredEntry> = known.iter().cloned().map(StoredEntry::from).collect();
+    let entries = entries.into_iter().chain(extra).collect();
+    match node.store.ingest(&w.log, entries, &budget()).unwrap() {
+        IngestOutcome::Stored { .. } => {}
+        other => panic!("holder ingest: {other:?}"),
+    }
+    node
+}
+
+// Kills: an opaque side that is held instead of repaired, a freeze at the
+// wrong counter, the known rival lost, the opaque main-chain row moved or
+// dropped, and a fork reference built from anything but counter and hash.
+#[test]
+fn fork_opaque_vs_known_same_counter_freezes() {
+    let w = world();
+    let prefix = w.a.entries(&w.log, 1);
+    let opaque = opaque_of_a(w.log, 3, w.a3.prev_hash, "held");
+    let c = holder(&w, &prefix[..2], vec![opaque.clone()]);
+    let mut core = c.core();
+    c.sink.enqueue(Job::Fork {
+        log: w.log,
+        held: Box::new(opaque.clone()),
+        conflicting: Box::new(w.b3.clone().into()),
+        source: peer(11),
+    });
+    core.work();
+    assert_eq!(c.count("SELECT COUNT(*) FROM sync_forks"), 1);
+    assert_eq!(
+        c.count(&format!(
+            "SELECT frozen_at_counter FROM sync_logs WHERE incarnation={}",
+            w.log.incarnation
+        )),
+        2,
+        "frozen at x - 1, like a known pair"
+    );
+    assert_eq!(
+        c.count("SELECT COUNT(*) FROM journal_forked WHERE counter=3"),
+        1,
+        "the known rival is the off-chain row"
+    );
+    assert_eq!(
+        c.count("SELECT COUNT(*) FROM journal_opaque WHERE counter=3 AND branch=0"),
+        1,
+        "the opaque side stays the main-chain row"
+    );
+    assert_eq!(c.sink.resumed(), vec![w.log]);
+    let refs = c.sink.fork_refs();
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].held.hash, hex(&opaque.hash()));
+    assert_eq!(refs[0].conflicting.hash, hex(&w.b3.hash));
+    assert_eq!(refs[0].frozen_at, 2);
+}
+
+// Kills: the opposite direction handled differently: a known held side with an
+// opaque rival must put the rival in journal_opaque as a branch row.
+#[test]
+fn fork_known_vs_opaque_rival_stores_branch_row() {
+    let w = world();
+    let prefix = w.a.entries(&w.log, 1);
+    let c = holder(&w, &prefix, vec![]);
+    let rival = opaque_of_a(w.log, 3, w.a3.prev_hash, "rival");
+    let mut core = c.core();
+    c.sink.enqueue(Job::Fork {
+        log: w.log,
+        held: Box::new(w.a3.clone().into()),
+        conflicting: Box::new(rival.clone()),
+        source: peer(11),
+    });
+    core.work();
+    assert_eq!(c.count("SELECT COUNT(*) FROM sync_forks"), 1);
+    assert_eq!(
+        c.count("SELECT COUNT(*) FROM journal_opaque WHERE counter=3 AND branch=1"),
+        1,
+        "the opaque rival is an off-chain row"
+    );
+    assert_eq!(c.count("SELECT COUNT(*) FROM journal_forked"), 0);
+    assert_eq!(
+        c.count(&format!(
+            "SELECT frozen_at_counter FROM sync_logs WHERE incarnation={}",
+            w.log.incarnation
+        )),
+        2
+    );
+}
+
+// Kills: a prev-link break at the next counter that an opaque entry escapes
+// (it must freeze like a known one), and a break signed by another key that
+// would freeze a healthy log.
+#[test]
+fn fork_opaque_prev_link_break_freezes() {
+    let w = world();
+    let prefix = w.a.entries(&w.log, 1);
+    let c = holder(&w, &prefix, vec![]);
+    let breaking = opaque_of_a(w.log, 4, [0x42; 32], "break");
+    let mut core = c.core();
+    c.sink.enqueue(Job::Fork {
+        log: w.log,
+        held: Box::new(w.a3.clone().into()),
+        conflicting: Box::new(breaking.clone()),
+        source: peer(11),
+    });
+    core.work();
+    assert_eq!(c.count("SELECT COUNT(*) FROM sync_forks"), 1);
+    assert_eq!(
+        c.count(&format!(
+            "SELECT frozen_at_counter FROM sync_logs WHERE incarnation={}",
+            w.log.incarnation
+        )),
+        2,
+        "frozen below the entry the break proves"
+    );
+    assert_eq!(
+        c.count("SELECT COUNT(*) FROM journal_opaque WHERE counter=4 AND branch=1"),
+        1
+    );
+
+    // The same break signed by another key is damage: nothing is recorded.
+    let c2 = holder(&w, &prefix, vec![]);
+    let mut core2 = c2.core();
+    let mut forged = crate::test_support::opaque_entry::synthetic_unsigned(
+        &NodeIdentity::from_seed([9; 32]),
+        w.log.incarnation,
+        4,
+        [0x43; 32],
+    );
+    forged.log = w.log;
+    let forged = StoredEntry::from(crate::test_support::opaque_entry::synthetic_entry(
+        &NodeIdentity::from_seed([9; 32]),
+        &forged,
+    ));
+    c2.sink.enqueue(Job::Fork {
+        log: w.log,
+        held: Box::new(w.a3.clone().into()),
+        conflicting: Box::new(forged),
+        source: peer(11),
+    });
+    core2.work();
+    assert_eq!(c2.count("SELECT COUNT(*) FROM sync_forks"), 0);
+    assert!(
+        c2.lines().iter().any(|l| l.contains("is corrupt")),
+        "{:?}",
+        c2.lines()
+    );
+}
+
+// Kills: an own-log restore entry of an unknown layout that rotates (it cannot
+// be copied) or is dropped without a trace; the log must stay held and exactly
+// one line must say why.
+#[test]
+fn restore_of_opaque_own_entry_is_reported() {
+    use crate::sync::journal_port::ForkEvidence;
+    use crate::sync::{LogHead, LogState};
+    let w = restore_world();
+    let mut core = w.restored.core();
+    let entry = opaque_of_a(w.i1, 2, w.tail.prev_hash, "restore");
+    let evidence = ForkEvidence::AheadOfSelf {
+        log: w.i1,
+        my_head: LogHead {
+            counter: 1,
+            head_hash: w.tail.prev_hash,
+            state: LogState::Active,
+            frozen_at: None,
+        },
+        entry: Box::new(entry),
+    };
+    assert_eq!(
+        w.restored.sink.on_fork(w.i1, evidence, w.src),
+        crate::sync::coordinator::ForkAck::Paused
+    );
+    core.work();
+    assert_eq!(w.restored.active_log(), w.i1, "no restore rotation");
+    assert_eq!(
+        w.restored.lines(),
+        vec![format!(
+            "sync: own log {}/{} entry 2 has an unknown layout; cannot re-issue",
+            uuid8(&w.i1.node),
+            w.i1.incarnation
+        )]
+    );
+    assert!(w.restored.sink.resumed().is_empty(), "the log stays held");
+    assert_eq!(w.restored.reissues(), 0);
+}
+
+// Kills: an opaque entry on an own frozen log that is silently absent from the
+// re-issue pass (it must be named once per change), one that is re-issued, and
+// a repeated line on every pass.
+#[test]
+fn reissue_pass_reports_opaque_entries_once() {
+    let w = world();
+    let stray = opaque_of_a(w.log, 4, w.a3.hash, "stray");
+    w.a.quantum(|tx, _ctx, _decision| {
+        journal::store_forked_entries(tx, &w.log, std::slice::from_ref(&stray), None)
+    });
+    let mut core = w.a.core();
+    w.a.sink.enqueue(w.owner_fork(peer(11)));
+    core.work();
+    assert_eq!(w.a.reissues(), 2, "the known entries re-issue as before");
+    let line = format!(
+        "sync: re-issue: 1 opaque entries of {}/{} cannot be re-issued",
+        uuid8(&w.log.node),
+        w.log.incarnation
+    );
+    assert_eq!(w.a.lines(), vec![line.clone()]);
+
+    w.a.sink.enqueue(Job::Reissue);
+    core.work();
+    assert_eq!(
+        w.a.lines(),
+        vec![line],
+        "an unchanged count is not repeated"
+    );
+    assert_eq!(w.a.reissues(), 2, "the opaque entry is never re-issued");
 }
