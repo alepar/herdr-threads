@@ -15,3 +15,4 @@ epic: ht-j87z
 approvals:
 - top-split · auto · .1 LEAF, .2 LEAF, .3 LEAF, .4 LEAF (promotion SPLIT applied: .10), .5 LEAF, .6 LEAF, .7 LEAF, .8 LEAF, .9 LEAF
 - coverage-round-1 · 12 findings: 11 applied, 1 rejected (cov-2) — see coverage-ledger.md; requirements: 12 · mapped: 12 · unmapped: 0 · all auto
+- coverage-round-2 · 7 findings, all applied (auto) — see coverage-ledger.md; no round 3 (cap)

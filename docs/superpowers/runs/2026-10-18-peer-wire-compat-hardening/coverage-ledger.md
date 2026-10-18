@@ -10,3 +10,10 @@ cov-9 · r1 · UNOWNED-SEAM · status/diagnostic fields + have-head contract · 
 cov-10 · r1 · UNOWNED-SEAM · synthetic HTJRNL99 helper · applied — .2 owns, others consume
 cov-11 · r1 · ORPHAN · .11 · applied — close-as-unneeded path documented
 cov-12 · r1 · GAP · TRUST-POLICY accepted limit · applied — decided accepted limit, edit in .4
+cov-13 · r2 · UNOWNED-SEAM · understood-layout hook/status contract/have-head/OPAQUE_MAX_BYTES/TRUST-POLICY owner/spike+3 duplicate lines · applied — owns/consumes lines rewritten (single consolidated lines), .9 deps and scope extended
+cov-14 · r2 · GAP · upgrade e2e · applied — .5 depends on .13 with upgrade scenario
+cov-15 · r2 · GAP · promotion preserves bytes/hash/crash-safe · applied — .13 acceptance
+cov-16 · r2 · GAP · lint negative fixtures · applied — .8 acceptance
+cov-17 · r2 · GAP · golden HTJRNL01 parses under EntryPrefix · applied — .2 acceptance
+cov-18 · r2 · UNOWNED-SEAM · unpark trigger owner · applied — .10 owns API, .13 calls
+cov-19 · r2 · GAP · shadow decoder faithful to v2.1.1 source · applied — .7 acceptance
