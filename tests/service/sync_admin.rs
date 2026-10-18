@@ -950,6 +950,28 @@ fn sync_clone_cleared_single_restored_store_clears_and_rotation_runs() {
     let restored_clock = w.restored.clock.clone();
     let rig = Rig::new(w.restored);
 
+    // Queue both inputs before starting the worker. Otherwise its startup
+    // reissue pass can emit HELD_LINE before this Restore is handled, letting
+    // the test clear the gate too early: Restore then rotates directly and
+    // never emits the branch request the test waits for below.
+    restored_sink.on_have(
+        source,
+        true,
+        &[HaveLog {
+            node: w.i1.node,
+            inc: w.i1.incarnation,
+            counter: 2,
+            head: hex_encode(&w.tail.hash),
+            frozen_at: None,
+        }],
+        &[],
+    );
+    assert!(restored_sink.enqueue(Job::Restore {
+        log: w.i1,
+        source,
+        entry: Box::new(w.tail.clone()),
+    }));
+
     // The worker, on the same store and sink the admin signals.
     let worker_stop = Cancellation::default();
     let worker = {
@@ -979,25 +1001,6 @@ fn sync_clone_cleared_single_restored_store_clears_and_rotation_runs() {
         worker.join().unwrap();
     };
 
-    // The peer advertises I1's tail, and the restore entry is queued: the gate
-    // holds it.
-    restored_sink.on_have(
-        source,
-        true,
-        &[HaveLog {
-            node: w.i1.node,
-            inc: w.i1.incarnation,
-            counter: 2,
-            head: hex_encode(&w.tail.hash),
-            frozen_at: None,
-        }],
-        &[],
-    );
-    restored_sink.enqueue(Job::Restore {
-        log: w.i1,
-        source,
-        entry: Box::new(w.tail.clone()),
-    });
     wait_for(10, "the worker to hold the restore", || {
         rig.node
             .lines
