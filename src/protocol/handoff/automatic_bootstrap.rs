@@ -69,8 +69,8 @@ pub struct AutomaticBootstrapPlan {
 impl AutomaticBootstrapPlan {
     pub fn validate(&self) -> Result<(), &'static str> {
         let p = &self.payload;
-        if p.directory_context.is_some() {
-            return Err("retained launch directories are not admitted yet");
+        if let Some(context) = &p.directory_context {
+            context.validate_bootstrap(&p.cwd, &p.env)?;
         }
         p.handoff.validate()?;
         p.launch.validate()?;
@@ -79,7 +79,7 @@ impl AutomaticBootstrapPlan {
             || !bounded_text(&p.label, 128)
             || p.label.chars().any(char::is_control)
             || p.focus
-            || !p.env.is_empty()
+            || (p.directory_context.is_none() && !p.env.is_empty())
         {
             return Err("invalid automatic bootstrap topology");
         }

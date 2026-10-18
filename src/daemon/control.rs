@@ -345,6 +345,11 @@ where
                             self.automatic_guarded
                                 .then_some(crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1),
                         )
+                        .chain(
+                            (self.bootstrap_guarded && self.automatic_guarded).then_some(
+                                crate::protocol::capabilities::HANDOFF_LAUNCH_DIRECTORIES_V1,
+                            ),
+                        )
                         .map(str::to_owned)
                         .collect(),
                 }))
