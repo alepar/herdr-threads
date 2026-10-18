@@ -103,11 +103,26 @@ check "ci.yml: linux-e2e runs on every push and pull request (no job-level if)" 
   'test "$(yq ".jobs.linux-e2e | has(\"if\")" "$1")" = false \
    && test "$(yq "(.on | has(\"push\")) and (.on | has(\"pull_request\")) and .on.push == null and .on.pull_request == null" "$1")" = true' _ "$ci"
 
+rust_caches() {
+  local job
+  for job in tests clippy build-targets release-proof; do
+    test "$(yq ".jobs.\"$job\".steps[] | select(.uses == \"Swatinem/rust-cache@*\") | .with.cache-bin" "$ci")" = false >/dev/null || return 1
+    # Restoring after toolchain installation ensures the actual rustc identity keys the cache.
+    local rust cache
+    rust=$(yq ".jobs.\"$job\".steps | to_entries | .[] | select(.value.name == \"Rust toolchain\") | .key" "$ci")
+    cache=$(yq ".jobs.\"$job\".steps | to_entries | .[] | select(.value.uses == \"Swatinem/rust-cache@*\") | .key" "$ci")
+    [ -n "$rust" ] && [ -n "$cache" ] && [ "$rust" -lt "$cache" ] >/dev/null || return 1
+  done
+  yq '.jobs.release-proof.steps[] | select(.uses == "Swatinem/rust-cache@*") | .with.workspaces' "$ci" | grep -F '. -> target/failpoints-release' >/dev/null || return 1
+  yq '.jobs.release-proof.steps[] | select(.uses == "Swatinem/rust-cache@*") | .with.workspaces' "$ci" | grep -F '. -> target/failpoints-control' >/dev/null
+}
+check "ci.yml: pinned Rust dependency caches include separate proof targets after toolchain setup" rust_caches
+
 proof_once() {
   local proof='manifest::failpoints_are_compiled_out_of_release_builds'
-  yq '.jobs.release-proof.steps[].run' "$ci" | grep -qF "cargo test --locked --all-features --test package $proof -- --exact --nocapture" || return 1
-  yq '.jobs.tests.steps[].run' "$ci" | grep -qF "not (binary(package) & test(=$proof))" || return 1
-  ! yq '.jobs.tests.steps[].run' "$ci" | grep -qF 'check_failpoints_absent.sh --prebuild'
+  yq '.jobs.release-proof.steps[].run' "$ci" | grep -F "cargo test --locked --all-features --test package $proof -- --exact --nocapture" >/dev/null || return 1
+  yq '.jobs.tests.steps[].run' "$ci" | grep -F "not (binary(package) & test(=$proof))" >/dev/null || return 1
+  ! yq '.jobs.tests.steps[].run' "$ci" | grep -F 'check_failpoints_absent.sh --prebuild'
 }
 check "ci.yml: release proof retains Rust assertions once outside all four timed shards" proof_once
 

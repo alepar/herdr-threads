@@ -84,6 +84,17 @@ jobs:
           cargo --version
           rustc --version
 
+      - name: Rust dependency cache
+        if: needs.changes.outputs.heavy == 'true'
+        uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
+        with:
+          # rust-cache adds rustc identity, Cargo.lock/manifests and Cargo/Rust
+          # environment hashes, with compatible dependency restore fallbacks.
+          # Workspace crates and incremental files are pruned to bound size.
+          shared-key: tests-${{ runner.os }}-${{ runner.arch }}
+          cache-bin: false
+          save-if: ${{ matrix.shard == 1 }}
+
       - name: cargo-nextest (pinned)
         if: needs.changes.outputs.heavy == 'true'
         shell: bash
@@ -189,6 +200,20 @@ jobs:
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup default "$RUST_TOOLCHAIN"
+      - name: Rust dependency cache
+        if: needs.changes.outputs.heavy == 'true'
+        uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
+        with:
+          # rust-cache adds rustc identity, Cargo.lock/manifests and Cargo/Rust
+          # environment hashes, with compatible dependency restore fallbacks.
+          # Workspace crates and incremental files are pruned to bound size.
+          shared-key: release-proof-${{ runner.os }}-${{ runner.arch }}
+          cache-bin: false
+          workspaces: |
+            . -> target
+            . -> target/failpoints-release
+            . -> target/failpoints-control
+
       - name: Release proof (including Rust hook-count and output assertions)
         if: needs.changes.outputs.heavy == 'true'
         # Runs once; cold release builds are outside the four shard timers.
@@ -530,6 +555,16 @@ jobs:
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
           rustup default "$RUST_TOOLCHAIN"
+      - name: Rust dependency cache
+        if: needs.changes.outputs.heavy == 'true'
+        uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
+        with:
+          # rust-cache adds rustc identity, Cargo.lock/manifests and Cargo/Rust
+          # environment hashes, with compatible dependency restore fallbacks.
+          # Workspace crates and incremental files are pruned to bound size.
+          shared-key: clippy-${{ runner.os }}-${{ runner.arch }}
+          cache-bin: false
+
       - name: Clippy (default features)
         if: needs.changes.outputs.heavy == 'true'
         run: cargo clippy --locked --all-targets -- -D warnings
@@ -566,6 +601,16 @@ jobs:
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "$TARGET"
           rustup default "$RUST_TOOLCHAIN"
+
+      - name: Rust dependency cache
+        if: needs.changes.outputs.heavy == 'true'
+        uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
+        with:
+          # rust-cache adds rustc identity, Cargo.lock/manifests and Cargo/Rust
+          # environment hashes, with compatible dependency restore fallbacks.
+          # Workspace crates and incremental files are pruned to bound size.
+          shared-key: build-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}
+          cache-bin: false
 
       - name: Locked release build
         if: needs.changes.outputs.heavy == 'true'

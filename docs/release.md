@@ -113,6 +113,8 @@ Linux archives are **experimental**: `herdr-plugin.toml` declares `platforms = [
 
 CI's dedicated `release-proof` job runs `manifest::failpoints_are_compiled_out_of_release_builds` once, including its Rust assertions for at least ten hooks, zero ordinary-release hook names and complete positive-control coverage. All four timed shards exclude that exact test and omit its duplicated prebuild; the local integrated full suite still includes it once. This removes four identical release-proof builds without moving a cold release build into a shard timer.
 
+Rust dependency caches now cover test shards, clippy, target builds and the separate proof target directories. They preserve compiler/lockfile boundaries and prune workspace/incremental output; hosted before/after measurements and the artifact decision are in [CI lead-time evidence](validation/ci-release-lead-time.md).
+
 ## Integrated local qualification
 
 Use `scripts/release-qualify --evidence-dir DIR` from a Herdr pane on the candidate SHA; see [RELEASE.md](../RELEASE.md). Its `--self-test` mode substitutes only authenticated wake and is not live wake evidence. The full suite runs alone; matrix and wake branches overlap only after it, with package lifecycle and installer checks afterward. Per-step logs, branch environment records, matrix/wake reports and a failure-aggregating `summary.json` are retained.
