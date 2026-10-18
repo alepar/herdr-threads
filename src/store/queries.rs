@@ -370,7 +370,8 @@ fn query_inner(
         Command::Seats(q) => seats(&db, instance, q, output),
         Command::Diagnostics(q) => diagnostics(&db, instance, q, store.clock().utc_now(), output),
         Command::Recipients(q) => recipients(&db, instance, q, store.clock().utc_now(), output),
-        Command::SeatInspect(q) => seat_inspect(&db, instance, q, output),
+        Command::SeatInspect(q) => seat_inspect(&db, instance, q, output, false),
+        Command::SeatInspectBindings(q) => seat_inspect(&db, instance, q, output, true),
         Command::DeliveryInspect(q) => {
             delivery_inspect(&db, instance, q, store.clock().utc_now(), output)
         }
@@ -1108,8 +1109,8 @@ pub(crate) fn open_binding_for(
     .map_err(store_error)
 }
 
-fn seat_inspect_argv(q: &SeatInspectQuery, raw: &str) -> Vec<String> {
-    vec![
+fn seat_inspect_argv(q: &SeatInspectQuery, raw: &str, binding_details: bool) -> Vec<String> {
+    let mut argv = vec![
         "herdr-threads".into(),
         "seat".into(),
         "inspect".into(),
@@ -1120,7 +1121,11 @@ fn seat_inspect_argv(q: &SeatInspectQuery, raw: &str) -> Vec<String> {
         q.page.limit.to_string(),
         "--max-bytes".into(),
         q.page.max_bytes.to_string(),
-    ]
+    ];
+    if binding_details {
+        argv.push("--binding-details".into());
+    }
+    argv
 }
 
 fn seat_inspect(
@@ -1128,6 +1133,7 @@ fn seat_inspect(
     instance: &str,
     q: &SeatInspectQuery,
     output: &OutputSpec,
+    binding_details: bool,
 ) -> Result<CommandResult, ApiError> {
     type SeatRow = (String, Option<String>, i64, i64, Option<i64>);
     let row:SeatRow=db.query_row("SELECT state,target_id,generation,created_at,retired_at FROM seats WHERE id=?1 AND instance_id=?2",params![q.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(|e|db.map_error(e))?.ok_or_else(||api_error(ErrorCode::NotFound,"seat not found"))?;
@@ -1140,7 +1146,8 @@ fn seat_inspect(
         row.4,
     )?;
     let mut summary = summary;
-    (summary.active, summary.bindings) = presence(db, q.seat.as_str())?;
+    (summary.active, summary.bindings) =
+        presence_with_details(db, q.seat.as_str(), binding_details)?;
     // A remote seat's state column already says `remote`; it has no availability.
     summary.availability = if row.0 == "remote" {
         None
@@ -1188,7 +1195,11 @@ fn seat_inspect(
         })
         .transpose()?;
     let open_binding = open_binding(db, q.seat.as_str())?;
-    let filter = digest(&q.seat.as_str())?;
+    let filter = if binding_details {
+        digest(&(q.seat.as_str(), "binding_details"))?
+    } else {
+        digest(&q.seat.as_str())?
+    };
     let cursor = decode_cursor(
         &q.page,
         instance,
@@ -1358,7 +1369,7 @@ fn seat_inspect(
         )?;
         items.push(Cand {
             item,
-            argv: seat_inspect_argv(q, &raw),
+            argv: seat_inspect_argv(q, &raw, binding_details),
             raw,
             before: (last, last_kind),
         });
@@ -1402,7 +1413,7 @@ fn seat_inspect(
             binding_high,
             repair_high,
         )?;
-        Some((raw.clone(), seat_inspect_argv(q, &raw)))
+        Some((raw.clone(), seat_inspect_argv(q, &raw, binding_details)))
     };
     let result = CommandResult::SeatInspect(SeatInspection {
         summary,
@@ -1640,10 +1651,18 @@ const PRESENCE_DISCONNECTED_SUBAGENTS: i64 = 4;
 /// bindings in ordinal order: every connected or top-level one and the
 /// [`PRESENCE_DISCONNECTED_SUBAGENTS`] most recent disconnected subagents.
 fn presence(db: &QueryConnection, seat: &str) -> Result<(bool, Vec<BindingPresence>), ApiError> {
+    presence_with_details(db, seat, false)
+}
+
+fn presence_with_details(
+    db: &QueryConnection,
+    seat: &str,
+    binding_details: bool,
+) -> Result<(bool, Vec<BindingPresence>), ApiError> {
     let active = super::bindings::seat_active(db, &SeatId::new(seat))?;
     let mut stmt = db
         .prepare_cached(
-            "SELECT harness,role,liveness,agent_id FROM occupant_bindings \
+            "SELECT harness,role,liveness,agent_id,binding_id,native_session,observation_provenance FROM occupant_bindings \
              WHERE seat_id=?1 AND ended_at IS NULL AND (role<>'subagent' OR liveness='connected' \
              OR ordinal IN (SELECT ordinal FROM occupant_bindings WHERE seat_id=?1 \
              AND ended_at IS NULL AND role='subagent' AND liveness<>'connected' \
@@ -1656,6 +1675,21 @@ fn presence(db: &QueryConnection, seat: &str) -> Result<(bool, Vec<BindingPresen
             let liveness: String = r.get(2)?;
             let agent_id: String = r.get(3)?;
             Ok(BindingPresence {
+                binding_id: if binding_details {
+                    Some(crate::protocol::ids::BindingId::new(r.get::<_, String>(4)?))
+                } else {
+                    None
+                },
+                native_session: if binding_details {
+                    Some(NativeSessionId::new(r.get::<_, String>(5)?))
+                } else {
+                    None
+                },
+                provenance: if binding_details {
+                    Some(r.get(6)?)
+                } else {
+                    None
+                },
                 harness: r.get(0)?,
                 connected: liveness == "connected",
                 agent_id: (role == "subagent").then_some(agent_id),

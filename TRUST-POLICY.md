@@ -109,6 +109,13 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 - **Origin**: the node that authored and signed a fact.
 - **Incarnation**: one generation of a node's log; a fork repair or restore starts a new one under the same key.
 
+Read-only `seat inspect --binding-details` (`seat.binding_details_v1`) exposes each listed open
+binding's id, native session, connected state and observation provenance together. These are
+canonical stored cooperative claims (A1–A3), not native attestation or proof that a session is
+ready for work. Consumers check the exact session's entry, never a sibling's presence or the
+representative `open_binding` scalar. Legacy inspection and routine presence listings omit the
+added identity fields; the opt-in read changes no binding, receipt, membership or authority.
+
 ## Continuity invariants
 
 **C1. How a seat's mapping may change.** Exactly three ways:

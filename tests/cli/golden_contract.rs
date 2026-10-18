@@ -147,6 +147,9 @@ mod fixtures {
 
     pub fn presence_bindings(seat: &str) -> Vec<BindingPresence> {
         let binding = |role: &str, connected: bool, agent: Option<&str>| BindingPresence {
+            binding_id: None,
+            native_session: None,
+            provenance: None,
             harness: "claude".to_owned(),
             role: role.to_owned(),
             connected,

@@ -374,6 +374,9 @@ mod seat_list_tests {
                     .into_iter()
                     .map(
                         |(role, connected, agent)| crate::protocol::results::BindingPresence {
+                            binding_id: None,
+                            native_session: None,
+                            provenance: None,
                             harness: "claude".into(),
                             role: role.into(),
                             connected,

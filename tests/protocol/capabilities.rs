@@ -346,6 +346,26 @@ fn every_advertised_capability_has_a_handler() {
             HARNESS_STATES => probe_harness_states(),
             HARNESS_HEALTH_V2 => health_v2_capability_is_negotiated_only_with_cached_provider(),
             SEAT_MANAGED_LAUNCH => probe_seat_managed_launch(),
+            SEAT_BINDING_DETAILS_V1 => {
+                let command =
+                    Command::SeatInspectBindings(crate::protocol::commands::SeatInspectQuery {
+                        seat: crate::protocol::ids::SeatId::new("missing-seat"),
+                        page: Default::default(),
+                    });
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap())
+                        .unwrap(),
+                    command
+                );
+                assert_eq!(
+                    daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4())
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
             SAME_SESSION_CONTINUITY_V1 => {
                 let command =
                     Command::ContinuityCheckIn(crate::protocol::commands::ContinuityCheckIn {
