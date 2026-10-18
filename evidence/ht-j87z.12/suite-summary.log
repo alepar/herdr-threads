@@ -1,0 +1,21 @@
+   Compiling herdr-threads v2.1.1 (/Users/alepar/AleCode/herdr-threads/.worktrees/super-auto-peer-wire-compat-hardening/.worktrees/super-auto-peer-wire-compat-hardening--task-ht-j87z.12)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 40s
+────────────
+ Nextest run ID b09d126a-5301-4806-9439-de4ecdb44e2a with nextest profile: default
+    Starting 7805 tests across 9 binaries (48 tests skipped)
+        SLOW [> 60.000s] (─────────) herdr-threads::package manifest::failpoints_are_compiled_out_of_release_builds
+        LEAK [   0.333s] (1714/7805) herdr-threads cli::watch::tests::stdout_closed_exits_0_quietly
+        LEAK [   0.240s] (1744/7805) herdr-threads client::tests::permission_denied_connect_is_transport_denied_with_remedy
+        LEAK [   0.246s] (1745/7805) herdr-threads client::service::tests::typed_reads_return_payloads_and_reject_mismatched_results
+        LEAK [   0.259s] (1746/7805) herdr-threads client::service::tests::wrong_correlation_and_oversized_frame_keep_mutations_pending
+        LEAK [   0.234s] (2441/7805) herdr-threads harness::attribution_tests::missing_file_is_absent
+        SLOW [>120.000s] (─────────) herdr-threads::package manifest::failpoints_are_compiled_out_of_release_builds
+        LEAK [   0.223s] (4222/7805) herdr-threads service::workers::admission_observer_tests::failing_observation_shows_retry_suffix_without_a_new_health_line
+        SLOW [>180.000s] (─────────) herdr-threads::package manifest::failpoints_are_compiled_out_of_release_builds
+        SLOW [>240.000s] (─────────) herdr-threads::package manifest::failpoints_are_compiled_out_of_release_builds
+        SLOW [>300.000s] (─────────) herdr-threads::package manifest::failpoints_are_compiled_out_of_release_builds
+────────────
+     Summary [ 404.319s] 7805 tests run: 7805 passed (1 slow, 6 leaky), 48 skipped
+        SLOW [ 312.774s] (7025/7805) herdr-threads::package manifest::failpoints_are_compiled_out_of_release_builds
+rc=0
+wall=570s

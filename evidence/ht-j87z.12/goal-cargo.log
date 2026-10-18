@@ -1,0 +1,16 @@
+### --test opaque_relay
+error: no test target named `opaque_relay` in default-run packages
+rc=101
+### --test combined peer_wire
+     Running tests/combined.rs (target/debug/deps/combined-6cfde94bbe3b4570)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1131 filtered out; finished in 0.03s
+rc=0
+### --test combined forward_compat
+     Running tests/combined.rs (target/debug/deps/combined-6cfde94bbe3b4570)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1130 filtered out; finished in 0.04s
+rc=0
+### --test combined journal_port_contract
+     Running tests/combined.rs (target/debug/deps/combined-6cfde94bbe3b4570)
+test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 1067 filtered out; finished in 0.74s
+rc=0
+ALLDONE
