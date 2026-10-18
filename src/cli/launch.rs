@@ -71,6 +71,8 @@ pub use crate::harness::launch::{PaneShellProbe, SHELL_PROBE_TIMEOUT, SystemShel
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LaunchRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_context: Option<crate::protocol::handoff::LaunchDirectoryContext>,
     pub target: HostTargetId,
     pub harness: ContextHarness,
     pub harness_binary: Option<String>,
@@ -693,6 +695,11 @@ fn execute_guarded_inner(
         AdmissionRequest, ExecutableLookup, InstallEnvironment, InstallObservation,
         LaunchRequest as AdapterLaunchRequest, ResolvedSetupScope, SetupStatus, StatusRequest,
     };
+    if request.directory_context.is_some() {
+        return Err(super::invalid_request(
+            "retained launch directories are not admitted yet",
+        ));
+    }
     let registration =
         crate::harness::launch::launch_registration(registry, policy_harness(request.harness))?;
     let policy = registration.launch_policy().expect("checked provider");
@@ -1522,6 +1529,7 @@ mod task23_tests {
     }
     fn request(harness: ContextHarness, argv: &[&str]) -> LaunchRequest {
         LaunchRequest {
+            directory_context: None,
             target: HostTargetId::new("w9:p1"),
             harness,
             harness_binary: None,

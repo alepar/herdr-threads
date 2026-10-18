@@ -883,6 +883,7 @@ fn automatic_parent(id: &BootstrapIdentity) -> AutomaticBootstrapIdentity {
         AutomaticBootstrapPlan {
             version: 2,
             payload: AutomaticBootstrapPayload {
+                directory_context: None,
                 handoff: AutomaticHandoffPayload::new(
                     id.payload.handoff.namespace.clone(),
                     OperationId::new("auto-child"),

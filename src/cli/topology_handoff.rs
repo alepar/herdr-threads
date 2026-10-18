@@ -118,6 +118,7 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
             .id
     };
     let launch = super::launch::LaunchRequest {
+        directory_context: None,
         target: inputs.claim.target.clone(),
         harness,
         harness_binary: request.binary.clone(),
@@ -157,6 +158,7 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         AutomaticBootstrapPlan {
             version: AUTOMATIC_PLAN_VERSION,
             payload: AutomaticBootstrapPayload {
+                directory_context: None,
                 handoff,
                 keys: AutomaticBootstrapKeys::new(compound),
                 workspace: HostTargetId::parse(workspace).map_err(fail)?,
@@ -226,6 +228,7 @@ pub(super) fn preflight_automatic_launch_request(
         crate::harness::launch::compose_native_argv(p.launch.harness, argv.clone(), vec![])?;
     crate::ports::NativeLaunchRequest::validate_argv(&native).map_err(super::invalid_request)?;
     Ok(super::launch::LaunchRequest {
+        directory_context: p.directory_context.clone(),
         target: identity.claim.target.clone(),
         harness: p.launch.harness.into(),
         harness_binary: p.launch.binary.clone(),
@@ -357,6 +360,7 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         }
     };
     let launch = super::launch::LaunchRequest {
+        directory_context: None,
         target: inputs.claim.target.clone(),
         harness,
         harness_binary: request.binary.clone(),
@@ -374,6 +378,7 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         ))
     };
     let payload = BootstrapPayload {
+        directory_context: None,
         handoff: HandoffPayload {
             policy: request.policy.clone(),
             namespace,
@@ -483,6 +488,7 @@ pub(super) fn preflight_launch_request(
         }
     };
     Ok(super::launch::LaunchRequest {
+        directory_context: identity.payload.directory_context.clone(),
         target: identity.claim.target.clone(),
         harness: identity.payload.launch.harness.into(),
         harness_binary: identity.payload.launch.binary.clone(),
@@ -943,6 +949,7 @@ fn downstream_plan(
             goal,
             body: payload.handoff.body.clone(),
             launch: super::launch::LaunchRequest {
+                directory_context: payload.directory_context.clone(),
                 target: created.root_pane.clone(),
                 harness,
                 harness_binary: payload.launch.binary.clone(),

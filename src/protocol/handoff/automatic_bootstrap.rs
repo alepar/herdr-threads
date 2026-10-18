@@ -47,6 +47,8 @@ impl AutomaticBootstrapKeys {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AutomaticBootstrapPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_context: Option<LaunchDirectoryContext>,
     pub handoff: AutomaticHandoffPayload,
     pub keys: AutomaticBootstrapKeys,
     pub workspace: HostTargetId,
@@ -67,6 +69,9 @@ pub struct AutomaticBootstrapPlan {
 impl AutomaticBootstrapPlan {
     pub fn validate(&self) -> Result<(), &'static str> {
         let p = &self.payload;
+        if p.directory_context.is_some() {
+            return Err("retained launch directories are not admitted yet");
+        }
         p.handoff.validate()?;
         p.launch.validate()?;
         if self.version != 2
@@ -192,6 +197,7 @@ impl AutomaticBootstrapIdentity {
                 version: 2,
                 delivery: AutomaticDeliveryPlan::new(p.handoff.clone(), recipient)?,
                 launch: crate::cli::launch::LaunchRequest {
+                    directory_context: p.directory_context.clone(),
                     target: created.root_pane.clone(),
                     harness,
                     harness_binary: p.launch.binary.clone(),
