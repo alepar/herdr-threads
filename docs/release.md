@@ -111,6 +111,14 @@ Linux uses musl so one static executable runs on any distribution regardless of 
 
 Linux archives are **experimental**: `herdr-plugin.toml` declares `platforms = ["macos", "linux"]` so the plugin can be linked from a Linux archive, and in an Ubuntu 24.04 arm64 container a locally built release linked into headless Herdr 0.9.3 and ran a healthy daemon ([evidence](evidence/linux-arm64-container/README.md)); x86_64 and harness sessions stay unverified, and a published-release download, upgrade, uninstall and Herdr-down await the clean-machine rehearsal in the follow-on checklist; the host incarnation witness covers Linux through `SO_PEERCRED` and procfs, and the deterministic suite passes there. The workflows pass `actionlint` locally and in CI. Four-target CI release builds, including both Linux architectures and Intel macOS, passed at `8e8e395e`; a release workflow for the final tag and its published archives are separate qualifications.
 
+## Integrated local qualification
+
+Use `scripts/release-qualify --evidence-dir DIR` from a Herdr pane on the candidate SHA; see [RELEASE.md](../RELEASE.md). Its `--self-test` mode substitutes only authenticated wake and is not live wake evidence. The full suite runs alone; matrix and wake branches overlap only after it, with package lifecycle and installer checks afterward. Per-step logs, branch environment records, matrix/wake reports and a failure-aggregating `summary.json` are retained.
+
+Ordinary CI keeps all existing required job names and four test shards for docs-only changes (`docs/**`, `*.md`, `CHANGELOG`), but skips heavy steps through a changed-path detector. PRs compare the merge base to the PR head; pushes compare the previous SHA to HEAD. Manual dispatch, tag pushes, unknown bases and empty diffs run all checks. Manual macOS package/matrix jobs remain available for diagnostics; local qualification supplies these release gates without a required manual CI dispatch.
+
+CI currently retains no release binaries or archives: `build-targets` compiles all four targets but uploads none. Release builds also inject a moving harness-manifest branch input that CI does not embed, so equal source SHAs alone do not prove compatible build inputs. `release.yml` therefore continues building and packaging all four archives, preserving SHA256SUMS, VERSION, TARGET and archive verification. Reuse would require a shared build pipeline that retains compatible four-target artifacts and records the resolved manifest input, toolchain and source SHA before publication.
+
 ## Versioning
 
 Every release number follows one rule (the user's standing decision, 2026-10-16):
@@ -124,7 +132,7 @@ A release takes the highest level among its changes. A schema migration alone do
 ## Release checklist
 
 1. **Provenance.** Record the reviewed source SHA, `Cargo.lock`, Rust, Herdr, Codex and Claude Code versions, host OS and architecture, and the locked build result. Inspect the archive: manifest, scripts, source and lockfile, built executable path and mode. No runtime state or credentials in it.
-2. **CI.** The workflow is green on the release SHA (clippy included), and the manually dispatched `package-lifecycle` and `herdr-releases` jobs green on that SHA. Every official Herdr release at or above the README's floor (0.9.1) is in `tests/herdr-releases.tsv` and passes the release smoke; a failing release blocks the release or lowers the stated support.
+2. **CI.** The workflow is green on the release SHA (clippy included), and `scripts/release-qualify` passes locally on that SHA (including package lifecycle, upstream inventory, matrix and live wake). Start ordinary push/PR CI alongside local qualification; manual `ci.yml` dispatch is optional. Every official Herdr release at or above the README's floor (0.9.1) is in `tests/herdr-releases.tsv` and passes the release smoke; a failing release blocks the release or lowers the stated support.
 3. **Package lifecycle.** Re-run the isolated package gate on the release SHA ([validation/package.md](validation/package.md)); never against the shared Herdr server. Add the real GitHub install once the repository is public.
 4. **Scoped setup and unsetup.** The setup CLI is merged, including the separate permission component (Claude allow/ask rules, the Codex rules file) and the legacy Codex sandbox allowance for the measured 0.159.2 and 0.159.3. Still to show on the release SHA: it leaves unrelated Codex and Claude configuration, hooks and permissions unchanged. `doctor` separates installed from observed.
 5. **Codex version admission.** Fingerprint admission is merged. Keep its "schema-matched, live-unverified" status documented wherever it applies (0.159.2), and decide from evidence whether a version is promoted into a recipe.

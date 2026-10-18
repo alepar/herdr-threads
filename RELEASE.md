@@ -25,19 +25,21 @@ In the standing release worktree (`.worktrees/herdr-095`): create `release/X.Y.Z
 
 ## 3. Qualify the candidate
 
-Run on the release worktree. Order matters only for the suite, which is timing-sensitive and runs alone:
+Start ordinary push/PR CI on the candidate SHA alongside local qualification; no manual `ci.yml` dispatch is required. Run from a Herdr pane in the release worktree:
 
-1. `cargo fmt --check`, `scripts/check-harness-neutral`, `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `nice scripts/check-default-features`.
-2. The full suite with a run id: `export HT_LEAK_RUN_ID=$(uuidgen)`, `nice cargo nextest run --locked --all-targets --all-features`, then `scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID"`.
-3. The Python installer suites CI runs (the exact commands are in `.github/workflows/ci.yml`: `tests/release/installer_alias_test.py`, `installer_integrations_test.py`, `installer_terminal_test.py`) and the shell installer harness.
-4. `scripts/herdr-release-smoke` (the Herdr release matrix) and, from a Herdr pane, `nice scripts/build.sh`, `python3 scripts/wake-e2e.py --self-test`, then `scripts/wake-e2e-herdr <newest herdr in tests/herdr-releases.tsv> --evidence-dir DIR`. The matrix and the wake e2e use private Herdr servers and may run side by side after the suite.
-5. Check that no scratch roots (`/tmp/ht-wake-e2e.*`) remain.
+```sh
+scripts/release-qualify --evidence-dir /tmp/release-X.Y.Z
+```
+
+The driver checks formatting, harness neutrality, both clippy feature variants and default features; prebuilds tests and release-proof fixtures; runs the full suite alone with its five-minute budget and unconditional run-scoped leak check; and builds the candidate. Afterward the upstream inventory check and Herdr matrix run alongside the wake driver's self-test and authenticated wake against the newest listed Herdr. The isolated package lifecycle gate and exact CI Python installer commands plus shell installer harness run afterward, avoiding competition with timing-sensitive tests. Every branch has a short private scratch root, state directory and run ID; logs, matrix/wake evidence and `summary.json` are retained. Any failed step makes the driver fail; inspect every failure and retain its evidence.
+
+`--self-test` replaces only the authenticated wake run. All other commands, including the real full suite, upstream inventory check, matrix, package lifecycle and installers, still run; this mode does not qualify live wake delivery. Scratch roots are removed after leak checks; the environment records retain their paths and run IDs for diagnosis.
 
 A real failure goes back to the fixer who owns the change (merge the release branch into their branch, fix, report a SHA), is cherry-picked, and the affected checks re-run. Keep the commands and results for the record.
 
 ## 4. Merge and CI
 
-`git merge --ff-only release/X.Y.Z` into `main`, `git push origin main`. The push starts CI. Watch each job as it finishes and act on a failure at once; do not wait for the whole run. Failed job logs: `gh api --allow-escape-sequences repos/alepar/herdr-threads/actions/jobs/JOB_ID/logs`, with ANSI codes stripped. CI runs on Linux; the local run is macOS, so CI can find what the local run cannot (it found a stale installer fixture in v2.2.0).
+`git merge --ff-only release/X.Y.Z` into `main`, `git push origin main`. The push starts ordinary CI; if the identical SHA already has a green ordinary run, reuse it. Watch each job as it finishes and act on a failure at once; do not wait for the whole run. Failed job logs: `gh api --allow-escape-sequences repos/alepar/herdr-threads/actions/jobs/JOB_ID/logs`, with ANSI codes stripped. CI runs on Linux; the local run is macOS, so CI can find what the local run cannot (it found a stale installer fixture in v2.2.0).
 
 ## 5. Tag and publish
 
@@ -61,7 +63,3 @@ Add the release record to `docs/release.md` under "Current release status": sour
 ## 9. Clean up
 
 For each merged fixer: close its tab by its verified label, `git worktree remove` its worktree, `git branch -d` its branch (a fixer branch whose commits were cherry-picked needs `-D`; ask first), and close its bead with `bd close`. Use a subagent for the cleanup. Keep `main` and the release worktree.
-
-## Open improvements
-
-Release lead time is being cut (bead ht-z70k): CI starts alongside local qualification, the manual CI dispatch is dropped, the local steps run through one script, docs-only commits skip heavy CI, the release workflow reuses CI builds, and CI cache time is investigated. This file changes with each of those.

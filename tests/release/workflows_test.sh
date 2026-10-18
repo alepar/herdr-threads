@@ -75,13 +75,13 @@ check "ci.yml: clippy default features -D warnings" bash -c \
 check "ci.yml: package-lifecycle cargo test enables test-support" bash -c \
   'yq ".jobs.package-lifecycle.steps[].run" "$1" | grep -qE -- "cargo test --locked (--features test-support|--all-features) --test package"' _ "$ci"
 check "ci.yml: deterministic job ends with an always() leak check" bash -c \
-  'test "$(yq ".jobs.deterministic.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()"' _ "$ci"
+  'test "$(yq ".jobs.deterministic.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "$2"' _ "$ci" "always() && needs.changes.outputs.heavy == 'true'"
 check "ci.yml: tests job runs on Linux in four shards" bash -c \
   'test "$(yq ".jobs.tests.runs-on" "$1")" = ubuntu-24.04 && test "$(yq -o=json -I=0 ".jobs.tests.strategy.matrix.shard" "$1")" = "[1,2,3,4]"' _ "$ci"
 check "ci.yml: tests job partitions nextest by slice" bash -c \
   'yq ".jobs.tests.steps[].run" "$1" | grep -qF -- "--partition \"slice:\$SHARD/4\""' _ "$ci"
 check "ci.yml: tests job ends with an always() leak check" bash -c \
-  'test "$(yq ".jobs.tests.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()"' _ "$ci"
+  'test "$(yq ".jobs.tests.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "$2"' _ "$ci" "always() && needs.changes.outputs.heavy == 'true'"
 check "ci.yml: clippy runs on macOS and Linux" bash -c \
   'test "$(yq -o=json -I=0 ".jobs.clippy.strategy.matrix.runner" "$1")" = "[\"macos-15\",\"ubuntu-24.04\"]"' _ "$ci"
 check "ci.yml: actionlint job exists" test "$(yq '.jobs | has("actionlint")' "$ci")" = true
@@ -97,11 +97,25 @@ check "ci.yml: linux-e2e never runs the live wake matrix or --check-upstream" ba
 check "ci.yml: linux-e2e references no secrets or tokens" bash -c \
   '! yq ".jobs.linux-e2e" "$1" | grep -qE "secrets\b|GITHUB_TOKEN|github\.token"' _ "$ci"
 check "ci.yml: linux-e2e ends with an always() leak check" bash -c \
-  'test "$(yq ".jobs.linux-e2e.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()" \
-   && test "$(yq ".jobs.linux-e2e.steps[-1].run" "$1")" = "scripts/check-no-leaked-processes --run-id \"\$HT_LEAK_RUN_ID\" --grace 15"' _ "$ci"
+  'test "$(yq ".jobs.linux-e2e.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "$2" \
+   && test "$(yq ".jobs.linux-e2e.steps[-1].run" "$1")" = "scripts/check-no-leaked-processes --run-id \"\$HT_LEAK_RUN_ID\" --grace 15"' _ "$ci" "always() && needs.changes.outputs.heavy == 'true'"
 check "ci.yml: linux-e2e runs on every push and pull request (no job-level if)" bash -c \
   'test "$(yq ".jobs.linux-e2e | has(\"if\")" "$1")" = false \
    && test "$(yq "(.on | has(\"push\")) and (.on | has(\"pull_request\")) and .on.push == null and .on.pull_request == null" "$1")" = true' _ "$ci"
+
+docs_filter() {
+  local job
+  test "$(yq '.jobs.changes.outputs.heavy' "$ci")" = '${{ steps.paths.outputs.heavy }}' || return 1
+  for job in tests deterministic linux-e2e clippy build-targets actionlint; do
+    test "$(yq ".jobs.\"$job\".needs" "$ci")" = changes || return 1
+    test "$(yq ".jobs.\"$job\" | has(\"if\")" "$ci")" = false || return 1
+    yq ".jobs.\"$job\".steps[].if" "$ci" | while IFS= read -r condition; do
+      case "$condition" in *"needs.changes.outputs.heavy == 'true'"*) ;; *) return 1 ;; esac
+    done || return 1
+  done
+}
+check "ci.yml: docs-only filter preserves every stable job and gates its steps" docs_filter
+check "ci.yml: changed-path detector event semantics" python3 -m unittest discover -s scripts/tests -p test_ci_changed_paths.py
 
 full=.github/workflows/full-suite.yml
 check "full-suite.yml: manual dispatch only, contents read" bash -c \

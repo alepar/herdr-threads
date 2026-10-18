@@ -28,7 +28,27 @@ env:
   HERDR_LINUX_SHA256: 2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7
 
 jobs:
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-24.04
+    outputs:
+      heavy: ${{ steps.paths.outputs.heavy }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - id: paths
+        name: Classify changes (unknown bases run all checks)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci-changed-paths.py
+
   tests:
+    needs: changes
     name: Tests ${{ matrix.shard }}/4 (Linux x86_64)
     runs-on: ubuntu-24.04
     strategy:
@@ -42,18 +62,22 @@ jobs:
       HT_SWEEP_PANIC_FILE: ${{ github.workspace }}/sweep-panics.log
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: needs.changes.outputs.heavy == 'true'
 
       - name: Python for TOML and fixture tests
+        if: needs.changes.outputs.heavy == 'true'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11.9'
 
       - name: zsh for shell round-trip tests
+        if: needs.changes.outputs.heavy == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends zsh
 
       - name: Rust toolchain
+        if: needs.changes.outputs.heavy == 'true'
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup default "$RUST_TOOLCHAIN"
@@ -61,6 +85,7 @@ jobs:
           rustc --version
 
       - name: cargo-nextest (pinned)
+        if: needs.changes.outputs.heavy == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -71,6 +96,7 @@ jobs:
           cargo nextest --version
 
       - name: Provision pinned Herdr 0.9.1
+        if: needs.changes.outputs.heavy == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -86,11 +112,13 @@ jobs:
           printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
 
       - name: Locked build
+        if: needs.changes.outputs.heavy == 'true'
         # Match nextest's test profile before the strict suite timer starts.
         # cargo build selects dev, so it would not warm optimized test artifacts.
         run: cargo test --locked --all-targets --all-features --no-run
 
       - name: Build release proof fixtures
+        if: needs.changes.outputs.heavy == 'true'
         # tests/service/check_failpoints_absent.sh (package suite) builds the
         # ordinary and the test-support release and compares them. Build both
         # before the timer, as Locked build does for the tests; otherwise the
@@ -98,6 +126,7 @@ jobs:
         run: sh tests/service/check_failpoints_absent.sh --prebuild
 
       - name: Tests (parallel, shard ${{ matrix.shard }}/4)
+        if: needs.changes.outputs.heavy == 'true'
         # cargo-nextest, one process per test, every binary in one pool; the
         # serialized chains are test groups in .config/nextest.toml. Every test
         # isolates its own state (ht-zo4, scripts/full-suite-gate). The suite
@@ -124,7 +153,7 @@ jobs:
           fi
 
       - name: Skipped Herdr tests (job summary)
-        if: always()
+        if: always() && needs.changes.outputs.heavy == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -138,7 +167,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Preserve sweep panic diagnostics
-        if: always()
+        if: always() && needs.changes.outputs.heavy == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sweep-diagnostics-${{ matrix.shard }}
@@ -149,29 +178,34 @@ jobs:
         # ht-p03.131: every daemon, private Herdr server and helper a test
         # started is gone once its run ends (owner tag, process groups,
         # reaper). Runs even when an earlier step failed.
-        if: always()
+        if: always() && needs.changes.outputs.heavy == 'true'
         shell: bash
         run: scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID" --grace 15
 
   deterministic:
+    needs: changes
     name: Format, package, installer, Python suites (Linux x86_64)
     runs-on: ubuntu-24.04
     env:
       HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: needs.changes.outputs.heavy == 'true'
 
       - name: Python for TOML and fixture tests
+        if: needs.changes.outputs.heavy == 'true'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11.9'
 
       - name: zsh for shell round-trip tests
+        if: needs.changes.outputs.heavy == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends zsh
 
       - name: Rust toolchain
+        if: needs.changes.outputs.heavy == 'true'
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
           rustup default "$RUST_TOOLCHAIN"
@@ -179,6 +213,7 @@ jobs:
           rustc --version
 
       - name: Provision pinned Herdr 0.9.1
+        if: needs.changes.outputs.heavy == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -196,14 +231,17 @@ jobs:
           printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
 
       - name: Format
+        if: needs.changes.outputs.heavy == 'true'
         run: cargo fmt --all -- --check
       - name: Harness-neutral core check
+        if: needs.changes.outputs.heavy == 'true'
         shell: bash
         run: |
           set -euo pipefail
           scripts/check-harness-neutral
           python3 -m unittest discover -s scripts/tests -p 'test_check_harness_neutral.py'
       - name: Package build script and manifest paths
+        if: needs.changes.outputs.heavy == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -225,6 +263,7 @@ jobs:
           PY
 
       - name: Release installer (offline, stub Herdr)
+        if: needs.changes.outputs.heavy == 'true'
         # Packages bin/herdr-threads as fake v0.1.0/v0.1.1 releases served from
         # file:// and drives scripts/install.sh in a scratch HOME: install,
         # idempotent re-run, upgrade, refusals, harness setup and uninstall.
@@ -241,6 +280,7 @@ jobs:
           tests/release/install_test.sh bin/herdr-threads 2>&1 | tee install_test.log
 
       - name: Python demo, validator and canary suites
+        if: needs.changes.outputs.heavy == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -258,6 +298,8 @@ jobs:
           done
           python3 -m unittest discover -s scripts/tests -p 'test_check_no_leaked_processes.py'
           python3 -m unittest discover -s scripts/tests -p 'test_herdr_release_smoke.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_release_qualify.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_ci_changed_paths.py'
           python3 -m unittest discover -s scripts/tests -p 'test_linux_e2e_run.py'
           python3 -m unittest discover -s scripts/tests -p 'test_cell_ran_versions.py'
           python3 -m unittest discover -s scripts/tests -p 'test_demo_try_it_camera.py'
@@ -267,7 +309,7 @@ jobs:
           done
 
       - name: Skipped Herdr tests (job summary)
-        if: always()
+        if: always() && needs.changes.outputs.heavy == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -284,7 +326,7 @@ jobs:
         # ht-p03.131: every daemon, private Herdr server and helper a test or the
         # installer test started is gone once its run ends (owner tag, process
         # groups, reaper). Runs even when an earlier step failed.
-        if: always()
+        if: always() && needs.changes.outputs.heavy == 'true'
         shell: bash
         run: scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID" --grace 15
 
@@ -387,6 +429,7 @@ jobs:
         run: cat "$RUNNER_TEMP/herdr-releases.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
   linux-e2e:
+    needs: changes
     name: Herdr release smoke and wake-e2e self-test (Linux ${{ matrix.arch }})
     # The no-credential e2e checks on both Linux architectures, every push:
     # scripts/herdr-release-smoke (the Herdr release matrix: core features,
@@ -411,13 +454,16 @@ jobs:
       HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-linux-e2e-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: needs.changes.outputs.heavy == 'true'
 
       - name: Python for the runner and the driver
+        if: needs.changes.outputs.heavy == 'true'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11.9'
 
       - name: lsof and procps for the leak check
+        if: needs.changes.outputs.heavy == 'true'
         # scripts/check-no-leaked-processes reads open files with lsof and
         # scans with pgrep (Linux Docker scoping: it fails without lsof).
         run: |
@@ -425,14 +471,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends lsof procps
 
       - name: Rust toolchain
+        if: needs.changes.outputs.heavy == 'true'
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup default "$RUST_TOOLCHAIN"
 
       - name: wake-e2e driver self-test
+        if: needs.changes.outputs.heavy == 'true'
         run: python3 scripts/wake-e2e.py --self-test
 
       - name: Herdr release matrix
+        if: needs.changes.outputs.heavy == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -444,16 +493,17 @@ jobs:
             --report "$RUNNER_TEMP/herdr-releases.md"
 
       - name: Matrix (job summary)
-        if: always()
+        if: always() && needs.changes.outputs.heavy == 'true'
         run: cat "$RUNNER_TEMP/herdr-releases.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
       - name: No leaked test processes
-        if: always()
+        if: always() && needs.changes.outputs.heavy == 'true'
         shell: bash
         run: scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID" --grace 15
 
   clippy:
     # Both OSes: each lints its own platform-gated code.
+    needs: changes
     name: Clippy -D warnings (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -462,16 +512,21 @@ jobs:
         runner: [macos-15, ubuntu-24.04]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: needs.changes.outputs.heavy == 'true'
       - name: Rust toolchain
+        if: needs.changes.outputs.heavy == 'true'
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
           rustup default "$RUST_TOOLCHAIN"
       - name: Clippy (default features)
+        if: needs.changes.outputs.heavy == 'true'
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Clippy (all features)
+        if: needs.changes.outputs.heavy == 'true'
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
   build-targets:
+    needs: changes
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -484,14 +539,16 @@ jobs:
           - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: needs.changes.outputs.heavy == 'true'
 
       - name: musl toolchain
-        if: contains(matrix.target, 'linux-musl')
+        if: needs.changes.outputs.heavy == 'true' && contains(matrix.target, 'linux-musl')
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools
 
       - name: Rust toolchain
+        if: needs.changes.outputs.heavy == 'true'
         env:
           TARGET: ${{ matrix.target }}
         run: |
@@ -499,6 +556,7 @@ jobs:
           rustup default "$RUST_TOOLCHAIN"
 
       - name: Locked release build
+        if: needs.changes.outputs.heavy == 'true'
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -514,6 +572,7 @@ jobs:
           cargo build --locked --release --target "$TARGET"
 
   actionlint:
+    needs: changes
     name: actionlint and workflow assertions
     runs-on: ubuntu-24.04
     env:
@@ -521,8 +580,10 @@ jobs:
       ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: needs.changes.outputs.heavy == 'true'
 
       - name: Install pinned actionlint
+        if: needs.changes.outputs.heavy == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -534,7 +595,9 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
 
       - name: actionlint
+        if: needs.changes.outputs.heavy == 'true'
         run: '"$RUNNER_TEMP/actionlint" -color'
 
       - name: Workflow assertions
+        if: needs.changes.outputs.heavy == 'true'
         run: bash tests/release/workflows_test.sh
