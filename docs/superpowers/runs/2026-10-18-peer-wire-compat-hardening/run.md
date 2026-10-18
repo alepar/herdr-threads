@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-18-peer-wire-compat-hardening
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: roast-design
+phase: code
 codeMechanism: Workflow
 runTag: peer-wire-compat-hardening-20261018T171300
 context: Context: claude · planner=200K/167K · implementer=200K/167K · reviewer=200K/167K · finalReview=200K/167K · assembler=200K/167K · warn: planner, finalReview on a 200K model → set ANTHROPIC_DEFAULT_OPUS_MODEL=<model>[1m] or config.models.<role> to a 1M model · warn: implementer, reviewer, assembler on a 200K model → set ANTHROPIC_DEFAULT_SONNET_MODEL=<model>[1m] or config.models.<role> to a 1M model
@@ -21,4 +21,6 @@ findingsLedgerDesign: findings-ledger-design.md
 stepBackDesign-round-1: local — shared-cause cluster swept as three rule clusters (chain-union, opaque-apply, cross-generation-contract); two-table choice kept
 roast-design: 2026-10-18-peer-wire-compat-hardening-roast-design-1.md, 2026-10-18-peer-wire-compat-hardening-roast-design-2.md
 roastDesignExit: round 2 — 0 Blocking, 5 confirmed (1 Nit, 4 Should-fix, all fix-regressions of round-1 fixes) fixed inline as mechanical spec/bead corrections; no round 3 (corrections, not new design decisions)
-graph-pass: depth 8→6 · width 1.6→2.2 · applied 1 · parked 0 (other 6 candidate edges kept: each names a real consumed artifact)
+graph-pass: depth 8→8 · width 1.6→1.6 · applied 1 · parked 0 (edge .10 <- .4 dropped but .4 now depends on .10 for the status field set, so the chain length is unchanged; other 6 candidate edges kept, each names a real consumed artifact)
+codeBuckets:
+  sweep: SWEEP DEFERRED (caller-owned)
