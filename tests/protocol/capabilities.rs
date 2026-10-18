@@ -277,6 +277,7 @@ fn capability_constants_are_stable() {
     assert_eq!(HARNESS_EVIDENCE, "hook.harness_evidence");
     assert_eq!(HARNESS_STATES, "harness.states");
     assert_eq!(SEAT_MANAGED_LAUNCH, "seat.managed_launch");
+    assert_eq!(SEAT_BINDING_DETAILS_V1, "seat.binding_details_v1");
     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
     assert_eq!(HOOK_CONTEXT_RECEIPTS_V1, "hook.context_receipts_v1");
@@ -299,6 +300,7 @@ fn capability_constants_are_stable() {
             "harness.states",
             "harness.health_v2",
             "seat.managed_launch",
+            "seat.binding_details_v1",
             "seat.continuity_same_session_v1",
             "inbox.batch_v1",
             "invitation.reject_v1",
@@ -1001,6 +1003,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "hook.harness_evidence",
             "harness.states",
             "seat.managed_launch",
+            "seat.binding_details_v1",
             "seat.continuity_same_session_v1",
             "inbox.batch_v1",
             "invitation.reject_v1",
