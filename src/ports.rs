@@ -5361,6 +5361,8 @@ pub struct CreateTabRequest {
     pub label: String,
     pub focus: bool,
     pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_context: Option<crate::protocol::handoff::LaunchDirectoryContext>,
     pub expected_witness: crate::host::continuity::LocalEndpointWitness,
 }
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

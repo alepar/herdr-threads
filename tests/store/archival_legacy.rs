@@ -1282,6 +1282,7 @@ fn archival_legacy_bootstrap_known_progress_is_bounded_exact_and_never_authority
         label: id.payload.label.clone(),
         focus: false,
         env: Default::default(),
+        directory_context: None,
         expected_witness: created.witness.clone(),
     };
     let records = [
