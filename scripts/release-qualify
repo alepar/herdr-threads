@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Qualify a release candidate; --self-test replaces only authenticated wake.
 
-Logs and short /tmp scratch roots are retained. A failed step never suppresses
-other independent checks. Run from a Herdr pane for live qualification.
+Logs and environment records are retained; short /tmp scratch roots are cleaned.
+A failed step never suppresses other independent checks. Run from a Herdr pane for live qualification.
 """
 from __future__ import annotations
 

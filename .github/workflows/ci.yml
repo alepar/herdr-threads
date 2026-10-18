@@ -454,7 +454,8 @@ jobs:
     # server. It first fails when
     # GitHub has an official release >= 0.9.1 that the list lacks (add it with
     # `scripts/herdr-release-smoke --update`). Manual dispatch, like the
-    # package gate; the release checklist requires it green on the release SHA.
+    # package gate; optional diagnostic, with local release-qualify evidence
+    # satisfying the release gate on the candidate SHA.
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-15
     timeout-minutes: 45
