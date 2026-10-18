@@ -13,6 +13,19 @@ use crate::node::{NodeIdentity, NodeUuid};
 
 /// Magic opening the canonical bytes; it also separates this signature domain
 /// from the handshake signatures. A layout change is a new magic.
+///
+/// Cross-generation invariants (every future layout keeps them, so an older
+/// node can still shape-check, hash-check and relay an entry it cannot parse):
+/// - every generation starts with the [`EntryPrefix`] layout, 68 bytes:
+///   `magic[8] || node[16] || incarnation u32 || counter u64 || prev_hash[32]`,
+///   big-endian;
+/// - `hash = SHA-256(all canonical bytes)` and `signature = ed25519(author
+///   key, hash)`, checked with `verify_strict`;
+/// - the hello `envelope` field stays `1` ([`crate::sync::link::ENVELOPE_GENERATION`]):
+///   2.1.1 refuses any other value with `envelope_unsupported`, a stop-dialing
+///   close, so new layouts are signalled by magic and capability only;
+/// - the genesis entry (counter 1) of every log and incarnation stays
+///   `HTJRNL01`, because the author's public key is read from it.
 pub const MAGIC: &[u8; 8] = b"HTJRNL01";
 /// The kind of the entry that opens a log, and the only one allowed at counter 1.
 pub const GENESIS_KIND: &str = "node.genesis";
@@ -21,6 +34,62 @@ pub const NEEDS_MAX: usize = 256;
 pub const DEPS_MAX: usize = 4096;
 pub const PAYLOAD_MAX: usize = 524_288;
 const DEP_LEN: usize = 28;
+
+/// Length of the generation-independent prefix every envelope generation
+/// starts with: `magic[8] || node[16] || incarnation u32 || counter u64 ||
+/// prev_hash[32]`.
+pub const PREFIX_LEN: usize = 68;
+
+/// The 68-byte layout-agnostic prefix (see [`MAGIC`]). Owns writing and
+/// parsing those bytes; callers never slice prefix offsets by hand. Must not
+/// read past byte 68 or decide whether a magic is known. The prefix declares
+/// no length: an entry's length is its byte count, bound by the hash, so the
+/// length checks are `PREFIX_LEN <= len <= OPAQUE_MAX_BYTES`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntryPrefix {
+    pub magic: [u8; 8],
+    pub log: LogKey,
+    pub counter: u64,
+    pub prev_hash: [u8; 32],
+}
+
+impl EntryPrefix {
+    /// `Malformed{field:"prefix"}` when `raw` is shorter than [`PREFIX_LEN`].
+    /// Reads only the first [`PREFIX_LEN`] bytes.
+    pub fn parse(raw: &[u8]) -> Result<Self, EnvelopeError> {
+        let head = raw.first_chunk::<PREFIX_LEN>().ok_or(malformed("prefix"))?;
+        let mut magic = [0u8; 8];
+        magic.copy_from_slice(&head[..8]);
+        let mut node = [0u8; 16];
+        node.copy_from_slice(&head[8..24]);
+        let mut prev_hash = [0u8; 32];
+        prev_hash.copy_from_slice(&head[36..68]);
+        Ok(Self {
+            magic,
+            log: LogKey {
+                node: NodeUuid::from_bytes(node),
+                incarnation: u32::from_be_bytes(head[24..28].try_into().expect("4 bytes")),
+            },
+            counter: u64::from_be_bytes(head[28..36].try_into().expect("8 bytes")),
+            prev_hash,
+        })
+    }
+
+    /// Append the prefix bytes to `out`.
+    pub fn write(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.magic);
+        out.extend_from_slice(self.log.node.as_bytes());
+        out.extend_from_slice(&self.log.incarnation.to_be_bytes());
+        out.extend_from_slice(&self.counter.to_be_bytes());
+        out.extend_from_slice(&self.prev_hash);
+    }
+
+    pub fn to_bytes(&self) -> [u8; PREFIX_LEN] {
+        let mut out = Vec::with_capacity(PREFIX_LEN);
+        self.write(&mut out);
+        out.try_into().expect("prefix is PREFIX_LEN bytes")
+    }
+}
 
 /// Why an envelope was refused. Shape errors stay distinct from the
 /// cryptographic ones.
@@ -202,11 +271,13 @@ impl Body<'_> {
     fn canonical_bytes(&self) -> Vec<u8> {
         let deps = self.deps.encode();
         let mut out = Vec::with_capacity(160 + deps.len() + self.payload.len());
-        out.extend_from_slice(MAGIC);
-        out.extend_from_slice(self.log.node.as_bytes());
-        out.extend_from_slice(&self.log.incarnation.to_be_bytes());
-        out.extend_from_slice(&self.counter.to_be_bytes());
-        out.extend_from_slice(self.prev_hash);
+        EntryPrefix {
+            magic: *MAGIC,
+            log: *self.log,
+            counter: self.counter,
+            prev_hash: *self.prev_hash,
+        }
+        .write(&mut out);
         out.extend_from_slice(&self.hlc.as_u64().to_be_bytes());
         out.extend_from_slice(&len_u16(self.kind.len(), "kind").to_be_bytes());
         out.extend_from_slice(self.kind.as_bytes());
@@ -364,6 +435,18 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
+/// `verify_strict` of `signature` over `hash` (`BadSignature`, also for an
+/// invalid public key); shared by every entry form.
+fn verify_hash_sig(
+    hash: &[u8; 32],
+    signature: &[u8; 64],
+    pubkey: &[u8; 32],
+) -> Result<(), EnvelopeError> {
+    let key = VerifyingKey::from_bytes(pubkey).map_err(|_| EnvelopeError::BadSignature)?;
+    key.verify_strict(hash, &Signature::from_bytes(signature))
+        .map_err(|_| EnvelopeError::BadSignature)
+}
+
 impl UnsignedEnvelope {
     fn body(&self) -> Body<'_> {
         Body {
@@ -445,9 +528,7 @@ impl Envelope {
         if self.compute_hash() != self.hash {
             return Err(EnvelopeError::HashMismatch);
         }
-        let key = VerifyingKey::from_bytes(pubkey).map_err(|_| EnvelopeError::BadSignature)?;
-        key.verify_strict(&self.hash, &Signature::from_bytes(&self.signature))
-            .map_err(|_| EnvelopeError::BadSignature)?;
+        verify_hash_sig(&self.hash, &self.signature, pubkey)?;
         check_payload(&self.payload)
     }
 
@@ -478,6 +559,341 @@ impl Envelope {
     /// zero `prev_hash`, and `node.genesis` appears only at counter 1.
     pub fn validate_shape(&self) -> Result<(), EnvelopeError> {
         self.body().validate_shape()
+    }
+}
+
+/// Largest opaque entry this node stores or relays: its hex form plus the
+/// wire header fits the 1 MiB frame even as a frame's only entry. Below
+/// [`PAYLOAD_MAX`].
+pub const OPAQUE_MAX_BYTES: usize = 384 * 1024;
+
+/// An opaque entry above [`OPAQUE_MAX_BYTES`]; not an [`EnvelopeError`]: a
+/// size refusal is not evidence of a corrupt source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpaqueTooLarge {
+    pub len: usize,
+}
+
+impl fmt::Display for OpaqueTooLarge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "opaque entry of {} bytes exceeds {OPAQUE_MAX_BYTES}",
+            self.len
+        )
+    }
+}
+
+impl std::error::Error for OpaqueTooLarge {}
+
+/// The size pre-check run before an opaque entry is built, stored or relayed.
+pub fn check_opaque_size(len: usize) -> Result<(), OpaqueTooLarge> {
+    if len > OPAQUE_MAX_BYTES {
+        return Err(OpaqueTooLarge { len });
+    }
+    Ok(())
+}
+
+/// The unauthenticated header an opaque item travels with; checked against
+/// the signed prefix before anything trusts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpaqueHeader {
+    pub log: LogKey,
+    pub counter: u64,
+    pub prev_hash: [u8; 32],
+    pub hash: [u8; 32],
+    pub signature: [u8; 64],
+}
+
+/// A shape-checked entry whose layout this node does not understand.
+///
+/// Owns: the shape check against its header (prefix == header, magic is not
+/// `HTJRNL01`, length within `PREFIX_LEN..=OPAQUE_MAX_BYTES`, counter >= 2)
+/// and hash/signature verification over the raw bytes. Must not: parse raw
+/// past the prefix, or be applied. Fields are private; read through accessors.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpaqueEntry {
+    log: LogKey,
+    counter: u64,
+    prev_hash: [u8; 32],
+    hash: [u8; 32],
+    signature: [u8; 64],
+    raw: Vec<u8>,
+}
+
+impl OpaqueEntry {
+    /// Shape check only (no crypto). Order: length (prefix, then raw bound),
+    /// magic, counter, prefix == header.
+    pub fn new(header: OpaqueHeader, raw: Vec<u8>) -> Result<Self, EnvelopeError> {
+        let prefix = EntryPrefix::parse(&raw)?;
+        check_opaque_size(raw.len()).map_err(|_| malformed("raw"))?;
+        if prefix.magic == *MAGIC {
+            return Err(malformed("magic"));
+        }
+        if header.counter == 0 || header.counter > i64::MAX as u64 {
+            return Err(malformed("counter"));
+        }
+        if header.counter == 1 {
+            return Err(EnvelopeError::NotGenesis);
+        }
+        if prefix.log != header.log
+            || prefix.counter != header.counter
+            || prefix.prev_hash != header.prev_hash
+        {
+            return Err(malformed("prefix"));
+        }
+        Ok(Self {
+            log: header.log,
+            counter: header.counter,
+            prev_hash: header.prev_hash,
+            hash: header.hash,
+            signature: header.signature,
+            raw,
+        })
+    }
+
+    /// `SHA-256(raw) == hash` (`HashMismatch`), then `verify_strict`
+    /// (`BadSignature`, also for an invalid key).
+    pub fn verify(&self, pubkey: &[u8; 32]) -> Result<(), EnvelopeError> {
+        if sha256(&self.raw) != self.hash {
+            return Err(EnvelopeError::HashMismatch);
+        }
+        verify_hash_sig(&self.hash, &self.signature, pubkey)
+    }
+
+    pub fn log(&self) -> LogKey {
+        self.log
+    }
+
+    pub fn counter(&self) -> u64 {
+        self.counter
+    }
+
+    pub fn prev_hash(&self) -> [u8; 32] {
+        self.prev_hash
+    }
+
+    pub fn hash(&self) -> [u8; 32] {
+        self.hash
+    }
+
+    pub fn signature(&self) -> [u8; 64] {
+        self.signature
+    }
+
+    pub fn raw(&self) -> &[u8] {
+        &self.raw
+    }
+
+    pub fn magic(&self) -> [u8; 8] {
+        self.prefix().magic
+    }
+
+    pub fn prefix(&self) -> EntryPrefix {
+        let mut magic = [0u8; 8];
+        magic.copy_from_slice(&self.raw[..8]);
+        EntryPrefix {
+            magic,
+            log: self.log,
+            counter: self.counter,
+            prev_hash: self.prev_hash,
+        }
+    }
+
+    pub fn header(&self) -> OpaqueHeader {
+        OpaqueHeader {
+            log: self.log,
+            counter: self.counter,
+            prev_hash: self.prev_hash,
+            hash: self.hash,
+            signature: self.signature,
+        }
+    }
+}
+
+/// Shape check plus hash and signature: the one call ingest makes.
+pub fn verify_opaque(
+    header: OpaqueHeader,
+    raw: Vec<u8>,
+    pubkey: &[u8; 32],
+) -> Result<OpaqueEntry, EnvelopeError> {
+    let entry = OpaqueEntry::new(header, raw)?;
+    entry.verify(pubkey)?;
+    Ok(entry)
+}
+
+/// The one entry type the journal port, chain rules, coordinator and
+/// incarnations exchange. Closed: a layout this node learns to understand
+/// becomes a parse into `Known`, never a new variant. Each operation is one
+/// match.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoredEntry {
+    Known(Envelope),
+    Opaque(OpaqueEntry),
+}
+
+impl StoredEntry {
+    pub fn log(&self) -> LogKey {
+        match self {
+            Self::Known(e) => e.log,
+            Self::Opaque(o) => o.log(),
+        }
+    }
+
+    pub fn counter(&self) -> u64 {
+        match self {
+            Self::Known(e) => e.counter,
+            Self::Opaque(o) => o.counter(),
+        }
+    }
+
+    pub fn prev_hash(&self) -> [u8; 32] {
+        match self {
+            Self::Known(e) => e.prev_hash,
+            Self::Opaque(o) => o.prev_hash(),
+        }
+    }
+
+    pub fn hash(&self) -> [u8; 32] {
+        match self {
+            Self::Known(e) => e.hash,
+            Self::Opaque(o) => o.hash(),
+        }
+    }
+
+    pub fn signature(&self) -> [u8; 64] {
+        match self {
+            Self::Known(e) => e.signature,
+            Self::Opaque(o) => o.signature(),
+        }
+    }
+
+    pub fn prefix(&self) -> EntryPrefix {
+        match self {
+            Self::Known(e) => EntryPrefix {
+                magic: *MAGIC,
+                log: e.log,
+                counter: e.counter,
+                prev_hash: e.prev_hash,
+            },
+            Self::Opaque(o) => o.prefix(),
+        }
+    }
+
+    /// Signed byte length: the canonical bytes of a known entry, the raw bytes
+    /// of an opaque one.
+    pub fn size(&self) -> usize {
+        match self {
+            Self::Known(e) => e.canonical_bytes().len(),
+            Self::Opaque(o) => o.raw().len(),
+        }
+    }
+
+    pub fn verify(&self, pubkey: &[u8; 32]) -> Result<(), EnvelopeError> {
+        match self {
+            Self::Known(e) => e.verify(pubkey),
+            Self::Opaque(o) => o.verify(pubkey),
+        }
+    }
+
+    /// The author key a genesis announces; an opaque entry is never genesis.
+    pub fn genesis_pubkey(&self) -> Result<[u8; 32], EnvelopeError> {
+        match self {
+            Self::Known(e) => e.genesis_pubkey(),
+            Self::Opaque(_) => Err(EnvelopeError::NotGenesis),
+        }
+    }
+
+    pub fn is_opaque(&self) -> bool {
+        matches!(self, Self::Opaque(_))
+    }
+
+    pub fn as_known(&self) -> Option<&Envelope> {
+        match self {
+            Self::Known(e) => Some(e),
+            Self::Opaque(_) => None,
+        }
+    }
+
+    pub fn as_opaque(&self) -> Option<&OpaqueEntry> {
+        match self {
+            Self::Known(_) => None,
+            Self::Opaque(o) => Some(o),
+        }
+    }
+}
+
+impl From<Envelope> for StoredEntry {
+    fn from(e: Envelope) -> Self {
+        Self::Known(e)
+    }
+}
+
+impl From<OpaqueEntry> for StoredEntry {
+    fn from(o: OpaqueEntry) -> Self {
+        Self::Opaque(o)
+    }
+}
+
+/// Parses one understood non-HTJRNL01 layout into a Known envelope. The
+/// returned Envelope carries the opaque entry's hash and signature, which were
+/// verified over the raw bytes; `Envelope::verify` (which recomputes HTJRNL01
+/// bytes) does not apply to it. How a promoted entry is stored and served is
+/// ht-j87z.13's decision.
+pub type LayoutParser = fn(&OpaqueEntry) -> Result<Envelope, EnvelopeError>;
+
+/// The parser for `magic`, if this build understands it. Production builds
+/// understand no layout but HTJRNL01 and always return `None`.
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn understood_layout(_magic: &[u8; 8]) -> Option<LayoutParser> {
+    None
+}
+
+/// The parser for `magic`, if this build understands it (test builds: the
+/// layouts registered with [`mark_layout_understood`]).
+#[cfg(any(test, feature = "test-support"))]
+pub fn understood_layout(magic: &[u8; 8]) -> Option<LayoutParser> {
+    UNDERSTOOD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(m, _)| m == magic)
+        .map(|(_, p)| *p)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+static UNDERSTOOD: std::sync::Mutex<Vec<([u8; 8], LayoutParser)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Marks `magic` parseable by `parser` until the guard drops. Process-global:
+/// a suite relying on it across threads must not share a process with suites
+/// that expect the magic to stay opaque. Refuses `HTJRNL01` (panics); a second
+/// registration of the same magic replaces the first.
+#[cfg(any(test, feature = "test-support"))]
+pub fn mark_layout_understood(magic: [u8; 8], parser: LayoutParser) -> UnderstoodLayoutGuard {
+    assert_ne!(&magic, MAGIC, "HTJRNL01 is always understood natively");
+    let mut list = UNDERSTOOD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    list.retain(|(m, _)| *m != magic);
+    list.push((magic, parser));
+    UnderstoodLayoutGuard { magic }
+}
+
+/// Removes the registration made by [`mark_layout_understood`] on drop.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use = "the layout is understood only while the guard lives"]
+pub struct UnderstoodLayoutGuard {
+    magic: [u8; 8],
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for UnderstoodLayoutGuard {
+    fn drop(&mut self) {
+        UNDERSTOOD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(m, _)| *m != self.magic);
     }
 }
 
@@ -1086,5 +1502,280 @@ mod tests {
         );
         assert_eq!(try_with("ver", 0.into()), Err(malformed("kind_version")));
         assert!(try_with("counter", 7.into()).is_ok());
+    }
+
+    use crate::test_support::opaque_entry::{
+        SYNTHETIC_MAGIC, synthetic_entry, synthetic_parts, synthetic_unsigned,
+    };
+
+    #[test]
+    fn htjrnl01_canonical_bytes_start_with_the_prefix() {
+        let id = identity(1);
+        for unsigned in [genesis(&id), full(&id)] {
+            let bytes = unsigned.canonical_bytes();
+            let prefix = EntryPrefix::parse(&bytes).unwrap();
+            assert_eq!(prefix.magic, *MAGIC);
+            assert_eq!(prefix.log, unsigned.log);
+            assert_eq!(prefix.counter, unsigned.counter);
+            assert_eq!(prefix.prev_hash, unsigned.prev_hash);
+            assert_eq!(&bytes[..PREFIX_LEN], &prefix.to_bytes()[..]);
+        }
+        assert_eq!(PREFIX_LEN, 8 + 16 + 4 + 8 + 32);
+    }
+
+    #[test]
+    fn every_unit_fixture_parses_under_entry_prefix() {
+        for n in 1..=3u8 {
+            let id = identity(n);
+            for inc in [1u32, 7] {
+                for mut unsigned in [genesis(&id), full(&id)] {
+                    unsigned.log.incarnation = inc;
+                    let e = unsigned.seal(&id);
+                    let prefix = EntryPrefix::parse(&e.canonical_bytes()).unwrap();
+                    assert_eq!(prefix.magic, *MAGIC);
+                    assert_eq!(prefix.log, e.log);
+                    assert_eq!(prefix.counter, e.counter);
+                    assert_eq!(prefix.prev_hash, e.prev_hash);
+                }
+            }
+        }
+        let golden = hex_decode_vec(GOLDEN_CANONICAL).unwrap();
+        let known = full(&identity(1));
+        let prefix = EntryPrefix::parse(&golden).unwrap();
+        assert_eq!(prefix.log, known.log);
+        assert_eq!(prefix.counter, known.counter);
+        assert_eq!(prefix.prev_hash, known.prev_hash);
+        assert_eq!(
+            EntryPrefix::parse(&golden[..PREFIX_LEN - 1]),
+            Err(malformed("prefix"))
+        );
+    }
+
+    #[test]
+    fn envelope_generation_stays_one() {
+        // 2.1.1 refuses any other hello `envelope` value with
+        // `envelope_unsupported`, a stop-dialing close (link.rs test
+        // `refuse_envelope_unsupported` proves the refusal and its
+        // `StopDialing` class), so a new layout is signalled by magic and
+        // capability, never by bumping this.
+        assert_eq!(crate::sync::link::ENVELOPE_GENERATION, 1);
+    }
+
+    #[test]
+    fn genesis_stays_htjrnl01() {
+        let id = identity(1);
+        for inc in [1u32, 2, 9] {
+            let mut g = genesis(&id);
+            g.log.incarnation = inc;
+            assert_eq!(g.seal(&id).canonical_bytes()[..8], *MAGIC);
+        }
+        let opaque = synthetic_unsigned(&id, 1, 1, [0; 32]);
+        let (header, raw) = synthetic_parts(&id, &opaque);
+        assert_eq!(
+            verify_opaque(header, raw, &id.public_key()),
+            Err(EnvelopeError::NotGenesis)
+        );
+    }
+
+    #[test]
+    fn opaque_max_bytes_fits_a_frame() {
+        assert_eq!(OPAQUE_MAX_BYTES, 384 * 1024);
+        const { assert!(OPAQUE_MAX_BYTES <= PAYLOAD_MAX) };
+        const { assert!(2 * OPAQUE_MAX_BYTES + 4096 < 1 << 20) };
+    }
+
+    #[test]
+    fn check_opaque_size_bounds() {
+        assert_eq!(check_opaque_size(OPAQUE_MAX_BYTES), Ok(()));
+        assert_eq!(
+            check_opaque_size(OPAQUE_MAX_BYTES + 1),
+            Err(OpaqueTooLarge {
+                len: OPAQUE_MAX_BYTES + 1
+            })
+        );
+    }
+
+    fn parts(counter: u64) -> (NodeIdentity, OpaqueHeader, Vec<u8>) {
+        let id = identity(1);
+        let (header, raw) = synthetic_parts(&id, &synthetic_unsigned(&id, 1, counter, [0x44; 32]));
+        (id, header, raw)
+    }
+
+    #[test]
+    fn verify_opaque_good() {
+        let (id, header, raw) = parts(5);
+        let entry = verify_opaque(header, raw.clone(), &id.public_key()).unwrap();
+        assert_eq!(entry.header(), header);
+        assert_eq!(entry.log(), header.log);
+        assert_eq!(entry.counter(), 5);
+        assert_eq!(entry.prev_hash(), [0x44; 32]);
+        assert_eq!(entry.hash(), header.hash);
+        assert_eq!(entry.signature(), header.signature);
+        assert_eq!(entry.raw(), &raw[..]);
+        assert_eq!(entry.magic(), SYNTHETIC_MAGIC);
+        assert_eq!(entry.prefix(), EntryPrefix::parse(&raw).unwrap());
+    }
+
+    #[test]
+    fn verify_opaque_wrong_hash() {
+        let (id, header, mut raw) = parts(5);
+        raw[PREFIX_LEN + 3] ^= 1;
+        assert_eq!(
+            verify_opaque(header, raw, &id.public_key()),
+            Err(EnvelopeError::HashMismatch)
+        );
+    }
+
+    #[test]
+    fn verify_opaque_wrong_sig() {
+        let (id, mut header, raw) = parts(5);
+        assert_eq!(
+            verify_opaque(header, raw.clone(), &identity(2).public_key()),
+            Err(EnvelopeError::BadSignature)
+        );
+        header.signature[0] ^= 1;
+        assert_eq!(
+            verify_opaque(header, raw, &id.public_key()),
+            Err(EnvelopeError::BadSignature)
+        );
+    }
+
+    #[test]
+    fn verify_opaque_prefix_header_mismatch() {
+        let (id, header, raw) = parts(5);
+        let key = id.public_key();
+        let mut counter = header;
+        counter.counter += 1;
+        let mut prev = header;
+        prev.prev_hash[0] ^= 1;
+        let mut inc = header;
+        inc.log.incarnation += 1;
+        for h in [counter, prev, inc] {
+            assert_eq!(
+                verify_opaque(h, raw.clone(), &key),
+                Err(malformed("prefix"))
+            );
+        }
+    }
+
+    #[test]
+    fn verify_opaque_prefix_names_other_log() {
+        let (id, mut header, raw) = parts(5);
+        header.log.node = identity(2).uuid();
+        assert_eq!(
+            verify_opaque(header, raw, &id.public_key()),
+            Err(malformed("prefix"))
+        );
+    }
+
+    #[test]
+    fn verify_opaque_refuses_htjrnl01_magic() {
+        let id = identity(1);
+        let raw = full(&id).canonical_bytes();
+        let prefix = EntryPrefix::parse(&raw).unwrap();
+        let hash = sha256(&raw);
+        let header = OpaqueHeader {
+            log: prefix.log,
+            counter: prefix.counter,
+            prev_hash: prefix.prev_hash,
+            hash,
+            signature: id.sign(&hash),
+        };
+        assert_eq!(
+            verify_opaque(header, raw, &id.public_key()),
+            Err(malformed("magic"))
+        );
+    }
+
+    #[test]
+    fn verify_opaque_short_raw() {
+        let (id, header, raw) = parts(5);
+        for len in [PREFIX_LEN - 1, 0] {
+            assert_eq!(
+                verify_opaque(header, raw[..len].to_vec(), &id.public_key()),
+                Err(malformed("prefix")),
+                "{len}"
+            );
+        }
+    }
+
+    #[test]
+    fn verify_opaque_oversize() {
+        let (id, header, raw) = parts(5);
+        let mut big = raw[..PREFIX_LEN].to_vec();
+        big.resize(OPAQUE_MAX_BYTES + 1, 0);
+        assert_eq!(
+            verify_opaque(header, big, &id.public_key()),
+            Err(malformed("raw"))
+        );
+        let mut max = raw[..PREFIX_LEN].to_vec();
+        max.resize(OPAQUE_MAX_BYTES, 0);
+        assert_eq!(
+            OpaqueEntry::new(header, max).map(|e| e.raw().len()),
+            Ok(OPAQUE_MAX_BYTES)
+        );
+    }
+
+    #[test]
+    fn verify_opaque_counter_one_is_not_genesis() {
+        let id = identity(1);
+        let (header, raw) = synthetic_parts(&id, &synthetic_unsigned(&id, 1, 1, [0; 32]));
+        assert_eq!(
+            verify_opaque(header, raw, &id.public_key()),
+            Err(EnvelopeError::NotGenesis)
+        );
+        let (header, raw) = synthetic_parts(&id, &synthetic_unsigned(&id, 1, 0, [0; 32]));
+        assert_eq!(
+            verify_opaque(header, raw, &id.public_key()),
+            Err(malformed("counter"))
+        );
+    }
+
+    #[test]
+    fn stored_entry_known_and_opaque_agree() {
+        let id = identity(1);
+        let known = full(&id).seal(&id);
+        let k = StoredEntry::from(known.clone());
+        assert_eq!(k.log(), known.log);
+        assert_eq!(k.counter(), 7);
+        assert_eq!(k.prev_hash(), known.prev_hash);
+        assert_eq!(k.hash(), known.hash);
+        assert_eq!(k.signature(), known.signature);
+        assert_eq!(
+            k.prefix(),
+            EntryPrefix::parse(&known.canonical_bytes()).unwrap()
+        );
+        assert_eq!(k.size(), known.canonical_bytes().len());
+        assert_eq!(k.verify(&id.public_key()), Ok(()));
+        assert_eq!(
+            k.verify(&identity(2).public_key()),
+            Err(EnvelopeError::BadSignature)
+        );
+        assert_eq!(k.genesis_pubkey(), Err(EnvelopeError::NotGenesis));
+        assert!(!k.is_opaque());
+        assert_eq!(k.as_known(), Some(&known));
+        assert_eq!(k.as_opaque(), None);
+
+        let g = StoredEntry::from(genesis(&id).seal(&id));
+        assert_eq!(g.genesis_pubkey(), Ok(id.public_key()));
+
+        let opaque = synthetic_entry(&id, &synthetic_unsigned(&id, 1, 5, [0x44; 32]));
+        let o = StoredEntry::from(opaque.clone());
+        assert_eq!(o.log(), opaque.log());
+        assert_eq!(o.counter(), 5);
+        assert_eq!(o.prev_hash(), [0x44; 32]);
+        assert_eq!(o.hash(), opaque.hash());
+        assert_eq!(o.signature(), opaque.signature());
+        assert_eq!(o.prefix(), opaque.prefix());
+        assert_eq!(o.size(), opaque.raw().len());
+        assert_eq!(o.verify(&id.public_key()), Ok(()));
+        assert_eq!(
+            o.verify(&identity(2).public_key()),
+            Err(EnvelopeError::BadSignature)
+        );
+        assert_eq!(o.genesis_pubkey(), Err(EnvelopeError::NotGenesis));
+        assert!(o.is_opaque());
+        assert_eq!(o.as_known(), None);
+        assert_eq!(o.as_opaque(), Some(&opaque));
     }
 }
