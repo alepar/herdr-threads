@@ -399,11 +399,40 @@ mod tag_check {
             .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    /// `Ok(true)`: compare; `Ok(false)`: skip locally; `Err`: the tag is
+    /// missing where `HT_REQUIRE_TAGS=1` says CI must have it.
+    fn tag_gate(available: bool, require: Option<&str>) -> Result<bool, String> {
+        if available {
+            Ok(true)
+        } else if require == Some("1") {
+            Err(
+                "HT_REQUIRE_TAGS=1 but git or the v2.1.1 tag is not available \
+                 (CI must fetch the tags before the test job)"
+                    .to_owned(),
+            )
+        } else {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn tag_gate_fails_only_when_required() {
+        assert_eq!(tag_gate(true, Some("1")), Ok(true));
+        assert_eq!(tag_gate(false, None), Ok(false));
+        assert_eq!(tag_gate(false, Some("0")), Ok(false));
+        assert!(tag_gate(false, Some("1")).is_err());
+    }
+
     #[test]
     fn frozen_copy_matches_tag_source() {
-        if git(&["cat-file", "-e", "v2.1.1^{commit}"]).is_none() {
-            eprintln!("skipped: git or the v2.1.1 tag is not available here");
-            return;
+        let available = git(&["cat-file", "-e", "v2.1.1^{commit}"]).is_some();
+        match tag_gate(available, std::env::var("HT_REQUIRE_TAGS").ok().as_deref()) {
+            Ok(true) => {}
+            Ok(false) => {
+                eprintln!("skipped: git or the v2.1.1 tag is not available here");
+                return;
+            }
+            Err(why) => panic!("{why}"),
         }
         let mut sources = std::collections::BTreeMap::new();
         for (file, marker, indent) in ITEMS {

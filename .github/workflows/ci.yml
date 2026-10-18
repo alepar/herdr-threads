@@ -40,8 +40,13 @@ jobs:
       # leak check can tell this run's leftovers from anyone else's.
       HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-tests-${{ matrix.shard }}
       HT_SWEEP_PANIC_FILE: ${{ github.workspace }}/sweep-panics.log
+      # The frozen wire-copy test compares against the v2.1.1 tag: fail, not skip, without it.
+      HT_REQUIRE_TAGS: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Fetch release tags for the frozen wire-copy test
+        run: git fetch --no-tags --depth=1 origin tag v2.1.1 tag v2.0.4
 
       - name: Python for TOML and fixture tests
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
