@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## v2.2.1
 
 - **Coordinator skill guidance.** Coordinator sessions run `herdr-threads nudge-threshold 1` when taking the role, so default p1 messages (including informational updates) wake them while idle; other roles keep the default threshold 0. The skill no longer suggests `nudge-threshold -1` for coordinators and describes the p1 wake correctly. Skill text only.
+- **Faster, steadier qualification.** Test, CI and release-process changes only, with no product behavior change: docs-only CI skipping, a single release failpoint proof, rust dependency caching, `scripts/release-qualify`, an 18-wide nextest run, and fixes for the apply-lane and multinode test flakes.
 
 ## v2.2.0
 
