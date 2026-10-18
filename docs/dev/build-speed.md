@@ -334,3 +334,59 @@ also three timing-sensitive tests (`lanes_latency`, `summary_flow`, `topology_ac
 dependencies in the test profile: they are -O0 except `sha2` and `libsqlite3-sys` (whose C is not
 LTO'd by rustc). `cargo build` (dev), release builds and clippy are unaffected. The dev profile
 keeps 64 units (item 5), which suits -O0.
+
+## CI shard budget (ht-o22w, 2026-10-18)
+
+The [manual run on c643fa0ad](https://github.com/alepar/herdr-threads/actions/runs/39108986859)
+passed every test, but three slice shards took 311.861, 312.726 and 189.959 s. Their
+aggregate test times were 2062.812, 2069.976 and 1189.965 test-seconds respectively.
+The first two were already near the seven-slot capacity floor (294.7 and 295.7 s),
+so starting their slow tests earlier cannot provide useful margin by itself.
+
+CI now uses four slice shards, retaining seven slots, every serialized test group,
+all coverage, and the strict 300 s wall-clock guard. This costs one additional CI
+runner and prewarm; it does not establish the separate unsharded speed budget.
+The full-suite gate remains unchanged.
+
+Timing replay of all 7,678 passing test rows from jobs 117620836510, 117620836517
+and 117620836495 gives:
+
+| Slice shard | Tests | Test-seconds | Projected wall time | With every duration +20% |
+| --- | ---: | ---: | ---: | ---: |
+| 1/4 | 1,920 | 1288.377 | 195.694 s | 234.833 s |
+| 2/4 | 1,920 | 1242.765 | 202.093 s | 242.512 s |
+| 3/4 | 1,919 | 1388.918 | 212.381 s | 254.857 s |
+| 4/4 | 1,919 | 1402.693 | 213.371 s | 256.045 s |
+
+Method: download each job with `gh api --allow-escape-sequences
+repos/alepar/herdr-threads/actions/jobs/JOB/logs`, strip ANSI escapes, and extract
+the PASS duration, binary ID and test name. Sort by (binary ID, test name), then
+assign consecutive rows round-robin; ignored tests do not consume positions.
+This reproduces all original three-shard assignments exactly. Replay in descending
+nextest priority, then binary ID and name, with seven slots, the group capacities
+and `threads-required` from `.config/nextest.toml`, advancing to the next completion
+when no queued test fits. The original split replays at 311.778, 312.618 and
+188.276 s (within 1.7 s of measured wall time). These are projections using the
+recorded runners' durations, not a new CI run or a guaranteed upper bound.
+
+Focused local checks (macOS arm64, unchanged fixtures and assertions):
+
+| Test | CI | Local baseline | Curve optimization experiment |
+| --- | ---: | ---: | ---: |
+| finite invitation backlog beyond the display cache | 81.018 s | 5.420 s | 5.308 s |
+| old visible invitation topic beyond newest window | 78.299 s | 5.403 s | 5.295 s |
+| Q4 episode/private/reconciliation SQLite work | 26.714 s | 5.389 s | 5.794 s |
+| page-fit differential oracle | — | 1.308 s | 1.358 s |
+
+The experiment set only `profile.test.package.curve25519-dalek.opt-level = 3`;
+it showed no useful improvement and was reverted. Both four-test nextest runs
+passed with `--lib --all-features --test-threads 1` and exact-name filters for the
+rows above. No test fixture, assertion or production code changed.
+
+The package release-absence proof passed locally in 193.88 s on the first seeded
+rebuild and 10.57 s on the immediate warm repeat (CI: 2.420 s after prebuild).
+Its persistent release/control target directories already share build artifacts.
+Before timing a local suite, run `sh tests/service/check_failpoints_absent.sh
+--prebuild`, as both CI workflows already do; a source change can otherwise put
+release compilation inside the suite timer. This task ran only focused tests;
+the coordinator owns the subsequent full-suite measurement.

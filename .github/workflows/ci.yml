@@ -1,7 +1,7 @@
 name: CI
 
 # Deterministic checks on Linux x86_64 (Ubuntu 24.04, Herdr 0.9.1): the test
-# suite in three parallel shards, plus format, packaging, installer and Python
+# suite in four parallel shards, plus format, packaging, installer and Python
 # suites; clippy on macOS and Linux; release-target build checks (macOS and
 # Linux musl) and workflow lint. macOS arm64 runs the same suite locally
 # before a merge. herdr-plugin.toml declares platforms ["macos", "linux"].
@@ -29,12 +29,12 @@ env:
 
 jobs:
   tests:
-    name: Tests ${{ matrix.shard }}/3 (Linux x86_64)
+    name: Tests ${{ matrix.shard }}/4 (Linux x86_64)
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     env:
       # ht-p03.131: every process a step starts carries this id, so the final
       # leak check can tell this run's leftovers from anyone else's.
@@ -97,12 +97,12 @@ jobs:
         # suite compiles a release mid-run and starves timing-bound tests.
         run: sh tests/service/check_failpoints_absent.sh --prebuild
 
-      - name: Tests (parallel, shard ${{ matrix.shard }}/3)
+      - name: Tests (parallel, shard ${{ matrix.shard }}/4)
         # cargo-nextest, one process per test, every binary in one pool; the
         # serialized chains are test groups in .config/nextest.toml. Every test
         # isolates its own state (ht-zo4, scripts/full-suite-gate). The suite
         # is split round-robin over the sorted test list (slice), so each shard
-        # carries about a third of the test time; each shard has the five-minute
+        # carries about a quarter of the test time; each shard has the five-minute
         # wall-clock budget. --all-features enables `test-support`.
         # The package suite runs tests/service/check_failpoints_absent.sh (its
         # two release builds are no-ops after the prebuild). #[ignore] tests (package lifecycle gate,
@@ -115,11 +115,11 @@ jobs:
           set -euo pipefail
           start=$(date +%s)
           cargo nextest run --locked --all-targets --all-features --profile ci \
-            --partition "slice:$SHARD/3" 2>&1 | tee test.log
+            --partition "slice:$SHARD/4" 2>&1 | tee test.log
           elapsed=$(( $(date +%s) - start ))
-          echo "Shard $SHARD/3 wall time: ${elapsed}s (budget: under 300s)"
+          echo "Shard $SHARD/4 wall time: ${elapsed}s (budget: under 300s)"
           if [ "$elapsed" -ge 300 ]; then
-            echo "::error::Test shard $SHARD/3 exceeded the five-minute budget"
+            echo "::error::Test shard $SHARD/4 exceeded the five-minute budget"
             exit 1
           fi
 
@@ -129,7 +129,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "### Isolated-Herdr tests (shard ${{ matrix.shard }}/3)"
+            echo "### Isolated-Herdr tests (shard ${{ matrix.shard }}/4)"
             echo "Pinned Herdr $HERDR_VERSION provisioned; HT_SKIP_HERDR_TESTS=${HT_SKIP_HERDR_TESTS:-unset}."
             echo 'Skipped by name (empty means none skipped):'
             echo '```'

@@ -76,10 +76,10 @@ check "ci.yml: package-lifecycle cargo test enables test-support" bash -c \
   'yq ".jobs.package-lifecycle.steps[].run" "$1" | grep -qE -- "cargo test --locked (--features test-support|--all-features) --test package"' _ "$ci"
 check "ci.yml: deterministic job ends with an always() leak check" bash -c \
   'test "$(yq ".jobs.deterministic.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()"' _ "$ci"
-check "ci.yml: tests job runs on Linux in three shards" bash -c \
-  'test "$(yq ".jobs.tests.runs-on" "$1")" = ubuntu-24.04 && test "$(yq -o=json -I=0 ".jobs.tests.strategy.matrix.shard" "$1")" = "[1,2,3]"' _ "$ci"
+check "ci.yml: tests job runs on Linux in four shards" bash -c \
+  'test "$(yq ".jobs.tests.runs-on" "$1")" = ubuntu-24.04 && test "$(yq -o=json -I=0 ".jobs.tests.strategy.matrix.shard" "$1")" = "[1,2,3,4]"' _ "$ci"
 check "ci.yml: tests job partitions nextest by slice" bash -c \
-  'yq ".jobs.tests.steps[].run" "$1" | grep -qF -- "--partition \"slice:\$SHARD/3\""' _ "$ci"
+  'yq ".jobs.tests.steps[].run" "$1" | grep -qF -- "--partition \"slice:\$SHARD/4\""' _ "$ci"
 check "ci.yml: tests job ends with an always() leak check" bash -c \
   'test "$(yq ".jobs.tests.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()"' _ "$ci"
 check "ci.yml: clippy runs on macOS and Linux" bash -c \
