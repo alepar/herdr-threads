@@ -495,7 +495,10 @@ fn codex_fork_session_start_satisfies_the_contract() {
             event: "SessionStart"
         }
     );
-    assert!(!parse_accepts("codex", &bytes));
+    assert!(
+        parse_accepts("codex", &bytes),
+        "a native fork is admitted (ht-i9a7)"
+    );
 }
 
 #[test]

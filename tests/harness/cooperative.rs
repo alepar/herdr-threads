@@ -26,14 +26,15 @@ fn codex_maps_source_lifecycle_and_preserves_local_identity() {
         assert_eq!(e.native_session.as_deref(), Some("native"));
         assert_eq!(e.capability, Capability::ObservedInput);
     }
-    assert!(
-        codex::parse_event_for_version(
-            br#"{"hook_event_name":"SessionStart","session_id":"native","source":"fork"}"#,
-            "id",
-            &pinned()
-        )
-        .is_err()
-    );
+    // A native interactive fork is its own concurrent session (ht-i9a7), not a rejected source.
+    let fork = codex::parse_event_for_version(
+        br#"{"hook_event_name":"SessionStart","session_id":"native","source":"fork"}"#,
+        "id",
+        &pinned(),
+    )
+    .unwrap();
+    assert_eq!(fork.kind, EventKind::Fork);
+    assert_eq!(fork.native_session.as_deref(), Some("native"));
 }
 #[test]
 fn claude_only_measured_tool_shape_is_qualified() {

@@ -886,7 +886,7 @@ fn retry_carries_no_seat_selectors_or_narrowing() {
 #[test]
 fn every_seat_taking_command_help_states_the_name_form() {
     // The D7 line sits on each seat-valued argument's help; no help may still say exact-only.
-    let line = "an exact seat ID, or a name path SPACE/TAB/PANE";
+    let line = "exact ID or SPACE/TAB/PANE; single-quote path: names";
     for argv in [
         &["inbox"][..],
         &["pending-receipts"],

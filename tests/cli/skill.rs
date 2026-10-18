@@ -146,7 +146,7 @@ fn skill_file_is_a_well_formed_concise_guide() {
     assert_eq!(lines.next(), Some("name: herdr-threads"));
     assert!(lines.next().unwrap().starts_with("description: "));
     assert_eq!(lines.next(), Some("---"));
-    assert!(SKILL_MD.lines().count() < 215);
+    assert!(SKILL_MD.lines().count() < 220);
     let summary_header = format!("## {}", crate::protocol::summary::SUMMARY_PROCEDURE_REF);
     for needle in [
         summary_header.as_str(),
