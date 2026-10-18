@@ -98,3 +98,53 @@ repository's one-minute incremental/lint budgets in this session. They are not
 quiet performance measurements; no build-speed cause or regression is claimed.
 `nice` reported that setpriority was denied in the sandbox and still ran the
 requested commands; their exit results above are from the actual checks.
+
+## Follow-up: multinode seat readiness
+
+The coordinator supplied another failure from the suite timing tab:
+`config_auto_ack::incomplete_read_only_and_refused_displays_leave_the_receipt_pending`
+failed in `support::send` with `send --seat ... not_found`. Main at `a0be1a5d8`
+was merged first (tree-identical to the already completed apply fix).
+
+`support::wait_seats` used `Cluster::kinds`, whose query counts every journal
+row regardless of `apply_state`. Incoming `seat.created` entries are stored
+pending; only the later Apply pass calls `materialize_seat_created` to insert
+the remote seat. A journal count is therefore not a readiness barrier for
+resolving a seat ID. The helper now counts published rows in the materialized
+`seats` table, preserving its exact-count contract and excluding unpublished
+local allocations. This fixes the common fixture barrier for its callers,
+without changing product behavior, retrying sends, or adding sleeps.
+
+The regression uses two real, unlinked cluster nodes with a seat each, stops
+both daemons, then serves the source's signed envelopes and ingests them into
+the stopped receiver through the production journal API. At this deterministic
+boundary the receiver has two `seat.created` journal facts but no remote seat
+projection. The original readiness predicate incorrectly returns true and the
+regression fails. After the fix it stays false; executing the production Apply
+pass creates the remote seat and makes readiness true. All writes to the store
+in this probe happen after the cluster's daemons stop.
+
+Evidence and checks:
+
+- [Deterministic red output](evidence/ht-b5yq/multinode-red.log): the old
+  readiness predicate releases while the remote seat is absent.
+- [Focused green output](evidence/ht-b5yq/multinode-focused.log): all seven
+  tests pass (new regression, four auto-ACK cases, two direct-send cases),
+  with two test threads, in 20.45 s.
+- [Baseline loaded runs](evidence/ht-b5yq/mn-baseline-results.json): 20/20
+  repetitions of the reported test pass. This does not reproduce its literal
+  historical CLI error; the deterministic probe proves the invalid readiness
+  assumption and missing seat projection that can cause it.
+- [Fixed loaded runs](evidence/ht-b5yq/mn-fixed-results.json): 50/50 pass.
+  Both stress runs used two parallel test processes and one owned Python CPU
+  companion, with per-invocation timeouts; companions were stopped and reaped.
+- [All-target/all-feature clippy](evidence/ht-b5yq/multinode-clippy.log):
+  warnings denied, pass in 0.89 s. Warm incremental test build: 1.71 s.
+  The initial multinode target preparation took 4m 02s; it is not a warm
+  incremental measurement. The sandbox's `nice` warning remains as above.
+- `scripts/check-harness-neutral`, `cargo fmt --check`, `git diff --check`,
+  and `nice scripts/check-default-features` pass. Independent read-only review
+  found no issues.
+- Scoped leak checks for `ht-b5yq-multinode-mn-baseline`,
+  `ht-b5yq-multinode-mn-fixed`, and `ht-b5yq-multinode-focused` found no
+  leaked processes or temporary files. No full suite run.

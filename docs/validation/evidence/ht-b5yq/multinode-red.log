@@ -1,0 +1,13 @@
+running 1 test
+
+thread 'support::received_seat_facts_are_not_ready_until_materialized' (159075539) panicked at tests/multinode/support.rs:181:5:
+receiving both seat facts must not release the readiness barrier
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test support::received_seat_facts_are_not_ready_until_materialized ... FAILED
+
+failures:
+
+failures:
+    support::received_seat_facts_are_not_ready_until_materialized
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 32 filtered out; finished in 1.72s

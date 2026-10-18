@@ -118,11 +118,87 @@ pub fn wait_receipt(cluster: &Cluster, node: usize, message: &str, seat: &Seat, 
     );
 }
 
-/// Waits until `node` knows `count` seats through `seat.created`.
+fn seats_ready(cluster: &Cluster, node: usize, count: i64) -> bool {
+    // Received journal facts can still be pending. Sends need their projection,
+    // including publication of locally allocated seats, before resolving ids.
+    cluster.scalar(node, "SELECT count(*) FROM seats WHERE published=1", &[])
+        == Some(count.to_string())
+}
+
+/// Waits until `node` has materialized `count` published seats.
 pub fn wait_seats(cluster: &Cluster, node: usize, count: i64) {
     cluster.wait_until(&format!("node {node} to know {count} seats"), WAIT, || {
-        (cluster.kinds(node).get("seat.created") == Some(&count)).then_some(())
+        seats_ready(cluster, node, count).then_some(())
     });
+}
+
+#[test]
+fn received_seat_facts_are_not_ready_until_materialized() {
+    use herdr_threads::{
+        app::SystemClock,
+        node::NodeIdentity,
+        protocol::time::{CallBudget, Cancellation, MonoInstant},
+        store::{apply, connection::StoreContext, journal},
+        sync::{BatchLimits, LogKey, facts::FactRegistry, journal_port::IngestOutcome},
+        test_support::multinode::default_seed,
+    };
+    use std::sync::Arc;
+
+    // No link: stage the actual remote envelopes without an Apply worker,
+    // deterministically exposing the normal ingest-before-apply boundary.
+    let mut cluster = cluster("mn-seat-ready", 2, &[], &[0, 1]);
+    cluster.seat(0, P1);
+    let remote = cluster.seat(1, P1);
+    cluster.stop();
+    let source = cluster.open_store(1).unwrap();
+    let vector = cluster.vector(1);
+    let log = LogKey {
+        node: cluster.node_uuid(1),
+        incarnation: vector.iter().map(|row| row.1 as u32).max().unwrap(),
+    };
+    let entries = journal::serve(&source, &log, 1, BatchLimits::default()).unwrap();
+    let path = cluster.open_store(0).unwrap().path().unwrap().to_owned();
+    let seed = default_seed(0);
+    let ctx = StoreContext::new(path.into(), Arc::new(SystemClock::new())).with_journal_seed(seed);
+    let mut writer = ctx.open_writer().unwrap();
+    journal::open(
+        &ctx,
+        &mut writer,
+        Arc::new(NodeIdentity::from_seed(seed)),
+        "multinode",
+        FactRegistry::builtins(),
+    )
+    .unwrap();
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Cancellation::default(),
+    };
+    let outcome = journal::ingest(&ctx, &mut writer, &log, entries, &budget).unwrap();
+    assert!(
+        matches!(outcome, IngestOutcome::Stored { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(cluster.kinds(0).get("seat.created"), Some(&2));
+    assert_eq!(
+        cluster.scalar(0, "SELECT id FROM seats WHERE id=?1", &[&remote.id]),
+        None,
+        "the ingested remote seat is not visible to a send yet"
+    );
+    assert!(
+        !seats_ready(&cluster, 0, 2),
+        "receiving both seat facts must not release the readiness barrier"
+    );
+    ctx.execute_decision(
+        &mut writer,
+        |_| Ok(()),
+        |tx, decision, ()| apply::apply_pass(tx, &ctx, decision, apply::ApplyLimits::default()),
+    )
+    .unwrap();
+    assert!(seats_ready(&cluster, 0, 2));
+    assert_eq!(
+        cluster.scalar(0, "SELECT id FROM seats WHERE id=?1", &[&remote.id]),
+        Some(remote.id)
+    );
 }
 
 /// Waits until `node`'s first host has typed `count` wake markers into
