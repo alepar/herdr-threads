@@ -1,0 +1,5 @@
+   Compiling herdr-threads v2.0.4 (/tmp/sp-af85f0d2/ht-j87z.12/freeze-peer-wire.Pbmv4h/wt)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 14s
+     Running tests/support/peer_wire_freeze.rs (target/freeze-peer-wire/debug/deps/peer_wire_freeze-842e48cd6e384b19)
+freeze-peer-wire: 2.0.4 is byte-identical to /Users/alepar/AleCode/herdr-threads/.worktrees/super-auto-peer-wire-compat-hardening/.worktrees/super-auto-peer-wire-compat-hardening--task-ht-j87z.12/tests/fixtures/peer_wire/2.0.4
+rc=0
