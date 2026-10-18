@@ -1,2 +1,4 @@
 # friction log — 2026-10-18-peer-wire-compat-hardening
 - [2026-10-18T20:59:06Z] security-review hook flagged unauthenticated oversize stall in ingest.rs mid-phase-3; filed fix bead ht-j87z.22 under the epic (blocked by .4) rather than editing the live integration worktree
+- [2026-10-18T23:05:15Z] assembler: unavailable — review input selection: provenance gaps in unrelated pre-existing run docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md:51,58 (invalid failed assembly archives) at both base and head; roast-code r1 runs directly on captured base/head; whole-range acceptance remains unavailable for these gaps
+- [2026-10-18T23:22:56Z] scope filter for roast-code r1 decided inline by orchestrator (all 5 findings in goal-named paths) instead of the scope-filter subagent

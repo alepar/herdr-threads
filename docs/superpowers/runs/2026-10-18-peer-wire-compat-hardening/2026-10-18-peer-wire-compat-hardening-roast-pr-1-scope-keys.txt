@@ -1,0 +1,5 @@
+[Should-fix] src/sync/resync.rs:488
+[Should-fix] src/sync/coordinator/serve.rs:265
+[Should-fix] src/store/journal.rs:1962; migrations/node/0004_journal_opaque.sql:19; migrations/node/0004_journal_opaque.sql:21
+[Nit] src/store/journal.rs:206
+[Nit] src/sync/coordinator.rs:2341; src/sync/coordinator/serve.rs:271; src/sync/coordinator.rs:5256
