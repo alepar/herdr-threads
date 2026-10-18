@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v2.1.1
+
+- **Daemon shutdown waits for its idle-exit monitor.** The idle-exit monitor thread was detached, so a stopping daemon could return while that thread still held the host session registry. It now joins with the other daemon workers before shutdown returns. No schema, protocol or model-visible text change.
+- **Test reliability and CI headroom.** The resume smoke test now asserts that the owed message is actually injected (a slow hook inbox read could fail open unnoticed) and test children scale that read bound with the test timeout scale; production keeps 500 ms. The clone-clearance test queues its restore inputs before starting its worker. CI test shards split four ways, which keeps each under the five-minute budget.
+
 ## v2.1.0
 
 - **One-way store upgrade to node schema 3.** The first daemon start of 2.1.0 adds `migrations/node/0003_concurrent_session_bindings.sql` (a `concurrent_session` flag on bindings, default off for existing ones); v2.0.x then refuses the upgraded store. Back up the state directory first if you might downgrade.
