@@ -42,6 +42,13 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 # Report every failure at the end of the run, not only the first.
 fail-fast = false
 final-status-level = "slow"
+# Most tests wait (IPC, real-time clocks, child processes) rather than
+# compute: one test per CPU on the 12-core development Mac kept 12 slots full
+# at ~4 busy cores and ran 292 s against the 300 s budget, 18 slots ran 224 s
+# at ~5.4 (ht-8jmx). The real-time chains still run alone (threads-required
+# below) and the serialized groups are unchanged. A fixed count, not
+# per-CPU: on a smaller host set NEXTEST_TEST_THREADS (or -j).
+test-threads = 18
 
 # Start the longest tests first, so they overlap the rest of the run instead
 # of trailing it: the failpoints check's two release builds, then the tests
@@ -59,6 +66,15 @@ slow-timeout = { period = "60s", terminate-after = 8 }
 [[profile.default.overrides]]
 filter = """
 binary(integration) & test(/::(herdr_stopped_freezes_wake_lane|herdr_stopped_logs_once_then_capped_summaries|herdr_stopped_costs_one_commit_per_backoff_step|idle_daemon_commits_nothing_from_deadline_wake_request_for_30s|retention_runs_alongside_the_wake_idle_bound|lapsed_reservation_fetch_is_honoured_while_free)$/)
+"""
+priority = 90
+
+# The six real-time service tests left outside the service-daemon group
+# (5-11 s each): the service binary sorts last, so in default order they
+# started in the run's final seconds and set its tail (ht-8jmx).
+[[profile.default.overrides]]
+filter = """
+binary(service) & test(/::(elected_health_does_not_keep_verified_host_after_errored_capture|elected_health_keeps_unavailable_host_after_errored_capture|elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join|real_cli_resolve_discards_intent_only_after_correlated_definitive_rejection|elected_driver_periodically_refreshes_without_target_requests|elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined)$/)
 """
 priority = 90
 
