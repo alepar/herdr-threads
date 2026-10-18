@@ -29,21 +29,23 @@ Options:
       --cooperative-seat <COOPERATIVE_SEAT>
           Explicit seat ID for a cooperative agent call; requires all four --cooperative-* options
       --cwd <CWD>
-          
+          Working directory for --new-tab; guarded pane launches cannot change it
       --cooperative-target <COOPERATIVE_TARGET>
           Exact live pane ID or scoped name bound to the cooperative seat
-      --space <SPACE>
-          Exact workspace ID or label; omitted inherits the caller's live workspace, never focus
+      --profile-dir <PROFILE_DIR>
+          Existing profile directory for --new-tab, distinct from native named profiles. Guarded pane launches cannot change the profile directory
       --cooperative-harness <COOPERATIVE_HARNESS>
           Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
-      --tab <TAB>
-          Exact tab ID or label in the selected workspace; a tab ID supplies its workspace
+      --space <SPACE>
+          Exact workspace ID or label; omitted inherits the caller's live workspace, never focus
       --cooperative-role <COOPERATIVE_ROLE>
           Agent role for the cooperative call [possible values: top-level, subagent]
-      --pane <PANE>
-          Exact pane ID, label or live agent name in the selected tab. Omitted parents inherit the live caller; outside Herdr supply parents or a pane ID. Qualify duplicate names with --space/--tab or use an ID; conflicts never pick a pane
+      --tab <TAB>
+          Exact tab ID or label in the selected workspace; a tab ID supplies its workspace
       --agent-id <ID>
           Subagent agent id, inserted by herdr-threads' Claude PreToolUse hook (spec §1). Carried into the cooperative claim; no behaviour change until session bindings land
+      --pane <PANE>
+          Exact pane ID, label or live agent name in the selected tab. Omitted parents inherit the live caller; outside Herdr supply parents or a pane ID. Qualify duplicate names with --space/--tab or use an ID; conflicts never pick a pane
       --new-thread
           
       --thread <THREAD>
@@ -77,9 +79,19 @@ Choose one target mode:
   --existing with exactly one --seat SEAT or --pane PANE delivers durable work
     to an existing canonical seat without launching or restarting its session.
 Handoff requires an original top-level Agent and the guarded daemon capability.
---new-tab conflicts with --existing, --tab, --pane and --seat. --cwd is new-tab
-only: an absolute existing directory, defaulting to the invocation cwd, normalized
-before publication. --space selects one live workspace by exact ID or unique label;
+--new-tab conflicts with --existing, --tab, --pane and --seat. Directory example:
+  handoff --new-tab review --kind HARNESS --profile-dir /absolute/profile --cwd /absolute/workdir -- "Review this change"
+--cwd and --profile-dir require absolute existing directories, canonicalized once
+before publication. Both refuse for --existing and guarded pane launches; use
+--new-tab instead. Plain launch is unchanged. Omitted cwd uses the invocation cwd;
+omitted profile retains normal selection. Profile mapping/support is adapter-owned
+(see docs/agent-usage.md); a directory is distinct from a native named profile.
+The selected profile is declared child input, subject to shell initialization,
+not proof of the authenticated account. Retry retains canonical directories and
+declared environment, not changed caller defaults or symlink targets. A disappeared
+directory refuses before new native effects: restore the saved directory and retry
+the reported REF. Configuration contents still undergo current-input checks.
+--space selects one live workspace by exact ID or unique label;
 omission for creation uses the caller's live workspace, never UI focus. New-tab is
 intentional creation even if its label already exists; it does not focus the tab.
 For --existing, --space and --tab qualify --pane, or narrow a --seat name.
