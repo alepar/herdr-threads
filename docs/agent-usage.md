@@ -300,6 +300,8 @@ herdr-threads handoff --existing --seat SEAT -- "Review this change"
 herdr-threads handoff --existing --pane PANE -- "Review this change"
 herdr-threads handoff --pane PANE --kind codex -- "Review this change"
 herdr-threads handoff --new-tab review --kind codex -- "Review this change"
+herdr-threads handoff --new-tab review --kind codex --profile-dir /absolute/profile \
+  --cwd /absolute/workdir -- "Review this change"
 ```
 
 Automatic routing freezes the exact recipient and ensures its canonical pair channel before ordinary addressed send; launch modes then perform guarded launch. New-tab resolves its guarded recipient before ensuring the pair. Ensure joins both seats of a new pair atomically (no invitation); it never ACKs for the recipient. Explicit `--thread` and `--new-thread` retain ordinary channel behavior and their ordinary invitation step. Metadata flags require `--new-thread`. All handoff destinations require an original top-level Agent; immediate human send remains available. Negotiate automatic routing capability before effects; an older daemon refuses without a client fallback.
@@ -320,16 +322,40 @@ herdr-threads handoff --existing --pane w9001:p102 --new-thread \
 
 The fixture IDs and paths above are illustrative. Handoff chooses one target mode
 and optionally overrides automatic pair routing with `--new-thread` or `--thread ID_OR_NAME`: an explicit pane launch
-(`--pane PANE --kind claude|codex|agy`), intentional new-tab creation
-(`--new-tab LABEL --kind claude|codex|agy`), or existing-seat delivery
+(`--pane PANE --kind claude|codex|hermes|agy`), intentional new-tab creation
+(`--new-tab LABEL --kind claude|codex|hermes|agy`), or existing-seat delivery
 (`--existing --seat SEAT` or `--existing --pane PANE`). All handoff modes
 require an original top-level Agent and the daemon capability. Native execution
 still requires the selected harness's approval and configuration; this reference
 does not establish installed permission.
 
 `--new-tab` conflicts with `--existing`, `--tab`, `--pane` and `--seat`. Its
-`--cwd` must be an absolute existing directory; omission uses the invocation cwd,
-and the path is normalized before publication. `--space` resolves an exact live
+`--cwd` and `--profile-dir` must name absolute existing directories (UTF-8, no
+control characters, at most 4096 bytes); paths are canonicalized once before
+publication. Omitted cwd uses the invocation cwd; omitted profile retains normal
+selection. Existing-seat delivery and guarded pane launches refuse either option
+before effects; use `--new-tab` instead. Plain `launch` is unchanged.
+
+Profile directories map through the selected adapter: Codex uses `CODEX_HOME`,
+Claude uses `CLAUDE_CONFIG_DIR`, and Hermes uses `HERMES_HOME`. Hermes native named
+profiles remain separate and may resolve below the supplied root; the effective
+setup scope follows that named profile. agy rejects explicit profile selection;
+new-tab cwd remains supported. Selection neither changes HOME nor creates a
+profile, installs hooks or copies authentication. Explicit selection takes
+precedence over inherited profile hints for inspection and the declared tab
+environment. Shell initialization can still alter that environment: it is declared
+child input, not proof of native consumption or the authenticated account.
+
+Retry uses saved canonical directories, declared environment and native argv,
+not current caller defaults, profile variables or a changed symlink target.
+Existence/type is rechecked before unpublished create/start boundaries without
+resolving the original symlink again. A disappeared directory refuses new native
+effects; restore the saved directory and use the reported `retry REF`. Selection
+does not freeze directory contents or bypass current configuration checks. Unknown
+creation and possible-start safeguards below remain in force. Diagnostics retain
+paths and declared environment only, never credential contents.
+
+`--space` resolves an exact live
 workspace ID or unique label; omission uses the caller's live workspace, never
 UI focus. Creation is intentional even if its label already exists, and does not
 focus the new tab. No caller identity or routing environment is copied into it.
