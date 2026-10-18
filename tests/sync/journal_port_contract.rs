@@ -10,7 +10,7 @@ use herdr_threads::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant
 use herdr_threads::store::connection::StoreContext;
 use herdr_threads::store::{SqliteStore, StoreSettings, journal};
 use herdr_threads::sync::chain::{ChainStep, HeldLog, check_next};
-use herdr_threads::sync::envelope::{Deps, Envelope, EnvelopeError, UnsignedEnvelope};
+use herdr_threads::sync::envelope::{Deps, Envelope, EnvelopeError, StoredEntry, UnsignedEnvelope};
 use herdr_threads::sync::hlc::HlcStamp;
 use herdr_threads::sync::journal_port::{ForkEvidence, IngestOutcome, JournalPort, LogMeta};
 use herdr_threads::sync::memory_journal::MemoryJournal;
@@ -1194,7 +1194,7 @@ fn memory_journal_never_skips_verification() {
         stored_hash: None,
     };
     assert_eq!(
-        check_next(Some(&held), &forged),
+        check_next(Some(&held), &StoredEntry::from(forged.clone())),
         ChainStep::Corrupt(EnvelopeError::BadSignature)
     );
     assert!(matches!(

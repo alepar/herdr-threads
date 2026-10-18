@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::chain::{ChainStep, HeldLog, check_next};
-use super::envelope::{Deps, Envelope, EnvelopeError, GENESIS_KIND, UnsignedEnvelope, hex_encode};
+use super::envelope::{
+    Deps, Envelope, EnvelopeError, GENESIS_KIND, StoredEntry, UnsignedEnvelope, hex_encode,
+};
 use super::facts::GenesisPayload;
 use super::hlc::HlcStamp;
 use super::journal_port::{ApplyProgress, ForkEvidence, IngestOutcome, JournalPort, LogMeta};
@@ -456,7 +458,7 @@ impl JournalPort for MemoryJournal {
                     }),
                     _ => None,
                 };
-                check_next(view.as_ref(), entry)
+                check_next(view.as_ref(), &StoredEntry::from(entry.clone()))
             };
             match step {
                 ChainStep::Duplicate => duplicates += 1,
