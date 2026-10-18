@@ -10,11 +10,16 @@ use herdr_threads::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant
 use herdr_threads::store::connection::StoreContext;
 use herdr_threads::store::{SqliteStore, StoreSettings, journal};
 use herdr_threads::sync::chain::{ChainStep, HeldLog, check_next};
-use herdr_threads::sync::envelope::{Deps, Envelope, EnvelopeError, StoredEntry, UnsignedEnvelope};
+use herdr_threads::sync::envelope::{
+    Deps, Envelope, EnvelopeError, OpaqueEntry, StoredEntry, UnsignedEnvelope,
+};
 use herdr_threads::sync::hlc::HlcStamp;
 use herdr_threads::sync::journal_port::{ForkEvidence, IngestOutcome, JournalPort, LogMeta};
 use herdr_threads::sync::memory_journal::MemoryJournal;
 use herdr_threads::sync::{BatchLimits, LogHead, LogKey, LogState};
+use herdr_threads::test_support::opaque_entry::{
+    synthetic_entry, synthetic_parts, synthetic_unsigned,
+};
 use herdr_threads::test_support::{TEST_NODE_SEED, isolation::TestIsolation};
 
 // ---- the two subjects -------------------------------------------------------
@@ -28,7 +33,7 @@ trait Subject {
     fn freeze(&self, log: &LogKey, at: u64);
     /// Records forked-branch entries (the port has no write for them; the
     /// sync layer's fork handling calls `journal::store_forked`).
-    fn store_forked(&self, log: &LogKey, entries: &[Envelope]);
+    fn store_forked(&self, log: &LogKey, entries: &[StoredEntry]);
     /// Lowers the most forked entries `serve_branch` walks.
     fn set_walk_bound(&self, steps: u64);
 }
@@ -103,14 +108,14 @@ impl Subject for SqliteSubject {
             .unwrap();
     }
 
-    fn store_forked(&self, log: &LogKey, entries: &[Envelope]) {
+    fn store_forked(&self, log: &LogKey, entries: &[StoredEntry]) {
         let context = self.store.context();
         let mut conn = context.open_writer().unwrap();
         context
             .execute_decision(
                 &mut conn,
                 |_| Ok(()),
-                |tx, _, ()| journal::store_forked(tx, log, entries, None),
+                |tx, _, ()| journal::store_forked_entries(tx, log, entries, None),
             )
             .unwrap();
     }
@@ -141,7 +146,7 @@ impl Subject for MemorySubject {
         self.0.freeze(log, at).unwrap();
     }
 
-    fn store_forked(&self, log: &LogKey, entries: &[Envelope]) {
+    fn store_forked(&self, log: &LogKey, entries: &[StoredEntry]) {
         self.0.store_forked(log, entries).unwrap();
     }
 
@@ -223,8 +228,25 @@ fn chain_with(id: &NodeIdentity, n: u64, payload: impl Fn(u64) -> String) -> Vec
     out
 }
 
+/// Known entries as the port takes them.
+fn wrap(entries: &[Envelope]) -> Vec<StoredEntry> {
+    entries.iter().cloned().map(StoredEntry::from).collect()
+}
+
+/// A served batch of known entries; an opaque one is a test failure.
+fn known(batch: Vec<StoredEntry>) -> Vec<Envelope> {
+    batch
+        .into_iter()
+        .map(|entry| entry.as_known().cloned().expect("a known entry"))
+        .collect()
+}
+
 fn ingest(s: &dyn Subject, log: &LogKey, entries: &[Envelope]) -> IngestOutcome {
-    s.port().ingest(log, entries.to_vec(), &budget()).unwrap()
+    ingest_entries(s, log, wrap(entries))
+}
+
+fn ingest_entries(s: &dyn Subject, log: &LogKey, entries: Vec<StoredEntry>) -> IngestOutcome {
+    s.port().ingest(log, entries, &budget()).unwrap()
 }
 
 fn head(s: &dyn Subject, log: &LogKey) -> Option<LogHead> {
@@ -240,6 +262,14 @@ fn stored_head(counter: u64, entries: &[Envelope]) -> LogHead {
     }
 }
 
+/// An opaque (`HTJRNL99`) entry of `id`'s log at `counter` after `prev`; `tag`
+/// varies the payload so two at one position differ.
+fn opaque_at(id: &NodeIdentity, counter: u64, prev: [u8; 32], tag: &str) -> StoredEntry {
+    let mut unsigned = synthetic_unsigned(id, remote_log(id).incarnation, counter, prev);
+    unsigned.payload = tag.as_bytes().to_vec();
+    StoredEntry::from(synthetic_entry(id, &unsigned))
+}
+
 // ---- cases ------------------------------------------------------------------
 
 /// The cases, as functions of the subject; `contract!` runs each on both.
@@ -250,10 +280,11 @@ mod cases {
         let own = s.self_log();
         let before = s.port().vector(&budget()).unwrap();
         assert_eq!(before.0.len(), 1, "only the own log: {before:?}");
-        let genesis = s
-            .port()
-            .serve(&own, 1, BatchLimits::default(), &budget())
-            .unwrap();
+        let genesis = known(
+            s.port()
+                .serve(&own, 1, BatchLimits::default(), &budget())
+                .unwrap(),
+        );
         assert_eq!(genesis.len(), 1);
         assert_eq!(before.0[&own], stored_head(1, &genesis));
 
@@ -290,16 +321,16 @@ mod cases {
         let limits = BatchLimits::default();
         let page = s.port().serve(&log, 1, limits, &budget()).unwrap();
         assert_eq!(page.len(), 256);
-        assert_eq!(page.first().map(|e| e.counter), Some(1));
-        assert_eq!(page.last().map(|e| e.counter), Some(256));
+        assert_eq!(page.first().map(StoredEntry::counter), Some(1));
+        assert_eq!(page.last().map(StoredEntry::counter), Some(256));
         let rest = s.port().serve(&log, 257, limits, &budget()).unwrap();
         assert_eq!(rest.len(), 44);
-        assert_eq!(rest[0], entries[256]);
-        assert_eq!(page[255], entries[255]);
+        assert_eq!(rest[0], StoredEntry::from(entries[256].clone()));
+        assert_eq!(page[255], StoredEntry::from(entries[255].clone()));
         // `from` 0 reads as 1; beyond the head and an unknown log are empty.
         assert_eq!(
             s.port().serve(&log, 0, limits, &budget()).unwrap()[0],
-            entries[0]
+            StoredEntry::from(entries[0].clone())
         );
         assert!(
             s.port()
@@ -340,7 +371,7 @@ mod cases {
             2,
             "two ~100 KB entries fit in 256 KiB, three do not"
         );
-        let size: usize = by_bytes.iter().map(|e| e.canonical_bytes().len()).sum();
+        let size: usize = by_bytes.iter().map(StoredEntry::size).sum();
         assert!(size <= limits.bytes);
         assert!(size + fat[3].canonical_bytes().len() > limits.bytes);
 
@@ -350,7 +381,7 @@ mod cases {
             bytes: 1_000,
         };
         let oversized = s.port().serve(&log2, 2, tiny, &budget()).unwrap();
-        assert_eq!(oversized, vec![fat[1].clone()]);
+        assert_eq!(oversized, wrap(&fat[1..2]));
         assert!(fat[1].canonical_bytes().len() > tiny.bytes);
         let zero = BatchLimits {
             entries: 0,
@@ -391,7 +422,7 @@ mod cases {
             s.port()
                 .serve(&log, 1, BatchLimits::default(), &budget())
                 .unwrap(),
-            entries
+            wrap(&entries)
         );
     }
 
@@ -457,8 +488,8 @@ mod cases {
             IngestOutcome::Fork {
                 stored: 0,
                 evidence: ForkEvidence::Conflict {
-                    held: Box::new(entries[1].clone()),
-                    conflicting: Box::new(rival),
+                    held: Box::new(StoredEntry::from(entries[1].clone())),
+                    conflicting: Box::new(StoredEntry::from(rival)),
                 }
             }
         );
@@ -470,8 +501,8 @@ mod cases {
             IngestOutcome::Fork {
                 stored: 1,
                 evidence: ForkEvidence::Conflict {
-                    held: Box::new(next.clone()),
-                    conflicting: Box::new(wrong_prev),
+                    held: Box::new(StoredEntry::from(next.clone())),
+                    conflicting: Box::new(StoredEntry::from(wrong_prev)),
                 }
             }
         );
@@ -484,10 +515,11 @@ mod cases {
 
     pub fn ingest_fork_ahead_of_self(s: &dyn Subject) {
         let own = s.self_log();
-        let genesis = s
-            .port()
-            .serve(&own, 1, BatchLimits::default(), &budget())
-            .unwrap();
+        let genesis = known(
+            s.port()
+                .serve(&own, 1, BatchLimits::default(), &budget())
+                .unwrap(),
+        );
         let id = own_identity();
         let claim = seal(&id, &id, own, 2, genesis[0].hash, r#"{"n":2}"#.into());
         assert_eq!(
@@ -497,7 +529,7 @@ mod cases {
                 evidence: ForkEvidence::AheadOfSelf {
                     log: own,
                     my_head: stored_head(1, &genesis),
-                    entry: Box::new(claim),
+                    entry: Box::new(StoredEntry::from(claim)),
                 }
             }
         );
@@ -515,10 +547,11 @@ mod cases {
 
     pub fn ingest_self_log_forged_is_corrupt(s: &dyn Subject) {
         let own = s.self_log();
-        let genesis = s
-            .port()
-            .serve(&own, 1, BatchLimits::default(), &budget())
-            .unwrap();
+        let genesis = known(
+            s.port()
+                .serve(&own, 1, BatchLimits::default(), &budget())
+                .unwrap(),
+        );
         let id = own_identity();
         let forged = seal(&id, &remote(), own, 2, genesis[0].hash, r#"{"n":2}"#.into());
         assert_eq!(
@@ -692,10 +725,11 @@ mod cases {
         assert_eq!(hash(&log, 0), None);
         assert_eq!(hash(&log, 4), None);
         let own = s.self_log();
-        let genesis = s
-            .port()
-            .serve(&own, 1, BatchLimits::default(), &budget())
-            .unwrap();
+        let genesis = known(
+            s.port()
+                .serve(&own, 1, BatchLimits::default(), &budget())
+                .unwrap(),
+        );
         assert_eq!(hash(&own, 1), Some(genesis[0].hash));
     }
 
@@ -713,6 +747,227 @@ mod cases {
             "{progress:?}"
         );
         assert_eq!(s.port().apply_pending(&budget()).unwrap().applied, 0);
+    }
+
+    // ---- opaque entries: the port relays them and they join the chain ------
+
+    pub fn contract_opaque_append_and_serve_round_trip(s: &dyn Subject) {
+        let id = remote();
+        let log = remote_log(&id);
+        let entries = chain(&id, 2);
+        let opaque = opaque_at(&id, 3, entries[1].hash, "three");
+        let mut batch = wrap(&entries);
+        batch.push(opaque.clone());
+        let held = LogHead {
+            counter: 3,
+            head_hash: opaque.hash(),
+            state: LogState::Active,
+            frozen_at: None,
+        };
+        assert_eq!(
+            ingest_entries(s, &log, batch.clone()),
+            IngestOutcome::Stored {
+                stored: 3,
+                duplicates: 0,
+                head: held
+            }
+        );
+        let served = s
+            .port()
+            .serve(&log, 1, BatchLimits::default(), &budget())
+            .unwrap();
+        assert_eq!(served, batch, "known and opaque, in order");
+        let relayed = served[2].as_opaque().expect("the third entry is opaque");
+        let sent = opaque.as_opaque().unwrap();
+        assert_eq!(relayed.raw(), sent.raw(), "raw bytes are relayed unchanged");
+        assert_eq!(relayed.hash(), sent.hash());
+        assert_eq!(relayed.signature(), sent.signature());
+        // The same entry again is a duplicate, not a fork.
+        assert_eq!(
+            ingest_entries(s, &log, vec![opaque]),
+            IngestOutcome::Stored {
+                stored: 0,
+                duplicates: 1,
+                head: held
+            }
+        );
+    }
+
+    pub fn contract_opaque_conflict_is_fork(s: &dyn Subject) {
+        // A known entry held, an opaque rival at its position.
+        let id = remote();
+        let log = remote_log(&id);
+        let entries = chain(&id, 3);
+        ingest(s, &log, &entries);
+        let rival = opaque_at(&id, 3, entries[1].hash, "rival");
+        assert_eq!(
+            ingest_entries(s, &log, vec![rival.clone()]),
+            IngestOutcome::Fork {
+                stored: 0,
+                evidence: ForkEvidence::Conflict {
+                    held: Box::new(StoredEntry::from(entries[2].clone())),
+                    conflicting: Box::new(rival),
+                }
+            }
+        );
+
+        // An opaque entry held, a known rival at its position.
+        let id2 = NodeIdentity::from_seed([8; 32]);
+        let log2 = remote_log(&id2);
+        let entries2 = chain(&id2, 2);
+        let held = opaque_at(&id2, 3, entries2[1].hash, "held");
+        let mut batch = wrap(&entries2);
+        batch.push(held.clone());
+        ingest_entries(s, &log2, batch);
+        let rival = seal(
+            &id2,
+            &id2,
+            log2,
+            3,
+            entries2[1].hash,
+            r#"{"n":"rival"}"#.into(),
+        );
+        assert_eq!(
+            ingest(s, &log2, std::slice::from_ref(&rival)),
+            IngestOutcome::Fork {
+                stored: 0,
+                evidence: ForkEvidence::Conflict {
+                    held: Box::new(held),
+                    conflicting: Box::new(StoredEntry::from(rival)),
+                }
+            }
+        );
+    }
+
+    pub fn contract_opaque_counter_one_is_corrupt(s: &dyn Subject) {
+        // An unknown log cannot start with an opaque entry: the genesis is
+        // always a known layout, so counter 2 is a gap that wants counter 1.
+        let id = remote();
+        let log = remote_log(&id);
+        let early = opaque_at(&id, 2, [1; 32], "two");
+        assert_eq!(
+            ingest_entries(s, &log, vec![early]),
+            IngestOutcome::Gap {
+                stored: 0,
+                expected: 1
+            }
+        );
+        assert_eq!(head(s, &log), None, "the log was not created");
+
+        // `OpaqueEntry` itself refuses counter 1, so no opaque genesis attempt
+        // reaches a port, held log or not.
+        let mut genesis = synthetic_unsigned(&id, log.incarnation, 2, [0; 32]);
+        genesis.counter = 1;
+        let (header, raw) = synthetic_parts(&id, &genesis);
+        assert!(OpaqueEntry::new(header, raw).is_err());
+        let entries = chain(&id, 2);
+        ingest(s, &log, &entries);
+        assert_eq!(head(s, &log), Some(stored_head(2, &entries)));
+    }
+
+    pub fn contract_opaque_counts_toward_vector_head(s: &dyn Subject) {
+        let id = remote();
+        let log = remote_log(&id);
+        let entries = chain(&id, 2);
+        let opaque = opaque_at(&id, 3, entries[1].hash, "three");
+        let mut batch = wrap(&entries);
+        batch.push(opaque.clone());
+        ingest_entries(s, &log, batch);
+        assert_eq!(
+            head(s, &log),
+            Some(LogHead {
+                counter: 3,
+                head_hash: opaque.hash(),
+                state: LogState::Active,
+                frozen_at: None,
+            })
+        );
+        assert_eq!(
+            s.port().stored_hash(&log, 3, &budget()).unwrap(),
+            Some(opaque.hash())
+        );
+        assert_eq!(
+            meta(s, &log).map(|m| (m.contiguous, m.head)),
+            Some((3, opaque.hash()))
+        );
+    }
+
+    pub fn contract_opaque_prev_continuity(s: &dyn Subject) {
+        let id = remote();
+        let log = remote_log(&id);
+        let entries = chain(&id, 2);
+        let opaque = opaque_at(&id, 3, entries[1].hash, "three");
+        let mut batch = wrap(&entries);
+        batch.push(opaque.clone());
+        ingest_entries(s, &log, batch);
+
+        // A validly signed 4 that does not chain on the opaque 3 is a fork
+        // against it.
+        let wrong = seal(&id, &id, log, 4, entries[1].hash, r#"{"n":4}"#.into());
+        assert_eq!(
+            ingest(s, &log, std::slice::from_ref(&wrong)),
+            IngestOutcome::Fork {
+                stored: 0,
+                evidence: ForkEvidence::Conflict {
+                    held: Box::new(opaque.clone()),
+                    conflicting: Box::new(StoredEntry::from(wrong)),
+                }
+            }
+        );
+        // One that names the opaque entry's hash appends.
+        let next = seal(&id, &id, log, 4, opaque.hash(), r#"{"n":4}"#.into());
+        assert_eq!(
+            ingest(s, &log, std::slice::from_ref(&next)),
+            IngestOutcome::Stored {
+                stored: 1,
+                duplicates: 0,
+                head: LogHead {
+                    counter: 4,
+                    head_hash: next.hash,
+                    state: LogState::Active,
+                    frozen_at: None,
+                }
+            }
+        );
+    }
+
+    pub fn contract_serve_branch_with_opaque_branch_row(s: &dyn Subject) {
+        let id = remote();
+        let log = remote_log(&id);
+        let main = chain(&id, 4);
+        ingest(s, &log, &main);
+        // An opaque rival at counter 3, recorded as a fork branch row; the
+        // log freezes after counter 2.
+        let rival = opaque_at(&id, 3, main[1].hash, "rival");
+        s.store_forked(&log, std::slice::from_ref(&rival));
+        s.freeze(&log, 2);
+
+        let tip = (3, rival.hash());
+        let served = s
+            .port()
+            .serve_branch(&log, tip, 1, BatchLimits::default(), &budget())
+            .unwrap();
+        let mut expected = wrap(&main[..2]);
+        expected.push(rival.clone());
+        assert_eq!(served, Some(expected), "the branch ends in the opaque row");
+        // The main branch is unaffected.
+        assert_eq!(
+            counters_of(
+                s.port()
+                    .serve_branch(&log, tip_of(&main, 4), 1, BatchLimits::default(), &budget())
+                    .unwrap()
+            ),
+            Some(vec![1, 2, 3, 4])
+        );
+        // Past the freeze nothing more is taken.
+        let past = seal(&id, &id, log, 5, main[3].hash, r#"{"n":5}"#.into());
+        assert_eq!(
+            ingest(s, &log, std::slice::from_ref(&past)),
+            IngestOutcome::Frozen {
+                stored: 0,
+                frozen_at: 2
+            }
+        );
     }
 
     // ---- serve_branch and log_meta ----------------------------------------
@@ -742,6 +997,11 @@ mod cases {
         s.port()
             .serve_branch(log, tip, from, limits, &budget())
             .unwrap()
+            .map(known)
+    }
+
+    fn counters_of(batch: Option<Vec<StoredEntry>>) -> Option<Vec<u64>> {
+        batch.map(|b| b.iter().map(StoredEntry::counter).collect())
     }
 
     fn counters(batch: Option<Vec<Envelope>>) -> Option<Vec<u64>> {
@@ -784,7 +1044,7 @@ mod cases {
         // The other branch shares counters 1 and 2 and differs from 3 to 6.
         let other = branch(&id, 6, 3);
         assert_eq!(other[..2], main[..2]);
-        s.store_forked(&log, &other[2..]);
+        s.store_forked(&log, &wrap(&other[2..]));
         let all = BatchLimits::default();
         let tip = tip_of(&other, 6);
         assert_eq!(served(s, &log, tip, 1, all), Some(other.clone()));
@@ -844,7 +1104,7 @@ mod cases {
             "a counter beyond the head"
         );
         // A forked tip whose predecessor was never stored: a broken chain.
-        s.store_forked(&log, &other[4..]);
+        s.store_forked(&log, &wrap(&other[4..]));
         assert_eq!(served(s, &log, tip_of(&other, 6), 1, all), None);
         assert_eq!(
             counters(served(s, &log, tip_of(&other, 6), 5, all)),
@@ -858,7 +1118,7 @@ mod cases {
         let log = remote_log(&id);
         ingest(s, &log, &chain(&id, 5));
         let other = branch(&id, 7, 3);
-        s.store_forked(&log, &other[2..]);
+        s.store_forked(&log, &wrap(&other[2..]));
         let all = BatchLimits::default();
         let tip = tip_of(&other, 7);
         // Five forked entries (3..=7).
@@ -914,7 +1174,7 @@ mod cases {
         );
         // The same limits cut the forked walk, across the join.
         let other = branch(&id, 303, 299);
-        s.store_forked(&log, &other[298..]);
+        s.store_forked(&log, &wrap(&other[298..]));
         let tip = tip_of(&other, 303);
         assert_eq!(
             counters(served(s, &log, tip, 297, BatchLimits::default())),
@@ -945,10 +1205,11 @@ mod cases {
 
     pub fn log_meta_own_active(s: &dyn Subject) {
         let own = s.self_log();
-        let genesis = s
-            .port()
-            .serve(&own, 1, BatchLimits::default(), &budget())
-            .unwrap();
+        let genesis = known(
+            s.port()
+                .serve(&own, 1, BatchLimits::default(), &budget())
+                .unwrap(),
+        );
         assert_eq!(
             meta(s, &own),
             Some(LogMeta {
@@ -1102,6 +1363,12 @@ contract!(
     log_meta_foreign,
     log_meta_frozen,
     log_meta_unknown_none,
+    contract_opaque_append_and_serve_round_trip,
+    contract_opaque_conflict_is_fork,
+    contract_opaque_counter_one_is_corrupt,
+    contract_opaque_counts_toward_vector_head,
+    contract_opaque_prev_continuity,
+    contract_serve_branch_with_opaque_branch_row,
 );
 
 // ---- one-implementation cases ------------------------------------------------
@@ -1137,9 +1404,11 @@ fn author_raw_entries_ingest_into_sqlite_as_stored() {
         "genesis came first"
     );
     assert_eq!(second.prev_hash, first.hash);
-    let all = author
-        .serve(&log, 1, BatchLimits::default(), &budget())
-        .unwrap();
+    let all = known(
+        author
+            .serve(&log, 1, BatchLimits::default(), &budget())
+            .unwrap(),
+    );
     assert_eq!(all.len(), 3);
     assert_eq!(all[0].kind, "node.genesis");
     all[2].verify(&author_pubkey(&author)).unwrap();

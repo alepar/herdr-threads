@@ -269,10 +269,14 @@ impl Node {
         self.store
             .serve(log, from, BatchLimits::default(), &budget())
             .unwrap()
+            .into_iter()
+            .map(|entry| entry.as_known().cloned().expect("a known entry"))
+            .collect()
     }
 
     fn ingest(&self, from: &Node, log: &LogKey, first: u64) {
         let entries = from.entries(log, first);
+        let entries = entries.into_iter().map(StoredEntry::from).collect();
         match self.store.ingest(log, entries, &budget()).unwrap() {
             IngestOutcome::Stored { .. } => {}
             other => panic!("ingest of {log:?}: {other:?}"),

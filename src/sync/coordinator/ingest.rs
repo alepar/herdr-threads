@@ -134,6 +134,7 @@ fn ingest_batch(
         deadline: MonoInstant(u64::MAX),
         cancellation: cancel,
     };
+    let entries = entries.into_iter().map(StoredEntry::from).collect();
     journal.ingest(log, entries, &budget)
 }
 

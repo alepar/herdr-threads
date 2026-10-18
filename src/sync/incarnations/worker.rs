@@ -52,7 +52,7 @@ use crate::store::SqliteStore;
 use crate::store::connection::{HoldSource, OwnHistoryHold};
 use crate::store::incarnations::{self as store, BranchVerdict, ReissueLimits, Repair, Rotation};
 use crate::sync::coordinator::{BranchReply, LogFn, uuid8};
-use crate::sync::envelope::{Envelope, WireEnvelope, hex_decode, hex_encode};
+use crate::sync::envelope::{Envelope, StoredEntry, WireEnvelope, hex_decode, hex_encode};
 use crate::sync::frame::{BranchWant, ForkRef, HaveLog, TipRef};
 use crate::sync::journal_port::{JournalPort, LogMeta};
 use crate::sync::signals::SyncSignals;
@@ -706,7 +706,7 @@ impl Core {
     fn handle_salvage(&mut self, backup_db: &Path, node_dir: &Path) -> Result<(), ApiError> {
         let cancel = self.d.cancel.clone();
         let this = &*self;
-        let mut ingest = |log: &LogKey, entries: Vec<Envelope>| {
+        let mut ingest = |log: &LogKey, entries: Vec<StoredEntry>| {
             let (_origin, _turn, _budget) = this.turn()?;
             this.d.journal.ingest(log, entries, &this.read_budget())
         };
@@ -1091,9 +1091,11 @@ impl Core {
             self.d
                 .journal
                 .serve_branch(log, (counter, hash), counter, one, &self.read_budget())?;
+        // An opaque entry is not held as a known one.
         Ok(served
             .and_then(|batch| batch.into_iter().next())
-            .filter(|e| e.counter == counter && e.hash == hash))
+            .filter(|e| e.counter() == counter && e.hash() == hash)
+            .and_then(|e| e.as_known().cloned()))
     }
 
     /// Obtains both sides of a forwarded fork reference (asking the advertiser
@@ -1300,7 +1302,11 @@ impl Core {
             .d
             .journal
             .serve(log, counter, one, &self.read_budget())?;
-        Ok(batch.into_iter().find(|e| e.counter == counter))
+        // An opaque entry is not held as a known one.
+        Ok(batch
+            .into_iter()
+            .find(|e| e.counter() == counter)
+            .and_then(|e| e.as_known().cloned()))
     }
 
     /// A reply to a pull of an own log's branch.

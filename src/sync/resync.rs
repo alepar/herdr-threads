@@ -47,7 +47,7 @@ use crate::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant};
 use crate::store::journal;
 use crate::store::sync_dial_targets::DialTarget;
 use crate::sync::coordinator::SyncHandle;
-use crate::sync::envelope::Envelope;
+use crate::sync::envelope::StoredEntry;
 use crate::sync::journal_port::IngestOutcome;
 use crate::sync::{BatchLimits, LogKey};
 
@@ -440,7 +440,7 @@ pub struct SalvageReport {
 /// implementation holds a `FairWriter` background turn around
 /// `JournalPort::ingest`.
 pub type SalvageIngest<'a> =
-    dyn FnMut(&LogKey, Vec<Envelope>) -> Result<IngestOutcome, ApiError> + 'a;
+    dyn FnMut(&LogKey, Vec<StoredEntry>) -> Result<IngestOutcome, ApiError> + 'a;
 
 /// Reads the backup at `backup_db` read-only and hands every log's entries,
 /// ascending in batches of [`SALVAGE_BATCH_ENTRIES`], to `ingest`, logs in
@@ -485,7 +485,7 @@ pub fn salvage(
                 report.interrupted = true;
                 return Ok(report);
             }
-            let batch = match journal::serve(&conn, log, from, limits) {
+            let batch = match journal::serve_entries(&conn, log, from, limits) {
                 Ok(batch) => batch,
                 Err(error) => {
                     report.stopped.push(SalvageStop {
@@ -495,7 +495,7 @@ pub fn salvage(
                     break;
                 }
             };
-            let Some(last) = batch.last().map(|entry| entry.counter) else {
+            let Some(last) = batch.last().map(StoredEntry::counter) else {
                 break;
             };
             let count = batch.len() as u64;
@@ -1036,7 +1036,7 @@ mod tests {
     use crate::sync::{LogHead, LogState};
 
     /// A foreign log of node `n`: its genesis and `extra` more entries.
-    fn foreign(n: u8, extra: usize) -> (LogKey, Vec<Envelope>) {
+    fn foreign(n: u8, extra: usize) -> (LogKey, Vec<StoredEntry>) {
         let journal = MemoryJournal::new(Arc::new(NodeIdentity::from_seed([n; 32])));
         journal.bootstrap();
         for i in 0..extra {
@@ -1060,7 +1060,7 @@ mod tests {
     }
 
     /// A real store at `db` holding the given foreign logs, closed again.
-    fn build_store(db: &Path, logs: &[(LogKey, Vec<Envelope>)]) {
+    fn build_store(db: &Path, logs: &[(LogKey, Vec<StoredEntry>)]) {
         let context = StoreContext::new(db.to_path_buf(), Arc::new(FixedClock(NOW)));
         let store = SqliteStore::new(
             context,
@@ -1094,7 +1094,7 @@ mod tests {
 
     /// Three foreign logs; the first has more than one batch. A store also
     /// holds its own genesis log, so a backup lists four logs.
-    fn three_logs() -> Vec<(LogKey, Vec<Envelope>)> {
+    fn three_logs() -> Vec<(LogKey, Vec<StoredEntry>)> {
         vec![
             foreign(41, SALVAGE_BATCH_ENTRIES + 43),
             foreign(42, 2),
@@ -1125,10 +1125,10 @@ mod tests {
 
         // (log, first counter, batch size) in call order.
         let mut calls: Vec<(LogKey, u64, usize)> = Vec::new();
-        let mut ingest = |log: &LogKey, entries: Vec<Envelope>| {
-            calls.push((*log, entries[0].counter, entries.len()));
+        let mut ingest = |log: &LogKey, entries: Vec<StoredEntry>| {
+            calls.push((*log, entries[0].counter(), entries.len()));
             // The big log's second batch is a gap: that log stops there.
-            if *log == big && entries[0].counter > 1 {
+            if *log == big && entries[0].counter() > 1 {
                 return Ok(IngestOutcome::Gap {
                     stored: 0,
                     expected: 1,
@@ -1174,7 +1174,7 @@ mod tests {
         let db = iso.path("backup.db");
         build_store(&db, &three_logs());
         let mut calls = 0;
-        let mut ingest = |_: &LogKey, entries: Vec<Envelope>| {
+        let mut ingest = |_: &LogKey, entries: Vec<StoredEntry>| {
             calls += 1;
             if calls == 2 {
                 return Err(ApiError::new(ErrorCode::StoreBusy, "writer busy"));
@@ -1199,7 +1199,7 @@ mod tests {
             ResyncPhase::Salvaging,
             "the phase is persisted"
         );
-        let mut ingest = |_: &LogKey, entries: Vec<Envelope>| Ok(stored(entries.len()));
+        let mut ingest = |_: &LogKey, entries: Vec<StoredEntry>| Ok(stored(entries.len()));
         let report = run_salvage(&paths.node_dir, &plan.backup_db, &mut ingest, &|| false).unwrap();
         assert_eq!(report.entries, 300 + 3 + 2 + 1, "every entry of every log");
         assert!(
@@ -1219,7 +1219,7 @@ mod tests {
         let plan = resume_at_start(&paths, &FixedClock(NOW)).unwrap().unwrap();
         mark_salvaging(&paths).unwrap();
 
-        let mut full = |_: &LogKey, _: Vec<Envelope>| Ok(IngestOutcome::Headroom);
+        let mut full = |_: &LogKey, _: Vec<StoredEntry>| Ok(IngestOutcome::Headroom);
         let report = run_salvage(&paths.node_dir, &plan.backup_db, &mut full, &|| false).unwrap();
         assert!(report.headroom, "{report:?}");
         assert_eq!(report.entries, 0);
@@ -1235,7 +1235,7 @@ mod tests {
         let marker = ResyncMarker::read(&paths).unwrap().expect("marker kept");
         assert_eq!(marker.phase, ResyncPhase::Salvaging);
 
-        let mut room = |_: &LogKey, entries: Vec<Envelope>| Ok(stored(entries.len()));
+        let mut room = |_: &LogKey, entries: Vec<StoredEntry>| Ok(stored(entries.len()));
         let report = run_salvage(&paths.node_dir, &plan.backup_db, &mut room, &|| false).unwrap();
         assert!(!report.headroom);
         assert_eq!(report.entries, 300 + 3 + 2 + 1);
@@ -1253,7 +1253,7 @@ mod tests {
             .first()
             .map(|(l, _)| l)
             .unwrap();
-        let mut ingest = |log: &LogKey, entries: Vec<Envelope>| {
+        let mut ingest = |log: &LogKey, entries: Vec<StoredEntry>| {
             if *log == first {
                 Ok(IngestOutcome::Headroom)
             } else {
@@ -1269,13 +1269,54 @@ mod tests {
         assert!(ResyncMarker::read(&paths).unwrap().is_some(), "marker kept");
     }
 
+    /// A backup whose log holds an opaque entry in the middle is carried
+    /// across whole: the new store holds the same bytes at every position, the
+    /// opaque one included, and the log is not cut at that position.
+    #[test]
+    fn salvage_carries_opaque_entries() {
+        use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
+
+        let (iso, _paths) = node("resync-salvage-opaque");
+        let id = NodeIdentity::from_seed([44; 32]);
+        let (log, mut entries) = foreign(44, 1);
+        let two = entries[1].hash();
+        let opaque = synthetic_entry(&id, &synthetic_unsigned(&id, log.incarnation, 3, two));
+        let opaque_hash = opaque.hash();
+        entries.push(StoredEntry::from(opaque.clone()));
+        let four = synthetic_unsigned(&id, log.incarnation, 4, opaque_hash).seal(&id);
+        entries.push(StoredEntry::from(four));
+        let backup = iso.path("backup.db");
+        build_store(&backup, &[(log, entries.clone())]);
+
+        let target = StoreContext::new(iso.path("new.db"), Arc::new(FixedClock(NOW)));
+        let fresh = SqliteStore::new(
+            target,
+            crate::test_support::test_node(),
+            StoreSettings::default(),
+        )
+        .unwrap();
+        let mut ingest =
+            |log: &LogKey, batch: Vec<StoredEntry>| fresh.ingest(log, batch, &budget());
+        let report = salvage(&backup, &mut ingest, &|| false).unwrap();
+
+        assert!(report.stopped.is_empty(), "{:?}", report.stopped);
+        let carried = fresh
+            .serve(&log, 1, BatchLimits::default(), &budget())
+            .unwrap();
+        assert_eq!(carried, entries, "every position, byte for byte");
+        assert_eq!(
+            carried[2].as_opaque().map(|o| o.raw().to_vec()),
+            Some(opaque.raw().to_vec())
+        );
+    }
+
     #[test]
     fn interrupted_salvage_keeps_the_marker() {
         let (_iso, paths) = node("resync-salvage-interrupted");
         build_store(&paths.database_path, &three_logs());
         requested_marker(&paths);
         let plan = resume_at_start(&paths, &FixedClock(NOW)).unwrap().unwrap();
-        let mut ingest = |_: &LogKey, entries: Vec<Envelope>| Ok(stored(entries.len()));
+        let mut ingest = |_: &LogKey, entries: Vec<StoredEntry>| Ok(stored(entries.len()));
         let report = run_salvage(&paths.node_dir, &plan.backup_db, &mut ingest, &|| true).unwrap();
         assert!(report.interrupted);
         assert_eq!(report.entries, 0);
@@ -1291,7 +1332,7 @@ mod tests {
         requested_marker(&paths);
         let db = iso.path("not-a-database");
         fs::write(&db, b"this is not a database at all").unwrap();
-        let mut ingest = |_: &LogKey, _: Vec<Envelope>| panic!("nothing to ingest");
+        let mut ingest = |_: &LogKey, _: Vec<StoredEntry>| panic!("nothing to ingest");
         let report = run_salvage(&paths.node_dir, &db, &mut ingest, &|| false).unwrap();
         assert!(report.unreadable.is_some(), "{report:?}");
         assert!(ResyncMarker::read(&paths).unwrap().is_none());

@@ -1276,6 +1276,10 @@ fn sqlite_store_apply_pending_is_apply_pass() {
         jr::open(store.context(), &mut conn, identity, "host", base()).unwrap();
     }
     let entries = jr::serve(&a.conn, &a.log, 1, BatchLimits::default()).unwrap();
+    let entries = entries
+        .into_iter()
+        .map(crate::sync::envelope::StoredEntry::from)
+        .collect();
     let outcome = store.ingest(&a.log, entries, &budget()).unwrap();
     assert!(matches!(outcome, IngestOutcome::Stored { stored: 2, .. }));
     let progress = store.apply_pending(&budget()).unwrap();
