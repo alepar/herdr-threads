@@ -4,6 +4,147 @@
 use super::*;
 use crate::protocol::results::ErrorCode;
 
+// These cases catch splitting a literal slash, decoding ordinary backslashes, accepting
+// unsupported escapes, and allowing proximity to hide a different raw interpretation.
+fn literal_topology() -> HostTopology {
+    HostTopology {
+        spaces: vec![space("w1", "prj/herdr-threads")],
+        tabs: vec![tab("w1:t1", "w1", "tab/main")],
+        panes: vec![pane("w1:p1", "w1", "w1:t1", "pane/main", &["agent/main"])],
+    }
+}
+
+#[test]
+fn explicit_paths_decode_components_and_keep_level_aliases() {
+    let topology = literal_topology();
+    for selector in [
+        r"path:prj\/herdr-threads/tab\/main/pane\/main",
+        r"path:prj\/herdr-threads/tab\/main",
+        r"path:tab\/main/pane\/main",
+        r"path:prj\/herdr-threads/pane\/main",
+        r"path:pane\/main",
+        r"path:tab\/main",
+        r"path:prj\/herdr-threads",
+        r"path:agent\/main",
+    ] {
+        assert_eq!(
+            resolved(resolve(selector, &topology, None, &none())).pane,
+            id("w1:p1"),
+            "{selector}"
+        );
+    }
+    let mut topology = literal_topology();
+    topology.spaces[0].label = Some("プロジェクト/青".into());
+    topology.tabs[0].label = Some("tab\\".into());
+    topology.panes[0].label = Some("pane\\/終".into());
+    assert_eq!(
+        resolved(resolve(
+            r"path:プロジェクト\/青/tab\\/pane\\\/終",
+            &topology,
+            None,
+            &none()
+        ))
+        .pane,
+        id("w1:p1")
+    );
+    // A raw slash-bearing label already worked as a whole string, and stays so.
+    assert_eq!(
+        resolved(resolve("agent/main", &topology, None, &none())).pane,
+        id("w1:p1")
+    );
+}
+
+#[test]
+fn malformed_explicit_paths_refuse_unless_the_raw_name_exists() {
+    for selector in [
+        "path:",
+        "path:/a",
+        "path:a/",
+        "path:a//b",
+        "path:a/b/c/d",
+        r"path:a\q",
+        "path:a\\",
+    ] {
+        let error = resolve(selector, &base(), None, &none())
+            .into_result(selector, |_| Ok::<_, ()>(None))
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            ErrorCode::InvalidRequest,
+            "{selector}: {error:?}"
+        );
+        let mut topology = base();
+        topology.panes[0].label = Some(selector.into());
+        assert_eq!(
+            resolved(resolve(selector, &topology, None, &none())).pane,
+            id("w1:p1")
+        );
+    }
+}
+
+#[test]
+fn raw_backslashes_and_path_prefix_names_are_preserved() {
+    let mut topology = base();
+    for label in [r"raw\q", r"raw\/name", "path:unmatched"] {
+        topology.panes[0].label = Some(label.into());
+        assert_eq!(
+            resolved(resolve(label, &topology, None, &none())).pane,
+            id("w1:p1")
+        );
+    }
+}
+
+#[test]
+fn explicit_paths_refuse_raw_collisions_before_proximity_but_after_narrowing() {
+    let selector = r"path:pane\/main";
+    let mut topology = literal_topology();
+    topology.spaces.push(space("w2", "remote"));
+    topology.tabs.push(tab("w2:t1", "w2", "remote"));
+    topology
+        .panes
+        .push(pane("w2:p1", "w2", "w2:t1", selector, &[]));
+    for caller in ["w1:p1", "w2:p1"] {
+        assert_eq!(
+            panes_of(&ambiguous(resolve(
+                selector,
+                &topology,
+                Some(&id(caller)),
+                &none()
+            ))),
+            vec!["w1:p1", "w2:p1"]
+        );
+    }
+    let narrowed = Narrowing {
+        space: Some("w1".into()),
+        tab: None,
+    };
+    assert_eq!(
+        resolved(resolve(selector, &topology, None, &narrowed)).pane,
+        id("w1:p1")
+    );
+    // Different readings that land on the same pane are not a collision.
+    topology.panes[0].agent_names.push(selector.into());
+    topology.panes.pop();
+    assert_eq!(
+        resolved(resolve(selector, &topology, None, &none())).pane,
+        id("w1:p1")
+    );
+
+    // The compatibility check includes the old slash-split readings, not only whole labels.
+    let mut topology = base();
+    topology.spaces[0].label = Some("path:solo".into());
+    topology.panes[0].label = Some("dave".into());
+    assert_eq!(
+        panes_of(&ambiguous(resolve(
+            "path:solo/dave",
+            &topology,
+            Some(&id("w1:p1")),
+            &none()
+        ))),
+        vec!["w1:p1", "w2:p1"]
+    );
+}
+
 fn space(id: &str, label: &str) -> TopologySpace {
     TopologySpace {
         id: id.into(),

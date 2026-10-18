@@ -1467,21 +1467,21 @@ enum SeatSub {
     },
     /// Inspect one seat's mapping, binding and obligations.
     Inspect {
-        /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+        /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
         seat: String,
         #[command(flatten)]
         page: PageArgs,
     },
     /// Rebind a seat to a pane through explicit operator repair.
     Rebind {
-        /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+        /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
         seat: String,
         #[command(flatten)]
         selector: super::panes::PaneSelector,
         /// Retire the seat that owns the pane (NEW) and rebind this seat onto
         /// the pane in one step; NEW's pending obligations settle as
         /// recipient-retired and nothing moves from NEW to this seat.
-        /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+        /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
         #[arg(long, value_name = "NEW")]
         replace: Option<String>,
         #[arg(long, required = true)]
@@ -1490,7 +1490,7 @@ enum SeatSub {
     /// Abandon a seat: it retires and its pending obligations settle as
     /// recipient-retired. The seat is never merged into another.
     Retire {
-        /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+        /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
         seat: String,
         #[arg(long)]
         operator: bool,
@@ -1577,7 +1577,7 @@ struct ThreadListArgs {
     recent: bool,
     #[command(flatten)]
     selector: super::panes::PaneSelector,
-    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+    /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
     #[arg(long)]
     seat: Option<String>,
     #[arg(long, group = "membership")]
@@ -1596,7 +1596,7 @@ struct ThreadListArgs {
 struct InboxArgs {
     #[command(flatten)]
     selector: super::panes::PaneSelector,
-    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+    /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
     #[arg(long)]
     seat: Option<String>,
     #[command(flatten)]
@@ -1609,7 +1609,7 @@ struct InviteArgs {
     /// Thread to invite the seat into.
     thread: String,
     /// Seat to invite.
-    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+    /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
     #[arg(long)]
     seat: Option<String>,
     /// Acceptance deadline in positive seconds.
@@ -1633,7 +1633,7 @@ struct SendArgs {
     #[arg(required_unless_present = "seat", conflicts_with = "seat")]
     thread: Option<String>,
     /// Recipient seat for an automatic one-to-one channel.
-    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+    /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
     #[arg(long, required_unless_present = "thread", conflicts_with = "thread")]
     seat: Option<String>,
     /// Message body given directly on the command line.
@@ -1646,7 +1646,7 @@ struct SendArgs {
     #[arg(long, group = "body_source")]
     stdin: bool,
     /// Require an ACK from this seat; repeat for more seats.
-    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+    /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
     #[arg(long = "require-ack", value_name = "SEAT", num_args = 1.., action = ArgAction::Append)]
     require_ack: Vec<String>,
     /// Require an ACK from one exact pane ID, label or live agent name; repeat
@@ -1692,7 +1692,7 @@ fn parse_user_intent(value: &str) -> Result<UserIntent, String> {
 struct PendingReceiptsArgs {
     #[command(flatten)]
     selector: super::panes::PaneSelector,
-    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+    /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
     #[arg(long)]
     seat: Option<String>,
     #[arg(long)]
@@ -1704,7 +1704,7 @@ struct PendingReceiptsArgs {
 struct DiagnosticsArgs {
     #[command(flatten)]
     selector: super::panes::PaneSelector,
-    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+    /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
     #[arg(long)]
     seat: Option<String>,
     #[arg(long)]
@@ -1716,7 +1716,7 @@ struct DiagnosticsArgs {
 struct WarningsArgs {
     #[command(flatten)]
     selector: super::panes::PaneSelector,
-    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+    /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
     #[arg(long)]
     seat: Option<String>,
     /// Show open conditions and actionable legacy warnings in this thread.
@@ -1862,7 +1862,7 @@ struct HandoffArgs {
     new_tab: Option<String>,
     #[arg(long)]
     existing: bool,
-    /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
+    /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
     #[arg(long, requires = "existing", conflicts_with = "pane")]
     seat: Option<String>,
     /// Working directory for --new-tab; guarded pane launches cannot change it.

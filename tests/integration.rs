@@ -84,6 +84,9 @@ mod lanes_latency;
 /// ht-4is.6.7: read-only latency under a multi-agent party with a slow host.
 #[path = "integration/latency.rs"]
 mod latency;
+#[cfg(feature = "test-support")]
+#[path = "integration/literal_name_paths.rs"]
+mod literal_name_paths;
 /// ht-j16.10: the Claude mod delivery flows end to end (real `watch` CLI, scripted
 /// mod driver, injected daemon clock, stand-in Herdr).
 #[cfg(feature = "test-support")]

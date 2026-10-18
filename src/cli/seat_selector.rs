@@ -110,6 +110,7 @@ pub enum Outcome {
     Resolved(Candidate),
     Ambiguous(Vec<Candidate>),
     NoMatch,
+    InvalidPath,
 }
 
 /// Location check for a seat whose mapped target is known.
@@ -166,6 +167,246 @@ fn readings(selector: &str) -> Vec<Reading> {
         _ => {}
     }
     out
+}
+
+/// One parse shared by name and nickname resolution. Raw readings always keep their original
+/// meaning; decoding is opt-in and never changes the separate location flags.
+pub struct Selector<'a> {
+    raw: &'a str,
+    components: Option<Result<Vec<String>, ()>>,
+}
+
+fn path_components(path: &str) -> Result<Vec<String>, ()> {
+    let mut parts = vec![String::new()];
+    let mut chars = path.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '/' => parts.push(String::new()),
+            '\\' => match chars.next() {
+                Some(c @ ('/' | '\\')) => parts.last_mut().unwrap().push(c),
+                _ => return Err(()),
+            },
+            _ => parts.last_mut().unwrap().push(c),
+        }
+    }
+    if parts.iter().any(String::is_empty) || parts.len() > 4 {
+        return Err(());
+    }
+    Ok(parts)
+}
+
+fn component_readings(parts: &[String]) -> Vec<Reading> {
+    match parts {
+        [a] => vec![
+            reading(None, None, Some(a)),
+            reading(None, Some(a), None),
+            reading(Some(a), None, None),
+        ],
+        [a, b] => vec![
+            reading(Some(a), Some(b), None),
+            reading(None, Some(a), Some(b)),
+            reading(Some(a), None, Some(b)),
+        ],
+        [a, b, c] => vec![reading(Some(a), Some(b), Some(c))],
+        _ => Vec::new(),
+    }
+}
+
+/// A possible nickname, with its prefix already parsed into level readings.
+pub struct Nickname<'a> {
+    pub last: &'a str,
+    prefix: Vec<Reading>,
+    needs_raw_scope: bool,
+}
+
+impl Nickname<'_> {
+    pub fn is_legacy_path(&self) -> bool {
+        self.needs_raw_scope
+    }
+
+    /// An opt-in argument retains an existing raw nickname scope before its decoded scope.
+    pub fn applies(&self, topology: &HostTopology) -> bool {
+        !self.needs_raw_scope
+            || !pool_readings(&self.prefix, topology, &Narrowing::default()).is_empty()
+    }
+
+    pub fn verify(&self, topology: &HostTopology, target: Option<&HostTargetId>) -> LocationCheck {
+        let Some(pane) = target.and_then(|t| pane_of(topology, t)) else {
+            return LocationCheck::Unverifiable;
+        };
+        location_result(
+            self.prefix
+                .iter()
+                .any(|r| reading_matches(topology, pane, r)),
+            topology,
+            pane,
+        )
+    }
+
+    pub fn conflict_with(
+        &self,
+        other: &Nickname<'_>,
+        topology: &HostTopology,
+        target: Option<&HostTargetId>,
+        other_target: Option<&HostTargetId>,
+    ) -> Option<Outcome> {
+        let pane = target.and_then(|t| pane_of(topology, t))?;
+        let other_pane = other_target.and_then(|t| pane_of(topology, t))?;
+        if pane.target == other_pane.target {
+            return None;
+        }
+        Some(Outcome::Ambiguous(
+            [(self, pane), (other, other_pane)]
+                .into_iter()
+                .map(|(nickname, pane)| Candidate {
+                    pane: pane.target.clone(),
+                    tier: Tier::Any,
+                    readings: nickname.prefix.clone(),
+                    path: render_pane(topology, pane),
+                })
+                .collect(),
+        ))
+    }
+}
+
+impl<'a> Selector<'a> {
+    pub fn new(raw: &'a str) -> Self {
+        Self {
+            raw,
+            components: raw.strip_prefix("path:").map(path_components),
+        }
+    }
+
+    pub fn nicknames(&self) -> Vec<Nickname<'_>> {
+        let mut out = Vec::new();
+        if let Some((prefix, last)) = split_nickname(self.raw) {
+            out.push(Nickname {
+                last,
+                prefix: readings(prefix),
+                needs_raw_scope: self.components.is_some(),
+            });
+        }
+        if let Some(Ok(parts)) = &self.components
+            && parts.len() >= 2
+        {
+            out.push(Nickname {
+                last: parts.last().unwrap(),
+                prefix: component_readings(&parts[..parts.len() - 1]),
+                needs_raw_scope: false,
+            });
+        }
+        out
+    }
+
+    fn decoded_readings(&self) -> Result<Vec<Reading>, ()> {
+        match &self.components {
+            None => Ok(Vec::new()),
+            Some(Ok(parts)) if parts.len() <= 3 => Ok(component_readings(parts)),
+            _ => Err(()),
+        }
+    }
+
+    fn candidates(
+        &self,
+        topology: &HostTopology,
+        caller: Option<&HostTargetId>,
+        narrowing: &Narrowing,
+        include_raw: bool,
+    ) -> (Vec<Candidate>, bool) {
+        let raw = if include_raw {
+            readings(self.raw)
+        } else {
+            Vec::new()
+        };
+        let decoded = self.decoded_readings().unwrap_or_default();
+        let mut raw_hit = false;
+        let mut decoded_hit = false;
+        let candidates = topology
+            .panes
+            .iter()
+            .filter(|pane| narrowing.admits(pane))
+            .filter_map(|pane| {
+                let mut hits = Vec::new();
+                for (all, matched) in [(&raw, &mut raw_hit), (&decoded, &mut decoded_hit)] {
+                    for reading in all {
+                        if reading_matches(topology, pane, reading) {
+                            *matched = true;
+                            if !hits.contains(reading) {
+                                hits.push(reading.clone());
+                            }
+                        }
+                    }
+                }
+                (!hits.is_empty()).then(|| Candidate {
+                    pane: pane.target.clone(),
+                    tier: tier_of(topology, caller, pane),
+                    readings: hits,
+                    path: render_pane(topology, pane),
+                })
+            })
+            .collect();
+        (candidates, raw_hit && decoded_hit)
+    }
+
+    pub fn resolve_with(
+        &self,
+        topology: &HostTopology,
+        caller: Option<&HostTargetId>,
+        narrowing: &Narrowing,
+        tiering: Tiering,
+    ) -> Outcome {
+        if self.raw.is_empty() {
+            return Outcome::NoMatch;
+        }
+        let (mut candidates, both) = self.candidates(topology, caller, narrowing, true);
+        if both && candidates.len() > 1 {
+            return Outcome::Ambiguous(candidates);
+        }
+        let Some(best) = candidates.iter().map(|c| c.tier).min() else {
+            return if self.decoded_readings().is_err() {
+                Outcome::InvalidPath
+            } else {
+                Outcome::NoMatch
+            };
+        };
+        if tiering == Tiering::Proximity {
+            candidates.retain(|c| c.tier == best);
+        }
+        if candidates.len() == 1 {
+            Outcome::Resolved(candidates.remove(0))
+        } else {
+            Outcome::Ambiguous(candidates)
+        }
+    }
+
+    /// A nickname is an existing seat, but must not hide another raw or decoded full-name
+    /// target. Return all contenders without proximity filtering; narrowing still applies.
+    pub fn nickname_collision(
+        &self,
+        nickname: &Nickname<'_>,
+        topology: &HostTopology,
+        narrowing: &Narrowing,
+        target: Option<&HostTargetId>,
+    ) -> Option<Outcome> {
+        self.components.as_ref()?;
+        let pane = target.and_then(|t| pane_of(topology, t))?;
+        // A winning raw nickname historically outranks raw full-name matches. Only a decoded
+        // target can conflict with it; a decoded nickname must also check raw full names.
+        let (mut candidates, _) =
+            self.candidates(topology, None, narrowing, !nickname.is_legacy_path());
+        if !candidates.iter().any(|c| c.pane != pane.target) {
+            return None;
+        }
+        if !candidates.iter().any(|c| c.pane == pane.target) {
+            candidates.push(Candidate {
+                pane: pane.target.clone(),
+                tier: Tier::Any,
+                readings: nickname.prefix.clone(),
+                path: render_pane(topology, pane),
+            });
+        }
+        Some(Outcome::Ambiguous(candidates))
+    }
 }
 
 fn space_of<'a>(topology: &'a HostTopology, id: &str) -> Option<&'a TopologySpace> {
@@ -234,13 +475,21 @@ fn pool<'a>(
     narrowing: &Narrowing,
 ) -> Vec<(&'a TopologyPane, Vec<Reading>)> {
     let all = readings(selector);
+    pool_readings(&all, topology, narrowing)
+}
+
+fn pool_readings<'a>(
+    all: &[Reading],
+    topology: &'a HostTopology,
+    narrowing: &Narrowing,
+) -> Vec<(&'a TopologyPane, Vec<Reading>)> {
     topology
         .panes
         .iter()
         .filter(|pane| narrowing.admits(pane))
         .filter_map(|pane| {
             let mut hits: Vec<Reading> = Vec::new();
-            for reading in &all {
+            for reading in all {
                 if reading_matches(topology, pane, reading) && !hits.contains(reading) {
                     hits.push(reading.clone());
                 }
@@ -293,29 +542,7 @@ pub fn resolve_with(
     narrowing: &Narrowing,
     tiering: Tiering,
 ) -> Outcome {
-    if selector.is_empty() {
-        return Outcome::NoMatch;
-    }
-    let mut tiered: Vec<Candidate> = pool(selector, topology, narrowing)
-        .into_iter()
-        .map(|(pane, readings)| Candidate {
-            pane: pane.target.clone(),
-            tier: tier_of(topology, caller, pane),
-            readings,
-            path: render_pane(topology, pane),
-        })
-        .collect();
-    let Some(best) = tiered.iter().map(|c| c.tier).min() else {
-        return Outcome::NoMatch;
-    };
-    if tiering == Tiering::Proximity {
-        tiered.retain(|c| c.tier == best);
-    }
-    if tiered.len() == 1 {
-        Outcome::Resolved(tiered.remove(0))
-    } else {
-        Outcome::Ambiguous(tiered)
-    }
+    Selector::new(selector).resolve_with(topology, caller, narrowing, tiering)
 }
 
 // ---------------------------------------------------------------- nickname and location
@@ -478,6 +705,9 @@ impl Outcome {
     ) -> Result<Candidate, ApiError> {
         match self {
             Outcome::Resolved(candidate) => Ok(candidate),
+            Outcome::InvalidPath => Err(ApiError::invalid_request(
+                r"invalid path: use 1-3 nonempty components; escapes: \/ and \\",
+            )),
             Outcome::NoMatch => Err(ApiError::not_found(format!(
                 "seat {}: neither an existing seat ID nor a live space/tab/pane name",
                 echo(selector)

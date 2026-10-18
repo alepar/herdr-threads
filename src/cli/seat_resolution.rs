@@ -536,17 +536,69 @@ where
             self.verify_narrowed(raw, &seat, &inspection)?;
             return Ok(Resolved::Seat(seat));
         }
+        let selector = seat_selector::Selector::new(raw);
         // 2. Nickname PREFIX/SEAT_ID: the last part is an existing seat; the prefix must name
         // the seat's live location.
-        if let Some((prefix, last)) = seat_selector::split_nickname(raw)
-            && let Ok(seat) = SeatId::parse(last)
-            && let Some(inspection) = self.inspect(&seat)?
-        {
+        let nicknames = selector.nicknames();
+        for nickname in &nicknames {
+            let Ok(seat) = SeatId::parse(nickname.last) else {
+                continue;
+            };
+            let Some(inspection) = self.inspect(&seat)? else {
+                continue;
+            };
             let topology = self.topology().map_err(run_error)?;
-            seat_selector::verify_nickname(prefix, topology, live_target(&inspection))
+            if !nickname.applies(topology) {
+                continue;
+            }
+            nickname
+                .verify(topology, live_target(&inspection))
                 .into_result(raw, &seat)
                 .map_err(run_error)?;
             self.verify_narrowed(raw, &seat, &inspection)?;
+            let narrowing = self
+                .narrowing()
+                .map_err(run_error)?
+                .cloned()
+                .unwrap_or_default();
+            if let Some(collision) = selector.nickname_collision(
+                nickname,
+                topology,
+                &narrowing,
+                live_target(&inspection),
+            ) {
+                self.candidate(collision, raw)?;
+            }
+            // Escaping can change the final opaque ID (for example seat\/tail versus tail).
+            // Preserve the legacy nickname's refusal/precedence, but refuse a second valid
+            // decoded nickname at a different target before returning its canonical seat.
+            if nickname.is_legacy_path() {
+                for decoded in nicknames
+                    .iter()
+                    .filter(|n| !n.is_legacy_path() && n.last != nickname.last)
+                {
+                    let Ok(decoded_seat) = SeatId::parse(decoded.last) else {
+                        continue;
+                    };
+                    let Some(decoded_inspection) = self.inspect(&decoded_seat)? else {
+                        continue;
+                    };
+                    let decoded_target = live_target(&decoded_inspection);
+                    if decoded.verify(topology, decoded_target)
+                        == seat_selector::LocationCheck::Match
+                        && seat_selector::verify_location(topology, &narrowing, decoded_target)
+                            == seat_selector::LocationCheck::Match
+                        && let Some(collision) = nickname.conflict_with(
+                            decoded,
+                            topology,
+                            live_target(&inspection),
+                            decoded_target,
+                        )
+                    {
+                        self.candidate(collision, raw)?;
+                    }
+                }
+            }
             return Ok(Resolved::Seat(seat));
         }
         // 3. A direct pane ID needs no topology unless narrowing applies.
@@ -561,23 +613,10 @@ where
         let narrowing = narrowing.unwrap_or_default();
         let topology = self.topology().map_err(run_error)?;
         let caller = self.caller().map_err(run_error)?;
-        let (_, client) = self.connection.get()?;
-        let clock = self.clock.as_ref();
-        let candidate =
-            seat_selector::resolve_with(raw, topology, caller, &narrowing, slot.tiering())
-                .into_result(raw, |pane| {
-                    match super::collect_pane_seats(pane, |command| {
-                        client.call(command, &super::cooperative_budget(clock))
-                    }) {
-                        Ok(seats) => match seats.resolved.as_slice() {
-                            [one] => Ok(Some(one.seat.clone())),
-                            [] => Ok(None),
-                            _ => Err(()),
-                        },
-                        Err(_) => Err(()),
-                    }
-                })
-                .map_err(run_error)?;
+        let candidate = self.candidate(
+            selector.resolve_with(topology, caller, &narrowing, slot.tiering()),
+            raw,
+        )?;
         let path = candidate.path.clone();
         let tier = candidate.tier.as_str().to_owned();
         match self.map_pane(parsed, slot, candidate.pane.clone())? {
@@ -590,6 +629,29 @@ where
                 line: Some((path, tier)),
             }),
         }
+    }
+
+    fn candidate(
+        &self,
+        outcome: seat_selector::Outcome,
+        raw: &str,
+    ) -> Result<seat_selector::Candidate, RunError> {
+        let (_, client) = self.connection.get()?;
+        let clock = self.clock.as_ref();
+        outcome
+            .into_result(raw, |pane| {
+                match super::collect_pane_seats(pane, |command| {
+                    client.call(command, &super::cooperative_budget(clock))
+                }) {
+                    Ok(seats) => match seats.resolved.as_slice() {
+                        [one] => Ok(Some(one.seat.clone())),
+                        [] => Ok(None),
+                        _ => Err(()),
+                    },
+                    Err(_) => Err(()),
+                }
+            })
+            .map_err(run_error)
     }
 
     /// Steps 3 and 4: the pane's seat by the slot's D4 class. A lookup resolves now; an

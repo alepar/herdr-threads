@@ -3214,6 +3214,113 @@ mod scoped_runtime {
         panes.push(pane("w2:p1", "w2:t1", "w2", "alice"));
         host
     }
+
+    #[test]
+    fn literal_path_nicknames_preserve_raw_precedence_and_refuse_full_label_collisions() {
+        let mut host = seat_snapshot();
+        host["workspaces"][0]["label"] = json!("prj/herdr-threads");
+        host["tabs"][1]["label"] = json!("tab/main");
+        let runtime = Runtime::new(host.clone());
+        runtime
+            .run(&[
+                "inbox",
+                "--seat",
+                r"path:prj\/herdr-threads/tab\/main/recipient",
+            ])
+            .unwrap();
+        assert!(
+            matches!(runtime.calls.lock().unwrap().last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("recipient")))
+        );
+        runtime
+            .run(&[
+                "inbox",
+                "--seat",
+                r"path:prj\/herdr-threads/tab\/main/alice/recipient",
+            ])
+            .unwrap();
+
+        // The raw full selector names a different pane: the nickname must not bypass it.
+        host["panes"][2]["label"] = json!(r"path:prj\/herdr-threads/tab\/main/recipient");
+        let runtime = Runtime::new(host);
+        let error = api_error(runtime.run(&[
+            "inbox",
+            "--seat",
+            r"path:prj\/herdr-threads/tab\/main/recipient",
+        ]));
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(resolve_seat_calls(&runtime).is_empty());
+
+        // Existing raw nickname scope remains authoritative even when decoded scope fits.
+        let mut host = seat_snapshot();
+        host["workspaces"][1]["label"] = json!("path:project");
+        let runtime = Runtime::new(host);
+        let error = api_error(runtime.run(&["inbox", "--seat", "path:project/recipient"]));
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(error.detail.contains("pass the bare seat ID"), "{error:?}");
+        let error = api_error(runtime.run(&[
+            "inbox",
+            "--seat",
+            "path:project/recipient",
+            "--space",
+            "project",
+        ]));
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(error.detail.contains("pass the bare seat ID"), "{error:?}");
+    }
+
+    #[test]
+    fn literal_paths_still_freeze_canonical_ids_and_exact_id_precedence() {
+        let mut host = seat_snapshot();
+        host["panes"][2]["label"] = json!("dev/tools");
+        let runtime = Runtime::new(host);
+        located_caller(&runtime);
+        let _ = runtime.run_with_host(
+            &["send", "--seat", r"path:dev\/tools", "--body", "hi"],
+            false,
+            "w1:p2",
+        );
+        assert_eq!(resolve_seat_calls(&runtime), vec!["w1:p3".to_owned()]);
+        assert!(
+            runtime
+                .journals
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["semantic"]["kind"] == "resolve_seat"
+                    && entry["semantic"]["target"] == "w1:p3")
+        );
+
+        // Known IDs are used before parsing path syntax and need no host read.
+        let mut seats = default_seats();
+        seats.push(FixtureSeat::mapped("path:literal", Some("w1:p2")));
+        let runtime = Runtime::with_seats(seat_snapshot(), seats);
+        runtime.run(&["inbox", "--seat", "path:literal"]).unwrap();
+        assert!(runtime.host_calls.lock().unwrap().is_empty());
+        assert!(
+            matches!(runtime.calls.lock().unwrap().last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("path:literal")))
+        );
+    }
+
+    #[test]
+    fn literal_path_refuses_distinct_raw_and_decoded_nickname_seats() {
+        let mut host = seat_snapshot();
+        host["panes"][1]["label"] = json!(r"path:scope/seat\");
+        host["panes"][2]["label"] = json!("scope");
+        let mut seats = default_seats();
+        seats.push(FixtureSeat::mapped("tail", Some("w1:p2")));
+        seats.push(FixtureSeat::mapped("seat/tail", Some("w1:p3")));
+        let runtime = Runtime::with_seats(host, seats);
+        let error = api_error(runtime.run(&["inbox", "--seat", r"path:scope/seat\/tail"]));
+        assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+        assert!(
+            !runtime
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::Inbox(_)))
+        );
+    }
     fn api_error(result: Result<(), crate::cli::RunError>) -> ApiError {
         match result {
             Err(crate::cli::RunError::Api(error)) => error,
@@ -4647,12 +4754,22 @@ mod scoped_runtime {
 
         #[test]
         fn retry_direct_send_after_relabel_keeps_frozen_seat() {
+            retry_after_relabel("bob", "bob");
+        }
+
+        #[test]
+        fn literal_path_retry_after_relabel_keeps_frozen_seat() {
+            retry_after_relabel(r"path:dev\/tools", "dev/tools");
+        }
+
+        fn retry_after_relabel(selector: &str, label: &str) {
             let runtime = caller_runtime();
+            runtime.snapshot.lock().unwrap()["panes"][1]["label"] = json!(label);
             // The fake daemon refuses the direct thread, so the journaled intent stays pending
             // and the error names the retry.
             let error = api_error(as_caller(
                 &runtime,
-                &["send", "--seat", "bob", "--body", "hi"],
+                &["send", "--seat", selector, "--body", "hi"],
             ));
             let reference = error
                 .restart_argv
@@ -4673,7 +4790,7 @@ mod scoped_runtime {
                 for pane in snapshot["panes"].as_array_mut().unwrap() {
                     match pane["pane_id"].as_str().unwrap() {
                         "w1:p3" => pane["label"] = json!("zoe"),
-                        "w1:p4" => pane["label"] = json!("bob"),
+                        "w1:p4" => pane["label"] = json!(label),
                         _ => {}
                     }
                 }

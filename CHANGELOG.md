@@ -5,6 +5,7 @@
 ## v2.1.0
 
 - **New-tab profile directories.** `handoff --new-tab` accepts `--profile-dir` with optional `--cwd`, freezing canonical existing directories and declared child environment across retry. Codex, Claude and Hermes map their profile roots; agy rejects explicit profile selection. Pane launches and existing-seat delivery refuse directory options before effects; plain `launch` is unchanged. Shell initialization can alter declared input, which does not prove the authenticated account. Missing saved directories require repair before new native effects.
+- **Literal slashes in seat names.** Seat arguments accept explicit escaped paths, for example `'path:prj\/herdr-threads/tab\/main/pane\/main'`. `/` separates levels, `\/` is a literal slash and `\\` a literal backslash; nickname prefixes use the same syntax. Ordinary selectors and separate `--space`/`--tab`/`--pane` values keep their meanings. A raw name that points elsewhere conflicts instead of silently changing the target.
 
 ## v2.0.4
 
