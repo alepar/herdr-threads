@@ -1,5 +1,5 @@
 status: clean [degraded: plan roast skipped, outstanding findings: 10, root acceptance pending: finish: human decision pending; owner: main release coordinator; ht-1urq.6:concurrent-topology: gap open; owner: super-auto / main qualification; final-sweep:apply-lane: gap open; owner: super-auto / main qualification]
-metrics: pending (upstream-feedback not yet run)
+metrics: upstream-feedback.draft.md (parked; not filed)
 
 ## Implemented
 
@@ -27,6 +27,8 @@ metrics: pending (upstream-feedback not yet run)
 
 - Complete independent review covered 98 selected slices and 12 hash-verified generated omissions; caller assessment is ready after the final sweep. Two code-roast rounds completed, second `clean (0 nits) [converged]`; no code redesign or confirmed roast defect. Source: `run.md` review collection, codeBuckets, roastCodeExit; `evidence/review-coverage-verification.json`; round-2 roast report.
 
+- Final parent/run process verification passed with0stopped,0survived,0unknown,0kept; task descendants, investigation and verification scratch removed. Integration worktree retained for main and required raw evidence. Source: evidence/final-process-sweep.json; evidence/final-cleanup-inventory.json.
+
 ## Remaining
 
 - Main release coordinator must decide merge/release; proposed minor version is 2.1.0. Branch `integration/handoff-profile-and-skill-guidance` is retained; no merge/tag is authorized here. Design roast was explicitly skipped. Source: `run.md` idea/flags/root acceptance and `.superpowers/sdd/ht-1urq-plan/report-status.txt`.
@@ -52,7 +54,6 @@ metrics: pending (upstream-feedback not yet run)
 
 - Integration worktree `/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance` and its ignored `.superpowers/sdd/ht-1urq-plan` evidence remain deliberately retained for main; do not remove their parent before archival/handoff. Source: `run.md` codeBuckets.worktreesKept.
 
-- [cleanup:parent] Final parent process sweep is still pending at draft time; task cleanup and scoped suite leak checks do not establish parent cleanup. Next safe action: verify parent run processes from outside the worktree and persist the result before finish. Source: phase-7 cleanup obligation; `run.md` codeBuckets.processSweep is not yet a final parent verification.
 
 ## Gotchas & surprises
 

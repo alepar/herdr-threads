@@ -1,0 +1,29 @@
+{
+  "model": "gpt-6-astra",
+  "reasoning": "high",
+  "freshContext": true,
+  "tools": "none",
+  "candidateCount": 3,
+  "retainedCount": 3,
+  "findings": [
+    {
+      "claim": "Committed current review intent makes collection self-referential",
+      "evidence": "The installed instruction says to commit the pending review-collection intent before launch. A corrected expected-path, settled:false current intent committed into captured HEAD still caused incomplete claimed collection. Only the documented commit-after-settlement ordering exception allowed a fresh complete assembly.",
+      "premise": "Verify the corrected current record schema and distinguish its incomplete state from independently incomplete historical collections.",
+      "fixShape": "Permit the current invocation\u2019s committed pending intent while validating completed historical records normally."
+    },
+    {
+      "claim": "Unavailable assemblies require a digest their producer never wrote",
+      "evidence": "A prior assembly failed before writing digest.md; the next assembler rejected its archive for lacking that digest. The run had to add explicitly labelled reconstructed diagnostic digests from immutable selection metadata. Original failed outputs/verdicts were retained.",
+      "premise": "Verify this archive is a supported failed-selection state and determine the immutable metadata required to identify its unavailable outputs.",
+      "fixShape": "Represent failed assemblies explicitly so later independent assembly can preserve the failure without demanding nonexistent producer output."
+    },
+    {
+      "claim": "Unknown slot metadata becomes a precise one-slot model",
+      "evidence": "The ordinary ledger used a JSON-shaped Launch: args line with concurrency4. The profile parser reads textual Launch: mechanism metadata and uses ledger?.concurrency ?? 1. Output reported cap1 beside task/all-agent peak5, model179% of actual, and an estimated47-minute slot benefit.",
+      "premise": "The recorded JSON launch may violate the ordinary coordinator protocol; do not claim valid native format rejection. Verify fallback/reporting and the missing-metadata path.",
+      "fixShape": "Keep unknown cap metadata unknown, diagnose its absence, and suppress quantitative slot-bound conclusions requiring that value."
+    }
+  ],
+  "triage": "All generalize beyond project, are actionable upstream and carry run evidence; third claim explicitly distinguishes malformed input from unsupported valid-format rejection."
+}

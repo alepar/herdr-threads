@@ -1,0 +1,13 @@
+{
+  "root": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance",
+  "registeredNested": [],
+  "localTaskDirectoryEntries": [],
+  "separateInvestigationRemoved": true,
+  "integrationKept": "required local ignored raw evidence and main handoff",
+  "privateBridgeDuplicatesRemoved": true,
+  "verificationScratchRemoved": [
+    true,
+    true,
+    true
+  ]
+}
