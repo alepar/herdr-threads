@@ -26,7 +26,7 @@
 - Modify `src/cli/seat_selector.rs`: strict parser, readings, nickname prefix, collision detection and invalid-input errors.
 - Modify `src/cli/seat_resolution.rs`: propagate validation and preserve ID precedence, canonical journaling and nickname verification.
 - Modify `tests/cli/seat_selector.rs`: literal tables and resolver tests.
-- Create `tests/integration/literal_name_paths.rs`; register in `tests/integration.rs` (same existing isolated smoke fixture; no process-wide mutable state).
+- Extend existing `tests/integration/session_bindings_e2e.rs` with the two `literal_name_paths` tests, reusing its Smoke import. No new suite or registration: AGENTS.md requires new stateless suites in combined, so the final review corrected the original standalone integration-module placement.
 - Modify `src/cli/commands.rs` and relevant help golden fixtures; document compactly in `integrations/skill/SKILL.md` and `docs/CHANGELOG.md`.
 
 **Interfaces:** Existing resolve/resolve_with and nickname verification remain the common consumers for every seat slot. A parser may return owned decoded components or ApiError; avoid decoding again or adding command-specific branches. `Outcome` may gain invalid syntax if needed. Existing exact --space/--tab/--pane values never decode.
