@@ -171,10 +171,22 @@ fn note_published_skips_a_remote_recipient_whose_threshold_admits_the_row() {
         UPDATE seats SET nudge_threshold=-1 WHERE id IN ('s1','r1');\
         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES('prep-1','{INSTANCE}','actor','op',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy',1);\
         INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES('prep-1','msg-1','t','s1'),('prep-1','msg-1','t','r1');\
+        UPDATE send_preparations SET status='sealed' WHERE id='prep-1';\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq,delivery_mode,priority) VALUES('{INSTANCE}','msg-1','t',1,'ordinary','s2','body',1000,10,'lazy',1);\
+        INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('{INSTANCE}','prep-1','msg-1','t',10,1000,1,0,0,0);\
     ")).unwrap();
     let tx = db.unchecked_transaction().unwrap();
     crate::store::lazy_delivery::note_published(&tx, "prep-1").unwrap();
     tx.commit().unwrap();
     assert_eq!(version(&db, "s1"), Some(1));
+    assert_eq!(
+        db.query_row(
+            "SELECT reason_bits FROM wake_work WHERE seat_id='s1'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
     assert_eq!(version(&db, "r1"), None);
 }
