@@ -269,6 +269,9 @@ impl Actor {
                 // log again would only repeat the cut: park it for the link's
                 // lifetime (a `want` from before the cut lifts it).
                 entry.withheld_logs.insert(log, from);
+                // The job is over and the parked log is out of the ready
+                // set: serve the link's next armed log now (ht-j87z.30).
+                self.push_link(link);
             }
             // Otherwise nothing committed there yet: stay armed (live tail).
             return;
