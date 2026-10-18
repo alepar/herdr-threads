@@ -442,6 +442,28 @@ pub struct SalvageReport {
 pub type SalvageIngest<'a> =
     dyn FnMut(&LogKey, Vec<StoredEntry>) -> Result<IngestOutcome, ApiError> + 'a;
 
+/// A backup from before node schema 4 (2.1.1 and older) has no
+/// `journal_opaque`, which the Chain-row reader selects from. An empty TEMP
+/// table of the same columns shadows the missing one, so the read is
+/// journal-only. TEMP objects live in this connection's temp database, never
+/// in the read-only backup.
+fn shadow_missing_opaque_table(conn: &Connection) -> rusqlite::Result<()> {
+    let present: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='journal_opaque')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !present {
+        conn.execute_batch(
+            "PRAGMA temp_store=MEMORY; \
+             CREATE TEMP TABLE journal_opaque (log_ix INTEGER NOT NULL, counter INTEGER NOT NULL, \
+             hash BLOB NOT NULL, prev_hash BLOB NOT NULL, signature BLOB NOT NULL, raw BLOB NOT NULL, \
+             branch INTEGER NOT NULL)",
+        )?;
+    }
+    Ok(())
+}
+
 /// Reads the backup at `backup_db` read-only and hands every log's entries,
 /// ascending in batches of [`SALVAGE_BATCH_ENTRIES`], to `ingest`, logs in
 /// [`LogKey`] order.
@@ -451,6 +473,8 @@ pub type SalvageIngest<'a> =
 /// corrupt rows are never admitted. A store error from `ingest` itself ends
 /// the pass with that error: ingest is idempotent, so the caller runs the
 /// whole pass again. A `Headroom` stop sets [`SalvageReport::headroom`].
+/// A backup from before node schema 4 is read journal-only (see
+/// [`shadow_missing_opaque_table`]).
 pub fn salvage(
     backup_db: &Path,
     ingest: &mut SalvageIngest<'_>,
@@ -463,6 +487,7 @@ pub fn salvage(
     )
     .map_err(|error| error.to_string())
     .and_then(|conn| {
+        shadow_missing_opaque_table(&conn).map_err(|error| error.to_string())?;
         let vector = journal::vector(&conn).map_err(|error| error.detail)?;
         Ok((conn, vector))
     });
@@ -1181,6 +1206,75 @@ mod tests {
             report.stopped
         );
         assert!(!report.interrupted && report.unreadable.is_none());
+    }
+
+    /// Turns a store built by this release into the shape of a 2.1.1 one
+    /// (node schema 3): every object that names `journal_opaque` is dropped,
+    /// triggers first, and `user_version` goes back to 3.
+    fn downgrade_to_schema_3(db: &Path) {
+        let conn = Connection::open(db).unwrap();
+        let objects: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT type,name FROM sqlite_master \
+                 WHERE type IN ('table','trigger') AND (name LIKE 'journal_opaque%' OR sql LIKE '%journal_opaque%') \
+                 ORDER BY type='table'",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for (kind, name) in &objects {
+            let kind = if kind == "table" { "TABLE" } else { "TRIGGER" };
+            conn.execute_batch(&format!("DROP {kind} \"{name}\""))
+                .unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version=3").unwrap();
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%journal_opaque%' OR sql LIKE '%journal_opaque%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0, "no 0004 object is left");
+    }
+
+    /// A backup from before node schema 4 has no `journal_opaque`: salvage
+    /// reads it journal-only, recovers every entry and leaves the file alone.
+    #[test]
+    fn salvage_reads_a_pre_0004_backup() {
+        let (iso, _paths) = node("resync-salvage-schema3");
+        let db = iso.path("backup.db");
+        let logs = three_logs();
+        build_store(&db, &logs);
+        downgrade_to_schema_3(&db);
+        let held = backup_logs(&db);
+
+        let mut got: std::collections::BTreeMap<LogKey, Vec<StoredEntry>> = Default::default();
+        let mut ingest = |log: &LogKey, entries: Vec<StoredEntry>| {
+            let count = entries.len();
+            got.entry(*log).or_default().extend(entries);
+            Ok(stored(count))
+        };
+        let report = salvage(&db, &mut ingest, &|| false).unwrap();
+
+        assert!(report.stopped.is_empty(), "{:?}", report.stopped);
+        assert!(report.unreadable.is_none() && !report.interrupted);
+        assert_eq!(report.logs, held.len());
+        assert_eq!(report.entries, held.iter().map(|(_, c)| c).sum::<u64>());
+        for (log, entries) in &logs {
+            assert_eq!(got.get(log), Some(entries), "entries recovered");
+        }
+        let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let opaque: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='journal_opaque'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(opaque, 0, "salvage never wrote to the backup");
     }
 
     /// A store that cannot take an opaque entry stops the log there, and the
