@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-17-handoff-profile-and-skill-guidance
 
 flags: planOneShot=true skipPlanRoast=true skipCodeRoast=false autonomous=true
-phase: design
+phase: code
 codeMechanism: ordinary-subagents
 runTag: handoff-profile-and-skill-guidance-20261018T024112
 context: Context: codex · planner=475K/auto · implementer=475K/auto · reviewer=475K/auto · finalReview=475K/auto · assembler=475K/auto
@@ -23,3 +23,8 @@ approvals:
 - coverage-round-2 · requirements: 12 · mapped: 12 · unmapped: 0 · auto no findings; C1–C7 closed; two valid fresh reviews; loop exits at fixed cap
 - integration-sweep · auto · ht-1urq.10 depends on all nine implementation/documentation/configuration-smoke leaves; terminal scoped integration net, caller retains root acceptance
 - design-ready · auto · coverage two rounds complete, 12/12 mapped, no open findings; design roast OFF, zero reports and zero rounds; graph all five candidates kept, no parked changes; caller-owned handoff
+
+- root-acceptance · {"version":1,"owner":"super-auto","sourceTree":"2aeda4dafc7bb4a659076ec9afa193ded205cc1e","requirements":[{"id":"final-review","kind":"review","owner":"super-auto"},{"id":"sweep","kind":"measurement","owner":"super-auto","command":"nice cargo nextest run --locked --all-targets --all-features","configuration":"all-features; HT_LEAK_RUN_ID scoped; leak check after suite","requiredLive":true,"obligations":["ht-1urq:sweep:handoff-profile-and-skill-guidance-20261018T024112"]},{"id":"finish","kind":"human","owner":"main release coordinator"}],"evidence":[],"reviews":[],"decisions":[],"recovery":{"obligations":[],"gaps":[]},"checkEvidence":{"records":[],"requiredLiveChecks":[],"gaps":[]},"runFailures":[]}
+- review-collection · {"invocationId":"inv-8759cc82-264d-4506-beaa-307c9600bb8d","workspace":"/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan","reviewPath":null,"review":"pending","required":[],"settled":false}
+
+resumeChange: 2026-10-17 · "Account-switch pause lifted; continue saved checkpoint" · same session, existing design adopted; no repeated baseline
