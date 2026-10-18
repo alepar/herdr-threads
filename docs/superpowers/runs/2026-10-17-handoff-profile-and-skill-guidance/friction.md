@@ -5,3 +5,8 @@
 - [2026-10-17 design pause] Explicit user account-switch pause arrived after coverage round-1 reviewers completed; saved the bounded ownership-clarification edits and deferred round 2, integration sweep and graph pass. This is intentional suspension, not a design-ready handoff.
 
 - [2026-10-17 design resume] Requested reviewer model `opus` is unavailable in this Codex runtime; required independent fresh-context coverage and graph reviews used the inherited available session model. Review isolation and bounded input contracts retained.
+
+- Review collection: original prelaunch intent incorrectly used null path; original assembly rejected provenance. Preserved raw input selection and bounded forced-not-ready review; settled-null recovery and collection replay passed.
+- Workflow ordering exception: installed review-inputs rejects every committed pending collection, including its current invocation. For the next invocation, persist pending intent in working run.md before launch but commit it after collection; capture all existing source and completed prior collection first. This changes only orchestration ordering, preserves every original artifact/gap and does not grant a clean verdict.
+- Evidence preservation: seven historical ordinal3 raw logs unavailable; six checks rerun at exact reviewed tree with new logs, historical bytes not recreated. Concurrent topology failure attribution remains unknown after exact-base/final controlled comparisons pass.
+- Build timing: initial task-worktree rebuilds often exceeded one minute; some lint timings exceeded budget during concurrent builds/lock waits. Final integration measurement pending.
