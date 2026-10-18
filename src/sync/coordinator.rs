@@ -5322,6 +5322,61 @@ mod tests {
         stop(rig).await;
     }
 
+    // A park ends the link's serve job like any other: the next armed log is
+    // served at once, not on some later event (roast-pr-1, ht-j87z.30).
+    #[tokio::test(start_paused = true)]
+    async fn park_pushes_the_links_next_wanted_log() {
+        let (rig, journal, log) = node_with_opaque_log();
+        let own = journal.inner.self_log();
+        let mut plain = connect(&rig, 0, &fork_hello(2)).await;
+        plain.expect_have().await;
+        // Hold the first serve job so the second want lands while it runs.
+        journal.serve_gate.store(true, Ordering::SeqCst);
+        plain
+            .send(PeerFrame::Want {
+                node: log.node,
+                inc: log.incarnation,
+                from: 3,
+            })
+            .await;
+        // Real-time poll: paused time does not advance while a blocking job is in flight.
+        for _ in 0..5_000 {
+            if !journal.serve_froms.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        plain
+            .send(PeerFrame::Want {
+                node: own.node,
+                inc: own.incarnation,
+                from: 1,
+            })
+            .await;
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            *journal.serve_froms.lock().unwrap(),
+            [3],
+            "one job per link: the second want waits"
+        );
+        journal.serve_gate.store(false, Ordering::SeqCst);
+        // No kick, no new entry, no further frame from the peer.
+        let frames = plain.pump(2_000).await;
+        assert_eq!(entry_counters(&frames), [1], "{frames:?}");
+        let reads = journal.serve_froms.lock().unwrap().clone();
+        assert_eq!(
+            reads.iter().filter(|f| **f == 3).count(),
+            1,
+            "the parked log is not read again: {reads:?}"
+        );
+        assert_eq!(snapshot(&rig).await.links[plain.idx].withheld, 1);
+        stop(rig).await;
+    }
+
     #[tokio::test(start_paused = true)]
     async fn branch_entries_gated_by_cap() {
         // `[known 1, 2, opaque 3, known 4]`: the branch from 3 starts opaque.
