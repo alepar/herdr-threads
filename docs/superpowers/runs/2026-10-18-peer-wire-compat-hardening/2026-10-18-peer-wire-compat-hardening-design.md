@@ -84,3 +84,6 @@ Digest:
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+- 2026-10-18 (super-auto, phase 3): promotion (task ht-j87z.13) keeps the `journal_opaque` row and its raw bytes with a `promoted` flag instead of moving the entry into `journal`; a promoted entry keeps being served in opaque raw form to `envelope.opaque.v1` peers only (design §5 and the TRUST-POLICY accepted limit hold). The earlier "served as Known to non-advertising peers" acceptance was dropped as contradictory (blocker ht-50fc).
+- 2026-10-18 (super-auto, phase 3): oversize opaque stall now requires the claim to match the frame's log and next counter and to verify before stalling; otherwise only that source is refused (security review, ht-j87z.22).
