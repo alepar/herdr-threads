@@ -91,3 +91,51 @@ fn handoff_kind_agy_without_the_plugin_starts_with_the_setup_hint() {
         "one start, one invitation, one message"
     );
 }
+
+#[test]
+fn handoff_agy_explicit_profile_is_unsupported_without_changing_home_or_cwd() {
+    use herdr_threads::harness::adapter::{LaunchRequest, SetupEnvironment};
+    use herdr_threads::harness::launch::PaneShellProbe;
+    use herdr_threads::protocol::{
+        results::ErrorCode,
+        time::{CallBudget, MonoInstant},
+    };
+    struct NoShell;
+    impl PaneShellProbe for NoShell {}
+    let registry = herdr_threads::harness::registry::builtins();
+    let policy = registry
+        .by_id(registry.agent("agy").unwrap())
+        .unwrap()
+        .launch_policy()
+        .unwrap();
+    let iso = herdr_threads::test_support::isolation::TestIsolation::new("agy-profile-refusal");
+    let cwd = iso.path("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let environment = SetupEnvironment {
+        home: Some(iso.home().into_os_string()),
+        cwd: cwd.clone(),
+        ..Default::default()
+    };
+    let home = environment.home.clone();
+    let error = policy
+        .explicit_directory_env(&iso.path("profile"))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    assert_eq!(error.detail, "explicit profile directory unavailable");
+    let budget = CallBudget {
+        deadline: MonoInstant(environment.clock.monotonic_now().0 + 10_000),
+        cancellation: Default::default(),
+    };
+    let request = LaunchRequest {
+        argv: vec![],
+        environment,
+        native_binary: None,
+    };
+    let scope = policy.resolve_scope(&request, &NoShell, &budget).unwrap();
+    assert_eq!(scope.working_directory, cwd);
+    assert_eq!(request.environment.home, home);
+    assert!(
+        request.environment.declared.is_empty(),
+        "unsupported selection must not manufacture an environment override"
+    );
+}
