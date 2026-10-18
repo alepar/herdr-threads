@@ -18,6 +18,8 @@
 #      crash-safe: the old tree is renamed aside, the new one renamed in, and
 #      the old one restored if that fails; an identical install is left
 #      alone) and links ~/.local/bin/herdr-threads and ht to its executable;
+#      stops again with the retained old executable after the swap, to catch
+#      a hook restarting it in the meantime, then verifies live daemon versions;
 #   4. registers the package with Herdr (`herdr plugin link`; Herdr does not
 #      build a linked plugin, and the package's build command keeps the
 #      prebuilt binary), and ensures the daemon if Herdr runs;
@@ -79,7 +81,7 @@ color_enabled() { [ -t 1 ] && [ -z "${NO_COLOR+x}" ] && [ -n "${TERM:-}" ] && [ 
 status_line() {
     if color_enabled; then
         case "$1" in
-            *'not linked'*|*'setup incomplete'*|*'old daemon still running'*)
+            *'not linked'*|*'setup incomplete'*|*'old daemon still running'*|*'daemon ensure failed'*|*'running daemon does not match'*)
                 printf '\033[1;31m%s\033[0m\n' "$1" ;;
             *) printf '\033[1;32m%s\033[0m\n' "$1" ;;
         esac
@@ -430,6 +432,7 @@ OUT_NOT_LINKED=''     # why not (install), or why not unregistered (uninstall)
 OUT_REGISTER_CMD=''   # the command that finishes registering / unregistering
 OUT_UPGRADED=0
 OUT_DAEMON_UP=0
+OUT_DAEMON_ERROR=''
 OUT_SETUP=none        # none_found|skipped|per_project|not_registered|suggested|declined|complete|failed
 OUT_SETUP_FAILED=''   # harnesses whose setup failed
 OUT_CODEX_SET_UP=0
@@ -675,6 +678,19 @@ if [ "$changed" = 1 ]; then
             mv "$install_dir.old" "$install_dir" || true
             die "could not move the new package into $install_dir; the previous install was restored"
         fi
+        # Hooks now resolve the new binary. Retain the old executable until
+        # any daemon re-ensured between the first stop and this swap is stopped;
+        # it must still speak the old wire protocol. No old binary is launched
+        # as a daemon here, only as a stop client.
+        if [ -n "$(live_instances)" ]; then
+            installed_binary="$install_dir.old/bin/herdr-threads"
+            if ! stop_with_installed; then
+                # A hook may already have started the new protocol here.
+                # Verification below decides whether a remaining daemon is old.
+                warn "post-swap stop with $previous_version failed${stop_err:+: $stop_err}"
+            fi
+            installed_binary="$install_dir/bin/herdr-threads"
+        fi
         rm -rf "$install_dir.old"
         OUT_UPGRADED=1
         say "replaced $install_dir ($previous_version -> $new_version)"
@@ -770,6 +786,7 @@ else
             OUT_DAEMON_UP=1
             say "daemon is running (Herdr action ensure)"
         else
+            OUT_DAEMON_ERROR="daemon ensure failed"
             warn "the ensure action failed; run \`herdr plugin action invoke doctor --plugin $PLUGIN_ID\`"
             old_pids=$(daemon_pids | tr '\n' ' ')
             old_pids=${old_pids% }
@@ -880,6 +897,40 @@ else
     fi
 fi
 
+# Verify the live instances against the executable we actually installed, not
+# the archive's VERSION label. `ensure` performs the version/boot handshake;
+# the explicit state/locator reaches the same daemon even when Herdr is down.
+# This also catches a failed ensure action which left an old daemon serving.
+verify_installed_daemons() {
+    local instance observed expected err locator
+    local -a where
+    expected=$("$installed_binary" --version) || return 1
+    expected=${expected#herdr-threads }
+    while IFS= read -r instance; do
+        [ -n "$instance" ] || continue
+        observed=$(json_field software_version < "$instance/endpoint.json") || return 1
+        if [ "$observed" != "$expected" ]; then
+            warn "daemon in $instance runs $observed; installed executable is $expected"
+            return 1
+        fi
+        where=(--state-dir "$(state_of_instance "$instance")")
+        case "$instance" in
+            */node) ;;
+            *)
+                locator=$(cat "$instance/locator") || return 1
+                where+=(--host-endpoint "$locator") ;;
+        esac
+        if ! err=$("$installed_binary" "${where[@]}" daemon ensure 2>&1); then
+            warn "installed daemon verification failed in $instance: $err"
+            return 1
+        fi
+    done < <(live_instances)
+}
+if ! verify_installed_daemons; then
+    OUT_DAEMON_UP=0
+    OUT_DAEMON_ERROR="running daemon does not match the installed executable"
+fi
+
 # --- next steps and final status -------------------------------------------
 
 step() { printf '  - %s\n' "$1"; }
@@ -955,6 +1006,11 @@ finish() {
     if [ "$OUT_LINKED" = 0 ]; then
         status_line "$verb, not linked: $OUT_NOT_LINKED"
         printf '  register it with: %s\n' "$OUT_REGISTER_CMD"
+        exit 3
+    fi
+    if [ -n "$OUT_DAEMON_ERROR" ]; then
+        status_line "$verb and linked; $OUT_DAEMON_ERROR"
+        printf '  check it with: herdr-threads doctor\n'
         exit 3
     fi
     if [ "$OUT_SETUP" = failed ]; then
