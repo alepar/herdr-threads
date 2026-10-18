@@ -1690,8 +1690,23 @@ mod live {
         report_save_loss: Option<std::path::PathBuf>,
         not_submitted: bool,
         change_binding_before_gate: Option<std::path::PathBuf>,
+        remove_directory_on_preflight: Option<std::path::PathBuf>,
     }
     impl super::super::super::handoff::HandoffLauncher for DownstreamLauncher {
+        fn preflight_saved(
+            &mut self,
+            _: &super::super::super::launch::LaunchRequest,
+            effective: &super::super::super::launch::LaunchRequest,
+            recipient: &SeatId,
+        ) -> Result<super::super::super::handoff::StartupPreflight, RunError> {
+            if let Some(directory) = self.remove_directory_on_preflight.take() {
+                std::fs::remove_dir(directory).unwrap();
+            }
+            Ok(super::super::super::handoff::StartupPreflight {
+                recipient: recipient.clone(),
+                native_argv: self.native_input(effective)?,
+            })
+        }
         fn preflight(
             &mut self,
             _: &super::super::super::launch::LaunchRequest,
@@ -9236,6 +9251,59 @@ mod live {
                     .profile_dir,
                 selected
             );
+        }
+
+        #[test]
+        fn cwd_only_automatic_removed_during_preflight_repairs_without_duplicate_effects() {
+            let temp = Temp::new();
+            let cwd = temp.path().join("selected-cwd");
+            std::fs::create_dir(&cwd).unwrap();
+            let cwd = cwd.canonicalize().unwrap();
+            let mut peer = AutoPeer::new();
+            peer.base.journal.complete(&peer.reference).unwrap();
+            peer.identity.plan.payload.cwd = cwd.clone();
+            peer.identity.digest = peer.identity.semantic_digest().unwrap();
+            peer.identity.validate().unwrap();
+            peer.reference = publish_automatic(&peer.base.journal, &peer.identity, 2).unwrap();
+            assert!(peer.identity.plan.payload.directory_context.is_none());
+            let mut launcher = DownstreamLauncher {
+                remove_directory_on_preflight: Some(cwd.clone()),
+                ..Default::default()
+            };
+            let run = |launcher: &mut DownstreamLauncher| {
+                resume_automatic_to_writer(
+                    &peer.base.journal,
+                    &peer.reference,
+                    super::super::super::super::actor_route::InvocationActor::Agent,
+                    peer.ns(),
+                    &peer,
+                    &peer,
+                    launcher,
+                    &peer.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &peer.base.witness,
+                        context: &peer.base.context,
+                    },
+                    &crate::protocol::output::OutputSpec::default(),
+                    &mut Vec::new(),
+                )
+            };
+            let error = run(&mut launcher).unwrap_err();
+            assert!(error.to_string().contains("bootstrap cwd disappeared"));
+            assert_eq!(launcher.starts, 0);
+            assert_eq!(peer.status().state, BootstrapState::Attached);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            let counts = ordinary_and_invitation_counts(&peer);
+            assert_eq!(counts.0, 1);
+            std::fs::create_dir(&cwd).unwrap();
+            assert_eq!(run(&mut launcher).unwrap().state, BootstrapState::Completed);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(ordinary_and_invitation_counts(&peer), counts);
+            std::fs::remove_dir(&cwd).unwrap();
+            assert_eq!(run(&mut launcher).unwrap().state, BootstrapState::Completed);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(ordinary_and_invitation_counts(&peer), counts);
         }
 
         /// Negative control for [`AutomaticPermitClock`]: holding the clock does

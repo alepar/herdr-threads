@@ -774,6 +774,11 @@ pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTabPort + ?Size
         }
         let result = launcher.launch(&effective, &attachment.resolved_seat, &mut |possible| {
             if possible {
+                super::check_bootstrap_directories(
+                    &id.plan.payload.cwd,
+                    id.plan.payload.directory_context.as_ref(),
+                )
+                .map_err(|error| ApiError::invalid_request(error.to_string()))?;
                 client.call(
                     parent_request(&id, AutomaticBootstrapAction::CheckStart),
                     &budget(clock),
