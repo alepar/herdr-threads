@@ -203,6 +203,18 @@ jobs:
           set -euo pipefail
           scripts/check-harness-neutral
           python3 -m unittest discover -s scripts/tests -p 'test_check_harness_neutral.py'
+      - name: Peer wire compatibility check
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${GITHUB_BASE_REF:-main}"
+          git fetch --no-tags --depth=1 origin "$base" || true
+          if git rev-parse --verify -q "origin/$base^{commit}" >/dev/null; then
+            scripts/check-wire-compat --base "origin/$base"
+          else
+            scripts/check-wire-compat
+          fi
+          python3 -m unittest discover -s scripts/tests -p 'test_check_wire_compat.py'
       - name: Package build script and manifest paths
         shell: bash
         run: |

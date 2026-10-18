@@ -1,0 +1,548 @@
+#!/usr/bin/env bash
+# check-wire-compat: keep the peer wire version-tolerant.
+#
+# Usage: scripts/check-wire-compat [--root DIR] [--baseline FILE] [--base REF | --base-file FILE]
+#                                  [--json] [--suggest]
+#
+#   --root DIR        repository root (default: the parent of this script's directory).
+#                     Every reported path is relative to it and '/'-separated.
+#   --baseline FILE   default <root>/scripts/wire-compat-baseline.txt; a missing file is an
+#                     empty baseline.
+#   --base REF        git ref whose baseline file (scripts/wire-compat-baseline.txt at REF)
+#                     the R4 delta is taken against. Default: `main` when it resolves in the
+#                     root's git repository, else R4 prints `R4: no base, delta skipped`. An
+#                     explicit REF that does not resolve is a usage error (exit 2). A baseline
+#                     file missing at REF (first introduction) means every line is new.
+#   --base-file FILE  an explicit old baseline for R4 (used by the self-test).
+#   --json            print one object instead of the summary line (violations, stale lines and
+#                     the delta still go to stderr):
+#                     {"status":"ok"|"failed","violations":V,"stale":S,"fields":F,"variants":N,
+#                      "entries":E,"delta_added":a,"delta_removed":r}
+#   --suggest         print the full sorted unique baseline entry set for the current tree
+#                     (every wire field and every gated-enum variant); exit 0. Bootstrap:
+#                     `scripts/check-wire-compat --suggest` after the baseline header.
+#
+# Exit codes: 0 pass; 1 violations or stale baseline entries; 2 usage or configuration error
+# (bad flag, malformed/unsorted/duplicate baseline line, a listed file missing, unknown --base).
+#
+# Human output: one line per violation `<path>:<line>: <rule>: <detail>`, one line per stale
+# entry `stale baseline entry: <line>`, the R4 delta (`baseline + <line>` / `baseline - <line>`),
+# then exactly one summary line, always last on stdout:
+#   check-wire-compat: <ok|FAILED> — <V> violations, <S> stale, <F> fields, <N> variants, <E> baseline entries
+#
+# Scanned files (the single source of truth is WIRE_FILES below; tests/ is never scanned, so
+# the frozen 2.1.1 shadow structs there are outside the lint by construction). A `:Type[,Type]`
+# suffix restricts the file's recorded types (R1 still scans the whole file):
+#   src/sync/frame.rs, src/sync/envelope.rs:WireEnvelope, src/sync/facts/{payload,node_genesis,
+#   node_retag,seat,thread,invitation,membership,message,receipt}.rs, src/protocol/sync_admin.rs
+# A listed file that does not exist is a configuration error (exit 2).
+#
+# Wire types: a `struct` (top level or nested in a fn) whose attribute block derives
+# `Serialize` or `Deserialize`. Fields are the named fields of such structs, keyed
+# `Type.field`, and the named fields of struct-like variants of such enums, keyed
+# `Enum::Variant.field`. Tuple structs/variants and unit variants contribute no fields;
+# `#[serde(flatten)]` fields are fields. Test-only items (`#[cfg(test)]`, test-support) are
+# skipped. Variants of the gated enums (GATED_ENUMS, in src/sync/frame.rs only; an absent enum
+# is fine) are recorded whether or not the enum derives anything (WireItem decodes by hand).
+#
+# Rules:
+#   R1  `deny_unknown_fields` (outside comments and strings) anywhere in a scanned file.
+#   R2  a field whose `field <key>` line is not in the baseline must carry a serde attribute
+#       with the `default` key (`#[serde(default)]`, `#[serde(default, skip_serializing_if =
+#       "...")]`, `#[serde(rename = "x", default)]`, `#[serde(default = "f")]`).
+#   R3  a variant of a gated enum whose `variant <Enum>::<Variant>` line is not in the baseline
+#       must have the annotation line `// cap: <CONST>` among the comment/doc/attribute lines
+#       directly above it (any other code line between them voids the marker), and <CONST>
+#       must be declared `pub const <CONST>: &str` in src/sync/frame.rs. Example:
+#           /// Opaque entries ride only links that negotiated the capability.
+#           // cap: OPAQUE_CAP
+#           Opaque(OpaqueWire),
+#   R4  the baseline delta against --base/--base-file is printed; a baseline line added for a
+#       type (`Type` or `Enum`, the part before the first `.` or `::`) that already had any line
+#       in the base baseline is a violation: an existing type's new field must carry
+#       `#[serde(default)]` (R2) and a new gated variant a `// cap:` marker (R3) instead of
+#       being baselined. New types get their baseline lines in the commit that introduces them.
+#
+# Baseline (scripts/wire-compat-baseline.txt): `#` lines and blank lines only in a header block
+# before the first entry; entries `field <Type>.<field>` or `variant <Enum>::<Variant>`,
+# sorted (byte order) and unique, else exit 2 naming the first offending line. An entry that
+# matches nothing in the tree is stale (exit 1).
+#
+# The comment/string/char lexer and the test-only skip logic are adapted from
+# scripts/check-harness-neutral (kept separate on purpose: that script is not edited here).
+
+set -euo pipefail
+export LC_ALL=C
+
+# path[:Type,Type] (see header). Single source of truth for the scanned list.
+WIRE_FILES=(
+    "src/sync/frame.rs"
+    "src/sync/envelope.rs:WireEnvelope"
+    "src/sync/facts/payload.rs"
+    "src/sync/facts/node_genesis.rs"
+    "src/sync/facts/node_retag.rs"
+    "src/sync/facts/seat.rs"
+    "src/sync/facts/thread.rs"
+    "src/sync/facts/invitation.rs"
+    "src/sync/facts/membership.rs"
+    "src/sync/facts/message.rs"
+    "src/sync/facts/receipt.rs"
+    "src/protocol/sync_admin.rs"
+)
+GATED_ENUMS=(PeerFrame WireItem)
+GATED_FILE="src/sync/frame.rs"
+BASELINE_REL="scripts/wire-compat-baseline.txt"
+
+die() { echo "check-wire-compat: $*" >&2; exit 2; }
+
+root=""
+baseline=""
+base_ref=""
+base_file=""
+mode="human"
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --root) [ $# -ge 2 ] || die "--root needs a value"; root="$2"; shift 2 ;;
+    --baseline) [ $# -ge 2 ] || die "--baseline needs a value"; baseline="$2"; shift 2 ;;
+    --base) [ $# -ge 2 ] || die "--base needs a value"; base_ref="$2"; shift 2 ;;
+    --base-file) [ $# -ge 2 ] || die "--base-file needs a value"; base_file="$2"; shift 2 ;;
+    --json) mode="json"; shift ;;
+    --suggest) mode="suggest"; shift ;;
+    -h | --help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+    esac
+done
+[ -z "$base_ref" ] || [ -z "$base_file" ] || die "--base and --base-file are exclusive"
+[ -n "$root" ] || root="$(cd "$(dirname "$0")/.." && pwd)"
+[ -n "$baseline" ] || baseline="$root/$BASELINE_REL"
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/check-wire-compat.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+
+# ---------------------------------------------------------------- files
+paths=()
+specs=""
+for ent in "${WIRE_FILES[@]}"; do
+    p="${ent%%:*}"
+    [ -f "$root/$p" ] || die "listed wire file is missing: $p"
+    paths+=("$p")
+    specs="$specs $ent"
+done
+gated=" ${GATED_ENUMS[*]} "
+
+# ---------------------------------------------------------------- baseline validation
+cat >"$tmp/validate.awk" <<'AWK'
+function fail(msg) {
+    printf "check-wire-compat: %s:%d: %s\n", file, NR, msg > "/dev/stderr"
+    exit 2
+}
+{
+    line = $0
+    if (line ~ /^#/ || line ~ /^[ ]*$/) {
+        if (seen) fail("comment or blank line after the first entry (header block only)")
+        next
+    }
+    seen = 1
+    if (line !~ /^field [A-Za-z0-9_]+(::[A-Za-z0-9_]+)?\.[A-Za-z0-9_]+$/ \
+        && line !~ /^variant [A-Za-z0-9_]+::[A-Za-z0-9_]+$/)
+        fail("entry must be `field <Type>.<field>` or `variant <Enum>::<Variant>`: " line)
+    if (n > 0) {
+        if (line == prev) fail("duplicate entry: " line)
+        if (line < prev) fail("entry out of order (entries must be sorted): " line)
+    }
+    prev = line
+    n++
+    printf "%s\t%s\t%d\n", tag, line, NR
+}
+AWK
+
+: >"$tmp/entries"
+if [ -f "$baseline" ]; then
+    awk -v file="$baseline" -v tag=B -f "$tmp/validate.awk" "$baseline" >"$tmp/entries" || exit 2
+fi
+
+# ---------------------------------------------------------------- base baseline (R4)
+r4="skipped"   # skipped | none | have
+: >"$tmp/old"
+if [ -n "$base_file" ]; then
+    [ -f "$base_file" ] || die "--base-file does not exist: $base_file"
+    awk -v file="$base_file" -v tag=O -f "$tmp/validate.awk" "$base_file" >"$tmp/old" || exit 2
+    r4="have"
+else
+    explicit=1
+    if [ -z "$base_ref" ]; then
+        explicit=0
+        base_ref="main"
+    fi
+    if git -C "$root" rev-parse --verify -q "$base_ref^{commit}" >/dev/null 2>&1; then
+        r4="have"
+        if git -C "$root" cat-file -e "$base_ref:$BASELINE_REL" 2>/dev/null; then
+            git -C "$root" show "$base_ref:$BASELINE_REL" >"$tmp/old.txt"
+            awk -v file="$base_ref:$BASELINE_REL" -v tag=O -f "$tmp/validate.awk" "$tmp/old.txt" >"$tmp/old" || exit 2
+        fi
+    elif [ "$explicit" = 1 ]; then
+        die "--base ref does not resolve: $base_ref"
+    fi
+fi
+
+# ---------------------------------------------------------------- lexer + wire-type parser
+cat >"$tmp/scan.awk" <<'AWK'
+function isid(c) { return c ~ /[A-Za-z0-9_]/ }
+function trim(s) { sub(/^[ ]+/, "", s); sub(/[ ]+$/, "", s); return s }
+# emit: both the full text (for the cfg(test) check) and the token text.
+function emit(x) { if (skip != 2) { out = out x; tok = tok x } }
+# emito: full text only (string and comment-adjacent content never becomes tokens).
+function emito(x) { if (skip != 2) out = out x }
+
+function lex(s,    i, n, c, c2, j, k) {
+    n = length(s); i = 1; out = ""; tok = ""
+    while (i <= n) {
+        c = substr(s, i, 1)
+        if (mode == 3) {
+            c2 = substr(s, i, 2)
+            if (c2 == "/*") { bd++; i += 2 }
+            else if (c2 == "*/") { bd--; i += 2; if (bd == 0) mode = 0 }
+            else i++
+            continue
+        }
+        if (mode == 1) {
+            if (c == "\\") { emito(substr(s, i, 2)); i += 2 }
+            else { if (c == "\"") mode = 0; emito(c); i++ }
+            continue
+        }
+        if (mode == 2) {
+            if (c == "\"" && substr(s, i + 1, rawh) == hashes) { emito(c hashes); i += 1 + rawh; mode = 0 }
+            else { emito(c); i++ }
+            continue
+        }
+        if (c == "\"") { mode = 1; emito(c); if (skip != 2) tok = tok "\""; i++; continue }
+        if ((c == "r" || c == "b") && (i == 1 || !isid(substr(s, i - 1, 1)))) {
+            j = i
+            if (c == "b" && substr(s, i + 1, 1) == "r") j = i + 1
+            if (substr(s, j, 1) == "r") {
+                k = j + 1
+                while (substr(s, k, 1) == "#") k++
+                if (substr(s, k, 1) == "\"") {
+                    rawh = k - j - 1
+                    hashes = substr("##########################", 1, rawh)
+                    mode = 2
+                    emito(substr(s, i, k - i + 1))
+                    if (skip != 2) tok = tok "\""
+                    i = k + 1
+                    continue
+                }
+            }
+            emit(c); i++
+            continue
+        }
+        if (c == "/") {
+            c2 = substr(s, i + 1, 1)
+            if (c2 == "/") break
+            if (c2 == "*") { mode = 3; bd = 1; emit(" "); i += 2; continue }
+            emit(c); i++
+            continue
+        }
+        if (c == "'") {
+            c2 = substr(s, i + 1, 1)
+            # a char literal becomes the word 0 in the token text
+            if (c2 == "\\") {
+                k = index(substr(s, i + 3), "'")
+                if (k > 0) { emito(substr(s, i, k + 3)); if (skip != 2) tok = tok " 0 "; i += k + 3; continue }
+            } else if (c2 != "'" && c2 != "" && substr(s, i + 2, 1) == "'") {
+                emito(substr(s, i, 3)); if (skip != 2) tok = tok " 0 "; i += 3; continue
+            } else if (c2 >= "\200") {
+                k = index(substr(s, i + 2, 4), "'")
+                if (k > 0) { emito(substr(s, i, k + 2)); if (skip != 2) tok = tok " 0 "; i += k + 2; continue }
+            }
+            emit(c); i++
+            continue
+        }
+        if (skip == 2) {
+            if (c == "{") { sd++; sbraced = 1 }
+            else if (c == "}") {
+                sd--
+                if (sd < 0) { skip = 0; emit(c) }
+                else if (sd == 0 && sbraced) skip = 0
+                i++
+                continue
+            }
+            else if (c == "(" || c == "[") pd++
+            else if (c == ")" || c == "]") { if (pd > 0) pd-- }
+            else if (c == ";" && sd == 0 && pd == 0 && !sbraced) { skip = 0; i++; continue }
+        }
+        emit(c); i++
+    }
+    emit(" ")
+}
+
+# ---- token level
+function reset_pend() { p_derive = 0; p_default = 0 }
+function push(kind, name, rec, recv) {
+    sp++
+    skind[sp] = kind; sname[sp] = name; srec[sp] = rec; srecv[sp] = recv
+    fst[sp] = 0; fpd[sp] = 0; fang[sp] = 0; fpp[sp] = 0; est[sp] = 0; epd[sp] = 0
+}
+function pop() { if (sp > 0) sp--; reset_pend() }
+function finish_attr(    i, d, name) {
+    name = atk[1]
+    if (name == "derive") {
+        for (i = 2; i <= na; i++) if (atk[i] == "Deserialize" || atk[i] == "Serialize") p_derive = 1
+    } else if (name == "serde") {
+        d = 0
+        for (i = 2; i <= na; i++) {
+            if (atk[i] == "(") d++
+            else if (atk[i] == ")") d--
+            else if (d == 1 && atk[i] == "default" && (atk[i - 1] == "(" || atk[i - 1] == ",")) p_default = 1
+        }
+    }
+}
+function in_restrict(name) {
+    if (restrict[curpath] == "") return 1
+    return index(restrict[curpath], "," name ",") > 0
+}
+function is_ident(t) { return t ~ /^[A-Za-z_][A-Za-z0-9_]*$/ }
+
+function tk(t, ln,    m, k, i, j, nm) {
+    if (t == "deny_unknown_fields") printf "deny\t%s\t%d\n", curpath, ln
+    # attribute capture (tokens never clear the cap marker)
+    if (acap == 2) {
+        if (t == "[") adepth++
+        else if (t == "]") { adepth--; if (adepth == 0) { finish_attr(); acap = 0; return } }
+        atk[++na] = t
+        return
+    }
+    if (acap == 1) {
+        if (t == "!") return
+        if (t == "[") { acap = 2; adepth = 1; na = 0; return }
+        acap = 0
+    }
+    if (t == "#") { acap = 1; return }
+
+    m = marker; marker = ""
+    k = skind[sp]
+
+    if (k == "S") {
+        st = fst[sp]
+        if (st == 0) {
+            if (t == "(") { fpp[sp]++; return }
+            if (t == ")") { fpp[sp]--; return }
+            if (fpp[sp] > 0 || t == "pub" || t == ",") return
+            if (t == "}") { pop(); return }
+            if (is_ident(t)) { fname[sp] = t; fline[sp] = ln; fdef[sp] = p_default; fst[sp] = 1; reset_pend() }
+            return
+        }
+        if (st == 1) {
+            if (t == ":") {
+                if (srec[sp]) printf "field\t%s.%s\t%s\t%d\t%d\n", sname[sp], fname[sp], curpath, fline[sp], fdef[sp]
+                fst[sp] = 2; fpd[sp] = 0; fang[sp] = 0
+            } else fst[sp] = 0
+            return
+        }
+        # st == 2: in the field type
+        if (t == "<") fang[sp]++
+        else if (t == ">") { if (fang[sp] > 0) fang[sp]-- }
+        else if (t == "(" || t == "[" || t == "{") fpd[sp]++
+        else if (t == ")" || t == "]") { if (fpd[sp] > 0) fpd[sp]-- }
+        else if (t == "}") { if (fpd[sp] > 0) fpd[sp]--; else pop() }
+        else if (t == "," && fpd[sp] == 0 && fang[sp] == 0) fst[sp] = 0
+        return
+    }
+
+    if (k == "E") {
+        st = est[sp]
+        if (st == 0) {
+            if (t == "}") { pop(); return }
+            if (t == ",") return
+            if (is_ident(t)) {
+                vname = t
+                if (srecv[sp]) printf "variant\t%s::%s\t%s\t%d\t%s\n", sname[sp], t, curpath, ln, (m == "" ? "-" : m)
+                est[sp] = 1; vname_cur[sp] = t
+                reset_pend()
+            }
+            return
+        }
+        if (st == 1) {
+            if (t == ",") est[sp] = 0
+            else if (t == "(") { est[sp] = 2; epd[sp] = 1 }
+            else if (t == "=") { est[sp] = 2; epd[sp] = 0 }
+            else if (t == "{") {
+                est[sp] = 3
+                nm = sname[sp] "::" vname_cur[sp]
+                if (srec_f[sp]) push("S", nm, 1, 0)
+                else push("o", "", 0, 0)
+            } else if (t == "}") pop()
+            return
+        }
+        if (st == 2) {
+            if (t == "(" || t == "[" || t == "{") epd[sp]++
+            else if (t == ")" || t == "]") { if (epd[sp] > 0) epd[sp]-- }
+            else if (t == "}") { if (epd[sp] > 0) epd[sp]--; else pop() }
+            else if (t == "," && epd[sp] == 0) est[sp] = 0
+            return
+        }
+        # st == 3: after a struct-like variant body
+        if (t == ",") est[sp] = 0
+        else if (t == "}") pop()
+        return
+    }
+
+    # kind "o": anything that is not a recorded type body
+    if (hdr) {
+        if (t == "{") {
+            hdr = 0
+            if (hdr_kind == "struct") {
+                if (hdr_wire && in_restrict(hdr_name)) push("S", hdr_name, 1, 0)
+                else push("o", "", 0, 0)
+            } else {
+                g = (curpath == gated_file && index(gated, " " hdr_name " ") > 0)
+                f = (hdr_wire && in_restrict(hdr_name))
+                if (g || f) { push("E", hdr_name, 0, g); srec_f[sp] = (hdr_wire ? 1 : 0) }
+                else push("o", "", 0, 0)
+            }
+            reset_pend()
+        } else if (t == "(" || t == ";") { hdr = 0; reset_pend() }
+        return
+    }
+    if (nextname) {
+        nextname = 0
+        if (is_ident(t)) { hdr = 1; hdr_name = t; hdr_kind = nextkind; hdr_wire = p_derive }
+        reset_pend()
+        return
+    }
+    if (t == "struct" || t == "enum") { nextname = 1; nextkind = t; hn = 0; return }
+    if (t == "{") { push("o", "", 0, 0); reset_pend() }
+    else if (t == "}") pop()
+    else if (t == ";") reset_pend()
+    # pub const NAME: &str / &'static str
+    hn++; hist[hn] = t
+    if (t == "str" && hn >= 6) {
+        j = hn - 1
+        if (hist[j] == "static") { j--; if (hist[j] == "'") j-- }
+        if (hist[j] == "&" && hist[j - 1] == ":" && hist[j - 3] == "const" && hist[j - 4] == "pub")
+            printf "const\t%s\t%s\n", hist[j - 2], curpath
+    }
+}
+
+function feed(s, ln,    rest, t) {
+    rest = s
+    while (rest != "") {
+        if (match(rest, /^[ \t]+/)) { rest = substr(rest, RLENGTH + 1); continue }
+        if (match(rest, /^[A-Za-z0-9_]+/)) t = substr(rest, 1, RLENGTH)
+        else t = substr(rest, 1, 1)
+        rest = substr(rest, length(t) + 1)
+        tk(t, ln)
+    }
+}
+
+BEGIN {
+    n = split(specs, sp_, " ")
+    for (i = 1; i <= n; i++) {
+        c = index(sp_[i], ":")
+        if (c > 0) restrict[substr(sp_[i], 1, c - 1)] = "," substr(sp_[i], c + 1) ","
+    }
+}
+FNR == 1 {
+    curpath = FILENAME
+    mode = 0; bd = 0; skip = 0; sd = 0; pd = 0; sbraced = 0; rawh = 0; hashes = ""
+    sp = 0; skind[0] = "o"; acap = 0; marker = ""; hdr = 0; nextname = 0; hn = 0
+    reset_pend()
+}
+{
+    line = $0
+    gsub(/\t/, " ", line)
+    t = line
+    if (skip == 1) {
+        sub(/^[ ]+/, "", t)
+        if (t == "" || substr(t, 1, 2) == "//" || substr(t, 1, 2) == "#[") next
+        skip = 2; sd = 0; pd = 0; sbraced = 0
+    } else if (mode == 0 && skip == 0) {
+        # the cap marker: a plain `// cap: NAME` comment line
+        if (match(t, /^[ ]*\/\/ cap: [A-Za-z_][A-Za-z0-9_]*/)) {
+            nm = substr(t, RSTART, RLENGTH)
+            sub(/^[ ]*\/\/ cap: /, "", nm)
+            marker = nm
+        }
+    }
+    startskip = skip
+    lex(line)
+    if (startskip == 0 && mode == 0 && skip == 0) {
+        t = trim(out)
+        if (t == "#[cfg(test)]" || t == "#[cfg(feature = \"test-support\")]" \
+            || t == "#[cfg(any(test, feature = \"test-support\"))]" \
+            || substr(t, 1, 14) == "#[cfg(all(test") { skip = 1; next }
+    }
+    if (tok != "") feed(tok, FNR)
+}
+AWK
+
+# restrict specs: "path:A,B" -> awk splits on the first ':' and wraps the list in commas.
+: >"$tmp/records"
+(cd "$root" && awk -v specs="${specs# }" -v gated=" ${GATED_ENUMS[*]} " -v gated_file="$GATED_FILE" \
+    -f "$tmp/scan.awk" "${paths[@]}") >"$tmp/records"
+
+if [ "$mode" = suggest ]; then
+    awk -F'\t' '$1 == "field" { print "field " $2 } $1 == "variant" { print "variant " $2 }' "$tmp/records" | sort -u
+    exit 0
+fi
+
+# ---------------------------------------------------------------- apply
+cat >"$tmp/apply.awk" <<'AWK'
+function out(s) { if (mode == "json") print s > "/dev/stderr"; else print s }
+function viol(s) { nviol++; out(s) }
+function typeof_(e,    t) {
+    t = e
+    sub(/^(field|variant) /, "", t)
+    sub(/[.:].*$/, "", t)
+    return t
+}
+BEGIN { FS = "\t" }
+$1 == "B" { nb++; bl[nb] = $2; bln[nb] = $3; base[$2] = 1; next }
+$1 == "O" { no++; ol[no] = $2; old[$2] = 1; oldtype[typeof_($2)] = 1; next }
+$1 == "const" { if ($3 == gated_file) consts[$2] = 1; next }
+$1 == "deny" { ndeny++; dpath[ndeny] = $2; dline[ndeny] = $3; next }
+$1 == "field" { nf++; fkey[nf] = $2; fpath[nf] = $3; fln[nf] = $4; fdef[nf] = $5; next }
+$1 == "variant" { nv++; vkey[nv] = $2; vpath[nv] = $3; vln[nv] = $4; vcap[nv] = $5; next }
+END {
+    for (i = 1; i <= ndeny; i++)
+        viol(dpath[i] ":" dline[i] ": R1: deny_unknown_fields breaks forward compatibility (peers add fields)")
+    for (i = 1; i <= nf; i++) {
+        seen["field " fkey[i]] = 1
+        if (!(("field " fkey[i]) in base) && fdef[i] != 1)
+            viol(fpath[i] ":" fln[i] ": R2: new field " fkey[i] " needs #[serde(default)] (or a baseline line only for a new type)")
+    }
+    for (i = 1; i <= nv; i++) {
+        seen["variant " vkey[i]] = 1
+        if (("variant " vkey[i]) in base) continue
+        if (vcap[i] == "-")
+            viol(vpath[i] ":" vln[i] ": R3: new variant " vkey[i] " needs a `// cap: <CONST>` marker directly above it")
+        else if (!(vcap[i] in consts))
+            viol(vpath[i] ":" vln[i] ": R3: variant " vkey[i] " names cap " vcap[i] ", which is not a `pub const " vcap[i] ": &str` in " gated_file)
+    }
+    for (i = 1; i <= nb; i++) if (!(bl[i] in seen)) { nstale++; out("stale baseline entry: " bl[i]) }
+    # R4
+    if (r4 == "skipped") out("R4: no base, delta skipped")
+    else {
+        for (i = 1; i <= nb; i++) if (!(bl[i] in old)) {
+            nadd++
+            out("baseline + " bl[i])
+            if (typeof_(bl[i]) in oldtype)
+                viol(bpath ":" bln[i] ": R4: baseline may only grow by new types: " bl[i])
+        }
+        for (i = 1; i <= no; i++) if (!(ol[i] in base)) { nrem++; out("baseline - " ol[i]) }
+    }
+    failed = (nviol > 0 || nstale > 0)
+    if (mode == "json")
+        printf "{\"status\":\"%s\",\"violations\":%d,\"stale\":%d,\"fields\":%d,\"variants\":%d,\"entries\":%d,\"delta_added\":%d,\"delta_removed\":%d}\n", \
+            (failed ? "failed" : "ok"), nviol, nstale, nf, nv, nb, nadd, nrem
+    else
+        printf "check-wire-compat: %s \342\200\224 %d violations, %d stale, %d fields, %d variants, %d baseline entries\n", \
+            (failed ? "FAILED" : "ok"), nviol, nstale, nf, nv, nb
+    exit (failed ? 1 : 0)
+}
+AWK
+
+case "$baseline" in "$root"/*) bpath="${baseline#"$root"/}" ;; *) bpath="$baseline" ;; esac
+rc=0
+cat "$tmp/entries" "$tmp/old" "$tmp/records" |
+    awk -v mode="$mode" -v r4="$r4" -v bpath="$bpath" -v gated_file="$GATED_FILE" -f "$tmp/apply.awk" || rc=$?
+exit "$rc"
