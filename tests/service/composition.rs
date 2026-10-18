@@ -13,7 +13,7 @@ use herdr_threads::{
         output::{ContinuationContext, OutputFormat, OutputSpec, encode_selected},
         pagination::PageRequest,
         results::{CommandResult, ErrorCode, HealthState},
-        time::{CallBudget, Cancellation, Clock, MonoInstant},
+        time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
         wire::{PROTOCOL_VERSION, WireRequest},
     },
     store::connection::StoreContext,
@@ -1793,13 +1793,30 @@ impl ActualNativeFixture {
         Self::start_with(held_snapshot, saved, Vec::new())
     }
     fn start_with(held_snapshot: bool, saved: usize, panes: Vec<serde_json::Value>) -> Self {
+        Self::start_configured(
+            held_snapshot,
+            saved,
+            panes,
+            Arc::new(SystemClock::new()),
+            ServiceConfig::default(),
+        )
+    }
+    fn start_configured(
+        held_snapshot: bool,
+        saved: usize,
+        panes: Vec<serde_json::Value>,
+        clock: Arc<dyn Clock>,
+        config: ServiceConfig,
+    ) -> Self {
         use std::io::{BufRead, BufReader, Write};
         use std::sync::atomic::{AtomicBool, Ordering};
         let stdio = super::IN_PROCESS_DAEMON
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let root = std::path::PathBuf::from(herdr_threads::test_support::SHORT_TMP)
-            .join(format!("herdr-actual-native-{}", Uuid::new_v4()));
+        let root = herdr_threads::test_support::scratch::temp_path(
+            std::path::Path::new(herdr_threads::test_support::SHORT_TMP)
+                .join(format!("herdr-actual-native-{}", Uuid::new_v4())),
+        );
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let root_cleanup = ActualNativeRoot(root.clone());
         let endpoint = root.join("host.sock");
@@ -1812,7 +1829,6 @@ impl ActualNativeFixture {
         let owner = OwnerLock::acquire_with_test_hint(&paths).unwrap();
         let instance = owner.node_uuid().unwrap();
         drop(owner);
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let db = StoreContext::new(paths.database_path.clone(), Arc::clone(&clock))
             .with_test_host()
             .with_node_seed(herdr_threads::test_support::node_seed_for(instance))
@@ -1977,7 +1993,7 @@ impl ActualNativeFixture {
                     &thread_paths,
                     thread_clock,
                     thread_stop,
-                    ServiceConfig::default(),
+                    config,
                     herdr_threads::test_support::single_host_plan(host),
                     thread_lanes,
                     move |descriptor| {
@@ -2640,6 +2656,68 @@ fn daemon_restart_keeps_joined_cooperative_seat_available_without_warning() {
 #[test]
 fn daemon_restart_keeps_joined_human_seat_available() {
     restart_keeps_registered_seat_available("operator_human");
+}
+
+// Kills: detaching idle-exit's thread, whose ActivityProbe retains the host
+// registry after the elected daemon returns. Hold a real clock sample until
+// shutdown has had a chance to finish; cancellation alone cannot release it.
+#[test]
+fn elected_shutdown_joins_idle_monitor_before_releasing_native_host() {
+    struct SampleClock {
+        real: SystemClock,
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl Clock for SampleClock {
+        fn utc_now(&self) -> UtcMillis {
+            self.real.utc_now()
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            if std::thread::current().name() == Some("idle-exit") {
+                self.entered.send(()).unwrap();
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(30))
+                    .unwrap();
+            }
+            self.real.monotonic_now()
+        }
+    }
+    let (entered, sampled) = std::sync::mpsc::sync_channel(1);
+    let (release, held) = std::sync::mpsc::sync_channel(1);
+    let clock = Arc::new(SampleClock {
+        real: SystemClock::new(),
+        entered,
+        release: std::sync::Mutex::new(held),
+    });
+    let mut fixture = ActualNativeFixture::start_configured(
+        false,
+        0,
+        vec![actual_pane("w4:p1", "term_a")],
+        clock,
+        ServiceConfig::default().with_idle_exit_after(Duration::from_millis(80)),
+    );
+    sampled.recv_timeout(Duration::from_secs(30)).unwrap();
+    fixture.stop.cancel();
+    let daemon = fixture.daemon.take().unwrap();
+    let (finished, completion) = std::sync::mpsc::sync_channel(1);
+    // The timeout bounds a deliberate negative observation, not a scheduler
+    // sleep: a cancelled monitor must be joined even while its sample is held.
+    let release_sample = std::thread::spawn(move || {
+        let returned_early = completion.recv_timeout(Duration::from_secs(1)).is_ok();
+        release.send(()).unwrap();
+        returned_early
+    });
+    let outcome = daemon.join();
+    let _ = finished.send(());
+    let returned_early = release_sample.join().unwrap();
+    assert!(outcome.unwrap().unwrap());
+    assert!(
+        !returned_early,
+        "daemon returned while idle-exit still owned its host"
+    );
+    assert!(fixture.native.upgrade().is_none());
 }
 
 /// S1 (wave-2 fix1): the writer's startup binding-evidence verification is

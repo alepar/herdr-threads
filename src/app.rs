@@ -2214,13 +2214,18 @@ where
                         Arc::new(move |line: &str| log.write_line(line))
                     },
                 );
-                std::thread::Builder::new()
-                    .name("idle-exit".into())
-                    .spawn(move || {
-                        idle.run(&idle_stop);
-                        drop(subscriptions);
-                    })
-                    .map_err(|error| io::Error::other(format!("idle exit monitor: {error}")))?;
+                // The monitor owns the host registry through ActivityProbe.
+                // Cancellation wakes it; joining releases that ownership before
+                // shutdown returns, just as for the other daemon workers.
+                start_into_slot(&factory_slot, &factory_stop, || {
+                    std::thread::Builder::new()
+                        .name("idle-exit".into())
+                        .spawn(move || {
+                            idle.run(&idle_stop);
+                            drop(subscriptions);
+                        })
+                })
+                .map_err(|error| io::Error::other(format!("idle exit monitor: {error}")))?;
             }
             // Peer discovery (spec §11): after the coordinator, so a pass that
             // adds a target can ask its Dialer to reload.
