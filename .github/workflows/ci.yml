@@ -117,14 +117,6 @@ jobs:
         # cargo build selects dev, so it would not warm optimized test artifacts.
         run: cargo test --locked --all-targets --all-features --no-run
 
-      - name: Build release proof fixtures
-        if: needs.changes.outputs.heavy == 'true'
-        # tests/service/check_failpoints_absent.sh (package suite) builds the
-        # ordinary and the test-support release and compares them. Build both
-        # before the timer, as Locked build does for the tests; otherwise the
-        # suite compiles a release mid-run and starves timing-bound tests.
-        run: sh tests/service/check_failpoints_absent.sh --prebuild
-
       - name: Tests (parallel, shard ${{ matrix.shard }}/4)
         if: needs.changes.outputs.heavy == 'true'
         # cargo-nextest, one process per test, every binary in one pool; the
@@ -133,8 +125,8 @@ jobs:
         # is split round-robin over the sorted test list (slice), so each shard
         # carries about a quarter of the test time; each shard has the five-minute
         # wall-clock budget. --all-features enables `test-support`.
-        # The package suite runs tests/service/check_failpoints_absent.sh (its
-        # two release builds are no-ops after the prebuild). #[ignore] tests (package lifecycle gate,
+        # The release-proof job owns the exact excluded package test once;
+        # no shard cold-builds release fixtures inside this timer. #[ignore] tests (package lifecycle gate,
         # 10^5..10^6 scale tests) do not run here. Herdr policy: provisioned,
         # not skipped (HT_SKIP_HERDR_TESTS is deliberately unset).
         shell: bash
@@ -144,7 +136,9 @@ jobs:
           set -euo pipefail
           start=$(date +%s)
           cargo nextest run --locked --all-targets --all-features --profile ci \
-            --partition "slice:$SHARD/4" 2>&1 | tee test.log
+            --partition "slice:$SHARD/4" \
+            -E 'not (binary(package) & test(=manifest::failpoints_are_compiled_out_of_release_builds))' \
+            2>&1 | tee test.log
           elapsed=$(( $(date +%s) - start ))
           echo "Shard $SHARD/4 wall time: ${elapsed}s (budget: under 300s)"
           if [ "$elapsed" -ge 300 ]; then
@@ -181,6 +175,24 @@ jobs:
         if: always() && needs.changes.outputs.heavy == 'true'
         shell: bash
         run: scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID" --grace 15
+
+  release-proof:
+    needs: changes
+    name: Release failpoint proof (Linux x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: needs.changes.outputs.heavy == 'true'
+      - name: Rust toolchain
+        if: needs.changes.outputs.heavy == 'true'
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - name: Release proof (including Rust hook-count and output assertions)
+        if: needs.changes.outputs.heavy == 'true'
+        # Runs once; cold release builds are outside the four shard timers.
+        run: cargo test --locked --all-features --test package manifest::failpoints_are_compiled_out_of_release_builds -- --exact --nocapture
 
   deterministic:
     needs: changes

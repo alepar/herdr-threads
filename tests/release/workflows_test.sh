@@ -103,10 +103,18 @@ check "ci.yml: linux-e2e runs on every push and pull request (no job-level if)" 
   'test "$(yq ".jobs.linux-e2e | has(\"if\")" "$1")" = false \
    && test "$(yq "(.on | has(\"push\")) and (.on | has(\"pull_request\")) and .on.push == null and .on.pull_request == null" "$1")" = true' _ "$ci"
 
+proof_once() {
+  local proof='manifest::failpoints_are_compiled_out_of_release_builds'
+  yq '.jobs.release-proof.steps[].run' "$ci" | grep -qF "cargo test --locked --all-features --test package $proof -- --exact --nocapture" || return 1
+  yq '.jobs.tests.steps[].run' "$ci" | grep -qF "not (binary(package) & test(=$proof))" || return 1
+  ! yq '.jobs.tests.steps[].run' "$ci" | grep -qF 'check_failpoints_absent.sh --prebuild'
+}
+check "ci.yml: release proof retains Rust assertions once outside all four timed shards" proof_once
+
 docs_filter() {
   local job
   test "$(yq '.jobs.changes.outputs.heavy' "$ci")" = '${{ steps.paths.outputs.heavy }}' || return 1
-  for job in tests deterministic linux-e2e clippy build-targets actionlint; do
+  for job in tests deterministic linux-e2e clippy build-targets actionlint release-proof; do
     test "$(yq ".jobs.\"$job\".needs" "$ci")" = changes || return 1
     test "$(yq ".jobs.\"$job\" | has(\"if\")" "$ci")" = false || return 1
     yq ".jobs.\"$job\".steps[].if" "$ci" | while IFS= read -r condition; do
