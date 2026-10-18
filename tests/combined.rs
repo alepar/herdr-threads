@@ -89,6 +89,10 @@ mod local_endpoint;
 mod multi_host;
 #[path = "store/multi_host_wake.rs"]
 mod multi_host_wake;
+#[path = "sync/peer_wire_fixtures.rs"]
+mod peer_wire_fixtures;
+#[path = "support/peer_wire_freeze.rs"]
+mod peer_wire_freeze;
 #[path = "cli/read_picker_pty.rs"]
 mod read_picker_pty;
 #[path = "store/remote_seats.rs"]
