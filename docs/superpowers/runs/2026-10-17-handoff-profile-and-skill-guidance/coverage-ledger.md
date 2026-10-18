@@ -6,3 +6,8 @@ C4 · r1 · GAP · credential-diagnostics · applied — Explicit ownership adde
 C5 · r1 · GAP · skill-byte-budget · applied — Explicit ownership added to ht-1urq.7; complete task acceptance already contained the behavior, retained unchanged.
 C6 · r1 · GAP · release-boundary · applied — Explicit ownership added to ht-1urq.8; complete task acceptance already contained the behavior, retained unchanged.
 C7 · r1 · GAP · fixture-cleanup · applied — Explicit ownership added to ht-1urq.9; complete task acceptance already contained the behavior, retained unchanged.
+C8 · graph · GRAPH-EDGE · ht-1urq.9 <- ht-1urq.6 · kept — Concrete artifact consumption verified against complete task declarations; earliest producer retained.
+C9 · graph · GRAPH-EDGE · ht-1urq.6 <- ht-1urq.3 · kept — Concrete artifact consumption verified against complete task declarations; earliest producer retained.
+C10 · graph · GRAPH-EDGE · ht-1urq.6 <- ht-1urq.5 · kept — Concrete artifact consumption verified against complete task declarations; earliest producer retained.
+C11 · graph · GRAPH-EDGE · ht-1urq.6 <- ht-1urq.4 · kept — Concrete artifact consumption verified against complete task declarations; earliest producer retained.
+C12 · graph · GRAPH-EDGE · ht-1urq.6 <- ht-1urq.2 · kept — Concrete artifact consumption verified against complete task declarations; earliest producer retained.

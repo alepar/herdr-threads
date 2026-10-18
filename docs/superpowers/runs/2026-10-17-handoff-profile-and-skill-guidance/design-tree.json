@@ -1,5 +1,106 @@
 [
   {
+    "id": "ht-1urq.10",
+    "title": "Integration sweep: handoff profile directories and skill guidance",
+    "description": "Verify the goal end to end and fix small unwired directory/context/guidance integration gaps; file blockers for larger gaps.\n\nSpec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md\nFiles-touched: tests/cli/topology_handoff.rs, tests/integration/herdr_release_smoke.rs, relevant handoff source/test paths only for small integration repairs, docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/evidence\nowns: terminal integration sweep across selected directory capture, canonical admission, real child launch, retry and shipped guidance.\nconsumes: all implementation, docs and configuration smoke leaves.\n\n## Acceptance\n- [ ] Verify automatic and explicit-thread public new-tab profile/cwd flows including actual child env/cwd, frozen retry and refusal-before-effects against owned fixtures.\n- [ ] Sweep for unwired config, parameters and interfaces; add integration coverage no existing leaf covers; fix small gaps inline and file blockers for large gaps.\n- [ ] Confirm skill/help/docs behavior aligns and no authentication, receipt or launch guard claims weaken.\n- [ ] Run focused checks and scoped process/temp cleanup; caller retains root acceptance, final review, default-feature/full-suite checks, merge/release handoff. No merge, tag, push or live quota.\nblocked-by ht-1urq.1: consumes all leaves (integration sweep)\nblocked-by ht-1urq.2: consumes all leaves (integration sweep)\nblocked-by ht-1urq.3: consumes all leaves (integration sweep)\nblocked-by ht-1urq.4: consumes all leaves (integration sweep)\nblocked-by ht-1urq.5: consumes all leaves (integration sweep)\nblocked-by ht-1urq.6: consumes all leaves (integration sweep)\nblocked-by ht-1urq.7: consumes all leaves (integration sweep)\nblocked-by ht-1urq.8: consumes all leaves (integration sweep)\nblocked-by ht-1urq.9: consumes all leaves (integration sweep)\n",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-18T02:55:31Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-18T02:55:31Z",
+    "labels": [
+      "sp:ht-1urq"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.4",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.9",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.8",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.7",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.2",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.6",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.5",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.1",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.3",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq",
+        "type": "parent-child",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 9,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-1urq"
+  },
+  {
     "id": "ht-1urq.9",
     "title": "Configuration smoke: selected profile and cwd in release matrix",
     "description": "Exercise public handoff configuration and real child env/cwd with isolated stand-ins across the existing Herdr release matrix.\n\nSpec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md\nFiles-touched: tests/integration/herdr_release_smoke.rs, tests/cli/topology_handoff.rs or new combined test module, scripts/herdr-release-smoke only if needed, docs/validation/herdr-release-matrix.md\nowns: executable configuration smoke and release-matrix directory evidence.\nconsumes: end-to-end frozen new-tab launch wiring.\nblocked-by ht-1urq.6: consumes end-to-end frozen new-tab launch wiring\nowns: credential-free owned-fixture evidence, scoped process/temp cleanup and no real config or shared-server changes.\n\n## Acceptance\n- [ ] Invoke public CLI with scratch Codex/Claude profile directories and cwd against owned stand-ins; actual child records selected env/cwd. Include Hermes source-bound fixture and agy unsupported/cwd behavior.\n- [ ] Extend herdr_release_launch_and_handoff for every listed release without exact-version operational gating; include defaults, spaces/quotes, bad directories and zero-effect pane/existing refusal.\n- [ ] Exercise automatic and explicit-thread profile selection and changed caller-env/cwd retry at public boundary; no real user config/credentials, live model quota or shared server restart.\n- [ ] All test processes use test_support ownership, scratch paths and scoped HT_LEAK_RUN_ID; stop/reap owned helpers/server and run scoped leak check after matrix/sweep. Record matrix failures honestly; no full-suite repetition from this leaf.\n",
@@ -32,7 +133,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 0,
+    "dependent_count": 1,
     "comment_count": 0,
     "parent": "ht-1urq"
   },
@@ -69,7 +170,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 0,
+    "dependent_count": 1,
     "comment_count": 0,
     "parent": "ht-1urq"
   },
@@ -98,7 +199,7 @@
       }
     ],
     "dependency_count": 0,
-    "dependent_count": 0,
+    "dependent_count": 1,
     "comment_count": 0,
     "parent": "ht-1urq"
   },
@@ -159,7 +260,7 @@
       }
     ],
     "dependency_count": 4,
-    "dependent_count": 1,
+    "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-1urq"
   },
@@ -196,7 +297,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 1,
+    "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-1urq"
   },
@@ -233,7 +334,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 1,
+    "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-1urq"
   },
@@ -270,7 +371,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 1,
+    "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-1urq"
   },
@@ -307,7 +408,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 2,
+    "dependent_count": 3,
     "comment_count": 0,
     "parent": "ht-1urq"
   },
@@ -336,7 +437,7 @@
       }
     ],
     "dependency_count": 0,
-    "dependent_count": 4,
+    "dependent_count": 5,
     "comment_count": 0,
     "parent": "ht-1urq"
   },
@@ -360,4 +461,3 @@
     "comment_count": 0
   }
 ]
-
