@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Coordinator skill guidance.** Coordinator sessions run `herdr-threads nudge-threshold 1` when taking the role, so default p1 messages (including informational updates) wake them while idle; other roles keep the default threshold 0. The skill no longer suggests `nudge-threshold -1` for coordinators and describes the p1 wake correctly. Skill text only.
+
 ## v2.2.0
 
 - **Same-seat sibling delivery.** A Codex `/side` can send to its parent and other sessions through a joined thread. Each binding receives its siblings' sends, excluding only its own `sender_binding_id`; author-seat mail creates no receipt or ACK obligation, and schedules wake work only for a connected receiving sibling. Other seats receive the usual delivery. Signed audiences retain the previous author exclusion for older peers. Fresh local sends gain sibling bookkeeping; old messages are not backfilled.
