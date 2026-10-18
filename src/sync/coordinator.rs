@@ -5529,6 +5529,37 @@ mod tests {
         })
     }
 
+    /// A validly signed oversize opaque item of `signer`'s log, plus its
+    /// parts so tests can tamper with them.
+    fn signed_oversize_item(
+        signer: &NodeIdentity,
+        log: &LogKey,
+        counter: u64,
+        prev: [u8; 32],
+    ) -> (WireItem, crate::sync::envelope::OpaqueHeader, Vec<u8>) {
+        use crate::sync::envelope::OPAQUE_MAX_BYTES;
+        use crate::test_support::opaque_entry::{synthetic_parts, synthetic_unsigned};
+        let mut unsigned = synthetic_unsigned(signer, log.incarnation, counter, prev);
+        // The entry names `log` whoever signs it.
+        unsigned.log = *log;
+        unsigned.payload = format!(r#"{{"pad":"{}"}}"#, "x".repeat(OPAQUE_MAX_BYTES)).into_bytes();
+        let (header, raw) = synthetic_parts(signer, &unsigned);
+        let item = oversize_wire(&header, &raw);
+        (item, header, raw)
+    }
+
+    fn oversize_wire(header: &crate::sync::envelope::OpaqueHeader, raw: &[u8]) -> WireItem {
+        WireItem::Opaque(OpaqueWire {
+            node: hex_encode(header.log.node.as_bytes()),
+            inc: header.log.incarnation,
+            counter: header.counter,
+            prev: hex_encode(&header.prev_hash),
+            hash: hex_encode(&header.hash),
+            sig: hex_encode(&header.signature),
+            raw: hex_encode(raw),
+        })
+    }
+
     #[tokio::test(start_paused = true)]
     async fn oversize_opaque_item_stores_prefix_and_stalls_without_penalty() {
         use crate::sync::envelope::OPAQUE_MAX_BYTES;
@@ -5544,7 +5575,9 @@ mod tests {
         .await;
         peer.find_want(f.log.node, f.log.incarnation, 1).await;
         let mut items: Vec<WireItem> = f.envs.iter().map(WireItem::from).collect();
-        items.push(oversize_item(&f.log, 3, f.envs[1].hash));
+        let (item, _, raw) = signed_oversize_item(&identity(9), &f.log, 3, f.envs[1].hash);
+        let size = raw.len();
+        items.push(item);
         peer.send(PeerFrame::Entries {
             node: f.log.node,
             inc: f.log.incarnation,
@@ -5573,7 +5606,7 @@ mod tests {
                 "sync: log {}/{} entry 3 is an opaque entry of {} bytes over {OPAQUE_MAX_BYTES}; log stalled on this node",
                 uuid8(&f.log.node),
                 f.log.incarnation,
-                OPAQUE_MAX_BYTES + 1
+                size
             )]
         );
         assert!(
@@ -5585,6 +5618,117 @@ mod tests {
         stop(rig).await;
     }
 
+    /// Peer 0 is wanted for the foreign log (five entries) and sends its first
+    /// two plus `bad`; peer 1 also advertises the log. Returns after peer 0
+    /// was unwanted and peer 1 was asked for the entry after the stored prefix.
+    async fn oversize_refusal_scenario(
+        bad: fn(&Foreign) -> WireItem,
+    ) -> (Rig, Arc<TestJournal>, Foreign, TestPeer) {
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 4);
+        let (node_id, inc) = (f.log.node, f.log.incarnation);
+        let mut a = connect(&rig, 0, &opaque_hello(2)).await;
+        a.expect_have().await;
+        let mut b = connect(&rig, 1, &opaque_hello(3)).await;
+        b.expect_have().await;
+        a.send_have(true, false, vec![have_log(node_id, inc, 5)])
+            .await;
+        a.find_want(node_id, inc, 1).await;
+        b.send_have(true, false, vec![have_log(node_id, inc, 5)])
+            .await;
+        let mut items: Vec<WireItem> = f.envs[..2].iter().map(WireItem::from).collect();
+        items.push(bad(&f));
+        a.send(PeerFrame::Entries {
+            node: node_id,
+            inc,
+            entries: items,
+        })
+        .await;
+        until(|| open_vector_counter(&journal, &f.log) == 2).await;
+        a.find_unwant(node_id, inc).await;
+        // The other source is asked, from the entry after the stored prefix.
+        b.find_want(node_id, inc, 3).await;
+        let lines = rig.lines.lock().unwrap().clone();
+        assert!(
+            !lines.iter().any(|l| l.contains("stalled")),
+            "an unverified item must not stall the log: {lines:?}"
+        );
+        let penalized: Vec<&String> = lines.iter().filter(|l| l.contains("penalized")).collect();
+        assert_eq!(penalized.len(), 1, "{lines:?}");
+        assert!(
+            penalized[0].contains("unverified oversize opaque entry"),
+            "{penalized:?}"
+        );
+        assert_eq!(snapshot(&rig).await.links.len(), 2);
+        // The log goes on from the other source.
+        b.send(PeerFrame::Entries {
+            node: node_id,
+            inc,
+            entries: f.envs[2..].iter().map(WireItem::from).collect(),
+        })
+        .await;
+        until(|| open_vector_counter(&journal, &f.log) == 5).await;
+        (rig, journal, f, a)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn oversize_item_for_other_log_or_counter_does_not_stall() {
+        let (rig, ..) = oversize_refusal_scenario(|f| {
+            let other = LogKey {
+                node: identity(8).uuid(),
+                incarnation: 1,
+            };
+            signed_oversize_item(&identity(8), &other, 3, f.envs[1].hash).0
+        })
+        .await;
+        stop(rig).await;
+        let (rig, ..) = oversize_refusal_scenario(|f| {
+            signed_oversize_item(&identity(9), &f.log, 4, f.envs[1].hash).0
+        })
+        .await;
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unverified_oversize_refuses_only_that_source() {
+        // Right position, wrong author: the signature does not verify.
+        let (rig, ..) = oversize_refusal_scenario(|f| {
+            signed_oversize_item(&identity(7), &f.log, 3, f.envs[1].hash).0
+        })
+        .await;
+        stop(rig).await;
+    }
+
+    // The refused source is wanted again when its penalty expires.
+    #[tokio::test(start_paused = true)]
+    async fn refused_oversize_source_is_asked_again_after_the_penalty() {
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 4);
+        let (node_id, inc) = (f.log.node, f.log.incarnation);
+        let mut a = connect(&rig, 0, &opaque_hello(2)).await;
+        a.expect_have().await;
+        a.send_have(true, false, vec![have_log(node_id, inc, 5)])
+            .await;
+        a.find_want(node_id, inc, 1).await;
+        let mut items: Vec<WireItem> = f.envs[..2].iter().map(WireItem::from).collect();
+        items.push(signed_oversize_item(&identity(7), &f.log, 3, f.envs[1].hash).0);
+        a.send(PeerFrame::Entries {
+            node: node_id,
+            inc,
+            entries: items,
+        })
+        .await;
+        until(|| open_vector_counter(&journal, &f.log) == 2).await;
+        a.find_unwant(node_id, inc).await;
+        let early = a.pump(ingest::CORRUPT_PENALTY_MS / 2).await;
+        assert!(wants_in(&early).is_empty(), "{early:?}");
+        a.send_have(true, false, vec![have_log(node_id, inc, 5)])
+            .await;
+        let late = a.pump(ingest::CORRUPT_PENALTY_MS / 2 + 5_000).await;
+        assert!(wants_in(&late).contains(&(node_id, inc, 3)), "{late:?}");
+        stop(rig).await;
+    }
+
     fn worker_parts() -> (Arc<FairWriter>, Arc<dyn Clock>) {
         (
             Arc::new(FairWriter::new(8)),
@@ -5592,26 +5736,22 @@ mod tests {
         )
     }
 
-    // The batch worker's verdict on an oversize entry: the entries before it
-    // are stored, then `Oversize`; an entry that does not follow the stored
-    // head is a gap, not a stall.
+    // The batch worker's verdict on an oversize claim: only one authenticated
+    // as the log's next entry stalls the log; anything else is refused for its
+    // source alone, with the stored prefix kept.
     #[tokio::test]
-    async fn ingest_batch_reports_oversize_after_the_stored_prefix() {
-        let journal = MemoryJournal::new(identity(1));
-        journal.bootstrap();
-        let f = foreign(9, 2);
+    async fn ingest_batch_authenticates_oversize_claims() {
+        use crate::sync::envelope::OPAQUE_MAX_BYTES;
+        let f = foreign(9, 3);
         let (writer, clock) = worker_parts();
-        let run = |entries: Vec<StoredEntry>, oversize| {
-            ingest::ingest_batch(
-                &journal,
-                &writer,
-                clock.as_ref(),
-                Cancellation::default(),
-                &f.log,
-                entries,
-                oversize,
-            )
-            .unwrap()
+        let claim = |item: WireItem| -> ingest::OversizeClaim {
+            let WireItem::Opaque(wire) = item else {
+                panic!("an opaque item")
+            };
+            ingest::OversizeClaim {
+                len: wire.raw.len() / 2,
+                wire,
+            }
         };
         let known = |range: std::ops::Range<usize>| -> Vec<StoredEntry> {
             f.envs[range]
@@ -5620,39 +5760,123 @@ mod tests {
                 .map(StoredEntry::from)
                 .collect()
         };
-        let len = crate::sync::envelope::OPAQUE_MAX_BYTES + 1;
-        // Not at the next position: a gap from the stored head.
-        let outcome = run(known(0..2), Some((9, len)));
-        assert!(
-            matches!(
-                outcome,
-                IngestOutcome::Gap {
-                    stored: 2,
-                    expected: 3
+        // A fresh journal per case, holding the log's first `held` entries;
+        // `batch` more arrive in the same frame as the claim.
+        let run = |held: usize, batch: usize, item: WireItem| -> ingest::IngestVerdict {
+            let journal = MemoryJournal::new(identity(1));
+            journal.bootstrap();
+            if held > 0 {
+                journal
+                    .ingest(&f.log, known(0..held), &open_budget())
+                    .unwrap();
+            }
+            ingest::ingest_batch(
+                &journal,
+                &writer,
+                clock.as_ref(),
+                Cancellation::default(),
+                &f.log,
+                known(held..held + batch),
+                Some(claim(item)),
+            )
+            .unwrap()
+        };
+        let signer = identity(9);
+        let refused =
+            |verdict: ingest::IngestVerdict, batch: usize, head_at: usize, why: &str| match verdict
+            {
+                ingest::IngestVerdict::OversizeRefused {
+                    stored,
+                    head,
+                    why: w,
+                    ..
+                } => {
+                    assert_eq!((stored, w), (batch, why));
+                    assert_eq!(
+                        head.map(|h| (h.counter, h.head_hash)),
+                        (batch > 0)
+                            .then(|| (f.envs[head_at - 1].counter, f.envs[head_at - 1].hash))
+                    );
                 }
-            ),
-            "{outcome:?}"
-        );
-        // Right after the head.
-        let outcome = run(known(2..3), Some((4, len)));
+                other => panic!("expected a refusal ({why}), got {other:?}"),
+            };
+
+        // Verified, after a stored prefix of 2 (log held to 1, so 3 is next).
+        let (item, ..) = signed_oversize_item(&signer, &f.log, 3, f.envs[1].hash);
+        let size = match &item {
+            WireItem::Opaque(w) => w.raw.len() / 2,
+            WireItem::Known(_) => unreachable!(),
+        };
+        assert!(size > OPAQUE_MAX_BYTES);
         assert_eq!(
-            outcome,
-            IngestOutcome::Oversize {
-                stored: 1,
-                counter: 4,
-                len
-            }
+            run(0, 2, item),
+            ingest::IngestVerdict::Port(IngestOutcome::Oversize {
+                stored: 2,
+                counter: 3,
+                len: size
+            })
         );
-        // Oversize first: nothing to store.
-        let outcome = run(Vec::new(), Some((5, len)));
+        // Verified as the first item: the held log's head is entry 2.
+        let (item, ..) = signed_oversize_item(&signer, &f.log, 3, f.envs[1].hash);
         assert_eq!(
-            outcome,
-            IngestOutcome::Oversize {
+            run(2, 0, item),
+            ingest::IngestVerdict::Port(IngestOutcome::Oversize {
                 stored: 0,
-                counter: 5,
-                len
-            }
+                counter: 3,
+                len: size
+            })
         );
+        // Another log's validly signed item.
+        let other_log = LogKey {
+            node: identity(8).uuid(),
+            incarnation: 1,
+        };
+        let (item, ..) = signed_oversize_item(&identity(8), &other_log, 3, f.envs[1].hash);
+        refused(run(0, 2, item), 2, 2, "names another log");
+        // Validly signed, but not the next position.
+        let (item, ..) = signed_oversize_item(&signer, &f.log, 4, f.envs[1].hash);
+        refused(run(0, 2, item), 2, 2, "not the next position");
+        // As the first item the same refusal holds (the former unchecked arm).
+        let (item, ..) = signed_oversize_item(&signer, &f.log, 4, f.envs[1].hash);
+        refused(run(2, 0, item), 0, 2, "not the next position");
+        // prev is not the head hash.
+        let (item, ..) = signed_oversize_item(&signer, &f.log, 3, [7; 32]);
+        refused(run(0, 2, item), 2, 2, "prev does not follow the head");
+        // Raw tampered after signing.
+        let (_, header, mut raw) = signed_oversize_item(&signer, &f.log, 3, f.envs[1].hash);
+        let last = raw.len() - 1;
+        raw[last] ^= 1;
+        refused(
+            run(0, 2, oversize_wire(&header, &raw)),
+            2,
+            2,
+            "hash mismatch",
+        );
+        // Signed by another identity.
+        let (item, ..) = signed_oversize_item(&identity(7), &f.log, 3, f.envs[1].hash);
+        refused(run(0, 2, item), 2, 2, "bad signature");
+        // Unsigned garbage.
+        refused(
+            run(0, 2, oversize_item(&f.log, 3, f.envs[1].hash)),
+            2,
+            2,
+            "prefix does not match",
+        );
+        // A log the journal does not hold (nothing stored, nothing known).
+        let journal = MemoryJournal::new(identity(1));
+        journal.bootstrap();
+        let (item, ..) = signed_oversize_item(&signer, &f.log, 1, [0; 32]);
+        let verdict = ingest::ingest_batch(
+            &journal,
+            &writer,
+            clock.as_ref(),
+            Cancellation::default(),
+            &f.log,
+            Vec::new(),
+            Some(claim(item)),
+        )
+        .unwrap();
+        refused(verdict, 0, 0, "unknown log");
     }
 
     #[tokio::test(start_paused = true)]

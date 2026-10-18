@@ -10,6 +10,9 @@
 //!   retry bookkeeping each outcome needs.
 //! - Hides: the `spawn_blocking`, `Lane::Sync` origin and `FairWriter`
 //!   background turn around `JournalPort::ingest`.
+//! - Also owns: authenticating an oversize opaque claim (log, position, prev,
+//!   prefix, hash, signature) before it may stall a log; an unauthenticated
+//!   claim refuses only its source.
 //! - Must not: decide fork policy (that is a [`ForkSink`]'s), touch SQLite, or
 //!   keep a batch's credit: the frame's bytes go back to the sender as soon
 //!   as its outcome is known, whatever it is.
@@ -20,8 +23,11 @@
 
 use super::*;
 use crate::service::kicks::{Lane, enter_lane};
-use crate::sync::envelope::{OPAQUE_MAX_BYTES, OpaqueTooLarge};
-use crate::sync::frame::WireItemError;
+use crate::sync::envelope::OPAQUE_MAX_BYTES;
+use crate::sync::envelope::{EntryPrefix, MAGIC, check_opaque_size, hex_decode, hex_decode_vec};
+use crate::sync::frame::{OpaqueWire, WireItemError};
+use ed25519_dalek::{Signature, VerifyingKey};
+use sha2::{Digest, Sha256};
 
 /// How long a source that served corrupt bytes is unwantable for that log (ms).
 pub(super) const CORRUPT_PENALTY_MS: u64 = 600_000;
@@ -37,12 +43,34 @@ pub(super) struct IngestJob {
     pub source: NodeUuid,
     pub log: LogKey,
     pub entries: Vec<StoredEntry>,
-    /// The frame carried an opaque entry over `OPAQUE_MAX_BYTES` right after
-    /// `entries`: its counter and length. The batch stores `entries` and then
-    /// reports [`IngestOutcome::Oversize`].
-    pub oversize: Option<(u64, usize)>,
+    /// The frame carried an opaque item over `OPAQUE_MAX_BYTES` right after
+    /// `entries`. The batch stores `entries`, then authenticates the claim:
+    /// [`IngestOutcome::Oversize`] only when it is the log's next entry.
+    pub oversize: Option<OversizeClaim>,
     /// The frame's wire length: the credit to return once the batch is done.
     pub len: u32,
+}
+
+/// An oversize opaque item as received: nothing about it is verified yet.
+pub(super) struct OversizeClaim {
+    pub wire: OpaqueWire,
+    /// Its raw length in bytes.
+    pub len: usize,
+}
+
+/// The worker's verdict: what the port said, or an oversize opaque item that
+/// could not be authenticated as the log's next entry.
+#[derive(Debug, PartialEq)]
+pub(super) enum IngestVerdict {
+    Port(IngestOutcome),
+    /// The `stored` prefix was kept (`head` is its new head, if any was
+    /// stored); only this source is refused for the log.
+    OversizeRefused {
+        stored: usize,
+        head: Option<LogHead>,
+        counter: u64,
+        why: &'static str,
+    },
 }
 
 /// A worker result, joined by the actor.
@@ -51,7 +79,7 @@ pub(super) struct IngestDone {
     pub source: NodeUuid,
     pub log: LogKey,
     pub len: u32,
-    pub result: Result<IngestOutcome, ApiError>,
+    pub result: Result<IngestVerdict, ApiError>,
 }
 
 /// What the worker needs; none of it is actor state.
@@ -131,8 +159,8 @@ pub(super) fn ingest_batch(
     cancel: Cancellation,
     log: &LogKey,
     entries: Vec<StoredEntry>,
-    oversize: Option<(u64, usize)>,
-) -> Result<IngestOutcome, ApiError> {
+    oversize: Option<OversizeClaim>,
+) -> Result<IngestVerdict, ApiError> {
     let _origin = enter_lane(Lane::Sync);
     let turn_budget = CallBudget {
         deadline: MonoInstant(clock.monotonic_now().0.saturating_add(INGEST_TURN_MS)),
@@ -148,31 +176,107 @@ pub(super) fn ingest_batch(
     } else {
         Some(journal.ingest(log, entries, &budget)?)
     };
-    Ok(match (outcome, oversize) {
-        // Everything before the oversize entry stored and it is the next
-        // position: the log stalls there.
-        (Some(IngestOutcome::Stored { stored, head, .. }), Some((counter, len))) => {
-            if head.counter + 1 == counter {
-                IngestOutcome::Oversize {
-                    stored,
-                    counter,
-                    len,
-                }
-            } else {
-                IngestOutcome::Gap {
-                    stored,
-                    expected: head.counter + 1,
-                }
-            }
+    let (stored, head, claim) = match (outcome, oversize) {
+        (Some(IngestOutcome::Stored { stored, head, .. }), Some(claim)) => {
+            (stored, Some(head), claim)
         }
-        (None, Some((counter, len))) => IngestOutcome::Oversize {
-            stored: 0,
-            counter,
-            len,
-        },
-        (Some(other), _) => other,
+        (None, Some(claim)) => (0, None, claim),
+        (Some(other), _) => return Ok(IngestVerdict::Port(other)),
         (None, None) => unreachable!("an empty batch without an oversize entry is never queued"),
-    })
+    };
+    // Only an item authenticated as the log's next entry may stall the log;
+    // anything else refuses just this source. `log_meta` reads after the
+    // prefix was stored, so `contiguous` and `head` include it.
+    let counter = claim.wire.counter;
+    Ok(
+        match authenticate_oversize(journal, log, &claim, &budget)? {
+            Auth::Verified => IngestVerdict::Port(IngestOutcome::Oversize {
+                stored,
+                counter,
+                len: claim.len,
+            }),
+            Auth::PastFreeze(frozen_at) => {
+                IngestVerdict::Port(IngestOutcome::Frozen { stored, frozen_at })
+            }
+            Auth::Refused(why) => IngestVerdict::OversizeRefused {
+                stored,
+                head,
+                counter,
+                why,
+            },
+        },
+    )
+}
+
+/// What authenticating an oversize claim found.
+enum Auth {
+    Verified,
+    /// Authentic but beyond the counter at which the log froze.
+    PastFreeze(u64),
+    Refused(&'static str),
+}
+
+/// Check an oversize claim against the frame's log and the local chain: same
+/// log, the next position after the head, prefix, hash over the raw bytes and
+/// the author's signature. The raw bytes are hashed because a `(hash, sig)`
+/// pair is public: without binding it to the position, a peer could replay an
+/// earlier entry's pair at `head + 1` and stall the log. The signature check
+/// mirrors `envelope::verify_hash_sig` (`verify_strict`, private there).
+fn authenticate_oversize(
+    journal: &dyn JournalPort,
+    log: &LogKey,
+    claim: &OversizeClaim,
+    budget: &CallBudget,
+) -> Result<Auth, ApiError> {
+    let wire = &claim.wire;
+    let named = hex_decode::<16>(&wire.node).map(|node| LogKey {
+        node: NodeUuid::from_bytes(node),
+        incarnation: wire.inc,
+    });
+    if named != Some(*log) {
+        return Ok(Auth::Refused("names another log"));
+    }
+    let Some(meta) = journal.log_meta(log, budget)? else {
+        return Ok(Auth::Refused("unknown log"));
+    };
+    if let Some(frozen_at) = meta.frozen_at
+        && wire.counter > frozen_at
+    {
+        return Ok(Auth::PastFreeze(frozen_at));
+    }
+    if wire.counter != meta.contiguous + 1 {
+        return Ok(Auth::Refused("not the next position"));
+    }
+    let prev = hex_decode::<32>(&wire.prev);
+    if prev != Some(meta.head) {
+        return Ok(Auth::Refused("prev does not follow the head"));
+    }
+    let (Some(hash), Some(sig)) = (hex_decode::<32>(&wire.hash), hex_decode::<64>(&wire.sig))
+    else {
+        return Ok(Auth::Refused("malformed hash or signature"));
+    };
+    let prefix = hex_decode_vec(&wire.raw).and_then(|raw| {
+        let parsed = EntryPrefix::parse(&raw).ok()?;
+        let matches = parsed.magic != *MAGIC
+            && parsed.log == *log
+            && parsed.counter == wire.counter
+            && parsed.prev_hash == meta.head;
+        matches.then_some(raw)
+    });
+    let Some(raw) = prefix else {
+        return Ok(Auth::Refused("prefix does not match"));
+    };
+    if <[u8; 32]>::from(Sha256::digest(&raw)) != hash {
+        return Ok(Auth::Refused("hash mismatch"));
+    }
+    let signed = VerifyingKey::from_bytes(&meta.pubkey).is_ok_and(|key| {
+        key.verify_strict(&hash, &Signature::from_bytes(&sig))
+            .is_ok()
+    });
+    if !signed {
+        return Ok(Auth::Refused("bad signature"));
+    }
+    Ok(Auth::Verified)
 }
 
 impl Actor {
@@ -208,19 +312,31 @@ impl Actor {
             }
             return;
         }
-        // In order, up to the first opaque entry over the size bound: that
-        // one is refused (not penalised), the entries before it are kept.
+        // In order, up to the first opaque item over the size bound: it is
+        // carried as an unverified claim for the worker, the entries before
+        // it are kept.
         let mut decoded = Vec::with_capacity(entries.len());
         let mut oversize = None;
         for item in entries {
-            let counter = item.counter();
+            // The size is checked here, before the item is decoded, so the
+            // wire struct moves into the claim without copying its raw hex.
+            if let WireItem::Opaque(wire) = &item
+                && check_opaque_size(wire.raw.len() / 2).is_err()
+            {
+                let WireItem::Opaque(wire) = item else {
+                    unreachable!("matched above")
+                };
+                oversize = Some(OversizeClaim {
+                    len: wire.raw.len() / 2,
+                    wire,
+                });
+                break;
+            }
             match item.into_stored() {
                 Ok(entry) => decoded.push(entry),
-                Err(WireItemError::TooLarge(OpaqueTooLarge { len: size })) => {
-                    oversize = Some((counter, size));
-                    break;
-                }
-                Err(WireItemError::Envelope(_)) => {
+                // Not reachable: oversize items were taken above. Treated as
+                // a malformed entry rather than a panic.
+                Err(WireItemError::TooLarge(_) | WireItemError::Envelope(_)) => {
                     self.grant(link_id, len);
                     self.on_corrupt(link_id, log, "malformed entry");
                     return;
@@ -271,7 +387,14 @@ impl Actor {
         } = done;
         self.grant(link, len);
         let outcome = match result {
-            Ok(outcome) => outcome,
+            Ok(IngestVerdict::Port(outcome)) => outcome,
+            Ok(IngestVerdict::OversizeRefused {
+                head, counter, why, ..
+            }) => {
+                self.on_oversize_refused(link, log, head, counter, why);
+                self.update_rounds();
+                return;
+            }
             Err(e) => {
                 self.on_ingest_error(log, &e);
                 return;
@@ -308,8 +431,8 @@ impl Actor {
         self.update_rounds();
     }
 
-    /// An opaque entry over [`OPAQUE_MAX_BYTES`]: the entries before it are
-    /// stored, the log stalls on this node (no source is penalised, none is
+    /// An **authenticated** opaque entry over [`OPAQUE_MAX_BYTES`]: the
+    /// entries before it are stored, the log stalls on this node (no source is penalised, none is
     /// asked again) and the size is logged once.
     fn on_oversize(&mut self, log: LogKey, counter: u64, len: usize) {
         self.drop_rx(log);
@@ -321,6 +444,27 @@ impl Actor {
             ));
         }
         self.request_local();
+    }
+
+    /// An oversize opaque item that is not authenticated as the log's next
+    /// entry refuses only this source (time-limited penalty), never the log:
+    /// the stored prefix is kept and relayed, other sources are asked.
+    fn on_oversize_refused(
+        &mut self,
+        link_id: u64,
+        log: LogKey,
+        head: Option<LogHead>,
+        counter: u64,
+        why: &str,
+    ) {
+        if let Some(head) = head {
+            self.on_stored(link_id, log, head);
+        }
+        self.on_corrupt(
+            link_id,
+            log,
+            &format!("counter {counter}: unverified oversize opaque entry: {why}"),
+        );
     }
 
     /// `Unwant` the log on its rx source and forget the source.
