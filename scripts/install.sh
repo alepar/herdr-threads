@@ -897,6 +897,8 @@ else
     fi
 fi
 
+# --- daemon verification ---------------------------------------------------
+
 # Verify the live instances against the executable we actually installed, not
 # the archive's VERSION label. `ensure` performs the version/boot handshake;
 # the explicit state/locator reaches the same daemon even when Herdr is down.

@@ -10,7 +10,7 @@ import unittest
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SOURCE = (REPO / 'scripts/install.sh').read_text()
 # Execute the actual setup lane against a controlled older/newer binary boundary.
-LANE = SOURCE.split('# --- harness setup ')[1].split('# --- next steps ')[0]
+LANE = SOURCE.split('# --- harness setup ')[1].split('# --- daemon verification ')[0]
 LANE = LANE[LANE.index('\n'):]
 CAPABILITY = SOURCE[SOURCE.index('installer_integrations() {'):SOURCE.index('\nbare_setup() {')]
 DETECTION = SOURCE[SOURCE.index('detected_harnesses() {'):SOURCE.index('\n# Asks a yes/no')]
@@ -72,6 +72,7 @@ status_line() { echo "$*"; }
 OUT_UPGRADED=0
 OUT_LINKED=1
 OUT_DAEMON_UP=0
+OUT_DAEMON_ERROR=''
 on_path=1
 # This extracted fixture omits installation; its private bin has no ht alias.
 alias_owned=0
