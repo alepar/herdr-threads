@@ -235,6 +235,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "node_directory",
     // Journal core (ht-5fr.3.4): `journal` maps to Apply and Sync, `sync_logs` to Sync.
     "journal_forked",
+    // Opaque entries (ht-j87z): an insert never kicks the apply lane; the
+    // `sync_logs` head update kicks the sync lane.
+    "journal_opaque",
     // Reachability is read by queries, never by a lane (ht-5fr.5.4).
     "sync_node_contact",
     "thread_registers",

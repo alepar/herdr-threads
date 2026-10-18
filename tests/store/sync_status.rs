@@ -406,3 +406,52 @@ fn peers_list_enabled_disabled_and_reach() {
     let later = peers(&fx.query(), NOW as u64 + 1_000_000).unwrap();
     assert_eq!(later[0].reach, "unreachable", "contacts age out");
 }
+
+/// A log `node` with journal 1 applied, an opaque chain position 2, and
+/// journal 3 (pending) whose prev hash is `prev3`; head at 3.
+fn log_with_opaque_predecessor(fx: &mut Fixture, node: u8, prev3: u8) {
+    let log_ix = fx.seed_log(node, 1, &[("applied", None)]);
+    fx.writer
+        .execute(
+            "INSERT INTO journal_opaque(log_ix,counter,hash,prev_hash,signature,raw,branch) \
+             VALUES (?1,2,?2,?3,zeroblob(64),zeroblob(68),0)",
+            params![log_ix, vec![2u8; 32], vec![1u8; 32]],
+        )
+        .unwrap();
+    fx.writer
+        .execute(
+            "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,needs, \
+             payload,signature,ingested_at,apply_state) \
+             VALUES (?1,3,?2,?3,1,'test.kind',1,x'','',x'7b7d',zeroblob(64),0,'pending')",
+            params![log_ix, vec![prev3; 32], vec![3u8; 32]],
+        )
+        .unwrap();
+    fx.writer
+        .execute(
+            "UPDATE sync_logs SET contiguous_counter=3,head_hash=?2 WHERE log_ix=?1",
+            params![log_ix, vec![3u8; 32]],
+        )
+        .unwrap();
+}
+
+// Kills: a J2 check that reports an opaque predecessor as a missing one.
+#[test]
+fn verify_j2_accepts_opaque_predecessor() {
+    let mut fx = Fixture::new();
+    log_with_opaque_predecessor(&mut fx, 0xdd, 2);
+    let found = without_j3(verify(&fx.query()).unwrap());
+    assert_eq!(found, Vec::new());
+}
+
+// Kills: a J2 check that stops at an opaque predecessor instead of comparing
+// the link.
+#[test]
+fn verify_j2_flags_broken_link_after_opaque() {
+    let mut fx = Fixture::new();
+    log_with_opaque_predecessor(&mut fx, 0xdd, 9);
+    let found = without_j3(verify(&fx.query()).unwrap());
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].invariant, "J2");
+    assert_eq!(found[0].log.as_deref(), Some("dddddddd/1"));
+    assert_eq!(found[0].counter, Some(3));
+}

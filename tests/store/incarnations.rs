@@ -2819,3 +2819,75 @@ fn status_clone_evidence_lists_rows() {
         Some("operator:local-user:501")
     );
 }
+
+// ---- opaque rows (ht-j87z.11) ---------------------------------------------------
+
+fn log_ix_of(conn: &Connection, log: &LogKey) -> i64 {
+    conn.query_row(
+        "SELECT log_ix FROM sync_logs WHERE node_uuid=?1 AND incarnation=?2",
+        params![log.node.to_string(), log.incarnation],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+fn insert_opaque(conn: &Connection, log_ix: i64, counter: i64, hash: [u8; 32], branch: i64) {
+    conn.execute(
+        "INSERT INTO journal_opaque(log_ix,counter,hash,prev_hash,signature,raw,branch) \
+         VALUES (?1,?2,?3,zeroblob(32),zeroblob(64),zeroblob(68),?4)",
+        params![log_ix, counter, hash.as_slice(), branch],
+    )
+    .unwrap();
+}
+
+// Kills: a first-entry check that reads `journal` and `journal_forked` only,
+// so an opaque main-chain predecessor looks unknown and the branch is searched
+// earlier forever.
+#[test]
+fn chains_on_known_accepts_opaque_predecessor() {
+    let (_sa, _sb, log, _entries, _ctx, mut conn) = fixture();
+    let log_ix = log_ix_of(&conn, &log);
+    insert_opaque(&conn, log_ix, 5, [0x55; 32], 0);
+    insert_opaque(&conn, log_ix, 6, [0x66; 32], 1);
+    let branch = BranchRow {
+        log_ix,
+        log,
+        pubkey: [0; 32],
+        frozen_at: 2,
+        tip_counter: 9,
+        tip_hash: [9; 32],
+        next_from: 6,
+        search_span: 1,
+    };
+    let tx = conn.transaction().unwrap();
+    let on_main = signed_entry(log, 6, [0x55; 32], r#"{"id":"x6"}"#);
+    assert!(chains_on_known(&tx, &branch, &on_main).unwrap());
+    // An opaque fork-branch row is a known predecessor too.
+    let on_branch = signed_entry(log, 7, [0x66; 32], r#"{"id":"x7"}"#);
+    assert!(chains_on_known(&tx, &branch, &on_branch).unwrap());
+    let nowhere = signed_entry(log, 6, [0x77; 32], r#"{"id":"x6"}"#);
+    assert!(!chains_on_known(&tx, &branch, &nowhere).unwrap());
+}
+
+// Kills: an I2 check blind to opaque fork-branch rows, and one that reads
+// opaque chain positions (branch = 0) as branch rows.
+#[test]
+fn i2_checks_opaque_branch_rows() {
+    let (_sa, _sb, log, _entries, _ctx, conn) = fixture();
+    let log_ix = log_ix_of(&conn, &log);
+    conn.execute(
+        "UPDATE sync_logs SET state='frozen',frozen_at_counter=2 WHERE log_ix=?1",
+        [log_ix],
+    )
+    .unwrap();
+    // Above the freeze, and a chain position: neither is an I2 violation.
+    insert_opaque(&conn, log_ix, 3, [0x33; 32], 1);
+    insert_opaque(&conn, log_ix, 5, [0x55; 32], 0);
+    assert_eq!(check_invariants(&conn).unwrap(), Vec::new());
+    // At the freeze: a violation.
+    insert_opaque(&conn, log_ix, 2, [0x22; 32], 1);
+    let found = check_invariants(&conn).unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].invariant, Invariant::I2);
+    assert_eq!(found[0].counter, 2);
+}

@@ -69,6 +69,10 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
         version: 3,
         sql: include_str!("../../migrations/node/0003_concurrent_session_bindings.sql"),
     },
+    NodeDelta {
+        version: 4,
+        sql: include_str!("../../migrations/node/0004_journal_opaque.sql"),
+    },
 ];
 
 /// Latest `PRAGMA user_version` supported by this binary's production schema.

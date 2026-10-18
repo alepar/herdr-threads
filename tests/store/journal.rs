@@ -1940,3 +1940,200 @@ fn reissue_parked_dep_parks() {
     check_self_applied(&conn).unwrap();
     assert_eq!(revision(&conn), 0, "the handler did not run");
 }
+
+// ---- Chain-row reader over journal and journal_opaque (ht-j87z.11) ----------
+
+const CHAIN_NODE: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+fn h(n: u8) -> [u8; 32] {
+    [n; 32]
+}
+
+/// A foreign log whose `sync_logs` row already says `contiguous` / `head`, as
+/// ingest would leave it; its rows are added with the `insert_*` helpers.
+fn chain_log(conn: &Connection, contiguous: i64, head: [u8; 32]) -> i64 {
+    conn.execute(
+        "INSERT INTO sync_logs(node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) \
+         VALUES (?1,1,0,zeroblob(32),zeroblob(32),?2,?3,0)",
+        params![CHAIN_NODE, contiguous, head.as_slice()],
+    )
+    .unwrap();
+    conn.last_insert_rowid()
+}
+
+fn insert_known_row(conn: &Connection, log_ix: i64, counter: i64, prev: [u8; 32], hash: [u8; 32]) {
+    conn.execute(
+        "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state) \
+         VALUES (?1,?2,?3,?4,5,'test.put',1,x'0000',x'00',zeroblob(64),0,'pending')",
+        params![log_ix, counter, prev.as_slice(), hash.as_slice()],
+    )
+    .unwrap();
+}
+
+fn insert_forked_row(conn: &Connection, log_ix: i64, counter: i64, prev: [u8; 32], hash: [u8; 32]) {
+    conn.execute(
+        "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,source_node,received_at) \
+         VALUES (?1,?2,?3,?4,5,'test.put',1,x'0000',x'00',zeroblob(64),NULL,0)",
+        params![log_ix, counter, prev.as_slice(), hash.as_slice()],
+    )
+    .unwrap();
+}
+
+/// Raw SQL: no store API exists for opaque rows yet (ht-j87z.3 adds it with
+/// its guards); `branch` is 0 for a chain position, 1 for a fork branch.
+fn insert_opaque_row(
+    conn: &Connection,
+    log_ix: i64,
+    counter: i64,
+    prev: [u8; 32],
+    hash: [u8; 32],
+    branch: i64,
+) {
+    conn.execute(
+        "INSERT INTO journal_opaque(log_ix,counter,hash,prev_hash,signature,raw,branch) \
+         VALUES (?1,?2,?3,?4,zeroblob(64),zeroblob(68),?5)",
+        params![log_ix, counter, hash.as_slice(), prev.as_slice(), branch],
+    )
+    .unwrap();
+}
+
+fn chain_key() -> LogKey {
+    LogKey {
+        node: CHAIN_NODE.parse().unwrap(),
+        incarnation: 1,
+    }
+}
+
+/// A store with a foreign log holding journal 1, 2, opaque 3 and journal 4
+/// (each `prev` the hash below it), and `head` as its stated head.
+fn mid_chain_store(store: &Store, contiguous: i64, head: [u8; 32]) -> (Connection, i64) {
+    let (_ctx, conn, _) = opened(store);
+    let log = chain_log(&conn, contiguous, head);
+    insert_known_row(&conn, log, 1, [0; 32], h(1));
+    insert_known_row(&conn, log, 2, h(1), h(2));
+    insert_opaque_row(&conn, log, 3, h(2), h(3), 0);
+    insert_known_row(&conn, log, 4, h(3), h(4));
+    (conn, log)
+}
+
+#[test]
+fn verify_accepts_opaque_mid_chain() {
+    let store = Store::new();
+    let (conn, _) = mid_chain_store(&store, 4, h(4));
+    verify_invariants(&conn).unwrap();
+}
+
+#[test]
+fn verify_accepts_opaque_head() {
+    let store = Store::new();
+    let (_ctx, conn, _) = opened(&store);
+    let log = chain_log(&conn, 3, h(3));
+    insert_known_row(&conn, log, 1, [0; 32], h(1));
+    insert_known_row(&conn, log, 2, h(1), h(2));
+    insert_opaque_row(&conn, log, 3, h(2), h(3), 0);
+    verify_invariants(&conn).unwrap();
+}
+
+#[test]
+fn verify_ignores_opaque_branch_row() {
+    let store = Store::new();
+    let (_ctx, conn, _) = opened(&store);
+    let log = chain_log(&conn, 3, h(3));
+    insert_known_row(&conn, log, 1, [0; 32], h(1));
+    insert_known_row(&conn, log, 2, h(1), h(2));
+    insert_known_row(&conn, log, 3, h(2), h(3));
+    insert_opaque_row(&conn, log, 3, h(2), h(0x33), 1);
+    verify_invariants(&conn).unwrap();
+    // A branch row above the head neither raises the stored max nor is a
+    // chain position.
+    insert_opaque_row(&conn, log, 4, h(0x33), h(0x44), 1);
+    verify_invariants(&conn).unwrap();
+}
+
+#[test]
+fn verify_still_refuses_tampered_head() {
+    let store = Store::new();
+    let (_ctx, conn, _) = opened(&store);
+    let log = chain_log(&conn, 3, h(0x99));
+    insert_known_row(&conn, log, 1, [0; 32], h(1));
+    insert_known_row(&conn, log, 2, h(1), h(2));
+    insert_opaque_row(&conn, log, 3, h(2), h(3), 0);
+    let error = verify_invariants(&conn).unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt);
+    assert!(
+        error
+            .detail
+            .contains("head_hash does not match the stored hash at counter 3"),
+        "{}",
+        error.detail
+    );
+}
+
+#[test]
+fn stored_hash_reads_opaque_position() {
+    let store = Store::new();
+    let (conn, _) = mid_chain_store(&store, 4, h(4));
+    let log = chain_key();
+    assert_eq!(stored_hash(&conn, &log, 2).unwrap(), Some(h(2)));
+    assert_eq!(stored_hash(&conn, &log, 3).unwrap(), Some(h(3)));
+    assert_eq!(stored_hash(&conn, &log, 4).unwrap(), Some(h(4)));
+    assert_eq!(stored_hash(&conn, &log, 5).unwrap(), None);
+}
+
+#[test]
+fn held_at_and_branch_prev_read_the_union() {
+    let store = Store::new();
+    let (conn, log) = mid_chain_store(&store, 4, h(4));
+    insert_forked_row(&conn, log, 4, h(0x33), h(0x44));
+    insert_opaque_row(&conn, log, 3, h(2), h(0x33), 1);
+    assert!(held_at(&conn, log, 3, &h(3), false).unwrap());
+    assert!(!held_at(&conn, log, 3, &h(0x33), false).unwrap());
+    assert!(held_at(&conn, log, 3, &h(0x33), true).unwrap());
+    assert!(held_at(&conn, log, 4, &h(0x44), true).unwrap());
+    assert!(!held_at(&conn, log, 4, &h(0x44), false).unwrap());
+    assert_eq!(branch_prev(&conn, log, 3, &h(0x33)).unwrap(), Some(h(2)));
+    assert_eq!(branch_prev(&conn, log, 4, &h(0x44)).unwrap(), Some(h(0x33)));
+    // A chain position is not a branch row.
+    assert_eq!(branch_prev(&conn, log, 3, &h(3)).unwrap(), None);
+}
+
+#[test]
+fn branch_walk_crosses_opaque_branch_row() {
+    let store = Store::new();
+    let (_ctx, conn, _) = opened(&store);
+    let log = chain_log(&conn, 2, h(2));
+    insert_known_row(&conn, log, 1, [0; 32], h(1));
+    insert_known_row(&conn, log, 2, h(1), h(2));
+    // Branch 3' (opaque) chains on main 2; branch 4' (known) chains on 3'.
+    insert_opaque_row(&conn, log, 3, h(2), h(0x33), 1);
+    insert_forked_row(&conn, log, 4, h(0x33), h(0x44));
+    let served =
+        serve_branch(&conn, &chain_key(), (4, h(0x44)), 1, BatchLimits::default()).unwrap();
+    // The known branch row 4' is served; the opaque row 3' joins main at 2
+    // and is served as a `StoredEntry` by ht-j87z.6.
+    let served = served.expect("the walk crosses the opaque branch row");
+    assert_eq!(
+        served.iter().map(|e| e.counter).collect::<Vec<_>>(),
+        [1, 2, 4]
+    );
+    // A broken link at the opaque row answers None.
+    insert_forked_row(&conn, log, 4, h(0x55), h(0x45));
+    let served =
+        serve_branch(&conn, &chain_key(), (4, h(0x45)), 1, BatchLimits::default()).unwrap();
+    assert!(served.is_none(), "prev 0x55 is held nowhere");
+}
+
+#[test]
+fn open_hlc_resume_ignores_opaque_head() {
+    let store = Store::new();
+    let (_ctx, conn, _) = opened(&store);
+    let log = chain_log(&conn, 3, h(3));
+    insert_known_row(&conn, log, 1, [0; 32], h(1));
+    insert_known_row(&conn, log, 2, h(1), h(2));
+    insert_opaque_row(&conn, log, 3, h(2), h(3), 0);
+    drop(conn);
+    // The HLC resume reads the self logs only and never an opaque row.
+    let restarted = store.ctx();
+    let mut conn2 = restarted.open_writer().unwrap();
+    open_with(&restarted, &mut conn2).unwrap();
+}

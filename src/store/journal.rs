@@ -199,11 +199,13 @@ pub fn applied_vector(conn: &Connection) -> Result<Vec<(LogKey, u64)>, ApiError>
 pub(crate) fn verify_invariants(tx: &Connection) -> Result<(), ApiError> {
     let mut statement = tx
         .prepare(
-            "SELECT l.log_ix,l.node_uuid,l.incarnation,l.contiguous_counter,l.head_hash,l.applied_through, \
-             (l.log_ix IS (SELECT active_log_ix FROM local_node)), \
-             COALESCE((SELECT MAX(counter) FROM journal j WHERE j.log_ix=l.log_ix),0), \
-             (SELECT hash FROM journal j WHERE j.log_ix=l.log_ix AND j.counter=l.contiguous_counter) \
-             FROM sync_logs l ORDER BY l.log_ix",
+            &format!(
+                "SELECT l.log_ix,l.node_uuid,l.incarnation,l.contiguous_counter,l.head_hash,l.applied_through, \
+                 (l.log_ix IS (SELECT active_log_ix FROM local_node)), \
+                 COALESCE((SELECT MAX(counter) FROM {CHAIN_ROWS} j WHERE j.log_ix=l.log_ix),0), \
+                 (SELECT hash FROM {CHAIN_ROWS} j WHERE j.log_ix=l.log_ix AND j.counter=l.contiguous_counter) \
+                 FROM sync_logs l ORDER BY l.log_ix"
+            ),
         )
         .map_err(store_error)?;
     let rows = statement
@@ -896,12 +898,78 @@ fn load_log(conn: &Connection, log: &LogKey) -> Result<Option<LogRow>, ApiError>
     }))
 }
 
+/// Chain positions of every log: the `journal` rows and the main-chain
+/// (`branch = 0`) rows of `journal_opaque`. The Chain-row reader's one SQL
+/// source; a reader of chain positions selects from it, never from
+/// `journal` alone (ht-j87z design section 4). `opaque` is 1 for a row whose
+/// signed layout this node does not understand.
+pub(crate) const CHAIN_ROWS: &str = "(SELECT log_ix,counter,prev_hash,hash,0 AS opaque FROM journal \
+     UNION ALL SELECT log_ix,counter,prev_hash,hash,1 AS opaque FROM journal_opaque WHERE branch=0)";
+
+/// Fork-branch rows of every log: `journal_forked` and the `branch = 1` rows
+/// of `journal_opaque`. `forked_ix` orders the known rows (NULL for opaque).
+pub(crate) const BRANCH_ROWS: &str = "(SELECT log_ix,counter,prev_hash,hash,0 AS opaque,forked_ix FROM journal_forked \
+     UNION ALL SELECT log_ix,counter,prev_hash,hash,1 AS opaque,NULL AS forked_ix FROM journal_opaque WHERE branch=1)";
+
+/// Whether `(counter, hash)` of `log_ix` is a chain position, or with
+/// `include_branches` also a fork-branch row.
+pub(crate) fn held_at(
+    conn: &Connection,
+    log_ix: i64,
+    counter: u64,
+    hash: &[u8; 32],
+    include_branches: bool,
+) -> Result<bool, ApiError> {
+    let Ok(counter) = i64::try_from(counter) else {
+        return Ok(false);
+    };
+    let branches = if include_branches {
+        format!(
+            " OR EXISTS(SELECT 1 FROM {BRANCH_ROWS} b WHERE b.log_ix=?1 AND b.counter=?2 AND b.hash=?3)"
+        )
+    } else {
+        String::new()
+    };
+    conn.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM {CHAIN_ROWS} c WHERE c.log_ix=?1 AND c.counter=?2 AND c.hash=?3){branches}"
+        ),
+        params![log_ix, counter, hash.as_slice()],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
+/// The `prev_hash` of the fork-branch row `(counter, hash)`, if held.
+pub(crate) fn branch_prev(
+    conn: &Connection,
+    log_ix: i64,
+    counter: u64,
+    hash: &[u8; 32],
+) -> Result<Option<[u8; 32]>, ApiError> {
+    conn.query_row(
+        &format!(
+            "SELECT prev_hash FROM {BRANCH_ROWS} b WHERE b.log_ix=?1 AND b.counter=?2 AND b.hash=?3"
+        ),
+        params![
+            log_ix,
+            i64::try_from(counter).unwrap_or(i64::MAX),
+            hash.as_slice()
+        ],
+        |r| r.get::<_, Vec<u8>>(0),
+    )
+    .optional()
+    .map_err(store_error)?
+    .map(|prev| hash_from(prev, "prev_hash"))
+    .transpose()
+}
+
 fn hash_at(conn: &Connection, log_ix: i64, counter: u64) -> Result<Option<[u8; 32]>, ApiError> {
     let Ok(counter) = i64::try_from(counter) else {
         return Ok(None);
     };
     conn.query_row(
-        "SELECT hash FROM journal WHERE log_ix=?1 AND counter=?2",
+        &format!("SELECT hash FROM {CHAIN_ROWS} c WHERE c.log_ix=?1 AND c.counter=?2"),
         params![log_ix, counter],
         |r| r.get::<_, Vec<u8>>(0),
     )
@@ -1155,21 +1223,7 @@ fn serve_branch_within(
         }
         return Ok(Some(batch.out));
     }
-    let forked_prev = |counter: u64, hash: &[u8; 32]| -> Result<Option<[u8; 32]>, ApiError> {
-        conn.query_row(
-            "SELECT prev_hash FROM journal_forked WHERE log_ix=?1 AND counter=?2 AND hash=?3",
-            params![
-                row.log_ix,
-                i64::try_from(counter).unwrap_or(i64::MAX),
-                hash.as_slice()
-            ],
-            |r| r.get::<_, Vec<u8>>(0),
-        )
-        .optional()
-        .map_err(store_error)?
-        .map(|prev| hash_from(prev, "prev_hash"))
-        .transpose()
-    };
+    let forked_prev = |counter: u64, hash: &[u8; 32]| branch_prev(conn, row.log_ix, counter, hash);
     // The forked part of the branch, tip first, as (counter, hash).
     let mut path: Vec<(u64, [u8; 32])> = Vec::new();
     let (mut counter, mut hash) = (tip_counter, tip_hash);
@@ -1197,7 +1251,7 @@ fn serve_branch_within(
         batch_journal_range(conn, row.log_ix, log, from, join, &mut batch)?;
     }
     for (counter, hash) in path.into_iter().rev().filter(|(c, _)| *c >= from) {
-        let raw = conn
+        let Some(raw) = conn
             .query_row(
                 &format!(
                     "SELECT {ENVELOPE_COLUMNS} FROM journal_forked \
@@ -1210,7 +1264,13 @@ fn serve_branch_within(
                 ],
                 RawEnvelope::read,
             )
-            .map_err(store_error)?;
+            .optional()
+            .map_err(store_error)?
+        else {
+            // An opaque branch row (the walk above found it in
+            // `journal_opaque`): ht-j87z.6 serves it as a `StoredEntry`.
+            continue;
+        };
         if !batch.push(raw.decode(log)?) {
             break;
         }

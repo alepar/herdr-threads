@@ -38,7 +38,7 @@ use crate::protocol::ids::SeatId;
 use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::time::{Clock, MonoInstant};
 use crate::store::connection::{DecisionInstant, StoreContext, SyncState, api_error, store_error};
-use crate::store::journal;
+use crate::store::journal::{self, CHAIN_ROWS};
 use crate::store::seats;
 use crate::sync::envelope::Deps;
 use crate::sync::facts::{FactError, FactKind};
@@ -869,9 +869,17 @@ fn next_ready_head(tx: &Transaction<'_>, only_self_log: bool) -> Result<Option<i
     };
     let mut statement = tx
         .prepare(
-            "SELECT l.log_ix,l.node_uuid,l.incarnation,l.blocked_on,j.ingest_seq,j.deps \
-             FROM sync_logs l JOIN journal j ON j.log_ix=l.log_ix AND j.counter=l.applied_through+1 \
-             WHERE l.applied_through<l.contiguous_counter ORDER BY j.ingest_seq",
+            // Reads the union of chain positions; an opaque head stops its
+            // log and is skipped here (`c.opaque=0`). ht-j87z.10 records
+            // `blocked_on = opaque_layout` for it.
+            &format!(
+                "SELECT l.log_ix,l.node_uuid,l.incarnation,l.blocked_on,j.ingest_seq,j.deps \
+                 FROM sync_logs l \
+                 JOIN {CHAIN_ROWS} c ON c.log_ix=l.log_ix AND c.counter=l.applied_through+1 \
+                 LEFT JOIN journal j ON j.log_ix=c.log_ix AND j.counter=c.counter AND c.opaque=0 \
+                 WHERE l.applied_through<l.contiguous_counter AND c.opaque=0 \
+                 ORDER BY j.ingest_seq"
+            ),
         )
         .map_err(store_error)?;
     let heads = statement
