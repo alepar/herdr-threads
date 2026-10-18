@@ -1,0 +1,13 @@
+Update the shipped collaboration guide with name-first prose, timely p0 dispatch and useful responses to missing receipt confirmations.
+
+Spec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md
+Files-touched: integrations/skill/SKILL.md, docs/agent-usage.md (matching guidance sections only), other checked/generated skill mirrors if present, tests/cli/skill.rs only if an existing contract requires updates
+owns: static model-facing collaboration guidance and its matching documentation.
+owns: measured baseline/final skill UTF-8 bytes and at most 1 KiB growth accounting.
+
+## Acceptance
+- [ ] Known names appear in user-facing communication; exact IDs remain in ready commands, disambiguation, receipt actions and evidence.
+- [ ] Use p0 if recipient may be actively waiting, blocked, or idle and needing to react now; routine nonblocking sends stay p1 and runtime wake defaults remain unchanged.
+- [ ] If sender depends on receipt, request ACK with actionable request and response; missing/overdue ACK triggers inspection through Herdr skill, self-execution or fresh handoff as appropriate, without polling/repeated nudges/restarts.
+- [ ] Preserve ACK-is-receipt-only, exact automatic-display ACK semantics, turn-ending waits, top-level/subagent restrictions and user permission boundaries.
+- [ ] Keep added skill bytes at most 1 KiB including launch profile example, record before/after UTF-8 sizes, synchronize checked mirrors using existing process (or direct edits if no generator), and run applicable doc/skill checks. Do not spawn behavioral-eval agents from this leaf.

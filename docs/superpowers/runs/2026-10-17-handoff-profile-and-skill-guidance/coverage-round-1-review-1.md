@@ -1,0 +1,38 @@
+requirements:
+  R1 → ht-1urq.7
+  R2 → ht-1urq.7
+  R3 → ht-1urq.7
+  R4 → ht-1urq.2, ht-1urq.3, ht-1urq.6
+  R5 → ht-1urq.4, ht-1urq.6, ht-1urq.8
+  R6 → ht-1urq.1, ht-1urq.2, ht-1urq.6
+  R7 → ht-1urq.1, ht-1urq.3, ht-1urq.4, ht-1urq.6, ht-1urq.9
+  R8 → ht-1urq.5, ht-1urq.6
+  R9 → ht-1urq.1, ht-1urq.5
+  R10 → ht-1urq.2, ht-1urq.4, ht-1urq.6
+  R11 → ht-1urq.7, ht-1urq.8
+  R12 → ht-1urq.9; focused-test ownership incomplete
+
+GAP:
+- subject: Pane/existing-mode rejection implementation
+  evidence: R10 says “Pane/existing profile/cwd options refuse before effects”; ht-1urq.2 owns “new-tab --profile-dir” validation, while ht-1urq.8 only documents “pane/agy limitations.”
+  proposed fix: Explicitly assign rejection of profile-dir/cwd in pane and existing-recipient modes, with before-effects tests, to ht-1urq.2.
+
+- subject: Focused regression-test ownership
+  evidence: R12 requires “Focused tests”; ht-1urq.9 owns “executable configuration smoke and release-matrix directory evidence.” No leaf explicitly owns focused parser, adapter, admission, historical replay, or retry tests.
+  proposed fix: Assign focused tests to ht-1urq.2–.6, including unchanged no-option/plain-launch behavior and retry refusal before effects.
+
+- subject: Guarded executable/PATH preservation
+  evidence: R7 requires “preserving guarded executable/PATH behavior”; ht-1urq.6 promises “selected directory capture-to-create-to-derived-launch wiring” without explicitly retaining executable/PATH guards.
+  proposed fix: Add guard-preservation implementation and regression checks to ht-1urq.6 acceptance criteria.
+
+- subject: Credential-safe diagnostics
+  evidence: R4 requires directory mapping “without credential logging”; ht-1urq.3 owns projection, but no task explicitly owns diagnostic redaction or credential-safe evidence.
+  proposed fix: Assign credential-safe launch diagnostics to ht-1urq.3 and credential-free smoke evidence to ht-1urq.9.
+
+- subject: Skill byte budget and release boundary
+  evidence: R11 requires “byte growth recorded within 1 KiB skill target” and “propose 2.1.0 without tagging/bumping”; ht-1urq.7 mentions guidance and documentation, and ht-1urq.8 mentions an “unreleased change summary.”
+  proposed fix: Make ht-1urq.7 record measured byte growth; make ht-1urq.8 explicitly propose 2.1.0 while leaving version metadata and tags unchanged.
+
+ORPHAN: none identified.
+
+UNOWNED-SEAM: none identified; the shared context, parser output, adapter projections, canonical admission, and end-to-end wiring each have named owners.

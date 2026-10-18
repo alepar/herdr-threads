@@ -1,0 +1,28 @@
+requirements:
+R1 → ht-1urq.7
+R2 → ht-1urq.7
+R3 → ht-1urq.7
+R4 → ht-1urq.2, ht-1urq.3, ht-1urq.6
+R5 → ht-1urq.4, ht-1urq.6, ht-1urq.8
+R6 → ht-1urq.2, ht-1urq.6
+R7 → ht-1urq.3, ht-1urq.4, ht-1urq.6, ht-1urq.9
+R8 → ht-1urq.5, ht-1urq.6
+R9 → ht-1urq.1, ht-1urq.5
+R10 → ht-1urq.2, ht-1urq.4, ht-1urq.6
+R11 → ht-1urq.7, ht-1urq.8
+R12 → ht-1urq.9; focused-test ownership unclear
+R-new: none
+
+GAP:
+- Subject: focused regression-test ownership.
+  Evidence: R12 requires “Focused tests”; ht-1urq.9 owns “executable configuration smoke and release-matrix directory evidence.”
+  Proposed fix: explicitly assign focused tests to ht-1urq.2–.6, covering rejection before effects, adapter projection, historical replay, capability admission, and exact retry after caller changes.
+- Subject: skill size accounting.
+  Evidence: R11 requires “byte growth recorded within 1 KiB skill target”; ht-1urq.7 owns “static model-facing collaboration guidance and its matching documentation.”
+  Proposed fix: add an acceptance criterion to ht-1urq.7 recording baseline/final byte counts and verifying growth against the target.
+- Subject: test isolation and cleanup acceptance.
+  Evidence: R12 requires “owned fixtures and cleanup, without real config/credentials or shared server changes”; ht-1urq.9 specifies “isolated stand-ins” but does not explicitly own cleanup or those prohibitions.
+  Proposed fix: add explicit fixture ownership, cleanup verification, and config/credential/server isolation criteria to ht-1urq.9 and relevant focused tests.
+
+ORPHAN: none
+UNOWNED-SEAM: none

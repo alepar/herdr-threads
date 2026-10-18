@@ -1,0 +1,14 @@
+Let Hermes explicit directory selection seed HERMES_HOME without changing named-profile resolution; retain agy unsupported explicit selection.
+
+Spec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md
+Files-touched: src/harness/hermes/launch.rs, src/harness/hermes.rs if required, tests/harness/adapter_smoke.rs or Hermes adapter tests, tests/handoff_agy.rs (refusal assertion only)
+owns: Hermes explicit root to native profile resolution and declared projection.
+consumes: LaunchDirectoryContext; consumes: LaunchPolicy explicit-directory seam.
+blocked-by ht-1urq.1: consumes boundary contract
+owns: focused Hermes named-profile and agy unsupported/cwd regression tests.
+
+## Acceptance
+- [ ] Hermes maps profile-dir to HERMES_HOME in its captured environment, preserves existing named --profile semantics and retains effective selected profile scope under the requested root.
+- [ ] Existing source-bound prelaunch observation, enabled owned assets and runtime rechecks still apply; explicit root never falsely attests authentication or model consumption.
+- [ ] Neutral unsupported default yields concise agy profile-directory refusal without changing HOME; ordinary agy cwd/no-option behavior stays intact.
+- [ ] Focused Hermes/mapping/refusal tests use owned fixtures, pass fmt, locked all-feature clippy and harness-neutral check.
