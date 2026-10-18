@@ -35,6 +35,79 @@ pub struct Preparation<'a, C: crate::ports::LocalClient + ?Sized> {
     pub clock: &'a dyn crate::protocol::time::Clock,
 }
 
+pub(crate) fn require_directory_capability<C: crate::ports::LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn crate::protocol::time::Clock,
+) -> Result<(), RunError> {
+    use crate::protocol::{commands::Command, results::CommandResult};
+    match client.call(Command::Capabilities, &super::cooperative_budget(clock))? {
+        CommandResult::Capabilities(c)
+            if c.capabilities.iter().any(|name| {
+                name == crate::protocol::capabilities::HANDOFF_LAUNCH_DIRECTORIES_V1
+            }) =>
+        {
+            Ok(())
+        }
+        _ => Err(super::unsupported(
+            "daemon lacks handoff launch directories capability",
+        )),
+    }
+}
+
+fn capture_directories<C: crate::ports::LocalClient + ?Sized>(
+    request: &Request,
+    inputs: &Preparation<'_, C>,
+    harness: crate::harness::context::Harness,
+    cwd: &std::path::Path,
+) -> Result<Option<crate::protocol::handoff::LaunchDirectoryContext>, RunError> {
+    let Some(profile_dir) = &request.profile_dir else {
+        return Ok(None);
+    };
+    require_directory_capability(inputs.client, inputs.clock)?;
+    let registration = crate::harness::launch::launch_registration(
+        crate::harness::registry::builtins(),
+        harness.occupant(),
+    )?;
+    let context = crate::protocol::handoff::LaunchDirectoryContext {
+        profile_dir: profile_dir.clone(),
+        cwd: cwd.to_path_buf(),
+        env: registration
+            .launch_policy()
+            .expect("checked provider")
+            .explicit_directory_env(profile_dir)?,
+    };
+    context.validate().map_err(super::invalid_request)?;
+    check_directories(Some(&context))?;
+    Ok(Some(context))
+}
+
+pub(crate) fn check_directories(
+    context: Option<&crate::protocol::handoff::LaunchDirectoryContext>,
+) -> Result<(), RunError> {
+    if let Some(context) = context {
+        context.validate().map_err(super::invalid_request)?;
+        if !context.profile_dir.is_dir() || !context.cwd.is_dir() {
+            return Err(super::invalid_request(
+                "selected launch directory disappeared or is not a directory",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn check_bootstrap_directories(
+    cwd: &std::path::Path,
+    context: Option<&crate::protocol::handoff::LaunchDirectoryContext>,
+) -> Result<(), RunError> {
+    check_directories(context)?;
+    if !cwd.is_dir() {
+        return Err(super::invalid_request(
+            "bootstrap cwd disappeared or is not a directory",
+        ));
+    }
+    Ok(())
+}
+
 pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
     request: &Request,
     inputs: Preparation<'_, C>,
@@ -44,12 +117,6 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         ids::{HostTargetId, OperationId},
     };
     let fail = super::invalid_request;
-    // Fail closed until launch-context orchestration consumes this selection.
-    if request.profile_dir.is_some() {
-        return Err(super::unsupported(
-            "explicit profile directories require new-tab launch context support",
-        ));
-    }
     if !request.automatic
         || request.new_tab.is_none()
         || request.existing
@@ -77,7 +144,12 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
     if !cwd.is_absolute() || !cwd.is_dir() {
         return Err(fail("--cwd must be an absolute existing directory"));
     }
-    let cwd = cwd.canonicalize()?;
+    let cwd = if request.cwd.is_some() {
+        cwd.to_path_buf()
+    } else {
+        cwd.canonicalize()?
+    };
+    let directory_context = capture_directories(request, &inputs, harness, &cwd)?;
     let runtime = crate::daemon::paths::RuntimeContext::explicit(
         inputs.namespace.state_dir.clone(),
         inputs.namespace.host_endpoint.clone(),
@@ -166,14 +238,14 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         AutomaticBootstrapPlan {
             version: AUTOMATIC_PLAN_VERSION,
             payload: AutomaticBootstrapPayload {
-                directory_context: None,
+                directory_context: directory_context.clone(),
                 handoff,
                 keys: AutomaticBootstrapKeys::new(compound),
                 workspace: HostTargetId::parse(workspace).map_err(fail)?,
                 cwd,
                 label: label.clone(),
                 focus: false,
-                env: Default::default(),
+                env: directory_context.map(|c| c.env).unwrap_or_default(),
                 launch: BootstrapLaunch {
                     harness: harness.occupant(),
                     binary: launch.harness_binary,
@@ -258,12 +330,6 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         ids::{HostTargetId, OperationId},
         results::CommandResult,
     };
-    // Fail closed until launch-context orchestration consumes this selection.
-    if request.profile_dir.is_some() {
-        return Err(super::unsupported(
-            "explicit profile directories require new-tab launch context support",
-        ));
-    }
     if request.automatic {
         return Err(super::unsupported(
             "automatic bootstrap producer unavailable",
@@ -301,7 +367,12 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
     if !cwd.is_absolute() || !cwd.is_dir() {
         return Err(fail("--cwd must be an absolute existing directory"));
     }
-    let cwd = cwd.canonicalize()?;
+    let cwd = if request.cwd.is_some() {
+        cwd.to_path_buf()
+    } else {
+        cwd.canonicalize()?
+    };
+    let directory_context = capture_directories(request, &inputs, harness, &cwd)?;
     let runtime = crate::daemon::paths::RuntimeContext::explicit(
         inputs.namespace.state_dir.clone(),
         inputs.namespace.host_endpoint.clone(),
@@ -392,7 +463,7 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         ))
     };
     let payload = BootstrapPayload {
-        directory_context: None,
+        directory_context: directory_context.clone(),
         handoff: HandoffPayload {
             policy: request.policy.clone(),
             namespace,
@@ -411,7 +482,7 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         cwd,
         label: label.clone(),
         focus: false,
-        env: Default::default(),
+        env: directory_context.map(|c| c.env).unwrap_or_default(),
         launch: BootstrapLaunch {
             harness: harness.occupant(),
             binary: launch.harness_binary,
@@ -581,6 +652,7 @@ pub fn publish(
     use super::journal::{BootstrapPlan, SemanticMutation};
     identity.validate().map_err(super::invalid_request)?;
     crate::store::topology_handoff::encode_identity(&identity.payload.handoff.namespace, identity)?;
+    check_directories(identity.payload.directory_context.as_ref())?;
     if !identity.payload.cwd.is_dir() {
         return Err(super::invalid_request(
             "bootstrap cwd disappeared before publication",
@@ -614,6 +686,7 @@ pub fn publish_automatic(
     identity
         .validate_local_admission(journal.root())
         .map_err(super::invalid_request)?;
+    check_directories(identity.plan.payload.directory_context.as_ref())?;
     if !identity.plan.payload.cwd.is_dir() {
         return Err(super::invalid_request(
             "bootstrap cwd disappeared before publication",
@@ -717,6 +790,10 @@ pub fn resume_to_attachment<
                 && (identity.payload.handoff.policy.is_none()
                     || c.capabilities.iter().any(|name| {
                         name == crate::protocol::capabilities::INVITATION_CONFIRMATION_V1
+                    }))
+                && (identity.payload.directory_context.is_none()
+                    || c.capabilities.iter().any(|name| {
+                        name == crate::protocol::capabilities::HANDOFF_LAUNCH_DIRECTORIES_V1
                     })) => {}
         _ => {
             return Err(super::unsupported(
@@ -815,6 +892,10 @@ pub fn resume_to_attachment<
             "native submission endpoint differs from frozen namespace",
         ));
     }
+    check_bootstrap_directories(
+        &identity.payload.cwd,
+        identity.payload.directory_context.as_ref(),
+    )?;
     let operation = current
         .attempt
         .operation(&identity.compound, "reserve")
@@ -899,7 +980,16 @@ pub fn resume_to_attachment<
             "fresh bootstrap submission check differs",
         ));
     }
-    match native.create_tab(&request, submission.context) {
+    let outcome = match check_bootstrap_directories(
+        &identity.payload.cwd,
+        identity.payload.directory_context.as_ref(),
+    ) {
+        Ok(()) => native.create_tab(&request, submission.context),
+        Err(error) => CreateTabOutcome::NotSubmitted(
+            crate::protocol::results::ApiError::invalid_request(error.to_string()),
+        ),
+    };
+    match outcome {
         CreateTabOutcome::NotSubmitted(_) => {
             local.not_submitted = true;
             save_bootstrap_progress(journal, reference, &local)
@@ -1881,6 +1971,9 @@ pub(crate) fn resume_to_writer<
         ));
     }
     if current.state != BootstrapState::Completed {
+        if identity.payload.directory_context.is_some() {
+            require_directory_capability(client, clock)?;
+        }
         let attachment = current
             .attachment
             .as_ref()
@@ -1939,6 +2032,13 @@ pub(crate) fn resume_to_writer<
             launcher,
             clock,
             &mut || {
+                check_bootstrap_directories(
+                    &identity.payload.cwd,
+                    identity.payload.directory_context.as_ref(),
+                )
+                .map_err(|error| {
+                    crate::protocol::results::ApiError::invalid_request(error.to_string())
+                })?;
                 // Live Begin replay is a deciding A2 check, not cached admission.
                 // This is bounded cooperative freshness, not a daemon/host transaction.
                 match client.call(
