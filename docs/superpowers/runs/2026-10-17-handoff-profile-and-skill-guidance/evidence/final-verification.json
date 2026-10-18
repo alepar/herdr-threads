@@ -1,0 +1,184 @@
+{
+  "sourceCommit": "7546897944cd4701674a640e0a7f07c83dfa7266",
+  "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+  "runId": "ht-final-8a9ff0b0-8074-40f6-969f-c9b8825c44f1",
+  "scratch": "/private/tmp/htf-b547c2f4",
+  "startedAt": "2026-10-18T05:33:51.925261+00:00",
+  "records": [
+    {
+      "name": "prepare-proof",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "sh tests/service/check_failpoints_absent.sh --prebuild",
+      "configuration": "outside sandbox; quiet compiler/test preflight; CI release proof prebuilt; all-features where requested; HT_LEAK_RUN_ID=ht-final-8a9ff0b0-8074-40f6-969f-c9b8825c44f1; TMPDIR=/private/tmp/htf-b547c2f4",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-quiet/prepare-proof.log",
+      "exitCode": 0,
+      "elapsedSeconds": 0.675
+    },
+    {
+      "name": "full-suite",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "nice cargo nextest run --locked --all-targets --all-features",
+      "configuration": "outside sandbox; quiet compiler/test preflight; CI release proof prebuilt; all-features where requested; HT_LEAK_RUN_ID=ht-final-8a9ff0b0-8074-40f6-969f-c9b8825c44f1; TMPDIR=/private/tmp/htf-b547c2f4",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-quiet/full-suite.log",
+      "exitCode": 0,
+      "elapsedSeconds": 216.369
+    },
+    {
+      "name": "scoped-leaks",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "scripts/check-no-leaked-processes --run-id ht-final-8a9ff0b0-8074-40f6-969f-c9b8825c44f1",
+      "configuration": "outside sandbox; quiet compiler/test preflight; CI release proof prebuilt; all-features where requested; HT_LEAK_RUN_ID=ht-final-8a9ff0b0-8074-40f6-969f-c9b8825c44f1; TMPDIR=/private/tmp/htf-b547c2f4",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-quiet/scoped-leaks.log",
+      "exitCode": 0,
+      "elapsedSeconds": 0.399
+    },
+    {
+      "name": "clippy",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "nice cargo clippy --locked --all-targets --all-features -- -D warnings",
+      "configuration": "outside sandbox; quiet compiler/test preflight; CI release proof prebuilt; all-features where requested; HT_LEAK_RUN_ID=ht-final-8a9ff0b0-8074-40f6-969f-c9b8825c44f1; TMPDIR=/private/tmp/htf-b547c2f4",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-quiet/clippy.log",
+      "exitCode": 0,
+      "elapsedSeconds": 0.309
+    },
+    {
+      "name": "harness-neutral",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "scripts/check-harness-neutral",
+      "configuration": "outside sandbox; quiet compiler/test preflight; CI release proof prebuilt; all-features where requested; HT_LEAK_RUN_ID=ht-final-8a9ff0b0-8074-40f6-969f-c9b8825c44f1; TMPDIR=/private/tmp/htf-b547c2f4",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-quiet/harness-neutral.log",
+      "exitCode": 0,
+      "elapsedSeconds": 3.338
+    },
+    {
+      "name": "default-features",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "nice scripts/check-default-features",
+      "configuration": "outside sandbox; quiet compiler/test preflight; CI release proof prebuilt; all-features where requested; HT_LEAK_RUN_ID=ht-final-8a9ff0b0-8074-40f6-969f-c9b8825c44f1; TMPDIR=/private/tmp/htf-b547c2f4",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-quiet/default-features.log",
+      "exitCode": 0,
+      "elapsedSeconds": 0.204
+    },
+    {
+      "name": "fmt",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "cargo fmt --check",
+      "configuration": "outside sandbox; quiet compiler/test preflight; CI release proof prebuilt; all-features where requested; HT_LEAK_RUN_ID=ht-final-8a9ff0b0-8074-40f6-969f-c9b8825c44f1; TMPDIR=/private/tmp/htf-b547c2f4",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-quiet/fmt.log",
+      "exitCode": 0,
+      "elapsedSeconds": 7.233
+    },
+    {
+      "name": "diff-check",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "git diff --check",
+      "configuration": "outside sandbox; quiet compiler/test preflight; CI release proof prebuilt; all-features where requested; HT_LEAK_RUN_ID=ht-final-8a9ff0b0-8074-40f6-969f-c9b8825c44f1; TMPDIR=/private/tmp/htf-b547c2f4",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-quiet/diff-check.log",
+      "exitCode": 0,
+      "elapsedSeconds": 0.017
+    },
+    {
+      "name": "scratch-processes",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "bash /Users/alepar/.codex/plugins/cache/superpowers-alepar/superpowers/6.4.2-alepar6.2/skills/super-code/scripts/stop-run-processes /private/tmp/htf-b547c2f4",
+      "configuration": "outside sandbox; quiet compiler/test preflight; CI release proof prebuilt; all-features where requested; HT_LEAK_RUN_ID=ht-final-8a9ff0b0-8074-40f6-969f-c9b8825c44f1; TMPDIR=/private/tmp/htf-b547c2f4",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-quiet/scratch-processes.log",
+      "exitCode": 0,
+      "elapsedSeconds": 1.018
+    }
+  ],
+  "quietPreflight": {
+    "observedAt": "2026-10-18T05:33:51.988797+00:00",
+    "processes": []
+  },
+  "quietPostflight": {
+    "observedAt": "2026-10-18T05:37:40.649581+00:00",
+    "processes": [
+      {
+        "pid": 17267,
+        "ppid": 17240,
+        "cpu": 0.0,
+        "elapsed": "01:09",
+        "detail": "cargo"
+      },
+      {
+        "pid": 17338,
+        "ppid": 17267,
+        "cpu": 397.7,
+        "elapsed": "01:09",
+        "detail": "/Users/alepar/AleCode/herdr-threads/.worktrees/herdr-095/target/release/deps"
+      }
+    ]
+  },
+  "finishedAt": "2026-10-18T05:37:40.654752+00:00",
+  "sourceUnchanged": true,
+  "scratchRemoved": true,
+  "status": "pass",
+  "rawFiles": [
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-quiet/clippy.log",
+      "sha256": "f0788aa36d1c86b6ccdfb7f4042a5574102d82061c046422a2d42e008a1e4710",
+      "bytes": 72
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-quiet/default-features.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-quiet/diff-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-quiet/fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-quiet/full-suite.log",
+      "sha256": "7c417b123d771eb8e4380ce6d486ea3b3eda7eb98d401c447abe5e9a6811614d",
+      "bytes": 1018703
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-quiet/harness-neutral.log",
+      "sha256": "26d6b5b7e46acfeb19d66db07a322c3c6ea3615057bc98d4a10e1a2b496e6492",
+      "bytes": 130
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-quiet/prepare-proof.log",
+      "sha256": "4bb1da7c4e10def23b98a890007e0a5e695ffa2be6cb77839e1d6581c152d350",
+      "bytes": 372
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-quiet/scoped-leaks.log",
+      "sha256": "0b3a49cfa062a5b1922b797205d07f7cdc12b25c525d50f4bc60dcd04bb97f50",
+      "bytes": 51
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-quiet/scratch-processes.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  ],
+  "suiteBudgetPass": true,
+  "clippyBudgetPass": true
+}

@@ -1,6 +1,6 @@
-# findings ledger — code — through r1
+# findings ledger — code — through r2
 triggers: none
-blocking: r0=- r1=0 carriedB=- regressedB=- degraded=none not-computable=no-progress,returned,regressed
+blocking: r1=0 r2=0 carriedB=0 regressedB=0 degraded=none not-computable=none
 ignored-overrides: 0
 - [Must-fix] Run and record the required caller-owned full all-target/all-feature nextest suite on the integrated candidate with a scoped HT_LEAK_RUN_ID, then its scoped process/temp leak check; no full-suite measurement of this branch exists yet, and focused historical passes do not discharge that requirement. · raised r1@- · open · source final-review · text docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-roast-pr-1-final-review-keys.txt
 - [Must-fix] Complete the final integration lint/default-feature, harness-neutral, formatting and timing gates with source-bound evidence before green branch handoff; retain and investigate any recurrence of the unexplained topology failure or measured budget regression. · raised r1@- · open · source final-review · text docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-roast-pr-1-final-review-keys.txt
