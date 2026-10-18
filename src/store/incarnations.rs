@@ -47,7 +47,7 @@ use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::time::UtcMillis;
 use crate::store::connection::DecisionInstant;
 use crate::store::connection::{StoreContext, SyncState, api_error, store_error};
-use crate::store::journal::{self};
+use crate::store::journal::{self, BRANCH_ROWS};
 use crate::sync::coordinator::{CloneKind, CloneReport};
 use crate::sync::envelope::{Envelope, GENESIS_KIND};
 use crate::sync::facts::{GenesisPayload, Predecessor};
@@ -98,17 +98,7 @@ pub fn record_fork(
         .map_err(store_error)?;
     let mut missing = Vec::new();
     for entry in [&proof.held, &proof.conflicting] {
-        let held: bool = tx
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM journal WHERE log_ix=?1 AND counter=?2 AND hash=?3)",
-                params![
-                    log_ix,
-                    i64::try_from(entry.counter).unwrap_or(i64::MAX),
-                    entry.hash.as_slice()
-                ],
-                |r| r.get(0),
-            )
-            .map_err(store_error)?;
+        let held = journal::held_at(tx, log_ix, entry.counter, &entry.hash, false)?;
         if !held {
             missing.push(entry.clone());
         }
@@ -370,9 +360,19 @@ fn reissue_pass_ungated(
 /// `counter - 1` with its `prev_hash`, or a forked row of that hash already
 /// re-issued.
 fn forked_ready(tx: &Transaction<'_>, candidate: &Candidate) -> Result<bool, ApiError> {
+    if let Ok(prev) = <[u8; 32]>::try_from(candidate.prev_hash.as_slice())
+        && journal::held_at(
+            tx,
+            candidate.log_ix,
+            u64::try_from(candidate.counter - 1).unwrap_or(0),
+            &prev,
+            false,
+        )?
+    {
+        return Ok(true);
+    }
     tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM journal WHERE log_ix=?1 AND counter=?2-1 AND hash=?3) \
-             OR EXISTS(SELECT 1 FROM journal_forked f JOIN sync_reissues r \
+        "SELECT EXISTS(SELECT 1 FROM journal_forked f JOIN sync_reissues r \
                        ON r.source_log_ix=f.log_ix AND r.source_counter=f.counter AND r.source_hash=f.hash \
                        WHERE f.log_ix=?1 AND f.counter=?2-1 AND f.hash=?3)",
         params![candidate.log_ix, candidate.counter, candidate.prev_hash],
@@ -994,13 +994,8 @@ pub fn upsert_branch_tip(
         .ok()
         .filter(|c| *c >= 1)
         .ok_or_else(|| api_error(ErrorCode::InvalidRequest, "branch tip counter out of range"))?;
-    let held: bool = tx
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM journal_forked WHERE log_ix=?1 AND counter=?2 AND hash=?3)",
-            params![log_ix, counter, hash.as_slice()],
-            |r| r.get(0),
-        )
-        .map_err(store_error)?;
+    let held =
+        journal::branch_prev(tx, log_ix, u64::try_from(counter).unwrap_or(0), &hash)?.is_some();
     let (state, next_from) = if held && counter <= frozen_at {
         ("complete", counter + 1)
     } else {
@@ -1222,14 +1217,7 @@ fn chains_on_known(
     if first.counter == 1 {
         return Ok(first.prev_hash == [0u8; 32]);
     }
-    let counter = i64::try_from(first.counter - 1).unwrap_or(i64::MAX);
-    tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM journal WHERE log_ix=?1 AND counter=?2 AND hash=?3) \
-             OR EXISTS(SELECT 1 FROM journal_forked WHERE log_ix=?1 AND counter=?2 AND hash=?3)",
-        params![branch.log_ix, counter, first.prev_hash.as_slice()],
-        |r| r.get(0),
-    )
-    .map_err(store_error)
+    journal::held_at(tx, branch.log_ix, first.counter - 1, &first.prev_hash, true)
 }
 
 /// Admits one `branch_entries` reply for branch `branch_ix` of a frozen own
@@ -1893,11 +1881,12 @@ pub struct InvariantViolation {
 pub fn check_invariants(conn: &Connection) -> Result<Vec<InvariantViolation>, ApiError> {
     let mut out = Vec::new();
     let mut i2 = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT l.node_uuid,l.incarnation,f.counter,l.frozen_at_counter \
-             FROM journal_forked f JOIN sync_logs l ON l.log_ix=f.log_ix \
-             WHERE f.counter<=l.frozen_at_counter ORDER BY f.forked_ix",
-        )
+                 FROM {BRANCH_ROWS} f JOIN sync_logs l ON l.log_ix=f.log_ix \
+                 WHERE f.counter<=l.frozen_at_counter \
+                 ORDER BY f.opaque,f.forked_ix,f.log_ix,f.counter"
+        ))
         .map_err(store_error)?;
     let rows = i2
         .query_map([], |r| {

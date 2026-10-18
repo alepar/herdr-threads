@@ -6074,3 +6074,55 @@ fn concurrent_session_delta_upgrades_existing_bindings_and_old_binary_refuses() 
     );
     open_with(&db, schema::NODE_DELTAS).unwrap();
 }
+
+#[test]
+fn journal_opaque_delta_upgrades_highest_main_store() {
+    let db = Connection::open_in_memory().unwrap();
+    let old = &schema::NODE_DELTAS[..2];
+    open_with(&db, old).unwrap();
+    assert_eq!(user_version(&db), 3);
+    db.execute_batch(
+        "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) \
+         VALUES (1,'0123456789abcdef0123456789abcdef',1,0,zeroblob(32),zeroblob(32),2,zeroblob(32),0);",
+    )
+    .unwrap();
+    for counter in [1i64, 2] {
+        db.execute(
+            "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state) \
+             VALUES (1,?1,zeroblob(32),randomblob(32),1,'k',1,x'',x'00',zeroblob(64),0,'pending')",
+            [counter],
+        )
+        .unwrap();
+    }
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    assert_eq!(user_version(&db), 4);
+    let columns: Vec<String> = db
+        .prepare("SELECT name FROM pragma_table_info('journal_opaque') ORDER BY cid")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        columns,
+        [
+            "log_ix",
+            "counter",
+            "hash",
+            "prev_hash",
+            "signature",
+            "raw",
+            "branch"
+        ]
+    );
+    let kept: i64 = db
+        .query_row("SELECT COUNT(*) FROM journal", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(kept, 2);
+    assert!(
+        open_with(&db, old)
+            .unwrap_err()
+            .detail
+            .contains("newer than this binary")
+    );
+}

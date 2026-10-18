@@ -1969,3 +1969,62 @@ fn duplicate_key_entry_is_refused_at_ingest() {
         "nothing stored"
     );
 }
+
+// ---- opaque chain positions (ht-j87z.11) -------------------------------------
+
+/// A log that stops at an opaque position is passed over: nothing is applied
+/// for it, `blocked_on` stays NULL (ht-j87z.10 records `opaque_layout`), and
+/// another log's ready head still applies in the same pass.
+#[test]
+fn opaque_next_position_is_skipped_without_blocked_on_write() {
+    let mut a = Node::new(11, base());
+    a.author::<PutKind>(&put("a1"));
+    let mut b = Node::new(12, base());
+    b.author::<PutKind>(&put("b1"));
+    let mut c = Node::new(13, base());
+    c.ship(&a, a.log, 1);
+    c.pass();
+    assert_eq!(c.log_row(&a.log), (1, 1, None));
+
+    // P (A's log): opaque at 2, a pending known entry at 3, head at 3.
+    let node = a.log.node.to_string();
+    let hash = |n: u8| [n; 32].to_vec();
+    c.conn
+        .execute(
+            "INSERT INTO journal_opaque(log_ix,counter,hash,prev_hash,signature,raw,branch) \
+             SELECT log_ix,2,?2,?3,zeroblob(64),zeroblob(68),0 FROM sync_logs WHERE node_uuid=?1",
+            params![node, hash(2), hash(1)],
+        )
+        .unwrap();
+    c.conn
+        .execute(
+            "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state) \
+             SELECT log_ix,3,?2,?3,5,'test.put',1,x'0000',x'00',zeroblob(64),0,'pending' \
+             FROM sync_logs WHERE node_uuid=?1",
+            params![node, hash(2), hash(3)],
+        )
+        .unwrap();
+    c.conn
+        .execute(
+            "UPDATE sync_logs SET contiguous_counter=3,head_hash=?2 WHERE node_uuid=?1",
+            params![node, hash(3)],
+        )
+        .unwrap();
+
+    // Q (B's log): a ready head.
+    c.ship(&b, b.log, 1);
+    let progress = c.pass();
+    assert_eq!(progress.applied, 1, "only Q's genesis: {progress:?}");
+    assert_eq!(c.state(&b.log, 1), "applied");
+    assert_eq!(
+        c.log_row(&a.log),
+        (1, 3, None),
+        "P stops at the opaque entry"
+    );
+    assert_eq!(c.state(&a.log, 3), "pending");
+
+    // No news: a second pass changes nothing.
+    let before = c.conn.total_changes();
+    c.pass();
+    assert_eq!(c.conn.total_changes(), before);
+}

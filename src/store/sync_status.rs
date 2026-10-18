@@ -28,6 +28,7 @@ use crate::protocol::sync_admin::{LogRow, PeerRow, UnappliedPage, UnappliedRow, 
 use crate::protocol::time::CallBudget;
 use crate::store::apply::{self, ApplyLimits, ApplyState, ReplayScope};
 use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
+use crate::store::journal::CHAIN_ROWS;
 use crate::store::{node_directory, sync_contacts, sync_dial_targets};
 use crate::sync::journal_port::ApplyProgress;
 use crate::sync::{BatchLimits, LogKey};
@@ -310,13 +311,13 @@ pub fn verify(conn: &Connection) -> Result<Vec<ViolationRow>, ApiError> {
         });
     }
     let mut statement = conn
-        .prepare(
-            "SELECT l.node_uuid,l.incarnation,j.counter FROM journal j \
-             JOIN sync_logs l ON l.log_ix=j.log_ix \
-             LEFT JOIN journal p ON p.log_ix=j.log_ix AND p.counter=j.counter-1 \
-             WHERE j.counter > 1 AND (p.hash IS NULL OR p.hash <> j.prev_hash) \
-             ORDER BY l.log_ix,j.counter LIMIT ?1",
-        )
+        .prepare(&format!(
+            "SELECT l.node_uuid,l.incarnation,j.counter FROM {CHAIN_ROWS} j \
+                 JOIN sync_logs l ON l.log_ix=j.log_ix \
+                 LEFT JOIN {CHAIN_ROWS} p ON p.log_ix=j.log_ix AND p.counter=j.counter-1 \
+                 WHERE j.counter > 1 AND (p.hash IS NULL OR p.hash <> j.prev_hash) \
+                 ORDER BY l.log_ix,j.counter LIMIT ?1"
+        ))
         .map_err(store_error)?;
     let rows = statement
         .query_map([i64::try_from(MAX_VIOLATIONS).unwrap_or(16)], |r| {
