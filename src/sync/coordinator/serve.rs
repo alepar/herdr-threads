@@ -15,6 +15,10 @@
 //!   answered `branch_none`. Inbound `branch_entries`/`branch_none` go to the
 //!   fork sink after a shape check, and the sink's outbox and fork refs go
 //!   out to `fork.v1` links only. No fork policy lives here.
+//! - Also (ht-j87z.4): the Opaque capability gate, [`gate_batch`]. Every batch
+//!   a link is served, ordinary or a fork branch, passes through it with the
+//!   link's negotiated `envelope.opaque.v1`; a log whose whole batch it cuts is
+//!   parked on that link (`withheld_logs`) instead of being read again.
 //! - Must not: touch SQLite, wait on a link's queue, or serve a log the
 //!   actor's `local` vector does not yet show (a want for a log not held yet
 //!   stays armed and is served once the log appears).
@@ -44,25 +48,43 @@ pub(super) struct ServeDone {
     pub result: Result<Vec<StoredEntry>, ApiError>,
 }
 
-/// The known entries before the first opaque one, in order.
-///
-/// The serve rule for ordinary batches and for fork branches alike: a peer is
-/// sent only the known prefix of what the journal holds, and a branch whose
-/// known prefix is empty (it starts at an opaque entry) is answered
-/// `branch_none`. No wire form carries an opaque entry yet; ht-j87z.4's
-/// capability gate decides per peer (`envelope.opaque.v1`) what may be sent
-/// beyond this prefix, and this rule stays the answer for a peer without it.
-fn known_prefix(batch: Vec<StoredEntry>) -> Vec<Envelope> {
-    batch
-        .into_iter()
-        .map_while(|entry| match entry {
-            StoredEntry::Known(envelope) => Some(envelope),
-            StoredEntry::Opaque(_) => None,
-        })
-        .collect()
+/// What the Opaque capability gate lets through.
+#[derive(Debug)]
+pub struct GateCut {
+    /// The entries a link may be sent, in order.
+    pub items: Vec<StoredEntry>,
+    /// Entries were cut off the batch's end.
+    pub withheld: bool,
 }
 
-/// Encode `envelopes` as frame bodies (built by `build`) no longer than
+/// The Opaque capability gate: cut `batch` by what the link negotiated.
+///
+/// The one place a served batch meets [`OPAQUE_CAP`]; serve paths never read
+/// a peer's capabilities themselves. With the capability the batch passes
+/// whole. Without it, the batch is cut before its first opaque entry (the
+/// known prefix), so a peer that cannot decode one never sees it, and its
+/// have-head stays behind the cut. The same cut serves ordinary batches and
+/// fork branches; a branch whose prefix is empty is answered `branch_none`.
+// cap: OPAQUE_CAP
+pub fn gate_batch(batch: Vec<StoredEntry>, opaque_cap: bool) -> GateCut {
+    if opaque_cap {
+        return GateCut {
+            items: batch,
+            withheld: false,
+        };
+    }
+    let total = batch.len();
+    let items: Vec<StoredEntry> = batch
+        .into_iter()
+        .take_while(|entry| !entry.is_opaque())
+        .collect();
+    GateCut {
+        withheld: items.len() < total,
+        items,
+    }
+}
+
+/// Encode `entries` as frame bodies (built by `build`) no longer than
 /// `max_frame`, halving the batch recursively. A single entry that is still
 /// too long goes alone (the link refuses it as `BadSize`). Each body comes
 /// with the last counter it carries.
@@ -71,22 +93,22 @@ fn known_prefix(batch: Vec<StoredEntry>) -> Vec<Envelope> {
 /// least the handshake's floor (`MIN_PEER_MAX_FRAME`) it emits at most one
 /// frame per entry, so at most `batch_entries` frames.
 fn encode_halved(
-    envelopes: &[Envelope],
+    entries: &[StoredEntry],
     max_frame: usize,
-    build: &dyn Fn(&[Envelope]) -> PeerFrame,
+    build: &dyn Fn(&[StoredEntry]) -> PeerFrame,
     out: &mut Vec<(Vec<u8>, u64)>,
 ) {
-    let Some(last) = envelopes.last() else {
+    let Some(last) = entries.last() else {
         return;
     };
-    let Ok(body) = build(envelopes).encode() else {
+    let Ok(body) = build(entries).encode() else {
         return;
     };
-    if body.len() <= max_frame || envelopes.len() == 1 {
-        out.push((body, last.counter));
+    if body.len() <= max_frame || entries.len() == 1 {
+        out.push((body, last.counter()));
         return;
     }
-    let (head, tail) = envelopes.split_at(envelopes.len() / 2);
+    let (head, tail) = entries.split_at(entries.len() / 2);
     encode_halved(head, max_frame, build, out);
     encode_halved(tail, max_frame, build, out);
 }
@@ -125,7 +147,13 @@ impl Actor {
             }
             return;
         }
-        entry.subs_out.insert(log, from.max(1));
+        let from = from.max(1);
+        // A parked log stays parked for a `want` at or past its cut; one
+        // from before it serves the known entries up to the cut again.
+        if entry.withheld_logs.get(&log).is_some_and(|at| from < *at) {
+            entry.withheld_logs.remove(&log);
+        }
+        entry.subs_out.insert(log, from);
         self.push_link(link_id);
     }
 
@@ -163,10 +191,12 @@ impl Actor {
             return;
         }
         let ready = |log: &LogKey, next: &u64| {
-            self.local
-                .0
-                .get(log)
-                .is_some_and(|head| *next <= head.counter)
+            !entry.withheld_logs.contains_key(log)
+                && self
+                    .local
+                    .0
+                    .get(log)
+                    .is_some_and(|head| *next <= head.counter)
         };
         let after = entry.push_cursor;
         let pick = entry
@@ -217,8 +247,8 @@ impl Actor {
             self.push_link(link);
             return;
         }
-        let envelopes = match result {
-            Ok(batch) => known_prefix(batch),
+        let cut = match result {
+            Ok(batch) => gate_batch(batch, entry.opaque_cap()),
             Err(e) => {
                 (self.deps.log)(&format!(
                     "sync: serve {}/{} failed: {:?}",
@@ -232,16 +262,24 @@ impl Actor {
                 return;
             }
         };
-        if envelopes.is_empty() {
-            // Nothing committed there yet: stay armed (live tail).
+        if cut.items.is_empty() {
+            if cut.withheld {
+                // Everything from `from` on is opaque and this peer cannot
+                // take it. Capabilities are fixed per link, so serving this
+                // log again would only repeat the cut: park it for the link's
+                // lifetime (a `want` from before the cut lifts it).
+                entry.withheld_logs.insert(log, from);
+            }
+            // Otherwise nothing committed there yet: stay armed (live tail).
             return;
         }
+        let envelopes = cut.items;
         let max_frame = entry.handle.peer().limits.max_frame as usize;
         let mut bodies = Vec::new();
-        let build = |batch: &[Envelope]| PeerFrame::Entries {
+        let build = |batch: &[StoredEntry]| PeerFrame::Entries {
             node: log.node,
             inc: log.incarnation,
-            entries: batch.iter().map(WireEnvelope::from).collect(),
+            entries: batch.iter().map(WireItem::from).collect(),
         };
         encode_halved(&envelopes, max_frame, &build, &mut bodies);
         let mut sent_to = None;
@@ -436,16 +474,16 @@ impl Actor {
             entry.branch_busy = false;
             if entry.branch_queue.front() == Some(&want) {
                 entry.branch_queue.pop_front();
-                // The branch rule: only the known prefix goes out. When an
-                // opaque entry cut it, nothing further follows on this link
+                // The branch rule, through the same gate as ordinary batches:
+                // a peer without the capability gets the known prefix. When
+                // an opaque entry cut it, nothing further follows on this link
                 // (`more: false`), and an empty prefix is `branch_none`.
                 let mut cut = false;
                 let batch = match result.map(|batch| {
                     batch.map(|batch| {
-                        let total = batch.len();
-                        let known = known_prefix(batch);
-                        cut = known.len() < total;
-                        known
+                        let gated = gate_batch(batch, entry.opaque_cap());
+                        cut = gated.withheld;
+                        gated.items
                     })
                 }) {
                     Ok(Some(batch)) if !batch.is_empty() => Some(batch),
@@ -496,8 +534,8 @@ impl Actor {
                     self.grant(link_id, len);
                     return;
                 }
-                let decoded: Result<Vec<Envelope>, _> =
-                    entries.into_iter().map(Envelope::try_from).collect();
+                let decoded: Result<Vec<StoredEntry>, _> =
+                    entries.into_iter().map(WireItem::into_stored).collect();
                 let Ok(decoded) = decoded else {
                     self.grant(link_id, len);
                     if let Some(entry) = self.links.get_mut(&link_id) {
@@ -518,7 +556,7 @@ impl Actor {
                         node,
                         inc,
                         tip_hash,
-                        entries: decoded.iter().map(WireEnvelope::from).collect(),
+                        entries: decoded.iter().map(WireItem::from).collect(),
                         more,
                     },
                 );
@@ -607,20 +645,20 @@ enum BranchSend {
 fn send_branch_entries(
     entry: &LinkEntry,
     want: &BranchWant,
-    batch: &[Envelope],
+    batch: &[StoredEntry],
     cut: bool,
 ) -> BranchSend {
     let max_frame = entry.handle.peer().limits.max_frame as usize;
     let ends_at = match batch.last() {
-        Some(last) if cut => last.counter,
+        Some(last) if cut => last.counter(),
         _ => want.tip.counter,
     };
-    let build = |part: &[Envelope]| PeerFrame::BranchEntries {
+    let build = |part: &[StoredEntry]| PeerFrame::BranchEntries {
         node: want.node,
         inc: want.inc,
         tip_hash: want.tip.hash.clone(),
-        entries: part.iter().map(WireEnvelope::from).collect(),
-        more: part.last().is_some_and(|e| e.counter < ends_at),
+        entries: part.iter().map(WireItem::from).collect(),
+        more: part.last().is_some_and(|e| e.counter() < ends_at),
     };
     let mut bodies = Vec::new();
     encode_halved(batch, max_frame, &build, &mut bodies);

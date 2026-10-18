@@ -916,7 +916,7 @@ fn nibble(c: u8) -> Option<u8> {
 }
 
 /// Lowercase hex only, so each byte string has one spelling.
-fn hex_decode_vec(text: &str) -> Option<Vec<u8>> {
+pub(super) fn hex_decode_vec(text: &str) -> Option<Vec<u8>> {
     let bytes = text.as_bytes();
     if !bytes.len().is_multiple_of(2) {
         return None;
@@ -933,7 +933,7 @@ pub(super) fn hex_decode<const N: usize>(text: &str) -> Option<[u8; N]> {
 
 /// The serde form of an [`Envelope`] inside peer frames: binary fields are
 /// lowercase hex and `payload` is the original JSON text, never re-encoded.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireEnvelope {
     pub node: String,
     pub inc: u32,

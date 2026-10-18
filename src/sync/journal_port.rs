@@ -11,7 +11,7 @@ use crate::protocol::time::CallBudget;
 /// What ingesting one batch of a log's entries did.
 ///
 /// Owns: the closed set of ingest results. `Corrupt` and `Headroom` store
-/// nothing; `Gap`, `Fork` and `Frozen` keep the valid prefix, counted in
+/// nothing; `Gap`, `Fork`, `Frozen` and `Oversize` keep the valid prefix, counted in
 /// `stored`. Does not own: resolving forks or pacing peers, which the caller
 /// decides from the variant. A new outcome is a new variant, handled by every
 /// caller's exhaustive `match`. Fork evidence holds entries as stored, known or
@@ -38,6 +38,15 @@ pub enum IngestOutcome {
         log: LogKey,
         counter: u64,
         reason: EnvelopeError,
+    },
+    /// An opaque entry at `counter` is `len` bytes, over `OPAQUE_MAX_BYTES`:
+    /// the `stored` entries before it were kept, it was refused. The log
+    /// stalls on this node; the source is not penalised (a size refusal is
+    /// not evidence of a corrupt peer).
+    Oversize {
+        stored: usize,
+        counter: u64,
+        len: usize,
     },
     /// Not enough free disk space; nothing was stored. Pause pulls, do not
     /// penalise the peer.

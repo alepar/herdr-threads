@@ -539,6 +539,7 @@ fn outcome_name(outcome: &IngestOutcome) -> &'static str {
         IngestOutcome::Fork { .. } => "fork",
         IngestOutcome::Frozen { .. } => "frozen",
         IngestOutcome::Corrupt { .. } => "corrupt",
+        IngestOutcome::Oversize { .. } => "oversize opaque entry",
         IngestOutcome::Headroom => "no disk headroom",
     }
 }

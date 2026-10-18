@@ -67,11 +67,11 @@ use tokio::time::{Instant, MissedTickBehavior, timeout};
 use uuid::Uuid;
 
 use super::dialer::{DialConfig, DialShared, Dialer, DialerDeps};
-use super::envelope::{Envelope, GENESIS_KIND, StoredEntry, WireEnvelope, hex_decode, hex_encode};
+use super::envelope::{GENESIS_KIND, StoredEntry, hex_decode, hex_encode};
 use super::facts::GenesisPayload;
 use super::frame::{
-    BranchWant, CloseReason, FORK_CAP, ForkRef, HaveLog, MAX_HAVE_FORKS, MAX_HAVE_LOGS, PeerFrame,
-    Role, SeenAge, write_peer_frame,
+    BranchWant, CloseReason, FORK_CAP, ForkRef, HaveLog, MAX_HAVE_FORKS, MAX_HAVE_LOGS, OPAQUE_CAP,
+    PeerFrame, Role, SeenAge, WireItem, write_peer_frame,
 };
 use super::journal_port::{ForkEvidence, IngestOutcome, JournalPort};
 use super::link::{
@@ -99,6 +99,7 @@ use ingest::{IngestDone, IngestJob};
 pub use routing::ResyncPin;
 use routing::{DupKey, SourceView};
 use serve::{BranchDone, ServeDone};
+pub use serve::{GateCut, gate_batch};
 
 /// Offers the transport may have waiting for the actor.
 pub const PEER_INTAKE_SLOTS: usize = 16;
@@ -266,7 +267,7 @@ pub enum BranchReply {
         node: NodeUuid,
         inc: u32,
         tip_hash: String,
-        entries: Vec<WireEnvelope>,
+        entries: Vec<WireItem>,
         more: bool,
     },
     /// A `branch_none`: the peer no longer has that branch.
@@ -508,6 +509,9 @@ pub struct LinkStatus {
     pub throttled: u64,
     /// Logs the peer has armed a subscription for.
     pub subscriptions: u32,
+    /// Logs parked on this link because the peer lacks [`OPAQUE_CAP`] and
+    /// everything it still wants of them is opaque.
+    pub withheld: u64,
     pub last_error: Option<String>,
 }
 
@@ -610,6 +614,23 @@ impl SyncHandle {
 // The actor
 // ---------------------------------------------------------------------------
 
+/// How a coordinator differs from the default; for tests that stand in for a
+/// node of another release.
+#[derive(Clone, Copy, Debug)]
+pub struct CoordinatorOptions {
+    /// Advertise [`OPAQUE_CAP`] in the hello (default). Without it, peers
+    /// withhold opaque entries from this node.
+    pub advertise_opaque: bool,
+}
+
+impl Default for CoordinatorOptions {
+    fn default() -> Self {
+        Self {
+            advertise_opaque: true,
+        }
+    }
+}
+
 /// Starts the coordinator actor.
 pub struct SyncCoordinator;
 
@@ -618,6 +639,14 @@ impl SyncCoordinator {
     /// after `deps.cancel` fires and every link has had its `close{shutdown}`
     /// (bounded at one second).
     pub fn start(deps: CoordinatorDeps) -> (SyncHandle, PeerIntake, JoinHandle<()>) {
+        Self::start_with(deps, CoordinatorOptions::default())
+    }
+
+    /// [`start`](Self::start) with `options`.
+    pub fn start_with(
+        deps: CoordinatorDeps,
+        options: CoordinatorOptions,
+    ) -> (SyncHandle, PeerIntake, JoinHandle<()>) {
         let links = Arc::new(AtomicUsize::new(0));
         let signals = Arc::new(SyncSignals::new());
         let contacts = ContactBook::new(deps.identity.uuid());
@@ -662,6 +691,9 @@ impl SyncCoordinator {
         });
         let mut hello = LocalHello::new(deps.identity.clone(), deps.boot);
         hello.caps.push(FORK_CAP.to_owned());
+        if options.advertise_opaque {
+            hello.caps.push(OPAQUE_CAP.to_owned());
+        }
         let me = Arc::new(hello);
         let actor = Actor {
             me,
@@ -690,6 +722,7 @@ impl SyncCoordinator {
             ingest_jobs: jobs_tx,
             worker: Some(worker),
             retry_logs: BTreeSet::new(),
+            oversize_logs: BTreeSet::new(),
             signals,
             contacts,
             flushes: JoinSet::new(),
@@ -771,6 +804,10 @@ struct LinkEntry {
     subs_out: BTreeMap<LogKey, u64>,
     /// The log served last, so the next push starts after it.
     push_cursor: Option<LogKey>,
+    /// Logs parked by the Opaque capability gate: the counter at which the
+    /// batch was cut empty. Not served again on this link (its capabilities
+    /// are fixed) unless the peer wants from before it.
+    withheld_logs: BTreeMap<LogKey, u64>,
     /// `entries` frames dropped as unsolicited.
     unsolicited: u64,
     /// Inbound control frames dropped by the token bucket.
@@ -817,6 +854,12 @@ impl LinkEntry {
     /// The peer negotiated [`FORK_CAP`] on this link.
     fn fork_cap(&self) -> bool {
         self.handle.peer().caps.iter().any(|cap| cap == FORK_CAP)
+    }
+
+    /// The peer negotiated [`OPAQUE_CAP`] on this link: opaque entries may be
+    /// sent to it (asked only through the gate, `serve::gate_batch`).
+    fn opaque_cap(&self) -> bool {
+        self.handle.peer().caps.iter().any(|cap| cap == OPAQUE_CAP)
     }
 
     /// Fork content may flow: the node's active, live link with the cap.
@@ -892,6 +935,9 @@ struct Actor {
     worker: Option<JoinHandle<()>>,
     /// Logs whose batch failed to store; asked again at the pacer's backoff.
     retry_logs: BTreeSet<LogKey>,
+    /// Logs stalled on this node by an opaque entry over `OPAQUE_MAX_BYTES`:
+    /// never wanted again until restart.
+    oversize_logs: BTreeSet<LogKey>,
     /// The round-complete signal this actor writes.
     signals: Arc<SyncSignals>,
     /// Reachability: direct contacts, gossiped ages and the flush schedule.
@@ -1116,6 +1162,7 @@ impl Actor {
                         errors: BTreeMap::new(),
                         subs_out: BTreeMap::new(),
                         push_cursor: None,
+                        withheld_logs: BTreeMap::new(),
                         unsolicited: 0,
                         throttled: 0,
                         bucket: CONTROL_BUCKET * 1_000,
@@ -1741,7 +1788,9 @@ impl Actor {
     }
 
     fn log_paused(&self, log: &LogKey, now: MonoInstant) -> bool {
-        self.paused.contains(log) || self.headroom_until.is_some_and(|until| until.0 > now.0)
+        self.paused.contains(log)
+            || self.oversize_logs.contains(log)
+            || self.headroom_until.is_some_and(|until| until.0 > now.0)
     }
 
     /// The pure `reselect` over the actor's current state for `log`.
@@ -2289,6 +2338,7 @@ impl Actor {
                             unsolicited: entry.unsolicited,
                             throttled: entry.throttled,
                             subscriptions: u32::try_from(entry.subs_out.len()).unwrap_or(u32::MAX),
+                            withheld: entry.withheld_logs.len() as u64,
                             last_error: None,
                         }
                     })
@@ -2482,7 +2532,7 @@ mod tests {
     use crate::store::sync_contacts::ContactVia;
     use crate::store::sync_dial_targets::{DialTarget, DialTransition};
     use crate::sync::envelope::{Deps, Envelope, UnsignedEnvelope, hex_encode};
-    use crate::sync::frame::read_peer_frame;
+    use crate::sync::frame::{OpaqueWire, read_peer_frame};
     use crate::sync::hlc::HlcStamp;
     use crate::sync::journal_port::{ApplyProgress, IngestOutcome};
     use crate::sync::memory_journal::MemoryJournal;
@@ -2657,6 +2707,15 @@ mod tests {
         journal: Arc<dyn JournalPort>,
         resync_pin: Option<ResyncPin>,
     ) -> Rig {
+        start_node_full(n, journal, resync_pin, CoordinatorOptions::default())
+    }
+
+    fn start_node_full(
+        n: u8,
+        journal: Arc<dyn JournalPort>,
+        resync_pin: Option<ResyncPin>,
+        options: CoordinatorOptions,
+    ) -> Rig {
         let clock: Arc<dyn Clock> = Arc::new(TokioClock(Instant::now()));
         let cancel = Cancellation::default();
         let (log, lines) = capture();
@@ -2680,22 +2739,25 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             fail: AtomicBool::new(false),
         });
-        let (handle, intake, join) = SyncCoordinator::start(CoordinatorDeps {
-            journal,
-            sync_store: store.clone(),
-            identity: identity(n),
-            boot: Uuid::from_u128(u128::from(n)),
-            writer: Arc::new(FairWriter::new(8)),
-            clock: clock.clone(),
-            pacer: pacer.clone(),
-            status: status.clone(),
-            log,
-            fork_sink: sink.clone(),
-            own_history: own_history.clone(),
-            dial: DialConfig::default(),
-            resync_pin,
-            cancel: cancel.clone(),
-        });
+        let (handle, intake, join) = SyncCoordinator::start_with(
+            CoordinatorDeps {
+                journal,
+                sync_store: store.clone(),
+                identity: identity(n),
+                boot: Uuid::from_u128(u128::from(n)),
+                writer: Arc::new(FairWriter::new(8)),
+                clock: clock.clone(),
+                pacer: pacer.clone(),
+                status: status.clone(),
+                log,
+                fork_sink: sink.clone(),
+                own_history: own_history.clone(),
+                dial: DialConfig::default(),
+                resync_pin,
+                cancel: cancel.clone(),
+            },
+            options,
+        );
         Rig {
             store,
             handle,
@@ -4684,7 +4746,7 @@ mod tests {
         PeerFrame::Entries {
             node: log.node,
             inc: log.incarnation,
-            entries: envs.iter().map(WireEnvelope::from).collect(),
+            entries: envs.iter().map(WireItem::from).collect(),
         }
     }
 
@@ -4763,7 +4825,7 @@ mod tests {
                         node: *node,
                         incarnation: *inc,
                     },
-                    entries.iter().map(|e| e.counter).collect(),
+                    entries.iter().map(WireItem::counter).collect(),
                 )),
                 _ => None,
             })
@@ -4905,7 +4967,7 @@ mod tests {
             for frame in &frames[granted as usize..] {
                 assert!(wire_len(frame) <= MAX_FRAME, "frame over max_frame");
                 if let PeerFrame::Entries { entries, .. } = frame {
-                    counters.extend(entries.iter().map(|e| e.counter));
+                    counters.extend(entries.iter().map(WireItem::counter));
                 }
                 peer.send(PeerFrame::Credit {
                     bytes: wire_len(frame),
@@ -5036,7 +5098,7 @@ mod tests {
         frames
             .iter()
             .filter_map(|f| match f {
-                PeerFrame::Entries { entries, .. } => Some(entries.iter().map(|e| e.counter)),
+                PeerFrame::Entries { entries, .. } => Some(entries.iter().map(WireItem::counter)),
                 _ => None,
             })
             .flatten()
@@ -5069,8 +5131,10 @@ mod tests {
         stop(rig).await;
     }
 
+    // The gate parks a log whose whole batch is cut: capabilities are fixed
+    // per link, so reading it again would only repeat the cut.
     #[tokio::test(start_paused = true)]
-    async fn all_opaque_batch_sends_nothing_and_stays_armed() {
+    async fn all_opaque_batch_sends_nothing_and_parks_the_log() {
         let (rig, journal, log) = node_with_opaque_log();
         let mut peer = connect(&rig, 0, &peer_hello(2)).await;
         peer.expect_have().await;
@@ -5082,16 +5146,513 @@ mod tests {
         .await;
         let frames = peer.pump(2_000).await;
         assert_eq!(entry_counters(&frames), Vec::<u64>::new(), "{frames:?}");
-        let reads = journal.serve_froms.lock().unwrap().len();
-        assert!(reads >= 1, "the batch was read");
-        // Still armed: the next kick reads the log again from the same place.
+        let reads = journal.serve_froms.lock().unwrap().clone();
+        assert_eq!(reads, [3], "the batch was read once");
         rig.pacer.kick();
         let frames = peer.pump(2_000).await;
         assert_eq!(entry_counters(&frames), Vec::<u64>::new(), "{frames:?}");
-        let froms = journal.serve_froms.lock().unwrap().clone();
-        assert!(froms.len() > reads, "{froms:?}");
-        assert!(froms.iter().all(|from| *from == 3), "{froms:?}");
+        assert_eq!(*journal.serve_froms.lock().unwrap(), [3], "not read again");
         stop(rig).await;
+    }
+
+    fn opaque_hello(n: u8) -> LocalHello {
+        let mut hello = fork_hello(n);
+        hello.caps.push(OPAQUE_CAP.to_owned());
+        hello
+    }
+
+    /// The items of every `entries` frame in `frames`, in order.
+    fn entry_items(frames: &[PeerFrame]) -> Vec<&WireItem> {
+        frames
+            .iter()
+            .filter_map(|f| match f {
+                PeerFrame::Entries { entries, .. } => Some(entries.iter()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// The opaque entry the journal holds at `counter` of `log`.
+    fn held_opaque(journal: &TestJournal, log: &LogKey, counter: u64) -> StoredEntry {
+        let one = BatchLimits {
+            entries: 1,
+            bytes: usize::MAX,
+        };
+        journal
+            .inner
+            .serve(log, counter, one, &open_budget())
+            .unwrap()
+            .remove(0)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hello_advertises_opaque_cap() {
+        let rig = start();
+        let peer = connect(&rig, 0, &opaque_hello(2)).await;
+        assert!(
+            peer.info.caps.iter().any(|c| c == OPAQUE_CAP),
+            "{:?}",
+            peer.info.caps
+        );
+        stop(rig).await;
+
+        // Without the option the cap is not offered, whatever the peer says.
+        let rig = start_node_full(
+            1,
+            Arc::new(MemoryJournal::new(identity(1))),
+            None,
+            CoordinatorOptions {
+                advertise_opaque: false,
+            },
+        );
+        let peer = connect(&rig, 0, &opaque_hello(2)).await;
+        assert!(
+            peer.info.caps.iter().all(|c| c != OPAQUE_CAP),
+            "{:?}",
+            peer.info.caps
+        );
+        assert!(peer.info.caps.iter().any(|c| c == FORK_CAP));
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn opaque_item_sent_only_to_cap_peer() {
+        let (rig, journal, log) = node_with_opaque_log();
+        let want = || PeerFrame::Want {
+            node: log.node,
+            inc: log.incarnation,
+            from: 1,
+        };
+        let mut cap = connect(&rig, 0, &opaque_hello(2)).await;
+        cap.expect_have().await;
+        let mut plain = connect(&rig, 1, &fork_hello(3)).await;
+        plain.expect_have().await;
+        cap.send(want()).await;
+        plain.send(want()).await;
+
+        let frames = cap.pump(2_000).await;
+        let items = entry_items(&frames);
+        let shape: Vec<(u64, bool)> = items
+            .iter()
+            .map(|i| (i.counter(), matches!(i, WireItem::Opaque(_))))
+            .collect();
+        assert_eq!(
+            shape,
+            [(1, false), (2, false), (3, true), (4, false)],
+            "{frames:?}"
+        );
+        let held = held_opaque(&journal, &log, 3);
+        let stored = items[2].clone().into_stored().unwrap();
+        assert_eq!(stored, held, "the raw bytes travel unchanged");
+
+        let frames = plain.pump(2_000).await;
+        assert_eq!(entry_counters(&frames), [1, 2], "{frames:?}");
+        assert!(
+            !frames.iter().any(|f| matches!(f, PeerFrame::Close { .. })),
+            "withholding is not an error: {frames:?}"
+        );
+        let status = snapshot(&rig).await;
+        assert_eq!(status.links[plain.idx].withheld, 1);
+        assert_eq!(status.links[cap.idx].withheld, 0);
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gate_parks_log_after_empty_cut() {
+        let (rig, journal, log) = node_with_opaque_log();
+        let own = journal.inner.self_log();
+        let mut plain = connect(&rig, 0, &fork_hello(2)).await;
+        plain.expect_have().await;
+        let want_foreign = || PeerFrame::Want {
+            node: log.node,
+            inc: log.incarnation,
+            from: 3,
+        };
+        plain.send(want_foreign()).await;
+        plain.pump(2_000).await;
+        let reads = journal.serve_froms.lock().unwrap().len();
+        assert_eq!(reads, 1);
+
+        // Ticks, kicks and the same want again do not read the log again.
+        for _ in 0..3 {
+            rig.pacer.kick();
+            plain.send(want_foreign()).await;
+            plain.pump(2_000).await;
+        }
+        assert_eq!(journal.serve_froms.lock().unwrap().len(), reads);
+
+        // Other logs keep flowing on the link.
+        plain
+            .send(PeerFrame::Want {
+                node: own.node,
+                inc: own.incarnation,
+                from: 1,
+            })
+            .await;
+        let frames = plain.pump(2_000).await;
+        assert_eq!(entry_counters(&frames), [1], "{frames:?}");
+        journal
+            .inner
+            .author_raw("test.kind", payload(1, 0))
+            .unwrap();
+        rig.pacer.kick();
+        let frames = plain.pump(2_000).await;
+        assert_eq!(entry_counters(&frames), [2], "{frames:?}");
+        let foreign_reads = journal
+            .serve_froms
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|from| **from == 3)
+            .count();
+        assert_eq!(foreign_reads, 1, "the parked log stayed parked");
+
+        // A want from before the cut serves the known entries again, once.
+        plain
+            .send(PeerFrame::Want {
+                node: log.node,
+                inc: log.incarnation,
+                from: 1,
+            })
+            .await;
+        let frames = plain.pump(2_000).await;
+        assert_eq!(entry_counters(&frames), [1, 2], "{frames:?}");
+        assert_eq!(snapshot(&rig).await.links[plain.idx].withheld, 1);
+        stop(rig).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn branch_entries_gated_by_cap() {
+        // `[known 1, 2, opaque 3, known 4]`: the branch from 3 starts opaque.
+        let (rig, journal, log, head) = node_with_branch(true);
+        let want = branch_want_of(log, head, 3);
+        let mut plain = connect(&rig, 0, &fork_hello(2)).await;
+        plain.expect_have().await;
+        plain.send(PeerFrame::BranchWant(want.clone())).await;
+        let none = plain
+            .find(|f| match f {
+                PeerFrame::BranchNone { tip_hash, .. } => Some(tip_hash.clone()),
+                PeerFrame::BranchEntries { .. } => panic!("an opaque entry was served"),
+                _ => None,
+            })
+            .await;
+        assert_eq!(none, want.tip.hash);
+
+        let mut cap = connect(&rig, 1, &opaque_hello(3)).await;
+        cap.expect_have().await;
+        cap.send(PeerFrame::BranchWant(want.clone())).await;
+        let items = cap
+            .find(|f| match f {
+                PeerFrame::BranchEntries { entries, more, .. } => {
+                    assert!(!more);
+                    Some(entries.clone())
+                }
+                _ => None,
+            })
+            .await;
+        let shape: Vec<(u64, bool)> = items
+            .iter()
+            .map(|i| (i.counter(), matches!(i, WireItem::Opaque(_))))
+            .collect();
+        assert_eq!(shape, [(3, true), (4, false)]);
+        assert_eq!(
+            items[0].clone().into_stored().unwrap(),
+            held_opaque(&journal, &log, 3)
+        );
+        stop(rig).await;
+    }
+
+    // Entries a cap peer sends are stored, opaque ones included, and served
+    // on byte-identical.
+    #[tokio::test(start_paused = true)]
+    async fn opaque_items_ingested_and_stored() {
+        use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 1);
+        let signer = identity(9);
+        let opaque = synthetic_entry(
+            &signer,
+            &synthetic_unsigned(&signer, f.log.incarnation, 3, f.envs[1].hash),
+        );
+        let four = synthetic_unsigned(&signer, f.log.incarnation, 4, opaque.hash()).seal(&signer);
+        let mut peer = connect(&rig, 0, &opaque_hello(2)).await;
+        peer.expect_have().await;
+        peer.send_have(
+            true,
+            false,
+            vec![have_log(f.log.node, f.log.incarnation, 4)],
+        )
+        .await;
+        peer.find_want(f.log.node, f.log.incarnation, 1).await;
+        let mut items: Vec<WireItem> = f.envs.iter().map(WireItem::from).collect();
+        items.push(WireItem::from(&opaque));
+        items.push(WireItem::from(&four));
+        peer.send(PeerFrame::Entries {
+            node: f.log.node,
+            inc: f.log.incarnation,
+            entries: items,
+        })
+        .await;
+        until(|| open_vector_counter(&journal, &f.log) == 4).await;
+        assert_eq!(
+            held_opaque(&journal, &f.log, 3),
+            StoredEntry::Opaque(opaque)
+        );
+        assert!(
+            !rig.lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("corrupt")),
+            "{:?}",
+            rig.lines.lock().unwrap()
+        );
+        stop(rig).await;
+    }
+
+    // Two cap nodes: the opaque entry crosses the link byte-exact and the
+    // successor follows it into the puller's journal.
+    #[tokio::test(start_paused = true)]
+    async fn opaque_entries_relay_between_cap_nodes() {
+        let (a, ja, log) = node_with_opaque_log();
+        let jb = TestJournal::new(2);
+        let b = start_node(2, jb.clone());
+        let _report = link_nodes(&a, &b).await;
+        until(|| open_vector_counter(&jb, &log) == 4).await;
+        assert_eq!(held_opaque(&jb, &log, 3), held_opaque(&ja, &log, 3));
+        assert!(held_opaque(&jb, &log, 3).is_opaque());
+        assert_eq!(snapshot(&a).await.links[0].withheld, 0);
+        stop(a).await;
+        stop(b).await;
+    }
+
+    // A node that did not advertise the cap keeps the known prefix, stays
+    // linked, and the serving side parks the log instead of re-reading it.
+    #[tokio::test(start_paused = true)]
+    async fn capless_node_converges_to_the_known_prefix_only() {
+        let (a, ja, log) = node_with_opaque_log();
+        let jb = TestJournal::new(2);
+        let b = start_node_full(
+            2,
+            jb.clone(),
+            None,
+            CoordinatorOptions {
+                advertise_opaque: false,
+            },
+        );
+        let mut report = link_nodes(&a, &b).await;
+        until(|| open_vector_counter(&jb, &log) == 2).await;
+        until(|| {
+            let ja = ja.serve_froms.lock().unwrap();
+            ja.contains(&3)
+        })
+        .await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        assert_eq!(open_vector_counter(&jb, &log), 2, "stuck at the cut");
+        let status = snapshot(&a).await;
+        assert_eq!(status.links.len(), 1, "the link stays up");
+        assert_eq!(status.links[0].withheld, 1);
+        assert!(
+            report
+                .try_recv()
+                .map_or(true, |r| !matches!(r, DialReport::LinkEnded { .. })),
+            "no link ended"
+        );
+        let reads_of_cut = ja
+            .serve_froms
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|f| **f == 3)
+            .count();
+        assert_eq!(reads_of_cut, 1, "the cut was read once, not per tick");
+        assert!(
+            !a.lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("corrupt")),
+            "{:?}",
+            a.lines.lock().unwrap()
+        );
+        stop(a).await;
+        stop(b).await;
+    }
+
+    // A fork whose proof carries an opaque side crosses a link between cap
+    // nodes as a `branch_entries` item the receiving fork sink gets intact.
+    #[tokio::test(start_paused = true)]
+    async fn opaque_fork_branch_flows_to_cap_peer() {
+        let (a, ja, log, head) = node_with_branch(true);
+        let jb = TestJournal::new(2);
+        let b = start_node(2, jb.clone());
+        let _report = link_nodes(&a, &b).await;
+        let want = branch_want_of(log, head, 3);
+        *b.sink.outbox.lock().unwrap() = ForkOutbox {
+            sends: vec![(node_of(1), want.clone())],
+            refs_changed: false,
+        };
+        until(|| !b.sink.branches.lock().unwrap().is_empty()).await;
+        let (source, reply) = b.sink.branches.lock().unwrap().remove(0);
+        assert_eq!(source, node_of(1));
+        let BranchReply::Entries {
+            entries, tip_hash, ..
+        } = reply
+        else {
+            panic!("a branch_none");
+        };
+        assert_eq!(tip_hash, want.tip.hash);
+        let shape: Vec<(u64, bool)> = entries
+            .iter()
+            .map(|i| (i.counter(), matches!(i, WireItem::Opaque(_))))
+            .collect();
+        assert_eq!(shape, [(3, true), (4, false)]);
+        assert_eq!(
+            entries[0].clone().into_stored().unwrap(),
+            held_opaque(&ja, &log, 3)
+        );
+        stop(a).await;
+        stop(b).await;
+    }
+
+    fn oversize_item(log: &LogKey, counter: u64, prev: [u8; 32]) -> WireItem {
+        use crate::sync::envelope::OPAQUE_MAX_BYTES;
+        WireItem::Opaque(OpaqueWire {
+            node: hex_encode(log.node.as_bytes()),
+            inc: log.incarnation,
+            counter,
+            prev: hex_encode(&prev),
+            hash: "11".repeat(32),
+            sig: "22".repeat(64),
+            raw: "00".repeat(OPAQUE_MAX_BYTES + 1),
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn oversize_opaque_item_stores_prefix_and_stalls_without_penalty() {
+        use crate::sync::envelope::OPAQUE_MAX_BYTES;
+        let (rig, journal) = node(1, 0, 0);
+        let f = foreign(9, 1);
+        let mut peer = connect(&rig, 0, &opaque_hello(2)).await;
+        peer.expect_have().await;
+        peer.send_have(
+            true,
+            false,
+            vec![have_log(f.log.node, f.log.incarnation, 5)],
+        )
+        .await;
+        peer.find_want(f.log.node, f.log.incarnation, 1).await;
+        let mut items: Vec<WireItem> = f.envs.iter().map(WireItem::from).collect();
+        items.push(oversize_item(&f.log, 3, f.envs[1].hash));
+        peer.send(PeerFrame::Entries {
+            node: f.log.node,
+            inc: f.log.incarnation,
+            entries: items,
+        })
+        .await;
+        until(|| open_vector_counter(&journal, &f.log) == 2).await;
+        peer.find_unwant(f.log.node, f.log.incarnation).await;
+
+        // Stalled: nothing is asked again, however long the peer keeps
+        // advertising the log, and past the corrupt-source penalty window.
+        peer.send_have(
+            true,
+            false,
+            vec![have_log(f.log.node, f.log.incarnation, 5)],
+        )
+        .await;
+        let frames = peer.pump(ingest::CORRUPT_PENALTY_MS + 60_000).await;
+        assert!(wants_in(&frames).is_empty(), "{frames:?}");
+        assert_eq!(open_vector_counter(&journal, &f.log), 2);
+        let lines = rig.lines.lock().unwrap().clone();
+        let stalled: Vec<&String> = lines.iter().filter(|l| l.contains("stalled")).collect();
+        assert_eq!(
+            stalled,
+            [&format!(
+                "sync: log {}/{} entry 3 is an opaque entry of {} bytes over {OPAQUE_MAX_BYTES}; log stalled on this node",
+                uuid8(&f.log.node),
+                f.log.incarnation,
+                OPAQUE_MAX_BYTES + 1
+            )]
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("penalized")),
+            "a size refusal is not a corrupt source: {lines:?}"
+        );
+        // The link itself is fine.
+        assert_eq!(snapshot(&rig).await.links.len(), 1);
+        stop(rig).await;
+    }
+
+    fn worker_parts() -> (Arc<FairWriter>, Arc<dyn Clock>) {
+        (
+            Arc::new(FairWriter::new(8)),
+            Arc::new(TokioClock(Instant::now())),
+        )
+    }
+
+    // The batch worker's verdict on an oversize entry: the entries before it
+    // are stored, then `Oversize`; an entry that does not follow the stored
+    // head is a gap, not a stall.
+    #[tokio::test]
+    async fn ingest_batch_reports_oversize_after_the_stored_prefix() {
+        let journal = MemoryJournal::new(identity(1));
+        journal.bootstrap();
+        let f = foreign(9, 2);
+        let (writer, clock) = worker_parts();
+        let run = |entries: Vec<StoredEntry>, oversize| {
+            ingest::ingest_batch(
+                &journal,
+                &writer,
+                clock.as_ref(),
+                Cancellation::default(),
+                &f.log,
+                entries,
+                oversize,
+            )
+            .unwrap()
+        };
+        let known = |range: std::ops::Range<usize>| -> Vec<StoredEntry> {
+            f.envs[range]
+                .iter()
+                .cloned()
+                .map(StoredEntry::from)
+                .collect()
+        };
+        let len = crate::sync::envelope::OPAQUE_MAX_BYTES + 1;
+        // Not at the next position: a gap from the stored head.
+        let outcome = run(known(0..2), Some((9, len)));
+        assert!(
+            matches!(
+                outcome,
+                IngestOutcome::Gap {
+                    stored: 2,
+                    expected: 3
+                }
+            ),
+            "{outcome:?}"
+        );
+        // Right after the head.
+        let outcome = run(known(2..3), Some((4, len)));
+        assert_eq!(
+            outcome,
+            IngestOutcome::Oversize {
+                stored: 1,
+                counter: 4,
+                len
+            }
+        );
+        // Oversize first: nothing to store.
+        let outcome = run(Vec::new(), Some((5, len)));
+        assert_eq!(
+            outcome,
+            IngestOutcome::Oversize {
+                stored: 0,
+                counter: 5,
+                len
+            }
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -5393,7 +5954,7 @@ mod tests {
         let tail: Vec<u64> = frames
             .iter()
             .filter_map(|f| match f {
-                PeerFrame::Entries { entries, .. } => Some(entries.iter().map(|e| e.counter)),
+                PeerFrame::Entries { entries, .. } => Some(entries.iter().map(WireItem::counter)),
                 _ => None,
             })
             .flatten()
@@ -5556,7 +6117,7 @@ mod tests {
                 ..
             } => Some((
                 tip_hash.clone(),
-                entries.iter().map(|e| e.counter).collect(),
+                entries.iter().map(WireItem::counter).collect(),
                 *more,
             )),
             _ => None,
@@ -5722,7 +6283,7 @@ mod tests {
             node: f.log.node,
             inc: f.log.incarnation,
             tip_hash: "cc".repeat(32),
-            entries: f.envs.iter().map(WireEnvelope::from).collect(),
+            entries: f.envs.iter().map(WireItem::from).collect(),
             more: true,
         };
         let len = wire_len(&frame);
@@ -6138,8 +6699,11 @@ mod tests {
         let f = foreign(9, 2);
         let mut peer = connect(&rig, 0, &fork_hello(2)).await;
         peer.expect_have().await;
-        let mut entries: Vec<WireEnvelope> = f.envs.iter().map(WireEnvelope::from).collect();
-        entries[1].sig = "zz".into();
+        let mut entries: Vec<WireItem> = f.envs.iter().map(WireItem::from).collect();
+        let WireItem::Known(second) = &mut entries[1] else {
+            panic!("a known item");
+        };
+        second.sig = "zz".into();
         let frame = PeerFrame::BranchEntries {
             node: f.log.node,
             inc: f.log.incarnation,
@@ -6180,8 +6744,11 @@ mod tests {
         )
         .await;
         peer.find_want(f.log.node, f.log.incarnation, 1).await;
-        let mut entries: Vec<WireEnvelope> = f.envs.iter().map(WireEnvelope::from).collect();
-        entries[1].sig = "zz".into();
+        let mut entries: Vec<WireItem> = f.envs.iter().map(WireItem::from).collect();
+        let WireItem::Known(second) = &mut entries[1] else {
+            panic!("a known item");
+        };
+        second.sig = "zz".into();
         peer.send(PeerFrame::BranchEntries {
             node: f.log.node,
             inc: f.log.incarnation,

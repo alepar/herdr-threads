@@ -96,6 +96,13 @@ field MessageSentPayload.require_ack
 field MessageSentPayload.sent_at
 field MessageSentPayload.thread
 field MessageSentPayload.user_intent
+field OpaqueWire.counter
+field OpaqueWire.hash
+field OpaqueWire.inc
+field OpaqueWire.node
+field OpaqueWire.prev
+field OpaqueWire.raw
+field OpaqueWire.sig
 field PeerFrame::Auth.sig
 field PeerFrame::BranchEntries.entries
 field PeerFrame::BranchEntries.inc
@@ -269,3 +276,4 @@ variant PeerFrame::Seen
 variant PeerFrame::Unknown
 variant PeerFrame::Unwant
 variant PeerFrame::Want
+variant WireItem::Known

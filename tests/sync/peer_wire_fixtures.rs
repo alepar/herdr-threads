@@ -161,7 +161,13 @@ fn check_session(dir: &Path) -> Vec<Envelope> {
             PeerFrame::Have { forks, .. } => forks_seen |= !forks.is_empty(),
             PeerFrame::Entries { entries, .. } | PeerFrame::BranchEntries { entries, .. } => {
                 from_frames.extend(entries.into_iter().map(|wire| {
-                    Envelope::try_from(wire).unwrap_or_else(|e| panic!("{name}: frame entry: {e}"))
+                    let entry = wire
+                        .into_stored()
+                        .unwrap_or_else(|e| panic!("{name}: frame entry: {e}"));
+                    entry
+                        .as_known()
+                        .cloned()
+                        .unwrap_or_else(|| panic!("{name}: frame entry is opaque"))
                 }));
             }
             _ => {}

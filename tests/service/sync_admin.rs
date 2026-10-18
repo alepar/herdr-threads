@@ -25,9 +25,9 @@ use crate::sync::coordinator::{
     SyncCoordinator,
 };
 use crate::sync::dialer::DialConfig;
-use crate::sync::envelope::{Envelope, StoredEntry, WireEnvelope, hex_encode};
+use crate::sync::envelope::{Envelope, StoredEntry, hex_encode};
 use crate::sync::facts::{ApplyContext, FactError, FactKind, FactRegistry, Predecessor};
-use crate::sync::frame::HaveLog;
+use crate::sync::frame::{HaveLog, WireItem};
 use crate::sync::incarnations::{HELD_LINE, IncarnationsWorker, Job, WorkerDeps};
 use crate::sync::journal_port::{IngestOutcome, JournalPort};
 use crate::sync::{BatchLimits, LogKey};
@@ -634,6 +634,45 @@ fn status_json_carries_blocked_on() {
     );
 }
 
+// Kills: a withheld count missing from the JSON or the link line, one printed
+// on a link that withholds nothing, and a decode that needs the new field (an
+// older daemon's reply has none).
+#[test]
+fn status_reports_link_withheld() {
+    use crate::protocol::sync_admin::LinkRow;
+    let rig = Rig::new(Node::new(SEED_A, 1));
+    let mut status = rig.status();
+    let link = |withheld| LinkRow {
+        node: "aB3".into(),
+        mode: "active".into(),
+        role: "dialer".into(),
+        rx_logs: 1,
+        unsolicited: 0,
+        withheld,
+        dest: None,
+        last_error: None,
+    };
+    status.links = vec![link(0)];
+    let plain = text(Reply::Status(Box::new(status.clone())));
+    let line = plain.lines().find(|l| l.starts_with("link ")).unwrap();
+    assert_eq!(line, "link aB3 active dialer rx_logs=1 unsolicited=0");
+
+    status.links = vec![link(2)];
+    let rendered = text(Reply::Status(Box::new(status.clone())));
+    let line = rendered.lines().find(|l| l.starts_with("link ")).unwrap();
+    assert_eq!(
+        line,
+        "link aB3 active dialer rx_logs=1 unsolicited=0 withheld=2"
+    );
+    let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(json["links"][0]["withheld"], 2);
+
+    let mut old = json;
+    old["links"][0].as_object_mut().unwrap().remove("withheld");
+    let decoded: crate::protocol::sync_admin::StatusReply = serde_json::from_value(old).unwrap();
+    assert_eq!(decoded.links[0].withheld, 0);
+}
+
 // Kills: a lineage-branch row without its remedy lines.
 #[test]
 fn sync_status_open_lineage_branch_prints_both_remedies() {
@@ -1111,7 +1150,7 @@ fn sync_clone_cleared_single_restored_store_clears_and_rotation_runs() {
             node: want.node,
             inc: want.inc,
             tip_hash: want.tip.hash.clone(),
-            entries: vec![WireEnvelope::from(&w.tail)],
+            entries: vec![WireItem::from(&w.tail)],
             more: false,
         },
     );

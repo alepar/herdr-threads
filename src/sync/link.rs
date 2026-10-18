@@ -1549,7 +1549,7 @@ mod tests {
             node: NodeUuid::nil(),
             inc: 1,
             tip_hash: "bb".repeat(32),
-            entries: vec![envelope],
+            entries: vec![envelope.into()],
             more: false,
         }
         .encode()

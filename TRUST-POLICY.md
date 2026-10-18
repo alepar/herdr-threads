@@ -1990,6 +1990,19 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   another, the peer's membership is authored by its own home node (N4), so until that join arrives the creating
   node does not list the peer as joined. Nothing is lost: the creator's sends address the peer as a member whose
   auto-join is pending, and the peer's read floor is the pair's start (amended 2026-10-15, main v1 reconcile §2).
+- **Opaque relay (ht-j87z).** A node relays and stores journal entries whose signed layout it does not
+  understand (a magic other than `HTJRNL01`). It verifies only the 68-byte layout-agnostic prefix against the
+  item's header (log, counter, previous hash), `SHA-256(raw)` against the entry hash and the author's ed25519
+  signature over that hash; it reads nothing else in the bytes. Provenance: relayed, unvalidated content. The
+  content is never applied here and attributes no act to anyone; the log stops applying at that entry
+  (`blocked_on = opaque_layout`) and later entries of the log wait behind it until an upgraded build parses it.
+  An own-log opaque entry cannot be re-issued by a node that does not understand it. The entry is sent only to
+  peers that advertised `envelope.opaque.v1`; a peer that did not (a 2.1.1 node) is sent the known prefix only,
+  keeps its link and receives no error, so a future-layout entry does not cross such a node and logs behind it
+  do not reach nodes beyond it until it upgrades. An opaque entry over 384 KiB (`OPAQUE_MAX_BYTES`) is refused at
+  ingest, with the entries before it stored and no source penalised, and stalls its log on that node (logged
+  once). Design `docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/2026-10-18-peer-wire-compat-hardening-design.md`,
+  sections 2 and 3.
 
 ## Decision record
 
