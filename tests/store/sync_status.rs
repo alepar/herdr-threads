@@ -176,6 +176,41 @@ fn per_log_counts() {
     );
 }
 
+// Kills: a blocked_on that is not read from sync_logs, one attributed to the
+// wrong log, and a stall text shown on an unblocked log.
+#[test]
+fn per_log_reports_blocked_on() {
+    let mut fx = Fixture::new();
+    fx.seed_log(0xaa, 1, &MIXED);
+    fx.seed_log(0xbb, 1, &[("applied", None), ("pending", None)]);
+    fx.seed_log(0xcc, 1, &[("applied", None)]);
+    fx.writer
+        .execute(
+            "UPDATE sync_logs SET blocked_on='opaque_layout' WHERE node_uuid=?1",
+            ["aa".repeat(16)],
+        )
+        .unwrap();
+    fx.writer
+        .execute(
+            "UPDATE sync_logs SET blocked_on='deps aaaaaaaa/1@3' WHERE node_uuid=?1",
+            ["bb".repeat(16)],
+        )
+        .unwrap();
+    let db = fx.query();
+    let (rows, _) = per_log(&db, None, 10).unwrap();
+    let blocked = |node: &str| {
+        rows.iter()
+            .find(|(_, row)| row.node == node)
+            .unwrap()
+            .1
+            .blocked_on
+            .clone()
+    };
+    assert_eq!(blocked("aaaaaaaa").as_deref(), Some("opaque_layout"));
+    assert_eq!(blocked("bbbbbbbb").as_deref(), Some("deps aaaaaaaa/1@3"));
+    assert_eq!(blocked("cccccccc"), None);
+}
+
 // Kills: a page past its bound, ingest_seq order lost across logs, a missing
 // continuation, totals that count applied rows, and detail text on the wrong
 // state.

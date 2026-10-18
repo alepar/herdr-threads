@@ -46,9 +46,12 @@ pub(super) struct ServeDone {
 
 /// The known entries before the first opaque one, in order.
 ///
-/// Interim cut until ht-j87z.4 adds the capability gate, which owns deciding
-/// what a link may be served: no wire form carries an opaque entry yet, so a
-/// batch is sent up to the first one and the rest waits.
+/// The serve rule for ordinary batches and for fork branches alike: a peer is
+/// sent only the known prefix of what the journal holds, and a branch whose
+/// known prefix is empty (it starts at an opaque entry) is answered
+/// `branch_none`. No wire form carries an opaque entry yet; ht-j87z.4's
+/// capability gate decides per peer (`envelope.opaque.v1`) what may be sent
+/// beyond this prefix, and this rule stays the answer for a peer without it.
 fn known_prefix(batch: Vec<StoredEntry>) -> Vec<Envelope> {
     batch
         .into_iter()
@@ -433,7 +436,18 @@ impl Actor {
             entry.branch_busy = false;
             if entry.branch_queue.front() == Some(&want) {
                 entry.branch_queue.pop_front();
-                let batch = match result.map(|batch| batch.map(known_prefix)) {
+                // The branch rule: only the known prefix goes out. When an
+                // opaque entry cut it, nothing further follows on this link
+                // (`more: false`), and an empty prefix is `branch_none`.
+                let mut cut = false;
+                let batch = match result.map(|batch| {
+                    batch.map(|batch| {
+                        let total = batch.len();
+                        let known = known_prefix(batch);
+                        cut = known.len() < total;
+                        known
+                    })
+                }) {
                     Ok(Some(batch)) if !batch.is_empty() => Some(batch),
                     Ok(_) => None,
                     Err(e) => {
@@ -449,7 +463,7 @@ impl Actor {
                 // After a partial send the last frame carried `more: true`, so
                 // the requester asks again from there; no `branch_none`.
                 let sent = batch.map_or(BranchSend::None, |batch| {
-                    send_branch_entries(entry, &want, &batch)
+                    send_branch_entries(entry, &want, &batch, cut)
                 });
                 if sent == BranchSend::None {
                     send_branch_none(entry, &want);
@@ -587,14 +601,26 @@ enum BranchSend {
 
 /// Queue `batch` as `branch_entries` frames halved to the link's
 /// `max_frame`.
-fn send_branch_entries(entry: &LinkEntry, want: &BranchWant, batch: &[Envelope]) -> BranchSend {
+///
+/// `cut`: an opaque entry ended the batch early, so its last counter, not the
+/// tip, is where the reply ends (`more: false` on the last frame).
+fn send_branch_entries(
+    entry: &LinkEntry,
+    want: &BranchWant,
+    batch: &[Envelope],
+    cut: bool,
+) -> BranchSend {
     let max_frame = entry.handle.peer().limits.max_frame as usize;
+    let ends_at = match batch.last() {
+        Some(last) if cut => last.counter,
+        _ => want.tip.counter,
+    };
     let build = |part: &[Envelope]| PeerFrame::BranchEntries {
         node: want.node,
         inc: want.inc,
         tip_hash: want.tip.hash.clone(),
         entries: part.iter().map(WireEnvelope::from).collect(),
-        more: part.last().is_some_and(|e| e.counter < want.tip.counter),
+        more: part.last().is_some_and(|e| e.counter < ends_at),
     };
     let mut bodies = Vec::new();
     encode_halved(batch, max_frame, &build, &mut bodies);

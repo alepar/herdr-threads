@@ -1,0 +1,8 @@
+    Checking herdr-threads v2.1.1 (/Users/alepar/AleCode/herdr-threads/.worktrees/super-auto-peer-wire-compat-hardening/.worktrees/super-auto-peer-wire-compat-hardening--task-ht-j87z.10)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 29s
+clippy rc=0
+check-harness-neutral: ok — 0 violations, 84 allowlisted (to-migrate 0, frozen-wire 49, history 0, registration 35), 51 entries
+neutral rc=0
+check-wire-compat: ok — 0 violations, 0 stale, 246 fields, 16 variants, 260 baseline entries
+wire rc=0
+fmt rc=0

@@ -585,6 +585,55 @@ fn sync_status_open_own_unknown_newer_prints_both_remedies() {
     assert!(status.evidence.is_empty());
 }
 
+// Kills: a blocked_on or cannot_reissue field missing from the JSON or the
+// text, one printed on an unblocked log, and a decode that needs the new
+// fields (an older daemon's reply has neither).
+#[test]
+fn status_json_carries_blocked_on() {
+    use crate::protocol::sync_admin::{LogRow, RepairRow};
+    let rig = Rig::new(Node::new(SEED_A, 1));
+    let mut status = rig.status();
+    let plain = text(Reply::Status(Box::new(status.clone())));
+    assert!(!plain.contains(" blocked="), "{plain}");
+    assert!(!plain.contains("cannot_reissue"), "{plain}");
+
+    status.logs[0].blocked_on = Some("opaque_layout".into());
+    status.repairs.push(RepairRow {
+        log: "aaaaaaaa/1".into(),
+        frozen_at: Some(2),
+        origin: None,
+        evidence: 0,
+        branches: 0,
+        reissued: 1,
+        pending: 0,
+        cannot_reissue: 3,
+    });
+    let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(json["logs"][0]["blocked_on"], "opaque_layout");
+    assert_eq!(json["repairs"][0]["cannot_reissue"], 3);
+    let rendered = text(Reply::Status(Box::new(status.clone())));
+    let log_line = rendered.lines().find(|l| l.starts_with("log ")).unwrap();
+    assert!(log_line.ends_with(" blocked=opaque_layout"), "{log_line}");
+    let repair_line = rendered.lines().find(|l| l.starts_with("repair ")).unwrap();
+    assert!(repair_line.ends_with(" cannot_reissue=3"), "{repair_line}");
+
+    // An older reply without the fields still decodes; None is not serialized.
+    let mut old = serde_json::to_value(&status).unwrap();
+    old["logs"][0].as_object_mut().unwrap().remove("blocked_on");
+    old["repairs"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("cannot_reissue");
+    let decoded: crate::protocol::sync_admin::StatusReply = serde_json::from_value(old).unwrap();
+    let row: &LogRow = &decoded.logs[0];
+    assert_eq!(row.blocked_on, None);
+    assert_eq!(decoded.repairs[0].cannot_reissue, 0);
+    assert!(
+        !serde_json::to_string(row).unwrap().contains("blocked_on"),
+        "None is omitted"
+    );
+}
+
 // Kills: a lineage-branch row without its remedy lines.
 #[test]
 fn sync_status_open_lineage_branch_prints_both_remedies() {
@@ -973,7 +1022,7 @@ fn sync_clone_cleared_single_restored_store_clears_and_rotation_runs() {
     assert!(restored_sink.enqueue(Job::Restore {
         log: w.i1,
         source,
-        entry: Box::new(w.tail.clone()),
+        entry: Box::new(w.tail.clone().into()),
     }));
 
     // The worker, on the same store and sink the admin signals.

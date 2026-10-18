@@ -495,4 +495,58 @@ mod tests {
         assert_eq!(check_next(None, &second), ChainStep::Gap { expected: 1 });
         assert_eq!(second.genesis_pubkey(), Err(EnvelopeError::NotGenesis));
     }
+
+    /// A gap is a gap whatever the layout: the opaque entry past the next
+    /// counter is not stored, it names the counter wanted.
+    #[test]
+    fn opaque_counter_gap_is_gap() {
+        let id = identity(1);
+        let (h, [_, _, e3]) = held(&id);
+        let skip = StoredEntry::from(synthetic_entry(
+            &id,
+            &synthetic_unsigned(&id, 1, 5, e3.hash),
+        ));
+        assert_eq!(check_next(Some(&h), &skip), ChainStep::Gap { expected: 4 });
+    }
+
+    /// A validly signed opaque entry that does not chain on the head is
+    /// evidence of a fork, like a known one.
+    #[test]
+    fn opaque_prev_break_is_conflict_when_signed() {
+        let id = identity(1);
+        let (h, _) = held(&id);
+        let broken = StoredEntry::from(synthetic_entry(
+            &id,
+            &synthetic_unsigned(&id, 1, 4, [0x42; 32]),
+        ));
+        assert_eq!(check_next(Some(&h), &broken), ChainStep::Conflict);
+    }
+
+    /// The same break signed by another key is damage, never a fork, so a
+    /// forged opaque entry cannot freeze a healthy log.
+    #[test]
+    fn opaque_prev_break_unsigned_is_corrupt() {
+        let id = identity(1);
+        let (h, _) = held(&id);
+        let forged = opaque(&id, &identity(9), 4, [0x42; 32]);
+        assert_eq!(
+            check_next(Some(&h), &forged),
+            ChainStep::Corrupt(EnvelopeError::BadSignature)
+        );
+    }
+
+    /// A header that names another log than the raw bytes' prefix is refused
+    /// at construction, before any store sees it.
+    #[test]
+    fn opaque_header_naming_other_log_is_malformed_prefix() {
+        let id = identity(1);
+        let other = identity(2);
+        let unsigned = synthetic_unsigned(&id, 1, 4, [3; 32]);
+        let (mut header, raw) = crate::test_support::opaque_entry::synthetic_parts(&id, &unsigned);
+        header.log = log(&other);
+        assert_eq!(
+            crate::sync::envelope::OpaqueEntry::new(header, raw),
+            Err(EnvelopeError::Malformed { field: "prefix" })
+        );
+    }
 }
