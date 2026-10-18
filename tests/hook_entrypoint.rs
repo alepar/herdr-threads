@@ -2507,6 +2507,65 @@ fn native_hook_auto_ack_preserves_sibling_unread_and_delivery_wake() {
     assert_eq!(receipt(), observation);
 }
 
+// Kills: a fixed inbox-read cap inside otherwise scaled test hooks. A successful
+// fail-open exit with no diagnostic does not establish receipt injection.
+#[test]
+fn native_hook_scaled_resume_injects_receipt_after_delayed_inbox() {
+    let fx = Fixture::start();
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "slow-inbox"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    fx.hook("w9:p1", &tool("sess-1"));
+    let message = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "owed", "--require-ack", "seat"],
+    ));
+    let acked = || {
+        fx.count(&format!(
+            "SELECT count(*) FROM receipt_state WHERE message_id='{message}' AND state='acked'"
+        ))
+    };
+    let delay_page = || std::thread::sleep(Duration::from_millis(750));
+    fx.race(RaceAt::InboxPage, delay_page);
+    let production = run_hook_with(
+        &fx.command,
+        "w9:p1",
+        &fx.host,
+        &Payload::session_start("sess-1", "resume").bytes(),
+        false,
+    );
+    let context = context_of(&production);
+    assert!(
+        !context.contains(&format!("message {message} ")),
+        "{context}"
+    );
+    assert!(
+        context.contains("More inbox content may remain"),
+        "{context}"
+    );
+    assert!(production.stderr.is_empty(), "{}", production.stderr);
+    assert_eq!(acked(), 0, "an undisplayed receipt stays pending");
+
+    // The standard test scale covers the page read, so this hook actually
+    // displays the receipt and synchronously settles it before exiting.
+    fx.race(RaceAt::InboxPage, delay_page);
+    let scaled = fx.hook("w9:p1", &Payload::session_start("sess-1", "resume").bytes());
+    let context = context_of(&scaled);
+    assert!(
+        context.contains(&format!("message {message} ")),
+        "{context}"
+    );
+    assert!(scaled.stderr.is_empty(), "{}", scaled.stderr);
+    assert_eq!(acked(), 1);
+}
+
 // Kills: a fixed production completion cap inside otherwise scaled test hooks.
 // Output is synchronous, but a post-flush timeout can leave its receipt pending.
 #[test]

@@ -2822,9 +2822,9 @@ impl PaneCall<'_> {
             return None;
         }
         let claim = contexts.claim(&saved).ok()?;
-        let capped = self
-            .deadline
-            .min(self.clock.instant_now() + INBOX_READ_BUDGET);
+        let capped = self.deadline.min(
+            self.clock.instant_now() + crate::protocol::time::external_bound(INBOX_READ_BUDGET),
+        );
         super::hook_inbox::read_page(self.client, claim, &budget(capped, self.clock.as_ref()))
     }
 

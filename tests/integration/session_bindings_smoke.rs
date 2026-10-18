@@ -1549,8 +1549,8 @@ fn config5_resume_within_a_page_and_past_it() {
     // read. The display must cover at least the entire pre-resume head.
     assert!(smoke.cursor(&binding.id, &thread).unwrap() >= resume_frontier);
     assert!(
-        out.stdout.contains("owed"),
-        "the owed body was injected: {}",
+        out.stdout.contains(&format!("message {owed} ")),
+        "the owed inbox row was injected (a history preview is not delivery): {}",
         out.stdout
     );
     let inbox = smoke.cli(&codex, &["inbox"]).data();
