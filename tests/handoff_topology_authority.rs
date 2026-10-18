@@ -2224,6 +2224,13 @@ fn automatic_canonical_descriptor_requires_the_concrete_automatic_runtime() {
                 .any(|name| name == herdr_threads::protocol::capabilities::AUTOMATIC_HANDOFF_V1),
             !generic
         );
+        assert_eq!(
+            caps.capabilities
+                .iter()
+                .any(|name| name == "handoff.launch_directories_v1"),
+            !generic,
+            "directory admission requires both canonical bootstrap runtimes"
+        );
     }
 }
 

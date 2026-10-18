@@ -721,8 +721,8 @@ impl BootstrapPayload {
         }
     }
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.directory_context.is_some() {
-            return Err("retained launch directories are not admitted yet");
+        if let Some(context) = &self.directory_context {
+            context.validate_bootstrap(&self.cwd, &self.env)?;
         }
         self.handoff.validate()?;
         self.launch.validate()?;
@@ -730,7 +730,7 @@ impl BootstrapPayload {
             || !bounded_text(&self.label, 128)
             || self.label.chars().any(char::is_control)
             || self.focus
-            || !self.env.is_empty()
+            || (self.directory_context.is_none() && !self.env.is_empty())
         {
             return Err("invalid bootstrap topology payload");
         }
@@ -1338,6 +1338,106 @@ pub(crate) mod topology_contract_tests {
         let mut bad = identity();
         bad.claim.instance = "foreign".into();
         assert!(bad.validate().is_err());
+    }
+    #[test]
+    fn launch_directories_admit_exact_bootstrap_and_automatic_child() {
+        let mut explicit = identity();
+        let context = LaunchDirectoryContext {
+            profile_dir: "/profile".into(),
+            cwd: explicit.payload.cwd.clone(),
+            env: [("PROFILE_ROOT".into(), "/profile".into())].into(),
+        };
+        explicit.payload.env = context.env.clone();
+        explicit.payload.directory_context = Some(context.clone());
+        explicit.digest = explicit.semantic_digest().unwrap();
+        explicit.validate().unwrap();
+        let restored: BootstrapIdentity =
+            serde_json::from_slice(&serde_json::to_vec(&explicit).unwrap()).unwrap();
+        assert_eq!(restored, explicit);
+        for bad in [
+            {
+                let mut p = explicit.payload.clone();
+                p.cwd = "/other".into();
+                p
+            },
+            {
+                let mut p = explicit.payload.clone();
+                p.env.clear();
+                p
+            },
+            {
+                let mut p = explicit.payload.clone();
+                p.directory_context = None;
+                p
+            },
+            {
+                let mut p = explicit.payload.clone();
+                p.directory_context.as_mut().unwrap().profile_dir = "/other".into();
+                p
+            },
+        ] {
+            assert!(bad.validate().is_err());
+        }
+        let automatic = AutomaticBootstrapIdentity::new(
+            explicit.scope.clone(),
+            explicit.claim.clone(),
+            AutomaticBootstrapPlan {
+                version: 2,
+                payload: AutomaticBootstrapPayload {
+                    directory_context: Some(context.clone()),
+                    handoff: AutomaticHandoffPayload::new(
+                        explicit.payload.handoff.namespace.clone(),
+                        OperationId::new("auto"),
+                        "work".into(),
+                    )
+                    .unwrap(),
+                    keys: AutomaticBootstrapKeys::new(OperationId::new("auto-bootstrap")),
+                    workspace: explicit.payload.workspace.clone(),
+                    cwd: context.cwd.clone(),
+                    label: "peer".into(),
+                    focus: false,
+                    env: context.env.clone(),
+                    launch: explicit.payload.launch.clone(),
+                    startup_input: None,
+                },
+            },
+        )
+        .unwrap();
+        let created = created();
+        let attached = AutomaticBootstrapAttachment::derive(
+            &automatic,
+            BootstrapAttempt::first(),
+            created,
+            SeatId::new("peer"),
+        )
+        .unwrap();
+        let AutomaticOriginal::Handoff(child) = &attached.child.original else {
+            panic!("handoff");
+        };
+        assert_eq!(child.launch.directory_context, Some(context));
+        let decoded: AutomaticBootstrapIdentity =
+            serde_json::from_slice(&serde_json::to_vec(&automatic).unwrap()).unwrap();
+        assert_eq!(decoded, automatic);
+        let mut forged = attached.clone();
+        let AutomaticOriginal::Handoff(child) = &mut forged.child.original else {
+            panic!("handoff");
+        };
+        child.launch.directory_context.as_mut().unwrap().cwd = "/other".into();
+        forged.child.digest = forged.child.original.digest(&forged.child.claim).unwrap();
+        forged.child.validate().unwrap();
+        assert!(
+            forged.validate(&automatic).is_err(),
+            "even a valid rehashed child must match its parent"
+        );
+        for alter_env in [false, true] {
+            let mut bad = automatic.plan.clone();
+            if alter_env {
+                bad.payload.env.clear();
+            } else {
+                bad.payload.cwd = "/other".into();
+            }
+            assert!(bad.validate().is_err());
+        }
     }
     #[test]
     fn launch_directories_preserve_legacy_bootstrap_and_refuse_admission() {
