@@ -63,6 +63,26 @@ No transport change (the ssh research recommends keeping ssh stdio); no serializ
 
 Unit: prefix invariant pin; opaque verify (good, wrong hash, wrong signature, prefix/header mismatch, prefix says other log, counter gap, prev break); store round trip; serve emits opaque only with the capability; fork between opaque and known. Integration: two-node session where the author emits `HTJRNL99`: a capability-advertising relay forwards it, a hello without the capability withholds it and `have` stays behind; fixture decode test; shadow-decoder test; lint self-test with fixtures of passing and failing source. Release as a minor (`v2.2.0` is already branched as `release/2.2.0` in another worktree; the integration branch merges into main and the releasing agent picks the version per the versioning rule: additive feature = minor).
 
+## Key abstractions
+
+- **EntryPrefix** (`src/sync/envelope.rs`): a `Copy` value for the 68-byte generation-independent prefix `magic[8] ‖ node[16] ‖ inc u32 ‖ counter u64 ‖ prev[32]`. `Body::canonical_bytes` writes its first 68 bytes through it, so HTJRNL01 meets the invariant by construction. Must not read past byte 68 or decide whether a magic is known. Short buffer: `EnvelopeError::Malformed{field:"prefix"}`.
+- **OpaqueEntry**: a verified unknown-layout entry `{log, counter, prev_hash, hash, signature, raw}`. Shape check against its wire header (prefix equals header, magic is not HTJRNL01, raw within bound) plus `SHA-256(raw)==hash` and `verify_strict`. Must not parse `raw` past the prefix or be applied. Reuses `EnvelopeError` (`Malformed{"prefix"|"magic"}`, `HashMismatch`, `BadSignature`).
+- **StoredEntry**: closed enum `{Known(Envelope), Opaque(OpaqueEntry)}` in the sync layer, the one entry type JournalPort, chain rules, coordinator and incarnations exchange; log/counter/prev/hash/verify/size/genesis-candidate are one `match` each. A generation the node learns to understand becomes a parse into `Known`, never a new variant. An opaque entry at counter 1 of an unknown log is `Corrupt(NotGenesis)`.
+- **WireItem** (`src/sync/frame.rs`): wire mirror `{Known(WireEnvelope), Opaque(OpaqueWire)}` for `entries`/`branch_entries` items, hand-written decode peeking the single `opaque` key (serde `untagged` cannot hold `RawValue`). Must not decide whether an item may be sent.
+- **Opaque capability gate** (`src/sync/coordinator/serve.rs`): the one outbound function that, per link, emits opaque entries only if `envelope.opaque.v1` was negotiated, else cuts the batch before the first opaque entry and counts it withheld (no error, no close, no hot-loop re-serve). Reads `LinkEntry::opaque_cap()` beside `fork_cap()`; runs before `encode_halved`.
+- **Chain-row reader** (`src/store/journal.rs`, behind `Journal::entries_from`): reads chain positions as `StoredEntry` from the union of `journal` and `journal_opaque`; replaces the `RawEnvelope::read` sites. Other readers stay known-only unless the spike (S1) finds otherwise.
+- **Peer-wire recorder** (test-support only): decorator over `PeerIo` splitting u32 frames per direction into `{"dir","frame"}` lines verbatim; needs no production hook and runs unchanged against v2.1.1.
+- Extended, not new: `JournalPort` (`serve`, `serve_branch`, `ingest`, `ForkEvidence` carry `StoredEntry`; SqliteStore and MemoryJournal both), `chain::check_next`, store ingest `ChainStep::Append` (inserts into `journal_opaque`), apply pass (log whose next position is opaque records `parked_unknown`/`blocked_on`), incarnations worker / resync salvage (distinct "opaque, cannot re-issue" report reason), `OPAQUE_CAP` pushed into hello caps beside `FORK_CAP`. New `OpaqueWire` fields are added to the lint baseline when the type is introduced (required fields, no `serde(default)`).
+
+Digest:
+- EntryPrefix: owns the 68-byte layout-agnostic prefix (write and parse); every envelope generation writes its first 68 bytes through it; callers never slice prefix offsets by hand.
+- OpaqueEntry: owns shape-checking an unknown-layout entry against its header and verifying hash and signature over raw bytes; callers never parse `raw` past the prefix.
+- StoredEntry: owns the layout-independent entry operations as one `match` each; a newly understood generation becomes a parse into `Known`, never a new variant.
+- WireItem: owns the `entries`/`branch_entries` item alternative, its hand-written decode and StoredEntry conversion; callers never use serde `untagged` around a RawValue.
+- Opaque capability gate: owns cutting served batches by the link's negotiated `envelope.opaque.v1` and counting withheld entries; serve paths never check capabilities themselves.
+- Chain-row reader: owns reading chain positions from `journal` and `journal_opaque` as StoredEntry; serve, fork and branch code never query `journal_opaque` directly.
+- Peer-wire recorder: owns verbatim per-direction frame capture by wrapping PeerIo in test-support; production code never gets a recording hook.
+
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
