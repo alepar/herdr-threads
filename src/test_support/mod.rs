@@ -16,6 +16,7 @@ pub mod isolation;
 pub mod journal_oracle;
 #[cfg(feature = "test-support")]
 pub mod multinode;
+pub mod opaque_entry;
 pub mod owner_watch;
 pub mod scratch;
 #[cfg(feature = "test-support")]
