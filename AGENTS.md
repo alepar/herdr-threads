@@ -14,6 +14,10 @@
 - Test targets are listed explicitly (`autotests = false`). A new suite that keeps no process-wide state goes into `tests/combined.rs` as a `#[path]` module (one binary, one link); a suite that redirects stdio, installs a panic hook, runs an in-process daemon, arms failpoints or changes the umask gets its own `[[test]]` entry. A target that uses `herdr_threads::test_support` (including `test_support::spawn`) needs `required-features = ["test-support"]`; otherwise `scripts/check-default-features` and the default-feature clippy job fail.
 - The daemon's owner watch exists only in `test-support` builds: always test with `--all-features`.
 
+## Releasing
+
+[RELEASE.md](RELEASE.md) is the release process (versioning, qualification, CI, tag, archive verification, install, record, announcement, cleanup). The pre-release wake e2e below is part of it; release evidence is recorded in [docs/release.md](docs/release.md).
+
 ## herdr-threads-dev channel
 
 Every top-level agent working on this repository inside a Herdr pane joins the active (non-archived) thread named exactly `herdr-threads-dev` at session start: `herdr-threads thread list --joined`; if it is not listed, `herdr-threads join herdr-threads-dev` (self-service, no invitation). Subagents never join. It carries announcements of potentially breaking changes, new releases and other broadcast messages about herdr-threads development. Post there only what every agent on this project needs; anything with a specific audience goes to a direct or topic thread. Never leave it unless the user asks.
