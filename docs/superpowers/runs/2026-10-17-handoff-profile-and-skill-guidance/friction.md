@@ -16,3 +16,5 @@
 - Code roast round1 uses manual fan-out (Workflow unavailable), same-family inherited seats; canonical engine bridge owns merge/caps/routes/coverage/enforce.
 
 - Code roast round2 uses manual fan-out (Workflow unavailable), fresh same-family inherited seats; canonical engine bridge owns stage order/routes/coverage/enforcement. Raw bridge payloads retained under ignored `.superpowers/sdd/ht-1urq-plan/roast-evidence/r2`; all 13 scouts completed, zero raw findings.
+
+- [2026-10-18 final verification] Initial preparation built nextest binaries but omitted the existing release-proof --prebuild step used by both CI workflows. The timed suite therefore included two release rebuilds and exceeded five minutes; preserve this measurement and prepare the fixtures before the final documented-candidate measurement. No test failure or product regression is inferred from that timing alone.

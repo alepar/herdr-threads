@@ -83,4 +83,8 @@ Digest:
 
 ## Post-Implementation Notes
 
+### 2026-10-18 Changes vs. original design
+
+The real Herdr matrix exposed a local NativeCli guard rejecting nonempty tab environments even though the host transport supports them. The implementation adds a strict typed directory context to native tab requests, validates agreement, and forwards the selected environment without weakening ordinary empty-env behavior. Review also added the missing cwd-only automatic final-start recheck. Both changes retain frozen retry and guarded native-start behavior. The five-release stand-in matrix proves child env/cwd consumption; authenticated account/model activation remains release verification.
+
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
