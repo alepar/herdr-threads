@@ -1,0 +1,29 @@
+
+running 25 tests
+test cli::topology_handoff::tests::automatic_bootstrap_retry_loads_its_frozen_original_without_v1_decode ... ok
+test cli::topology_handoff::tests::live::automatic_live::historical_retry_does_not_admit_live_child_with_possible_start ... ok
+test cli::topology_handoff::tests::live::automatic_live::completed_automatic_retry_is_historical_after_source_binding_changes ... ok
+test cli::topology_handoff::tests::live::automatic_live::historical_retry_refuses_wrong_namespace_and_changed_original ... ok
+test cli::topology_handoff::tests::live::automatic_live::parsed_human_automatic_operator_retry_replays_lost_decision_reply ... ok
+test cli::topology_handoff::tests::live::automatic_live::historical_retry_refuses_missing_or_contradictory_successful_launch ... ok
+test cli::topology_handoff::tests::live::automatic_live::modern_automatic_artifact_failure_keeps_synced_summary_and_reopened_retry_never_starts ... ok
+test cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin ... ok
+test cli::topology_handoff::tests::live::automatic_live::profile_directory_automatic_retry_preserves_create_and_child_context ... ok
+test cli::topology_handoff::tests::live::downstream_adapter_proven_not_submitted_can_retry_start_without_restage ... ok
+test cli::topology_handoff::tests::live::automatic_live::public_historical_retry_reconciles_completed_child_after_sender_check_in ... ok
+test cli::topology_handoff::tests::live::live_lost_reservation_reply_never_submits_on_retry ... ok
+test cli::topology_handoff::tests::live::live_uncorrelated_creation_stays_unknown_without_record_or_retry ... ok
+test cli::topology_handoff::tests::live::phase13_operator_created_keeps_original_request_and_allows_second_agent_retry ... ok
+test cli::topology_handoff::tests::live::final_sdd_pending_write_and_flush_loss_preserve_possible_start_and_retry ... ok
+test cli::topology_handoff::tests::live::profile_directory_frozen_retry_retains_canonical_paths_and_exact_child ... ok
+test cli::topology_recover::tests::conflicting_concurrent_assertions_never_authorize_both_dispositions ... ok
+test cli::topology_recover::tests::interrupted_saved_inspection_refuses_after_original_normal_retry_unknown_creation ... ok
+test cli::topology_recover::tests::invalid_retained_original_ambiguous_retry_wrapper ... ok
+test cli::topology_recover::tests::invalid_retained_original_changed_retry_wrapper ... ok
+test cli::topology_recover::tests::invalid_retained_original_conflicting_retry_wrapper ... ok
+test cli::topology_recover::tests::invalid_retained_original_malformed_retry_wrapper ... ok
+test cli::topology_recover::tests::invalid_retained_original_missing_retry_wrapper ... ok
+test cli::topology_recover::tests::root_operator_retry_refuses_before_completed_presentation_and_cleanup ... ok
+test cli::topology_handoff::tests::live::maximum_instruction_file_freezes_through_bootstrap_completion_and_retry ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 6052 filtered out; finished in 13.54s

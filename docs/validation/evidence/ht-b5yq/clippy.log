@@ -1,0 +1,4 @@
+nice: setpriority: Operation not permitted
+    Blocking waiting for file lock on build directory
+    Checking herdr-threads v2.2.0 (/Users/alepar/AleCode/herdr-threads/.worktrees/ht-b5yq)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4m 32s

@@ -1,0 +1,23 @@
+nice: setpriority: Operation not permitted
+    Blocking waiting for file lock on artifact directory
+   Compiling herdr-threads v2.2.0 (/Users/alepar/AleCode/herdr-threads/.worktrees/ht-b5yq)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 41s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-51d8134974471731)
+
+running 1 test
+
+thread 'service::workers::apply_lane_tests::lane_fault_degrades_health_then_recovers' (158249394) panicked at src/service/../../tests/service/apply_lane.rs:460:5:
+assertion `left == right` failed: the retry applied the backlog
+  left: 0
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test service::workers::apply_lane_tests::lane_fault_degrades_health_then_recovers ... FAILED
+
+failures:
+
+failures:
+    service::workers::apply_lane_tests::lane_fault_degrades_health_then_recovers
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6076 filtered out; finished in 0.49s
+
+error: test failed, to rerun pass `--lib`

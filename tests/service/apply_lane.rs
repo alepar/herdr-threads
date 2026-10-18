@@ -232,11 +232,18 @@ impl LaneFx {
     }
 
     fn start(&mut self) {
+        self.start_with(Box::new(|_| {}));
+    }
+
+    fn start_with(&mut self, post_commit: ApplyPostCommit) {
         let calls = Arc::clone(&self.calls);
         self.handle = Some(
             start_apply_worker(
                 self.store.clone(),
-                Box::new(move |progress| calls.lock().unwrap().push(*progress)),
+                Box::new(move |progress| {
+                    calls.lock().unwrap().push(*progress);
+                    post_commit(progress);
+                }),
                 Arc::clone(&self.writer),
                 Arc::clone(&self.pacer),
                 self.cancel.clone(),
@@ -422,7 +429,18 @@ fn lane_fault_degrades_health_then_recovers() {
     let mut source = fx.source("src", 2);
     source.put_all(0, 2);
     fx.ship(&source);
-    fx.start();
+    let (replayed_tx, replayed_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let first = std::sync::atomic::AtomicBool::new(true);
+    // Hold the first successful callback after health/backoff publication,
+    // before the worker advances from startup replay to pending entries.
+    fx.start_with(Box::new(move |progress| {
+        if first.swap(false, Ordering::SeqCst) {
+            replayed_tx.send(*progress).unwrap();
+            // Dropping the sender on an assertion failure also releases us.
+            let _ = release_rx.recv_timeout(Duration::from_secs(30));
+        }
+    }));
     wait_until("the failure", || {
         fx.pacer.attempts() == 1 && fx.status.health().is_some()
     });
@@ -438,10 +456,22 @@ fn lane_fault_degrades_health_then_recovers() {
     faulted.store(false, Ordering::SeqCst);
     let due = fx.pacer.next_retry_at().unwrap().0 - fx.pacer.now().0;
     fx.advance(due);
-    wait_until("the retry to succeed", || {
-        fx.pacer.attempts() == 0 && fx.status.last_tick().is_some()
-    });
-    assert_eq!(fx.applied_puts(), 2, "the retry applied the backlog");
+    let progress = replayed_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    let replay_succeeded = fx.pacer.attempts() == 0 && fx.status.last_tick().is_some();
+    let applied_at_replay = fx.applied_puts();
+    release_tx.send(()).unwrap();
+    assert!(
+        replay_succeeded,
+        "startup replay already cleared the failure"
+    );
+    assert_eq!(progress.applied, 0);
+    assert_eq!(
+        applied_at_replay, 0,
+        "startup replay does not drain pending puts"
+    );
+    // Health/last_tick describe each successful pass, including startup replay.
+    // Wait for the retry's actual effect before asserting recovery.
+    wait_until("the retry to apply the backlog", || fx.applied_puts() == 2);
     assert!(fx.status.health().is_none());
 }
 
