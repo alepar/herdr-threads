@@ -1,0 +1,20 @@
+diff --git a/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-3.md b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-3.md
+new file mode 100644
+index 000000000..51100d01b
+--- /dev/null
++++ b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-3.md
+@@ -0,0 +1,14 @@
++Make native config-root adapters select explicit profile directories ahead of inherited or shell hints for all launch inspection and child inputs.
++
++Spec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md
++Files-touched: src/harness/codex.rs, src/harness/claude.rs, src/harness/launch.rs (native_scope shared helper only), tests/harness/adapter_smoke.rs or focused adapter tests
++owns: explicit native config-root profile projection for Codex and Claude.
++consumes: LaunchDirectoryContext; consumes: LaunchPolicy explicit-directory seam.
++blocked-by ht-1urq.1: consumes boundary contract
++owns: credential-safe native launch diagnostics and focused explicit-over-inherited adapter tests.
++
++## Acceptance
++- [ ] Codex maps the selected directory to CODEX_HOME; Claude maps to CLAUDE_CONFIG_DIR using adapter-owned names and captured snapshots only.
++- [ ] Explicit scope wins over conflicting launcher/pane-shell hints and reaches hook status, fingerprinting, startup composition and prelaunch recheck; no explicit option preserves existing scope selection.
++- [ ] No credential values/config contents are printed and no real config or caller process environment is mutated; native executable identity/PATH guards remain intact.
++- [ ] Focused adapter tests establish selected directory precedence and declared child env; fmt, locked all-feature clippy and harness-neutral pass.

@@ -1,0 +1,140 @@
+diff --git a/tests/host/topology_creation.rs b/tests/host/topology_creation.rs
+index e4311af06..f966149a5 100644
+--- a/tests/host/topology_creation.rs
++++ b/tests/host/topology_creation.rs
+@@ -22,6 +22,19 @@ impl Peer {
+         result: Value,
+         mode: usize,
+         cancellation: Option<crate::protocol::time::Cancellation>,
++    ) -> Self {
++        Self::with_params(
++            result,
++            mode,
++            cancellation,
++            json!({"workspace_id":"w4", "cwd":"/private/tmp", "label":"test-tab", "focus":false, "env":{}}),
++        )
++    }
++    fn with_params(
++        result: Value,
++        mode: usize,
++        cancellation: Option<crate::protocol::time::Cancellation>,
++        params: Value,
+     ) -> Self {
+         let path =
+             crate::test_support::scratch::temp_path(format!("ht-qhz3-{}", uuid::Uuid::new_v4()));
+@@ -71,10 +84,7 @@ impl Peer {
+                 } else {
+                     counts.fetch_add(1, Ordering::AcqRel);
+                     assert_eq!(wire["method"], "tab.create");
+-                    assert_eq!(
+-                        wire["params"],
+-                        json!({"workspace_id":"w4", "cwd":"/private/tmp", "label":"test-tab", "focus":false, "env":{}})
+-                    );
++                    assert_eq!(wire["params"], params);
+                     result.clone()
+                 };
+                 if wire["method"] != "ping" {
+@@ -136,6 +146,7 @@ fn request(peer: &Peer) -> crate::ports::CreateTabRequest {
+         label: "test-tab".into(),
+         focus: false,
+         env: Default::default(),
++        directory_context: None,
+         expected_witness: witness(&peer.path),
+     }
+ }
+@@ -178,6 +189,87 @@ fn audited_tab_create_is_admitted() {
+     assert_eq!(peer.operations.load(Ordering::Acquire), 1);
+ }
+ #[test]
++fn retained_profile_context_reaches_native_transport_exactly() {
++    let peer = Peer::with_params(
++        result(),
++        0,
++        None,
++        json!({
++            "workspace_id":"w4", "cwd":"/work 'quoted' \"directory\"", "label":"test-tab",
++            "focus":false, "env":{"PROFILE_ROOT":"/profiles 'one' \"two\""}
++        }),
++    );
++    let mut request = request(&peer);
++    request.cwd = "/work 'quoted' \"directory\"".into();
++    request.env = [("PROFILE_ROOT".into(), "/profiles 'one' \"two\"".into())].into();
++    request.directory_context = Some(crate::protocol::handoff::LaunchDirectoryContext {
++        profile_dir: "/profiles 'one' \"two\"".into(),
++        cwd: request.cwd.clone(),
++        env: request.env.clone(),
++    });
++    let response = call(&peer, &request, &context());
++    assert!(
++        matches!(response, crate::ports::CreateTabOutcome::Created(_)),
++        "{response:?}"
++    );
++    assert_eq!(peer.operations.load(Ordering::Acquire), 1);
++}
++#[test]
++fn invalid_retained_profile_context_never_submits_operation_bytes() {
++    let peer = Peer::with_action(result(), 5, None);
++    let mut original = request(&peer);
++    original.env = [("PROFILE_ROOT".into(), "/profiles/selected".into())].into();
++    original.directory_context = Some(crate::protocol::handoff::LaunchDirectoryContext {
++        profile_dir: "/profiles/selected".into(),
++        cwd: original.cwd.clone(),
++        env: original.env.clone(),
++    });
++    for mode in 0..12 {
++        let mut request = original.clone();
++        let selection = request.directory_context.as_mut().unwrap();
++        match mode {
++            0 => request.directory_context = None,
++            1 => request.cwd = "/other".into(),
++            2 => {
++                request.env.insert("PROFILE_ROOT".into(), "/other".into());
++            }
++            3 => selection.env = [("BAD-KEY".into(), "/profiles/selected".into())].into(),
++            4 => {
++                selection
++                    .env
++                    .insert("SECOND".into(), "/profiles/selected".into());
++            }
++            5 => selection.env.clear(),
++            6 => selection.profile_dir = "relative".into(),
++            7 => selection.profile_dir = "/a/../b".into(),
++            8 => selection.profile_dir = format!("/{}", "x".repeat(4096)).into(),
++            9 => selection.cwd = "relative".into(),
++            10 => selection.cwd = "/with\ncontrol".into(),
++            _ => selection.cwd = format!("/{}", "x".repeat(4096)).into(),
++        }
++        if mode >= 3 {
++            let selection = request.directory_context.as_mut().unwrap();
++            if (6..=8).contains(&mode) {
++                selection.env = [(
++                    "PROFILE_ROOT".into(),
++                    selection.profile_dir.to_str().unwrap().into(),
++                )]
++                .into();
++            }
++            request.env = selection.env.clone();
++            request.cwd = selection.cwd.clone();
++        }
++        assert!(
++            matches!(
++                call(&peer, &request, &context()),
++                crate::ports::CreateTabOutcome::NotSubmitted(_)
++            ),
++            "case {mode}"
++        );
++        assert_eq!(peer.operations.load(Ordering::Acquire), 0, "case {mode}");
++    }
++}
++#[test]
+ fn malformed_and_incoherent_replies_are_unknown_without_retry() {
+     let mut cases = Vec::new();
+     for (pointer, value) in [
+@@ -366,6 +458,7 @@ fn isolated_native_tab_creation() {
+         label: "ht-qhz3-child".into(),
+         focus: false,
+         env: Default::default(),
++        directory_context: None,
+         expected_witness: snapshot.witness,
+     };
+     let cli = super::super::native::NativeCli::new(host.socket_path(), clock);

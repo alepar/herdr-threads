@@ -1,0 +1,45 @@
+diff --git a/scripts/herdr-release-smoke b/scripts/herdr-release-smoke
+index dd348cb8e..951b60de1 100755
+--- a/scripts/herdr-release-smoke
++++ b/scripts/herdr-release-smoke
+@@ -171,6 +171,8 @@ def main() -> int:
+     parser.add_argument("--cache", type=Path, default=Path(os.environ.get(
+         "HT_HERDR_RELEASE_CACHE", Path.home() / ".cache/herdr-threads/herdr-releases")))
+     parser.add_argument("--report", type=Path, help="also write the matrix as Markdown")
++    parser.add_argument("--case", choices=MATRIX, help="run one matrix case (default: all)")
++    parser.add_argument("--logs-dir", type=Path, help="retain complete per-release test output")
+     parser.add_argument("--jobs", type=int, default=int(os.environ.get("HT_HERDR_MATRIX_JOBS", "2")),
+                         help="releases run at once (default 2; each runs its matrix tests in parallel)")
+     parser.add_argument("--list", action="store_true", help="print the listed versions")
+@@ -222,10 +224,14 @@ def main() -> int:
+             return version, "ERROR", 0.0, {}, str(error)
+         run_env = dict(env, PATH=f"{binary.parent}{os.pathsep}{env['PATH']}", HT_HERDR_SMOKE_VERSION=version)
+         # The test binary itself, not `cargo test`: concurrent releases would wait on cargo's build lock.
+-        argv = [executable, *FILTER] if executable else \
+-            ["cargo", "test", "--locked", "--all-features", "--test", "integration", "--", *FILTER]
++        filters = [f"herdr_release_smoke::{args.case}", "--ignored", "--nocapture"] if args.case else FILTER
++        argv = [executable, *filters] if executable else \
++            ["cargo", "test", "--locked", "--all-features", "--test", "integration", "--", *filters]
+         run = subprocess.run(argv, cwd=ROOT, env=run_env, capture_output=True, text=True)
+         out = (run.stdout or "") + (run.stderr or "")
++        if args.logs_dir:
++            args.logs_dir.mkdir(parents=True, exist_ok=True)
++            (args.logs_dir / f"herdr-{version}.log").write_text(out)
+         tests = test_results(out)
+         detail = ""
+         if run.returncode != 0:
+@@ -243,11 +249,12 @@ def main() -> int:
+ 
+     leak = subprocess.run([str(ROOT / "scripts/check-no-leaked-processes"), "--run-id", env["HT_LEAK_RUN_ID"]],
+                           cwd=ROOT)
+-    names = [COLUMNS[name] for name in MATRIX]
++    cases = [args.case] if args.case else MATRIX
++    names = [COLUMNS[name] for name in cases]
+     lines = [f"Herdr release matrix at {head} on {asset}", "",
+              "| Herdr | Result | Time | " + " | ".join(names) + " | Detail |",
+              "| --- | --- | --- | " + " | ".join("---" for _ in names) + " | --- |"]
+-    lines += [f"| {v} | {r} | {t:.1f}s | " + " | ".join(tests.get(name, "-") for name in MATRIX)
++    lines += [f"| {v} | {r} | {t:.1f}s | " + " | ".join(tests.get(name, "-") for name in cases)
+               + f" | {d.replace('|', '/')} |" for v, r, t, tests, d in results]
+     lines += ["", f"Leak check: {'clean' if leak.returncode == 0 else 'LEAKS (see above)'}"]
+     print("\n".join(lines))

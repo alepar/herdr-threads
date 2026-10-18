@@ -1,0 +1,28 @@
+diff --git a/src/harness/launch.rs b/src/harness/launch.rs
+index 116adeccb..943839f4a 100644
+--- a/src/harness/launch.rs
++++ b/src/harness/launch.rs
+@@ -1045,7 +1045,8 @@ pub fn submit_prepared_with_evidence(
+ #[path = "../../tests/harness/launch.rs"]
+ pub(crate) mod tests;
+ 
+-/// Resolve only the adapter-declared config variable, retaining the existing pane-shell fallback.
++/// Preserve explicit captured selection; otherwise retain the pane-shell fallback
++/// for the adapter-declared config variable.
+ pub(crate) fn native_scope(
+     request: &super::adapter::LaunchRequest,
+     id: &str,
+@@ -1059,6 +1060,13 @@ pub(crate) fn native_scope(
+             "launch budget exhausted",
+         ));
+     }
++    if let Some(root) = &request.environment.explicit_profile_directory {
++        return Ok(super::adapter::LaunchScope {
++            setup: super::adapter::ResolvedSetupScope::ConfigRoot(root.clone()),
++            working_directory: request.environment.cwd.clone(),
++            config_source: "explicit_profile_directory",
++        });
++    }
+     let pane = probe
+         .pane_shell_env_bounded(variable, request.environment.clock.as_ref(), budget)
+         .map(std::path::PathBuf::from)

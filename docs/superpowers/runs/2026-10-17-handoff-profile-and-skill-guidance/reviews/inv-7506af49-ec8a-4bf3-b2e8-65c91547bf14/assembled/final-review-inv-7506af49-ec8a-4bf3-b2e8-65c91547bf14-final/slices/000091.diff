@@ -1,0 +1,315 @@
+diff --git a/tests/integration/herdr_release_smoke.rs b/tests/integration/herdr_release_smoke.rs
+index 3924c8db4..5f832dfab 100644
+--- a/tests/integration/herdr_release_smoke.rs
++++ b/tests/integration/herdr_release_smoke.rs
+@@ -89,17 +89,25 @@ impl Matrix {
+         executable(
+             &bin.join("codex"),
+             &format!(
+-                "#!/bin/sh\nexec python3 -I {} \"$@\"\n",
++                "#!/bin/sh\nexport FAKE_CODEX_LOG_DIR=\"$HOME/.fake-codex\"\nexec python3 -I {} \"$@\"\n",
+                 fixture.join("codex.js").display()
+             ),
+         );
+         executable(
+             &bin.join("claude"),
+             "#!/bin/sh\n[ \"$1\" = --version ] && { echo '2.1.0 (Claude Code)'; exit 0; }\n\
++             python3 \"$HOME/record-child.py\" claude \"$@\"\n\
+              printf '\\033[2J\\033[H╭──────────────────────────╮\\n│ ✻ Welcome to Claude Code │\\n\
+              ╰──────────────────────────╯\\n\\n❯ \\n  ? for shortcuts\\n'\n\
+              while IFS= read -r line; do [ \"$line\" = exit ] && exit 0; done\n",
+         );
++        executable(
++            &bin.join("agy"),
++            "#!/bin/sh\npython3 \"$HOME/record-child.py\" agy \"$@\"\nprintf 'agy stand-in\\n> '\nwhile IFS= read -r line; do [ \"$line\" = exit ] && exit 0; done\n",
++        );
++        fs::create_dir_all(host.root().join("home")).unwrap();
++        fs::write(host.root().join("home/record-child.py"),
++            "import json,os,sys,time\nfrom pathlib import Path\np=Path(os.environ['HOME'])/('.fake-'+sys.argv[1]);p.mkdir(exist_ok=True)\n(p/(str(time.time_ns())+'.json')).write_text(json.dumps({'pane':os.environ.get('HERDR_PANE_ID'),'cwd':os.getcwd(),'home':os.environ['HOME'],'config_home':os.environ.get('CLAUDE_CONFIG_DIR') if sys.argv[1]=='claude' else None,'argv':sys.argv[1:]}))\n").unwrap();
+         // Agents' own `herdr-threads` calls reach the plugin's executable.
+         std::os::unix::fs::symlink(plugin.join("bin").join(PLUGIN), bin.join(PLUGIN)).unwrap();
+         let m = Matrix {
+@@ -419,6 +427,9 @@ impl Matrix {
+     fn agent_ht(&self, pane: &str, args: &str) -> Value {
+         let tool = self.agent_run(pane, &format!("herdr-threads --json {args}"));
+         assert_eq!(tool["rc"], 0, "agent `{args}`: {tool}");
++        if !tool["result_json"].is_null() {
++            return tool["result_json"].clone();
++        }
+         serde_json::from_str(tool["stdout"].as_str().unwrap())
+             .unwrap_or_else(|e| panic!("agent `{args}` output: {e}: {tool}"))
+     }
+@@ -426,6 +437,36 @@ impl Matrix {
+ 
+ impl Drop for Matrix {
+     fn drop(&mut self) {
++        // Preserve child-observed records and private server/daemon logs before teardown,
++        // including on assertion failure. Fixtures contain no real config or credentials.
++        if let Some(dir) = std::env::var_os("HT_HERDR_MATRIX_EVIDENCE") {
++            let dir = PathBuf::from(dir)
++                .join(&self.version)
++                .join(self.host.root().file_name().unwrap());
++            let _ = fs::create_dir_all(&dir);
++            for name in [".fake-codex", ".fake-claude", ".fake-agy"] {
++                if let Ok(entries) = fs::read_dir(self.home().join(name)) {
++                    let target = dir.join(name);
++                    let _ = fs::create_dir_all(&target);
++                    for entry in entries.flatten() {
++                        let _ = fs::copy(entry.path(), target.join(entry.file_name()));
++                    }
++                }
++            }
++            for (source, name) in [
++                (self.host.root().join("server-1.out"), "server.log"),
++                (
++                    self.host
++                        .root()
++                        .join("st/herdr/plugins/herdr-threads/node/daemon.log"),
++                    "daemon.log",
++                ),
++            ] {
++                if source.is_file() {
++                    let _ = fs::copy(source, dir.join(name));
++                }
++            }
++        }
+         // The daemon Herdr's startup entry started; the root teardown that
+         // follows also stops anything naming the private root.
+         let _ = self.ht_out(&["daemon", "stop"]);
+@@ -690,11 +731,22 @@ fn herdr_release_launch_and_handoff() {
+     // The caller agent chooses each target itself (a real top-level session).
+     let auto = m.agent_ht(
+         &caller_pane,
+-        &format!("handoff --new-tab ho-auto --kind codex --cwd {cwd} -- handoff-auto"),
++        "handoff --new-tab ho-auto --kind codex -- handoff-auto",
+     );
+     assert_eq!(auto["bootstrap"]["state"], "completed", "{auto}");
+     let (pane, thread) = target(&auto);
+     received(&pane, &thread);
++    let default_child = &m.log_of(&pane)[0];
++    assert_eq!(
++        default_child["cwd"],
++        home.canonicalize().unwrap().to_str().unwrap(),
++        "{default_child}"
++    );
++    assert_eq!(
++        default_child["config_home"],
++        home.join(".codex").to_str().unwrap(),
++        "{default_child}"
++    );
+ 
+     let explicit = m.agent_ht(
+         &caller_pane,
+@@ -731,10 +783,212 @@ fn herdr_release_launch_and_handoff() {
+     assert!(delivered.to_string().contains(&peer), "{delivered}");
+     m.turn(&peer_pane, "next");
+     received(&peer_pane, "handoff-existing");
++    profile_directory_smoke(&m, &caller_pane);
+     let _ = caller;
+     println!("herdr {}: launch and handoff matrix passed", m.version);
+ }
+ 
++/// Public entry point, real private-server tab creation, and a child-observed record.
++/// Dropping the env projection or ignoring the selected cwd makes these checks fail.
++fn profile_directory_smoke(m: &Matrix, caller: &str) {
++    let cwd = m.home().join("working ' \" directory");
++    fs::create_dir(&cwd).unwrap();
++    let cwd = cwd.canonicalize().unwrap();
++    // The no-option launch control inherited the ordinary scratch profile and cwd.
++    let control = &m.log_of(caller)[0];
++    assert_eq!(
++        control["config_home"],
++        m.home().join(".codex").to_str().unwrap()
++    );
++    assert_eq!(
++        control["cwd"],
++        m.home().canonicalize().unwrap().to_str().unwrap()
++    );
++
++    let thread = id(&m.agent_ht(caller, "thread create --topic selected-profile"));
++    for (kind, key) in [("codex", "CODEX_HOME"), ("claude", "CLAUDE_CONFIG_DIR")] {
++        let selected = m.home().join(format!("{kind} profile ' \" selected"));
++        fs::create_dir(&selected).unwrap();
++        let selected = selected.canonicalize().unwrap();
++        // Setup uses the public CLI under the selected scratch scope; no credentials are copied.
++        let mut setup = m.cli();
++        setup
++            .env(key, &selected)
++            .args(["setup", kind, "--harness-binary"])
++            .arg(m.bin.join(kind))
++            .arg("--state-dir")
++            .arg(m.host.root().join("st/herdr/plugins").join(PLUGIN))
++            .arg("--host-endpoint")
++            .arg(m.host.socket_path());
++        let setup = setup.output().unwrap();
++        assert!(
++            setup.status.success(),
++            "{}",
++            String::from_utf8_lossy(&setup.stderr)
++        );
++
++        for (label, route) in [
++            ("profile-auto", String::new()),
++            ("profile-thread", format!("--thread {thread}")),
++        ] {
++            let out = m.agent_ht(caller, &format!(
++            "handoff --new-tab {kind}-{label} {route} --kind {kind} --profile-dir {} --cwd {} -- selected-profile-work",
++            quote(&selected), quote(&cwd)
++        ));
++            let frame = out.get("bootstrap").or_else(|| out.get("handoff")).unwrap();
++            assert_eq!(frame["outcome"], "started", "{out}");
++            let pane = frame["pane"]
++                .as_str()
++                .or_else(|| frame["launch"]["pane"].as_str())
++                .unwrap();
++            let start = wait_for("selected child record", Duration::from_secs(20), || {
++                child_start(m, kind, pane).ok_or_else(|| pane.to_owned())
++            });
++            assert_eq!(start["cwd"], cwd.to_str().unwrap(), "{start}");
++            assert_eq!(start["config_home"], selected.to_str().unwrap(), "{start}");
++            assert_eq!(
++                start["home"],
++                m.home().to_str().unwrap(),
++                "HOME must stay isolated: {start}"
++            );
++            // Even after the invoking shell and both caller profile hints change, a completed
++            // public retry uses the retained original and performs no second native launch.
++            let before = effect_counts(m, caller);
++            let recovery = frame["recovery_ref"].as_str().unwrap();
++            let changed = m.agent_run(caller, &format!(
++            "cd / && CODEX_HOME=/missing-changed-caller CLAUDE_CONFIG_DIR=/missing-changed-caller herdr-threads --json retry {recovery}"
++        ));
++            assert_eq!(changed["rc"], 0, "{changed}");
++            assert!(
++                changed["result_json"].to_string().contains(pane),
++                "{changed}"
++            );
++            assert_eq!(effect_counts(m, caller), before, "retry must be historical");
++        }
++    }
++
++    let before = effect_counts(m, caller);
++    let profile = m.home().join(".codex");
++    let missing = m.home().join("missing-directory");
++    let file = m.home().join("ordinary-file");
++    fs::write(&file, "not a directory").unwrap();
++    for options in [
++        format!(
++            "--new-tab invalid --kind codex --profile-dir {}",
++            quote(&missing)
++        ),
++        format!("--new-tab invalid --kind codex --cwd {}", quote(&missing)),
++        format!("--new-tab invalid --kind codex --cwd {}", quote(&file)),
++        format!(
++            "--new-tab invalid --kind codex --profile-dir {}",
++            quote(&file)
++        ),
++        format!(
++            "--new-tab invalid --kind agy --profile-dir {}",
++            quote(&profile)
++        ),
++        format!(
++            "--pane {caller} --kind codex --profile-dir {}",
++            quote(&profile)
++        ),
++        format!("--pane {caller} --kind codex --cwd {}", quote(&cwd)),
++        format!(
++            "--existing --seat missing-seat --profile-dir {}",
++            quote(&profile)
++        ),
++        format!("--existing --seat missing-seat --cwd {}", quote(&cwd)),
++    ] {
++        let out = m.agent_run(
++            caller,
++            &format!("herdr-threads --json handoff {options} -- refused-work"),
++        );
++        assert_ne!(out["rc"], 0, "must refuse {options}: {out}");
++        assert_eq!(
++            effect_counts(m, caller),
++            before,
++            "refusal effects: {options}"
++        );
++    }
++    // agy has no independent profile selector; cwd-only new-tab remains supported.
++    let agy = m.agent_ht(
++        caller,
++        &format!(
++            "handoff --new-tab agy-cwd --kind agy --cwd {} -- cwd-only-work",
++            quote(&cwd)
++        ),
++    );
++    let frame = &agy["bootstrap"];
++    assert_eq!(frame["outcome"], "started", "{agy}");
++    let pane = frame["pane"].as_str().unwrap();
++    let observed = wait_for("agy cwd child", Duration::from_secs(20), || {
++        child_start(m, "agy", pane).ok_or_else(|| pane.to_owned())
++    });
++    assert_eq!(observed["cwd"], cwd.to_str().unwrap(), "{observed}");
++    assert_eq!(observed["home"], m.home().to_str().unwrap(), "{observed}");
++}
++
++fn child_start(m: &Matrix, kind: &str, pane: &str) -> Option<Value> {
++    if kind == "codex" {
++        return m.log_of(pane).into_iter().find(|e| e["kind"] == "start");
++    }
++    fs::read_dir(m.home().join(format!(".fake-{kind}")))
++        .ok()?
++        .flatten()
++        .find_map(|entry| {
++            let row: Value = serde_json::from_slice(&fs::read(entry.path()).ok()?).ok()?;
++            (row["pane"] == pane).then_some(row)
++        })
++}
++
++/// Durable state plus native tab and start counts: parser/admission refusals must not
++/// allocate a thread/seat/invitation/message, create a tab or start a helper.
++fn effect_counts(m: &Matrix, caller: &str) -> Vec<i64> {
++    let db = rusqlite::Connection::open_with_flags(
++        m.host
++            .root()
++            .join("st/herdr/plugins/herdr-threads/node/herdr-threads.db"),
++        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
++    )
++    .unwrap();
++    let mut counts: Vec<i64> = [
++        "SELECT count(*) FROM threads",
++        "SELECT count(*) FROM seats",
++        "SELECT count(*) FROM invitations",
++        "SELECT count(*) FROM messages WHERE kind='ordinary'",
++    ]
++    .iter()
++    .map(|sql| db.query_row(sql, [], |row| row.get(0)).unwrap())
++    .collect();
++    let tabs = m.herdr(&[
++        "tab",
++        "list",
++        "--workspace",
++        caller.split(':').next().unwrap(),
++    ]);
++    counts.push(
++        tabs["result"]["tabs"]
++            .as_array()
++            .unwrap_or_else(|| panic!("{tabs}"))
++            .len() as i64,
++    );
++    counts.push(m.logs().len() as i64);
++    counts.push(
++        fs::read_dir(m.home().join(".fake-agy"))
++            .map(|d| d.count() as i64)
++            .unwrap_or(0),
++    );
++    counts.push(
++        fs::read_dir(m.home().join(".fake-claude"))
++            .map(|d| d.count() as i64)
++            .unwrap_or(0),
++    );
++    counts
++}
++
++fn quote(path: &Path) -> String {
++    format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"))
++}
++
+ #[test]
+ #[ignore = "run per release by scripts/herdr-release-smoke (official binary on PATH)"]
+ fn herdr_release_wake() {

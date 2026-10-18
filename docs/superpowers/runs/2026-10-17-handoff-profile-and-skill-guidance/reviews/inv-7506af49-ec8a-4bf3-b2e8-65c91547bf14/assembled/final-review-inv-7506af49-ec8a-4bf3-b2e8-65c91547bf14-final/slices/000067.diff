@@ -1,0 +1,44 @@
+diff --git a/src/harness/hermes/launch.rs b/src/harness/hermes/launch.rs
+index 3fcc060b5..716c8917a 100644
+--- a/src/harness/hermes/launch.rs
++++ b/src/harness/hermes/launch.rs
+@@ -182,6 +182,18 @@ fn owned(
+     Ok(status)
+ }
+ impl LaunchPolicy for HermesLaunch {
++    fn explicit_directory_env(
++        &self,
++        directory: &std::path::Path,
++    ) -> Result<BTreeMap<String, String>, ApiError> {
++        let directory = directory.to_str().ok_or_else(|| {
++            error(
++                ErrorCode::InvalidRequest,
++                "invalid explicit profile directory",
++            )
++        })?;
++        Ok([("HERMES_HOME".into(), directory.into())].into())
++    }
+     fn requires_process_hint(&self) -> bool {
+         true
+     }
+@@ -385,6 +397,20 @@ impl LaunchPolicy for HermesLaunch {
+ mod tests {
+     use super::*;
+     #[test]
++    fn hermes_explicit_root_projection_preserves_requested_root() {
++        let root = std::path::Path::new("/owned/root with spaces");
++        assert_eq!(
++            POLICY.explicit_directory_env(root).unwrap(),
++            BTreeMap::from([("HERMES_HOME".into(), root.to_str().unwrap().into())])
++        );
++        use std::os::unix::ffi::OsStrExt;
++        let invalid = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/owned/\xff"));
++        assert_eq!(
++            POLICY.explicit_directory_env(invalid).unwrap_err().code,
++            ErrorCode::InvalidRequest
++        );
++    }
++    #[test]
+     fn source_grammar_fixtures_preserve_owned_chat_profile_and_refuse_ambiguous_forms() {
+         let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(
+             "../../../tests/fixtures/hermes/launch-argv.json"

@@ -1,0 +1,27 @@
+diff --git a/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-10.md b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-10.md
+new file mode 100644
+index 000000000..62c079149
+--- /dev/null
++++ b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-10.md
+@@ -0,0 +1,21 @@
++Verify the goal end to end and fix small unwired directory/context/guidance integration gaps; file blockers for larger gaps.
++
++Spec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md
++Files-touched: tests/cli/topology_handoff.rs, tests/integration/herdr_release_smoke.rs, relevant handoff source/test paths only for small integration repairs, docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/evidence
++owns: terminal integration sweep across selected directory capture, canonical admission, real child launch, retry and shipped guidance.
++consumes: all implementation, docs and configuration smoke leaves.
++
++## Acceptance
++- [ ] Verify automatic and explicit-thread public new-tab profile/cwd flows including actual child env/cwd, frozen retry and refusal-before-effects against owned fixtures.
++- [ ] Sweep for unwired config, parameters and interfaces; add integration coverage no existing leaf covers; fix small gaps inline and file blockers for large gaps.
++- [ ] Confirm skill/help/docs behavior aligns and no authentication, receipt or launch guard claims weaken.
++- [ ] Run focused checks and scoped process/temp cleanup; caller retains root acceptance, final review, default-feature/full-suite checks, merge/release handoff. No merge, tag, push or live quota.
++blocked-by ht-1urq.1: consumes all leaves (integration sweep)
++blocked-by ht-1urq.2: consumes all leaves (integration sweep)
++blocked-by ht-1urq.3: consumes all leaves (integration sweep)
++blocked-by ht-1urq.4: consumes all leaves (integration sweep)
++blocked-by ht-1urq.5: consumes all leaves (integration sweep)
++blocked-by ht-1urq.6: consumes all leaves (integration sweep)
++blocked-by ht-1urq.7: consumes all leaves (integration sweep)
++blocked-by ht-1urq.8: consumes all leaves (integration sweep)
++blocked-by ht-1urq.9: consumes all leaves (integration sweep)

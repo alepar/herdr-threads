@@ -1,0 +1,2432 @@
+diff --git a/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/code-profile-original.json b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/code-profile-original.json
+new file mode 100644
+index 000000000..55f8ff783
+--- /dev/null
++++ b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/code-profile-original.json
+@@ -0,0 +1,2426 @@
++{
++  "version": 1,
++  "epic": "ht-1urq",
++  "cap": 1,
++  "earlyUnblock": false,
++  "runtimeSlots": null,
++  "invocations": [
++    {
++      "runId": "01a14ce1-e8af-7090-b51f-107f30a07f74",
++      "dir": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-40-36-01a14ce1-e8af-7090-b51f-107f30a07f74.jsonl",
++      "source": "codex",
++      "start": "2026-10-18T02:41:38.010Z",
++      "end": "2026-10-18T04:41:33.840Z",
++      "agents": 64,
++      "timed": 64,
++      "journal": true
++    }
++  ],
++  "window": {
++    "start": "2026-10-18T02:41:38.010Z",
++    "lastLanding": "2026-10-18T04:39:44.830Z",
++    "end": "2026-10-18T04:41:33.840Z",
++    "graphMs": 7086820,
++    "wallMs": 7195830
++  },
++  "graphScope": "observed invocation/residual graph",
++  "diagnosis": {
++    "planningMs": 217491,
++    "windowMs": 7086820,
++    "dominant": "task graph"
++  },
++  "shape": {
++    "beads": 11,
++    "edges": 24,
++    "depth": 7,
++    "width": 1.6,
++    "levels": [
++      2,
++      3,
++      2,
++      1,
++      1,
++      1,
++      1
++    ],
++    "criticalPath": [
++      "ht-1urq.1",
++      "ht-1urq.3",
++      "ht-1urq.4",
++      "ht-1urq.6",
++      "ht-1urq.19",
++      "ht-1urq.9",
++      "ht-1urq.10"
++    ],
++    "fanOut": [
++      {
++        "id": "ht-1urq.1",
++        "direct": 5,
++        "transitive": 9
++      },
++      {
++        "id": "ht-1urq.2",
++        "direct": 3,
++        "transitive": 5
++      },
++      {
++        "id": "ht-1urq.3",
++        "direct": 3,
++        "transitive": 5
++      },
++      {
++        "id": "ht-1urq.4",
++        "direct": 2,
++        "transitive": 4
++      },
++      {
++        "id": "ht-1urq.5",
++        "direct": 2,
++        "transitive": 4
++      }
++    ],
++    "cycles": []
++  },
++  "cuts": [],
++  "beads": [
++    {
++      "id": "ht-1urq.1",
++      "n": null,
++      "deps": [],
++      "dependents": [
++        "ht-1urq.10",
++        "ht-1urq.5",
++        "ht-1urq.4",
++        "ht-1urq.3",
++        "ht-1urq.2"
++      ],
++      "attempts": [
++        "IMPLEMENTED"
++      ],
++      "landed": true,
++      "verificationOnlyCompleted": false,
++      "createdAt": "2026-10-18T02:47:02.000Z",
++      "mappingReadyAt": "2026-10-18T02:59:23.084Z",
++      "dependencyReadyAt": "2026-10-18T02:59:23.084Z",
++      "readyAt": "2026-10-18T02:59:23.084Z",
++      "dispatchedAt": "2026-10-18T02:59:36.875Z",
++      "landedAt": "2026-10-18T03:15:03.494Z",
++      "waitMs": 13791,
++      "waitCause": "none",
++      "carriedMs": 0,
++      "implMs": 646079,
++      "implByTool": {
++        "read": 1205,
++        "git": 11146,
++        "shell": 45846,
++        "test": 8020,
++        "poll": 87087,
++        "edit": 7928,
++        "other": 529
++      },
++      "implToolMs": 161761,
++      "reviewMs": 84416,
++      "fixMs": 0,
++      "stackWaitMs": 0,
++      "queueWaitMs": 8888,
++      "laneMs": 169428,
++      "seamMs": 0,
++      "blockerMs": 0,
++      "reworkMs": 0,
++      "criticalMs": 0,
++      "stackParents": [],
++      "lateEdges": []
++    },
++    {
++      "id": "ht-1urq.7",
++      "n": null,
++      "deps": [],
++      "dependents": [
++        "ht-1urq.10",
++        "ht-1urq.8"
++      ],
++      "attempts": [
++        null,
++        "IMPLEMENTED"
++      ],
++      "landed": true,
++      "verificationOnlyCompleted": false,
++      "createdAt": "2026-10-18T02:47:25.000Z",
++      "mappingReadyAt": "2026-10-18T02:59:23.084Z",
++      "dependencyReadyAt": "2026-10-18T02:59:23.084Z",
++      "readyAt": "2026-10-18T02:59:23.084Z",
++      "dispatchedAt": "2026-10-18T02:59:41.757Z",
++      "landedAt": "2026-10-18T03:12:09.065Z",
++      "waitMs": 18673,
++      "waitCause": "none",
++      "carriedMs": 0,
++      "implMs": 444762,
++      "implByTool": {
++        "read": 381,
++        "git": 11231,
++        "shell": 37530,
++        "other": 604,
++        "test": 7265,
++        "build": 1166,
++        "poll": 128250
++      },
++      "implToolMs": 186427,
++      "reviewMs": 82367,
++      "fixMs": 0,
++      "stackWaitMs": 0,
++      "queueWaitMs": 11680,
++      "laneMs": 200886,
++      "seamMs": 0,
++      "blockerMs": 0,
++      "reworkMs": 1,
++      "criticalMs": 0,
++      "stackParents": [],
++      "lateEdges": []
++    },
++    {
++      "id": "ht-1urq.3",
++      "n": null,
++      "deps": [
++        "ht-1urq.1"
++      ],
++      "dependents": [
++        "ht-1urq.10",
++        "ht-1urq.6",
++        "ht-1urq.4"
++      ],
++      "attempts": [
++        null,
++        "IMPLEMENTED"
++      ],
++      "landed": true,
++      "verificationOnlyCompleted": false,
++      "createdAt": "2026-10-18T02:47:07.000Z",
++      "mappingReadyAt": "2026-10-18T02:59:23.084Z",
++      "dependencyReadyAt": null,
++      "readyAt": null,
++      "dispatchedAt": "2026-10-18T03:10:56.246Z",
++      "landedAt": "2026-10-18T03:32:17.664Z",
++      "waitMs": null,
++      "waitCause": "unknown",
++      "carriedMs": null,
++      "implMs": 969672,
++      "implByTool": {
++        "read": 1868,
++        "git": 7681,
++        "shell": 38374,
++        "other": 797,
++        "edit": 3048,
++        "test": 40227,
++        "poll": 105233,
++        "build": 9985
++      },
++      "implToolMs": 207213,
++      "reviewMs": 113932,
++      "fixMs": 0,
++      "stackWaitMs": 0,
++      "queueWaitMs": 79354,
++      "laneMs": 138152,
++      "seamMs": 0,
++      "blockerMs": 0,
++      "reworkMs": 1,
++      "criticalMs": 841989,
++      "stackParents": [
++        "ht-1urq.1"
++      ],
++      "lateEdges": []
++    },
++    {
++      "id": "ht-1urq.5",
++      "n": null,
++      "deps": [
++        "ht-1urq.1"
++      ],
++      "dependents": [
++        "ht-1urq.10",
++        "ht-1urq.6"
++      ],
++      "attempts": [
++        "IMPLEMENTED"
++      ],
++      "landed": true,
++      "verificationOnlyCompleted": false,
++      "createdAt": "2026-10-18T02:47:14.000Z",
++      "mappingReadyAt": "2026-10-18T02:59:23.084Z",
++      "dependencyReadyAt": null,
++      "readyAt": null,
++      "dispatchedAt": "2026-10-18T03:11:09.881Z",
++      "landedAt": "2026-10-18T03:29:48.837Z",
++      "waitMs": null,
++      "waitCause": "unknown",
++      "carriedMs": null,
++      "implMs": 793848,
++      "implByTool": {
++        "read": 1264,
++        "git": 9894,
++        "shell": 18087,
++        "test": 32197,
++        "other": 1783,
++        "poll": 169397,
++        "edit": 10769,
++        "build": 10814
++      },
++      "implToolMs": 254205,
++      "reviewMs": 147344,
++      "fixMs": 0,
++      "stackWaitMs": 0,
++      "queueWaitMs": 23048,
++      "laneMs": 143757,
++      "seamMs": 0,
++      "blockerMs": 0,
++      "reworkMs": 0,
++      "criticalMs": 1118956,
++      "stackParents": [
++        "ht-1urq.1"
++      ],
++      "lateEdges": []
++    },
++    {
++      "id": "ht-1urq.2",
++      "n": null,
++      "deps": [
++        "ht-1urq.1"
++      ],
++      "dependents": [
++        "ht-1urq.10",
++        "ht-1urq.8",
++        "ht-1urq.6"
++      ],
++      "attempts": [
++        "IMPLEMENTED"
++      ],
++      "landed": true,
++      "verificationOnlyCompleted": false,
++      "createdAt": "2026-10-18T02:47:04.000Z",
++      "mappingReadyAt": "2026-10-18T02:59:23.084Z",
++      "dependencyReadyAt": null,
++      "readyAt": null,
++      "dispatchedAt": "2026-10-18T03:11:50.013Z",
++      "landedAt": "2026-10-18T03:34:49.709Z",
++      "waitMs": null,
++      "waitCause": "unknown",
++      "carriedMs": null,
++      "implMs": 986088,
++      "implByTool": {
++        "read": 1784,
++        "git": 10432,
++        "shell": 31174,
++        "other": 945,
++        "edit": 6237,
++        "test": 46049,
++        "poll": 247387,
++        "build": 12357
++      },
++      "implToolMs": 356365,
++      "reviewMs": 65410,
++      "fixMs": 0,
++      "stackWaitMs": 0,
++      "queueWaitMs": 169968,
++      "laneMs": 139439,
++      "seamMs": 0,
++      "blockerMs": 0,
++      "reworkMs": 0,
++      "criticalMs": 152045,
++      "stackParents": [
++        "ht-1urq.1"
++      ],
++      "lateEdges": []
++    },
++    {
++      "id": "ht-1urq.4",
++      "n": null,
++      "deps": [
++        "ht-1urq.3",
++        "ht-1urq.1"
++      ],
++      "dependents": [
++        "ht-1urq.10",
++        "ht-1urq.6"
++      ],
++      "attempts": [
++        "IMPLEMENTED"
++      ],
++      "landed": true,
++      "verificationOnlyCompleted": false,
++      "createdAt": "2026-10-18T02:47:11.000Z",
++      "mappingReadyAt": "2026-10-18T02:59:23.084Z",
++      "dependencyReadyAt": null,
++      "readyAt": null,
++      "dispatchedAt": "2026-10-18T03:26:55.909Z",
++      "landedAt": "2026-10-18T03:41:21.926Z",
++      "waitMs": null,
++      "waitCause": "unknown",
++      "carriedMs": null,
++      "implMs": 580743,
++      "implByTool": {
++        "read": 1214,
++        "git": 11226,
++        "shell": 30000,
++        "poll": 79093,
++        "test": 15918,
++        "other": 785,
++        "edit": 509,
++        "build": 6316
++      },
++      "implToolMs": 145061,
++      "reviewMs": 66098,
++      "fixMs": 0,
++      "stackWaitMs": 0,
++      "queueWaitMs": 13842,
++      "laneMs": 180661,
++      "seamMs": 0,
++      "blockerMs": 0,
++      "reworkMs": 0,
++      "criticalMs": 0,
++      "stackParents": [
++        "ht-1urq.3"
++      ],
++      "lateEdges": []
++    },
++    {
++      "id": "ht-1urq.8",
++      "n": null,
++      "deps": [
++        "ht-1urq.2",
++        "ht-1urq.7"
++      ],
++      "dependents": [
++        "ht-1urq.10"
++      ],
++      "attempts": [
++        null,
++        "IMPLEMENTED"
++      ],
++      "landed": true,
++      "verificationOnlyCompleted": false,
++      "createdAt": "2026-10-18T02:47:26.000Z",
++      "mappingReadyAt": "2026-10-18T02:59:23.084Z",
++      "dependencyReadyAt": "2026-10-18T03:34:49.709Z",
++      "readyAt": "2026-10-18T03:34:49.709Z",
++      "dispatchedAt": "2026-10-18T03:35:03.742Z",
++      "landedAt": "2026-10-18T03:52:51.673Z",
++      "waitMs": 14033,
++      "waitCause": "none",
++      "carriedMs": 0,
++      "implMs": 868426,
++      "implByTool": {
++        "read": 1417,
++        "git": 18955,
++        "shell": 55919,
++        "edit": 96,
++        "test": 18068,
++        "other": 1037,
++        "poll": 273614,
++        "build": 12393
++      },
++      "implToolMs": 381499,
++      "reviewMs": 56865,
++      "fixMs": 0,
++      "stackWaitMs": 0,
++      "queueWaitMs": 8473,
++      "laneMs": 119194,
++      "seamMs": 0,
++      "blockerMs": 0,
++      "reworkMs": 64188,
++      "criticalMs": 0,
++      "stackParents": [],
++      "lateEdges": []
++    },
++    {
++      "id": "ht-1urq.6",
++      "n": null,
++      "deps": [
++        "ht-1urq.3",
++        "ht-1urq.5",
++        "ht-1urq.4",
++        "ht-1urq.2"
++      ],
++      "dependents": [
++        "ht-1urq.19",
++        "ht-1urq.10",
++        "ht-1urq.9"
++      ],
++      "attempts": [
++        "IMPLEMENTED"
++      ],
++      "landed": true,
++      "verificationOnlyCompleted": false,
++      "createdAt": "2026-10-18T02:47:17.000Z",
++      "mappingReadyAt": "2026-10-18T02:59:23.084Z",
++      "dependencyReadyAt": null,
++      "readyAt": null,
++      "dispatchedAt": "2026-10-18T03:37:11.143Z",
++      "landedAt": "2026-10-18T04:03:45.985Z",
++      "waitMs": null,
++      "waitCause": "unknown",
++      "carriedMs": null,
++      "implMs": 1004423,
++      "implByTool": {
++        "read": 4378,
++        "git": 13538,
++        "shell": 27002,
++        "other": 1052,
++        "test": 13524,
++        "poll": 97528,
++        "edit": 19279,
++        "build": 1170
++      },
++      "implToolMs": 177471,
++      "reviewMs": 117649,
++      "fixMs": 290195,
++      "stackWaitMs": 0,
++      "queueWaitMs": 5036,
++      "laneMs": 133695,
++      "seamMs": 0,
++      "blockerMs": 0,
++      "reworkMs": 0,
++      "criticalMs": 1165925,
++      "stackParents": [
++        "ht-1urq.4"
++      ],
++      "lateEdges": []
++    },
++    {
++      "id": "ht-1urq.9",
++      "n": null,
++      "deps": [
++        "ht-1urq.19",
++        "ht-1urq.6"
++      ],
++      "dependents": [
++        "ht-1urq.10"
++      ],
++      "attempts": [
++        null,
++        "IMPLEMENTED"
++      ],
++      "landed": true,
++      "verificationOnlyCompleted": false,
++      "createdAt": "2026-10-18T02:47:30.000Z",
++      "mappingReadyAt": "2026-10-18T02:59:23.084Z",
++      "dependencyReadyAt": null,
++      "readyAt": null,
++      "dispatchedAt": "2026-10-18T03:54:18.408Z",
++      "landedAt": "2026-10-18T04:32:02.387Z",
++      "waitMs": null,
++      "waitCause": "unknown",
++      "carriedMs": null,
++      "implMs": 2050685,
++      "implByTool": {
++        "read": 9896,
++        "git": 14736,
++        "shell": 65068,
++        "other": 2437,
++        "edit": 29271,
++        "test": 56966,
++        "poll": 223583,
++        "build": 2587
++      },
++      "implToolMs": 404544,
++      "reviewMs": 107611,
++      "fixMs": 0,
++      "stackWaitMs": 0,
++      "queueWaitMs": 12756,
++      "laneMs": 173865,
++      "seamMs": 0,
++      "blockerMs": 0,
++      "reworkMs": 1,
++      "criticalMs": 0,
++      "stackParents": [
++        "ht-1urq.19",
++        "ht-1urq.6"
++      ],
++      "lateEdges": []
++    },
++    {
++      "id": "ht-1urq.19",
++      "n": null,
++      "deps": [
++        "ht-1urq.6"
++      ],
++      "dependents": [
++        "ht-1urq.10",
++        "ht-1urq.9"
++      ],
++      "attempts": [
++        "IMPLEMENTED"
++      ],
++      "landed": true,
++      "verificationOnlyCompleted": false,
++      "createdAt": "2026-10-18T04:00:47.000Z",
++      "mappingReadyAt": null,
++      "dependencyReadyAt": null,
++      "readyAt": null,
++      "dispatchedAt": "2026-10-18T04:03:12.005Z",
++      "landedAt": "2026-10-18T04:21:46.586Z",
++      "waitMs": null,
++      "waitCause": "unknown",
++      "carriedMs": null,
++      "implMs": 871003,
++      "implByTool": {
++        "read": 2388,
++        "git": 15025,
++        "shell": 31615,
++        "other": 845,
++        "edit": 13009,
++        "test": 54981,
++        "poll": 116202,
++        "build": 36366
++      },
++      "implToolMs": 270431,
++      "reviewMs": 74774,
++      "fixMs": 0,
++      "stackWaitMs": 0,
++      "queueWaitMs": 8941,
++      "laneMs": 138823,
++      "seamMs": 0,
++      "blockerMs": 0,
++      "reworkMs": 0,
++      "criticalMs": 1114581,
++      "stackParents": [
++        "ht-1urq.6"
++      ],
++      "lateEdges": []
++    },
++    {
++      "id": "ht-1urq.10",
++      "n": null,
++      "deps": [
++        "ht-1urq.4",
++        "ht-1urq.9",
++        "ht-1urq.8",
++        "ht-1urq.7",
++        "ht-1urq.2",
++        "ht-1urq.6",
++        "ht-1urq.5",
++        "ht-1urq.1",
++        "ht-1urq.19",
++        "ht-1urq.3"
++      ],
++      "dependents": [],
++      "attempts": [
++        null,
++        "IMPLEMENTED"
++      ],
++      "landed": true,
++      "verificationOnlyCompleted": false,
++      "createdAt": "2026-10-18T02:55:31.000Z",
++      "mappingReadyAt": "2026-10-18T02:59:23.084Z",
++      "dependencyReadyAt": null,
++      "readyAt": null,
++      "dispatchedAt": "2026-10-18T04:27:15.467Z",
++      "landedAt": "2026-10-18T04:39:44.830Z",
++      "waitMs": null,
++      "waitCause": "unknown",
++      "carriedMs": null,
++      "implMs": 521438,
++      "implByTool": {
++        "read": 700,
++        "git": 9906,
++        "shell": 12600,
++        "other": 628,
++        "poll": 133561,
++        "test": 21018,
++        "edit": 70,
++        "build": 1191
++      },
++      "implToolMs": 179674,
++      "reviewMs": 92717,
++      "fixMs": 0,
++      "stackWaitMs": 0,
++      "queueWaitMs": 9268,
++      "laneMs": 105303,
++      "seamMs": 0,
++      "blockerMs": 0,
++      "reworkMs": 1,
++      "criticalMs": 1078244,
++      "stackParents": [
++        "ht-1urq.9"
++      ],
++      "lateEdges": []
++    }
++  ],
++  "criticalPath": {
++    "ms": 7086820,
++    "byCategory": {
++      "other": 764765,
++      "wait": 1445427,
++      "dispatch": 190852,
++      "planning": 217491,
++      "implement": 3190714,
++      "unmeasured-gap": 179604,
++      "review": 432484,
++      "merge": 665474,
++      "fix": 9
++    },
++    "laneContentionMs": 281909,
++    "redo": {
++      "stack-conflict": {
++        "ms": 0,
++        "beads": []
++      },
++      "cancelled": {
++        "ms": 0,
++        "beads": []
++      },
++      "retry": {
++        "ms": 1,
++        "beads": [
++          "ht-1urq.10"
++        ]
++      }
++    },
++    "segments": [
++      {
++        "kind": "other",
++        "bead": null,
++        "label": "design",
++        "via": null,
++        "start": "2026-10-18T02:41:38.010Z",
++        "ms": 595273
++      },
++      {
++        "kind": "wait",
++        "bead": null,
++        "label": "previous → design_resume",
++        "via": null,
++        "start": "2026-10-18T02:51:33.283Z",
++        "ms": 152567
++      },
++      {
++        "kind": "other",
++        "bead": null,
++        "label": "design_resume",
++        "via": "previous",
++        "start": "2026-10-18T02:54:05.850Z",
++        "ms": 169492
++      },
++      {
++        "kind": "dispatch",
++        "bead": null,
++        "label": "previous → plan",
++        "via": null,
++        "start": "2026-10-18T02:56:55.342Z",
++        "ms": 29834
++      },
++      {
++        "kind": "planning",
++        "bead": null,
++        "label": "plan",
++        "via": "previous",
++        "start": "2026-10-18T02:57:25.176Z",
++        "ms": 117908
++      },
++      {
++        "kind": "wait",
++        "bead": "ht-1urq.3",
++        "label": "planned → impl:ht-1urq.3",
++        "via": null,
++        "start": "2026-10-18T02:59:23.084Z",
++        "ms": 693161
++      },
++      {
++        "kind": "implement",
++        "bead": "ht-1urq.3",
++        "label": "impl:ht-1urq.3",
++        "via": "planned",
++        "start": "2026-10-18T03:10:56.245Z",
++        "ms": 1
++      },
++      {
++        "kind": "unmeasured-gap",
++        "bead": null,
++        "label": "readiness unknown → impl:ht-1urq.5",
++        "via": null,
++        "start": "2026-10-18T03:10:56.246Z",
++        "ms": 13635
++      },
++      {
++        "kind": "implement",
++        "bead": "ht-1urq.5",
++        "label": "impl:ht-1urq.5",
++        "via": "slot",
++        "start": "2026-10-18T03:11:09.881Z",
++        "ms": 793848
++      },
++      {
++        "kind": "dispatch",
++        "bead": "ht-1urq.5",
++        "label": "chain → review:ht-1urq.5",
++        "via": null,
++        "start": "2026-10-18T03:24:23.729Z",
++        "ms": 10959
++      },
++      {
++        "kind": "review",
++        "bead": "ht-1urq.5",
++        "label": "review:ht-1urq.5",
++        "via": "chain",
++        "start": "2026-10-18T03:24:34.688Z",
++        "ms": 147344
++      },
++      {
++        "kind": "dispatch",
++        "bead": "ht-1urq.5",
++        "label": "chain → merge:ht-1urq.5",
++        "via": null,
++        "start": "2026-10-18T03:27:02.032Z",
++        "ms": 23048
++      },
++      {
++        "kind": "merge",
++        "bead": "ht-1urq.5",
++        "label": "merge:ht-1urq.5",
++        "via": "chain",
++        "start": "2026-10-18T03:27:25.080Z",
++        "ms": 143757
++      },
++      {
++        "kind": "dispatch",
++        "bead": "ht-1urq.3",
++        "label": "merge-lane → merge:ht-1urq.3",
++        "via": null,
++        "start": "2026-10-18T03:29:48.837Z",
++        "ms": 10675
++      },
++      {
++        "kind": "merge",
++        "bead": "ht-1urq.3",
++        "label": "merge:ht-1urq.3",
++        "via": "merge-lane",
++        "start": "2026-10-18T03:29:59.512Z",
++        "ms": 138152
++      },
++      {
++        "kind": "dispatch",
++        "bead": "ht-1urq.2",
++        "label": "merge-lane → merge:ht-1urq.2",
++        "via": null,
++        "start": "2026-10-18T03:32:17.664Z",
++        "ms": 12606
++      },
++      {
++        "kind": "merge",
++        "bead": "ht-1urq.2",
++        "label": "merge:ht-1urq.2",
++        "via": "merge-lane",
++        "start": "2026-10-18T03:32:30.270Z",
++        "ms": 1
++      },
++      {
++        "kind": "merge",
++        "bead": "ht-1urq.2",
++        "label": "merge:ht-1urq.2",
++        "via": "chain",
++        "start": "2026-10-18T03:32:30.271Z",
++        "ms": 139438
++      },
++      {
++        "kind": "unmeasured-gap",
++        "bead": null,
++        "label": "readiness unknown → impl:ht-1urq.6",
++        "via": null,
++        "start": "2026-10-18T03:34:49.709Z",
++        "ms": 141434
++      },
++      {
++        "kind": "implement",
++        "bead": "ht-1urq.6",
++        "label": "impl:ht-1urq.6",
++        "via": "dep",
++        "start": "2026-10-18T03:37:11.143Z",
++        "ms": 1004423
++      },
++      {
++        "kind": "dispatch",
++        "bead": "ht-1urq.6",
++        "label": "chain → review:ht-1urq.6",
++        "via": null,
++        "start": "2026-10-18T03:53:55.566Z",
++        "ms": 17874
++      },
++      {
++        "kind": "review",
++        "bead": "ht-1urq.6",
++        "label": "review:ht-1urq.6",
++        "via": "chain",
++        "start": "2026-10-18T03:54:13.440Z",
++        "ms": 117649
++      },
++      {
++        "kind": "dispatch",
++        "bead": "ht-1urq.6",
++        "label": "chain → fix:ht-1urq.6",
++        "via": null,
++        "start": "2026-10-18T03:56:11.089Z",
++        "ms": 25970
++      },
++      {
++        "kind": "fix",
++        "bead": "ht-1urq.6",
++        "label": "fix:ht-1urq.6",
++        "via": "chain",
++        "start": "2026-10-18T03:56:37.059Z",
++        "ms": 9
++      },
++      {
++        "kind": "wait",
++        "bead": null,
++        "label": "previous → plan:native_fix",
++        "via": null,
++        "start": "2026-10-18T03:56:37.068Z",
++        "ms": 270819
++      },
++      {
++        "kind": "planning",
++        "bead": null,
++        "label": "plan:native_fix",
++        "via": "previous",
++        "start": "2026-10-18T04:01:07.887Z",
++        "ms": 1
++      },
++      {
++        "kind": "planning",
++        "bead": null,
++        "label": "plan:native_fix",
++        "via": "previous",
++        "start": "2026-10-18T04:01:07.888Z",
++        "ms": 99582
++      },
++      {
++        "kind": "unmeasured-gap",
++        "bead": null,
++        "label": "readiness unknown → impl:ht-1urq.19",
++        "via": null,
++        "start": "2026-10-18T04:02:47.470Z",
++        "ms": 24535
++      },
++      {
++        "kind": "implement",
++        "bead": "ht-1urq.19",
++        "label": "impl:ht-1urq.19",
++        "via": "planned",
++        "start": "2026-10-18T04:03:12.005Z",
++        "ms": 871003
++      },
++      {
++        "kind": "dispatch",
++        "bead": "ht-1urq.19",
++        "label": "chain → review:ht-1urq.19",
++        "via": null,
++        "start": "2026-10-18T04:17:43.008Z",
++        "ms": 21040
++      },
++      {
++        "kind": "review",
++        "bead": "ht-1urq.19",
++        "label": "review:ht-1urq.19",
++        "via": "chain",
++        "start": "2026-10-18T04:18:04.048Z",
++        "ms": 74774
++      },
++      {
++        "kind": "dispatch",
++        "bead": "ht-1urq.19",
++        "label": "chain → merge:ht-1urq.19",
++        "via": null,
++        "start": "2026-10-18T04:19:18.822Z",
++        "ms": 8941
++      },
++      {
++        "kind": "merge",
++        "bead": "ht-1urq.19",
++        "label": "merge:ht-1urq.19",
++        "via": "chain",
++        "start": "2026-10-18T04:19:27.763Z",
++        "ms": 138823
++      },
++      {
++        "kind": "wait",
++        "bead": "ht-1urq.10",
++        "label": "dep → impl:ht-1urq.10",
++        "via": null,
++        "start": "2026-10-18T04:21:46.586Z",
++        "ms": 328880
++      },
++      {
++        "kind": "implement",
++        "bead": "ht-1urq.10",
++        "label": "impl:ht-1urq.10",
++        "via": "dep",
++        "start": "2026-10-18T04:27:15.466Z",
++        "ms": 1
++      },
++      {
++        "kind": "implement",
++        "bead": "ht-1urq.10",
++        "label": "impl:ht-1urq.10",
++        "via": "retry",
++        "start": "2026-10-18T04:27:15.467Z",
++        "ms": 521438
++      },
++      {
++        "kind": "dispatch",
++        "bead": "ht-1urq.10",
++        "label": "chain → review:ht-1urq.10",
++        "via": null,
++        "start": "2026-10-18T04:35:56.905Z",
++        "ms": 20637
++      },
++      {
++        "kind": "review",
++        "bead": "ht-1urq.10",
++        "label": "review:ht-1urq.10",
++        "via": "chain",
++        "start": "2026-10-18T04:36:17.542Z",
++        "ms": 1
++      },
++      {
++        "kind": "review",
++        "bead": "ht-1urq.10",
++        "label": "review:ht-1urq.10",
++        "via": "chain",
++        "start": "2026-10-18T04:36:17.543Z",
++        "ms": 92716
++      },
++      {
++        "kind": "dispatch",
++        "bead": "ht-1urq.10",
++        "label": "chain → merge:ht-1urq.10",
++        "via": null,
++        "start": "2026-10-18T04:37:50.259Z",
++        "ms": 9268
++      },
++      {
++        "kind": "merge",
++        "bead": "ht-1urq.10",
++        "label": "merge:ht-1urq.10",
++        "via": "chain",
++        "start": "2026-10-18T04:37:59.527Z",
++        "ms": 1
++      },
++      {
++        "kind": "merge",
++        "bead": "ht-1urq.10",
++        "label": "merge:ht-1urq.10",
++        "via": "chain",
++        "start": "2026-10-18T04:37:59.528Z",
++        "ms": 105302
++      }
++    ]
++  },
++  "bottleneck": {
++    "bead": "ht-1urq.6",
++    "ms": 1165925,
++    "share": 0.16452019382459268,
++    "byCategory": {
++      "implement": 1004423,
++      "dispatch": 43844,
++      "review": 117649,
++      "fix": 9
++    },
++    "implByTool": {
++      "read": 4378,
++      "git": 13538,
++      "shell": 27002,
++      "other": 1052,
++      "test": 13524,
++      "poll": 97528,
++      "edit": 19279,
++      "build": 1170
++    },
++    "calls": [
++      {
++        "name": "exec",
++        "cat": "shell",
++        "what": "scripts/check-harness-neutral",
++        "ms": 9359
++      },
++      {
++        "name": "exec",
++        "cat": "edit",
++        "what": "tail -8 target/task-evidence/topology-handoff.log",
++        "ms": 7813
++      },
++      {
++        "name": "exec",
++        "cat": "poll",
++        "what": "bash /Users/alepar/.codex/plugins/cache/superpowers-alepar/…",
++        "ms": 7402
++      },
++      {
++        "name": "exec",
++        "cat": "edit",
++        "what": "cargo fmt",
++        "ms": 5633
++      },
++      {
++        "name": "exec",
++        "cat": "shell",
++        "what": "cat /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-…",
++        "ms": 5577
++      },
++      {
++        "name": "exec",
++        "cat": "poll",
++        "what": "ls -lt target/debug/deps/herdr_threads*",
++        "ms": 5383
++      },
++      {
++        "name": "exec",
++        "cat": "poll",
++        "what": "tail -28 evidence-profile.log",
++        "ms": 5158
++      },
++      {
++        "name": "exec",
++        "cat": "poll",
++        "what": "tail -22 evidence-red.log",
++        "ms": 5142
++      },
++      {
++        "name": "exec",
++        "cat": "poll",
++        "what": "tail -25 evidence-red.log",
++        "ms": 5132
++      },
++      {
++        "name": "exec",
++        "cat": "poll",
++        "what": "wc -l TRUST-POLICY.md",
++        "ms": 5118
++      }
++    ]
++  },
++  "lane": {
++    "busyMs": 1643203,
++    "seamMs": 0,
++    "spanMs": 5456651,
++    "merges": 15,
++    "firstTryFailed": 4,
++    "firstTryKnown": 11,
++    "queueWaitMs": 351254,
++    "stackWaitMs": 0,
++    "peakQueue": 2
++  },
++  "runtime": {
++    "scope": "all-agent concurrency",
++    "slots": null,
++    "peak": 5,
++    "fullMs": 0
++  },
++  "taskSlots": {
++    "scope": "task-slot concurrency",
++    "cap": 1,
++    "peak": 5,
++    "fullMs": 6007955
++  },
++  "concurrency": {
++    "scope": "all-agent concurrency",
++    "dispatches": 64,
++    "wallMs": 7195830,
++    "busyMs": 6951859,
++    "byActive": {
++      "0": 243971,
++      "1": 1800619,
++      "2": 2558552,
++      "3": 2592688
++    },
++    "peak": 5,
++    "kinds": [
++      {
++        "kind": "design",
++        "mapped": false,
++        "ms": 764765,
++        "n": 2
++      },
++      {
++        "kind": "plan",
++        "mapped": true,
++        "ms": 430506,
++        "n": 4
++      },
++      {
++        "kind": "impl",
++        "mapped": true,
++        "ms": 9801359,
++        "n": 16
++      },
++      {
++        "kind": "review",
++        "mapped": true,
++        "ms": 1009183,
++        "n": 14
++      },
++      {
++        "kind": "merge",
++        "mapped": true,
++        "ms": 1643203,
++        "n": 15
++      },
++      {
++        "kind": "collect",
++        "mapped": false,
++        "ms": 300938,
++        "n": 3
++      },
++      {
++        "kind": "repair",
++        "mapped": false,
++        "ms": 91088,
++        "n": 4
++      },
++      {
++        "kind": "recover",
++        "mapped": false,
++        "ms": 398163,
++        "n": 1
++      },
++      {
++        "kind": "investigate",
++        "mapped": false,
++        "ms": 524380,
++        "n": 1
++      },
++      {
++        "kind": "fix",
++        "mapped": true,
++        "ms": 290195,
++        "n": 2
++      },
++      {
++        "kind": "assemble",
++        "mapped": false,
++        "ms": 27830,
++        "n": 1
++      },
++      {
++        "kind": "finish",
++        "mapped": false,
++        "ms": 70608,
++        "n": 1
++      }
++    ],
++    "coordinatorMergeMs": 0
++  },
++  "tests": {
++    "busyMs": 10091554,
++    "testMs": 323515,
++    "pollMs": 1718176,
++    "cappedCalls": 0
++  },
++  "slowTests": [
++    {
++      "cmd": "cargo test --locked --all-features --lib parser_launch_directories",
++      "ms": 29751,
++      "runs": 4,
++      "longestMs": 14656
++    },
++    {
++      "cmd": "cargo test --locked --all-features --lib topology_handoff",
++      "ms": 28075,
++      "runs": 5,
++      "longestMs": 13254
++    },
++    {
++      "cmd": "cargo test --locked --all-features --test integration hermes_selected_directory_source_fi…",
++      "ms": 27013,
++      "runs": 7,
++      "longestMs": 6561
++    },
++    {
++      "cmd": "cargo test --locked --all-features --lib native_profiles",
++      "ms": 25120,
++      "runs": 7,
++      "longestMs": 7168
++    },
++    {
++      "cmd": "cargo test --locked --all-features --lib topology_creation",
++      "ms": 19293,
++      "runs": 3,
++      "longestMs": 8812
++    },
++    {
++      "cmd": "cargo test --locked --all-features skill",
++      "ms": 18784,
++      "runs": 4,
++      "longestMs": 6603
++    },
++    {
++      "cmd": "cargo test --locked --all-features --lib retained_profile_context_reaches_native_transpor…",
++      "ms": 13372,
++      "runs": 3,
++      "longestMs": 9745
++    },
++    {
++      "cmd": "cargo test --locked --all-features --test combined handoff_agy",
++      "ms": 11413,
++      "runs": 1,
++      "longestMs": 11413
++    },
++    {
++      "cmd": "cargo test --locked --all-features --test combined selected_profile_unfinished_public_ret…",
++      "ms": 10770,
++      "runs": 3,
++      "longestMs": 5018
++    },
++    {
++      "cmd": "cargo test --locked --all-features --lib launch_directories",
++      "ms": 10040,
++      "runs": 4,
++      "longestMs": 4444
++    },
++    {
++      "cmd": "cargo test --locked --all-features --lib hermes",
++      "ms": 9809,
++      "runs": 2,
++      "longestMs": 7007
++    },
++    {
++      "cmd": "cargo test --locked --all-features --lib cli::skill -- --test-threads=1",
++      "ms": 8368,
++      "runs": 1,
++      "longestMs": 8368
++    },
++    {
++      "cmd": "cargo test --locked --all-features --lib topology_handoff -- --test-threads=1",
++      "ms": 7981,
++      "runs": 2,
++      "longestMs": 5645
++    },
++    {
++      "cmd": "cargo test --locked --all-features --lib launch_checks_the_config_dir_it_hands_the_pane",
++      "ms": 7847,
++      "runs": 2,
++      "longestMs": 4171
++    },
++    {
++      "cmd": "cargo test --locked --all-features --lib cli::launch::tests::adapter_launch_",
++      "ms": 7260,
++      "runs": 2,
++      "longestMs": 3733
++    },
++    {
++      "cmd": "cargo test --locked --all-features --lib cli::handoff_delivery::tests",
++      "ms": 6557,
++      "runs": 1,
++      "longestMs": 6557
++    },
++    {
++      "cmd": "cargo test --locked --all-features --test combined golden_surfaces::help_texts",
++      "ms": 6549,
++      "runs": 3,
++      "longestMs": 2768
++    },
++    {
++      "cmd": "cargo test --locked --all-features --test combined handoff_topology_authority",
++      "ms": 6035,
++      "runs": 1,
++      "longestMs": 6035
++    },
++    {
++      "cmd": "cargo test --locked --all-features --lib publication",
++      "ms": 5329,
++      "runs": 1,
++      "longestMs": 5329
++    },
++    {
++      "cmd": "cargo test --locked --all-features --test integration hermes_enrollment_smoke -- --test-t…",
++      "ms": 5295,
++      "runs": 1,
++      "longestMs": 5295
++    }
++  ],
++  "conflicts": [],
++  "simulation": {
++    "estimate": true,
++    "window": "first dispatch to last landing",
++    "asRunMs": 12653305,
++    "actualMs": 7086820,
++    "fit": 1.79,
++    "unlimitedSlotsMs": 9837220,
++    "unlimitedLanesMs": 12653305,
++    "lowerBoundMs": 9696436,
++    "graphChain": [
++      "ht-1urq.1",
++      "ht-1urq.3",
++      "ht-1urq.4",
++      "ht-1urq.6",
++      "ht-1urq.19",
++      "ht-1urq.9",
++      "ht-1urq.10"
++    ],
++    "whatIfs": [
++      {
++        "kind": "slots",
++        "target": "unlimited slots",
++        "ms": 9837220,
++        "savingMs": 2816085,
++        "note": "no slot cap",
++        "estimate": true
++      },
++      {
++        "kind": "faster",
++        "target": "faster ht-1urq.9",
++        "ms": 11627962.5,
++        "savingMs": 1025342.5,
++        "note": "its implement time halved",
++        "estimate": true
++      },
++      {
++        "kind": "faster",
++        "target": "faster ht-1urq.6",
++        "ms": 12151093.5,
++        "savingMs": 502211.5,
++        "note": "its implement time halved",
++        "estimate": true
++      },
++      {
++        "kind": "cut",
++        "target": "cut ht-1urq.9 <- ht-1urq.19",
++        "ms": 12479440,
++        "savingMs": 173865,
++        "note": "payoff if this edge were cut — whether it can be is a design call",
++        "estimate": true
++      },
++      {
++        "kind": "cut",
++        "target": "cut ht-1urq.10 <- ht-1urq.9",
++        "ms": 12479440,
++        "savingMs": 173865,
++        "note": "payoff if this edge were cut — whether it can be is a design call",
++        "estimate": true
++      },
++      {
++        "kind": "cut",
++        "target": "cut ht-1urq.19 <- ht-1urq.6",
++        "ms": 12519610,
++        "savingMs": 133695,
++        "note": "payoff if this edge were cut — whether it can be is a design call",
++        "estimate": true
++      }
++    ],
++    "verdict": "slot-bound"
++  },
++  "unmeasured": [
++    "availability/readiness timing unknown for 8 bead(s): waits unmeasured; schedule estimates retain dispatch as the release boundary",
++    "13 dispatch(es) not named for a bead of ht-1urq, in the run-level lines only (coordinator-subagents.md names dispatches <kind>_<bead id> on Codex, <kind>:<bead id> on Claude Code)",
++    "the schedule model is 179% of actual, so the what-ifs are rough",
++    "coordinator rows counted from the session start (no invocation found)"
++  ],
++  "context": {
++    "agents": [
++      {
++        "harness": "codex",
++        "role": "coordinator",
++        "label": "coordinator",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-40-36-01a14ce1-e8af-7090-b51f-107f30a07f74.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 361,
++        "peak": 257779,
++        "peakAt": "2026-10-18T04:41:31.496Z",
++        "first": 23699,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 54,
++        "tasks": 2,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "design",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-41-37-01a14ce2-dab6-7bb0-ae2f-2720a873656b.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 63,
++        "peak": 176363,
++        "peakAt": "2026-10-18T02:51:33.266Z",
++        "first": 25560,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 37,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "design_resume",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-54-05-01a14cee-43f9-7b43-848b-35126088a85a.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 23,
++        "peak": 80884,
++        "peakAt": "2026-10-18T02:56:55.324Z",
++        "first": 25962,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 17,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "plan",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-57-25-01a14cf1-4e8f-7a42-865a-5d27527dcbce.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 13,
++        "peak": 70601,
++        "peakAt": "2026-10-18T02:59:23.037Z",
++        "first": 25763,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 15,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "impl_ht_1urq_1",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-59-36-01a14cf3-5116-77d0-9c7c-91ed93804726.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 71,
++        "peak": 114799,
++        "peakAt": "2026-10-18T03:10:22.938Z",
++        "first": 25872,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 24,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "impl_ht_1urq_7",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-59-41-01a14cf3-6410-7791-90be-d4cc6d9ca724.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 54,
++        "peak": 82668,
++        "peakAt": "2026-10-18T03:07:06.468Z",
++        "first": 25839,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 17,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "plan_rest",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-59-45-01a14cf3-7436-7203-aa2f-b55672294902.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 21,
++        "peak": 65764,
++        "peakAt": "2026-10-18T03:03:18.853Z",
++        "first": 25783,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 14,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "review_ht_1urq_7",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-07-14-01a14cfa-4ae7-74d2-a656-631aff3cf124.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 8,
++        "peak": 56969,
++        "peakAt": "2026-10-18T03:08:36.470Z",
++        "first": 25792,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 12,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "merge_ht_1urq_7",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-08-48-01a14cfb-ba93-7e41-bec2-2abab3aa100a.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 32,
++        "peak": 42002,
++        "peakAt": "2026-10-18T03:12:09.039Z",
++        "first": 25835,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 9,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "review_ht_1urq_1",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-10-40-01a14cfd-7262-7810-b6bc-4af4862ac5e7.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 9,
++        "peak": 66407,
++        "peakAt": "2026-10-18T03:12:05.150Z",
++        "first": 25802,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 14,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "impl_ht_1urq_3",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-10-56-01a14cfd-aedd-7342-9103-638b9c07925d.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 94,
++        "peak": 146399,
++        "peakAt": "2026-10-18T03:27:05.888Z",
++        "first": 25868,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 31,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "impl_ht_1urq_5",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-11-09-01a14cfd-e422-76d0-b514-9d36e5b939d0.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 71,
++        "peak": 128421,
++        "peakAt": "2026-10-18T03:24:23.709Z",
++        "first": 25864,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 27,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "impl_ht_1urq_2",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-11-49-01a14cfe-80da-7930-8e0c-ed009f49fb13.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 82,
++        "peak": 123311,
++        "peakAt": "2026-10-18T03:28:16.083Z",
++        "first": 25862,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 26,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "merge_ht_1urq_1",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-12-14-01a14cfe-dedb-71f3-8d1a-5188ce640aa0.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 29,
++        "peak": 44262,
++        "peakAt": "2026-10-18T03:15:03.456Z",
++        "first": 25871,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 9,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "review_ht_1urq_5",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-24-34-01a14d0a-2bdd-7cf2-9327-379787230df0.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 14,
++        "peak": 75727,
++        "peakAt": "2026-10-18T03:27:01.993Z",
++        "first": 25789,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 16,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "review_ht_1urq_3",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-26-46-01a14d0c-2db2-7e71-9f61-9882fa651d57.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 12,
++        "peak": 68026,
++        "peakAt": "2026-10-18T03:28:40.140Z",
++        "first": 25787,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 14,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "impl_ht_1urq_4",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-26-55-01a14d0c-5383-7f43-9965-c84717789079.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 64,
++        "peak": 104535,
++        "peakAt": "2026-10-18T03:36:36.636Z",
++        "first": 25891,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 22,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "merge_ht_1urq_5",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-27-25-01a14d0c-c579-7683-9da5-b452edff1300.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 18,
++        "peak": 47833,
++        "peakAt": "2026-10-18T03:29:48.727Z",
++        "first": 25884,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 10,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "review_ht_1urq_2",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-28-34-01a14d0d-d632-7701-b4dd-b8ce1a79d421.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 8,
++        "peak": 53387,
++        "peakAt": "2026-10-18T03:29:40.216Z",
++        "first": 25808,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 11,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "impl_ht_1urq_8",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-28-56-01a14d0e-2a3b-75a2-bf32-10e11ea9e2e5.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 11,
++        "peak": 39583,
++        "peakAt": "2026-10-18T03:30:00.519Z",
++        "first": 25942,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 8,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "merge_ht_1urq_3",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-29-59-01a14d0f-2068-7c70-b658-01dec3628306.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 23,
++        "peak": 49068,
++        "peakAt": "2026-10-18T03:32:17.648Z",
++        "first": 25871,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 10,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "merge_ht_1urq_2",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-32-30-01a14d11-6da5-7b63-8d19-7240a3c3a693.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 23,
++        "peak": 42302,
++        "peakAt": "2026-10-18T03:34:49.693Z",
++        "first": 25906,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 9,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "impl_ht_1urq_8__2",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-35-03-01a14d13-c526-7790-8a9c-6edee6b9e217.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 76,
++        "peak": 105804,
++        "peakAt": "2026-10-18T03:49:32.151Z",
++        "first": 25931,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 22,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "review_ht_1urq_4",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-37-01-01a14d15-9074-7d60-b7b1-3c7fab7d211e.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 9,
++        "peak": 54327,
++        "peakAt": "2026-10-18T03:38:07.349Z",
++        "first": 25797,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 11,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "impl_ht_1urq_6",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-37-11-01a14d15-b6d1-7eb2-acf2-0d56b133a732.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 115,
++        "peak": 173038,
++        "peakAt": "2026-10-18T03:53:55.515Z",
++        "first": 25958,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 36,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "merge_ht_1urq_4",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-38-21-01a14d16-c8bb-79f2-b782-2057634343ea.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 28,
++        "peak": 50148,
++        "peakAt": "2026-10-18T03:41:21.883Z",
++        "first": 25849,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 11,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "collect_checks",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-38-30-01a14d16-ed3d-7e62-940a-1159546593e7.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 17,
++        "peak": 64109,
++        "peakAt": "2026-10-18T03:40:32.540Z",
++        "first": 25980,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 13,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "repair_check_pointers",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-40-42-01a14d18-f170-7b50-b630-9b6b35af4311.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 11,
++        "peak": 60228,
++        "peakAt": "2026-10-18T03:41:53.700Z",
++        "first": 25905,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 13,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "recover_task2_evidence",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-41-41-01a14d19-d7ab-7371-900d-f6d5df92755b.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 34,
++        "peak": 59727,
++        "peakAt": "2026-10-18T03:48:19.860Z",
++        "first": 26043,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 13,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "review_ht_1urq_8",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-49-47-01a14d21-3fee-7db2-9a42-6f2c6d8b5372.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 8,
++        "peak": 55054,
++        "peakAt": "2026-10-18T03:50:43.960Z",
++        "first": 25824,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 12,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "merge_ht_1urq_8",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-50-52-01a14d22-3f28-7632-9cca-ba1e8fc2e542.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 16,
++        "peak": 44551,
++        "peakAt": "2026-10-18T03:52:51.657Z",
++        "first": 25841,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 9,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "review_ht_1urq_6",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-54-13-01a14d25-501b-7031-8477-89cd196ad09a.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 12,
++        "peak": 94114,
++        "peakAt": "2026-10-18T03:56:11.071Z",
++        "first": 25836,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 20,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "impl_ht_1urq_9",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-54-18-01a14d25-6384-7ed3-9e2f-33250270d576.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 140,
++        "peak": 223412,
++        "peakAt": "2026-10-18T04:28:29.075Z",
++        "first": 25879,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 47,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "investigate_topology_failure",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-54-46-01a14d25-d268-7df0-9b15-10752c176b6f.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 61,
++        "peak": 114841,
++        "peakAt": "2026-10-18T04:03:31.133Z",
++        "first": 25830,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 24,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "fix_ht_1urq_6",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T20-56-37-01a14d27-80e3-76b0-ba4b-4bd2a11f6fd9.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 32,
++        "peak": 80096,
++        "peakAt": "2026-10-18T04:01:27.239Z",
++        "first": 25889,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 17,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "plan_native_fix",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-01-07-01a14d2b-a31a-78a3-85c0-3b298056b0c1.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 12,
++        "peak": 50811,
++        "peakAt": "2026-10-18T04:02:47.454Z",
++        "first": 25820,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 11,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "merge_ht_1urq_6",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-01-32-01a14d2c-026a-7753-bf30-9a5c07f996bf.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 20,
++        "peak": 50287,
++        "peakAt": "2026-10-18T04:03:45.947Z",
++        "first": 25903,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 11,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "impl_ht_1urq_19",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-03-11-01a14d2d-87ee-7ab1-bdb1-fd1678b9d3cf.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 90,
++        "peak": 115945,
++        "peakAt": "2026-10-18T04:17:42.976Z",
++        "first": 25954,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 24,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "review_ht_1urq_19",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-18-04-01a14d3b-2476-7053-a0f3-fb86c8d171b7.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 10,
++        "peak": 74375,
++        "peakAt": "2026-10-18T04:19:18.803Z",
++        "first": 28438,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 16,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "merge_ht_1urq_19",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-19-27-01a14d3c-6b7b-7680-a92d-18b4be840ed0.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 25,
++        "peak": 56497,
++        "peakAt": "2026-10-18T04:21:46.569Z",
++        "first": 28466,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 12,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "review_ht_1urq_9",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-27-08-01a14d43-71e2-7333-a909-a3f7aa14f952.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 17,
++        "peak": 87820,
++        "peakAt": "2026-10-18T04:28:55.747Z",
++        "first": 28431,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 18,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "impl_ht_1urq_10",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-27-15-01a14d43-8e70-7072-aab8-ba4dc8cf939b.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 54,
++        "peak": 113500,
++        "peakAt": "2026-10-18T04:35:56.886Z",
++        "first": 28561,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 24,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "merge_ht_1urq_9",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-29-08-01a14d45-480f-79e2-807c-b0a8953aea88.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 25,
++        "peak": 54626,
++        "peakAt": "2026-10-18T04:32:02.341Z",
++        "first": 28472,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 12,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "review_ht_1urq_10",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-36-17-01a14d4b-d3eb-74b0-8e55-6cec690439b3.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 14,
++        "peak": 75031,
++        "peakAt": "2026-10-18T04:37:50.244Z",
++        "first": 28418,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 16,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "merge_ht_1urq_10",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-37-59-01a14d4d-624d-73a0-ad44-a3169a17c5af.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 17,
++        "peak": 48594,
++        "peakAt": "2026-10-18T04:39:44.815Z",
++        "first": 28466,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 10,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "collect_final_checks",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-38-10-01a14d4d-8f14-70d3-bedf-49e682f8f971.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 24,
++        "peak": 100551,
++        "peakAt": "2026-10-18T04:41:09.997Z",
++        "first": 28579,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 21,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "assemble_final",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-40-10-01a14d4f-6214-7003-9c9b-f372b772b780.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 5,
++        "peak": 33234,
++        "peakAt": "2026-10-18T04:40:38.356Z",
++        "first": 28407,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 7,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "finish_metrics",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-40-23-01a14d4f-93a5-71b1-b40b-5daf40604a21.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 9,
++        "peak": 70453,
++        "peakAt": "2026-10-18T04:41:31.581Z",
++        "first": 28541,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 15,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "repair_review_intent",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T21-41-12-01a14d50-5404-7901-a0b5-2fa3537ee2fa.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 4,
++        "peak": 45766,
++        "peakAt": "2026-10-18T04:41:30.624Z",
++        "first": 28577,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 10,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "design/abstractions",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-44-50-01a14ce5-cc67-7423-b92b-fcce2951473a.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 7,
++        "peak": 37620,
++        "peakAt": "2026-10-18T02:45:31.488Z",
++        "first": 22419,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 8,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "design/promotion",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-47-47-01a14ce8-7e0f-7f01-8bfe-7e7eecdcfee2.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 4,
++        "peak": 33378,
++        "peakAt": "2026-10-18T02:48:15.378Z",
++        "first": 22453,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 7,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "design/coverage_one",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-49-00-01a14ce9-9a47-7240-ac6b-1f6e27f36a7d.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 1,
++        "peak": 23622,
++        "peakAt": "2026-10-18T02:49:21.452Z",
++        "first": 23622,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 5,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "design/coverage_two",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-49-18-01a14ce9-e1dc-7f21-b25a-fb6348d6aca8.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 1,
++        "peak": 23627,
++        "peakAt": "2026-10-18T02:49:32.083Z",
++        "first": 23627,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 5,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "design_resume/coverage2_a",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-54-46-01a14cee-e364-7452-8c1d-5f5491567f29.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 2,
++        "peak": 24524,
++        "peakAt": "2026-10-18T02:54:59.579Z",
++        "first": 22393,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 5,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "design_resume/coverage2_b",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-54-50-01a14cee-f1ea-76d3-8597-4da0115c0cc1.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 2,
++        "peak": 24524,
++        "peakAt": "2026-10-18T02:55:03.166Z",
++        "first": 22393,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 5,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      },
++      {
++        "harness": "codex",
++        "role": "agent",
++        "label": "design_resume/graph_review",
++        "file": "/Users/alepar/.codex/sessions/2026/10/17/rollout-2026-10-17T19-55-45-01a14cef-cb20-7c00-9df5-8d25dc11ab48.jsonl",
++        "model": "gpt-6.1-sol",
++        "requests": 3,
++        "peak": 33929,
++        "peakAt": "2026-10-18T02:55:59.740Z",
++        "first": 22328,
++        "window": 475000,
++        "windowSource": "transcript",
++        "peakPct": 7,
++        "tasks": 1,
++        "compactions": [],
++        "unmeasured": null
++      }
++    ],
++    "summary": {
++      "n": 56,
++      "measured": 56,
++      "high": 0,
++      "multiTask": 0,
++      "compacted": 0,
++      "compactions": 0,
++      "byCause": {
++        "cap": 0,
++        "early": 0,
++        "idle": 0,
++        "manual": 0,
++        "unknown": 0
++      },
++      "coordinator": {
++        "peak": 257779,
++        "window": 475000,
++        "peakPct": 54,
++        "compactions": 0
++      },
++      "max": {
++        "label": "coordinator",
++        "peakPct": 54
++      },
++      "reasons": [
++        "coordinator rows counted from the session start (no invocation found)"
++      ]
++    }
++  },
++  "summary": [
++    "Profile: ht-1urq · 1 invocation · 2026-10-18T02:41Z → 2026-10-18T04:41Z · wall 2h00m (task graph 1h58m, after the last landing 2m) · agents 64 (timed 64) · beads dispatched 11, landed 11, planned 11",
++    "Profile: graph scope — observed invocation/residual graph; historical topology is unknown",
++    "Profile: shape — 11 beads · 24 edges · depth 7 · width 1.6 · beads per level 2/3/2/1/1/1/1 · widest fan-out ht-1urq.1 (5 direct, 9 transitive dependents)",
++    "Profile: bound — graph lower bound 2h42m along ht-1urq.1 → ht-1urq.3 → ht-1urq.4 → ht-1urq.6 → ht-1urq.19 → ht-1urq.9 → ht-1urq.10 (unlimited slots and merge lanes) · model of the run 3h31m (cap 1, one merge lane) vs actual 1h58m (179%) → slot-bound: 47m of the 49m above the graph's bound is the slot cap",
++    "Profile: critical path — 1h58m = implement 53m · review 7m · merge 11m · planning 4m · other 13m · dispatch 3m · wait 24m · unmeasured-gap 3m · of which other beads' merge-lane turns 5m",
++    "Profile: diagnosis — planning 4m (3% of first dispatch to last landing)",
++    "Profile: critical chain — design other 13m → plan planning 2m → ht-1urq.3 implement 0s → ht-1urq.5 implement+review+merge 18m → merge lane ×2 5m → ht-1urq.6 implement+review+fix 19m → plan planning 2m → ht-1urq.19 implement+review+merge 18m → ht-1urq.10 implement+review+merge 12m",
++    "Profile: bottleneck — ht-1urq.6 — 19m on the critical path (16%) · implement 17m · review 2m · dispatch 44s · implement on the path 17m: test 14s · poll 2m · build 1s · git 14s · read 4s · edit 19s · shell 27s · other 1s · model 14m (longest: \"scripts/check-harness-neutral\" 9s, \"tail -8 target/task-evidence/topology-handoff.log\" 8s) · dependents 3",
++    "Profile: waits — ready→start, summed per bead (beads wait at the same time, so not wall time): 0s over 0 of 11 landed beads",
++    "Profile: rework — 1m of dispatch time in attempts that did not land — ht-1urq.8 1m (?; landed later)",
++    "Profile: tests — implementers and fixers, summed: 5m running tests and 29m polling background runs, 20% of their 2h48m · 0 Bash call(s) ran into the 10-minute tool limit",
++    "Profile: merge lane — busy 27m of 1h31m (30%) · seam reviews and fixes 0s (0% of busy) · 15 merge dispatches, first try not merged for 4 of 11 · queue wait 6m total, peak 2 waiting · stack-parent wait 0s",
++    "Profile: concurrency — 64 dispatches over 2h00m · a dispatch running 1h56m (97%) · dispatches at once: 0 for 3% · 1 for 25% · 2 for 36% · 3+ for 36% of the time · peak 5",
++    "Profile: dispatch time by kind, summed — impl 2h43m (16) · merge 27m (15) · review 17m (14) · plan 7m (4) · fix 5m (2) · not named for a bead: design 13m (2) · investigate 9m (1) · recover 7m (1) · collect 5m (3) · repair 2m (4) · finish 1m (1) · assemble 28s (1)",
++    "Profile: runtime — peak 5 agents at once · slot cap 1",
++    "Profile: concurrency scope — all-agent concurrency peak 5 · task-slot concurrency peak 5, cap 1 (ordinary chains retain a slot through merge)",
++    "Profile: what-if estimate — unlimited slots → 2h44m (−47m, 22%) — no slot cap; first dispatch to last landing, planning retained",
++    "Profile: what-if estimate — faster ht-1urq.9 → 3h14m (−17m, 8%) — its implement time halved; first dispatch to last landing, planning retained",
++    "Profile: what-if estimate — faster ht-1urq.6 → 3h23m (−8m, 4%) — its implement time halved; first dispatch to last landing, planning retained",
++    "Profile: what-if estimate — cut ht-1urq.9 <- ht-1urq.19 → 3h28m (−3m, 1%) — payoff if this edge were cut — whether it can be is a design call; first dispatch to last landing, planning retained",
++    "Profile: what-if estimate — cut ht-1urq.10 <- ht-1urq.9 → 3h28m (−3m, 1%) — payoff if this edge were cut — whether it can be is a design call; first dispatch to last landing, planning retained",
++    "Profile: what-if estimate — cut ht-1urq.19 <- ht-1urq.6 → 3h29m (−2m, 1%) — payoff if this edge were cut — whether it can be is a design call; first dispatch to last landing, planning retained",
++    "Profile: context — agents 56 (measured 56) · peak≥80% 0 · compacted 0 agents, 0 compactions · coordinator 258K/475K (54%), 0 compactions · max coordinator 54%",
++    "Profile: context agent — coordinator peak 258K/475K (54%) · first 24K · compactions 0",
++    "Profile: unmeasured — availability/readiness timing unknown for 8 bead(s): waits unmeasured; schedule estimates retain dispatch as the release boundary; 13 dispatch(es) not named for a bead of ht-1urq, in the run-level lines only (coordinator-subagents.md names dispatches <kind>_<bead id> on Codex, <kind>:<bead id> on Claude Code); the schedule model is 179% of actual, so the what-ifs are rough; coordinator rows counted from the session start (no invocation found)"
++  ]
++}

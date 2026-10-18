@@ -1,0 +1,13 @@
+diff --git a/src/ports.rs b/src/ports.rs
+index 0937b2ed9..2b8498b38 100644
+--- a/src/ports.rs
++++ b/src/ports.rs
+@@ -5361,6 +5361,8 @@ pub struct CreateTabRequest {
+     pub label: String,
+     pub focus: bool,
+     pub env: std::collections::BTreeMap<String, String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub directory_context: Option<crate::protocol::handoff::LaunchDirectoryContext>,
+     pub expected_witness: crate::host::continuity::LocalEndpointWitness,
+ }
+ #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -1,0 +1,15 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 26e4ba0bc..83eb039b3 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,10 @@
+ 
+ ## Unreleased
+ 
++Proposed minor version: **2.1.0** (no package version change or release yet).
++
++- **New-tab profile directories.** `handoff --new-tab` accepts `--profile-dir` with optional `--cwd`, freezing canonical existing directories and declared child environment across retry. Codex, Claude and Hermes map their profile roots; agy rejects explicit profile selection. Pane launches and existing-seat delivery refuse directory options before effects; plain `launch` is unchanged. Shell initialization can alter declared input, which does not prove the authenticated account. Missing saved directories require repair before new native effects.
++
+ ## v2.0.3
+ 
+ - **Sends and handoffs no longer fail with `send preparation snapshot changed`.** A send gave up the store's write lane between its final preparation and publication, so a queued background pass (for example, seat liveness) could change the state in between and the send or handoff failed with `send preparation snapshot changed (conflict)`. The final preparation now keeps the lane through permit issuance and publication, for ordinary sends and both handoff paths; earlier preparation steps still yield and every revision, budget and authority check stays. No schema, protocol or model-visible text change.

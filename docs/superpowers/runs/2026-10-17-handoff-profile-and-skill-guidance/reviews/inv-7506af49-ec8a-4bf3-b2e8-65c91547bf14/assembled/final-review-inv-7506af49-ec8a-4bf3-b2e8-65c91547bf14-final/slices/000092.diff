@@ -1,0 +1,102 @@
+diff --git a/tests/integration/hermes_enrollment_smoke.rs b/tests/integration/hermes_enrollment_smoke.rs
+index 8c8560423..6163849f3 100644
+--- a/tests/integration/hermes_enrollment_smoke.rs
++++ b/tests/integration/hermes_enrollment_smoke.rs
+@@ -455,11 +455,96 @@ fn synthetic_hermes(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+     );
+     let calls = root.join("selected-launcher-calls.jsonl");
+     let launcher = root.join("selected launcher");
+-    fs::write(&launcher, format!("#!{}\nimport json,sys,os\nwith open({},'a') as f: f.write(json.dumps({{'argv':sys.argv[1:],'home':os.environ['HOME'],'native_home':os.environ.get('HERMES_HOME')}})+'\\n')\nprint(json.dumps([{},'-I','-c',{},'--count','--no-report',sys.argv[-3],'--profile',sys.argv[-1]]))\n", interpreter.display(), py(&calls), py(&interpreter), serde_json::to_string(&bootstrap).unwrap())).unwrap();
++    fs::write(&launcher, format!("#!{}\nimport json,sys,os\nwith open({},'a') as f: f.write(json.dumps({{'argv':sys.argv[1:],'home':os.environ['HOME'],'native_home':os.environ.get('HERMES_HOME'),'cwd':os.getcwd()}})+'\\n')\nprint(json.dumps([{},'-I','-c',{},'--count','--no-report',sys.argv[-3],'--profile',sys.argv[-1]]))\n", interpreter.display(), py(&calls), py(&interpreter), serde_json::to_string(&bootstrap).unwrap())).unwrap();
+     fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+     (native_home, source, launcher)
+ }
+ 
++/// Source-bound Python fixture only: a named profile below an explicit root must keep
++/// that root in the launcher's environment and resolve its effective scope below it.
++/// This does not qualify callbacks, authenticate an account or start a real model.
++#[test]
++fn hermes_selected_directory_source_fixture_preserves_named_scope_and_child_inputs() {
++    use herdr_threads::harness::adapter::{LaunchRequest, ResolvedSetupScope, SetupEnvironment};
++    use herdr_threads::harness::launch::PaneShellProbe;
++    use herdr_threads::protocol::time::{CallBudget, MonoInstant};
++    use std::os::unix::fs::DirBuilderExt;
++    struct NoShell;
++    impl PaneShellProbe for NoShell {}
++    let scratch = herdr_threads::test_support::scratch::temp_path(format!(
++        "hermes-launch-directory-{}",
++        uuid::Uuid::new_v4()
++    ));
++    fs::DirBuilder::new().mode(0o700).create(&scratch).unwrap();
++    let canonical_root = scratch.canonicalize().unwrap();
++    let root = canonical_root.as_path();
++    let home = root.join("home");
++    fs::create_dir(&home).unwrap();
++    fs::DirBuilder::new()
++        .mode(0o700)
++        .create(root.join("plugin-state"))
++        .unwrap();
++    let (selected, source, launcher) = synthetic_hermes(root);
++    let selected = selected.canonicalize().unwrap();
++    let cwd = root.join("cwd ' \" selected");
++    fs::create_dir(&cwd).unwrap();
++    let registry = herdr_threads::harness::registry::builtins();
++    let policy = registry
++        .by_id(registry.agent("hermes").unwrap())
++        .unwrap()
++        .launch_policy()
++        .unwrap();
++    let projection = policy.explicit_directory_env(&selected).unwrap();
++    let mut environment = SetupEnvironment {
++        home: Some(home.clone().into_os_string()),
++        path: std::env::var_os("PATH"),
++        cwd: cwd.clone(),
++        executable: BIN.into(),
++        state_dir: Some(root.join("plugin-state")),
++        config_roots: [("hermes".into(), root.join("wrong-inherited-root"))].into(),
++        explicit_profile_directory: Some(selected.clone()),
++        ..Default::default()
++    };
++    environment.declared.extend(
++        projection
++            .into_iter()
++            .map(|(key, value)| (key, value.into())),
++    );
++    // Fixture source imports remain attributed to this exact source tree.
++    environment
++        .declared
++        .insert("PYTHONPATH".into(), source.into_os_string());
++    let budget = CallBudget {
++        deadline: MonoInstant(environment.clock.monotonic_now().0 + 15_000),
++        cancellation: Default::default(),
++    };
++    let request = LaunchRequest {
++        argv: vec!["--profile".into(), "work".into()],
++        environment,
++        native_binary: Some(launcher),
++    };
++    let scope = policy.resolve_scope(&request, &NoShell, &budget).unwrap();
++    assert_eq!(
++        scope.setup,
++        ResolvedSetupScope::Profile {
++            name: "work".into(),
++            home: selected.join("profiles/work")
++        }
++    );
++    assert_eq!(scope.working_directory, cwd);
++    let calls = fs::read_to_string(root.join("selected-launcher-calls.jsonl")).unwrap();
++    let calls: Vec<Value> = calls
++        .lines()
++        .map(|line| serde_json::from_str(line).unwrap())
++        .collect();
++    assert!(!calls.is_empty(), "the real helper launcher must run");
++    for call in calls {
++        assert_eq!(call["native_home"], selected.to_str().unwrap(), "{call}");
++        assert_eq!(call["home"], home.to_str().unwrap(), "{call}");
++        assert_eq!(call["cwd"], cwd.to_str().unwrap(), "{call}");
++    }
++}
++
+ // ---- synthetic Hermes 0.21.5 callbacks -------------------------------------
+ 
+ fn callback(callback: &str, kwargs: Value) -> Value {

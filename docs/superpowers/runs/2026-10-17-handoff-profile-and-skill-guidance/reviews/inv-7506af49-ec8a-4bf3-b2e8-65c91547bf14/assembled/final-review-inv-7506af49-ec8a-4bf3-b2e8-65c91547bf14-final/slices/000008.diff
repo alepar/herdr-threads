@@ -1,0 +1,13 @@
+diff --git a/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-findings-round-1.md b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-findings-round-1.md
+new file mode 100644
+index 000000000..99a43f44f
+--- /dev/null
++++ b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-findings-round-1.md
+@@ -0,0 +1,7 @@
++GAP · pane-existing-refusal · Compact tree omitted explicit ownership; clarify existing acceptance in ht-1urq.2.
++GAP · focused-regressions · Compact tree omitted explicit ownership; clarify existing acceptance in ht-1urq.2–.6.
++GAP · guarded-path · Compact tree omitted explicit ownership; clarify existing acceptance in ht-1urq.6.
++GAP · credential-diagnostics · Compact tree omitted explicit ownership; clarify existing acceptance in ht-1urq.3/.9.
++GAP · skill-byte-budget · Compact tree omitted explicit ownership; clarify existing acceptance in ht-1urq.7.
++GAP · release-boundary · Compact tree omitted explicit ownership; clarify existing acceptance in ht-1urq.8.
++GAP · fixture-cleanup · Compact tree omitted explicit ownership; clarify existing acceptance in ht-1urq.9.

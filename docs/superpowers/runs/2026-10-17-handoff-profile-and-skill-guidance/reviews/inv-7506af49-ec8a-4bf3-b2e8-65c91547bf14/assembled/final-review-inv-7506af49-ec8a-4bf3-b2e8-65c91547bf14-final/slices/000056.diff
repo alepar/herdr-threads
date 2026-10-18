@@ -1,0 +1,27 @@
+diff --git a/src/cli/help.rs b/src/cli/help.rs
+index feceed997..e54cf300b 100644
+--- a/src/cli/help.rs
++++ b/src/cli/help.rs
+@@ -118,9 +118,19 @@ Choose one target mode:
+   --existing with exactly one --seat SEAT or --pane PANE delivers durable work
+     to an existing canonical seat without launching or restarting its session.
+ Handoff requires an original top-level Agent and the guarded daemon capability.
+---new-tab conflicts with --existing, --tab, --pane and --seat. --cwd is new-tab
+-only: an absolute existing directory, defaulting to the invocation cwd, normalized
+-before publication. --space selects one live workspace by exact ID or unique label;
++--new-tab conflicts with --existing, --tab, --pane and --seat. Directory example:
++  handoff --new-tab review --kind HARNESS --profile-dir /absolute/profile --cwd /absolute/workdir -- "Review this change"
++--cwd and --profile-dir require absolute existing directories, canonicalized once
++before publication. Both refuse for --existing and guarded pane launches; use
++--new-tab instead. Plain launch is unchanged. Omitted cwd uses the invocation cwd;
++omitted profile retains normal selection. Profile mapping/support is adapter-owned
++(see docs/agent-usage.md); a directory is distinct from a native named profile.
++The selected profile is declared child input, subject to shell initialization,
++not proof of the authenticated account. Retry retains canonical directories and
++declared environment, not changed caller defaults or symlink targets. A disappeared
++directory refuses before new native effects: restore the saved directory and retry
++the reported REF. Configuration contents still undergo current-input checks.
++--space selects one live workspace by exact ID or unique label;
+ omission for creation uses the caller's live workspace, never UI focus. New-tab is
+ intentional creation even if its label already exists; it does not focus the tab.
+ For --existing, --space and --tab qualify --pane, or narrow a --seat name.

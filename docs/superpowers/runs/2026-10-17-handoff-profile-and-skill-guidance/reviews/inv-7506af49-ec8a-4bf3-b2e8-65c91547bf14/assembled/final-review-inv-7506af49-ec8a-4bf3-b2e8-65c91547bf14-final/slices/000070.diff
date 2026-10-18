@@ -1,0 +1,13 @@
+diff --git a/src/host/transport.rs b/src/host/transport.rs
+index a6efa2391..8fe9b38e8 100644
+--- a/src/host/transport.rs
++++ b/src/host/transport.rs
+@@ -777,7 +777,7 @@ fn create_tab_with_provider(
+                             "cwd": request.cwd,
+                             "label": request.label,
+                             "focus": false,
+-                            "env": {},
++                            "env": request.env,
+                         });
+                         let (response, witness) = exchange(
+                             socket,

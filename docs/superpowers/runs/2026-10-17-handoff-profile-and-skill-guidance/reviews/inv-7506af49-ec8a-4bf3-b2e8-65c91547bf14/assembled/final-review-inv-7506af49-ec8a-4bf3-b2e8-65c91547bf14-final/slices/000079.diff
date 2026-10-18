@@ -1,0 +1,12 @@
+diff --git a/tests/cli/launch.rs b/tests/cli/launch.rs
+index 05a09d707..bca9a931f 100644
+--- a/tests/cli/launch.rs
++++ b/tests/cli/launch.rs
+@@ -370,6 +370,7 @@ fn handoff() -> FakeHandoff {
+ }
+ fn request(harness: ContextHarness, argv: &[&str]) -> LaunchRequest {
+     LaunchRequest {
++        directory_context: None,
+         target: HostTargetId::new("w9:p1"),
+         harness,
+         harness_binary: None,

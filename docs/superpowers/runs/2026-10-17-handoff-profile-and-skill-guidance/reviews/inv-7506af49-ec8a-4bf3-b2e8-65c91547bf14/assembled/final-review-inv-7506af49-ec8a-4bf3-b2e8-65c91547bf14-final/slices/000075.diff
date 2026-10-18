@@ -1,0 +1,49 @@
+diff --git a/src/protocol/handoff/automatic_bootstrap.rs b/src/protocol/handoff/automatic_bootstrap.rs
+index 2ade2f436..204355edd 100644
+--- a/src/protocol/handoff/automatic_bootstrap.rs
++++ b/src/protocol/handoff/automatic_bootstrap.rs
+@@ -47,6 +47,8 @@ impl AutomaticBootstrapKeys {
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct AutomaticBootstrapPayload {
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub directory_context: Option<LaunchDirectoryContext>,
+     pub handoff: AutomaticHandoffPayload,
+     pub keys: AutomaticBootstrapKeys,
+     pub workspace: HostTargetId,
+@@ -67,6 +69,9 @@ pub struct AutomaticBootstrapPlan {
+ impl AutomaticBootstrapPlan {
+     pub fn validate(&self) -> Result<(), &'static str> {
+         let p = &self.payload;
++        if let Some(context) = &p.directory_context {
++            context.validate_bootstrap(&p.cwd, &p.env)?;
++        }
+         p.handoff.validate()?;
+         p.launch.validate()?;
+         if self.version != 2
+@@ -74,7 +79,7 @@ impl AutomaticBootstrapPlan {
+             || !bounded_text(&p.label, 128)
+             || p.label.chars().any(char::is_control)
+             || p.focus
+-            || !p.env.is_empty()
++            || (p.directory_context.is_none() && !p.env.is_empty())
+         {
+             return Err("invalid automatic bootstrap topology");
+         }
+@@ -192,6 +197,7 @@ impl AutomaticBootstrapIdentity {
+                 version: 2,
+                 delivery: AutomaticDeliveryPlan::new(p.handoff.clone(), recipient)?,
+                 launch: crate::cli::launch::LaunchRequest {
++                    directory_context: p.directory_context.clone(),
+                     target: created.root_pane.clone(),
+                     harness,
+                     harness_binary: p.launch.binary.clone(),
+@@ -848,7 +854,7 @@ impl AutomaticBootstrapIdentity {
+                 let message = CommandResult::MessageSent(MessageId::new(escaped.clone()));
+                 for local in [
+                     serde_json::json!({"version":2,"identity":self,"attachment":attachment,"thread":thread,"selection":selection,"message":message,"possible_start":true,"launch":summary}),
+-                    serde_json::json!({"version":2,"identity":self,"attempt":attempt,"possible_creation":true,"request":crate::ports::CreateTabRequest {correlation:created.correlation.clone(),workspace:p.workspace.clone(),cwd:p.cwd.clone(),label:p.label.clone(),focus:false,env:Default::default(),expected_witness:created.witness.clone()},"creation":created,"not_submitted":false}),
++                    serde_json::json!({"version":2,"identity":self,"attempt":attempt,"possible_creation":true,"request":crate::ports::CreateTabRequest {correlation:created.correlation.clone(),workspace:p.workspace.clone(),cwd:p.cwd.clone(),label:p.label.clone(),focus:false,env:p.env.clone(),directory_context:p.directory_context.clone(),expected_witness:created.witness.clone()},"creation":created,"not_submitted":false}),
+                 ] {
+                     if serde_json::to_vec(&local)
+                         .map_err(|_| "automatic local envelope encoding")?
