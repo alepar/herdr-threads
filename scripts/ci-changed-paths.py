@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Conservative per-job docs-only filter; no workflow-level path filters."""
 import os
-from pathlib import PurePosixPath
 import subprocess
 
 
 def heavy(event, ref_type, paths):
     if event not in ('push', 'pull_request') or ref_type == 'tag' or not paths or not all(paths):
         return True
-    return any(not (p.startswith('docs/') or PurePosixPath(p).match('*.md') or p == 'CHANGELOG')
-               for p in paths)
+    # Deny by default: Markdown includes embedded harness assets and tested
+    # contracts. docs/release.md is consumed by tests/release/docs_test.sh;
+    # docs/evidence and compatibility data are compiled into Rust tests/code.
+    allowed = {'RELEASE.md', 'AGENTS.md', 'CLAUDE.md'}
+    return any(p not in allowed and not p.startswith('docs/superpowers/') for p in paths)
 
 
 def main():

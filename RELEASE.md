@@ -25,7 +25,7 @@ In the standing release worktree (`.worktrees/herdr-095`): create `release/X.Y.Z
 
 ## 3. Qualify the candidate
 
-Start ordinary push/PR CI on the candidate SHA alongside local qualification; no manual `ci.yml` dispatch is required. Run from a Herdr pane in the release worktree:
+Start ordinary push/PR CI on the candidate SHA alongside local qualification; only changes confined to `RELEASE.md`, `AGENTS.md`, `CLAUDE.md` and `docs/superpowers/**` skip heavy CI steps. Other documentation, including `docs/release.md`, remains heavy because it can be embedded or consumed by checks; no manual `ci.yml` dispatch is required. Run from a Herdr pane in the release worktree:
 
 ```sh
 scripts/release-qualify --evidence-dir /tmp/release-X.Y.Z
