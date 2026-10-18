@@ -866,22 +866,6 @@ fn unmet_dep(tx: &Transaction<'_>, head: &Head) -> Result<Option<String>, ApiErr
 /// ordinary `deps <node8>/<inc>@<c>` text.
 pub const OPAQUE_LAYOUT: &str = "opaque_layout";
 
-/// The one re-attempt trigger after an opaque position became known
-/// (ht-j87z.13 calls it after `journal::promote_opaque`): clears the
-/// `opaque_layout` stall of `log`, and returns whether it did. The next apply
-/// pass re-reads the head; a log that is still stopped at an opaque position
-/// gets the stall written again.
-pub fn unpark(tx: &Transaction<'_>, log: &LogKey) -> Result<bool, ApiError> {
-    let changed = tx
-        .execute(
-            "UPDATE sync_logs SET blocked_on=NULL \
-             WHERE node_uuid=?1 AND incarnation=?2 AND blocked_on=?3",
-            params![log.node.to_string(), log.incarnation, OPAQUE_LAYOUT],
-        )
-        .map_err(store_error)?;
-    Ok(changed > 0)
-}
-
 /// Records [`OPAQUE_LAYOUT`] on every log whose head position is opaque,
 /// writing only on change. Under the own-history hold only the active self
 /// log is touched, like the known heads.

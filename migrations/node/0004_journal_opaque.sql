@@ -1,8 +1,9 @@
 -- Opaque journal entries (ht-j87z, peer wire compat hardening, design section 4):
 -- verified entries whose signed layout this node does not understand. A row
 -- is a chain position (branch = 0) or a conflicting-branch entry (branch = 1,
--- as journal_forked holds for known entries). Guard triggers, the promotion
--- marker and the store API come with ht-j87z.14.
+-- as journal_forked holds for known entries). Rows are immutable and append-only:
+-- no UPDATE and no DELETE, without exemption. How a later release that
+-- understands a layout stores a promoted entry is not decided here (ht-evlm).
 CREATE TABLE journal_opaque (
     log_ix INTEGER NOT NULL REFERENCES sync_logs(log_ix),
     counter INTEGER NOT NULL CHECK(counter >= 2),
@@ -16,19 +17,10 @@ CREATE TABLE journal_opaque (
 
 CREATE UNIQUE INDEX journal_opaque_position ON journal_opaque(log_ix, counter) WHERE branch = 0;
 
--- One row per in-flight promotion, inside promote_opaque's transaction only;
--- always empty at rest (verify_invariants checks it).
-CREATE TABLE journal_opaque_promoting (
-    log_ix INTEGER NOT NULL, counter INTEGER NOT NULL, hash BLOB NOT NULL,
-    PRIMARY KEY(log_ix, counter, hash)
-) STRICT, WITHOUT ROWID;
-
 CREATE TRIGGER journal_opaque_immutable BEFORE UPDATE ON journal_opaque
 BEGIN SELECT RAISE(ABORT, 'journal_opaque_immutable'); END;
 
 CREATE TRIGGER journal_opaque_append_only BEFORE DELETE ON journal_opaque
-WHEN NOT EXISTS (SELECT 1 FROM journal_opaque_promoting p
-                 WHERE p.log_ix = OLD.log_ix AND p.counter = OLD.counter AND p.hash = OLD.hash)
 BEGIN SELECT RAISE(ABORT, 'journal_opaque_append_only'); END;
 
 CREATE TRIGGER journal_opaque_position_taken BEFORE INSERT ON journal_opaque

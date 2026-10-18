@@ -244,17 +244,6 @@ pub(crate) fn verify_invariants(tx: &Connection) -> Result<(), ApiError> {
             )));
         }
     }
-    // The promotion marker lives only inside `promote_opaque`'s transaction.
-    let marked: i64 = tx
-        .query_row("SELECT COUNT(*) FROM journal_opaque_promoting", [], |r| {
-            r.get(0)
-        })
-        .map_err(store_error)?;
-    if marked != 0 {
-        return Err(corrupt(
-            "journal invariant: journal_opaque_promoting is not empty",
-        ));
-    }
     Ok(())
 }
 
@@ -1267,8 +1256,8 @@ impl Batch {
 /// batch, at the first opaque row, before reading that row's blobs.
 ///
 /// The only functions in this file that select from `journal_opaque` are this
-/// one, [`entry_at_position`] (through it), [`branch_entry`], [`insert_opaque`]
-/// and [`promote_opaque`].
+/// one, [`entry_at_position`] (through it), [`branch_entry`] and
+/// [`insert_opaque`].
 pub(crate) fn entries_from(
     conn: &Connection,
     log_ix: i64,
@@ -1949,61 +1938,6 @@ pub(crate) fn insert_opaque(
         )
         .map_err(store_error)?;
     Ok(new == 1)
-}
-
-/// Replaces the opaque chain row at `known`'s position with `known`, as a
-/// pending `journal` row, and returns its `ingest_seq`. The opaque row must
-/// exist with the same hash (`InvalidRequest "no opaque entry to promote"`
-/// otherwise, nothing changed).
-///
-/// The only path that deletes a `journal_opaque` row (ht-j87z.13 calls it);
-/// one transaction, the caller's. The marker row exempts that one delete from
-/// the append-only guard and is gone before this returns.
-#[allow(dead_code)] // ht-j87z.13 is the caller; tests exercise it until then
-pub(crate) fn promote_opaque(
-    tx: &Transaction<'_>,
-    log: &LogKey,
-    known: &Envelope,
-    decision: DecisionInstant,
-) -> Result<i64, ApiError> {
-    let Some(row) = load_log(tx, log)? else {
-        return Err(api_error(ErrorCode::NotFound, "unknown log"));
-    };
-    let key = params![
-        row.log_ix,
-        i64::try_from(known.counter).unwrap_or(i64::MAX),
-        known.hash.as_slice()
-    ];
-    let present: bool = tx
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM journal_opaque \
-             WHERE log_ix=?1 AND counter=?2 AND hash=?3 AND branch=0)",
-            key,
-            |r| r.get(0),
-        )
-        .map_err(store_error)?;
-    if !present {
-        return Err(api_error(
-            ErrorCode::InvalidRequest,
-            "no opaque entry to promote",
-        ));
-    }
-    tx.execute(
-        "INSERT INTO journal_opaque_promoting(log_ix,counter,hash) VALUES (?1,?2,?3)",
-        key,
-    )
-    .map_err(store_error)?;
-    tx.execute(
-        "DELETE FROM journal_opaque WHERE log_ix=?1 AND counter=?2 AND hash=?3 AND branch=0",
-        key,
-    )
-    .map_err(store_error)?;
-    tx.execute(
-        "DELETE FROM journal_opaque_promoting WHERE log_ix=?1 AND counter=?2 AND hash=?3",
-        key,
-    )
-    .map_err(store_error)?;
-    insert_pending(tx, row.log_ix, known, decision)
 }
 
 /// Freezes `log` at counter `at`, lower-only: an active log becomes frozen
