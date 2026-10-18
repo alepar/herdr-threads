@@ -1377,6 +1377,7 @@ fn automatic_canonical_full_outer_original_is_frozen_and_oversize_refuses_before
         version: 2,
         delivery: request.plan().clone(),
         launch: LaunchRequest {
+            directory_context: None,
             target: HostTargetId::new("peer-pane"),
             harness: ContextHarness::Codex,
             harness_binary: None,
@@ -1921,6 +1922,7 @@ fn automatic_parent_identity() -> AutomaticBootstrapIdentity {
     let plan = AutomaticBootstrapPlan {
         version: 2,
         payload: AutomaticBootstrapPayload {
+            directory_context: None,
             handoff: AutomaticHandoffPayload::new(
                 old.payload.handoff.namespace.clone(),
                 herdr_threads::protocol::ids::OperationId::new("automatic-child"),
@@ -2222,6 +2224,13 @@ fn automatic_canonical_descriptor_requires_the_concrete_automatic_runtime() {
                 .any(|name| name == herdr_threads::protocol::capabilities::AUTOMATIC_HANDOFF_V1),
             !generic
         );
+        assert_eq!(
+            caps.capabilities
+                .iter()
+                .any(|name| name == "handoff.launch_directories_v1"),
+            !generic,
+            "directory admission requires both canonical bootstrap runtimes"
+        );
     }
 }
 
@@ -2417,6 +2426,7 @@ fn automatic_canonical_first_begin_admits_future_startup_before_any_effect() {
         version: 2,
         delivery,
         launch: LaunchRequest {
+            directory_context: None,
             target: HostTargetId::new("peer-pane"),
             harness: ContextHarness::Codex,
             harness_binary: None,

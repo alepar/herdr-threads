@@ -1,0 +1,506 @@
+diff --git a/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/evidence/baseline-nextest.log b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/evidence/baseline-nextest.log
+new file mode 100644
+index 000000000..3f577fab8
+--- /dev/null
++++ b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/evidence/baseline-nextest.log
+@@ -0,0 +1,500 @@
++    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
++────────────
++ Nextest run ID 4444f7d4-af5c-42fc-aef1-fec660fbd086 with nextest profile: default
++    Starting 494 tests across 9 binaries (7176 tests skipped)
++        PASS [   6.264s] (  1/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects
++        PASS [   3.137s] (  2/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly
++        PASS [   0.019s] (  3/494) herdr-threads cli::commands::tests::handoff_new_tab_grammar
++        PASS [   0.019s] (  4/494) herdr-threads cli::commands::tests::handoff_parser_preserves_native_elements_and_distinct_names
++        PASS [   0.020s] (  5/494) herdr-threads cli::commands::tests::handoff_thread_name_uses_shared_canonical_resolution
++        PASS [   0.021s] (  6/494) herdr-threads cli::commands::tests::legacy_handoff_body_word_recover_remains_data
++        PASS [   0.026s] (  7/494) herdr-threads cli::commands::tests::handoff_new_tab_conflicts_and_required_fields
++        PASS [   0.026s] (  8/494) herdr-threads cli::commands::tests::handoff_parser_requires_one_thread_explicit_pane_and_one_body
++        PASS [   0.026s] (  9/494) herdr-threads cli::commands::tests::automatic_handoff_channel_omission_parses_for_every_destination
++        PASS [   0.035s] ( 10/494) herdr-threads cli::commands::tests::handoff_existing_target_matrix_and_no_launch_options
++        PASS [   0.014s] ( 11/494) herdr-threads cli::handoff::tests::a_human_handoff_requests_the_confirming_invitation_policy
++        PASS [   0.078s] ( 12/494) herdr-threads cli::handoff::tests::automatic_launched_oversized_original_refuses_before_recipient_allocation
++        PASS [   0.114s] ( 13/494) herdr-threads cli::cooperative_tests::actor_prerequisite_all_unfrozen_handoffs_refuse_before_dispatch
++        PASS [   0.082s] ( 14/494) herdr-threads cli::handoff::tests::automatic_launched_pane_lost_ensure_then_reject_preserves_original_without_send_or_start
++        PASS [   0.086s] ( 15/494) herdr-threads cli::handoff::tests::automatic_launched_pane_lost_complete_retries_terminal_without_relaunch
++        PASS [   0.104s] ( 16/494) herdr-threads cli::handoff::tests::acquired_stdin_survives_retry_after_reader_is_unavailable
++        PASS [   0.106s] ( 17/494) herdr-threads cli::cooperative_tests::scoped_runtime::seat_selector_matrix::d4_handoff_existing_by_name_and_id
++        PASS [   0.133s] ( 18/494) herdr-threads cli::cooperative_tests::scoped_runtime::handoff_existing_seat_name_with_tab_reaches_delivery
++        PASS [   0.033s] ( 19/494) herdr-threads cli::handoff::tests::automatic_launched_pane_unsupported_refuses_before_journal_and_start
++        PASS [   0.045s] ( 20/494) herdr-threads cli::handoff::tests::automatic_launched_pane_lost_start_never_resubmits_on_retry
++        PASS [   0.130s] ( 21/494) herdr-threads cli::handoff::tests::automatic_launched_pane_live_retry_requires_original_current_caller
++        PASS [   0.028s] ( 22/494) herdr-threads cli::handoff::tests::frozen_v1_prompt_and_manual_projection_ignore_current_renderer_drift
++        PASS [   0.026s] ( 23/494) herdr-threads cli::handoff::tests::frozen_v1_prompt_literals_bind_routing_quoting_and_thread
++        PASS [   0.029s] ( 24/494) herdr-threads cli::handoff::tests::handoff_bootstrap_binds_hook_preference_to_frozen_expected_instance_and_pair
++        PASS [   0.045s] ( 25/494) herdr-threads cli::handoff::tests::automatic_launched_pane_uses_ensure_send_and_one_start
++        PASS [   0.021s] ( 26/494) herdr-threads cli::handoff::tests::handoff_bootstrap_is_one_native_shell_argument
++        PASS [   0.026s] ( 27/494) herdr-threads cli::handoff::tests::handoff_bootstrap_prefers_recipient_hook_commands_and_replays_exact_fallback
++        PASS [   0.027s] ( 28/494) herdr-threads cli::handoff::tests::handoff_broken_output_replays_report_without_relaunch_or_wrong_scope
++        PASS [   0.030s] ( 29/494) herdr-threads cli::handoff::tests::handoff_confirmed_native_refusal_resets_fence_for_guarded_retry
++        PASS [   0.064s] ( 30/494) herdr-threads cli::handoff::tests::automatic_presentation_admission_counts_exact_local_root
++        PASS [   0.035s] ( 31/494) herdr-threads cli::handoff::tests::handoff_crash_after_native_start_before_result_never_repeats_start
++        PASS [   0.036s] ( 32/494) herdr-threads cli::handoff::tests::handoff_existing_thread_requires_joined_sender_and_freezes_id_on_replay
++        PASS [   0.042s] ( 33/494) herdr-threads cli::handoff::tests::handoff_exact_keys_replay_lost_responses_each_durable_phase
++        PASS [   0.028s] ( 34/494) herdr-threads cli::handoff::tests::handoff_fenced_complete_survives_local_removal_failure_then_cleanup_only_retry
++        PASS [   0.036s] ( 35/494) herdr-threads cli::handoff::tests::handoff_fenced_begin_precedes_effects_complete_follows_successful_flush
++        PASS [   0.027s] ( 36/494) herdr-threads cli::handoff::tests::handoff_fenced_early_live_alias_defers_without_calls_or_refusal
++        PASS [   0.023s] ( 37/494) herdr-threads cli::handoff::tests::handoff_fenced_terminal_retry_only_reprints_and_cleans_retained_intent
++        PASS [   0.030s] ( 38/494) herdr-threads cli::handoff::tests::handoff_fenced_early_terminal_retry_uses_frozen_selection_without_live_inspection
++        PASS [   0.019s] ( 39/494) herdr-threads cli::handoff::tests::handoff_invitations_always_require_ack_and_the_old_flag_is_gone
++        PASS [   0.041s] ( 40/494) herdr-threads cli::handoff::tests::handoff_fenced_early_namespace_alias_is_canonical_but_copied_uuid_is_not
++        PASS [   0.033s] ( 41/494) herdr-threads cli::handoff::tests::handoff_freezes_configured_options_for_preflight_launch_and_retry
++        PASS [   0.024s] ( 42/494) herdr-threads cli::handoff::tests::handoff_pending_page_lists_compound_without_payload_and_uses_private_files
++        PASS [   0.021s] ( 43/494) herdr-threads cli::handoff::tests::handoff_policy_parses_independent_deadlines_before_body_effects
++        PASS [   0.024s] ( 44/494) herdr-threads cli::handoff::tests::handoff_policy_refuses_unsupported_daemon_before_journal_or_launch
++        PASS [   0.245s] ( 45/494) herdr-threads cli::cooperative_tests::main539_composition::joined_result_is_refused_by_handoff_invitation_stage_and_durable_retry
++        PASS [   0.014s] ( 46/494) herdr-threads cli::handoff::tests::handoff_stdin_acquisition_is_bounded_and_preserves_exact_message_bytes
++        PASS [   0.030s] ( 47/494) herdr-threads cli::handoff::tests::handoff_possible_start_crash_and_unknown_never_start_twice
++        PASS [   0.017s] ( 48/494) herdr-threads cli::handoff::tests::handoff_validation_precedes_native_and_durable_work
++        PASS [   0.030s] ( 49/494) herdr-threads cli::handoff::tests::handoff_pre_start_refusal_retains_work_and_rechecks_launch
++        PASS [   0.021s] ( 50/494) herdr-threads cli::handoff::tests::pane_handoff_agy_and_hermes_produce_valid_argv
++        PASS [   0.038s] ( 51/494) herdr-threads cli::handoff::tests::legacy_handoff_origin_overflow_refuses_before_publication_or_effects
++        PASS [   0.076s] ( 52/494) herdr-threads cli::handoff::tests::handoff_instruction_sources_preserve_message_bytes_and_exclude_conflicts
++        PASS [   0.055s] ( 53/494) herdr-threads cli::handoff::tests::registered_handoff_selectors_refuse_human_and_unknown_without_fallback
++        PASS [   0.290s] ( 54/494) herdr-threads cli::handoff::tests::automatic_launched_noncompletion_keeps_exact_artifact_and_bounded_progress
++        PASS [   0.079s] ( 55/494) herdr-threads cli::handoff::tests::maximum_instruction_file_freezes_through_explicit_launch_retry
++        PASS [   0.017s] ( 56/494) herdr-threads cli::handoff::tests::task48_finite_grammar_keeps_captured_caller_states_and_refuses_neighbors
++        PASS [   0.028s] ( 57/494) herdr-threads cli::handoff::tests::task48_envelope_true_reserved_bounds_and_opaque_slot_are_exact
++        PASS [   0.136s] ( 58/494) herdr-threads cli::handoff::tests::registered_handoff_refusal_preserves_canonical_recovery_and_frozen_launch
++        PASS [   0.043s] ( 59/494) herdr-threads cli::handoff::tests::task48_nonpositional_optional_provider_reaches_actual_guarded_native
++        PASS [   0.121s] ( 60/494) herdr-threads cli::handoff::tests::stage_a_registered_options_freeze_once_and_retry_ignores_current_environment
++        PASS [   0.021s] ( 61/494) herdr-threads cli::handoff::tests::task48_old_plan_digest_and_new_template_selection_remain_immutable
++        PASS [   0.161s] ( 62/494) herdr-threads cli::handoff::tests::registered_handoff_unknown_submission_retains_identity_without_relaunch
++        PASS [   0.033s] ( 63/494) herdr-threads cli::handoff::tests::task48_progress_unknown_and_oversized_tails_fail_before_begin
++        PASS [   0.452s] ( 64/494) herdr-threads::service resolution::managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending
++        PASS [   0.057s] ( 65/494) herdr-threads cli::handoff::tests::task48_uncertain_retry_never_begins_or_launches
++        PASS [   0.021s] ( 66/494) herdr-threads cli::handoff_delivery::tests::actor_prerequisite_retained_human_delivery_refuses_before_canonical_or_cleanup
++        PASS [   0.052s] ( 67/494) herdr-threads cli::handoff_delivery::tests::actor_prerequisite_public_retained_agent_delivery_requires_elected_daemon_without_output_or_cleanup
++        PASS [   0.017s] ( 68/494) herdr-threads cli::handoff_delivery::tests::actual_existing_request_prepares_exact_recipient_without_mutation
++        PASS [   0.015s] ( 69/494) herdr-threads cli::handoff_delivery::tests::automatic_delivery_preparation_stays_unsupported_before_any_read
++        PASS [   0.075s] ( 70/494) herdr-threads cli::handoff_delivery::tests::actor_prerequisite_retained_agent_evidence_must_be_unique_valid_and_present
++        PASS [   0.036s] ( 71/494) herdr-threads cli::handoff_delivery::tests::automatic_existing_completed_retry_uses_terminal_without_ensure_or_send
++        PASS [   0.259s] ( 72/494) herdr-threads cli::handoff::tests::registered_handoff_report_replay_and_completed_cleanup_keep_frozen_identity
++        PASS [   0.032s] ( 73/494) herdr-threads cli::handoff_delivery::tests::automatic_existing_lost_send_replays_published_message_after_reject
++        PASS [   0.042s] ( 74/494) herdr-threads cli::handoff_delivery::tests::automatic_existing_lost_ensure_then_reject_keeps_original_and_refuses_send
++        PASS [   0.017s] ( 75/494) herdr-threads cli::handoff_delivery::tests::automatic_existing_pane_unsupported_refuses_before_resolution_and_publication
++        PASS [   0.028s] ( 76/494) herdr-threads cli::handoff_delivery::tests::automatic_existing_pane_full_request_resolves_one_seat
++        PASS [   0.019s] ( 77/494) herdr-threads cli::handoff_delivery::tests::automatic_existing_unsupported_refuses_before_publication_and_effects
++        PASS [   0.153s] ( 78/494) herdr-threads cli::handoff::tests::task48_terminal_thin_uncertain_matrix_is_runtime_free_and_canonically_completed
++        PASS [   0.029s] ( 79/494) herdr-threads cli::handoff_delivery::tests::automatic_existing_seat_full_request_ensures_and_sends
++        PASS [   0.037s] ( 80/494) herdr-threads cli::handoff_delivery::tests::automatic_existing_retry_requires_exact_namespace_path_bytes_before_client
++        PASS [   0.022s] ( 81/494) herdr-threads cli::handoff_delivery::tests::completed_changed_valid_participation_refuses
++        PASS [   0.027s] ( 82/494) herdr-threads cli::handoff_delivery::tests::completed_corrupt_compound_refuses
++        PASS [   0.024s] ( 83/494) herdr-threads cli::handoff_delivery::tests::completed_corrupt_invitation_refuses
++        PASS [   0.033s] ( 84/494) herdr-threads cli::handoff_delivery::tests::completed_corrupt_message_refuses
++        PASS [   0.028s] ( 85/494) herdr-threads cli::handoff_delivery::tests::completed_corrupt_reference_refuses
++        PASS [   0.030s] ( 86/494) herdr-threads cli::handoff_delivery::tests::completed_corrupt_participation_refuses
++        PASS [   0.030s] ( 87/494) herdr-threads cli::handoff_delivery::tests::completed_unexpected_field_refuses
++        PASS [   0.039s] ( 88/494) herdr-threads cli::handoff_delivery::tests::fix_reader_preterminal_oversized_prefix_refuses
++        PASS [   0.042s] ( 89/494) herdr-threads cli::handoff_delivery::tests::fix_reader_surviving_progress_oversized_prefix_refuses
++        PASS [   0.036s] ( 90/494) herdr-threads cli::handoff_delivery::tests::fix_retry_preterminal_unknown_staged_field_refuses
++        PASS [   0.037s] ( 91/494) herdr-threads cli::handoff_delivery::tests::fix_retry_publication_sync_failure_refuses_output_until_durable
++        PASS [   0.033s] ( 92/494) herdr-threads cli::handoff_delivery::tests::fix_retry_publication_sync_failure_retains_files_until_durable
++        PASS [   0.029s] ( 93/494) herdr-threads cli::handoff_delivery::tests::fix_retry_surviving_progress_unknown_staged_field_refuses
++        PASS [   0.159s] ( 94/494) herdr-threads cli::handoff_delivery::tests::canonical_pending_invitation_is_reused_in_existing_channel
++        PASS [   0.191s] ( 95/494) herdr-threads cli::handoff_delivery::tests::canonical_invitation_loss_and_old_replay_leave_new_episode_pending
++        PASS [   0.331s] ( 96/494) herdr-threads cli::handoff_delivery::tests::automatic_existing_max_escaped_body_and_independent_frozen_deadlines
++        PASS [   0.020s] ( 97/494) herdr-threads cli::handoff_delivery::tests::held_foreign_and_launch_only_requests_refuse_before_mutation
++        PASS [   0.825s] ( 98/494) herdr-threads cli::handoff::tests::automatic_launched_maximum_escaped_body_is_frozen_and_retries_without_relaunch
++        PASS [   0.156s] ( 99/494) herdr-threads cli::handoff_delivery::tests::handoff_policy_lazy_invitation_still_warns_sender_for_unregistered_ack_required_recipient
++        PASS [   0.182s] (100/494) herdr-threads cli::handoff_delivery::tests::handoff_policy_completed_canonical_status_bypasses_missing_capabilities_but_pending_refuses
++        PASS [   0.592s] (101/494) herdr-threads cli::handoff::tests::task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutant
++        PASS [   0.023s] (102/494) herdr-threads cli::handoff_delivery::tests::invitation_reply_loss_replays_original_child_even_after_join
++        PASS [   0.020s] (103/494) herdr-threads cli::handoff_delivery::tests::joined_delivery_skips_invite_and_stages_exact_body_without_launch
++        PASS [   0.201s] (104/494) herdr-threads cli::handoff_delivery::tests::handoff_policy_already_joined_unavailable_recipient_warns_without_new_invitation
++        PASS [   0.044s] (105/494) herdr-threads cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin
++        PASS [   0.017s] (106/494) herdr-threads cli::handoff_delivery::tests::pane_labels_select_canonical_seat_and_ambiguity_never_allocates
++        PASS [   0.032s] (107/494) herdr-threads cli::handoff_delivery::tests::new_unbound_delivery_reuses_exact_children_after_each_lost_reply
++        PASS [   0.215s] (108/494) herdr-threads cli::handoff_delivery::tests::handoff_policy_default_choice_resolves_at_child_creation_then_replay_preserves_deadlines
++        PASS [   0.662s] (109/494) herdr-threads cli::handoff::tests::stage_a_manual_recovery_extra_key_lossless_shell_parser_resolver
++        PASS [   0.089s] (110/494) herdr-threads cli::handoff_delivery::tests::maximum_escaped_delivery_origin_and_terminal_survive_cleanup_retry
++        PASS [   0.137s] (111/494) herdr-threads cli::handoff_delivery::tests::pending_delivery_writer_invite_refusal_before_attempt_is_not_uncertain
++        PASS [   0.806s] (112/494) herdr-threads cli::handoff::tests::task48_claude_lossless_manual_shell_parser_options_and_actual_native_chain
++        PASS [   0.961s] (113/494) herdr-threads cli::handoff::tests::handoff_manual_recovery_preserves_frozen_options_without_reentry
++        PASS [   0.278s] (114/494) herdr-threads cli::handoff_delivery::tests::pending_delivery_writer_output_failure_stays_replayable
++        PASS [   0.188s] (115/494) herdr-threads cli::handoff_delivery::tests::pending_delivery_writer_progress_io_failure_reports_after_begin
++        PASS [   0.040s] (116/494) herdr-threads cli::handoff_delivery::tests::retry_completed_strict_client_after_journal_restart_cleans_only_local_files
++        PASS [   0.035s] (117/494) herdr-threads cli::handoff_delivery::tests::retry_completion_reply_loss_replays_only_the_completed_fence
++        PASS [   0.389s] (118/494) herdr-threads cli::handoff_delivery::tests::pending_delivery_writer_begin_failure_reports_unknown_status
++        PASS [   0.042s] (119/494) herdr-threads cli::handoff_delivery::tests::retry_directory_sync_failure_after_unlink_is_replayable
++        PASS [   0.074s] (120/494) herdr-threads cli::handoff_delivery::tests::retry_copied_uuid_wrong_root_or_socket_refuses_before_client_or_output
++        PASS [   0.058s] (121/494) herdr-threads cli::handoff_delivery::tests::retry_failed_write_and_flush_retain_exact_report_and_original
++        PASS [   0.044s] (122/494) herdr-threads cli::handoff_delivery::tests::retry_intent_removal_failure_is_replayable
++        PASS [   0.196s] (123/494) herdr-threads cli::handoff_delivery::tests::retry_canonical_completed_after_both_bindings_change_archive_and_store_restart
++        PASS [   0.051s] (124/494) herdr-threads cli::handoff_delivery::tests::retry_progress_removal_failure_is_replayable
++        PASS [   0.035s] (125/494) herdr-threads cli::handoff_delivery::tests::retry_reference_refuses_conflicting_terminal_even_with_original_intent
++        PASS [   0.027s] (126/494) herdr-threads cli::handoff_delivery::tests::retry_terminal_changed_valid_participation_is_corrupt_history
++        PASS [   0.497s] (127/494) herdr-threads cli::handoff_delivery::tests::pending_delivery_writer_completion_reply_loss_is_uncertain
++        PASS [   0.030s] (128/494) herdr-threads cli::handoff_delivery::tests::retry_terminal_unknown_nested_fields_refuse
++        PASS [   0.035s] (129/494) herdr-threads cli::handoff_delivery::tests::retry_terminal_unknown_header_fields_refuse
++        PASS [   0.020s] (130/494) herdr-threads cli::handoff_delivery::tests::unsafe_recipient_preparation_refuses_before_any_write
++        PASS [   0.302s] (131/494) herdr-threads cli::handoff_delivery::tests::pending_delivery_writer_terminal_save_failure_after_completion_reports
++        PASS [   0.019s] (132/494) herdr-threads cli::hook::tests::burst_digest_ranks_the_require_ack_handoff_first
++        PASS [   0.063s] (133/494) herdr-threads cli::handoff_delivery::tests::retry_terminal_corruption_refuses_without_output_or_client
++        PASS [   0.021s] (134/494) herdr-threads cli::hook::tests::burst_session_start_keeps_the_handoff_inbox_within_budget
++        PASS [   0.022s] (135/494) herdr-threads cli::journal::tests::topology_contract_legacy_handoff_bytes_and_digest_unchanged
++        PASS [   0.049s] (136/494) herdr-threads cli::launch::tests::claude_launch_starts_with_caller_argv_and_reports_durable_handoff
++        PASS [   0.055s] (137/494) herdr-threads cli::launch::tests::handoff_native_launcher_checks_frozen_seat_and_propagates_confirmed_refusal
++        PASS [   0.615s] (138/494) herdr-threads cli::handoff_delivery::tests::pending_delivery_writer_authority_and_corrupt_history_stay_silent
++        PASS [   0.048s] (139/494) herdr-threads cli::launch::tests::handoff_preflight_and_failed_durable_gate_never_submit_or_record_start
++        PASS [   0.017s] (140/494) herdr-threads cli::panes::panes_hint::handoff_names_ignore_unnamed_agents_in_other_spaces
++        PASS [   0.040s] (141/494) herdr-threads cli::launch::tests::unknown_outcome_exits_five_and_keeps_handoff_discoverable
++        PASS [   0.013s] (142/494) herdr-threads cli::topology_handoff::tests::automatic_bootstrap_preparation_freezes_v2_without_invite_or_create_child
++        PASS [   0.020s] (143/494) herdr-threads cli::topology_handoff::tests::automatic_bootstrap_preparation_refuses_a_kind_whose_composition_rewrites_the_caller_argv
++        PASS [   0.022s] (144/494) herdr-threads cli::topology_handoff::tests::automatic_bootstrap_retry_loads_its_frozen_original_without_v1_decode
++        PASS [   0.016s] (145/494) herdr-threads cli::topology_handoff::tests::bootstrap_plan_version_must_match_its_payload
++        PASS [   0.111s] (146/494) herdr-threads cli::launch::tests::handoff_policy_readiness_is_advisory_for_missing_wrong_profile_and_uncovered_hooks
++        PASS [   0.014s] (147/494) herdr-threads cli::topology_handoff::tests::fresh_root_preparation_uses_current_admission_and_v1_generated_input
++        PASS [   0.021s] (148/494) herdr-threads cli::topology_handoff::tests::current_main_topology_native_argv_preserves_empty_tokens
++        PASS [   0.014s] (149/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::automatic_old_peer_with_all_other_caps_refuses_before_selector_or_caller_allocation
++        PASS [   0.373s] (150/494) herdr-threads cli::handoff_delivery::tests::timed_handoff_acceptance_and_ack_clear_only_their_own_overdue_condition
++        PASS [   0.229s] (151/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::automatic_new_tab_agy_completes_end_to_end_with_prompt_interactive
++        PASS [   0.225s] (152/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::automatic_permit_clock_window_at_the_bound_completes
++        PASS [   0.887s] (153/494) herdr-threads cli::handoff_delivery::tests::pending_delivery_writer_partial_commits_preserve_observations
++        PASS [   0.962s] (154/494) herdr-threads cli::handoff_delivery::tests::pending_delivery_writer_inspect_argv_parses_as_public_pending_ops
++        PASS [   0.460s] (155/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::automatic_child_begin_expired_permit_has_no_effects_and_fresh_permit_succeeds
++        PASS [   0.161s] (156/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_below_limit_replays_exact_bytes
++        PASS [   0.245s] (157/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::bound_recipient_leave_after_lost_ensure_refuses_send
++        PASS [   0.231s] (158/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::completed_child_reconciles_outer_without_relaunch_or_recreate
++        PASS [   0.243s] (159/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::completed_automatic_retry_is_historical_after_source_binding_changes
++        PASS [   0.213s] (160/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_retry_refuses_wrong_namespace_and_changed_original
++        PASS [   0.232s] (161/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_retry_does_not_admit_live_child_with_possible_start
++        PASS [   0.399s] (162/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_read_refuses
++        PASS [   1.477s] (163/494) herdr-threads cli::handoff_delivery::tests::maximum_instruction_file_freezes_through_existing_delivery_and_retry
++        PASS [   0.357s] (164/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_replay_refuses
++        PASS [   0.388s] (165/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_write_refuses_atomically
++        PASS [   0.430s] (166/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_retry_refuses_missing_or_contradictory_successful_launch
++        PASS [   0.241s] (167/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::lost_guarded_attachment_reply_never_recreates_topology
++        PASS [   1.063s] (168/494) herdr-threads cli::launch::tests::handoff_policy_hermes_missing_owned_readiness_still_launches_selected_native_profile
++        PASS [   0.251s] (169/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::lost_start_outcome_stays_pending_without_second_start
++        PASS [   0.257s] (170/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_canonical_completion_refuses_full_diagnostic_report
++        PASS [   0.277s] (171/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_committed_completion_reply_loss_reopens_without_artifact_or_relaunch
++        PASS [   0.480s] (172/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::lost_automatic_ensure_or_send_reply_replays_one_exact_child
++        PASS [   2.419s] (173/494) herdr-threads cli::handoff::tests::task48_hermes_actual_native_launcher_composes_before_durable_work
++        PASS [   0.416s] (174/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_artifact_failure_keeps_synced_summary_and_reopened_retry_never_starts
++        PASS [   0.288s] (175/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_completed_terminal_rejects_mismatched_selection_hint
++        PASS [   2.185s] (176/494) herdr-threads cli::handoff_delivery::tests::handoff_policy_missing_readiness_guarded_launch_stages_unregistered_body_and_warns_sender
++        PASS [   0.186s] (177/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::parsed_human_automatic_operator_retry_replays_lost_decision_reply
++        PASS [   0.212s] (178/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::parsed_human_recovery_of_automatic_unknown_creation_is_durable
++        PASS [   0.532s] (179/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_completed_missing_child_and_artifact_is_readonly_and_truthful
++        PASS [   0.341s] (180/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_rejects_future_request_overflow_before_publication_or_topology
++        PASS [   0.521s] (181/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_large_diagnostics_preserve_full_local_report_and_complete_summary
++        PASS [   0.327s] (182/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::parsed_human_created_and_cancelled_automatic_recovery_are_distinct
++        PASS [   0.174s] (183/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::parsed_new_tab_automatic_route_refuses_a_rewriting_kind_before_any_effect
++        PASS [   0.417s] (184/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_unknown_large_diagnostics_keep_bounded_truthful_progress
++        PASS [   0.162s] (185/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::parsed_new_tab_unsupported_refuses_before_topology_or_journal
++        PASS [   0.251s] (186/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::parsed_new_tab_automatic_route_creates_one_pair_and_starts_once
++        PASS [   0.215s] (187/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::parsed_operator_dispatch_classifies_before_connect_and_replays_frozen_decision
++        PASS [   0.241s] (188/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin
++        PASS [   0.319s] (189/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::parsed_new_tab_selector_enters_public_runtime_dispatch
++        PASS [   1.725s] (190/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::automatic_permit_clock_window_past_the_bound_still_expires
++        PASS [   0.210s] (191/494) herdr-threads cli::topology_handoff::tests::live::bootstrap_v2_agy_completes_end_to_end_with_prompt_interactive
++        PASS [   0.272s] (192/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::public_historical_retry_reconciles_completed_child_after_sender_check_in
++        PASS [   0.224s] (193/494) herdr-threads cli::topology_handoff::tests::live::bootstrap_v2_completion_refuses_a_report_the_frozen_composition_did_not_produce
++        PASS [   0.216s] (194/494) herdr-threads cli::topology_handoff::tests::live::bootstrap_v2_root_launch_refuses_before_start_when_current_composition_differs
++        PASS [   1.989s] (195/494) herdr-threads cli::launch::tests::handoff_policy_hermes_unused_readiness_change_allows_submit_but_native_profile_change_refuses
++        PASS [   0.803s] (196/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_recovery_above_historical_limit_succeeds_and_replays
++        PASS [   0.186s] (197/494) herdr-threads cli::topology_handoff::tests::live::composition_absent_parent_and_foreign_database_cannot_be_authorized_locally
++        PASS [   0.212s] (198/494) herdr-threads cli::topology_handoff::tests::live::bootstrap_v2_synthetic_fourth_completes_end_to_end
++        PASS [   0.026s] (199/494) herdr-threads cli::topology_handoff::tests::live::composition_foreground_contender_is_joined_when_deciding_pass_unwinds
++        PASS [   0.121s] (200/494) herdr-threads cli::topology_handoff::tests::live::composition_canonical_created_actual_request_none_establishes_coverage
++        PASS [   0.263s] (201/494) herdr-threads cli::topology_handoff::tests::live::composition_actual_new_thread_child_requires_canonical_created_thread
++        PASS [   0.465s] (202/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::typed_native_zero_advances_attempt_but_unknown_stays_fenced
++        PASS [   0.169s] (203/494) herdr-threads cli::topology_handoff::tests::live::composition_no_effect_request_none_vetoes_without_advancing_attempt
++        PASS [   0.250s] (204/494) herdr-threads cli::topology_handoff::tests::live::composition_actual_retained_child_establishes_coverage_without_authority
++        PASS [   0.252s] (205/494) herdr-threads cli::topology_handoff::tests::live::composition_actual_terminal_after_cleanup_matches_human_original_and_worker
++        PASS [   0.262s] (206/494) herdr-threads cli::topology_handoff::tests::live::composition_retained_child_requires_exact_canonical_attachment
++        PASS [   0.243s] (207/494) herdr-threads cli::topology_handoff::tests::live::composition_retained_completion_requires_full_canonical_equality
++        PASS [   0.200s] (208/494) herdr-threads cli::topology_handoff::tests::live::current_main_linked_none_preserves_root_append_contract
++        PASS [   0.179s] (209/494) herdr-threads cli::topology_handoff::tests::live::downstream_atomic_completion_runs_exact_child_then_flushes_success
++        PASS [   0.383s] (210/494) herdr-threads cli::topology_handoff::tests::live::composition_child_lookup_many_names_and_modern_header_progress
++        PASS [   0.217s] (211/494) herdr-threads cli::topology_handoff::tests::live::downstream_adapter_proven_not_submitted_can_retry_start_without_restage
++        PASS [   0.271s] (212/494) herdr-threads cli::topology_handoff::tests::live::composition_terminal_surviving_submission_must_match_completed_attempt_and_creation
++        PASS [   0.560s] (213/494) herdr-threads cli::topology_handoff::tests::live::composition_actual_retained_bundle_cap_and_corruption_controls
++        PASS [   0.185s] (214/494) herdr-threads cli::topology_handoff::tests::live::downstream_delivery_terminal_with_live_bootstrap_origin_refuses_before_client
++        PASS [   0.255s] (215/494) herdr-threads cli::topology_handoff::tests::live::downstream_child_progress_corruption_or_oversize_never_clears_launch_fence
++        PASS [   0.189s] (216/494) herdr-threads cli::topology_handoff::tests::live::downstream_launch_report_save_loss_retains_possible_start_after_reopen
++        PASS [   0.325s] (217/494) herdr-threads cli::topology_handoff::tests::live::downstream_crash_before_or_after_native_start_never_relaunches
++        PASS [   0.359s] (218/494) herdr-threads cli::topology_handoff::tests::live::downstream_failed_output_reopen_archive_depart_binding_changes_are_history_only
++        PASS [   0.279s] (219/494) herdr-threads cli::topology_handoff::tests::live::downstream_new_thread_create_links_parent_child_in_same_real_transaction
++        PASS [   0.185s] (220/494) herdr-threads cli::topology_handoff::tests::live::downstream_original_binding_change_at_native_gate_stops_start
++        PASS [   0.211s] (221/494) herdr-threads cli::topology_handoff::tests::live::downstream_original_agent_after_intent_removed_replays_history
++        PASS [   0.381s] (222/494) herdr-threads cli::topology_handoff::tests::live::downstream_invalid_or_oversized_success_report_refuses_before_wrapper_commit
++        PASS [   0.191s] (223/494) herdr-threads cli::topology_handoff::tests::live::downstream_original_human_after_intent_removed_refuses_root_before_effects
++        PASS [   0.512s] (224/494) herdr-threads cli::topology_handoff::tests::live::downstream_child_intent_and_directory_sync_cleanup_loss_replays_only_history
++        PASS [   0.184s] (225/494) herdr-threads cli::topology_handoff::tests::live::downstream_partial_terminal_with_live_original_refuses_before_any_effect
++        PASS [   0.184s] (226/494) herdr-threads cli::topology_handoff::tests::live::downstream_retained_identity_alternate_path_spelling_is_corruption
++        PASS [   0.171s] (227/494) herdr-threads cli::topology_handoff::tests::live::downstream_unknown_launch_never_becomes_success_or_clears_fence
++        PASS [   0.201s] (228/494) herdr-threads cli::topology_handoff::tests::live::downstream_terminal_save_loss_recovers_canonical_success_without_effects
++        PASS [   0.232s] (229/494) herdr-threads cli::topology_handoff::tests::live::downstream_terminal_namespace_mismatch_refuses_even_after_cleanup
++        PASS [   0.201s] (230/494) herdr-threads cli::topology_handoff::tests::live::downstream_wrapper_before_call_failure_retries_cached_real_report_only
++        PASS [   0.298s] (231/494) herdr-threads cli::topology_handoff::tests::live::downstream_retained_terminal_requires_exact_canonical_completed_report
++        PASS [   0.301s] (232/494) herdr-threads cli::topology_handoff::tests::live::downstream_retained_origin_damage_or_ambiguity_refuses_before_client_or_output
++        PASS [   0.195s] (233/494) herdr-threads cli::topology_handoff::tests::live::downstream_wrapper_reply_loss_recovers_atomic_canonical_report
++        PASS [   0.202s] (234/494) herdr-threads cli::topology_handoff::tests::live::final_sdd_pending_proven_not_submitted_preserves_phase_and_manual_frozen_argv
++        PASS [   0.188s] (235/494) herdr-threads cli::topology_handoff::tests::live::held_store_clock_permit_window_at_the_bound_completes
++        PASS [   0.191s] (236/494) herdr-threads cli::topology_handoff::tests::live::historical_v1_completed_terminal_presents_after_current_composition_drift
++        PASS [   1.037s] (237/494) herdr-threads cli::topology_handoff::tests::live::downstream_canonical_accepted_escaped_origin_exceeding_delivery_bound_replays
++        PASS [   0.112s] (238/494) herdr-threads cli::topology_handoff::tests::live::live_actor_wrapper_agent_original_reaches_guarded_attachment
++        PASS [   0.312s] (239/494) herdr-threads cli::topology_handoff::tests::live::final_sdd_pending_write_and_flush_loss_preserve_possible_start_and_retry
++        PASS [   0.103s] (240/494) herdr-threads cli::topology_handoff::tests::live::live_actor_wrapper_human_origin_refuses_before_client_lock_or_progress
++        PASS [   0.212s] (241/494) herdr-threads cli::topology_handoff::tests::live::historical_v1_saved_success_completes_after_current_composition_drift
++        PASS [   0.103s] (242/494) herdr-threads cli::topology_handoff::tests::live::live_actor_wrapper_invalid_missing_ambiguous_origins_refuse_readonly
++        PASS [   0.271s] (243/494) herdr-threads cli::topology_handoff::tests::live::historical_v1_corrupted_saved_report_refuses_after_drift_without_relaunch
++        PASS [   0.310s] (244/494) herdr-threads cli::topology_handoff::tests::live::historical_v1_reply_loss_and_terminal_save_loss_recover_after_drift
++        PASS [   0.145s] (245/494) herdr-threads cli::topology_handoff::tests::live::live_attachment_reply_loss_recovers_identical_child_without_resubmit
++        PASS [   0.104s] (246/494) herdr-threads cli::topology_handoff::tests::live::live_created_save_failure_is_unknown_without_record_or_resubmit
++        PASS [   0.156s] (247/494) herdr-threads cli::topology_handoff::tests::live::live_attached_plan_exact_frozen_options_and_digest_tampering_refusal
++        PASS [   0.146s] (248/494) herdr-threads cli::topology_handoff::tests::live::live_created_attaches_exact_recipient_without_downstream_effects
++        PASS [   0.427s] (249/494) herdr-threads cli::topology_handoff::tests::live::held_store_clock_permit_window_past_the_bound_still_expires
++        PASS [   0.141s] (250/494) herdr-threads cli::topology_handoff::tests::live::live_fix1_canonical_created_without_local_request_still_attaches
++        PASS [   0.163s] (251/494) herdr-threads cli::topology_handoff::tests::live::live_canonical_evidence_recovers_missing_progress_across_two_retries
++        PASS [   0.110s] (252/494) herdr-threads cli::topology_handoff::tests::live::live_fix1_genuine_typed_zero_saved_request_replays_no_effect_record
++        PASS [   0.012s] (253/494) herdr-threads cli::topology_handoff::tests::live::live_owned_child
++        PASS [   0.136s] (254/494) herdr-threads cli::topology_handoff::tests::live::live_lost_host_reply_never_creates_twice
++        PASS [   0.150s] (255/494) herdr-threads cli::topology_handoff::tests::live::live_fresh_authority_refusal_fences_submission
++        PASS [   0.151s] (256/494) herdr-threads cli::topology_handoff::tests::live::live_lost_reservation_reply_never_submits_on_retry
++        PASS [   0.170s] (257/494) herdr-threads cli::topology_handoff::tests::live::live_fix1_no_effect_without_saved_request_refuses_uncertain_attempt_readonly
++        PASS [   0.146s] (258/494) herdr-threads cli::topology_handoff::tests::live::live_missing_guard_capability_refuses_before_any_mutation
++        PASS [   0.138s] (259/494) herdr-threads cli::topology_handoff::tests::live::live_only_typed_zero_submission_allocates_distinct_next_attempt
++        PASS [   0.194s] (260/494) herdr-threads cli::topology_handoff::tests::live::live_moved_scope_at_resolve_or_attach_retains_exact_creation
++        PASS [   0.102s] (261/494) herdr-threads cli::topology_handoff::tests::live::live_possible_save_failure_never_reaches_native
++        PASS [   0.104s] (262/494) herdr-threads cli::topology_handoff::tests::live::live_possible_save_failure_reports_exact_uncertainty
++        PASS [   0.212s] (263/494) herdr-threads cli::topology_handoff::tests::live::live_owned_process_copied_journal_canonical_uniqueness
++        PASS [   1.793s] (264/494) herdr-threads cli::topology_handoff::tests::live::composition_actual_large_bundle_survivors_admission_loss_and_cancel
++        PASS [   0.234s] (265/494) herdr-threads cli::topology_handoff::tests::live::live_owned_process_crash_during_write_no_second_submission
++        PASS [   0.134s] (266/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_actual_next_attempt_rejects_previous_attempt
++        PASS [   0.199s] (267/494) herdr-threads cli::topology_handoff::tests::live::live_owned_process_duplicate_shared_journal_lock_no_second_submission
++        PASS [   0.176s] (268/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_budget_entry_and_final_presentation_zero_effect
++        PASS [   0.128s] (269/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_existing_owner_positive_uses_no_allocation_bump
++        PASS [   0.123s] (270/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_lifecycle_only_change_refuses_existing_owner_fresh_key
++        PASS [   0.133s] (271/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_lifecycle_only_change_refuses_exact_replay_and_preserves_row
++        PASS [   0.149s] (272/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_integer_ceiling_allocating_and_owner_phases
++        PASS [   0.114s] (273/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_moved_tab_refuses_with_zero_seats_and_operations
++        PASS [   0.113s] (274/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_operation_insert_failure_rolls_back_allocation
++        PASS [   0.116s] (275/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_own_extra_lifecycle_bump_rolls_back_allocation
++        PASS [   0.278s] (276/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_a2_namespace_claim_and_race_controls_zero_effect
++        PASS [   0.126s] (277/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_same_response_allocates_once_and_keeps_old_digest
++        PASS [   0.191s] (278/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_replay_rechecks_original_authority_preserving_ledger
++        PASS [   0.138s] (279/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_stale_attempt_refuses_before_allocation
++        PASS [   0.134s] (280/494) herdr-threads cli::topology_handoff::tests::live::live_record_reply_loss_recovers_canonical_creation_without_resubmit
++        PASS [   0.169s] (281/494) herdr-threads cli::topology_handoff::tests::live::live_preallocation_same_response_wrong_workspace_or_terminal_refuses
++        PASS [   0.142s] (282/494) herdr-threads cli::topology_handoff::tests::live::live_progress_nested_unknown_fields_refuse_without_new_effects
++        PASS [   0.157s] (283/494) herdr-threads cli::topology_handoff::tests::live::live_uncorrelated_creation_stays_unknown_without_record_or_retry
++        PASS [   0.174s] (284/494) herdr-threads cli::topology_handoff::tests::live::pending_writer_authority_and_namespace_refusals_stay_silent
++        PASS [   0.103s] (285/494) herdr-threads cli::topology_handoff::tests::maximum_escaped_bootstrap_survives_origin_and_request_progress
++        PASS [   0.067s] (286/494) herdr-threads cli::topology_handoff::tests::phase13_prepublication_capacity_uses_actual_request_envelope_bound
++        PASS [   0.026s] (287/494) herdr-threads cli::topology_handoff::tests::publication_explicit_cwd_claude_options_and_invalid_inputs
++        PASS [   0.025s] (288/494) herdr-threads cli::topology_handoff::tests::publication_freezes_route_argv_caller_and_channel
++        PASS [   0.182s] (289/494) herdr-threads cli::topology_handoff::tests::live::root_launch_refuses_before_start_when_current_composition_differs_from_v1
++        PASS [   0.036s] (290/494) herdr-threads cli::topology_handoff::tests::publication_public_route_refuses_unavailable_daemon_before_publication
++        PASS [   0.023s] (291/494) herdr-threads cli::topology_handoff::tests::publication_refuses_cwd_removed_after_preparation
++        PASS [   0.017s] (292/494) herdr-threads cli::topology_handoff::tests::publication_selected_workspace_and_new_channel_defaults
++        PASS [   0.205s] (293/494) herdr-threads cli::topology_handoff::tests::live::phase13_operator_created_keeps_original_request_and_allows_second_agent_retry
++        PASS [   0.024s] (294/494) herdr-threads cli::topology_handoff::tests::publication_rejects_tampered_identity_before_allocation
++        PASS [   0.022s] (295/494) herdr-threads cli::topology_handoff::tests::publication_validation_has_zero_journal_effects
++        PASS [   0.327s] (296/494) herdr-threads cli::topology_handoff::tests::live::pending_writer_completion_failure_labels_last_observed_attached_as_uncertain
++        PASS [   0.021s] (297/494) herdr-threads cli::topology_handoff::tests::v1_plan_payload_is_unchanged_by_bootstrap_v2
++        PASS [   0.025s] (298/494) herdr-threads cli::topology_handoff::tests::retained_family_collision_two_v2_terminals_refuses_before_decoder
++        PASS [   0.031s] (299/494) herdr-threads cli::topology_handoff::tests::retained_family_collision_delivery_same_kind_refuses_before_decoder
++        PASS [   0.040s] (300/494) herdr-threads cli::topology_handoff::tests::retained_family_collision_bootstrap_same_kind_refuses_before_decoder
++        PASS [   0.025s] (301/494) herdr-threads cli::topology_handoff::tests::v2_new_tab_agy_places_the_prompt_with_prompt_interactive
++        PASS [   0.020s] (302/494) herdr-threads cli::topology_handoff::tests::v2_new_tab_hermes_places_the_prompt_with_query
++        PASS [   0.022s] (303/494) herdr-threads cli::topology_handoff::tests::v2_payload_requires_template_iff_composed_argv
++        PASS [   0.022s] (304/494) herdr-threads cli::topology_handoff::tests::v2_plan_freezes_adapter_composition_and_round_trips
++        PASS [   0.019s] (305/494) herdr-threads cli::topology_handoff::tests::v2_retained_argv_validation_accepts_frozen_and_refuses_changed
++        PASS [   0.012s] (306/494) herdr-threads harness::agy::launch::tests::a_v2_handoff_plan_composes_and_its_retained_argv_validates
++        PASS [   0.016s] (307/494) herdr-threads cli::topology_handoff::tests::v2_retained_argv_validation_uses_the_frozen_template
++        PASS [   0.021s] (308/494) herdr-threads cli::topology_handoff::tests::v2_startup_input_drift_is_refused_at_preparation
++        PASS [   0.017s] (309/494) herdr-threads harness::launch::tests::handoff_preparation_runs_all_guards_without_native_submission
++        PASS [   0.021s] (310/494) herdr-threads host::native::tests::handoff_native_confirmed_refusal_has_not_submitted_evidence
++        PASS [   0.022s] (311/494) herdr-threads protocol::handoff::automatic_contract_tests::automatic_keys_versions_and_raw_legacy_phases_fail_closed
++        PASS [   0.017s] (312/494) herdr-threads protocol::handoff::automatic_contract_tests::automatic_original_digest_and_all_restricted_phases_are_exact
++        PASS [   0.020s] (313/494) herdr-threads protocol::handoff::automatic_contract_tests::automatic_launch_original_binds_outer_launch_context_and_child_payload
++        PASS [   0.029s] (314/494) herdr-threads protocol::handoff::automatic_contract_tests::automatic_historical_original_capacity_and_exact_bytes_remain_unchanged
++        PASS [   0.017s] (315/494) herdr-threads protocol::handoff::automatic_contract_tests::automatic_v2_keys_have_ensure_and_no_legacy_invite
++        PASS [   0.014s] (316/494) herdr-threads protocol::handoff::automatic_contract_tests::plan_with_foreign_host_refused
++        PASS [   3.131s] (317/494) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_operator_decision_replays_exactly
++        PASS [   0.020s] (318/494) herdr-threads protocol::handoff::topology_contract_tests::inspection_aware_results_preserve_old_history_and_older_decoders_fail_closed
++        PASS [   0.019s] (319/494) herdr-threads protocol::handoff::topology_contract_tests::payload_with_foreign_host_refused
++        PASS [   0.018s] (320/494) herdr-threads protocol::handoff::topology_contract_tests::topology_contract_attempt_recovery_and_linked_report_shapes
++        PASS [   0.019s] (321/494) herdr-threads protocol::handoff::topology_contract_tests::topology_contract_structural_validation
++        PASS [   0.332s] (322/494) herdr-threads cli::topology_handoff::tests::live::pending_writer_rearm_report_write_and_flush_failure_stays_replayable
++        PASS [   0.015s] (323/494) herdr-threads protocol::handoff::topology_contract_tests::topology_not_submitted_wire_has_a_distinct_exact_attempt_key
++        PASS [   0.029s] (324/494) herdr-threads protocol::handoff::topology_contract_tests::recovery_inspection_wire_keys_bind_canonical_state_and_preserve_absent_history
++        PASS [   0.396s] (325/494) herdr-threads cli::topology_handoff::tests::live::pending_writer_fresh_not_submitted_reports_next_prepared
++        PASS [   0.078s] (326/494) herdr-threads protocol::handoff::topology_contract_tests::maximum_escaped_body_completion_and_recovery_share_bounded_wire_reply
++        PASS [   0.395s] (327/494) herdr-threads cli::topology_handoff::tests::live::pending_writer_saved_not_submitted_reports_next_prepared
++        PASS [   0.139s] (328/494) herdr-threads store::topology_handoff::attempts::tests::created_recovery_uses_process_boot_and_fresh_structural_call_without_seat_allocation
++        PASS [   0.149s] (329/494) herdr-threads store::topology_handoff::attempts::tests::common_canonical_guard_returns_exact_current_owner_without_mutation
++        PASS [   0.144s] (330/494) herdr-threads store::topology_handoff::attempts::tests::created_recovery_refuses_fresh_pane_that_now_belongs_to_another_tab
++        PASS [   0.165s] (331/494) herdr-threads store::control::tests::topology_attachment::handoff_policy_linked_frozen_children_match_both_modes_and_reject_tampering
++        PASS [   0.017s] (332/494) herdr-threads store::topology_handoff::tests::copied_compound_refuses_foreign_canonical_namespace_bytes
++        PASS [   0.017s] (333/494) herdr-threads store::topology_handoff::tests::equivalent_json_order_and_whitespace_preserve_full_identity
++        PASS [   0.173s] (334/494) herdr-threads store::topology_handoff::attempts::tests::created_recovery_then_cancellation_retains_both_immutable_decisions
++        PASS [   0.014s] (335/494) herdr-threads store::topology_handoff::tests::malformed_truncated_oversized_and_invalid_saved_identities_are_corrupt
++        PASS [   0.141s] (336/494) herdr-threads store::topology_handoff::attempts::tests::phase13_created_recovery_preserves_independent_historical_reference
++        PASS [   0.164s] (337/494) herdr-threads store::topology_handoff::attempts::tests::phase13_a225_created_recovery_bytes_remain_compatible
++        PASS [   0.016s] (338/494) herdr-threads store::topology_handoff::tests::retained_unknown_fields_and_missing_optional_fields_are_corrupt
++        PASS [   0.018s] (339/494) herdr-threads store::topology_handoff::tests::same_compound_refuses_changed_full_identity_with_valid_digest
++        PASS [   0.015s] (340/494) herdr-threads store::topology_handoff::tests::valid_full_identity_roundtrips_without_losing_frozen_arguments
++        PASS [   0.139s] (341/494) herdr-threads store::topology_handoff::attempts::tests::phase13_created_recovery_refuses_existing_owner_lifecycle_change
++        PASS [   0.054s] (342/494) herdr-threads store::topology_handoff::tests::maximum_escaped_body_identity_survives_canonical_encoding
++        PASS [   0.123s] (343/494) herdr-threads store::topology_handoff::tests::envelope_boundary_preserves_valid_full_data_and_refuses_overflow
++        PASS [   0.177s] (344/494) herdr-threads store::topology_handoff::attempts::tests::phase13_recovery_refuses_canonical_lifecycle_transition_for_both_owner_states
++        PASS [   0.349s] (345/494) herdr-threads store::topology_handoff::attempts::tests::created_recovery_refuses_hold_stale_admission_lifecycle_and_structural_mismatch
++        PASS [   0.327s] (346/494) herdr-threads::combined archival_legacy::maximum_escaped_handoff_bodies_survive_real_archival_origin_and_terminal_loaders
++        PASS [   0.150s] (347/494) herdr-threads::combined handoff_fences::handoff_accountable_replay_presents_current_terminal_state_before_live_guards
++        PASS [   1.024s] (348/494) herdr-threads cli::topology_handoff::tests::live::pending_writer_inspect_argv_parses_as_public_pending_ops
++        PASS [   0.108s] (349/494) herdr-threads::combined handoff_fences::handoff_begin_completed_replay_is_historical_but_live_replay_checks_current_guards
++        PASS [   0.105s] (350/494) herdr-threads::combined handoff_fences::handoff_begin_installs_exact_thread_protection_before_any_side_effect
++        PASS [   0.108s] (351/494) herdr-threads::combined handoff_fences::handoff_begin_refuses_changed_immutable_plan_identity
++        PASS [   0.107s] (352/494) herdr-threads::combined handoff_fences::handoff_completed_tombstone_absorbs_delayed_import_and_retained_restart_intent
++        PASS [   0.107s] (353/494) herdr-threads::combined handoff_fences::handoff_legacy_hint_is_sticky_and_cannot_change_bindings_or_receipts
++        PASS [   0.108s] (354/494) herdr-threads::combined handoff_fences::handoff_new_thread_attachment_matches_exact_actor_scope_and_create_key
++        PASS [   0.082s] (355/494) herdr-threads::combined handoff_fences::handoff_real_create_attaches_atomically_and_begin_replay_reports_current_thread
++        PASS [   0.195s] (356/494) herdr-threads::combined handoff_topology_authority::actual_guarded_domain_capability_requires_concrete_composition_and_handler
++        PASS [   0.133s] (357/494) herdr-threads::combined handoff_topology_authority::actual_main_delivery_phase_preserves_ordinary_and_rejects_lazy_mode
++        PASS [   0.147s] (358/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_attachment_failure_rolls_back_resolver_and_operation
++        PASS [   0.143s] (359/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_bootstrap_public_begin_reserve_and_record_created
++        PASS [   0.145s] (360/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_companion_is_immutable_retained_foreign_keyed_and_audited
++        PASS [   0.179s] (361/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_complete_requires_published_frozen_send
++        PASS [   0.514s] (362/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_complete_refuses_corrupt_publication_proof
++        PASS [   0.338s] (363/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_descriptor_requires_the_concrete_automatic_runtime
++        PASS [   0.190s] (364/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_ensure_attaches_exact_pair_and_replays_without_reinviting
++        PASS [   1.877s] (365/494) herdr-threads::combined golden_surfaces::hermes_launch_and_handoff_refusals
++        PASS [   0.196s] (366/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_ensure_historical_result_must_match_attached_thread
++        PASS [   4.440s] (367/494) herdr-threads cli::topology_handoff::tests::live::composition_maximum_legal_escaped_serializer_memory_and_budgets
++        PASS [   0.234s] (368/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_first_begin_admits_future_startup_before_any_effect
++        PASS [   1.944s] (369/494) herdr-threads::combined handoff_agy::handoff_kind_agy_without_the_plugin_starts_with_the_setup_hint
++        PASS [   1.969s] (370/494) herdr-threads::combined handoff_agy::handoff_kind_agy_composes_through_bootstrap_v2_and_starts
++        PASS [   0.190s] (371/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_forged_original_namespace_claim_keys_and_payload_have_no_effects
++        PASS [   0.244s] (372/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_full_outer_original_is_frozen_and_oversize_refuses_before_effects
++        PASS [   0.288s] (373/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_historical_ensure_keeps_original_claim_namespace_and_fence
++        PASS [   0.264s] (374/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_lost_ensure_then_real_leave_cannot_publish_or_reinvite
++        PASS [   0.274s] (375/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_ordinary_send_uses_selected_bootstrap_preparer
++        PASS [   0.280s] (376/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_parent_blocks_archival_before_child_registration
++        PASS [   0.333s] (377/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_namespace_requires_exact_frozen_path_spelling
++        PASS [   0.285s] (378/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_real_leave_between_preparation_and_publication_refuses
++        PASS [   0.243s] (379/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_recovery_public_noncreation_requires_inspected_state
++        PASS [   0.190s] (380/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_selected_attachment_cannot_be_retargeted
++        PASS [   0.210s] (381/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_registration_refuses_cross_role_and_legacy_key_adoption
++        PASS [   0.250s] (382/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_selected_runtime_keeps_active_unlinked_direct_send
++        PASS [   0.377s] (383/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_refuses_raw_create_invite_even_with_completed_historical_rows
++        PASS [   0.190s] (384/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_unknown_recovery_is_inspected_one_use_and_operator_attributed
++        PASS [   0.173s] (385/494) herdr-threads::combined handoff_topology_authority::automatic_contract_public_dispatch_refuses_every_phase_without_effects
++        PASS [   0.222s] (386/494) herdr-threads::combined handoff_topology_authority::automatic_canonical_send_publishes_once_and_completed_replay_is_historical
++        PASS [   0.189s] (387/494) herdr-threads::combined handoff_topology_authority::automatic_generic_selected_runtime_defaults_refuse_without_effects
++        PASS [   0.192s] (388/494) herdr-threads::combined handoff_topology_authority::automatic_original_changed_after_a_remembered_check_is_rechecked
++        PASS [   0.183s] (389/494) herdr-threads::combined handoff_topology_authority::direct_marker_delivery_refuses_before_preparation_and_preserves_original_send
++        PASS [   0.174s] (390/494) herdr-threads::combined handoff_topology_authority::public_begin_installs_canonical_fence_and_reserve_replay_never_reauthorizes
++        PASS [   0.186s] (391/494) herdr-threads::combined handoff_topology_authority::ordinary_unlinked_direct_ensure_send_reaches_selected_bootstrap_runtime
++        PASS [   0.193s] (392/494) herdr-threads::combined handoff_topology_authority::public_delivery_completed_status_and_keyed_history_bypass_only_live_guards
++        PASS [   2.907s] (393/494) herdr-threads::combined golden_surfaces::launch_and_handoff_reports
++        PASS [   0.164s] (394/494) herdr-threads::combined handoff_topology_authority::public_delivery_current_recipient_hold_refuses_live_begin_and_send_preparation
++        PASS [   0.158s] (395/494) herdr-threads::combined handoff_topology_authority::public_delivery_envelope_reaches_real_deciding_begin_without_launch
++        PASS [   3.087s] (396/494) herdr-threads::combined golden_surfaces::handoff_bootstrap_plans
++        PASS [   0.236s] (397/494) herdr-threads::combined handoff_topology_authority::public_delivery_scoped_status_and_prepublication_admission_are_read_only
++        PASS [   0.526s] (398/494) herdr-threads::combined handoff_topology_authority::public_begin_refuses_copied_namespace_and_subagent_before_mutation
++        PASS [   0.223s] (399/494) herdr-threads::combined handoff_topology_authority::public_reservation_loss_and_changed_caller_refuse_final_submission_check
++        PASS [   0.457s] (400/494) herdr-threads::combined handoff_topology_authority::public_delivery_live_cached_invite_replay_rechecks_recipient
++        PASS [   0.540s] (401/494) herdr-threads::combined handoff_topology_authority::public_delivery_live_cached_send_replay_rechecks_recipient
++        PASS [   0.592s] (402/494) herdr-threads::combined handoff_topology_authority::public_delivery_live_cached_create_replay_rechecks_recipient
++        PASS [   0.512s] (403/494) herdr-threads::combined handoff_topology_cli::directory_search_discovers_canonical_name_with_unrelated_topic
++        PASS [   0.659s] (404/494) herdr-threads::combined handoff_topology_authority::public_delivery_namespace_and_original_actor_refuse_before_begin_or_replay
++        PASS [   0.541s] (405/494) herdr-threads::combined handoff_topology_cli::final_sdd_generated_pinned_prompt_limit_refuses_before_publication_or_effects
++        PASS [   0.644s] (406/494) herdr-threads::combined handoff_topology_cli::final_sdd_actual_native_count_refuses_before_publication_or_effects
++        PASS [   4.596s] (407/494) herdr-threads cli::topology_handoff::tests::live::maximum_instruction_file_freezes_through_bootstrap_completion_and_retry
++        PASS [   0.722s] (408/494) herdr-threads::combined handoff_topology_cli::final_sdd_public_creation_unknown_reports_pinned_attempt_and_conditional_human_recovery
++        PASS [   0.702s] (409/494) herdr-threads::combined handoff_topology_cli::new_pane_readiness_plain_launch_starts_once
++        PASS [   1.061s] (410/494) herdr-threads::combined handoff_topology_cli::final_sdd_public_possible_start_reports_known_committed_work_without_relaunch
++        PASS [   1.134s] (411/494) herdr-threads::combined handoff_topology_cli::final_sdd_public_staging_loss_reports_actual_create_phase_and_retries_only_saved_work
++        PASS [   1.326s] (412/494) herdr-threads::combined handoff_topology_cli::new_pane_readiness_automatic_handoff_completes_once
++        PASS [   1.954s] (413/494) herdr-threads::combined handoff_topology_cli::final_sdd_actual_native_byte_and_line_limits_refuse_before_effects
++        PASS [   0.592s] (414/494) herdr-threads::combined handoff_topology_cli::pending_public_prepublication_failure_is_silent
++        PASS [   2.146s] (415/494) herdr-threads::combined handoff_topology_cli::existing_peer_pane_and_seat_do_not_launch
++        PASS [   0.595s] (416/494) herdr-threads::combined handoff_topology_cli::pending_public_retry_from_different_valid_caller_is_silent
++        PASS [   1.972s] (417/494) herdr-threads::combined handoff_topology_cli::final_sdd_actual_native_maximum_completes_and_historical_retry_never_relaunches
++        PASS [   0.058s] (418/494) herdr-threads::combined setup_cli::stage_a_handoff_malformed_options_refuse_before_caller_connection
++        PASS [   0.114s] (419/494) herdr-threads::combined topology_handoff::attachment::begin_first_live_child_remains_live_and_import_never_suppresses_it
++        PASS [   2.322s] (420/494) herdr-threads::combined handoff_topology_cli::explicit_pane_preserves_both_harness_configs
++        PASS [   0.170s] (421/494) herdr-threads::combined topology_handoff::attachment::completed_wrapper_reopens_historically_and_corruption_never_revives_protection
++        PASS [   0.250s] (422/494) herdr-threads::combined topology_handoff::attachment::cancelled_attached_fixture_retains_evidence_and_refuses_later_linked_begin_or_import
++        PASS [   0.145s] (423/494) herdr-threads::combined topology_handoff::attachment::deciding_create_attaches_exact_new_thread_to_both_fences
++        PASS [   1.529s] (424/494) herdr-threads::combined handoff_topology_cli::pending_public_postpublication_lock_failure_after_cancelled_is_silent
++        PASS [   0.134s] (425/494) herdr-threads::combined topology_handoff::attachment::existing_thread_bootstrap_vetoes_archival_before_topology_effects
++        PASS [   0.135s] (426/494) herdr-threads::combined topology_handoff::attachment::failed_second_terminal_update_rolls_back_child_report_and_operations_even_if_caller_commits
++        PASS [   0.184s] (427/494) herdr-threads::combined topology_handoff::attachment::foreign_selected_namespace_and_bare_begin_create_refuse_even_only_copied_instance_match
++        PASS [   0.180s] (428/494) herdr-threads::combined topology_handoff::attachment::genuine_v1_report_completes_and_replays_after_current_composition_drift
++        PASS [   1.912s] (429/494) herdr-threads::combined handoff_topology_cli::new_tab_preserves_both_harness_configs_and_caller_workspace
++        PASS [   1.888s] (430/494) herdr-threads::combined handoff_topology_cli::pending_public_postpublication_lock_failure_after_attached_reports_continuation
++        PASS [   0.147s] (431/494) herdr-threads::combined topology_handoff::attachment::linked_completion_report_storage_failures_rollback_all_canonical_rows
++        PASS [   0.147s] (432/494) herdr-threads::combined topology_handoff::attachment::linked_completion_stores_real_report_and_both_terminals_with_exact_historical_replay
++        PASS [   0.219s] (433/494) herdr-threads::combined topology_handoff::attachment::linked_completion_refuses_failed_unknown_changed_arguments_and_legacy_operation_conflicts
++        PASS [   1.006s] (434/494) herdr-threads::combined handoff_topology_cli::public_copied_uuid_namespace_refuses_before_effects
++        PASS [   0.128s] (435/494) herdr-threads::combined topology_handoff::attachment::linked_live_child_refuses_unwrapped_completion_without_changing_either_fence
++        PASS [   0.153s] (436/494) herdr-threads::combined topology_handoff::attempts::administrative_slots_and_registry_use_parent_attempt_indexes
++        PASS [   0.210s] (437/494) herdr-threads::combined topology_handoff::attempts::begin_refuses_future_non_submission_key_colliding_with_frozen_invite
++        PASS [   0.230s] (438/494) herdr-threads::combined topology_handoff::attachment::new_thread_completion_preserves_original_child_none_through_create_and_replay
++        PASS [   0.191s] (439/494) herdr-threads::combined topology_handoff::attempts::cancellation_invalid_reason_and_created_without_structural_guard_refuse
++        PASS [   0.182s] (440/494) herdr-threads::combined topology_handoff::attempts::cancellation_is_absorbing_and_requires_canonical_no_live_child
++        PASS [   0.158s] (441/494) herdr-threads::combined topology_handoff::attempts::cancellation_retains_attached_identity_and_created_evidence_after_reopen
++        PASS [   0.200s] (442/494) herdr-threads::combined topology_handoff::attempts::cancellation_serializes_with_underlying_live_child_insertion
++        PASS [   0.927s] (443/494) herdr-threads::combined handoff_topology_cli::public_native_start_reply_loss_never_starts_again
++        PASS [   0.153s] (444/494) herdr-threads::combined topology_handoff::attempts::concurrent_connections_and_lost_reserve_reply_reopen_never_authorize_twice
++        PASS [   0.152s] (445/494) herdr-threads::combined topology_handoff::attempts::decision_kind_namespace_attempt_and_excess_slots_are_retained_corruption
++        PASS [   0.132s] (446/494) herdr-threads::combined topology_handoff::attempts::exact_created_replay_and_contradictory_or_late_evidence_refuse
++        PASS [   0.123s] (447/494) herdr-threads::combined topology_handoff::attempts::guarded_retained_result_keeps_the_1mib_ceiling_without_truncation
++        PASS [   0.152s] (448/494) herdr-threads::combined topology_handoff::attempts::guarded_history_replays_before_current_binding_and_refuses_altered_or_corrupt_guards
++        PASS [   0.190s] (449/494) herdr-threads::combined topology_handoff::attempts::historical_recovery_replay_refuses_corrupt_decision_snapshot
++        PASS [   0.142s] (450/494) herdr-threads::combined topology_handoff::attempts::recorded_creation_lost_reply_reopens_exact_without_new_authorization
++        PASS [   0.176s] (451/494) herdr-threads::combined topology_handoff::attempts::late_next_attempt_insert_failure_rolls_back_even_if_caller_commits_error
++        PASS [   1.802s] (452/494) herdr-threads::combined handoff_topology_cli::pending_public_postpublication_witnessed_read_failure_reports
++        PASS [   0.129s] (453/494) herdr-threads::combined topology_handoff::attempts::reserve_is_one_use_and_fresh_submission_checks_a2
++        PASS [   1.326s] (454/494) herdr-threads::combined handoff_topology_cli::public_creation_reservation_and_host_reply_loss_never_resubmit
++        PASS [   0.171s] (455/494) herdr-threads::combined topology_handoff::attempts::recovery_registry_missing_or_cross_role_key_refuses_current_and_historical_replay
++        PASS [   0.183s] (456/494) herdr-threads::combined topology_handoff::attempts::recovery_old_decision_is_historical_and_stale_undecided_refuses
++        PASS [   0.133s] (457/494) herdr-threads::combined topology_handoff::attempts::stale_undecided_attempt_and_changed_phase_or_revision_refuse_without_effects
++        PASS [   0.154s] (458/494) herdr-threads::combined topology_handoff::attempts::typed_zero_submission_lost_reply_reopens_and_old_replay_never_advances_again
++        PASS [   0.157s] (459/494) herdr-threads::combined topology_handoff::attempts::typed_zero_submission_refuses_wrong_key_attempt_creation_unknown_and_terminal
++        PASS [   0.152s] (460/494) herdr-threads::combined topology_handoff::attempts::unknown_creation_never_reauthorizes_and_proven_zero_submission_advances_once
++        PASS [   0.161s] (461/494) herdr-threads::combined topology_handoff::attempts::unbound_undecided_recovery_refuses_without_allocating_or_deciding
++        PASS [   0.129s] (462/494) herdr-threads::combined topology_handoff::begin_installs_attempt_one_and_thread_protection_without_delivery
++        PASS [   0.143s] (463/494) herdr-threads::combined topology_handoff::attempts::unknown_transport_outcome_cannot_be_later_reclassified_as_not_submitted
++        PASS [   0.529s] (464/494) herdr-threads::combined topology_handoff::attempts::cancellation_writer_is_bounded_after_retained_legacy_history_and_checks_each_exact_key
++        PASS [   0.289s] (465/494) herdr-threads::combined topology_handoff::attempts::stale_inspection_refuses_possible_unknown_and_cancelled_snapshots_without_new_decisions
++        PASS [   0.134s] (466/494) herdr-threads::combined topology_handoff::bounded_slots_refuse_oversized_or_missing_terminal_reports_without_truncation
++        PASS [   0.132s] (467/494) herdr-threads::combined topology_handoff::canonical_namespace_and_full_identity_conflicts_leave_rows_unchanged
++        PASS [   0.156s] (468/494) herdr-threads::combined topology_handoff::cancelled_replay_preserves_original_identity_without_current_live_authority
++        PASS [   0.143s] (469/494) herdr-threads::combined topology_handoff::impossible_attempt_number_is_saved_corruption_not_transient_busy
++        PASS [   0.167s] (470/494) herdr-threads::combined topology_handoff::invalid_terminal_metadata_and_revision_are_retained_corruption
++        PASS [   0.175s] (471/494) herdr-threads::combined topology_handoff::late_attempt_failure_rolls_back_helper_rows_even_when_caller_commits
++        PASS [   0.168s] (472/494) herdr-threads::combined topology_handoff::live_new_channel_replay_checks_its_recorded_thread_after_creation
++        PASS [   0.161s] (473/494) herdr-threads::combined topology_handoff::lookup_fails_closed_on_tampered_identity_or_cross_record_state
++        PASS [   0.191s] (474/494) herdr-threads::combined topology_handoff::live_begin_and_replay_recheck_a2_archive_and_membership
++        PASS [   0.274s] (475/494) herdr-threads::combined topology_handoff::current_key_lookup_stays_bounded_after_many_retained_attempts
++        PASS [   0.187s] (476/494) herdr-threads::combined topology_handoff::new_channel_retains_frozen_create_key_without_creating_channel
++        PASS [   0.177s] (477/494) herdr-threads::combined topology_handoff::recovery_cancelled_reopen_refuses_an_older_attempt_decision
++        PASS [   0.141s] (478/494) herdr-threads::combined topology_handoff::recovery_created_pane_refuses_result_state_or_normalized_evidence_mismatch
++        PASS [   0.146s] (479/494) herdr-threads::combined topology_handoff::recovery_noncreation_refuses_creation_or_wrong_snapshot_state
++        PASS [   0.195s] (480/494) herdr-threads::combined topology_handoff::recovery_matching_created_and_cancelled_evidence_survive_reopen
++        PASS [   0.208s] (481/494) herdr-threads::combined topology_handoff::recovery_cancelled_reopen_refuses_invalid_foreign_or_unrecorded_creation
++        PASS [   0.150s] (482/494) herdr-threads::combined topology_handoff::registered_product_ddl_defines_normalized_records
++        PASS [   0.113s] (483/494) herdr-threads::combined topology_handoff::registry_refuses_cross_role_collisions_and_invalid_attempts_atomically
++        PASS [   0.114s] (484/494) herdr-threads::combined topology_handoff::replay_and_thread_protection_queries_use_keys_instead_of_table_scans
++        PASS [   0.116s] (485/494) herdr-threads::combined topology_handoff::schema_tests::registered28_identity_lookup_is_absent_without_a_begin
++        PASS [   3.370s] (486/494) herdr-threads::combined handoff_topology_cli::new_pane_readiness_handoff_exhaustion_preserves_safe_retry
++        PASS [   0.186s] (487/494) herdr-threads::combined topology_handoff::retained_identity_and_attempt_survive_database_reopen
++        PASS [   0.343s] (488/494) herdr-threads::combined topology_handoff::recovery_historical_noncreation_before_later_prepared_attempt_remains_valid
++        PASS [   0.207s] (489/494) herdr-threads::combined topology_handoff::schema_tests::legacy_key_index_retains_foreign_namespaces_with_bounded_lookup_after_1000_attempts
++        PASS [   0.488s] (490/494) herdr-threads::combined topology_handoff::maximum_escaped_body_recovery_survives_reopen
++        PASS [   0.897s] (491/494) herdr-threads::combined topology_handoff::full_completed_report_with_large_json_escaping_replays_and_rejects_tamper
++        PASS [   2.430s] (492/494) herdr-threads::integration sweep::installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart
++        PASS [   4.252s] (493/494) herdr-threads::combined handoff_topology_cli::public_durable_reply_loss_reuses_exact_children
++        PASS [   5.255s] (494/494) herdr-threads::integration readme_tryout::readme_tryout_named_handoffs_and_conversation_obey_launch_and_receipt_boundaries
++────────────
++     Summary [  27.440s] 494 tests run: 494 passed, 7176 skipped

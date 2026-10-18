@@ -1,0 +1,13 @@
+# Coverage ledger
+C1 · r1 · GAP · pane-existing-refusal · applied — Explicit ownership added to ht-1urq.2; complete task acceptance already contained the behavior, retained unchanged.
+C2 · r1 · GAP · focused-regressions · applied — Explicit ownership added to ht-1urq.2–.6; complete task acceptance already contained the behavior, retained unchanged.
+C3 · r1 · GAP · guarded-path · applied — Explicit ownership added to ht-1urq.6; complete task acceptance already contained the behavior, retained unchanged.
+C4 · r1 · GAP · credential-diagnostics · applied — Explicit ownership added to ht-1urq.3/.9; complete task acceptance already contained the behavior, retained unchanged.
+C5 · r1 · GAP · skill-byte-budget · applied — Explicit ownership added to ht-1urq.7; complete task acceptance already contained the behavior, retained unchanged.
+C6 · r1 · GAP · release-boundary · applied — Explicit ownership added to ht-1urq.8; complete task acceptance already contained the behavior, retained unchanged.
+C7 · r1 · GAP · fixture-cleanup · applied — Explicit ownership added to ht-1urq.9; complete task acceptance already contained the behavior, retained unchanged.
+C8 · graph · GRAPH-EDGE · ht-1urq.9 <- ht-1urq.6 · kept — Concrete artifact consumption verified against complete task declarations; earliest producer retained.
+C9 · graph · GRAPH-EDGE · ht-1urq.6 <- ht-1urq.3 · kept — Concrete artifact consumption verified against complete task declarations; earliest producer retained.
+C10 · graph · GRAPH-EDGE · ht-1urq.6 <- ht-1urq.5 · kept — Concrete artifact consumption verified against complete task declarations; earliest producer retained.
+C11 · graph · GRAPH-EDGE · ht-1urq.6 <- ht-1urq.4 · kept — Concrete artifact consumption verified against complete task declarations; earliest producer retained.
+C12 · graph · GRAPH-EDGE · ht-1urq.6 <- ht-1urq.2 · kept — Concrete artifact consumption verified against complete task declarations; earliest producer retained.

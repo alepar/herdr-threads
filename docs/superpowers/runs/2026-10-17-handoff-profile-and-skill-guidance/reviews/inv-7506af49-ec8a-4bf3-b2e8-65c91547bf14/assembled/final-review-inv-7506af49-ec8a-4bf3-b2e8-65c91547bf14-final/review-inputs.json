@@ -1,0 +1,702 @@
+{
+  "base": "b4d5f9628d17f869ab5b139b7f4ae3c933d02841",
+  "head": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+  "sourceAvailable": true,
+  "wholeRangeReady": false,
+  "status": "complete",
+  "changed": [
+    "CHANGELOG.md",
+    "README.md",
+    "docs/agent-usage.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/code-profile-original.json",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/code-profile-original.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-changes-round-2.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-findings-round-1.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-findings-round-2.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-inputs-round-1.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-inputs-round-2.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-ledger.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-precheck-round-1.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-precheck-round-2.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-1-requirements.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-1-result.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-1-review-1.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-1-review-2.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-2-prompt.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-2-requirements.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-2-result.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-2-review-1.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-2-review-2.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/design-handoff.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/design-tree.json",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/evidence/baseline-nextest.log",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/evidence/baseline.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/evidence/profile-directories.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/friction.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/graph-after.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/graph-before.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/graph-pass-prompt.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/graph-review.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/promotion-review.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/review-intent-recovery.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-1.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-10.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-2.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-3.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-4.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-5.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-6.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-7.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-8.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-9.md",
+    "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-ids.json",
+    "docs/superpowers/specs/INDEX.md",
+    "docs/validation/herdr-release-matrix.md",
+    "integrations/skill/SKILL.md",
+    "scripts/herdr-release-smoke",
+    "src/cli/commands.rs",
+    "src/cli/handoff_delivery.rs",
+    "src/cli/help.rs",
+    "src/cli/launch.rs",
+    "src/cli/setup.rs",
+    "src/cli/topology_handoff.rs",
+    "src/cli/topology_handoff/automatic.rs",
+    "src/cli/topology_runtime.rs",
+    "src/daemon/control.rs",
+    "src/harness/adapter.rs",
+    "src/harness/claude.rs",
+    "src/harness/codex.rs",
+    "src/harness/hermes.rs",
+    "src/harness/hermes/launch.rs",
+    "src/harness/launch.rs",
+    "src/host/native.rs",
+    "src/host/transport.rs",
+    "src/ports.rs",
+    "src/protocol/capabilities.rs",
+    "src/protocol/handoff.rs",
+    "src/protocol/handoff/automatic.rs",
+    "src/protocol/handoff/automatic_bootstrap.rs",
+    "src/protocol/handoff/launch_directories.rs",
+    "tests/cli/follow_retry.rs",
+    "tests/cli/handoff.rs",
+    "tests/cli/launch.rs",
+    "tests/cli/topology_handoff.rs",
+    "tests/daemon/transport.rs",
+    "tests/fixtures/golden/help/handoff.txt",
+    "tests/fixtures/herdr-matrix/codex.js",
+    "tests/handoff_agy.rs",
+    "tests/handoff_topology_authority.rs",
+    "tests/handoff_topology_cli.rs",
+    "tests/harness/agy_launch.rs",
+    "tests/harness/launch.rs",
+    "tests/host/topology_creation.rs",
+    "tests/integration/channel_activation.rs",
+    "tests/integration/herdr_release_smoke.rs",
+    "tests/integration/hermes_enrollment_smoke.rs",
+    "tests/integration/topology_activation.rs",
+    "tests/lifecycle_ux.rs",
+    "tests/service/resolution.rs",
+    "tests/store/archival_legacy.rs",
+    "tests/store/topology_attachment_guard.rs",
+    "tests/store/topology_handoff.rs"
+  ],
+  "slices": [
+    {
+      "path": "CHANGELOG.md",
+      "slice": "slices/000001.diff"
+    },
+    {
+      "path": "README.md",
+      "slice": "slices/000002.diff"
+    },
+    {
+      "path": "docs/agent-usage.md",
+      "slice": "slices/000003.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md",
+      "slice": "slices/000004.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/code-profile-original.json",
+      "slice": "slices/000005.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/code-profile-original.md",
+      "slice": "slices/000006.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-changes-round-2.md",
+      "slice": "slices/000007.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-findings-round-1.md",
+      "slice": "slices/000008.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-findings-round-2.md",
+      "slice": "slices/000009.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-inputs-round-1.md",
+      "slice": "slices/000010.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-inputs-round-2.md",
+      "slice": "slices/000011.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-ledger.md",
+      "slice": "slices/000012.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-precheck-round-1.md",
+      "slice": "slices/000013.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-precheck-round-2.md",
+      "slice": "slices/000014.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-1-requirements.md",
+      "slice": "slices/000015.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-1-result.md",
+      "slice": "slices/000016.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-1-review-1.md",
+      "slice": "slices/000017.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-1-review-2.md",
+      "slice": "slices/000018.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-2-prompt.md",
+      "slice": "slices/000019.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-2-requirements.md",
+      "slice": "slices/000020.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-2-result.md",
+      "slice": "slices/000021.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-2-review-1.md",
+      "slice": "slices/000022.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-2-review-2.md",
+      "slice": "slices/000023.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/design-handoff.md",
+      "slice": "slices/000024.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/design-tree.json",
+      "slice": "slices/000025.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/evidence/baseline-nextest.log",
+      "slice": "slices/000026.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/evidence/baseline.md",
+      "slice": "slices/000027.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/evidence/profile-directories.md",
+      "slice": "slices/000028.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/friction.md",
+      "slice": "slices/000029.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/graph-after.md",
+      "slice": "slices/000030.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/graph-before.md",
+      "slice": "slices/000031.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/graph-pass-prompt.md",
+      "slice": "slices/000032.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/graph-review.md",
+      "slice": "slices/000033.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/promotion-review.md",
+      "slice": "slices/000034.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/review-intent-recovery.md",
+      "slice": "slices/000035.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d.md",
+      "slice": "slices/000036.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f.md",
+      "slice": "slices/000037.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "slice": "slices/000038.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-1.md",
+      "slice": "slices/000039.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-10.md",
+      "slice": "slices/000040.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-2.md",
+      "slice": "slices/000041.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-3.md",
+      "slice": "slices/000042.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-4.md",
+      "slice": "slices/000043.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-5.md",
+      "slice": "slices/000044.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-6.md",
+      "slice": "slices/000045.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-7.md",
+      "slice": "slices/000046.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-8.md",
+      "slice": "slices/000047.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-9.md",
+      "slice": "slices/000048.diff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-ids.json",
+      "slice": "slices/000049.diff"
+    },
+    {
+      "path": "docs/superpowers/specs/INDEX.md",
+      "slice": "slices/000050.diff"
+    },
+    {
+      "path": "docs/validation/herdr-release-matrix.md",
+      "slice": "slices/000051.diff"
+    },
+    {
+      "path": "integrations/skill/SKILL.md",
+      "slice": "slices/000052.diff"
+    },
+    {
+      "path": "scripts/herdr-release-smoke",
+      "slice": "slices/000053.diff"
+    },
+    {
+      "path": "src/cli/commands.rs",
+      "slice": "slices/000054.diff"
+    },
+    {
+      "path": "src/cli/handoff_delivery.rs",
+      "slice": "slices/000055.diff"
+    },
+    {
+      "path": "src/cli/help.rs",
+      "slice": "slices/000056.diff"
+    },
+    {
+      "path": "src/cli/launch.rs",
+      "slice": "slices/000057.diff"
+    },
+    {
+      "path": "src/cli/setup.rs",
+      "slice": "slices/000058.diff"
+    },
+    {
+      "path": "src/cli/topology_handoff.rs",
+      "slice": "slices/000059.diff"
+    },
+    {
+      "path": "src/cli/topology_handoff/automatic.rs",
+      "slice": "slices/000060.diff"
+    },
+    {
+      "path": "src/cli/topology_runtime.rs",
+      "slice": "slices/000061.diff"
+    },
+    {
+      "path": "src/daemon/control.rs",
+      "slice": "slices/000062.diff"
+    },
+    {
+      "path": "src/harness/adapter.rs",
+      "slice": "slices/000063.diff"
+    },
+    {
+      "path": "src/harness/claude.rs",
+      "slice": "slices/000064.diff"
+    },
+    {
+      "path": "src/harness/codex.rs",
+      "slice": "slices/000065.diff"
+    },
+    {
+      "path": "src/harness/hermes.rs",
+      "slice": "slices/000066.diff"
+    },
+    {
+      "path": "src/harness/hermes/launch.rs",
+      "slice": "slices/000067.diff"
+    },
+    {
+      "path": "src/harness/launch.rs",
+      "slice": "slices/000068.diff"
+    },
+    {
+      "path": "src/host/native.rs",
+      "slice": "slices/000069.diff"
+    },
+    {
+      "path": "src/host/transport.rs",
+      "slice": "slices/000070.diff"
+    },
+    {
+      "path": "src/ports.rs",
+      "slice": "slices/000071.diff"
+    },
+    {
+      "path": "src/protocol/capabilities.rs",
+      "slice": "slices/000072.diff"
+    },
+    {
+      "path": "src/protocol/handoff.rs",
+      "slice": "slices/000073.diff"
+    },
+    {
+      "path": "src/protocol/handoff/automatic.rs",
+      "slice": "slices/000074.diff"
+    },
+    {
+      "path": "src/protocol/handoff/automatic_bootstrap.rs",
+      "slice": "slices/000075.diff"
+    },
+    {
+      "path": "src/protocol/handoff/launch_directories.rs",
+      "slice": "slices/000076.diff"
+    },
+    {
+      "path": "tests/cli/follow_retry.rs",
+      "slice": "slices/000077.diff"
+    },
+    {
+      "path": "tests/cli/handoff.rs",
+      "slice": "slices/000078.diff"
+    },
+    {
+      "path": "tests/cli/launch.rs",
+      "slice": "slices/000079.diff"
+    },
+    {
+      "path": "tests/cli/topology_handoff.rs",
+      "slice": "slices/000080.diff"
+    },
+    {
+      "path": "tests/daemon/transport.rs",
+      "slice": "slices/000081.diff"
+    },
+    {
+      "path": "tests/fixtures/golden/help/handoff.txt",
+      "slice": "slices/000082.diff"
+    },
+    {
+      "path": "tests/fixtures/herdr-matrix/codex.js",
+      "slice": "slices/000083.diff"
+    },
+    {
+      "path": "tests/handoff_agy.rs",
+      "slice": "slices/000084.diff"
+    },
+    {
+      "path": "tests/handoff_topology_authority.rs",
+      "slice": "slices/000085.diff"
+    },
+    {
+      "path": "tests/handoff_topology_cli.rs",
+      "slice": "slices/000086.diff"
+    },
+    {
+      "path": "tests/harness/agy_launch.rs",
+      "slice": "slices/000087.diff"
+    },
+    {
+      "path": "tests/harness/launch.rs",
+      "slice": "slices/000088.diff"
+    },
+    {
+      "path": "tests/host/topology_creation.rs",
+      "slice": "slices/000089.diff"
+    },
+    {
+      "path": "tests/integration/channel_activation.rs",
+      "slice": "slices/000090.diff"
+    },
+    {
+      "path": "tests/integration/herdr_release_smoke.rs",
+      "slice": "slices/000091.diff"
+    },
+    {
+      "path": "tests/integration/hermes_enrollment_smoke.rs",
+      "slice": "slices/000092.diff"
+    },
+    {
+      "path": "tests/integration/topology_activation.rs",
+      "slice": "slices/000093.diff"
+    },
+    {
+      "path": "tests/lifecycle_ux.rs",
+      "slice": "slices/000094.diff"
+    },
+    {
+      "path": "tests/service/resolution.rs",
+      "slice": "slices/000095.diff"
+    },
+    {
+      "path": "tests/store/archival_legacy.rs",
+      "slice": "slices/000096.diff"
+    },
+    {
+      "path": "tests/store/topology_attachment_guard.rs",
+      "slice": "slices/000097.diff"
+    },
+    {
+      "path": "tests/store/topology_handoff.rs",
+      "slice": "slices/000098.diff"
+    }
+  ],
+  "archives": [
+    {
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 35,
+      "invocationId": "inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/bounded-original-draft.md",
+          "sha256": "3e95b9346deda8956adefbd62333b67d381e28eb522071278793358838e0bc0b"
+        },
+        {
+          "path": "assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/coverage.json",
+          "sha256": "57737e3dd8ae4dc3d47cc76f614c7ddca330dd180bb64ca18952b0854bc664ba"
+        },
+        {
+          "path": "assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/diffstat.txt",
+          "sha256": "6d0e0b9d6d24d4bec04418078d19f99565158189c84a00a83ec83590a23d7a89"
+        },
+        {
+          "path": "assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/digest.md",
+          "sha256": "4eb3f3df8b2bb88945b3431665893e9c5c1aeff0d3e86b47e46b7bf46b3bbf3f"
+        },
+        {
+          "path": "assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/generated-input-provenance.md",
+          "sha256": "36eb6457c7100233d00b582fb41983ec091a6d8e4bab4a287c827f6d1f80d12b"
+        },
+        {
+          "path": "assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/review-inputs.json",
+          "sha256": "1a41bf538b43254bee5684b3e82a2ce05256b64bbef5391d977e14e44c744509"
+        },
+        {
+          "path": "final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d.md",
+          "sha256": "f08ee9cf5c4082715305142a7160277f32deab4b66d8c77cf83e93e4b51b53f0"
+        }
+      ]
+    },
+    {
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 42,
+      "invocationId": "inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f.md",
+      "files": [
+        {
+          "path": "assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/bounded-coverage.json",
+          "sha256": "171e924c711f045dda3466a143c72685fc64987f850387afa2d115f40a81b07c"
+        },
+        {
+          "path": "assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/bounded-draft.md",
+          "sha256": "65f29c97477956f8c183bd61e5a98d330e90fa0dfd6516ce3b8e7f315a49e4a4"
+        },
+        {
+          "path": "assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/diffstat.txt",
+          "sha256": "04f9782919ade98f3377348588c0e35818108e6a31ff0f4ca2ab7caf9b247ff8"
+        },
+        {
+          "path": "assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/digest.md",
+          "sha256": "0c69a5996894474a58d5c88624cd7bb35434b4b4845374c05bbc817c474662d6"
+        },
+        {
+          "path": "assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/generated-input-provenance.md",
+          "sha256": "e2bf6e81470eb0adecf7775d7f6ac7ae971d5f1047e1ec74b422fb97c0a63aed"
+        },
+        {
+          "path": "assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/review-inputs.json",
+          "sha256": "b11e675492e2f1ca076869120b688baf45091b9c482b1db8089786526f187a9d"
+        },
+        {
+          "path": "final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f.md",
+          "sha256": "d5f7d4e5796abf5d6c8bd65e878522d620bd7f9da34909ff64024881126f7abb"
+        }
+      ]
+    }
+  ],
+  "omitted": [
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/bounded-original-draft.md",
+      "sha256": "3e95b9346deda8956adefbd62333b67d381e28eb522071278793358838e0bc0b",
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 35,
+      "invocationId": "inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d.md"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/coverage.json",
+      "sha256": "57737e3dd8ae4dc3d47cc76f614c7ddca330dd180bb64ca18952b0854bc664ba",
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 35,
+      "invocationId": "inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d.md"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/diffstat.txt",
+      "sha256": "6d0e0b9d6d24d4bec04418078d19f99565158189c84a00a83ec83590a23d7a89",
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 35,
+      "invocationId": "inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d.md"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/digest.md",
+      "sha256": "4eb3f3df8b2bb88945b3431665893e9c5c1aeff0d3e86b47e46b7bf46b3bbf3f",
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 35,
+      "invocationId": "inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d.md"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/generated-input-provenance.md",
+      "sha256": "36eb6457c7100233d00b582fb41983ec091a6d8e4bab4a287c827f6d1f80d12b",
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 35,
+      "invocationId": "inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d.md"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/assembled/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d-final/review-inputs.json",
+      "sha256": "1a41bf538b43254bee5684b3e82a2ce05256b64bbef5391d977e14e44c744509",
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 35,
+      "invocationId": "inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-8759cc82-264d-4506-beaa-307c9600bb8d/final-review-inv-8759cc82-264d-4506-beaa-307c9600bb8d.md"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/bounded-coverage.json",
+      "sha256": "171e924c711f045dda3466a143c72685fc64987f850387afa2d115f40a81b07c",
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 42,
+      "invocationId": "inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f.md"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/bounded-draft.md",
+      "sha256": "65f29c97477956f8c183bd61e5a98d330e90fa0dfd6516ce3b8e7f315a49e4a4",
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 42,
+      "invocationId": "inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f.md"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/diffstat.txt",
+      "sha256": "04f9782919ade98f3377348588c0e35818108e6a31ff0f4ca2ab7caf9b247ff8",
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 42,
+      "invocationId": "inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f.md"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/digest.md",
+      "sha256": "0c69a5996894474a58d5c88624cd7bb35434b4b4845374c05bbc817c474662d6",
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 42,
+      "invocationId": "inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f.md"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/generated-input-provenance.md",
+      "sha256": "e2bf6e81470eb0adecf7775d7f6ac7ae971d5f1047e1ec74b422fb97c0a63aed",
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 42,
+      "invocationId": "inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f.md"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/assembled/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f-final/review-inputs.json",
+      "sha256": "b11e675492e2f1ca076869120b688baf45091b9c482b1db8089786526f187a9d",
+      "revision": "89b60fcd07b71888608f0b1d67dadb6de38c3ff4",
+      "run": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/run.md",
+      "recordLine": 42,
+      "invocationId": "inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "archive": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f",
+      "report": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/reviews/inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f/final-review-inv-b6e4e8fd-19d3-4193-81b5-f0887ab5e66f.md"
+    }
+  ],
+  "gaps": []
+}

@@ -1045,7 +1045,8 @@ pub fn submit_prepared_with_evidence(
 #[path = "../../tests/harness/launch.rs"]
 pub(crate) mod tests;
 
-/// Resolve only the adapter-declared config variable, retaining the existing pane-shell fallback.
+/// Preserve explicit captured selection; otherwise retain the pane-shell fallback
+/// for the adapter-declared config variable.
 pub(crate) fn native_scope(
     request: &super::adapter::LaunchRequest,
     id: &str,
@@ -1058,6 +1059,13 @@ pub(crate) fn native_scope(
             ErrorCode::DeadlineExceeded,
             "launch budget exhausted",
         ));
+    }
+    if let Some(root) = &request.environment.explicit_profile_directory {
+        return Ok(super::adapter::LaunchScope {
+            setup: super::adapter::ResolvedSetupScope::ConfigRoot(root.clone()),
+            working_directory: request.environment.cwd.clone(),
+            config_source: "explicit_profile_directory",
+        });
     }
     let pane = probe
         .pane_shell_env_bounded(variable, request.environment.clock.as_ref(), budget)

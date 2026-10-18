@@ -183,7 +183,12 @@ impl ports::CreateTabPort for NativeCli {
             || request.cwd.to_str().is_none()
             || request.label.trim().is_empty()
             || request.focus
-            || !request.env.is_empty()
+            || match &request.directory_context {
+                Some(selection) => selection
+                    .validate_bootstrap(&request.cwd, &request.env)
+                    .is_err(),
+                None => !request.env.is_empty(),
+            }
         {
             return NotSubmitted(error(
                 ErrorCode::InvalidRequest,

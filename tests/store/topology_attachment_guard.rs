@@ -29,6 +29,13 @@ fn attachment_fixture_with_recording(real_writer: bool) -> AttachmentFixture {
     attachment_fixture_inner(real_writer, true)
 }
 fn attachment_fixture_inner(real_writer: bool, retain_legacy: bool) -> AttachmentFixture {
+    attachment_fixture_directories(real_writer, retain_legacy, false)
+}
+fn attachment_fixture_directories(
+    real_writer: bool,
+    retain_legacy: bool,
+    directories: bool,
+) -> AttachmentFixture {
     let (context, mut db, path, clock) = fixture(100);
     db.execute_batch("DELETE FROM seat_archival; DELETE FROM seats;")
         .unwrap();
@@ -81,6 +88,14 @@ fn attachment_fixture_inner(real_writer: bool, retain_legacy: bool) -> Attachmen
     };
     let mut id = crate::protocol::handoff::topology_contract_tests::identity();
     id.claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
+    if directories {
+        id.payload.env = [("PROFILE_ROOT".into(), "/profile".into())].into();
+        id.payload.directory_context = Some(LaunchDirectoryContext {
+            profile_dir: "/profile".into(),
+            cwd: id.payload.cwd.clone(),
+            env: id.payload.env.clone(),
+        });
+    }
     id.digest = id.semantic_digest().unwrap();
     let request = ResolveSeat {
         host: crate::test_support::test_host_locator(),
@@ -184,7 +199,15 @@ fn attachment_guard(
 }
 #[test]
 fn topology_attachment_uses_real_resolution_and_fresh_guard_without_allocating() {
-    let (_context, mut db, path, store, observation, budget, id, a) = attachment_fixture();
+    explicit_attachment_directories(false);
+}
+#[test]
+fn topology_attachment_launch_directories_preserve_exact_parent() {
+    explicit_attachment_directories(true);
+}
+fn explicit_attachment_directories(directories: bool) {
+    let (_context, mut db, path, store, observation, budget, id, a) =
+        attachment_fixture_directories(false, true, directories);
     let (mut wrong_boot, admission) = ordinary_resolution_read(&store, &observation, 3, &budget);
     let mut changed_witness = crate::protocol::handoff::topology_contract_tests::created().witness;
     changed_witness.peer_pid = 43;
@@ -883,6 +906,7 @@ fn automatic_parent(id: &BootstrapIdentity) -> AutomaticBootstrapIdentity {
         AutomaticBootstrapPlan {
             version: 2,
             payload: AutomaticBootstrapPayload {
+                directory_context: id.payload.directory_context.clone(),
                 handoff: AutomaticHandoffPayload::new(
                     id.payload.handoff.namespace.clone(),
                     OperationId::new("auto-child"),
@@ -894,7 +918,7 @@ fn automatic_parent(id: &BootstrapIdentity) -> AutomaticBootstrapIdentity {
                 cwd: id.payload.cwd.clone(),
                 label: id.payload.label.clone(),
                 focus: false,
-                env: Default::default(),
+                env: id.payload.env.clone(),
                 launch: id.payload.launch.clone(),
                 startup_input: None,
             },
@@ -1337,9 +1361,16 @@ fn automatic_child_mutate(
 
 #[test]
 fn automatic_linked_terminal_reconciles_completed_child_without_reopening_or_relaunch() {
+    automatic_terminal_directories(false);
+}
+#[test]
+fn topology_attachment_automatic_launch_directories_complete_and_replay() {
+    automatic_terminal_directories(true);
+}
+fn automatic_terminal_directories(directories: bool) {
     use sha2::Digest;
     let (context, mut db, path, store, observation, budget, old, a) =
-        attachment_fixture_inner(false, false);
+        attachment_fixture_directories(false, false, directories);
     let id = automatic_parent(&old);
     automatic_parent_created(&store, &id, &budget);
     let guard = attachment_guard(

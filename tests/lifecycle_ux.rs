@@ -1006,6 +1006,7 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
                         goal: None,
                         body: "retained terminal work".into(),
                         launch: LaunchRequest {
+                            directory_context: None,
                             target: HostTargetId::new("w1:p2"),
                             harness: herdr_threads::harness::context::Harness::Claude,
                             harness_binary: None,

@@ -1,0 +1,24 @@
+diff --git a/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-6.md b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-6.md
+new file mode 100644
+index 000000000..977a50f5f
+--- /dev/null
++++ b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-6.md
+@@ -0,0 +1,18 @@
++Wire selected directories end to end through preflight, tab creation, derived launch and exact retry for automatic and explicit-thread new-tab modes.
++
++Spec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md
++Files-touched: src/cli/topology_handoff.rs, src/cli/topology_handoff/automatic.rs, src/cli/topology_runtime.rs, src/cli/launch.rs, src/cli/retry.rs as needed, tests/cli/topology_handoff.rs
++owns: selected directory capture-to-create-to-derived-launch wiring and retry filesystem checks.
++consumes: LaunchDirectoryContext; consumes: normalized public directory inputs; consumes: canonical launch-context admission; consumes: native config-root and Hermes profile projections.
++blocked-by ht-1urq.2: consumes normalized public directory inputs
++blocked-by ht-1urq.3: consumes native config-root profile projection
++blocked-by ht-1urq.4: consumes Hermes profile projection
++blocked-by ht-1urq.5: consumes canonical launch-context admission
++owns: guarded executable/PATH preservation and focused frozen retry/lost-reply/disappeared-directory tests.
++
++## Acceptance
++- [ ] Capture adapter projection/cwd once and require the capability before publication or tab/thread/seat effects; freeze into the saved original and exact derived child for both routing modes.
++- [ ] CreateTabRequest receives exactly frozen env/cwd; hook/readiness/fingerprint/prelaunch uses the same captured selection/cwd and preserves native executable PATH guard and existing diagnostics.
++- [ ] Retry never recaptures caller profile env, cwd, configured options or symlink target; changed caller inputs still use saved context/native argv. Missing directories refuse before new native effects without canonicalizing saved paths again.
++- [ ] Lost-reply and pre-start refusal tests prove no duplicate create/message/start; historical completed retries and possible-start certainty retain behavior. No raw native env wrapper, pane typing, HOME change or guard bypass.
++- [ ] Focused public coordinator/retry tests, fmt, locked all-feature clippy and harness-neutral pass.

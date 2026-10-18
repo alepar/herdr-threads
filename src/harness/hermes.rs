@@ -2401,11 +2401,19 @@ mod adapter_tests {
             (package.join("__init__.py"), ""),
             (
                 package.join("profiles.py"),
-                "import os\nfrom pathlib import Path\ndef normalize_profile_name(p): return p.strip().lower()\ndef validate_profile_name(p):\n if p not in ('default','work'): raise ValueError('private')\ndef resolve_profile_env(p):\n p=normalize_profile_name(p);validate_profile_name(p)\n root=Path(os.environ['FIXTURE_HOME']);home=root if p=='default' else root/'profiles'/p\n if not home.is_dir(): raise FileNotFoundError('private')\n return str(home)\n",
+                "import os\nfrom pathlib import Path\ndef normalize_profile_name(p): return p.strip().lower()\ndef validate_profile_name(p):\n if p not in ('default','work'): raise ValueError('private')\ndef resolve_profile_env(p):\n p=normalize_profile_name(p);validate_profile_name(p)\n root=Path(os.environ['HERMES_HOME']);home=root if p=='default' else root/'profiles'/p\n if not home.is_dir(): raise FileNotFoundError('private')\n return str(home)\n",
             ),
             (
                 package.join("version_info.py"),
                 "from types import SimpleNamespace\ndef get_version_info(): return SimpleNamespace(source='git',base_version='0.21.5',derived_version='0.21.5+1.g1234567',commit='1234567890abcdef1234567890abcdef12345678',dirty=False,distance=1)\n",
+            ),
+            (
+                package.join("plugins_dispatch.py"),
+                "class PluginDispatchMixin:\n def invoke_hook(self): pass\n",
+            ),
+            (
+                package.join("plugins.py"),
+                "from hermes_cli.plugins_dispatch import PluginDispatchMixin\nclass PluginContext:\n def register_hook(self): pass\n def on_unload(self): pass\nclass PluginManager(PluginDispatchMixin): pass\nVALID_HOOKS={'pre_llm_call','post_tool_call','on_session_start','on_session_reset'}\n",
             ),
             (
                 package.join("config.py"),
@@ -2449,6 +2457,62 @@ mod adapter_tests {
             ),
             cancellation: Default::default(),
         };
+        // Project an explicit root over a conflicting inherited root without
+        // changing the caller snapshot or confusing root with named-profile home.
+        use crate::harness::adapter::LaunchPolicy;
+        struct NoShell;
+        impl crate::harness::launch::PaneShellProbe for NoShell {
+            fn pane_shell_env(&self, _: &str) -> Option<String> {
+                panic!("explicit Hermes root must not probe shell hints")
+            }
+        }
+        let policy = &launch::POLICY;
+        let mut inherited = environment.clone();
+        inherited
+            .declared
+            .insert("HERMES_HOME".into(), iso.path("conflict").into_os_string());
+        let mut selected = inherited.clone();
+        selected.explicit_profile_directory = Some(home.clone());
+        let projection = policy.explicit_directory_env(&home).unwrap();
+        selected
+            .declared
+            .extend(projection.iter().map(|(k, v)| (k.clone(), v.into())));
+        assert_eq!(
+            inherited.declared["HERMES_HOME"],
+            iso.path("conflict").into_os_string()
+        );
+        assert_eq!(projection["HERMES_HOME"], home.to_str().unwrap());
+        let launch_request = LaunchRequest {
+            argv: vec!["--profile".into(), "work".into()],
+            environment: selected,
+            native_binary: Some(launcher.clone()),
+        };
+        let scope = policy
+            .resolve_scope(&launch_request, &NoShell, &budget)
+            .unwrap();
+        assert_eq!(
+            scope.setup,
+            ResolvedSetupScope::Profile {
+                name: "work".into(),
+                home: home.join("profiles/work"),
+            }
+        );
+        assert_eq!(scope.working_directory, environment.cwd);
+        let default_request = LaunchRequest {
+            argv: vec![],
+            environment: environment.clone(),
+            native_binary: Some(launcher.clone()),
+        };
+        assert_eq!(
+            policy
+                .resolve_scope(&default_request, &NoShell, &budget)
+                .unwrap()
+                .setup,
+            ResolvedSetupScope::Profile {
+                name: "default".into(),
+                home: home.clone()
+            }
+        );
         let observed = inspect_profile("work", Some(&launcher), &environment, &budget)
             .expect("actual discovery cannot reach setup consumer");
         assert_eq!(observed.home, home.join("profiles/work"));
@@ -2491,6 +2555,39 @@ mod adapter_tests {
         assert_eq!(status.enabled, Some(true));
         assert_eq!(status.admitted, None);
         assert_eq!(status.observed, None);
+        let captured = policy
+            .observe_prelaunch(&launch_request, &scope, &budget)
+            .unwrap();
+        let prepared = policy
+            .prepare_prelaunch(
+                &launch_request,
+                &scope,
+                captured.as_ref(),
+                &status,
+                &NoShell,
+                &budget,
+            )
+            .unwrap();
+        assert!(prepared.hook.is_some());
+        assert_eq!(&prepared.argv[..4], ["--profile", "work", "--cli", "chat"]);
+        assert_eq!(
+            prepared.report["hermes"]["home"],
+            home.join("profiles/work").to_str().unwrap()
+        );
+        assert_eq!(prepared.report["hermes"]["api"], "presence_only");
+        assert_eq!(prepared.report["hermes"]["native_acceptance"], "unmet");
+        assert_eq!(prepared.report["hermes"]["callback_qualified"], false);
+        policy
+            .recheck_prelaunch(&launch_request, &scope, captured.as_ref(), &budget)
+            .unwrap();
+        std::fs::write(package.join("config.py"), "class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':[],'disabled':['herdr-threads']}}\n").unwrap();
+        assert_eq!(
+            policy
+                .recheck_prelaunch(&launch_request, &scope, captured.as_ref(), &budget)
+                .unwrap_err()
+                .code,
+            crate::protocol::results::ErrorCode::Conflict
+        );
         let removed = HermesAdapter
             .unsetup(
                 &UnsetupRequest {

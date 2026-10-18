@@ -1,0 +1,160 @@
+{
+  "sourceCommit": "7546897944cd4701674a640e0a7f07c83dfa7266",
+  "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+  "runId": "ht-final-c7c06f0e-c26e-49ae-a439-ef88af17b434",
+  "scratch": "/private/tmp/htf-5bb54b09",
+  "startedAt": "2026-10-18T05:25:09.711349+00:00",
+  "records": [
+    {
+      "name": "prepare-proof",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "sh tests/service/check_failpoints_absent.sh --prebuild",
+      "configuration": "outside sandbox; all-features where requested; HT_LEAK_RUN_ID=ht-final-c7c06f0e-c26e-49ae-a439-ef88af17b434; TMPDIR=/private/tmp/htf-5bb54b09",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-prepared/prepare-proof.log",
+      "exitCode": 0,
+      "elapsedSeconds": 1.416
+    },
+    {
+      "name": "full-suite",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "nice cargo nextest run --locked --all-targets --all-features",
+      "configuration": "outside sandbox; all-features where requested; HT_LEAK_RUN_ID=ht-final-c7c06f0e-c26e-49ae-a439-ef88af17b434; TMPDIR=/private/tmp/htf-5bb54b09",
+      "outcome": "fail",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-prepared/full-suite.log",
+      "exitCode": 100,
+      "elapsedSeconds": 388.394
+    },
+    {
+      "name": "scoped-leaks",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "scripts/check-no-leaked-processes --run-id ht-final-c7c06f0e-c26e-49ae-a439-ef88af17b434",
+      "configuration": "outside sandbox; all-features where requested; HT_LEAK_RUN_ID=ht-final-c7c06f0e-c26e-49ae-a439-ef88af17b434; TMPDIR=/private/tmp/htf-5bb54b09",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-prepared/scoped-leaks.log",
+      "exitCode": 0,
+      "elapsedSeconds": 0.504
+    },
+    {
+      "name": "clippy",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "nice cargo clippy --locked --all-targets --all-features -- -D warnings",
+      "configuration": "outside sandbox; all-features where requested; HT_LEAK_RUN_ID=ht-final-c7c06f0e-c26e-49ae-a439-ef88af17b434; TMPDIR=/private/tmp/htf-5bb54b09",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-prepared/clippy.log",
+      "exitCode": 0,
+      "elapsedSeconds": 0.248
+    },
+    {
+      "name": "harness-neutral",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "scripts/check-harness-neutral",
+      "configuration": "outside sandbox; all-features where requested; HT_LEAK_RUN_ID=ht-final-c7c06f0e-c26e-49ae-a439-ef88af17b434; TMPDIR=/private/tmp/htf-5bb54b09",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-prepared/harness-neutral.log",
+      "exitCode": 0,
+      "elapsedSeconds": 1.834
+    },
+    {
+      "name": "default-features",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "nice scripts/check-default-features",
+      "configuration": "outside sandbox; all-features where requested; HT_LEAK_RUN_ID=ht-final-c7c06f0e-c26e-49ae-a439-ef88af17b434; TMPDIR=/private/tmp/htf-5bb54b09",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-prepared/default-features.log",
+      "exitCode": 0,
+      "elapsedSeconds": 0.13
+    },
+    {
+      "name": "fmt",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "cargo fmt --check",
+      "configuration": "outside sandbox; all-features where requested; HT_LEAK_RUN_ID=ht-final-c7c06f0e-c26e-49ae-a439-ef88af17b434; TMPDIR=/private/tmp/htf-5bb54b09",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-prepared/fmt.log",
+      "exitCode": 0,
+      "elapsedSeconds": 5.74
+    },
+    {
+      "name": "diff-check",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "git diff --check",
+      "configuration": "outside sandbox; all-features where requested; HT_LEAK_RUN_ID=ht-final-c7c06f0e-c26e-49ae-a439-ef88af17b434; TMPDIR=/private/tmp/htf-5bb54b09",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-prepared/diff-check.log",
+      "exitCode": 0,
+      "elapsedSeconds": 0.019
+    },
+    {
+      "name": "scratch-processes",
+      "sourceTree": "59713c1a6f77563711ce6ff4cc91859ef52d8709",
+      "command": "bash /Users/alepar/.codex/plugins/cache/superpowers-alepar/superpowers/6.4.2-alepar6.2/skills/super-code/scripts/stop-run-processes /private/tmp/htf-5bb54b09",
+      "configuration": "outside sandbox; all-features where requested; HT_LEAK_RUN_ID=ht-final-c7c06f0e-c26e-49ae-a439-ef88af17b434; TMPDIR=/private/tmp/htf-5bb54b09",
+      "outcome": "pass",
+      "kind": "live",
+      "location": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/.superpowers/sdd/ht-1urq-plan/final-verification-prepared/scratch-processes.log",
+      "exitCode": 0,
+      "elapsedSeconds": 0.952
+    }
+  ],
+  "finishedAt": "2026-10-18T05:31:48.012121+00:00",
+  "sourceUnchanged": true,
+  "scratchRemoved": true,
+  "status": "needs-attention",
+  "rawFiles": [
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-prepared/clippy.log",
+      "sha256": "fecede7c2157efe2f16c8c8b9dce94b0fb4dd384dca8207046c8bf7636eb0ffe",
+      "bytes": 72
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-prepared/default-features.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-prepared/diff-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-prepared/fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-prepared/full-suite.log",
+      "sha256": "84f3b438b30e634e0c6105e08585347db02edb39209be35a852dc8ef3d64c81c",
+      "bytes": 1019588
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-prepared/harness-neutral.log",
+      "sha256": "26d6b5b7e46acfeb19d66db07a322c3c6ea3615057bc98d4a10e1a2b496e6492",
+      "bytes": 130
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-prepared/prepare-proof.log",
+      "sha256": "4bb1da7c4e10def23b98a890007e0a5e695ffa2be6cb77839e1d6581c152d350",
+      "bytes": 372
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-prepared/scoped-leaks.log",
+      "sha256": "0b3a49cfa062a5b1922b797205d07f7cdc12b25c525d50f4bc60dcd04bb97f50",
+      "bytes": 51
+    },
+    {
+      "path": ".superpowers/sdd/ht-1urq-plan/final-verification-prepared/scratch-processes.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  ],
+  "assessment": "One apply-lane assertion failed under confirmed external release compilation; cause and source attribution unconfirmed. Preserve failure; independently diagnose and confirm under quiet host. All other7652 tests and remaining gates passed, cleanup confirmed."
+}

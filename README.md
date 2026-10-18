@@ -148,9 +148,15 @@ herdr-threads handoff --existing --seat SEAT -- "Review this change"
 herdr-threads handoff --existing --pane PANE -- "Review this change"
 herdr-threads handoff --pane PANE --kind codex -- "Review this change"
 herdr-threads handoff --new-tab review --kind codex -- "Review this change"
+herdr-threads handoff --new-tab review --kind codex --profile-dir /absolute/profile \
+  --cwd /absolute/workdir -- "Review this change"
 ```
 
 All handoffs require an original top-level Agent. Automatic handoff ensures the pair and sends the addressed assignment before guarded launch, where requested; it never accepts or ACKs for the peer. New-tab resolves its recipient before ensuring the pair. Use explicit `--thread THREAD` to deliver into a compatible joined channel, or `--new-thread` for a separate ordinary channel as in the group quickstart above. `--thread-name`, `--topic` and `--goal` require `--new-thread`. Automatic routing requires the new daemon capability and refuses older daemons before effects.
+
+`--profile-dir` and `--cwd` are new-tab options: both must name absolute existing directories and are canonicalized once before publication. Existing-seat delivery and guarded pane launches refuse either option before effects; plain `launch` is unchanged. Omitted cwd uses the invocation cwd; omitted profile keeps normal selection. Codex maps the selected directory to `CODEX_HOME`, Claude to `CLAUDE_CONFIG_DIR`, and Hermes to `HERMES_HOME`; a Hermes native named profile may resolve below that root. agy does not support explicit profile selection (new-tab cwd still works). No profile is created, hooks installed or authentication copied by this selection.
+
+The profile is declared child input, subject to shell initialization, not proof of the authenticated account. Retry preserves canonical directories, declared environment and saved native arguments despite changed caller defaults or symlink targets; current configuration checks still apply. If a saved directory disappears or stops being a directory, restore it and use the reported `retry REF`; new native effects refuse until repair. Existing unknown-creation and possible-start safeguards still apply. Diagnostics contain paths and declared environment, never credential contents. See the [handoff reference](docs/agent-usage.md#durable-handoff-and-recovery).
 
 ## A role that survives its session
 

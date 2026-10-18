@@ -1,0 +1,40 @@
+diff --git a/src/harness/adapter.rs b/src/harness/adapter.rs
+index 41517c458..a62053c54 100644
+--- a/src/harness/adapter.rs
++++ b/src/harness/adapter.rs
+@@ -894,6 +894,9 @@ pub struct SetupEnvironment {
+     pub host_endpoint: Option<std::path::PathBuf>,
+     pub instance_source: serde_json::Value,
+     pub config_roots: std::collections::BTreeMap<String, std::path::PathBuf>,
++    /// Explicit canonical launch selection, distinct from inherited config hints.
++    /// Adapters resolve this captured directory without a later pane-shell override.
++    pub explicit_profile_directory: Option<std::path::PathBuf>,
+     pub declared: std::collections::BTreeMap<String, OsString>,
+ }
+ impl Default for SetupEnvironment {
+@@ -908,6 +911,7 @@ impl Default for SetupEnvironment {
+             host_endpoint: None,
+             instance_source: serde_json::Value::Null,
+             config_roots: Default::default(),
++            explicit_profile_directory: None,
+             declared: Default::default(),
+         }
+     }
+@@ -1234,6 +1238,17 @@ impl StartupInputTemplate {
+ }
+ 
+ pub trait LaunchPolicy: Send + Sync {
++    /// Adapter-owned projection for an explicit canonical profile directory.
++    /// Consumers validate the bounded projection with `LaunchDirectoryContext`.
++    fn explicit_directory_env(
++        &self,
++        _: &std::path::Path,
++    ) -> Result<std::collections::BTreeMap<String, String>, crate::protocol::results::ApiError>
++    {
++        Err(crate::protocol::results::ApiError::unsupported(
++            "explicit profile directory unavailable",
++        ))
++    }
+     /// Optional pure original-caller grammar. Absence is honest unsupported handoff.
+     fn prepare_startup_input(
+         &self,

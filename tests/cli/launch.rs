@@ -370,6 +370,7 @@ fn handoff() -> FakeHandoff {
 }
 fn request(harness: ContextHarness, argv: &[&str]) -> LaunchRequest {
     LaunchRequest {
+        directory_context: None,
         target: HostTargetId::new("w9:p1"),
         harness,
         harness_binary: None,

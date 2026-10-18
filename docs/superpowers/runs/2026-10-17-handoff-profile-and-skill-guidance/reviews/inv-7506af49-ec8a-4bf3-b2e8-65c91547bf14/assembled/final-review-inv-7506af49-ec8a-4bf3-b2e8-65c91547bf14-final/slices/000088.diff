@@ -1,0 +1,302 @@
+diff --git a/tests/harness/launch.rs b/tests/harness/launch.rs
+index 045a2f365..c1faa5465 100644
+--- a/tests/harness/launch.rs
++++ b/tests/harness/launch.rs
+@@ -13,6 +13,297 @@ use std::sync::{
+     atomic::{AtomicU64, AtomicUsize, Ordering},
+ };
+ 
++mod native_profiles {
++    use super::*;
++    use crate::harness::{adapter::*, registry::builtins};
++
++    struct ConflictingShell;
++    impl PaneShellProbe for ConflictingShell {
++        fn pane_shell_env(&self, _: &str) -> Option<String> {
++            Some("/pane/profile".into())
++        }
++    }
++
++    fn request(id: &str) -> LaunchRequest {
++        LaunchRequest {
++            argv: vec![],
++            environment: SetupEnvironment {
++                clock: std::sync::Arc::new(TestClock(AtomicU64::new(0))),
++                cwd: "/selected/work".into(),
++                config_roots: [(id.into(), "/launcher/profile".into())].into(),
++                ..Default::default()
++            },
++            native_binary: None,
++        }
++    }
++
++    fn budget() -> CallBudget {
++        CallBudget {
++            deadline: MonoInstant(10_000),
++            cancellation: Default::default(),
++        }
++    }
++
++    // Catches an unsupported/wrong adapter mapping and a shell probe overriding
++    // the retained selection. Paths with spaces and quotes remain literal inputs.
++    #[test]
++    fn explicit_profile_directory_precedes_inherited_scope() {
++        for (id, key) in [("codex", "CODEX_HOME"), ("claude", "CLAUDE_CONFIG_DIR")] {
++            let registration = builtins().by_id(builtins().agent(id).unwrap()).unwrap();
++            let policy = registration.launch_policy().unwrap();
++            let mut request = request(id);
++            let selected = std::path::PathBuf::from("/selected/profile ' Ω");
++            let projection = policy.explicit_directory_env(&selected).unwrap();
++            assert_eq!(
++                projection,
++                [(key.into(), "/selected/profile ' Ω".into())].into()
++            );
++            request.environment.explicit_profile_directory = Some(selected.clone());
++            request
++                .environment
++                .declared
++                .insert(key.into(), "/launcher/profile".into());
++            let scope = policy
++                .resolve_scope(&request, &ConflictingShell, &budget())
++                .unwrap();
++            assert_eq!(scope.setup, ResolvedSetupScope::ConfigRoot(selected));
++            assert_eq!(scope.config_source, "explicit_profile_directory");
++            assert_eq!(
++                scope.working_directory,
++                std::path::Path::new("/selected/work")
++            );
++            assert_eq!(request.environment.declared[key], "/launcher/profile");
++            assert_eq!(
++                request.environment.config_roots[id],
++                std::path::Path::new("/launcher/profile")
++            );
++        }
++    }
++
++    // Catches accidentally treating an inherited declared variable as explicit.
++    #[test]
++    fn no_explicit_profile_directory_preserves_shell_then_launcher_scope() {
++        struct NoShell;
++        impl PaneShellProbe for NoShell {}
++        for (id, key) in [("codex", "CODEX_HOME"), ("claude", "CLAUDE_CONFIG_DIR")] {
++            let registration = builtins().by_id(builtins().agent(id).unwrap()).unwrap();
++            let policy = registration.launch_policy().unwrap();
++            let mut request = request(id);
++            request
++                .environment
++                .declared
++                .insert(key.into(), "/launcher/profile".into());
++            let scope = policy
++                .resolve_scope(&request, &ConflictingShell, &budget())
++                .unwrap();
++            assert_eq!(
++                scope.setup,
++                ResolvedSetupScope::ConfigRoot("/pane/profile".into())
++            );
++            assert_eq!(scope.config_source, "pane_shell");
++            let scope = policy.resolve_scope(&request, &NoShell, &budget()).unwrap();
++            assert_eq!(
++                scope.setup,
++                ResolvedSetupScope::ConfigRoot("/launcher/profile".into())
++            );
++            assert_eq!(scope.config_source, "launcher");
++        }
++    }
++
++    // Catches inspection/preparation reverting to inherited roots, losing cwd,
++    // disclosing config contents, or freezing config bytes instead of selection.
++    #[test]
++    fn explicit_profile_directory_drives_native_inspection_and_recheck() {
++        use std::os::unix::fs::PermissionsExt;
++        let iso = crate::test_support::isolation::TestIsolation::new("native-explicit-profile");
++        for (id, key, config) in [
++            ("codex", "CODEX_HOME", "config.toml"),
++            ("claude", "CLAUDE_CONFIG_DIR", "settings.json"),
++        ] {
++            let process_value = std::env::var_os(key);
++            let selected = iso.path(format!("{id} selected ' Ω"));
++            let launcher = iso.path(format!("{id}-launcher"));
++            let cwd = iso.path(format!("{id}-cwd"));
++            for directory in [&selected, &launcher, &cwd] {
++                std::fs::create_dir_all(directory).unwrap();
++            }
++            let original = if id == "codex" {
++                "# launcher config must remain unchanged\n"
++            } else {
++                "{\"launcher\":\"must remain unchanged\"}"
++            };
++            std::fs::write(launcher.join(config), original).unwrap();
++            // Hook setup need not create the separate native config file.
++            if id == "codex" {
++                std::fs::write(selected.join(config), "# selected native config\n").unwrap();
++            }
++            let binary = iso.path(format!("{id}-stand-in"));
++            std::fs::write(&binary, "#!/bin/sh\nexit 97\n").unwrap();
++            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
++            let mut request = request(id);
++            request.native_binary = Some(binary.clone());
++            request.environment.home = Some(iso.home().as_os_str().into());
++            request.environment.executable = iso.path("herdr-threads");
++            request.environment.state_dir = Some(iso.path("state"));
++            request.environment.host_endpoint = Some(iso.socket_path("host.sock"));
++            request.environment.cwd = cwd.clone();
++            request
++                .environment
++                .config_roots
++                .insert(id.into(), launcher.clone());
++            request
++                .environment
++                .declared
++                .insert(key.into(), launcher.clone().into_os_string());
++            request.environment.explicit_profile_directory = Some(selected.clone());
++            let registration = builtins().by_id(builtins().agent(id).unwrap()).unwrap();
++            let policy = registration.launch_policy().unwrap();
++            let selected_scope = ResolvedSetupScope::ConfigRoot(selected.clone());
++            registration
++                .setup(
++                    &SetupRequest {
++                        scope: selected_scope.clone(),
++                        executable: request.environment.executable.clone(),
++                        environment: request.environment.clone(),
++                        native_binary: Some(binary),
++                        options: if id == "claude" {
++                            [
++                                ("hooks-only".into(), true),
++                                ("keep-prompt-suggestions".into(), true),
++                            ]
++                            .into()
++                        } else {
++                            Default::default()
++                        },
++                    },
++                    &budget(),
++                )
++                .unwrap();
++            let scope = policy
++                .resolve_scope(&request, &ConflictingShell, &budget())
++                .unwrap();
++            assert_eq!(scope.setup, selected_scope);
++            let SetupStatus::Detailed(status) = registration.status(
++                &StatusRequest {
++                    scope: scope.setup.clone(),
++                    environment: request.environment.clone(),
++                    native_binary: request.native_binary.clone(),
++                },
++                &budget(),
++            ) else {
++                panic!("native status unavailable")
++            };
++            assert!(status.installed);
++            assert!(status.configured_hook.is_some());
++            let fingerprint = policy.configuration_fingerprint(&request, &scope).unwrap();
++            let admitted = registration
++                .admit(
++                    &AdmissionRequest {
++                        installed: InstallObservation::NotRequested,
++                        input: None,
++                        runtime_candidate: None,
++                        admitted_at: None,
++                    },
++                    &budget(),
++                )
++                .unwrap();
++            let template = policy
++                .prepare_startup_input(
++                    &[],
++                    &StartupInputSpec {
++                        max_text_bytes: 1024,
++                    },
++                )
++                .unwrap()
++                .unwrap();
++            request.argv = template.apply(&[], "profile startup").unwrap().0;
++            let prepared = registration
++                .prepare_launch(
++                    &request,
++                    &scope,
++                    &admitted,
++                    &status,
++                    &ConflictingShell,
++                    &budget(),
++                )
++                .unwrap();
++            assert_eq!(prepared.working_directory, cwd);
++            assert!(prepared.argv.iter().any(|arg| arg == "profile startup"));
++            // Child-tab env is declared separately; native agent.start still
++            // carries no environment, preserving the ordinary launch guard.
++            assert!(prepared.environment_overrides.is_empty());
++            assert_eq!(
++                policy.explicit_directory_env(&selected).unwrap()[key],
++                selected.to_str().unwrap()
++            );
++            assert_eq!(
++                policy.configuration_fingerprint(&request, &scope).unwrap(),
++                fingerprint
++            );
++            let sensitive = "PRIVATE_CONFIG_VALUE_7f92";
++            let path = selected.join(config);
++            let bytes = if id == "claude" {
++                let mut value: serde_json::Value =
++                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
++                value["private_config"] = sensitive.into();
++                serde_json::to_vec(&value).unwrap()
++            } else {
++                let mut bytes = std::fs::read(&path).unwrap();
++                bytes.extend_from_slice(format!("\n# {sensitive}\n").as_bytes());
++                bytes
++            };
++            std::fs::write(path, bytes).unwrap();
++            assert_ne!(
++                policy.configuration_fingerprint(&request, &scope).unwrap(),
++                fingerprint
++            );
++            if id == "claude" {
++                // Claude's hook descriptor fingerprints its whole settings file;
++                // an earlier status must still refuse after that file changes.
++                let stale = registration.prepare_launch(
++                    &request,
++                    &scope,
++                    &admitted,
++                    &status,
++                    &ConflictingShell,
++                    &budget(),
++                );
++                assert!(matches!(stale, Err(error) if error.code == ErrorCode::Conflict));
++            }
++            let SetupStatus::Detailed(status) = registration.status(
++                &StatusRequest {
++                    scope: scope.setup.clone(),
++                    environment: request.environment.clone(),
++                    native_binary: request.native_binary.clone(),
++                },
++                &budget(),
++            ) else {
++                panic!("native status unavailable after config change")
++            };
++            let prepared = registration
++                .prepare_launch(
++                    &request,
++                    &scope,
++                    &admitted,
++                    &status,
++                    &ConflictingShell,
++                    &budget(),
++                )
++                .unwrap();
++            let diagnostics = format!(
++                "{:?} {:?} {:?}",
++                status.diagnostics, status.projection, prepared.report
++            );
++            assert!(!diagnostics.contains(sensitive));
++            assert_eq!(
++                std::fs::read_to_string(launcher.join(config)).unwrap(),
++                original
++            );
++            assert_eq!(std::env::var_os(key), process_value);
++        }
++    }
++}
++
+ struct TestClock(AtomicU64);
+ impl Clock for TestClock {
+     fn utc_now(&self) -> UtcMillis {

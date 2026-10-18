@@ -1,0 +1,13 @@
+# Settled design handoff
+
+Epic: ht-1urq. Spec: 2026-10-17-handoff-profile-and-skill-guidance-design.md.
+
+Ten leaf tasks: adopt existing ht-1urq.1–.9 plus ht-1urq.10, the final integration sweep. Nine existing leaves and their committed ownership clarifications are unchanged. Sweep depends on every leaf. All tasks remain open; implementation has not begun.
+
+Coverage: round 1 finalized with 12/12 mapped and seven ownership clarifications; round 2 has two valid fresh reviews, 12/12 mapped, zero findings. Findings 7→0; novel 0/0; widening no. Final mechanical precheck: zero flags, unstated edges or citation defects.
+
+Design roast OFF: reports [], rounds 0. No unresolved coverage/verdict/graph qualifiers. Model limitation: the skill's named opus reviewer model is unavailable; independent fresh reviews used the inherited session model (recorded in friction.md).
+
+graph-pass: depth 5→5 · width 2.0→2.0 · applied 0 · parked 0
+
+All five candidate edges consume concrete artifacts from their earliest producers; no proposed splits or parked changes. Caller owns onward super-code invocation, root acceptance, final code review, full-suite/default-feature checks and final branch handoff. No implementation, merge or release performed by design phase.

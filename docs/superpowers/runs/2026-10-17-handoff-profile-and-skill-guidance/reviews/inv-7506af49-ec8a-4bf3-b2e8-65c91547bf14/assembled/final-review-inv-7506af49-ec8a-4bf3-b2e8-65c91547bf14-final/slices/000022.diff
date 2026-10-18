@@ -1,0 +1,33 @@
+diff --git a/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-2-review-1.md b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-2-review-1.md
+new file mode 100644
+index 000000000..7a1709bfa
+--- /dev/null
++++ b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-round-2-review-1.md
+@@ -0,0 +1,27 @@
++requirements:
++R1 → ht-1urq.7
++R2 → ht-1urq.7
++R3 → ht-1urq.7
++R4 → ht-1urq.2, ht-1urq.3, ht-1urq.6
++R5 → ht-1urq.4, ht-1urq.6, ht-1urq.8
++R6 → ht-1urq.1, ht-1urq.2
++R7 → ht-1urq.1, ht-1urq.3, ht-1urq.4, ht-1urq.6
++R8 → ht-1urq.5, ht-1urq.6
++R9 → ht-1urq.1, ht-1urq.5
++R10 → ht-1urq.2, ht-1urq.4
++R11 → ht-1urq.7, ht-1urq.8
++R12 → ht-1urq.2, ht-1urq.3, ht-1urq.4, ht-1urq.5, ht-1urq.6, ht-1urq.9
++
++R-new: none.
++
++findings: none.
++
++Prior fixes close their reported coverage findings:
++
++- C1: ht-1urq.2 explicitly owns “pane/existing directory-option refusal before effects.”
++- C2: ht-1urq.2–.6 explicitly own focused parser, adapter, admission, replay and retry regression tests.
++- C3: ht-1urq.6 explicitly owns “guarded executable/PATH preservation.”
++- C4: ht-1urq.3 owns “credential-safe native launch diagnostics”; ht-1urq.9 owns “credential-free owned-fixture evidence.”
++- C5: ht-1urq.7 owns “measured baseline/final skill UTF-8 bytes and at most 1 KiB growth accounting.”
++- C6: ht-1urq.8 owns “proposed unreleased minor 2.1.0 with no package version bump, tag or release.”
++- C7: ht-1urq.9 owns “scoped process/temp cleanup and no real config or shared-server changes.”

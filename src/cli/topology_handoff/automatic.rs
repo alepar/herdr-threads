@@ -171,7 +171,8 @@ fn load_parent(
                 || r.cwd != id.plan.payload.cwd
                 || r.label != id.plan.payload.label
                 || r.focus
-                || !r.env.is_empty()
+                || r.env != id.plan.payload.env
+                || r.directory_context != id.plan.payload.directory_context
                 || r.expected_witness.endpoint.as_os_str()
                     != id.plan.payload.handoff.namespace.host_endpoint.as_os_str()
         })
@@ -339,6 +340,9 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
     let completed =
         matches!(status(client, clock, &id), Ok(s) if s.state == BootstrapState::Completed);
     if !completed {
+        if id.plan.payload.directory_context.is_some() {
+            super::require_directory_capability(client, clock)?;
+        }
         super::super::handoff_delivery::require_policy_capabilities(
             client,
             clock,
@@ -433,6 +437,10 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
     if current.state != BootstrapState::Prepared || local.possible_creation {
         return Err(unknown(reference, current.attempt));
     }
+    super::check_bootstrap_directories(
+        &id.plan.payload.cwd,
+        id.plan.payload.directory_context.as_ref(),
+    )?;
     if submission.witness.endpoint.as_os_str() != namespace.host_endpoint.as_os_str() {
         return Err(invalid(
             "automatic native endpoint differs from frozen namespace",
@@ -487,7 +495,8 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
         cwd: id.plan.payload.cwd.clone(),
         label: id.plan.payload.label.clone(),
         focus: false,
-        env: Default::default(),
+        env: id.plan.payload.env.clone(),
+        directory_context: id.plan.payload.directory_context.clone(),
         expected_witness: submission.witness.clone(),
     };
     local.possible_creation = true;
@@ -513,7 +522,14 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
     {
         return Err(invalid("automatic submission check differs"));
     }
-    match native.create_tab(&request, submission.context) {
+    let outcome = match super::check_bootstrap_directories(
+        &id.plan.payload.cwd,
+        id.plan.payload.directory_context.as_ref(),
+    ) {
+        Ok(()) => native.create_tab(&request, submission.context),
+        Err(error) => CreateTabOutcome::NotSubmitted(ApiError::invalid_request(error.to_string())),
+    };
+    match outcome {
         CreateTabOutcome::NotSubmitted(_) => {
             local.not_submitted = true;
             save_parent(journal, reference, &local)
@@ -737,6 +753,10 @@ pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTabPort + ?Size
         save_child(journal, reference, &progress)?;
     }
     if progress.launch.is_none() && !progress.possible_start {
+        super::check_bootstrap_directories(
+            &id.plan.payload.cwd,
+            id.plan.payload.directory_context.as_ref(),
+        )?;
         let AutomaticOriginal::Handoff(plan) = &child.original else {
             return Err(invalid("automatic child lacks launch"));
         };
@@ -756,6 +776,11 @@ pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTabPort + ?Size
         }
         let result = launcher.launch(&effective, &attachment.resolved_seat, &mut |possible| {
             if possible {
+                super::check_bootstrap_directories(
+                    &id.plan.payload.cwd,
+                    id.plan.payload.directory_context.as_ref(),
+                )
+                .map_err(|error| ApiError::invalid_request(error.to_string()))?;
                 client.call(
                     parent_request(&id, AutomaticBootstrapAction::CheckStart),
                     &budget(clock),

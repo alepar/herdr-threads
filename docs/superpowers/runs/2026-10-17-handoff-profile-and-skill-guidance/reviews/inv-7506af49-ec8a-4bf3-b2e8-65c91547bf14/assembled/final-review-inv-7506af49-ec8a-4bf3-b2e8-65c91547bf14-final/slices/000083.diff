@@ -1,0 +1,29 @@
+diff --git a/tests/fixtures/herdr-matrix/codex.js b/tests/fixtures/herdr-matrix/codex.js
+index 9931a16f3..ad4df8d2b 100644
+--- a/tests/fixtures/herdr-matrix/codex.js
++++ b/tests/fixtures/herdr-matrix/codex.js
+@@ -129,7 +129,13 @@ def turn(line):
+             run_hooks("PreToolUse", tool_name="Bash", tool_use_id=tool_id, tool_input={"command": command},
+                       turn_id=turn_id)
+             rc, stdout, stderr = run_tool(command)
+-            log("tool", command=command, rc=rc, stdout=stdout[-4000:], stderr=stderr[-2000:])
++            # Preserve structured reports when quoted directory paths exceed the text tail.
++            try:
++                structured = json.loads(stdout)
++            except ValueError:
++                structured = None
++            log("tool", command=command, rc=rc, stdout=stdout[-4000:], stderr=stderr[-2000:],
++                result_json=structured)
+             transcript.append(f"• Ran {command[:60]} (rc={rc})")
+             draw(working=True)
+     transcript.append("• done")
+@@ -145,7 +151,8 @@ def main():
+     if len(sys.argv) > 1 and sys.argv[1] == "--version":
+         print("codex-cli 0.0.0-fake")
+         return
+-    log("start", argv=sys.argv[1:], cwd=os.getcwd())
++    log("start", argv=sys.argv[1:], cwd=os.getcwd(),
++        config_home=HOME, declared_config_home=os.environ.get("CODEX_HOME"), home=os.environ.get("HOME"))
+     run_hooks("SessionStart", source="startup")
+     global TTY, queued
+     fd = TTY = sys.stdin.fileno()

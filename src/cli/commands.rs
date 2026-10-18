@@ -1865,8 +1865,13 @@ struct HandoffArgs {
     /// SEAT: an exact seat ID, or a name path SPACE/TAB/PANE (any part may be omitted)
     #[arg(long, requires = "existing", conflicts_with = "pane")]
     seat: Option<String>,
-    #[arg(long, requires = "new_tab")]
+    /// Working directory for --new-tab; guarded pane launches cannot change it.
+    #[arg(long)]
     cwd: Option<std::path::PathBuf>,
+    /// Existing profile directory for --new-tab, distinct from native named profiles.
+    /// Guarded pane launches cannot change the profile directory.
+    #[arg(long)]
+    profile_dir: Option<std::path::PathBuf>,
     #[command(flatten)]
     selector: super::panes::PaneSelector,
     #[arg(long, conflicts_with = "thread")]
@@ -2534,6 +2539,33 @@ fn locator_hint(value: String) -> HostTargetId {
     HostTargetId::parse(value).unwrap_or_else(|_| HostTargetId::new("pending-pane-selector"))
 }
 
+fn normalize_handoff_directory(path: std::path::PathBuf) -> Result<std::path::PathBuf, ApiError> {
+    let valid_text = |path: &std::path::Path| {
+        path.is_absolute()
+            && path
+                .to_str()
+                .is_some_and(|text| text.len() <= 4096 && !text.chars().any(char::is_control))
+    };
+    let refusal = || {
+        invalid(
+            "--cwd and --profile-dir must name absolute existing directories (UTF-8, no controls, at most 4096 bytes)",
+        )
+    };
+    if !valid_text(&path) || !path.is_dir() {
+        return Err(refusal());
+    }
+    let canonical = path.canonicalize().map_err(|_| refusal())?;
+    // Share the frozen protocol path contract; canonicalization happens once,
+    // and never allows a symlink to smuggle invalid transport bytes through.
+    if !valid_text(&canonical)
+        || !crate::protocol::handoff::frozen_absolute_path(&canonical)
+        || !canonical.is_dir()
+    {
+        return Err(refusal());
+    }
+    Ok(canonical)
+}
+
 #[cfg(test)]
 fn parse_cli(cli: Cli) -> Result<ParsedCli, ApiError> {
     parse_cli_in_registry(cli, crate::harness::registry::builtins())
@@ -2543,6 +2575,25 @@ fn parse_cli_in_registry(
     mut cli: Cli,
     registry: &crate::harness::registry::Registry,
 ) -> Result<ParsedCli, ApiError> {
+    // Reject launch-only conflicts and normalize before reading instructions or
+    // constructing selectors: no recipient resolution or publication can precede this.
+    if let Top::Handoff(args) = &mut cli.command {
+        if (args.cwd.is_some() || args.profile_dir.is_some()) && args.new_tab.is_none() {
+            return Err(invalid(
+                "--cwd and --profile-dir require --new-tab; guarded pane launches cannot change directories",
+            ));
+        }
+        args.cwd = args
+            .cwd
+            .take()
+            .map(normalize_handoff_directory)
+            .transpose()?;
+        args.profile_dir = args
+            .profile_dir
+            .take()
+            .map(normalize_handoff_directory)
+            .transpose()?;
+    }
     // Normalize before capturing selectors so names, picker eligibility and
     // follow execution share the existing read path.
     cli.command = match cli.command {
@@ -2655,9 +2706,6 @@ fn parse_cli_in_registry(
             Some(selector.clone())
         }
         Top::Handoff(args) => {
-            if args.cwd.is_some() && args.new_tab.is_none() {
-                return Err(invalid("--cwd requires --new-tab"));
-            }
             if args.new_tab.is_some() {
                 None
             } else if args.existing {
@@ -3262,6 +3310,7 @@ fn parse_cli_in_registry(
                 )));
             }
             CliAction::Launch(super::launch::LaunchRequest {
+                directory_context: None,
                 target: locator_hint(args.selector.pane.expect("explicit pane validated")),
                 harness,
                 harness_binary: args.harness_binary,
@@ -3342,6 +3391,7 @@ fn parse_cli_in_registry(
                     },
                     seat: args.seat.map(|_| SEAT_SELECTOR_PLACEHOLDER.to_owned()),
                     cwd: args.cwd,
+                    profile_dir: args.profile_dir,
                     thread: args.thread,
                     thread_name: args.thread_name,
                     topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,
@@ -3362,6 +3412,7 @@ fn parse_cli_in_registry(
                     goal: args.goal.map(|s| bounded(s, "goal")).transpose()?,
                     body,
                     launch: super::launch::LaunchRequest {
+                        directory_context: None,
                         target: locator_hint(args.selector.pane.expect("explicit pane validated")),
                         harness: harness_arg(
                             args.kind.as_deref().expect("kind required"),

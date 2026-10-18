@@ -26,6 +26,7 @@ pub(super) fn identity() -> BootstrapIdentity {
         claim,
         digest: "a".repeat(64),
         payload: BootstrapPayload {
+            directory_context: None,
             handoff: HandoffPayload {
                 policy: None,
                 namespace: namespace(),
@@ -315,6 +316,23 @@ fn new_channel_retains_frozen_create_key_without_creating_channel() {
 
 #[test]
 fn retained_identity_and_attempt_survive_database_reopen() {
+    retained_identity_reopen(false);
+}
+#[test]
+fn launch_directories_retained_identity_and_attempt_survive_database_reopen() {
+    retained_identity_reopen(true);
+}
+fn retained_identity_reopen(directories: bool) {
+    let mut id = identity();
+    if directories {
+        id.payload.env = [("PROFILE_ROOT".into(), "/profile".into())].into();
+        id.payload.directory_context = Some(LaunchDirectoryContext {
+            profile_dir: "/profile".into(),
+            cwd: id.payload.cwd.clone(),
+            env: id.payload.env.clone(),
+        });
+        id.digest = id.semantic_digest().unwrap();
+    }
     let directory =
         super::handoff_fences::Directory(herdr_threads::test_support::scratch::temp_path(format!(
             "ht-topology-{}",
@@ -327,14 +345,14 @@ fn retained_identity_and_attempt_survive_database_reopen() {
         setup(&db);
         let tx = db.transaction().unwrap();
         let result =
-            topology_handoff::begin_pending(&tx, &namespace(), &identity(), UtcMillis(10)).unwrap();
+            topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(10)).unwrap();
         tx.commit().unwrap();
         result
     };
     let db = Connection::open(path).unwrap();
     db.pragma_update(None, "foreign_keys", true).unwrap();
     assert_eq!(
-        topology_handoff::current(&db, &namespace(), &identity()).unwrap(),
+        topology_handoff::current(&db, &namespace(), &id).unwrap(),
         Some(expected)
     );
     assert_eq!(counts(&db), (1, 1, 14, 0));
@@ -679,10 +697,25 @@ fn bounded_slots_refuse_oversized_or_missing_terminal_reports_without_truncation
 
 #[test]
 fn full_completed_report_with_large_json_escaping_replays_and_rejects_tamper() {
+    completed_report_directories(false);
+}
+#[test]
+fn launch_directories_completed_report_replays_and_rejects_tamper() {
+    completed_report_directories(true);
+}
+fn completed_report_directories(directories: bool) {
     use sha2::{Digest, Sha256};
     let (_directory, path, mut db) = file_fixture();
     let tx = db.transaction().unwrap();
     let mut id = identity();
+    if directories {
+        id.payload.env = [("PROFILE_ROOT".into(), "/profile".into())].into();
+        id.payload.directory_context = Some(LaunchDirectoryContext {
+            profile_dir: "/profile".into(),
+            cwd: id.payload.cwd.clone(),
+            env: id.payload.env.clone(),
+        });
+    }
     id.payload.launch.argv = vec!["\"".repeat(4096); 14];
     id.payload.handoff.body = "\u{1}".repeat(65_536);
     id.digest = id.semantic_digest().unwrap();

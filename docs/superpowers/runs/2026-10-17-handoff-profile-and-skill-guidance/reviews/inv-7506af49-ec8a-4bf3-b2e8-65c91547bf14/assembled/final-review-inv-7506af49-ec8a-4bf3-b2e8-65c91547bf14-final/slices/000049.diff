@@ -1,0 +1,18 @@
+diff --git a/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-ids.json b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-ids.json
+new file mode 100644
+index 000000000..15a5f5ba8
+--- /dev/null
++++ b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/task-ids.json
+@@ -0,0 +1,12 @@
++[
++  "ht-1urq.1",
++  "ht-1urq.2",
++  "ht-1urq.3",
++  "ht-1urq.4",
++  "ht-1urq.5",
++  "ht-1urq.6",
++  "ht-1urq.7",
++  "ht-1urq.8",
++  "ht-1urq.9",
++  "ht-1urq.10"
++]

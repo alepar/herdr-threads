@@ -132,6 +132,7 @@ fn pane(id: &str, agent: Option<&Value>) -> Value {
 pub(super) struct HostState {
     pub(super) requests: Vec<Value>,
     created: bool,
+    created_inputs: Option<Value>,
     agent: Option<Value>,
     lose: Option<&'static str>,
     busy_starts: usize,
@@ -209,6 +210,7 @@ impl Host {
                     }
                     "tab.create" => {
                         state.created = true;
+                        state.created_inputs = Some(request["params"].clone());
                         json!({"type":"tab_created","tab":{"tab_id":"w4:t2","workspace_id":"w4"},"root_pane":pane("w4:p3",None)})
                     }
                     "agent.start" => {
@@ -238,6 +240,14 @@ impl Host {
                             .stdin(Stdio::null())
                             .stdout(Stdio::piped())
                             .stderr(Stdio::piped());
+                        if request["params"]["pane_id"] == "w4:p3"
+                            && let Some(inputs) = &state.created_inputs
+                        {
+                            helper.current_dir(inputs["cwd"].as_str().unwrap());
+                            for (key, value) in inputs["env"].as_object().unwrap() {
+                                helper.env(key, value.as_str().unwrap());
+                            }
+                        }
                         let child = helper.spawn_owned().unwrap();
                         let pid = child.id();
                         let out = finish(child);
@@ -352,7 +362,7 @@ impl Fixture {
         let python = String::from_utf8(python.stdout).unwrap();
         // A tiny owned helper captures literal argv/environment; no harness/model is invoked.
         let script = format!(
-            "#!{}\nimport json,os,sys\nprint(json.dumps({{'argv':sys.argv[1:],'home':os.environ['HOME'],'claude':os.environ['CLAUDE_CONFIG_DIR'],'codex':os.environ['CODEX_HOME']}}))\n",
+            "#!{}\nimport json,os,sys\nprint(json.dumps({{'argv':sys.argv[1:],'home':os.environ['HOME'],'claude':os.environ['CLAUDE_CONFIG_DIR'],'codex':os.environ['CODEX_HOME'],'cwd':os.getcwd()}}))\n",
             python.trim()
         );
         install_helper(&iso.path("claude"), &script);
@@ -1069,6 +1079,94 @@ fn new_pane_readiness_handoff_exhaustion_preserves_safe_retry() {
         f.count("SELECT count(*) FROM automatic_bootstrap_parents WHERE state='completed'"),
         1
     );
+}
+
+// Actual executable retry after a proven pre-start refusal: choosing current caller
+// defaults here would make the owned helper record the wrong profile or cwd.
+#[test]
+fn selected_profile_unfinished_public_retry_keeps_original_child_env_and_cwd() {
+    for kind in ["codex", "claude"] {
+        for explicit in [false, true] {
+            let f = Fixture::new();
+            let profile = f.iso.path("selected profile ' \"");
+            let cwd = f.iso.path("selected cwd ' \"");
+            fs::create_dir(&profile).unwrap();
+            fs::create_dir(&cwd).unwrap();
+            let profile = profile.canonicalize().unwrap();
+            let cwd = cwd.canonicalize().unwrap();
+            let binary = f.iso.path(kind);
+            let thread = f.named_thread();
+            let mut args = vec![
+                "handoff",
+                "--new-tab",
+                "Selected",
+                "--kind",
+                kind,
+                "--harness-binary",
+                binary.to_str().unwrap(),
+                "--profile-dir",
+                profile.to_str().unwrap(),
+                "--cwd",
+                cwd.to_str().unwrap(),
+            ];
+            if explicit {
+                args.extend(["--thread", thread.as_str()]);
+            }
+            args.extend(["--", BODY]);
+            f.host.state.lock().unwrap().busy_starts = usize::MAX;
+            let refused = f.run(&args, "--model frozen-model");
+            assert!(!refused.status.success());
+            assert!(
+                String::from_utf8_lossy(&refused.stderr).contains("agent_pane_busy"),
+                "{}",
+                String::from_utf8_lossy(&refused.stderr)
+            );
+            let frame: Value = serde_json::from_slice(&refused.stdout).unwrap();
+            let pending = frame
+                .get("bootstrap")
+                .or_else(|| frame.get("handoff"))
+                .unwrap_or(&frame);
+            assert_eq!(pending["possible_start"], false, "{frame}");
+            let recovery = pending["recovery_ref"].as_str().unwrap();
+            let before = f.effect_counts();
+            assert_eq!(before.0, 1);
+            assert!(f.host.state.lock().unwrap().helpers.is_empty());
+            f.host.state.lock().unwrap().busy_starts = 0;
+            let mut retry = f.command();
+            retry
+                .args([
+                    "--cooperative-seat",
+                    "sender",
+                    "--cooperative-target",
+                    "w4:p1",
+                    "--cooperative-harness",
+                    "codex",
+                    "--cooperative-role",
+                    "top-level",
+                    "retry",
+                    recovery,
+                ])
+                .env("CODEX_HOME", f.iso.path("changed-caller-codex"))
+                .env("CLAUDE_CONFIG_DIR", f.iso.path("changed-caller-claude"))
+                .env("HERDR_THREADS_CODEX_OPTS", "--model changed-model")
+                .env("HERDR_THREADS_CLAUDE_OPTS", "--model changed-model")
+                .current_dir("/");
+            let done = successful(f.capture(retry));
+            assert!(done.to_string().contains("started"), "{done}");
+            let after = f.effect_counts();
+            assert_eq!(after, (before.0, before.1 + 1, before.2, before.3));
+            let state = f.host.state.lock().unwrap();
+            assert_eq!(state.helpers.len(), 1);
+            let child = &state.helpers[0]["capture"];
+            assert_eq!(child[kind], profile.to_str().unwrap(), "{child}");
+            assert_eq!(child["cwd"], cwd.to_str().unwrap(), "{child}");
+            assert_eq!(child["home"], f.iso.home().to_str().unwrap(), "{child}");
+            assert_eq!(
+                &child["argv"].as_array().unwrap()[..2],
+                &[json!("--model"), json!("frozen-model")]
+            );
+        }
+    }
 }
 
 // Plain launch into a fresh shell uses the same bounded product retry.

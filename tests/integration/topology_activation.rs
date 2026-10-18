@@ -2307,6 +2307,7 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
         liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
     };
     let payload = BootstrapPayload {
+        directory_context: None,
         handoff: HandoffPayload {
             policy: None,
             namespace: HandoffNamespace {

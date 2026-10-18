@@ -1,0 +1,15 @@
+diff --git a/src/protocol/capabilities.rs b/src/protocol/capabilities.rs
+index 89fc0f48d..f16d40537 100644
+--- a/src/protocol/capabilities.rs
++++ b/src/protocol/capabilities.rs
+@@ -36,6 +36,10 @@ pub const DIRECT_THREADS_V1: &str = "thread.direct_v1";
+ /// Advertise only with the complete automatic handoff deciding adapters.
+ pub const AUTOMATIC_HANDOFF_V1: &str = "handoff.automatic_v1";
+ 
++/// Frozen profile/cwd projection and exact canonical bootstrap child retention.
++/// Requires both guarded explicit-thread and automatic bootstrap implementations.
++pub const HANDOFF_LAUNCH_DIRECTORIES_V1: &str = "handoff.launch_directories_v1";
++
+ pub const THREAD_JOIN: &str = "thread.join_v1";
+ 
+ /// Advertise only once canonical invitation lifecycle handlers honor this policy.

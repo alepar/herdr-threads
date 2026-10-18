@@ -71,6 +71,8 @@ pub use crate::harness::launch::{PaneShellProbe, SHELL_PROBE_TIMEOUT, SystemShel
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LaunchRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_context: Option<crate::protocol::handoff::LaunchDirectoryContext>,
     pub target: HostTargetId,
     pub harness: ContextHarness,
     pub harness_binary: Option<String>,
@@ -693,6 +695,7 @@ fn execute_guarded_inner(
         AdmissionRequest, ExecutableLookup, InstallEnvironment, InstallObservation,
         LaunchRequest as AdapterLaunchRequest, ResolvedSetupScope, SetupStatus, StatusRequest,
     };
+    super::topology_handoff::check_directories(request.directory_context.as_ref())?;
     let registration =
         crate::harness::launch::launch_registration(registry, policy_harness(request.harness))?;
     let policy = registration.launch_policy().expect("checked provider");
@@ -706,6 +709,19 @@ fn execute_guarded_inner(
             .as_ref()
             .map(std::path::PathBuf::from),
     };
+    if let Some(context) = &request.directory_context {
+        if policy.explicit_directory_env(&context.profile_dir)? != context.env {
+            return Err(super::invalid_request(
+                "retained profile projection differs from adapter",
+            ));
+        }
+        adapter_request.environment.cwd = context.cwd.clone();
+        adapter_request.environment.explicit_profile_directory = Some(context.profile_dir.clone());
+        adapter_request
+            .environment
+            .declared
+            .extend(context.env.iter().map(|(k, v)| (k.clone(), v.into())));
+    }
     let local_clock = adapter_request.environment.clock.clone();
     let local_budget = CallBudget {
         deadline: MonoInstant(local_clock.monotonic_now().0.saturating_add(30_000)),
@@ -940,7 +956,17 @@ fn execute_guarded_inner(
         None
     };
     // The native host carries argv only; providers cannot silently request an environment it cannot submit.
-    if !preparation.environment_overrides.is_empty() {
+    if preparation
+        .environment_overrides
+        .iter()
+        .any(|(key, value)| {
+            request
+                .directory_context
+                .as_ref()
+                .and_then(|c| c.env.get(key))
+                .is_none_or(|declared| value != std::ffi::OsStr::new(declared))
+        })
+    {
         return Err(api(
             ErrorCode::UnsupportedHarness,
             "native host cannot apply launch environment overrides",
@@ -1045,6 +1071,12 @@ fn execute_guarded_inner(
         });
     }
     boundary(LaunchBoundary::BeforeSubmit(&prepared.request))?;
+    if let Err(error) =
+        super::topology_handoff::check_directories(request.directory_context.as_ref())
+    {
+        boundary(LaunchBoundary::RefusedBeforeStart)?;
+        return Err(error);
+    }
     if let Err(error) = recheck_configuration() {
         boundary(LaunchBoundary::RefusedBeforeStart)?;
         return Err(error.into());
@@ -1522,6 +1554,7 @@ mod task23_tests {
     }
     fn request(harness: ContextHarness, argv: &[&str]) -> LaunchRequest {
         LaunchRequest {
+            directory_context: None,
             target: HostTargetId::new("w9:p1"),
             harness,
             harness_binary: None,
@@ -1640,6 +1673,28 @@ mod task23_tests {
         assert_eq!(seats.recorded.lock().unwrap().len(), 1);
         assert_eq!(report.report["hermes"]["callback_qualified"], false);
         assert_eq!(report.report["hermes"]["native_acceptance"], "unmet");
+    }
+
+    #[test]
+    fn profile_directory_guarded_launch_uses_selected_scope_over_inherited_environment() {
+        let mut s = hermes_fixture();
+        let selected =
+            Path::new(s.env.declared_environment["HERMES_HOME"].to_str().unwrap()).to_path_buf();
+        let mut launch = request(serde_json::from_str("\"Hermes\"").unwrap(), &["-q", "work"]);
+        launch.directory_context = Some(crate::protocol::handoff::LaunchDirectoryContext {
+            profile_dir: selected.clone(),
+            cwd: s.root.clone(),
+            env: [("HERMES_HOME".into(), selected.to_str().unwrap().into())].into(),
+        });
+        s.env.declared_environment.insert(
+            "HERMES_HOME".into(),
+            s.root.join("absent inherited").into_os_string(),
+        );
+        s.env.cwd = s.root.join("absent cwd");
+        let host = FakeHost::new();
+        let report = s.launch(&host, &seats(), &handoff(), launch).unwrap();
+        assert_eq!(report.exit, 0);
+        assert_eq!(host.submitted().len(), 1);
     }
     #[test]
     fn hermes_named_profile_actual_consumer_keeps_provider_prompt_bytes() {

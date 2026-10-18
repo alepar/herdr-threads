@@ -1,0 +1,12 @@
+diff --git a/tests/daemon/transport.rs b/tests/daemon/transport.rs
+index 81eed5448..1e032479d 100644
+--- a/tests/daemon/transport.rs
++++ b/tests/daemon/transport.rs
+@@ -3569,6 +3569,7 @@ fn maximum_automatic_recovery_result(
+         AutomaticBootstrapPlan {
+             version: 2,
+             payload: AutomaticBootstrapPayload {
++                directory_context: None,
+                 handoff: AutomaticHandoffPayload::new(
+                     ns,
+                     OperationId::new("large-child"),

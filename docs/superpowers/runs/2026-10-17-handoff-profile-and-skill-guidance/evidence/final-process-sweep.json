@@ -1,0 +1,19 @@
+{
+  "verifiedAt": "2026-10-18T05:45:33.148482+00:00",
+  "helper": "/Users/alepar/.codex/plugins/cache/superpowers-alepar/superpowers/6.4.2-alepar6.2/skills/super-code/scripts/stop-run-processes",
+  "cwd": "/private/tmp",
+  "roots": [
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-profile-and-skill-guidance/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance"
+  ],
+  "exitCode": 0,
+  "stdout": "",
+  "realInvocationConfirmed": true,
+  "stopped": 0,
+  "survived": 0,
+  "unknown": 0,
+  "keptProcesses": 0,
+  "allNativeAgentsSettled": true,
+  "inventory": "final-cleanup-inventory.json",
+  "keptWorktree": "required local ignored raw evidence and requested main handoff"
+}

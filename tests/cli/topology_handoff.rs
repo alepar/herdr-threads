@@ -28,6 +28,7 @@ impl LocalClient for ReadOnly {
                         .iter()
                         .copied()
                         .chain([
+                            crate::protocol::capabilities::HANDOFF_LAUNCH_DIRECTORIES_V1,
                             crate::protocol::capabilities::INVITATION_CONFIRMATION_V1,
                             crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1,
                         ])
@@ -58,6 +59,7 @@ fn request() -> Request {
         selector: PaneSelector::default(),
         seat: None,
         cwd: None,
+        profile_dir: None,
         thread: Some("chosen".into()),
         thread_name: None,
         topic: None,
@@ -67,6 +69,213 @@ fn request() -> Request {
         binary: Some("/bin/quoted path".into()),
         name: Some("peer".into()),
         argv: vec!["--model".into(), "saved value".into()],
+    }
+}
+
+// Missing normalization would retain the symlink (and follow a later retarget on retry).
+#[test]
+fn parser_launch_directories_canonicalize_explicit_paths() {
+    let temp = Temp::new();
+    let target = temp.path().join("profile ' \" space");
+    std::fs::create_dir(&target).unwrap();
+    let link = temp.path().join("selected");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let argv: Vec<std::ffi::OsString> = vec![
+        "ht".into(),
+        "handoff".into(),
+        "--new-tab".into(),
+        "peer".into(),
+        "--kind".into(),
+        "codex".into(),
+        "--profile-dir".into(),
+        link.clone().into_os_string(),
+        "--cwd".into(),
+        link.into_os_string(),
+        "--agent-arg=--profile".into(),
+        "--agent-arg=native-name".into(),
+        "--".into(),
+        "work".into(),
+    ];
+    let parsed = crate::cli::commands::parse_argv(argv)
+        .expect("new-tab accepts an explicit profile directory");
+    let crate::cli::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+        panic!("new-tab route");
+    };
+    assert_eq!(request.cwd, Some(target.canonicalize().unwrap()));
+    assert_eq!(request.profile_dir, Some(target.canonicalize().unwrap()));
+    assert_eq!(request.argv, ["--profile", "native-name"]);
+}
+
+// A parser success would allow invalid explicit cwd to reach recipient resolution.
+#[test]
+fn parser_launch_directories_reject_invalid_paths_before_dispatch() {
+    use std::os::unix::ffi::OsStringExt;
+    let temp = Temp::new();
+    let file = temp.path().join("file");
+    std::fs::write(&file, "x").unwrap();
+    let controls = temp.path().join("has\nnewline");
+    std::fs::create_dir(&controls).unwrap();
+    let control_link = temp.path().join("looks-valid");
+    std::os::unix::fs::symlink(&controls, &control_link).unwrap();
+    let non_utf8 = temp.path().join(std::ffi::OsString::from_vec(vec![255]));
+    for path in [
+        file,
+        temp.path().join("missing"),
+        "relative".into(),
+        controls,
+        control_link,
+        non_utf8,
+        format!("/{}", "x".repeat(4096)).into(),
+    ] {
+        for option in ["--cwd", "--profile-dir"] {
+            let argv: Vec<std::ffi::OsString> = vec![
+                "ht".into(),
+                "handoff".into(),
+                "--new-tab".into(),
+                "peer".into(),
+                "--kind".into(),
+                "codex".into(),
+                option.into(),
+                path.clone().into_os_string(),
+                "--".into(),
+                "work".into(),
+            ];
+            assert!(crate::cli::commands::parse_argv(argv).is_err());
+        }
+    }
+}
+
+#[test]
+fn parser_launch_directories_refuse_panes_and_existing_with_new_tab_guidance() {
+    for option in ["--cwd", "--profile-dir"] {
+        for mode in [
+            vec!["--pane", "missing-pane", "--kind", "codex"],
+            vec!["--existing", "--seat", "missing-seat"],
+        ] {
+            let mut argv = vec!["ht", "handoff"];
+            argv.extend(mode);
+            argv.extend([option, "/missing", "--", "work"]);
+            let error = crate::cli::commands::parse_argv(argv).unwrap_err();
+            assert!(error.detail.contains("--new-tab"), "{error:?}");
+        }
+        assert!(
+            crate::cli::commands::parse_argv([
+                "ht", "launch", "--pane", "peer", "--kind", "codex", option, "/missing",
+            ])
+            .is_err()
+        );
+    }
+    for mode in [
+        vec!["--new-tab", "peer", "--kind", "codex"],
+        vec!["--pane", "peer", "--kind", "codex"],
+        vec!["--existing", "--seat", "peer"],
+    ] {
+        let mut argv = vec!["ht", "handoff"];
+        argv.extend(mode);
+        argv.extend(["--", "work"]);
+        let parsed = crate::cli::commands::parse_argv(argv).unwrap();
+        if let crate::cli::commands::CliAction::TopologyHandoff(request) = parsed.action {
+            assert!(request.cwd.is_none());
+            assert!(request.profile_dir.is_none());
+        }
+    }
+    assert!(
+        crate::cli::commands::parse_argv(["ht", "launch", "--pane", "peer", "--kind", "codex",])
+            .is_ok()
+    );
+}
+
+#[test]
+fn profile_directory_missing_capability_and_existing_selection_have_zero_effects() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Counter(AtomicUsize);
+    impl LocalClient for Counter {
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            assert!(
+                matches!(command, Command::Capabilities),
+                "unexpected recipient lookup or effect"
+            );
+            Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: vec![],
+                },
+            ))
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+    let temp = Temp::new();
+    let client = Counter(AtomicUsize::new(0));
+    let caller = claim();
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: caller.instance.clone(),
+        state_dir: temp.path().into(),
+        host_endpoint: "/host.sock".into(),
+    };
+    let topology = topology();
+    let clock = crate::app::SystemClock::new();
+    for automatic in [false, true] {
+        client.0.store(0, Ordering::Relaxed);
+        let mut r = request();
+        r.automatic = automatic;
+        if automatic {
+            r.thread = None;
+        }
+        r.profile_dir = Some(temp.path().canonicalize().unwrap());
+        let inputs = Preparation {
+            claim: &caller,
+            namespace: &namespace,
+            topology: &topology,
+            invocation_cwd: temp.path(),
+            options: None,
+            client: &client,
+            clock: &clock,
+        };
+        let result = if automatic {
+            prepare_automatic(&r, inputs).map(|_| ())
+        } else {
+            prepare(&r, inputs).map(|_| ())
+        };
+        assert!(matches!(
+            result,
+            Err(RunError::Api(ApiError {
+                code: crate::protocol::results::ErrorCode::Unsupported,
+                ..
+            }))
+        ));
+        assert_eq!(client.0.load(Ordering::Relaxed), 1);
+
+        r.new_tab = None;
+        r.existing = true;
+        r.kind = None;
+        r.binary = None;
+        r.name = None;
+        r.argv.clear();
+        r.seat = Some("recipient".into());
+        if automatic {
+            r.thread = None;
+        }
+        let inputs = super::super::handoff_delivery::Preparation {
+            claim: &caller,
+            namespace: &namespace,
+            topology: &topology,
+            client: &client,
+            clock: &clock,
+        };
+        let result = if automatic {
+            super::super::handoff_delivery::prepare_automatic(&r, inputs).map(|_| ())
+        } else {
+            super::super::handoff_delivery::prepare(&r, inputs).map(|_| ())
+        };
+        assert!(result.is_err());
+        assert_eq!(client.0.load(Ordering::Relaxed), 1);
     }
 }
 fn topology() -> HostTopology {
@@ -175,6 +384,73 @@ fn publication_freezes_route_argv_caller_and_channel() {
         journal.load(&reference).unwrap().header.semantic_digest,
         identity.digest
     );
+}
+
+#[test]
+fn profile_directory_publication_freezes_both_routes_and_preflight() {
+    let temp = Temp::new();
+    let profile = temp.path().join("profile ' selected");
+    std::fs::create_dir(&profile).unwrap();
+    let profile = profile.canonicalize().unwrap();
+    let mut r = request();
+    r.profile_dir = Some(profile.clone());
+    let explicit = prepared(&r, temp.path()).unwrap();
+    let context = explicit.payload.directory_context.as_ref().unwrap();
+    assert_eq!(context.profile_dir, profile);
+    assert_eq!(
+        context.env.get("CODEX_HOME"),
+        profile.to_str().map(str::to_owned).as_ref()
+    );
+    assert_eq!(explicit.payload.env, context.env);
+    assert_eq!(
+        preflight_launch_request(&explicit)
+            .unwrap()
+            .directory_context
+            .as_ref(),
+        Some(context)
+    );
+    r.automatic = true;
+    r.thread = None;
+    let namespace = explicit.payload.handoff.namespace.clone();
+    let automatic = prepare_automatic(
+        &r,
+        Preparation {
+            claim: &claim(),
+            namespace: &namespace,
+            topology: &topology(),
+            invocation_cwd: temp.path(),
+            options: None,
+            client: &ReadOnly,
+            clock: &crate::app::SystemClock::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        automatic.plan.payload.directory_context.as_ref(),
+        Some(context)
+    );
+    assert_eq!(automatic.plan.payload.env, context.env);
+    assert_eq!(
+        preflight_automatic_launch_request(&automatic)
+            .unwrap()
+            .directory_context
+            .as_ref(),
+        Some(context)
+    );
+}
+
+#[test]
+fn profile_directory_disappeared_selection_refuses_publication() {
+    let temp = Temp::new();
+    let profile = temp.path().join("selected");
+    std::fs::create_dir(&profile).unwrap();
+    let mut r = request();
+    r.profile_dir = Some(profile.canonicalize().unwrap());
+    let identity = prepared(&r, temp.path()).unwrap();
+    std::fs::remove_dir(&profile).unwrap();
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    assert!(publish(&journal, &identity, 1).is_err());
+    assert!(journal.resolve_recovery_ref("local:1").is_err());
 }
 #[test]
 fn publication_validation_has_zero_journal_effects() {
@@ -409,6 +685,8 @@ fn publication_explicit_cwd_claude_options_and_invalid_inputs() {
     let temp = Temp::new();
     let work = temp.path().join("quoted worktree");
     std::fs::create_dir(&work).unwrap();
+    // Request carries the parser's already-canonical explicit directory.
+    let work = work.canonicalize().unwrap();
     let namespace = crate::protocol::handoff::HandoffNamespace {
         instance: "34750f98bd59fcfc946da45aaabe933b".into(),
         state_dir: temp.path().join("state"),
@@ -538,6 +816,7 @@ mod live {
         NotSubmitted,
         NotSubmittedRecordUnavailable,
         Check,
+        RemoveProfileOnCheck,
         RecordReply,
         SavePossible,
         SaveCreated,
@@ -696,6 +975,19 @@ mod live {
                 _ => panic!("unapproved live route {command:?}"),
             };
             s.calls.push(role);
+            if role == "check" && s.fault == Fault::RemoveProfileOnCheck {
+                std::fs::remove_dir(
+                    &self
+                        .identity
+                        .payload
+                        .directory_context
+                        .as_ref()
+                        .unwrap()
+                        .profile_dir,
+                )
+                .unwrap();
+                s.fault = Fault::None;
+            }
             if role == "status" && s.fault == Fault::StatusUnavailable {
                 return Err(ApiError::host_unavailable("status unavailable"));
             }
@@ -725,6 +1017,7 @@ mod live {
                                 .iter()
                                 .copied()
                                 .chain([
+                                    crate::protocol::capabilities::HANDOFF_LAUNCH_DIRECTORIES_V1,
                                     crate::protocol::capabilities::INVITATION_CONFIRMATION_V1,
                                     crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1,
                                 ])
@@ -1015,7 +1308,7 @@ mod live {
             assert_eq!(r.cwd, self.identity.payload.cwd);
             assert_eq!(r.label, self.identity.payload.label);
             assert!(!r.focus);
-            assert!(r.env.is_empty());
+            assert_eq!(r.env, self.identity.payload.env);
             if let Some(marker) = &self.native_marker {
                 use std::io::Write;
                 let mut file = std::fs::OpenOptions::new()
@@ -1169,6 +1462,7 @@ mod live {
                         label: identity.payload.label.clone(),
                         focus: false,
                         env: identity.payload.env.clone(),
+                        directory_context: identity.payload.directory_context.clone(),
                         expected_witness: created.witness.clone(),
                     }),
                     creation: Some(created),
@@ -1385,6 +1679,7 @@ mod live {
     }
     #[derive(Default)]
     struct DownstreamLauncher {
+        requests: Vec<super::super::super::launch::LaunchRequest>,
         starts: usize,
         unknown: bool,
         crash_after_gate: bool,
@@ -1396,8 +1691,23 @@ mod live {
         report_save_loss: Option<std::path::PathBuf>,
         not_submitted: bool,
         change_binding_before_gate: Option<std::path::PathBuf>,
+        remove_directory_on_preflight: Option<std::path::PathBuf>,
     }
     impl super::super::super::handoff::HandoffLauncher for DownstreamLauncher {
+        fn preflight_saved(
+            &mut self,
+            _: &super::super::super::launch::LaunchRequest,
+            effective: &super::super::super::launch::LaunchRequest,
+            recipient: &SeatId,
+        ) -> Result<super::super::super::handoff::StartupPreflight, RunError> {
+            if let Some(directory) = self.remove_directory_on_preflight.take() {
+                std::fs::remove_dir(directory).unwrap();
+            }
+            Ok(super::super::super::handoff::StartupPreflight {
+                recipient: recipient.clone(),
+                native_argv: self.native_input(effective)?,
+            })
+        }
         fn preflight(
             &mut self,
             _: &super::super::super::launch::LaunchRequest,
@@ -1410,6 +1720,7 @@ mod live {
             seat: &SeatId,
             gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
         ) -> Result<super::super::super::launch::LaunchReport, RunError> {
+            self.requests.push(request.clone());
             let argv = crate::harness::launch::compose_native_argv(
                 request.harness.into(),
                 request.argv.clone(),
@@ -1490,6 +1801,83 @@ mod live {
             },
             writer,
         )
+    }
+
+    #[test]
+    fn profile_directory_frozen_retry_retains_canonical_paths_and_exact_child() {
+        use std::os::unix::fs::symlink;
+        let temp = Temp::new();
+        let selected = temp.path().join("selected");
+        let other = temp.path().join("other");
+        std::fs::create_dir(&selected).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        let link = temp.path().join("link");
+        symlink(&selected, &link).unwrap();
+        let mut r = request();
+        r.profile_dir = Some(link.canonicalize().unwrap());
+        let f = Fixture::with_request(Fault::None, r, None);
+        std::fs::remove_file(&link).unwrap();
+        symlink(&other, &link).unwrap();
+        std::fs::remove_dir(&selected).unwrap();
+        assert!(f.run().is_err());
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 0);
+        std::fs::create_dir(&selected).unwrap();
+        let mut launcher = DownstreamLauncher::default();
+        let completed = downstream(&f, &mut launcher, &mut Vec::new()).unwrap();
+        assert_eq!(completed.state, BootstrapState::Completed);
+        assert_eq!(launcher.starts, 1);
+        assert_eq!(
+            launcher.requests[0]
+                .directory_context
+                .as_ref()
+                .unwrap()
+                .profile_dir,
+            selected.canonicalize().unwrap()
+        );
+        assert_eq!(
+            launcher.requests[0].directory_context,
+            f.peer.identity.payload.directory_context
+        );
+        std::fs::remove_dir(&selected).unwrap();
+        downstream(&f, &mut launcher, &mut Vec::new()).unwrap();
+        assert_eq!(launcher.starts, 1);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+    }
+
+    #[test]
+    fn profile_directory_missing_before_start_is_repairable_without_new_tab() {
+        let temp = Temp::new();
+        let selected = temp.path().join("selected");
+        std::fs::create_dir(&selected).unwrap();
+        let mut r = request();
+        r.profile_dir = Some(selected.canonicalize().unwrap());
+        let f = Fixture::with_request(Fault::None, r, None);
+        f.run().unwrap();
+        std::fs::remove_dir(&selected).unwrap();
+        let mut launcher = DownstreamLauncher::default();
+        assert!(downstream(&f, &mut launcher, &mut Vec::new()).is_err());
+        assert_eq!(launcher.starts, 0);
+        std::fs::create_dir(&selected).unwrap();
+        downstream(&f, &mut launcher, &mut Vec::new()).unwrap();
+        assert_eq!(launcher.starts, 1);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+    }
+
+    #[test]
+    fn profile_directory_removed_at_create_boundary_rearms_without_uncertainty() {
+        let temp = Temp::new();
+        let selected = temp.path().join("selected");
+        std::fs::create_dir(&selected).unwrap();
+        let mut r = request();
+        r.profile_dir = Some(selected.canonicalize().unwrap());
+        let f = Fixture::with_request(Fault::RemoveProfileOnCheck, r, None);
+        let result = f.run().unwrap();
+        assert_eq!(result.state, BootstrapState::Prepared);
+        assert_eq!(result.attempt.get(), 2);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 0);
+        std::fs::create_dir(&selected).unwrap();
+        assert_eq!(f.run().unwrap().state, BootstrapState::Attached);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
     }
     fn composition_source(f: &Fixture) -> crate::archival_legacy::Source {
         let ns = &f.peer.identity.payload.handoff.namespace;
@@ -6472,6 +6860,14 @@ mod live {
                 Self::with_body_policy(kind, body, false)
             }
             fn with_body_policy(kind: &'static str, body: &str, historical: bool) -> Self {
+                Self::with_profile(kind, body, historical, None)
+            }
+            fn with_profile(
+                kind: &'static str,
+                body: &str,
+                historical: bool,
+                profile: Option<std::path::PathBuf>,
+            ) -> Self {
                 let base = Fixture::aligned(Fault::None, None);
                 base.journal.complete(&base.peer.reference).unwrap();
                 let parsed = super::super::super::super::commands::parse_argv([
@@ -6485,12 +6881,13 @@ mod live {
                     body,
                 ])
                 .unwrap();
-                let super::super::super::super::commands::CliAction::TopologyHandoff(request) =
+                let super::super::super::super::commands::CliAction::TopologyHandoff(mut request) =
                     parsed.action
                 else {
                     panic!("parsed new-tab route")
                 };
                 assert!(request.automatic);
+                request.profile_dir = profile;
                 let mut identity = prepare_automatic(
                     &request,
                     Preparation {
@@ -6860,6 +7257,7 @@ mod live {
                     Command::Capabilities => Ok(CommandResult::Capabilities(
                         crate::protocol::results::CapabilityList {
                             capabilities: vec![
+                                crate::protocol::capabilities::HANDOFF_LAUNCH_DIRECTORIES_V1.into(),
                                 crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into(),
                                 crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1.into(),
                                 crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into(),
@@ -7132,6 +7530,8 @@ mod live {
                     .clone()
                     .expect("active parent");
                 assert_eq!(request.workspace, identity.plan.payload.workspace);
+                assert_eq!(request.cwd, identity.plan.payload.cwd);
+                assert_eq!(request.env, identity.plan.payload.env);
                 assert_eq!(request.expected_witness, self.base.witness);
                 drop(state);
                 match self.native_outcome_once.lock().unwrap().take() {
@@ -8812,6 +9212,101 @@ mod live {
             (result, launcher)
         }
 
+        #[test]
+        fn profile_directory_automatic_retry_preserves_create_and_child_context() {
+            let temp = Temp::new();
+            let selected = temp.path().canonicalize().unwrap();
+            let peer = AutoPeer::with_profile("codex", "work", false, Some(selected.clone()));
+            *peer.lost_child_reply.lock().unwrap() = Some("auto_child_send");
+            let (first, mut launcher) = run_public_automatic(&peer);
+            assert!(first.is_err());
+            let result = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec::default(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(result.state, BootstrapState::Completed);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(
+                launcher.requests[0].directory_context,
+                peer.identity.plan.payload.directory_context
+            );
+            assert_eq!(
+                launcher.requests[0]
+                    .directory_context
+                    .as_ref()
+                    .unwrap()
+                    .profile_dir,
+                selected
+            );
+        }
+
+        #[test]
+        fn cwd_only_automatic_removed_during_preflight_repairs_without_duplicate_effects() {
+            let temp = Temp::new();
+            let cwd = temp.path().join("selected-cwd");
+            std::fs::create_dir(&cwd).unwrap();
+            let cwd = cwd.canonicalize().unwrap();
+            let mut peer = AutoPeer::new();
+            peer.base.journal.complete(&peer.reference).unwrap();
+            peer.identity.plan.payload.cwd = cwd.clone();
+            peer.identity.digest = peer.identity.semantic_digest().unwrap();
+            peer.identity.validate().unwrap();
+            peer.reference = publish_automatic(&peer.base.journal, &peer.identity, 2).unwrap();
+            assert!(peer.identity.plan.payload.directory_context.is_none());
+            let mut launcher = DownstreamLauncher {
+                remove_directory_on_preflight: Some(cwd.clone()),
+                ..Default::default()
+            };
+            let run = |launcher: &mut DownstreamLauncher| {
+                resume_automatic_to_writer(
+                    &peer.base.journal,
+                    &peer.reference,
+                    super::super::super::super::actor_route::InvocationActor::Agent,
+                    peer.ns(),
+                    &peer,
+                    &peer,
+                    launcher,
+                    &peer.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &peer.base.witness,
+                        context: &peer.base.context,
+                    },
+                    &crate::protocol::output::OutputSpec::default(),
+                    &mut Vec::new(),
+                )
+            };
+            let error = run(&mut launcher).unwrap_err();
+            assert!(error.to_string().contains("bootstrap cwd disappeared"));
+            assert_eq!(launcher.starts, 0);
+            assert_eq!(peer.status().state, BootstrapState::Attached);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            let counts = ordinary_and_invitation_counts(&peer);
+            assert_eq!(counts.0, 1);
+            std::fs::create_dir(&cwd).unwrap();
+            assert_eq!(run(&mut launcher).unwrap().state, BootstrapState::Completed);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(ordinary_and_invitation_counts(&peer), counts);
+            std::fs::remove_dir(&cwd).unwrap();
+            assert_eq!(run(&mut launcher).unwrap().state, BootstrapState::Completed);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(ordinary_and_invitation_counts(&peer), counts);
+        }
+
         /// Negative control for [`AutomaticPermitClock`]: holding the clock does
         /// not disable the permit expiry. A held window past `MAX_PERMIT_MILLIS`
         /// between one role's issuance and decision refuses that role's
@@ -10433,6 +10928,7 @@ fn maximum_escaped_bootstrap_survives_origin_and_request_progress() {
             label: identity.payload.label.clone(),
             focus: identity.payload.focus,
             env: identity.payload.env.clone(),
+            directory_context: identity.payload.directory_context.clone(),
             expected_witness: created.witness,
         }),
         creation: None,
@@ -10569,6 +11065,7 @@ fn seam_automatic_bootstrap_identity(
         AutomaticBootstrapPlan {
             version: 2,
             payload: AutomaticBootstrapPayload {
+                directory_context: None,
                 handoff,
                 keys: AutomaticBootstrapKeys::new(compound),
                 workspace: legacy.payload.workspace,

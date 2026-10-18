@@ -1,0 +1,61 @@
+{
+  "observedAt": "2026-10-18T05:27:32.917690+00:00",
+  "processes": [
+    {
+      "pid": 12562,
+      "ppid": 7414,
+      "cpu": 0.2,
+      "elapsed": "11:21",
+      "detail": "cargo-nextest"
+    },
+    {
+      "pid": 17609,
+      "ppid": 17173,
+      "cpu": 0.6,
+      "elapsed": "02:21",
+      "detail": "cargo-nextest"
+    },
+    {
+      "pid": 47595,
+      "ppid": 80785,
+      "cpu": 255.0,
+      "elapsed": "00:11",
+      "detail": "/Users/alepar/AleCode/herdr-threads/.worktrees/herdr-095/target/failpoints-control/release/deps"
+    },
+    {
+      "pid": 51071,
+      "ppid": 17609,
+      "cpu": 0.0,
+      "elapsed": "00:00",
+      "detail": "(cargo-nextest)"
+    },
+    {
+      "pid": 80784,
+      "ppid": 80158,
+      "cpu": 0.0,
+      "elapsed": "04:04",
+      "detail": "cargo"
+    },
+    {
+      "pid": 80785,
+      "ppid": 80158,
+      "cpu": 0.0,
+      "elapsed": "04:04",
+      "detail": "cargo"
+    },
+    {
+      "pid": 80905,
+      "ppid": 80784,
+      "cpu": 19.5,
+      "elapsed": "04:04",
+      "detail": "/Users/alepar/AleCode/herdr-threads/.worktrees/herdr-095/target/failpoints-release/release/deps"
+    },
+    {
+      "pid": 90702,
+      "ppid": 46342,
+      "cpu": 0.0,
+      "elapsed": "03:46",
+      "detail": "cargo"
+    }
+  ]
+}

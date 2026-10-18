@@ -1,0 +1,88 @@
+You are a fresh-context coverage reviewer; read-only, call no tools. The entire review input follows. Map each canonical R-id to task IDs, propose R-new only for missing goal outcomes. Report GAP, ORPHAN or UNOWNED-SEAM with subject/evidence/proposed fix; check prior fixes and quote evidence. Never invent exchanges. Report ledger duplicates only with new evidence. Return requirements: block Rn → IDs then findings or none.
+
+## coverage-inputs-round-2.md
+## Goals
+
+### ht-1urq (root)
+Agents can hand off to a fresh tab using an explicitly selected existing harness profile directory and working directory, with the same selected inputs preserved across retry. The shipped skill teaches readable names, timely priority-0 delivery, explicit receipt dependence and proactive recovery when requested receipts do not arrive.
+
+## Task tree
+
+- ht-1urq · Handoff profile directories and collaboration skill guidance (epic) · Deliver the committed handoff launch-directory and collaboration-guidance design to merge-ready code. · deps: none
+  - ht-1urq.1 · Seam contract: frozen launch directory context · Land the inert shared directory-context type, defaulted optional retained fields and adapter policy seam so later leaves compile against one contract. · deps: none
+      owns: LaunchDirectoryContext
+      owns: optional launch-context transport fields and LaunchPolicy explicit-directory seam.
+  - ht-1urq.2 · Parse and validate new-tab profile directory inputs · Expose new-tab --profile-dir and validate explicit profile/cwd paths before any recipient resolution, durable publication or native effects. · deps: ht-1urq.1
+      owns: public handoff directory grammar and path normalization into LaunchDirectoryContext capture inputs.
+      consumes: optional launch-context transport fields and LaunchPolicy explicit-directory seam.
+      owns: pane/existing directory-option refusal before effects and focused parser/no-option/plain-launch regression tests.
+  - ht-1urq.3 · Map explicit Codex and Claude profile directories · Make native config-root adapters select explicit profile directories ahead of inherited or shell hints for all launch inspection and child inputs. · deps: ht-1urq.1
+      owns: explicit native config-root profile projection for Codex and Claude.
+      consumes: LaunchDirectoryContext
+      consumes: LaunchPolicy explicit-directory seam.
+      owns: credential-safe native launch diagnostics and focused explicit-over-inherited adapter tests.
+  - ht-1urq.4 · Map explicit Hermes roots and retain unsupported adapter behavior · Let Hermes explicit directory selection seed HERMES_HOME without changing named-profile resolution; retain agy unsupported explicit selection. · deps: ht-1urq.1
+      owns: Hermes explicit root to native profile resolution and declared projection.
+      consumes: LaunchDirectoryContext
+      consumes: LaunchPolicy explicit-directory seam.
+      owns: focused Hermes named-profile and agy unsupported/cwd regression tests.
+  - ht-1urq.5 · Validate and retain context-bearing bootstrap identities · Admit additive context-bearing identities canonically while preserving exact historical context-free validation and replay. · deps: ht-1urq.1
+      owns: canonical launch-context admission, capability and exact retained identity/child/report validation.
+      consumes: LaunchDirectoryContext
+      consumes: optional launch-context transport fields.
+      owns: focused canonical capability admission, historical identity and exact replay regression tests.
+  - ht-1urq.6 · Apply frozen profile environment through new-tab handoff · Wire selected directories end to end through preflight, tab creation, derived launch and exact retry for automatic and explicit-thread new-tab modes. · deps: ht-1urq.2, ht-1urq.3, ht-1urq.4, ht-1urq.5
+      owns: selected directory capture-to-create-to-derived-launch wiring and retry filesystem checks.
+      consumes: LaunchDirectoryContext
+      consumes: normalized public directory inputs
+      consumes: canonical launch-context admission
+      consumes: native config-root and Hermes profile projections.
+      owns: guarded executable/PATH preservation and focused frozen retry/lost-reply/disappeared-directory tests.
+  - ht-1urq.7 · Teach names, immediate delivery and receipt recovery in shipped skill · Update the shipped collaboration guide with name-first prose, timely p0 dispatch and useful responses to missing receipt confirmations. · deps: none
+      owns: static model-facing collaboration guidance and its matching documentation.
+      owns: measured baseline/final skill UTF-8 bytes and at most 1 KiB growth accounting.
+  - ht-1urq.8 · Document launch directory support and proposed minor version · Align help, user documentation and changelog with supported new-tab directories and deliberate pane/agy limitations. · deps: ht-1urq.2
+      owns: public handoff option reference, help/goldens and unreleased change summary.
+      consumes: public handoff directory grammar.
+      owns: proposed unreleased minor 2.1.0 with no package version bump, tag or release.
+  - ht-1urq.9 · Configuration smoke: selected profile and cwd in release matrix · Exercise public handoff configuration and real child env/cwd with isolated stand-ins across the existing Herdr release matrix. · deps: ht-1urq.6
+      owns: executable configuration smoke and release-matrix directory evidence.
+      consumes: end-to-end frozen new-tab launch wiring.
+      owns: credential-free owned-fixture evidence, scoped process/temp cleanup and no real config or shared-server changes.
+
+## coverage-round-2-requirements.md
+R1 Known names in user-facing prose, exact IDs in commands/disambiguation/receipt evidence.
+R2 Use p0 when recipient may be waiting, blocked, or idle and needing to react now; preserve routine p1 and wake defaults.
+R3 Request ACK and actionable response when dependent on receipt; recover proactively by pane inspection, self-work or fresh handoff without polling/spam, preserving ACK-only-receipt semantics.
+R4 Public new-tab profile directory selection maps Codex CODEX_HOME and Claude CLAUDE_CONFIG_DIR without credential logging.
+R5 Hermes HERMES_HOME plus native named-profile resolution work; agy unsupported explicit directory and cwd behavior are honest.
+R6 Explicit profile/cwd paths must be existing absolute directories canonicalized once with symlink/encoding/control/size handling.
+R7 The frozen selected profile env/cwd reach real tab creation and all derived-launch preflight/config inspection consistently, preserving guarded executable/PATH behavior.
+R8 Automatic and explicit-thread retries retain exact selected directories/env/cwd/argv despite caller changes and refuse disappeared directories before new effects.
+R9 Additive daemon capability admission, canonical context agreement and historical context-free identity/replay compatibility remain exact.
+R10 Pane/existing profile/cwd options refuse before effects; ordinary no-option and plain launch behavior remain unchanged.
+R11 Concise shipped skill plus full reference/help/README/goldens and changelog are aligned, byte growth recorded within 1 KiB skill target, propose 2.1.0 without tagging/bumping.
+R12 Focused tests and executable public configuration smoke/release matrix prove actual child env/cwd with owned fixtures and cleanup, without real config/credentials or shared server changes.
+
+## coverage-precheck-round-2.md
+summary: flag-sweep 0 · unstated 0 · citations 0 (dependent 0, unwired 0, unknown 0)
+
+## coverage-changes-round-2.md
+ht-1urq.2: owns: pane/existing directory-option refusal before effects and focused parser/no-option/plain-launch regression tests.
+ht-1urq.3: owns: credential-safe native launch diagnostics and focused explicit-over-inherited adapter tests.
+ht-1urq.4: owns: focused Hermes named-profile and agy unsupported/cwd regression tests.
+ht-1urq.5: owns: focused canonical capability admission, historical identity and exact replay regression tests.
+ht-1urq.6: owns: guarded executable/PATH preservation and focused frozen retry/lost-reply/disappeared-directory tests.
+ht-1urq.7: owns: measured baseline/final skill UTF-8 bytes and at most 1 KiB growth accounting.
+ht-1urq.8: owns: proposed unreleased minor 2.1.0 with no package version bump, tag or release.
+ht-1urq.9: owns: credential-free owned-fixture evidence, scoped process/temp cleanup and no real config or shared-server changes.
+
+## coverage-ledger.md
+# Coverage ledger
+C1 · r1 · GAP · pane-existing-refusal · applied — Explicit ownership added to ht-1urq.2; complete task acceptance already contained the behavior, retained unchanged.
+C2 · r1 · GAP · focused-regressions · applied — Explicit ownership added to ht-1urq.2–.6; complete task acceptance already contained the behavior, retained unchanged.
+C3 · r1 · GAP · guarded-path · applied — Explicit ownership added to ht-1urq.6; complete task acceptance already contained the behavior, retained unchanged.
+C4 · r1 · GAP · credential-diagnostics · applied — Explicit ownership added to ht-1urq.3/.9; complete task acceptance already contained the behavior, retained unchanged.
+C5 · r1 · GAP · skill-byte-budget · applied — Explicit ownership added to ht-1urq.7; complete task acceptance already contained the behavior, retained unchanged.
+C6 · r1 · GAP · release-boundary · applied — Explicit ownership added to ht-1urq.8; complete task acceptance already contained the behavior, retained unchanged.
+C7 · r1 · GAP · fixture-cleanup · applied — Explicit ownership added to ht-1urq.9; complete task acceptance already contained the behavior, retained unchanged.

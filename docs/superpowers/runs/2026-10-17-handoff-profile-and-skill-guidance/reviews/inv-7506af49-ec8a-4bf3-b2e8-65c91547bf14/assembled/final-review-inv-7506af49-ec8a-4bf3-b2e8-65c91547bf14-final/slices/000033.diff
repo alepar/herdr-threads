@@ -1,0 +1,13 @@
+diff --git a/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/graph-review.md b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/graph-review.md
+new file mode 100644
+index 000000000..d220e8e06
+--- /dev/null
++++ b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/graph-review.md
+@@ -0,0 +1,7 @@
++change: ht-1urq.9 <- ht-1urq.6 · keep · Public CLI configuration smoke consumes completed capture-to-create-to-derived-launch wiring and frozen retry behavior.
++change: ht-1urq.6 <- ht-1urq.3 · keep · New-tab launch orchestration consumes Codex and Claude explicit config-root projections across preflight and child inputs.
++change: ht-1urq.6 <- ht-1urq.5 · keep · Context-bearing publication and retry consume canonical capability admission and retained identity/derived-child validation.
++change: ht-1urq.6 <- ht-1urq.4 · keep · New-tab launch orchestration consumes Hermes explicit-root projection with preserved named-profile semantics.
++change: ht-1urq.6 <- ht-1urq.2 · keep · Automatic and explicit-thread coordinators consume normalized public directory request inputs and directory-option refusal behavior.
++expected: depth 5→5 · width 2.0→2.0
++recommendation: Keep all five candidate edges. Each connects a consumer to the earliest producer of a concrete required implementation artifact; none merely imposes narrative order.

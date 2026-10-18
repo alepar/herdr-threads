@@ -315,6 +315,9 @@ pub(crate) fn try_run_automatic_new_with_ports(
         return Ok(false);
     }
     agent_claim(claim)?;
+    if request.profile_dir.is_some() {
+        super::topology_handoff::require_directory_capability(client, clock)?;
+    }
     super::handoff_delivery::require_policy_capabilities(client, clock, request.policy.as_ref())?;
     let topology = automatic_before_topology(client, clock, topology)?;
     let identity = super::topology_handoff::prepare_automatic(
@@ -374,6 +377,10 @@ pub(crate) fn run(
     let (instance, _, client) = super::connect(paths, &clock)?;
     let ns = namespace(&selected, instance)?;
     agent_claim(&claim)?;
+    if matches!(&parsed.action, CliAction::TopologyHandoff(request) if request.profile_dir.is_some())
+    {
+        super::topology_handoff::require_directory_capability(&client, clock.as_ref())?;
+    }
     if !matches!(&parsed.action, CliAction::TopologyHandoff(request) if request.automatic && !request.existing)
     {
         require_capability(&client, clock.as_ref())?;
@@ -394,6 +401,7 @@ pub(crate) fn run(
             let options =
                 super::launch::native_options_env(registry, harness)?.and_then(std::env::var_os);
             let mut env = super::setup::SetupEnv::from_process(&output)?;
+            env.cwd = request.cwd.clone().unwrap_or_else(|| cwd.clone());
             env.state_dir = Some(selected.state_dir.clone());
             env.host_endpoint = Some(selected.require_host()?.to_path_buf());
             let seats = super::launch::DaemonSeatResolver::new(
@@ -565,6 +573,7 @@ pub(crate) fn run(
             // The new target does not exist yet; input-only preparation never
             // resolves it. Canonical target admission remains after creation.
             let mut env = super::setup::SetupEnv::from_process(&output)?;
+            env.cwd = identity.payload.cwd.clone();
             env.state_dir = Some(selected.state_dir.clone());
             env.host_endpoint = Some(selected.require_host()?.to_path_buf());
             let seats = super::launch::DaemonSeatResolver::new(
@@ -670,6 +679,7 @@ pub(crate) fn run(
                         .clone(),
                 };
                 let mut env = super::setup::SetupEnv::from_process(&output)?;
+                env.cwd = identity.plan.payload.cwd.clone();
                 env.state_dir = Some(selected.state_dir.clone());
                 env.host_endpoint = Some(selected.require_host()?.to_path_buf());
                 let registry = crate::harness::registry::builtins();
@@ -876,6 +886,7 @@ pub(crate) fn run(
         }
     };
     env.host_endpoint = Some(selected.require_host()?.to_path_buf());
+    env.cwd = identity.payload.cwd.clone();
     let claim_host = selected.claim_host()?;
     env.state_dir = Some(selected.state_dir);
     let seats = super::launch::DaemonSeatResolver::new(

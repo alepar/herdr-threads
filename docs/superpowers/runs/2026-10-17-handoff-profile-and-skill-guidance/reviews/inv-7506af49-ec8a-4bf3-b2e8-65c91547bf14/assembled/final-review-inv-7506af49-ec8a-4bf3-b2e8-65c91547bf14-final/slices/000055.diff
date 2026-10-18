@@ -1,0 +1,20 @@
+diff --git a/src/cli/handoff_delivery.rs b/src/cli/handoff_delivery.rs
+index 6a47ee17d..0be4380b0 100644
+--- a/src/cli/handoff_delivery.rs
++++ b/src/cli/handoff_delivery.rs
+@@ -232,6 +232,7 @@ pub(crate) fn prepare_automatic<C: LocalClient + ?Sized>(
+         || !request.existing
+         || request.new_tab.is_some()
+         || request.cwd.is_some()
++        || request.profile_dir.is_some()
+         || request.kind.is_some()
+         || request.binary.is_some()
+         || request.name.is_some()
+@@ -344,6 +345,7 @@ pub fn prepare<C: LocalClient + ?Sized>(
+     if !request.existing
+         || request.new_tab.is_some()
+         || request.cwd.is_some()
++        || request.profile_dir.is_some()
+         || request.kind.is_some()
+         || request.binary.is_some()
+         || request.name.is_some()

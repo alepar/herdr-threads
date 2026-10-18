@@ -164,6 +164,9 @@ impl AutomaticHandoffPlan {
             return Err("unsupported automatic handoff version");
         }
         self.delivery.validate()?;
+        if let Some(context) = &self.launch.directory_context {
+            context.validate()?;
+        }
         if self.context.state_dir.as_deref() != self.delivery.payload.namespace.state_dir.to_str()
             || self.context.host.as_deref()
                 != self.delivery.payload.namespace.host_endpoint.to_str()

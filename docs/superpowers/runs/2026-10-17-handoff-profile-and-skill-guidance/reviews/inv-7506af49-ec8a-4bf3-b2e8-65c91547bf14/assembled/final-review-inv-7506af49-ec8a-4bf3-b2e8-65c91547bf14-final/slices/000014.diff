@@ -1,0 +1,7 @@
+diff --git a/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-precheck-round-2.md b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-precheck-round-2.md
+new file mode 100644
+index 000000000..074147bff
+--- /dev/null
++++ b/docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/coverage-precheck-round-2.md
+@@ -0,0 +1 @@
++summary: flag-sweep 0 · unstated 0 · citations 0 (dependent 0, unwired 0, unknown 0)

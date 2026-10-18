@@ -9,6 +9,8 @@ pub(crate) mod automatic;
 pub use automatic::*;
 mod automatic_bootstrap;
 pub use automatic_bootstrap::*;
+mod launch_directories;
+pub use launch_directories::LaunchDirectoryContext;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -291,6 +293,8 @@ pub struct BootstrapLaunch {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BootstrapPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_context: Option<LaunchDirectoryContext>,
     pub handoff: HandoffPayload,
     pub workspace: HostTargetId,
     pub cwd: std::path::PathBuf,
@@ -717,13 +721,16 @@ impl BootstrapPayload {
         }
     }
     pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(context) = &self.directory_context {
+            context.validate_bootstrap(&self.cwd, &self.env)?;
+        }
         self.handoff.validate()?;
         self.launch.validate()?;
         if !frozen_absolute_path(&self.cwd)
             || !bounded_text(&self.label, 128)
             || self.label.chars().any(char::is_control)
             || self.focus
-            || !self.env.is_empty()
+            || (self.directory_context.is_none() && !self.env.is_empty())
         {
             return Err("invalid bootstrap topology payload");
         }
@@ -1015,6 +1022,7 @@ pub(crate) mod topology_contract_tests {
     }
     pub(crate) fn payload() -> BootstrapPayload {
         BootstrapPayload {
+            directory_context: None,
             handoff: HandoffPayload {
                 policy: None,
                 namespace: HandoffNamespace {
@@ -1330,6 +1338,171 @@ pub(crate) mod topology_contract_tests {
         let mut bad = identity();
         bad.claim.instance = "foreign".into();
         assert!(bad.validate().is_err());
+    }
+    #[test]
+    fn launch_directories_admit_exact_bootstrap_and_automatic_child() {
+        let mut explicit = identity();
+        let context = LaunchDirectoryContext {
+            profile_dir: "/profile".into(),
+            cwd: explicit.payload.cwd.clone(),
+            env: [("PROFILE_ROOT".into(), "/profile".into())].into(),
+        };
+        explicit.payload.env = context.env.clone();
+        explicit.payload.directory_context = Some(context.clone());
+        explicit.digest = explicit.semantic_digest().unwrap();
+        explicit.validate().unwrap();
+        let restored: BootstrapIdentity =
+            serde_json::from_slice(&serde_json::to_vec(&explicit).unwrap()).unwrap();
+        assert_eq!(restored, explicit);
+        for bad in [
+            {
+                let mut p = explicit.payload.clone();
+                p.cwd = "/other".into();
+                p
+            },
+            {
+                let mut p = explicit.payload.clone();
+                p.env.clear();
+                p
+            },
+            {
+                let mut p = explicit.payload.clone();
+                p.directory_context = None;
+                p
+            },
+            {
+                let mut p = explicit.payload.clone();
+                p.directory_context.as_mut().unwrap().profile_dir = "/other".into();
+                p
+            },
+        ] {
+            assert!(bad.validate().is_err());
+        }
+        let automatic = AutomaticBootstrapIdentity::new(
+            explicit.scope.clone(),
+            explicit.claim.clone(),
+            AutomaticBootstrapPlan {
+                version: 2,
+                payload: AutomaticBootstrapPayload {
+                    directory_context: Some(context.clone()),
+                    handoff: AutomaticHandoffPayload::new(
+                        explicit.payload.handoff.namespace.clone(),
+                        OperationId::new("auto"),
+                        "work".into(),
+                    )
+                    .unwrap(),
+                    keys: AutomaticBootstrapKeys::new(OperationId::new("auto-bootstrap")),
+                    workspace: explicit.payload.workspace.clone(),
+                    cwd: context.cwd.clone(),
+                    label: "peer".into(),
+                    focus: false,
+                    env: context.env.clone(),
+                    launch: explicit.payload.launch.clone(),
+                    startup_input: None,
+                },
+            },
+        )
+        .unwrap();
+        let created = created();
+        let attached = AutomaticBootstrapAttachment::derive(
+            &automatic,
+            BootstrapAttempt::first(),
+            created,
+            SeatId::new("peer"),
+        )
+        .unwrap();
+        let AutomaticOriginal::Handoff(child) = &attached.child.original else {
+            panic!("handoff");
+        };
+        assert_eq!(child.launch.directory_context, Some(context));
+        let decoded: AutomaticBootstrapIdentity =
+            serde_json::from_slice(&serde_json::to_vec(&automatic).unwrap()).unwrap();
+        assert_eq!(decoded, automatic);
+        let mut forged = attached.clone();
+        let AutomaticOriginal::Handoff(child) = &mut forged.child.original else {
+            panic!("handoff");
+        };
+        child.launch.directory_context.as_mut().unwrap().cwd = "/other".into();
+        forged.child.digest = forged.child.original.digest(&forged.child.claim).unwrap();
+        forged.child.validate().unwrap();
+        assert!(
+            forged.validate(&automatic).is_err(),
+            "even a valid rehashed child must match its parent"
+        );
+        for alter_env in [false, true] {
+            let mut bad = automatic.plan.clone();
+            if alter_env {
+                bad.payload.env.clear();
+            } else {
+                bad.payload.cwd = "/other".into();
+            }
+            assert!(bad.validate().is_err());
+        }
+    }
+    #[test]
+    fn launch_directories_preserve_legacy_bootstrap_and_refuse_admission() {
+        let original = payload();
+        let bytes = serde_json::to_vec(&original).unwrap();
+        assert!(
+            !String::from_utf8(bytes.clone())
+                .unwrap()
+                .contains("directory_context")
+        );
+        let decoded: BootstrapPayload = serde_json::from_slice(&bytes).unwrap();
+        assert!(decoded.directory_context.is_none());
+        assert_eq!(serde_json::to_vec(&decoded).unwrap(), bytes);
+        let before = identity().semantic_digest().unwrap();
+        let roundtrip: BootstrapIdentity =
+            serde_json::from_slice(&serde_json::to_vec(&identity()).unwrap()).unwrap();
+        assert_eq!(roundtrip.semantic_digest().unwrap(), before);
+        let mut selected = original;
+        selected.directory_context = Some(LaunchDirectoryContext {
+            profile_dir: "/profile".into(),
+            cwd: selected.cwd.clone(),
+            env: [("PROFILE_ROOT".into(), "/profile".into())].into(),
+        });
+        let saved: BootstrapPayload =
+            serde_json::from_slice(&serde_json::to_vec(&selected).unwrap()).unwrap();
+        assert_eq!(saved.directory_context, selected.directory_context);
+        assert!(saved.validate().is_err());
+        let automatic = AutomaticBootstrapPayload {
+            directory_context: None,
+            handoff: AutomaticHandoffPayload::new(
+                saved.handoff.namespace.clone(),
+                OperationId::new("auto"),
+                "task".into(),
+            )
+            .unwrap(),
+            keys: AutomaticBootstrapKeys::new(OperationId::new("bootstrap")),
+            workspace: saved.workspace.clone(),
+            cwd: saved.cwd.clone(),
+            label: saved.label.clone(),
+            focus: false,
+            env: Default::default(),
+            launch: saved.launch.clone(),
+            startup_input: None,
+        };
+        let bytes = serde_json::to_vec(&automatic).unwrap();
+        assert!(
+            !String::from_utf8(bytes.clone())
+                .unwrap()
+                .contains("directory_context")
+        );
+        let mut restored: AutomaticBootstrapPayload = serde_json::from_slice(&bytes).unwrap();
+        assert!(restored.directory_context.is_none());
+        assert_eq!(serde_json::to_vec(&restored).unwrap(), bytes);
+        restored.directory_context = saved.directory_context;
+        let plan = AutomaticBootstrapPlan {
+            version: 2,
+            payload: restored,
+        };
+        let decoded: AutomaticBootstrapPlan =
+            serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert_eq!(
+            decoded.payload.directory_context,
+            plan.payload.directory_context
+        );
+        assert!(decoded.validate().is_err());
     }
     #[test]
     fn topology_contract_attempt_recovery_and_linked_report_shapes() {
@@ -1937,6 +2110,7 @@ mod automatic_contract_tests {
             version: 2,
             delivery: serde_json::from_str(PLAN).unwrap(),
             launch: crate::cli::launch::LaunchRequest {
+                directory_context: None,
                 target: HostTargetId::new("w1:p2"),
                 harness: crate::harness::context::Harness::Codex,
                 harness_binary: None,
@@ -1961,6 +2135,18 @@ mod automatic_contract_tests {
         )
         .unwrap();
         assert_eq!(request.plan().recipient.as_str(), "peer");
+        let mut retained = request.clone();
+        if let AutomaticOriginal::Handoff(plan) = &mut retained.original {
+            plan.launch.directory_context = Some(LaunchDirectoryContext {
+                profile_dir: "/profile".into(),
+                cwd: "/work".into(),
+                env: [("PROFILE_ROOT".into(), "/profile".into())].into(),
+            });
+        }
+        let decoded: AutomaticDeliveryMutation =
+            serde_json::from_slice(&serde_json::to_vec(&retained).unwrap()).unwrap();
+        assert_eq!(decoded.original, retained.original);
+        assert!(decoded.validate().is_err());
         let mut changed = request.clone();
         if let AutomaticOriginal::Handoff(plan) = &mut changed.original {
             plan.launch.argv.push("changed".into());

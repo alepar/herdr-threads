@@ -59,7 +59,7 @@ The 1.0.1 column is the single smoke test that version shipped. The 1.0.2 column
 | `retry` of unknown outcomes | Needs a fault between a request and its reply | Failpoint tests in the suite |
 | Seat repair (`seat` operator subcommands), operator rebind/retire | Destructive operator repair | Integration tests in the suite, on the CI-pinned Herdr only |
 | `view`, `cached-check-in`, `diagnostics`, other `delivery` views | Read-only views of daemon state with no Herdr dependency | Suite |
-| Hermes and agy launch kinds | Their own gates (`scripts/agy-gate`, the Hermes enrollment smoke) | Those gates |
+| Native Hermes activation and agy model behavior | The directory smoke uses owned stand-ins; Hermes's source-bound helper fixture checks selected-root/named-profile scope separately | `scripts/agy-gate`, Hermes enrollment smoke and native qualification gates |
 | Busy cases beyond one p0 (busy invite, busy ACK request) | One busy case already pins the Herdr-dependent part (working detection, no nudge, tool-boundary delivery) | The real-agent wake e2e busy cases |
 
 ## V2 auto ACK repair verification
@@ -75,3 +75,59 @@ Verified on 2026-10-16 on macOS arm64, from candidate base `4fc664dc8` plus this
 | 0.9.5 | 136.0 s | PASS | PASS | PASS | PASS | PASS |
 
 All-target/all-feature Clippy with warnings denied, the harness-neutral check, the default-feature guard, formatting and whitespace checks passed. Independent read-only review found no remaining issues. Earlier runs exposed the text inbox page bound and the stand-in startup input-flush race described above; those runs also cleaned up their private servers. Product code and model-visible delivery text are unchanged.
+
+## Handoff directory configuration smoke
+
+`herdr_release_launch_and_handoff` also launches Codex and Claude stand-ins through
+the public CLI with distinct scratch profile directories and cwd containing spaces,
+single quotes and double quotes. Both automatic and explicit-thread routes assert
+the real child's selected profile environment, cwd and unchanged scratch HOME.
+The ordinary no-option handoff remains a control. Completed retries from a changed
+caller profile environment and cwd must retain the original result without another
+tab, child, thread, seat, invitation or ordinary message. A separate executable
+public-CLI test holds an owned fake host at a proven pre-start refusal, changes the
+caller's profile environment, cwd and native defaults, then verifies the actual
+retry child keeps its original profile, cwd and argv in both routing modes.
+Lost-reply and removed-directory boundaries remain covered by the focused topology
+tests.
+
+Missing/file directory inputs, pane/existing directory options and agy's unsupported
+profile selector must produce zero new durable or native effects. agy's cwd-only
+new-tab handoff records the actual child's cwd. The separate
+`hermes_selected_directory_source_fixture_preserves_named_scope_and_child_inputs`
+test runs the source-bound Python inspection fixture, checks the helper's selected
+`HERMES_HOME`, cwd and scratch HOME, and resolves the named profile below that root.
+
+These checks measure declared child inputs and their consumption by the owned
+stand-ins. Shell startup may change those inputs in a user's setup; the matrix
+does not prove native harness consumption, authenticated account selection or
+callback/model activation. It uses no credentials, real user configuration,
+shared-server lifecycle changes or live model quota. `--case` selects this matrix
+row alone; `--logs-dir` retains complete per-release output, and
+`HT_HERDR_MATRIX_EVIDENCE` retains child records and private server/daemon logs
+before fixture cleanup.
+
+Verified on 2026-10-17 on macOS arm64 with `nice scripts/herdr-release-smoke
+--case herdr_release_launch_and_handoff --jobs 3` (scratch cache and retained log
+directories supplied), using scoped run
+`fa756dca-e2c5-44f9-91c2-48e3114b33c3`. Tested source tree:
+`4a0ffd863daf1d8491c270208ab1f147a9a98b10` (stack base `7da6cf2a0` plus the
+configuration smoke changes, before adding these result rows). All rows and the
+driver's leak check passed; a second scoped process/scratch check was clean.
+
+| Herdr | Launch/handoff directory smoke | Time |
+| --- | --- | --- |
+| 0.9.1 | PASS | 80.4 s |
+| 0.9.2 | PASS | 82.1 s |
+| 0.9.3 | PASS | 81.3 s |
+| 0.9.4 | PASS | 85.7 s |
+| 0.9.5 | PASS | 82.0 s |
+
+The initial 0.9.5 run failed before child creation: the native tab boundary still
+rejected every nonempty environment projection (41.8 s, tested source tree
+`6a61225ab6dee752dfb6b9e34e70f4a09e4a59d3`). The typed directory-context fix
+in `ht-1urq.19` was stacked before the passing matrix. The executable public CLI
+suite passed 24 tests, the Hermes fixture suite passed five, and agy's public
+checks passed three. All-target/all-feature Clippy completed in 30.61 s; the
+harness-neutral, formatting and whitespace checks passed. These are focused
+checks; this leaf did not run the full suite or authenticated release e2e.

@@ -187,6 +187,7 @@ fn legacy_compound_with_body(
             goal: new_thread.then(|| "literal-goal".into()),
             body,
             launch: LaunchRequest {
+                directory_context: None,
                 target: HostTargetId::new("p"),
                 harness: serde_json::from_str("\"Codex\"").unwrap(),
                 harness_binary: None,
@@ -1281,6 +1282,7 @@ fn archival_legacy_bootstrap_known_progress_is_bounded_exact_and_never_authority
         label: id.payload.label.clone(),
         focus: false,
         env: Default::default(),
+        directory_context: None,
         expected_witness: created.witness.clone(),
     };
     let records = [

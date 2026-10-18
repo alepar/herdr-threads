@@ -1,0 +1,463 @@
+[
+  {
+    "id": "ht-1urq.10",
+    "title": "Integration sweep: handoff profile directories and skill guidance",
+    "description": "Verify the goal end to end and fix small unwired directory/context/guidance integration gaps; file blockers for larger gaps.\n\nSpec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md\nFiles-touched: tests/cli/topology_handoff.rs, tests/integration/herdr_release_smoke.rs, relevant handoff source/test paths only for small integration repairs, docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/evidence\nowns: terminal integration sweep across selected directory capture, canonical admission, real child launch, retry and shipped guidance.\nconsumes: all implementation, docs and configuration smoke leaves.\n\n## Acceptance\n- [ ] Verify automatic and explicit-thread public new-tab profile/cwd flows including actual child env/cwd, frozen retry and refusal-before-effects against owned fixtures.\n- [ ] Sweep for unwired config, parameters and interfaces; add integration coverage no existing leaf covers; fix small gaps inline and file blockers for large gaps.\n- [ ] Confirm skill/help/docs behavior aligns and no authentication, receipt or launch guard claims weaken.\n- [ ] Run focused checks and scoped process/temp cleanup; caller retains root acceptance, final review, default-feature/full-suite checks, merge/release handoff. No merge, tag, push or live quota.\nblocked-by ht-1urq.1: consumes all leaves (integration sweep)\nblocked-by ht-1urq.2: consumes all leaves (integration sweep)\nblocked-by ht-1urq.3: consumes all leaves (integration sweep)\nblocked-by ht-1urq.4: consumes all leaves (integration sweep)\nblocked-by ht-1urq.5: consumes all leaves (integration sweep)\nblocked-by ht-1urq.6: consumes all leaves (integration sweep)\nblocked-by ht-1urq.7: consumes all leaves (integration sweep)\nblocked-by ht-1urq.8: consumes all leaves (integration sweep)\nblocked-by ht-1urq.9: consumes all leaves (integration sweep)\n",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-18T02:55:31Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-18T02:55:31Z",
+    "labels": [
+      "sp:ht-1urq"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.4",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.9",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.8",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.7",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.2",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.6",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.5",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.1",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq.3",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.10",
+        "depends_on_id": "ht-1urq",
+        "type": "parent-child",
+        "created_at": "2026-10-18T02:55:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 9,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-1urq"
+  },
+  {
+    "id": "ht-1urq.9",
+    "title": "Configuration smoke: selected profile and cwd in release matrix",
+    "description": "Exercise public handoff configuration and real child env/cwd with isolated stand-ins across the existing Herdr release matrix.\n\nSpec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md\nFiles-touched: tests/integration/herdr_release_smoke.rs, tests/cli/topology_handoff.rs or new combined test module, scripts/herdr-release-smoke only if needed, docs/validation/herdr-release-matrix.md\nowns: executable configuration smoke and release-matrix directory evidence.\nconsumes: end-to-end frozen new-tab launch wiring.\nblocked-by ht-1urq.6: consumes end-to-end frozen new-tab launch wiring\nowns: credential-free owned-fixture evidence, scoped process/temp cleanup and no real config or shared-server changes.\n\n## Acceptance\n- [ ] Invoke public CLI with scratch Codex/Claude profile directories and cwd against owned stand-ins; actual child records selected env/cwd. Include Hermes source-bound fixture and agy unsupported/cwd behavior.\n- [ ] Extend herdr_release_launch_and_handoff for every listed release without exact-version operational gating; include defaults, spaces/quotes, bad directories and zero-effect pane/existing refusal.\n- [ ] Exercise automatic and explicit-thread profile selection and changed caller-env/cwd retry at public boundary; no real user config/credentials, live model quota or shared server restart.\n- [ ] All test processes use test_support ownership, scratch paths and scoped HT_LEAK_RUN_ID; stop/reap owned helpers/server and run scoped leak check after matrix/sweep. Record matrix failures honestly; no full-suite repetition from this leaf.\n",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-18T02:47:30Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-18T02:50:23Z",
+    "labels": [
+      "sp:ht-1urq"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-1urq.9",
+        "depends_on_id": "ht-1urq",
+        "type": "parent-child",
+        "created_at": "2026-10-18T02:47:30Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.9",
+        "depends_on_id": "ht-1urq.6",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:47:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-1urq"
+  },
+  {
+    "id": "ht-1urq.8",
+    "title": "Document launch directory support and proposed minor version",
+    "description": "Align help, user documentation and changelog with supported new-tab directories and deliberate pane/agy limitations.\n\nSpec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md\nFiles-touched: src/cli/help.rs, README.md, CHANGELOG.md, tests/fixtures/golden/help/handoff.txt, related handoff help goldens, docs/agent-usage.md (handoff reference only)\nowns: public handoff option reference, help/goldens and unreleased change summary.\nconsumes: public handoff directory grammar.\nblocked-by ht-1urq.2: consumes public handoff directory grammar\nowns: proposed unreleased minor 2.1.0 with no package version bump, tag or release.\n\n## Acceptance\n- [ ] Document --new-tab --profile-dir with --cwd example, adapter mapping/unsupported agy, absolute existing paths, frozen retry, directory disappearance and plain existing/pane refusal.\n- [ ] State selected profile is declared child input subject to shell initialization, not proof of authenticated account; no logs/docs contain credential contents.\n- [ ] Unreleased changelog proposes 2.1.0 for the additive feature; do not bump package version, tag, release, push or merge main.\n- [ ] Update CLI help goldens and checked references; coordinate agent-usage sections with guidance leaf to avoid overwrite; relevant golden/doc checks pass.\n",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-18T02:47:26Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-18T02:50:22Z",
+    "labels": [
+      "sp:ht-1urq"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-1urq.8",
+        "depends_on_id": "ht-1urq",
+        "type": "parent-child",
+        "created_at": "2026-10-18T02:47:26Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.8",
+        "depends_on_id": "ht-1urq.2",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:47:27Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-1urq"
+  },
+  {
+    "id": "ht-1urq.7",
+    "title": "Teach names, immediate delivery and receipt recovery in shipped skill",
+    "description": "Update the shipped collaboration guide with name-first prose, timely p0 dispatch and useful responses to missing receipt confirmations.\n\nSpec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md\nFiles-touched: integrations/skill/SKILL.md, docs/agent-usage.md (matching guidance sections only), other checked/generated skill mirrors if present, tests/cli/skill.rs only if an existing contract requires updates\nowns: static model-facing collaboration guidance and its matching documentation.\nowns: measured baseline/final skill UTF-8 bytes and at most 1 KiB growth accounting.\n\n## Acceptance\n- [ ] Known names appear in user-facing communication; exact IDs remain in ready commands, disambiguation, receipt actions and evidence.\n- [ ] Use p0 if recipient may be actively waiting, blocked, or idle and needing to react now; routine nonblocking sends stay p1 and runtime wake defaults remain unchanged.\n- [ ] If sender depends on receipt, request ACK with actionable request and response; missing/overdue ACK triggers inspection through Herdr skill, self-execution or fresh handoff as appropriate, without polling/repeated nudges/restarts.\n- [ ] Preserve ACK-is-receipt-only, exact automatic-display ACK semantics, turn-ending waits, top-level/subagent restrictions and user permission boundaries.\n- [ ] Keep added skill bytes at most 1 KiB including launch profile example, record before/after UTF-8 sizes, synchronize checked mirrors using existing process (or direct edits if no generator), and run applicable doc/skill checks. Do not spawn behavioral-eval agents from this leaf.\n",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-18T02:47:25Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-18T02:50:21Z",
+    "labels": [
+      "sp:ht-1urq"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-1urq.7",
+        "depends_on_id": "ht-1urq",
+        "type": "parent-child",
+        "created_at": "2026-10-18T02:47:25Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-1urq"
+  },
+  {
+    "id": "ht-1urq.6",
+    "title": "Apply frozen profile environment through new-tab handoff",
+    "description": "Wire selected directories end to end through preflight, tab creation, derived launch and exact retry for automatic and explicit-thread new-tab modes.\n\nSpec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md\nFiles-touched: src/cli/topology_handoff.rs, src/cli/topology_handoff/automatic.rs, src/cli/topology_runtime.rs, src/cli/launch.rs, src/cli/retry.rs as needed, tests/cli/topology_handoff.rs\nowns: selected directory capture-to-create-to-derived-launch wiring and retry filesystem checks.\nconsumes: LaunchDirectoryContext; consumes: normalized public directory inputs; consumes: canonical launch-context admission; consumes: native config-root and Hermes profile projections.\nblocked-by ht-1urq.2: consumes normalized public directory inputs\nblocked-by ht-1urq.3: consumes native config-root profile projection\nblocked-by ht-1urq.4: consumes Hermes profile projection\nblocked-by ht-1urq.5: consumes canonical launch-context admission\nowns: guarded executable/PATH preservation and focused frozen retry/lost-reply/disappeared-directory tests.\n\n## Acceptance\n- [ ] Capture adapter projection/cwd once and require the capability before publication or tab/thread/seat effects; freeze into the saved original and exact derived child for both routing modes.\n- [ ] CreateTabRequest receives exactly frozen env/cwd; hook/readiness/fingerprint/prelaunch uses the same captured selection/cwd and preserves native executable PATH guard and existing diagnostics.\n- [ ] Retry never recaptures caller profile env, cwd, configured options or symlink target; changed caller inputs still use saved context/native argv. Missing directories refuse before new native effects without canonicalizing saved paths again.\n- [ ] Lost-reply and pre-start refusal tests prove no duplicate create/message/start; historical completed retries and possible-start certainty retain behavior. No raw native env wrapper, pane typing, HOME change or guard bypass.\n- [ ] Focused public coordinator/retry tests, fmt, locked all-feature clippy and harness-neutral pass.\n",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-18T02:47:17Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-18T02:50:21Z",
+    "labels": [
+      "sp:ht-1urq"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-1urq.6",
+        "depends_on_id": "ht-1urq.3",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:47:20Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.6",
+        "depends_on_id": "ht-1urq",
+        "type": "parent-child",
+        "created_at": "2026-10-18T02:47:17Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.6",
+        "depends_on_id": "ht-1urq.5",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:47:23Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.6",
+        "depends_on_id": "ht-1urq.4",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:47:21Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.6",
+        "depends_on_id": "ht-1urq.2",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:47:18Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 4,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-1urq"
+  },
+  {
+    "id": "ht-1urq.5",
+    "title": "Validate and retain context-bearing bootstrap identities",
+    "description": "Admit additive context-bearing identities canonically while preserving exact historical context-free validation and replay.\n\nSpec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md\nFiles-touched: src/protocol/handoff.rs, src/protocol/handoff/automatic_bootstrap.rs, src/protocol/handoff/automatic.rs, src/store/topology_handoff/*.rs as needed, src/service capability registration, tests/store/topology_handoff*.rs, tests/handoff_topology_authority.rs\nowns: canonical launch-context admission, capability and exact retained identity/child/report validation.\nconsumes: LaunchDirectoryContext; consumes: optional launch-context transport fields.\nblocked-by ht-1urq.1: consumes boundary contract\nowns: focused canonical capability admission, historical identity and exact replay regression tests.\n\n## Acceptance\n- [ ] Advertise additive handoff.launch_directories_v1 capability for the complete canonical implementation and reject context-bearing operations without support before effects.\n- [ ] Present context requires exact bounded cwd/env agreement; absent context keeps old empty-env rule and old serialized identity/digest bytes; reject mismatched context and derived child/report.\n- [ ] Automatic and explicit-thread bootstrap retain context unchanged through canonical attachment, progress, completion and replay; malformed/unknown shapes do not weaken existing fences.\n- [ ] No historical migration/identity bytes change; add meaningful identity round-trip, old-shape and forged mismatch tests; focused durability tests, fmt, locked all-feature clippy and harness-neutral pass.\n",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-18T02:47:14Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-18T02:50:20Z",
+    "labels": [
+      "sp:ht-1urq"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-1urq.5",
+        "depends_on_id": "ht-1urq.1",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:47:15Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.5",
+        "depends_on_id": "ht-1urq",
+        "type": "parent-child",
+        "created_at": "2026-10-18T02:47:14Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-1urq"
+  },
+  {
+    "id": "ht-1urq.4",
+    "title": "Map explicit Hermes roots and retain unsupported adapter behavior",
+    "description": "Let Hermes explicit directory selection seed HERMES_HOME without changing named-profile resolution; retain agy unsupported explicit selection.\n\nSpec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md\nFiles-touched: src/harness/hermes/launch.rs, src/harness/hermes.rs if required, tests/harness/adapter_smoke.rs or Hermes adapter tests, tests/handoff_agy.rs (refusal assertion only)\nowns: Hermes explicit root to native profile resolution and declared projection.\nconsumes: LaunchDirectoryContext; consumes: LaunchPolicy explicit-directory seam.\nblocked-by ht-1urq.1: consumes boundary contract\nowns: focused Hermes named-profile and agy unsupported/cwd regression tests.\n\n## Acceptance\n- [ ] Hermes maps profile-dir to HERMES_HOME in its captured environment, preserves existing named --profile semantics and retains effective selected profile scope under the requested root.\n- [ ] Existing source-bound prelaunch observation, enabled owned assets and runtime rechecks still apply; explicit root never falsely attests authentication or model consumption.\n- [ ] Neutral unsupported default yields concise agy profile-directory refusal without changing HOME; ordinary agy cwd/no-option behavior stays intact.\n- [ ] Focused Hermes/mapping/refusal tests use owned fixtures, pass fmt, locked all-feature clippy and harness-neutral check.\n",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-18T02:47:11Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-18T02:50:19Z",
+    "labels": [
+      "sp:ht-1urq"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-1urq.4",
+        "depends_on_id": "ht-1urq",
+        "type": "parent-child",
+        "created_at": "2026-10-18T02:47:11Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.4",
+        "depends_on_id": "ht-1urq.1",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:47:12Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-1urq"
+  },
+  {
+    "id": "ht-1urq.3",
+    "title": "Map explicit Codex and Claude profile directories",
+    "description": "Make native config-root adapters select explicit profile directories ahead of inherited or shell hints for all launch inspection and child inputs.\n\nSpec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md\nFiles-touched: src/harness/codex.rs, src/harness/claude.rs, src/harness/launch.rs (native_scope shared helper only), tests/harness/adapter_smoke.rs or focused adapter tests\nowns: explicit native config-root profile projection for Codex and Claude.\nconsumes: LaunchDirectoryContext; consumes: LaunchPolicy explicit-directory seam.\nblocked-by ht-1urq.1: consumes boundary contract\nowns: credential-safe native launch diagnostics and focused explicit-over-inherited adapter tests.\n\n## Acceptance\n- [ ] Codex maps the selected directory to CODEX_HOME; Claude maps to CLAUDE_CONFIG_DIR using adapter-owned names and captured snapshots only.\n- [ ] Explicit scope wins over conflicting launcher/pane-shell hints and reaches hook status, fingerprinting, startup composition and prelaunch recheck; no explicit option preserves existing scope selection.\n- [ ] No credential values/config contents are printed and no real config or caller process environment is mutated; native executable identity/PATH guards remain intact.\n- [ ] Focused adapter tests establish selected directory precedence and declared child env; fmt, locked all-feature clippy and harness-neutral pass.\n",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-18T02:47:07Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-18T02:50:18Z",
+    "labels": [
+      "sp:ht-1urq"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-1urq.3",
+        "depends_on_id": "ht-1urq",
+        "type": "parent-child",
+        "created_at": "2026-10-18T02:47:07Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.3",
+        "depends_on_id": "ht-1urq.1",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:47:08Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-1urq"
+  },
+  {
+    "id": "ht-1urq.2",
+    "title": "Parse and validate new-tab profile directory inputs",
+    "description": "Expose new-tab --profile-dir and validate explicit profile/cwd paths before any recipient resolution, durable publication or native effects.\n\nSpec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md\nFiles-touched: src/cli/commands.rs, src/cli/handoff_delivery.rs, src/cli/topology_runtime.rs (request construction only), tests/cli/topology_handoff.rs, tests/cli/handoff.rs\nowns: public handoff directory grammar and path normalization into LaunchDirectoryContext capture inputs.\nconsumes: optional launch-context transport fields and LaunchPolicy explicit-directory seam.\nblocked-by ht-1urq.1: consumes boundary contract\nowns: pane/existing directory-option refusal before effects and focused parser/no-option/plain-launch regression tests.\n\n## Acceptance\n- [ ] Add --profile-dir PATH for new-tab launch; existing and pane launch reject explicit profile/cwd with concise new-tab guidance before effects; plain launch and no-option grammar preserve behavior.\n- [ ] Validate absolute existing directories, reject files/missing/non-UTF-8/control/over-bound inputs and canonicalize once; symlink/spaces/quotes cases retain the intended canonical directory.\n- [ ] Pass normalized request data without adapter-name branches or native named-profile confusion; parser fixtures prove invalid requests cause zero thread/tab/seat/native effects.\n- [ ] Run focused parser/handoff tests, fmt, locked all-feature clippy and harness-neutral check.\n",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-18T02:47:04Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-18T02:50:17Z",
+    "labels": [
+      "sp:ht-1urq"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-1urq.2",
+        "depends_on_id": "ht-1urq.1",
+        "type": "blocks",
+        "created_at": "2026-10-18T02:47:05Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-1urq.2",
+        "depends_on_id": "ht-1urq",
+        "type": "parent-child",
+        "created_at": "2026-10-18T02:47:04Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 3,
+    "comment_count": 0,
+    "parent": "ht-1urq"
+  },
+  {
+    "id": "ht-1urq.1",
+    "title": "Seam contract: frozen launch directory context",
+    "description": "Land the inert shared directory-context type, defaulted optional retained fields and adapter policy seam so later leaves compile against one contract.\n\nSpec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md\nFiles-touched: src/protocol/handoff/launch_directories.rs (new), src/protocol/handoff.rs, src/protocol/handoff/automatic_bootstrap.rs, src/protocol/handoff/automatic.rs, src/cli/launch.rs, src/cli/topology_handoff.rs, src/harness/adapter.rs; required constructor updates only\nowns: LaunchDirectoryContext; owns: optional launch-context transport fields and LaunchPolicy explicit-directory seam.\n**LaunchDirectoryContext** — new struct, the immutable directory and declared-environment selection retained across new-tab handoff and retry.\n- Owns: canonical requested profile directory, bounded adapter-produced environment projection and selected cwd; shared validation of their bounds and agreement with bootstrap cwd/env.\n- Hides: the difference between a newly captured selection and its exact replay. An absent context preserves historical serialization and empty-env rules.\n- Must not: choose harness environment names, resolve native named profiles, hold credentials, confer seat authority or freeze configuration contents. Adapters own profile semantics; existing daemon identity validation owns authority.\n- Relationships: composed into saved bootstrap and derived launch inputs; consumed by existing creation, preflight and retry orchestration. `LaunchPolicy` produces the profile projection; transport uses the frozen projection unchanged.\n- Lifecycle: captured once before publication, owned by the durable plan and copied into its exact derived child. Immutable, with no process-global state or owned external resources.\n- Errors: malformed or inconsistent retained data is distinct from a selected directory that has disappeared or ceased to be a directory. Structural validation is deterministic; orchestration rechecks filesystem existence before unpublished create/start boundaries without canonicalizing again.\n\n## Acceptance\n- [ ] Create LaunchDirectoryContext with deterministic bounded validation for absolute UTF-8 profile directory, cwd and environment projection; absence serializes identically to historic inputs.\n- [ ] Add a responsibility comment on the type stating ownership, exclusions, protocol value role and where adapter variation goes; include the abstraction entry above.\n- [ ] Add optional serde-default/skip-none fields to saved bootstrap/derived launch request contexts and a neutral default unsupported LaunchPolicy method; keep context-bearing operational admission disabled until canonical-validation leaf.\n- [ ] Carry context through exact child constructors as inert data, update literal constructors and prove empty/default serialization and existing tests compile; no CLI feature activation or new effects.\n",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-18T02:47:02Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-18T02:47:02Z",
+    "labels": [
+      "sp:ht-1urq"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-1urq.1",
+        "depends_on_id": "ht-1urq",
+        "type": "parent-child",
+        "created_at": "2026-10-18T02:47:02Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 5,
+    "comment_count": 0,
+    "parent": "ht-1urq"
+  },
+  {
+    "id": "ht-1urq",
+    "title": "Handoff profile directories and collaboration skill guidance",
+    "description": "Deliver the committed handoff launch-directory and collaboration-guidance design to merge-ready code. Spec: docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md. Caller owns final code review, full integration checks and branch handoff; no release/tag or main merge.\n\n## Global Constraints\nUse the committed spec. New-tab profile/cwd only; pane/existing refuse before effects. Existing native guard, at-most-once retry, routing, receipt and trust invariants remain unchanged. No real configuration writes, shared server lifecycle, push, release or tag. Every commit has Outside-adapter trailer. Focused meaningful tests, fmt, locked all-feature clippy and harness-neutral check; caller owns final full-suite/default checks.\n\u003c!-- key-abstractions digest: begin --\u003e\n- LaunchDirectoryContext: owns immutable retained directory selection and its bounded environment projection; shared validation belongs beside the protocol value, while harness behavior belongs in LaunchPolicy; callers never reconstruct retry inputs from current defaults or independently choose profile environment names.\n\u003c!-- key-abstractions digest: end --\u003e",
+    "spec_id": "docs/superpowers/runs/2026-10-17-handoff-profile-and-skill-guidance/2026-10-17-handoff-profile-and-skill-guidance-design.md",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-18T02:44:56Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-18T02:47:01Z",
+    "labels": [
+      "sp:ht-1urq"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]
