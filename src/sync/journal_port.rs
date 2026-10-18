@@ -14,9 +14,10 @@ use crate::protocol::time::CallBudget;
 /// nothing; `Gap`, `Fork` and `Frozen` keep the valid prefix, counted in
 /// `stored`. Does not own: resolving forks or pacing peers, which the caller
 /// decides from the variant. A new outcome is a new variant, handled by every
-/// caller's exhaustive `match`.
+/// caller's exhaustive `match`. `E` is `StoredEntry` on the store's entry-level
+/// ingest; the port uses the default until ht-j87z.15.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum IngestOutcome {
+pub enum IngestOutcome<E = Envelope> {
     /// Every entry was stored or already held; `head` is the new contiguous head.
     Stored {
         stored: usize,
@@ -28,7 +29,7 @@ pub enum IngestOutcome {
     /// A validly signed entry contradicts the held chain.
     Fork {
         stored: usize,
-        evidence: ForkEvidence,
+        evidence: ForkEvidence<E>,
     },
     /// An entry lies beyond the counter at which the log froze.
     Frozen { stored: usize, frozen_at: u64 },
@@ -43,21 +44,19 @@ pub enum IngestOutcome {
     Headroom,
 }
 
-/// Proof of a fork, for the caller to keep and report.
+/// Proof of a fork, for the caller to keep and report. `E` is `StoredEntry` on
+/// the store's entry-level ingest; the port uses the default until ht-j87z.15.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ForkEvidence {
+pub enum ForkEvidence<E = Envelope> {
     /// A peer holds entries of this node's own active log that this node does
     /// not have.
     AheadOfSelf {
         log: LogKey,
         my_head: LogHead,
-        entry: Box<Envelope>,
+        entry: Box<E>,
     },
     /// Two different validly signed entries for one position.
-    Conflict {
-        held: Box<Envelope>,
-        conflicting: Box<Envelope>,
-    },
+    Conflict { held: Box<E>, conflicting: Box<E> },
 }
 
 /// What one apply pass did.

@@ -238,6 +238,7 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     // Opaque entries (ht-j87z): an insert never kicks the apply lane; the
     // `sync_logs` head update kicks the sync lane.
     "journal_opaque",
+    "journal_opaque_promoting",
     // Reachability is read by queries, never by a lane (ht-5fr.5.4).
     "sync_node_contact",
     "thread_registers",

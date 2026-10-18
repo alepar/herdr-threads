@@ -6095,7 +6095,7 @@ fn journal_opaque_delta_upgrades_highest_main_store() {
         .unwrap();
     }
     open_with(&db, schema::NODE_DELTAS).unwrap();
-    assert_eq!(user_version(&db), 4);
+    assert_eq!(user_version(&db), schema::NODE_LATEST_SCHEMA_VERSION);
     let columns: Vec<String> = db
         .prepare("SELECT name FROM pragma_table_info('journal_opaque') ORDER BY cid")
         .unwrap()
@@ -6119,10 +6119,140 @@ fn journal_opaque_delta_upgrades_highest_main_store() {
         .query_row("SELECT COUNT(*) FROM journal", [], |r| r.get(0))
         .unwrap();
     assert_eq!(kept, 2);
+    for (kind, name) in [
+        ("table", "journal_opaque_promoting"),
+        ("trigger", "journal_opaque_immutable"),
+        ("trigger", "journal_opaque_append_only"),
+        ("trigger", "journal_opaque_position_taken"),
+        ("trigger", "journal_position_taken_by_opaque"),
+    ] {
+        let found: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type=?1 AND name=?2",
+                [kind, name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1, "{kind} {name}");
+    }
     assert!(
         open_with(&db, old)
             .unwrap_err()
             .detail
             .contains("newer than this binary")
+    );
+}
+
+fn opaque_hash(last: u8) -> [u8; 32] {
+    let mut hash = [0u8; 32];
+    hash[31] = last;
+    hash
+}
+
+fn insert_opaque_raw(
+    db: &Connection,
+    log_ix: i64,
+    counter: i64,
+    hash: u8,
+    branch: i64,
+) -> rusqlite::Result<usize> {
+    db.execute(
+        "INSERT INTO journal_opaque(log_ix,counter,hash,prev_hash,signature,raw,branch) \
+         VALUES (?1,?2,?3,zeroblob(32),zeroblob(64),zeroblob(68),?4)",
+        rusqlite::params![log_ix, counter, opaque_hash(hash).as_slice(), branch],
+    )
+}
+
+#[test]
+fn journal_opaque_rows_are_immutable() {
+    let db = journal_db();
+    insert_opaque_raw(&db, 2, 3, 7, 0).unwrap();
+    for assignment in [
+        "counter=4",
+        "hash=zeroblob(32)",
+        "prev_hash=randomblob(32)",
+        "signature=randomblob(64)",
+        "raw=zeroblob(69)",
+        "branch=1",
+        "log_ix=1",
+    ] {
+        let message =
+            abort_message(db.execute(&format!("UPDATE journal_opaque SET {assignment}"), []));
+        assert!(
+            message.contains("journal_opaque_immutable"),
+            "{assignment}: {message}"
+        );
+    }
+}
+
+#[test]
+fn journal_opaque_delete_aborts_outside_promotion() {
+    let db = journal_db();
+    insert_opaque_raw(&db, 2, 3, 7, 0).unwrap();
+    let message = abort_message(db.execute("DELETE FROM journal_opaque", []));
+    assert!(message.contains("journal_opaque_append_only"), "{message}");
+    // A marker for another hash does not exempt the row.
+    db.execute(
+        "INSERT INTO journal_opaque_promoting VALUES (2,3,zeroblob(32))",
+        [],
+    )
+    .unwrap();
+    let message = abort_message(db.execute("DELETE FROM journal_opaque", []));
+    assert!(message.contains("journal_opaque_append_only"), "{message}");
+    // The exact marker does.
+    db.execute("DELETE FROM journal_opaque_promoting", [])
+        .unwrap();
+    db.execute(
+        "INSERT INTO journal_opaque_promoting VALUES (2,3,?1)",
+        [opaque_hash(7).as_slice()],
+    )
+    .unwrap();
+    assert_eq!(db.execute("DELETE FROM journal_opaque", []).unwrap(), 1);
+}
+
+#[test]
+fn duplicate_position_across_tables_rejected() {
+    let db = journal_db();
+    // journal first, then an opaque chain row at the same counter.
+    insert_journal(&db, 3, "pending", None, None).unwrap();
+    let message = abort_message(insert_opaque_raw(&db, 2, 3, 7, 0));
+    assert!(
+        message.contains("journal_opaque_position_taken"),
+        "{message}"
+    );
+    // A branch row at a held counter is allowed.
+    assert_eq!(insert_opaque_raw(&db, 2, 3, 8, 1).unwrap(), 1);
+    // Opaque first, then a journal row at the same counter.
+    insert_opaque_raw(&db, 2, 4, 7, 0).unwrap();
+    let message = abort_message(insert_journal(&db, 4, "pending", None, None));
+    assert!(
+        message.contains("journal_opaque_position_taken"),
+        "{message}"
+    );
+    // A branch row alone does not take the position.
+    insert_opaque_raw(&db, 2, 5, 9, 1).unwrap();
+    insert_journal(&db, 5, "pending", None, None).unwrap();
+}
+
+#[test]
+fn promotion_marker_is_empty_at_rest() {
+    let db = fresh_db();
+    crate::store::journal::verify_invariants(&db).unwrap();
+    db.execute(
+        "INSERT INTO journal_opaque_promoting VALUES (2,3,zeroblob(32))",
+        [],
+    )
+    .unwrap();
+    let error = crate::store::journal::verify_invariants(&db).unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::protocol::results::ErrorCode::StoreCorrupt
+    );
+    assert!(
+        error
+            .detail
+            .contains("journal_opaque_promoting is not empty"),
+        "{}",
+        error.detail
     );
 }

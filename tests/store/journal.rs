@@ -1979,8 +1979,10 @@ fn insert_forked_row(conn: &Connection, log_ix: i64, counter: i64, prev: [u8; 32
     .unwrap();
 }
 
-/// Raw SQL: no store API exists for opaque rows yet (ht-j87z.3 adds it with
-/// its guards); `branch` is 0 for a chain position, 1 for a fork branch.
+/// Raw SQL with an undecodable `raw` (the row is only ever read through the
+/// `Rows::KnownPrefix` paths, which stop before it); `branch` is 0 for a
+/// chain position, 1 for a fork branch. Decodable rows come from
+/// `insert_opaque`.
 fn insert_opaque_row(
     conn: &Connection,
     log_ix: i64,
@@ -2109,13 +2111,11 @@ fn branch_walk_crosses_opaque_branch_row() {
     insert_forked_row(&conn, log, 4, h(0x33), h(0x44));
     let served =
         serve_branch(&conn, &chain_key(), (4, h(0x44)), 1, BatchLimits::default()).unwrap();
-    // The known branch row 4' is served; the opaque row 3' joins main at 2
-    // and is served as a `StoredEntry` by ht-j87z.6.
+    // The known-entry wrapper stops before the opaque branch row 3' (ht-j87z.14)
+    // instead of skipping it, so a served branch never has a gap;
+    // `serve_branch_entries` serves it.
     let served = served.expect("the walk crosses the opaque branch row");
-    assert_eq!(
-        served.iter().map(|e| e.counter).collect::<Vec<_>>(),
-        [1, 2, 4]
-    );
+    assert_eq!(served.iter().map(|e| e.counter).collect::<Vec<_>>(), [1, 2]);
     // A broken link at the opaque row answers None.
     insert_forked_row(&conn, log, 4, h(0x55), h(0x45));
     let served =
@@ -2136,4 +2136,404 @@ fn open_hlc_resume_ignores_opaque_head() {
     let restarted = store.ctx();
     let mut conn2 = restarted.open_writer().unwrap();
     open_with(&restarted, &mut conn2).unwrap();
+}
+
+// ---- Opaque entries through the store API (ht-j87z.14) ---------------------
+
+use crate::test_support::opaque_entry::{
+    parse_synthetic, synthetic_entry, synthetic_parts, synthetic_unsigned,
+};
+
+/// An opaque entry in `log` at `counter` after `prev`; `tag` varies the
+/// bytes, so two tags at one position are two different signed entries.
+fn opaque_in(log: LogKey, counter: u64, prev: [u8; 32], tag: &str) -> OpaqueEntry {
+    let signer = identity();
+    let mut unsigned = synthetic_unsigned(&signer, log.incarnation, counter, prev);
+    unsigned.log = log;
+    unsigned.payload = tag.as_bytes().to_vec();
+    synthetic_entry(&signer, &unsigned)
+}
+
+fn ingest_stored(
+    ctx: &StoreContext,
+    conn: &mut Connection,
+    log: &LogKey,
+    entries: Vec<StoredEntry>,
+) -> Result<IngestOutcome<StoredEntry>, ApiError> {
+    ingest_entries(ctx, conn, log, entries, &budget())
+}
+
+fn wrapped(entries: &[Envelope]) -> Vec<StoredEntry> {
+    entries.iter().cloned().map(StoredEntry::from).collect()
+}
+
+/// Node B holding A's genesis, put 1 and an opaque entry at counter 3.
+struct OpaqueStore {
+    _a: Store,
+    _b: Store,
+    ctx: StoreContext,
+    conn: Connection,
+    log: LogKey,
+    known: Vec<Envelope>,
+    opaque: OpaqueEntry,
+}
+
+fn with_opaque_three() -> OpaqueStore {
+    let (a, b) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, known) = chain_of_a(&a, 1);
+    let (ctx, mut conn) = opened_b(&b, 77);
+    let opaque = opaque_in(log, 3, known[1].hash, "three");
+    let mut batch = wrapped(&known);
+    batch.push(StoredEntry::from(opaque.clone()));
+    let outcome = ingest_stored(&ctx, &mut conn, &log, batch).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Stored {
+            stored: 3,
+            duplicates: 0,
+            head: head(3, opaque.hash()),
+        }
+    );
+    OpaqueStore {
+        _a: a,
+        _b: b,
+        ctx,
+        conn,
+        log,
+        known,
+        opaque,
+    }
+}
+
+#[test]
+fn ingest_stores_opaque_and_moves_head() {
+    let mut s = with_opaque_three();
+    let four = signed_entry(&identity(), s.log, 4, s.opaque.hash(), r#"{"id":"four"}"#);
+    let outcome = ingest_stored(&s.ctx, &mut s.conn, &s.log, vec![four.clone().into()]).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Stored {
+            stored: 1,
+            duplicates: 0,
+            head: head(4, four.hash),
+        }
+    );
+    let (contiguous, head_hash): (i64, Vec<u8>) = s
+        .conn
+        .query_row(
+            "SELECT contiguous_counter,head_hash FROM sync_logs WHERE node_uuid=?1",
+            [s.log.node.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((contiguous, head_hash), (4, four.hash.to_vec()));
+    let opaque_rows: Vec<(i64, i64)> = s
+        .conn
+        .prepare("SELECT counter,branch FROM journal_opaque")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(opaque_rows, [(3, 0)]);
+    let known_counters: Vec<i64> = s
+        .conn
+        .prepare(
+            "SELECT j.counter FROM journal j JOIN sync_logs l USING(log_ix) \
+             WHERE l.node_uuid=?1 ORDER BY j.counter",
+        )
+        .unwrap()
+        .query_map([s.log.node.to_string()], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(known_counters, [1, 2, 4]);
+    verify_invariants(&s.conn).unwrap();
+}
+
+#[test]
+fn opaque_round_trip_serve_is_byte_identical() {
+    let mut s = with_opaque_three();
+    let four = signed_entry(&identity(), s.log, 4, s.opaque.hash(), r#"{"id":"four"}"#);
+    ingest_stored(&s.ctx, &mut s.conn, &s.log, vec![four.clone().into()]).unwrap();
+
+    let served = serve_entries(&s.conn, &s.log, 1, BatchLimits::default()).unwrap();
+    assert_eq!(
+        served,
+        vec![
+            StoredEntry::from(s.known[0].clone()),
+            StoredEntry::from(s.known[1].clone()),
+            StoredEntry::from(s.opaque.clone()),
+            StoredEntry::from(four),
+        ]
+    );
+    let item = served[2].as_opaque().expect("position 3 is opaque");
+    assert_eq!(item.raw(), s.opaque.raw());
+    assert_eq!(item.hash(), s.opaque.hash());
+    assert_eq!(item.signature(), s.opaque.signature());
+    // The known-entry wrapper serves the known prefix and stops at the
+    // opaque row without decoding it.
+    assert_eq!(
+        serve(&s.conn, &s.log, 1, BatchLimits::default()).unwrap(),
+        s.known
+    );
+    assert!(
+        serve(&s.conn, &s.log, 3, BatchLimits::default())
+            .unwrap()
+            .is_empty()
+    );
+    // The byte bound counts an opaque entry by its raw length, and a limit
+    // never skips a position.
+    let tight = BatchLimits {
+        entries: 256,
+        bytes: s.known[0].canonical_bytes().len() + s.known[1].canonical_bytes().len() + 1,
+    };
+    let page = serve_entries(&s.conn, &s.log, 1, tight).unwrap();
+    assert_eq!(page.len(), 2);
+}
+
+#[test]
+fn ingest_opaque_duplicate_is_duplicate() {
+    let mut s = with_opaque_three();
+    let mut again = wrapped(&s.known);
+    again.push(s.opaque.clone().into());
+    let outcome = ingest_stored(&s.ctx, &mut s.conn, &s.log, again).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Stored {
+            stored: 0,
+            duplicates: 3,
+            head: head(3, s.opaque.hash()),
+        }
+    );
+    assert_eq!(count(&s.conn, "SELECT COUNT(*) FROM journal_opaque"), 1);
+}
+
+#[test]
+fn ingest_opaque_conflict_reports_fork() {
+    // Held opaque 3, incoming known rival at 3.
+    let mut s = with_opaque_three();
+    let rival = signed_entry(&identity(), s.log, 3, s.known[1].hash, r#"{"id":"rival"}"#);
+    let outcome = ingest_stored(&s.ctx, &mut s.conn, &s.log, vec![rival.clone().into()]).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Fork {
+            stored: 0,
+            evidence: ForkEvidence::Conflict {
+                held: Box::new(s.opaque.clone().into()),
+                conflicting: Box::new(rival.into()),
+            },
+        }
+    );
+    // Held known 3, incoming opaque rival at 3.
+    let (a, b) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, known) = chain_of_a(&a, 2);
+    let (ctx, mut conn) = opened_b(&b, 77);
+    ingest_stored(&ctx, &mut conn, &log, wrapped(&known)).unwrap();
+    let rival = opaque_in(log, 3, known[1].hash, "rival");
+    let outcome = ingest_stored(&ctx, &mut conn, &log, vec![rival.clone().into()]).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Fork {
+            stored: 0,
+            evidence: ForkEvidence::Conflict {
+                held: Box::new(known[2].clone().into()),
+                conflicting: Box::new(rival.into()),
+            },
+        }
+    );
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM journal_opaque"), 0);
+}
+
+#[test]
+fn ingest_opaque_bad_signature_is_corrupt_nothing_stored() {
+    let (a, b) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, known) = chain_of_a(&a, 1);
+    let (ctx, mut conn) = opened_b(&b, 77);
+    // Shape-valid, hash-valid, signed by another key: never verified.
+    let mut unsigned = synthetic_unsigned(&identity(), log.incarnation, 3, known[1].hash);
+    unsigned.log = log;
+    let (header, raw) = synthetic_parts(&NodeIdentity::from_seed(SEED_C), &unsigned);
+    let forged = OpaqueEntry::new(header, raw).unwrap();
+    let mut batch = wrapped(&known);
+    batch.push(forged.into());
+    let outcome = ingest_stored(&ctx, &mut conn, &log, batch).unwrap();
+    assert_eq!(
+        outcome,
+        IngestOutcome::Corrupt {
+            log,
+            counter: 3,
+            reason: EnvelopeError::BadSignature,
+        }
+    );
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM journal_opaque"), 0);
+    assert_eq!(
+        count(
+            &conn,
+            &format!(
+                "SELECT COUNT(*) FROM sync_logs WHERE node_uuid='{}'",
+                log.node
+            )
+        ),
+        0,
+        "the whole batch rolled back, the genesis too"
+    );
+}
+
+#[test]
+fn opaque_append_does_not_fold_hlc() {
+    let (a, b) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, known) = chain_of_a(&a, 1);
+    let (ctx, mut conn) = opened_b(&b, 77);
+    ingest_stored(&ctx, &mut conn, &log, wrapped(&known)).unwrap();
+    let before = ctx.sync().unwrap().hlc.lock().unwrap().last();
+    // 30 s ahead of the wall: a known entry like this would be absorbed.
+    let signer = identity();
+    let mut unsigned = synthetic_unsigned(&signer, log.incarnation, 3, known[1].hash);
+    unsigned.log = log;
+    unsigned.hlc = HlcStamp::from_parts(FixedClock.utc_now().0 as u64 + 30_000, 0);
+    let ahead = synthetic_entry(&signer, &unsigned);
+    ingest_stored(&ctx, &mut conn, &log, vec![ahead.into()]).unwrap();
+    assert_eq!(
+        ctx.sync().unwrap().hlc.lock().unwrap().last(),
+        before,
+        "an opaque entry has no readable hlc to fold"
+    );
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM journal_opaque"), 1);
+}
+
+#[test]
+fn store_forked_keeps_opaque_branch_row() {
+    let limits = BatchLimits::default();
+    // Held opaque 3 on the main chain, known rival 3.
+    let mut s = with_opaque_three();
+    let rival = signed_entry(&identity(), s.log, 3, s.known[1].hash, r#"{"id":"rival"}"#);
+    let tx = s.conn.transaction().unwrap();
+    assert_eq!(
+        store_forked_entries(&tx, &s.log, &[rival.clone().into()], None).unwrap(),
+        1
+    );
+    tx.commit().unwrap();
+    assert_eq!(
+        count(
+            &s.conn,
+            "SELECT COUNT(*) FROM journal_opaque WHERE branch=0 AND counter=3"
+        ),
+        1
+    );
+    assert_eq!(count(&s.conn, "SELECT COUNT(*) FROM journal_forked"), 1);
+    let main = serve_branch_entries(&s.conn, &s.log, (3, s.opaque.hash()), 1, limits)
+        .unwrap()
+        .unwrap();
+    assert_eq!(main[2], StoredEntry::from(s.opaque.clone()));
+    assert_eq!(main[2].as_opaque().unwrap().raw(), s.opaque.raw());
+    let side = serve_branch_entries(&s.conn, &s.log, (3, rival.hash), 1, limits)
+        .unwrap()
+        .unwrap();
+    assert_eq!(side[2], StoredEntry::from(rival.clone()));
+    assert_eq!(side.len(), 3);
+    // The known-entry wrapper serves the known branch and stops before the
+    // opaque chain row.
+    let known_main = serve_branch(&s.conn, &s.log, (3, s.opaque.hash()), 1, limits)
+        .unwrap()
+        .unwrap();
+    assert_eq!(known_main, s.known);
+
+    // Held known 3, opaque rival 3.
+    let (a, b) = (Store::new(), Store::new());
+    let (_actx, _aconn, log, known) = chain_of_a(&a, 2);
+    let (ctx, mut conn) = opened_b(&b, 77);
+    ingest_stored(&ctx, &mut conn, &log, wrapped(&known)).unwrap();
+    let rival = opaque_in(log, 3, known[1].hash, "rival");
+    let tx = conn.transaction().unwrap();
+    assert_eq!(
+        store_forked_entries(&tx, &log, &[rival.clone().into()], None).unwrap(),
+        1
+    );
+    // A repeat is an exact duplicate.
+    assert_eq!(
+        store_forked_entries(&tx, &log, &[rival.clone().into()], None).unwrap(),
+        0
+    );
+    tx.commit().unwrap();
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM journal_opaque WHERE branch=1 AND counter=3"
+        ),
+        1
+    );
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM journal_forked"), 0);
+    let main = serve_branch_entries(&conn, &log, (3, known[2].hash), 1, limits)
+        .unwrap()
+        .unwrap();
+    assert_eq!(main, wrapped(&known));
+    let side = serve_branch_entries(&conn, &log, (3, rival.hash()), 1, limits)
+        .unwrap()
+        .unwrap();
+    assert_eq!(side[2], StoredEntry::from(rival.clone()));
+    assert_eq!(side[2].as_opaque().unwrap().raw(), rival.raw());
+    // Below the cut, the known wrapper serves the known prefix of the branch.
+    let known_side = serve_branch(&conn, &log, (3, rival.hash()), 1, limits)
+        .unwrap()
+        .unwrap();
+    assert_eq!(known_side, known[..2]);
+}
+
+#[test]
+fn promote_opaque_moves_row_atomically() {
+    let mut s = with_opaque_three();
+    let parsed = parse_synthetic(&s.opaque).unwrap();
+    // A mismatched hash changes nothing.
+    let mut wrong = parsed.clone();
+    wrong.hash[0] ^= 1;
+    let tx = s.conn.transaction().unwrap();
+    let error = promote_opaque(&tx, &s.log, &wrong, decision()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert!(error.detail.contains("no opaque entry to promote"));
+    drop(tx);
+    assert_eq!(count(&s.conn, "SELECT COUNT(*) FROM journal_opaque"), 1);
+    // Outside promote_opaque the row still cannot be deleted.
+    let refused = s
+        .conn
+        .execute("DELETE FROM journal_opaque", [])
+        .unwrap_err();
+    assert!(refused.to_string().contains("journal_opaque_append_only"));
+
+    let tx = s.conn.transaction().unwrap();
+    let seq = promote_opaque(&tx, &s.log, &parsed, decision()).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(count(&s.conn, "SELECT COUNT(*) FROM journal_opaque"), 0);
+    assert_eq!(
+        count(&s.conn, "SELECT COUNT(*) FROM journal_opaque_promoting"),
+        0
+    );
+    let (counter, hash, state): (i64, Vec<u8>, String) = s
+        .conn
+        .query_row(
+            "SELECT counter,hash,apply_state FROM journal WHERE ingest_seq=?1",
+            [seq],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (counter, hash, state.as_str()),
+        (3, s.opaque.hash().to_vec(), "pending")
+    );
+    verify_invariants(&s.conn).unwrap();
+}
+
+#[test]
+fn envelope_port_ingest_over_opaque_held_is_store_error() {
+    let mut s = with_opaque_three();
+    let rival = signed_entry(&identity(), s.log, 3, s.known[1].hash, r#"{"id":"rival"}"#);
+    let error = ingest(&s.ctx, &mut s.conn, &s.log, vec![rival], &budget()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt);
+    assert!(
+        error
+            .detail
+            .contains("fork evidence holds an opaque entry; the StoredEntry port is ht-j87z.15"),
+        "{}",
+        error.detail
+    );
 }

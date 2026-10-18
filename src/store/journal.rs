@@ -43,7 +43,8 @@ use crate::store::connection::{
 };
 use crate::sync::chain::{ChainStep, HeldLog, check_next};
 use crate::sync::envelope::{
-    Deps, Envelope, EnvelopeError, GENESIS_KIND, PAYLOAD_MAX, UnsignedEnvelope, hex_encode,
+    Deps, Envelope, EnvelopeError, GENESIS_KIND, OpaqueEntry, OpaqueHeader, PAYLOAD_MAX,
+    StoredEntry, UnsignedEnvelope, hex_encode,
 };
 use crate::sync::facts::{FactKind, FactRegistry, GenesisPayload, NodeGenesis};
 use crate::sync::hlc::{Fold, Hlc, HlcStamp};
@@ -242,6 +243,17 @@ pub(crate) fn verify_invariants(tx: &Connection) -> Result<(), ApiError> {
                 "journal invariant: {label} applied_through {applied} != contiguous_counter {contiguous} (active self log)"
             )));
         }
+    }
+    // The promotion marker lives only inside `promote_opaque`'s transaction.
+    let marked: i64 = tx
+        .query_row("SELECT COUNT(*) FROM journal_opaque_promoting", [], |r| {
+            r.get(0)
+        })
+        .map_err(store_error)?;
+    if marked != 0 {
+        return Err(corrupt(
+            "journal invariant: journal_opaque_promoting is not empty",
+        ));
     }
     Ok(())
 }
@@ -775,24 +787,22 @@ struct RawEnvelope {
     signature: Vec<u8>,
 }
 
-/// The `journal` columns [`RawEnvelope`] reads, in order.
-const ENVELOPE_COLUMNS: &str =
-    "counter,prev_hash,hlc,kind,kind_version,deps,creates,needs,payload,hash,signature";
-
 impl RawEnvelope {
-    fn read(r: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+    /// Reads the eleven columns that start at `at`: `counter, prev_hash, hlc, kind,
+    /// kind_version, deps, creates, needs, payload, hash, signature`.
+    fn read_at(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Self> {
         Ok(Self {
-            counter: r.get(0)?,
-            prev_hash: r.get(1)?,
-            hlc: r.get(2)?,
-            kind: r.get(3)?,
-            kind_version: r.get(4)?,
-            deps: r.get(5)?,
-            creates: r.get(6)?,
-            needs: r.get(7)?,
-            payload: r.get(8)?,
-            hash: r.get(9)?,
-            signature: r.get(10)?,
+            counter: r.get(at)?,
+            prev_hash: r.get(at + 1)?,
+            hlc: r.get(at + 2)?,
+            kind: r.get(at + 3)?,
+            kind_version: r.get(at + 4)?,
+            deps: r.get(at + 5)?,
+            creates: r.get(at + 6)?,
+            needs: r.get(at + 7)?,
+            payload: r.get(at + 8)?,
+            hash: r.get(at + 9)?,
+            signature: r.get(at + 10)?,
         })
     }
 
@@ -979,22 +989,119 @@ fn hash_at(conn: &Connection, log_ix: i64, counter: u64) -> Result<Option<[u8; 3
     .transpose()
 }
 
-fn envelope_at(
+/// The stored columns of one `journal_opaque` row, read before decoding.
+struct RawOpaque {
+    counter: i64,
+    prev_hash: Vec<u8>,
+    hash: Vec<u8>,
+    signature: Vec<u8>,
+    raw: Vec<u8>,
+}
+
+impl RawOpaque {
+    /// Rebuilds the header from the row and shape-checks it. No signature
+    /// check on read, as [`RawEnvelope::decode`] does none.
+    fn decode(self, log: &LogKey) -> Result<OpaqueEntry, ApiError> {
+        let bad = || corrupt("journal invariant: stored opaque entry");
+        let header = OpaqueHeader {
+            log: *log,
+            counter: u64::try_from(self.counter).map_err(|_| bad())?,
+            prev_hash: self.prev_hash.try_into().map_err(|_| bad())?,
+            hash: self.hash.try_into().map_err(|_| bad())?,
+            signature: self.signature.try_into().map_err(|_| bad())?,
+        };
+        OpaqueEntry::new(header, self.raw).map_err(|_| bad())
+    }
+}
+
+/// How far a chain read goes past the entries this node understands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Rows {
+    /// Every row, known and opaque.
+    All,
+    /// The known rows before the first opaque one; that row is not decoded
+    /// and ends the read. What the `Envelope` port serves until it carries
+    /// `StoredEntry` (ht-j87z.15).
+    KnownPrefix,
+}
+
+/// One row of a chain or branch read, before decoding.
+enum RawRow {
+    Known(RawEnvelope),
+    Opaque(RawOpaque),
+    /// An opaque row met under [`Rows::KnownPrefix`]; its blobs are unread.
+    Cut,
+}
+
+impl RawRow {
+    /// Reads the shared layout of [`entry_select`]: `opaque`, `counter`, the
+    /// eleven [`RawEnvelope::read_at`] columns, then the `journal_opaque` columns.
+    fn read(r: &rusqlite::Row<'_>, rows: Rows) -> rusqlite::Result<Self> {
+        if !r.get::<_, bool>(0)? {
+            return RawEnvelope::read_at(r, 2).map(Self::Known);
+        }
+        if rows == Rows::KnownPrefix {
+            return Ok(Self::Cut);
+        }
+        Ok(Self::Opaque(RawOpaque {
+            counter: r.get(1)?,
+            prev_hash: r.get(13)?,
+            hash: r.get(14)?,
+            signature: r.get(15)?,
+            raw: r.get(16)?,
+        }))
+    }
+
+    /// `None` for [`RawRow::Cut`].
+    fn decode(self, log: &LogKey) -> Result<Option<StoredEntry>, ApiError> {
+        Ok(match self {
+            Self::Known(raw) => Some(StoredEntry::Known(raw.decode(log)?)),
+            Self::Opaque(raw) => Some(StoredEntry::Opaque(raw.decode(log)?)),
+            Self::Cut => None,
+        })
+    }
+}
+
+/// The select list and joins of one chain or branch read over `rows` (an
+/// alias of [`CHAIN_ROWS`] or [`BRANCH_ROWS`]); `known` is the table a known
+/// row lives in (`journal` or `journal_forked`) and `opaque_branch` the
+/// `journal_opaque.branch` value of its opaque rows.
+fn entry_select(rows: &str, known: &str, opaque_branch: u8) -> String {
+    format!(
+        "SELECT c.opaque,c.counter,\
+         k.counter,k.prev_hash,k.hlc,k.kind,k.kind_version,k.deps,k.creates,k.needs,k.payload,k.hash,k.signature,\
+         o.prev_hash,o.hash,o.signature,o.raw \
+         FROM {rows} c \
+         LEFT JOIN {known} k ON k.log_ix=c.log_ix AND k.counter=c.counter AND k.hash=c.hash AND c.opaque=0 \
+         LEFT JOIN journal_opaque o ON o.log_ix=c.log_ix AND o.counter=c.counter AND o.hash=c.hash \
+         AND c.opaque=1 AND o.branch={opaque_branch}"
+    )
+}
+
+/// The chain position `counter` of `log` as a stored entry, known or opaque.
+fn entry_at_position(
     conn: &Connection,
     log_ix: i64,
     log: &LogKey,
     counter: u64,
-) -> Result<Envelope, ApiError> {
-    let raw = conn
-        .query_row(
-            &format!("SELECT {ENVELOPE_COLUMNS} FROM journal WHERE log_ix=?1 AND counter=?2"),
-            params![log_ix, i64::try_from(counter).unwrap_or(i64::MAX)],
-            RawEnvelope::read,
-        )
-        .optional()
-        .map_err(store_error)?
-        .ok_or_else(|| corrupt("journal invariant: held entry missing"))?;
-    raw.decode(log)
+) -> Result<StoredEntry, ApiError> {
+    let mut batch = Batch::new(BatchLimits {
+        entries: 1,
+        bytes: usize::MAX,
+    });
+    entries_from(
+        conn,
+        log_ix,
+        log,
+        counter,
+        Some(counter),
+        Rows::All,
+        &mut batch,
+    )?;
+    batch
+        .out
+        .pop()
+        .ok_or_else(|| corrupt("journal invariant: held entry missing"))
 }
 
 /// The head of every log this node holds: `sync_logs` rows in `(node,
@@ -1061,13 +1168,34 @@ pub fn stored_hash(
 /// canonical size past `limits.bytes`; but always returns at least one entry
 /// when `from <= contiguous`, even an oversized one, so a peer can always make
 /// progress. An unknown log, or `from` beyond the contiguous head, gives an
-/// empty vec.
+/// empty vec. Stops before the first opaque row without decoding it, so the
+/// result is a known prefix; [`serve_entries`] serves opaque rows too.
 pub fn serve(
     conn: &Connection,
     log: &LogKey,
     from: u64,
     limits: BatchLimits,
 ) -> Result<Vec<Envelope>, ApiError> {
+    known_only(serve_rows(conn, log, from, limits, Rows::KnownPrefix)?)
+}
+
+/// [`serve`] over every chain position, known and opaque, byte-exact.
+pub fn serve_entries(
+    conn: &Connection,
+    log: &LogKey,
+    from: u64,
+    limits: BatchLimits,
+) -> Result<Vec<StoredEntry>, ApiError> {
+    serve_rows(conn, log, from, limits, Rows::All)
+}
+
+fn serve_rows(
+    conn: &Connection,
+    log: &LogKey,
+    from: u64,
+    limits: BatchLimits,
+    rows: Rows,
+) -> Result<Vec<StoredEntry>, ApiError> {
     let Some(row) = load_log(conn, log)? else {
         return Ok(Vec::new());
     };
@@ -1075,33 +1203,20 @@ pub fn serve(
     if from > row.held.contiguous {
         return Ok(Vec::new());
     }
-    let mut statement = conn
-        .prepare(&format!(
-            "SELECT {ENVELOPE_COLUMNS} FROM journal WHERE log_ix=?1 AND counter>=?2 \
-             ORDER BY counter"
-        ))
-        .map_err(store_error)?;
-    let rows = statement
-        .query_map(
-            params![row.log_ix, i64::try_from(from).unwrap_or(i64::MAX)],
-            RawEnvelope::read,
-        )
-        .map_err(store_error)?;
-    let mut out: Vec<Envelope> = Vec::new();
-    let mut bytes = 0usize;
-    for raw in rows {
-        if out.len() >= limits.entries.max(1) {
-            break;
-        }
-        let envelope = raw.map_err(store_error)?.decode(log)?;
-        let size = envelope.canonical_bytes().len();
-        if !out.is_empty() && bytes.saturating_add(size) > limits.bytes {
-            break;
-        }
-        bytes = bytes.saturating_add(size);
-        out.push(envelope);
-    }
-    Ok(out)
+    let mut batch = Batch::new(limits);
+    entries_from(conn, row.log_ix, log, from, None, rows, &mut batch)?;
+    Ok(batch.out)
+}
+
+/// The known entries of a [`Rows::KnownPrefix`] read.
+fn known_only(entries: Vec<StoredEntry>) -> Result<Vec<Envelope>, ApiError> {
+    entries
+        .into_iter()
+        .map(|entry| match entry {
+            StoredEntry::Known(envelope) => Ok(envelope),
+            StoredEntry::Opaque(_) => Err(corrupt("journal invariant: opaque entry in known read")),
+        })
+        .collect()
 }
 
 /// Most `journal_forked` rows [`serve_branch`] walks before it answers `None`.
@@ -1109,11 +1224,14 @@ pub const BRANCH_WALK_MAX_STEPS: u64 = 65_536;
 
 /// Accumulates a served batch under [`BatchLimits`]: at most `entries`
 /// entries, stopping before the entry that would take the canonical size past
-/// `bytes`, but always at least one entry, even an oversized one.
-struct Batch {
+/// `bytes`, but always at least one entry, even an oversized one. Once it
+/// refuses an entry it refuses every later one, so a batch never skips a
+/// position.
+pub(crate) struct Batch {
     limits: BatchLimits,
-    out: Vec<Envelope>,
+    out: Vec<StoredEntry>,
     bytes: usize,
+    closed: bool,
 }
 
 impl Batch {
@@ -1122,56 +1240,111 @@ impl Batch {
             limits,
             out: Vec::new(),
             bytes: 0,
+            closed: false,
         }
     }
 
-    /// Adds `envelope` unless a limit is hit; `false` means the batch is full.
-    fn push(&mut self, envelope: Envelope) -> bool {
-        if self.out.len() >= self.limits.entries.max(1) {
+    /// Adds `entry` unless a limit is hit; `false` means the batch is full.
+    fn push(&mut self, entry: StoredEntry) -> bool {
+        if self.closed || self.out.len() >= self.limits.entries.max(1) {
+            self.closed = true;
             return false;
         }
-        let size = envelope.canonical_bytes().len();
+        let size = entry.size();
         if !self.out.is_empty() && self.bytes.saturating_add(size) > self.limits.bytes {
+            self.closed = true;
             return false;
         }
         self.bytes = self.bytes.saturating_add(size);
-        self.out.push(envelope);
+        self.out.push(entry);
         true
     }
 }
 
-/// Adds `journal` rows `from..=to` of `log_ix` to `batch`, in counter order,
-/// until the batch is full.
-fn batch_journal_range(
+/// The Chain-row reader: adds the chain positions `from..=to` (or to the end)
+/// of `log_ix` to `batch`, in counter order, as [`StoredEntry`], until the
+/// batch is full. With [`Rows::KnownPrefix`] it also stops, closing the
+/// batch, at the first opaque row, before reading that row's blobs.
+///
+/// The only functions in this file that select from `journal_opaque` are this
+/// one, [`entry_at_position`] (through it), [`branch_entry`], [`insert_opaque`]
+/// and [`promote_opaque`].
+pub(crate) fn entries_from(
     conn: &Connection,
     log_ix: i64,
     log: &LogKey,
     from: u64,
-    to: u64,
+    to: Option<u64>,
+    rows: Rows,
     batch: &mut Batch,
 ) -> Result<(), ApiError> {
     let mut statement = conn
         .prepare(&format!(
-            "SELECT {ENVELOPE_COLUMNS} FROM journal WHERE log_ix=?1 AND counter>=?2 \
-             AND counter<=?3 ORDER BY counter"
+            "{} WHERE c.log_ix=?1 AND c.counter>=?2 AND c.counter<=?3 ORDER BY c.counter",
+            entry_select(CHAIN_ROWS, "journal", 0)
         ))
         .map_err(store_error)?;
-    let rows = statement
+    let found = statement
         .query_map(
             params![
                 log_ix,
                 i64::try_from(from).unwrap_or(i64::MAX),
-                i64::try_from(to).unwrap_or(i64::MAX)
+                to.map_or(i64::MAX, |to| i64::try_from(to).unwrap_or(i64::MAX))
             ],
-            RawEnvelope::read,
+            |r| RawRow::read(r, rows),
         )
         .map_err(store_error)?;
-    for raw in rows {
-        if !batch.push(raw.map_err(store_error)?.decode(log)?) {
+    for raw in found {
+        let Some(entry) = raw.map_err(store_error)?.decode(log)? else {
+            batch.closed = true;
+            break;
+        };
+        if !batch.push(entry) {
             break;
         }
     }
     Ok(())
+}
+
+/// What [`branch_entry`] found.
+enum BranchRead {
+    Entry(Box<StoredEntry>),
+    /// An opaque row under [`Rows::KnownPrefix`].
+    Cut,
+    Missing,
+}
+
+/// The fork-branch row `(counter, hash)` of `log_ix`: a `journal_forked` row
+/// or a `branch = 1` `journal_opaque` row.
+fn branch_entry(
+    conn: &Connection,
+    log_ix: i64,
+    log: &LogKey,
+    counter: u64,
+    hash: &[u8; 32],
+    rows: Rows,
+) -> Result<BranchRead, ApiError> {
+    let raw = conn
+        .query_row(
+            &format!(
+                "{} WHERE c.log_ix=?1 AND c.counter=?2 AND c.hash=?3",
+                entry_select(BRANCH_ROWS, "journal_forked", 1)
+            ),
+            params![
+                log_ix,
+                i64::try_from(counter).unwrap_or(i64::MAX),
+                hash.as_slice()
+            ],
+            |r| RawRow::read(r, rows),
+        )
+        .optional()
+        .map_err(store_error)?;
+    Ok(match raw {
+        None => BranchRead::Missing,
+        Some(raw) => raw
+            .decode(log)?
+            .map_or(BranchRead::Cut, |entry| BranchRead::Entry(Box::new(entry))),
+    })
 }
 
 /// The batch of the branch of `log` that ends at `tip`, starting at counter
@@ -1191,7 +1364,9 @@ fn batch_journal_range(
 /// least one entry when the range is not empty). `None` means "cannot serve
 /// this branch": an unknown log, an unknown tip, a broken chain or a walk
 /// over the bound. `Some(vec![])` means the branch is known and nothing lies
-/// in range (`from` beyond the tip).
+/// in range (`from` beyond the tip). Like [`serve`], it stops before the
+/// first opaque row, chain position or branch row; [`serve_branch_entries`]
+/// serves those too.
 pub fn serve_branch(
     conn: &Connection,
     log: &LogKey,
@@ -1199,10 +1374,39 @@ pub fn serve_branch(
     from: u64,
     limits: BatchLimits,
 ) -> Result<Option<Vec<Envelope>>, ApiError> {
-    serve_branch_within(conn, log, tip, from, limits, BRANCH_WALK_MAX_STEPS)
+    serve_branch_within(
+        conn,
+        log,
+        tip,
+        from,
+        limits,
+        BRANCH_WALK_MAX_STEPS,
+        Rows::KnownPrefix,
+    )?
+    .map(known_only)
+    .transpose()
 }
 
-/// [`serve_branch`] with the walk bound given.
+/// [`serve_branch`] over known and opaque rows, byte-exact.
+pub fn serve_branch_entries(
+    conn: &Connection,
+    log: &LogKey,
+    tip: (u64, [u8; 32]),
+    from: u64,
+    limits: BatchLimits,
+) -> Result<Option<Vec<StoredEntry>>, ApiError> {
+    serve_branch_within(
+        conn,
+        log,
+        tip,
+        from,
+        limits,
+        BRANCH_WALK_MAX_STEPS,
+        Rows::All,
+    )
+}
+
+/// [`serve_branch`] with the walk bound and the row scope given.
 fn serve_branch_within(
     conn: &Connection,
     log: &LogKey,
@@ -1210,7 +1414,8 @@ fn serve_branch_within(
     from: u64,
     limits: BatchLimits,
     max_steps: u64,
-) -> Result<Option<Vec<Envelope>>, ApiError> {
+    rows: Rows,
+) -> Result<Option<Vec<StoredEntry>>, ApiError> {
     let Some(row) = load_log(conn, log)? else {
         return Ok(None);
     };
@@ -1219,7 +1424,15 @@ fn serve_branch_within(
     let mut batch = Batch::new(limits);
     if hash_at(conn, row.log_ix, tip_counter)? == Some(tip_hash) {
         if from <= tip_counter {
-            batch_journal_range(conn, row.log_ix, log, from, tip_counter, &mut batch)?;
+            entries_from(
+                conn,
+                row.log_ix,
+                log,
+                from,
+                Some(tip_counter),
+                rows,
+                &mut batch,
+            )?;
         }
         return Ok(Some(batch.out));
     }
@@ -1248,31 +1461,19 @@ fn serve_branch_within(
         (counter, hash) = (counter - 1, prev);
     }
     if let Some(join) = join {
-        batch_journal_range(conn, row.log_ix, log, from, join, &mut batch)?;
+        entries_from(conn, row.log_ix, log, from, Some(join), rows, &mut batch)?;
     }
     for (counter, hash) in path.into_iter().rev().filter(|(c, _)| *c >= from) {
-        let Some(raw) = conn
-            .query_row(
-                &format!(
-                    "SELECT {ENVELOPE_COLUMNS} FROM journal_forked \
-                     WHERE log_ix=?1 AND counter=?2 AND hash=?3"
-                ),
-                params![
-                    row.log_ix,
-                    i64::try_from(counter).unwrap_or(i64::MAX),
-                    hash.as_slice()
-                ],
-                RawEnvelope::read,
-            )
-            .optional()
-            .map_err(store_error)?
-        else {
-            // An opaque branch row (the walk above found it in
-            // `journal_opaque`): ht-j87z.6 serves it as a `StoredEntry`.
-            continue;
-        };
-        if !batch.push(raw.decode(log)?) {
-            break;
+        match branch_entry(conn, row.log_ix, log, counter, &hash, rows)? {
+            BranchRead::Entry(entry) => {
+                if !batch.push(*entry) {
+                    break;
+                }
+            }
+            BranchRead::Cut => break,
+            BranchRead::Missing => {
+                return Err(corrupt("journal invariant: branch row missing"));
+            }
         }
     }
     Ok(Some(batch.out))
@@ -1329,7 +1530,7 @@ const INGEST_BATCH_MAX: usize = 256;
 /// Seconds between two skew lines for one log, in ms.
 const SKEW_LOG_INTERVAL_MS: i64 = 3_600_000;
 
-fn malformed_batch(log: &LogKey, counter: u64, field: &'static str) -> IngestOutcome {
+fn malformed_batch<E>(log: &LogKey, counter: u64, field: &'static str) -> IngestOutcome<E> {
     IngestOutcome::Corrupt {
         log: *log,
         counter,
@@ -1365,6 +1566,75 @@ pub fn ingest(
     entries: Vec<Envelope>,
     budget: &CallBudget,
 ) -> Result<IngestOutcome, ApiError> {
+    let entries = entries.into_iter().map(StoredEntry::from).collect();
+    known_outcome(ingest_entries(ctx, conn, log, entries, budget)?)
+}
+
+/// The `Envelope` view of an entry-level outcome. A fork whose side is an
+/// opaque entry cannot be expressed by the `Envelope` port, which returns
+/// `Err` instead; the `StoredEntry` port is ht-j87z.15, and production cannot
+/// reach it before then (no wire form carries an opaque entry).
+fn known_outcome(outcome: IngestOutcome<StoredEntry>) -> Result<IngestOutcome, ApiError> {
+    let known = |entry: Box<StoredEntry>| {
+        entry.as_known().cloned().map(Box::new).ok_or_else(|| {
+            corrupt(
+                "journal: fork evidence holds an opaque entry; the StoredEntry port is ht-j87z.15",
+            )
+        })
+    };
+    Ok(match outcome {
+        IngestOutcome::Stored {
+            stored,
+            duplicates,
+            head,
+        } => IngestOutcome::Stored {
+            stored,
+            duplicates,
+            head,
+        },
+        IngestOutcome::Gap { stored, expected } => IngestOutcome::Gap { stored, expected },
+        IngestOutcome::Fork { stored, evidence } => IngestOutcome::Fork {
+            stored,
+            evidence: match evidence {
+                ForkEvidence::AheadOfSelf {
+                    log,
+                    my_head,
+                    entry,
+                } => ForkEvidence::AheadOfSelf {
+                    log,
+                    my_head,
+                    entry: known(entry)?,
+                },
+                ForkEvidence::Conflict { held, conflicting } => ForkEvidence::Conflict {
+                    held: known(held)?,
+                    conflicting: known(conflicting)?,
+                },
+            },
+        },
+        IngestOutcome::Frozen { stored, frozen_at } => IngestOutcome::Frozen { stored, frozen_at },
+        IngestOutcome::Corrupt {
+            log,
+            counter,
+            reason,
+        } => IngestOutcome::Corrupt {
+            log,
+            counter,
+            reason,
+        },
+        IngestOutcome::Headroom => IngestOutcome::Headroom,
+    })
+}
+
+/// [`ingest`] over [`StoredEntry`]: an opaque append is stored in
+/// `journal_opaque`, moves the head and does not fold the HLC. Fork evidence
+/// carries both sides as stored, known or opaque.
+pub fn ingest_entries(
+    ctx: &StoreContext,
+    conn: &mut Connection,
+    log: &LogKey,
+    entries: Vec<StoredEntry>,
+    budget: &CallBudget,
+) -> Result<IngestOutcome<StoredEntry>, ApiError> {
     let sync = ctx.sync()?;
     if budget.is_exhausted(ctx.clock()) {
         return Err(if budget.cancellation.is_cancelled() {
@@ -1381,8 +1651,8 @@ pub fn ingest(
     if entries.len() > INGEST_BATCH_MAX {
         return Ok(malformed_batch(log, 0, "batch"));
     }
-    if let Some(stray) = entries.iter().find(|entry| entry.log != *log) {
-        return Ok(malformed_batch(log, stray.counter, "log"));
+    if let Some(stray) = entries.iter().find(|entry| entry.log() != *log) {
+        return Ok(malformed_batch(log, stray.counter(), "log"));
     }
     match ingest_batch(ctx, sync, conn, log, &entries) {
         Err(error) if error.code == ErrorCode::StoreFull => Ok(IngestOutcome::Headroom),
@@ -1395,8 +1665,8 @@ fn ingest_batch(
     sync: &SyncState,
     conn: &mut Connection,
     log: &LogKey,
-    entries: &[Envelope],
-) -> Result<IngestOutcome, ApiError> {
+    entries: &[StoredEntry],
+) -> Result<IngestOutcome<StoredEntry>, ApiError> {
     let wall = ctx.clock().utc_now();
     let decision = DecisionInstant {
         utc: wall,
@@ -1408,13 +1678,13 @@ fn ingest_batch(
     let mut row = load_log(&tx, log)?;
     let (mut stored, mut duplicates) = (0usize, 0usize);
     let mut max_ahead: Option<u64> = None;
-    let mut stop: Option<IngestOutcome> = None;
+    let mut stop: Option<IngestOutcome<StoredEntry>> = None;
     for entry in entries {
         let step = {
             let view = match row.as_mut() {
                 Some(row) => {
-                    row.held.stored_hash = if entry.counter <= row.held.contiguous {
-                        hash_at(&tx, row.log_ix, entry.counter)?
+                    row.held.stored_hash = if entry.counter() <= row.held.contiguous {
+                        hash_at(&tx, row.log_ix, entry.counter())?
                     } else {
                         None
                     };
@@ -1429,7 +1699,7 @@ fn ingest_batch(
             ChainStep::Corrupt(reason) => {
                 return Ok(IngestOutcome::Corrupt {
                     log: *log,
-                    counter: entry.counter,
+                    counter: entry.counter(),
                     reason,
                 });
             }
@@ -1460,58 +1730,72 @@ fn ingest_batch(
                 let Some(row) = row.as_ref() else {
                     return Err(corrupt("journal invariant: conflict without a held log"));
                 };
-                let held_counter = if entry.counter <= row.held.contiguous {
-                    entry.counter
+                let held_counter = if entry.counter() <= row.held.contiguous {
+                    entry.counter()
                 } else {
-                    entry.counter - 1
+                    entry.counter() - 1
                 };
                 stop = Some(IngestOutcome::Fork {
                     stored,
                     evidence: ForkEvidence::Conflict {
-                        held: Box::new(envelope_at(&tx, row.log_ix, log, held_counter)?),
+                        held: Box::new(entry_at_position(&tx, row.log_ix, log, held_counter)?),
                         conflicting: Box::new(entry.clone()),
                     },
                 });
                 break;
             }
             step @ (ChainStep::Genesis | ChainStep::Append) => {
-                // The chain check proved hash and signature; the shape is the
-                // sender's claim, so refuse what the table cannot hold.
-                if let Err(reason) = entry.validate_shape() {
-                    return Ok(IngestOutcome::Corrupt {
-                        log: *log,
-                        counter: entry.counter,
-                        reason,
-                    });
-                }
-                if step == ChainStep::Genesis {
-                    let pubkey = match entry.genesis_pubkey() {
-                        Ok(pubkey) => pubkey,
-                        Err(reason) => {
+                match entry {
+                    StoredEntry::Known(envelope) => {
+                        // The chain check proved hash and signature; the shape is the
+                        // sender's claim, so refuse what the table cannot hold.
+                        if let Err(reason) = envelope.validate_shape() {
                             return Ok(IngestOutcome::Corrupt {
                                 log: *log,
-                                counter: entry.counter,
+                                counter: envelope.counter,
                                 reason,
                             });
                         }
-                    };
-                    row = Some(insert_log(&tx, log, &pubkey, entry, wall)?);
+                        if step == ChainStep::Genesis {
+                            let pubkey = match envelope.genesis_pubkey() {
+                                Ok(pubkey) => pubkey,
+                                Err(reason) => {
+                                    return Ok(IngestOutcome::Corrupt {
+                                        log: *log,
+                                        counter: envelope.counter,
+                                        reason,
+                                    });
+                                }
+                            };
+                            row = Some(insert_log(&tx, log, &pubkey, envelope, wall)?);
+                        }
+                        let Some(row) = row.as_mut() else {
+                            return Err(corrupt("journal invariant: append without a log row"));
+                        };
+                        insert_pending(&tx, row.log_ix, envelope, decision)?;
+                        row.held.contiguous = envelope.counter;
+                        row.held.head_hash = envelope.hash;
+                        let fold = sync
+                            .hlc
+                            .lock()
+                            .map_err(|_| corrupt("hlc poisoned"))?
+                            .fold(wall, envelope.hlc);
+                        if let Fold::Skewed { ahead_ms } = fold {
+                            max_ahead = Some(max_ahead.map_or(ahead_ms, |seen| seen.max(ahead_ms)));
+                        }
+                    }
+                    StoredEntry::Opaque(opaque) => {
+                        // `check_next` refuses an opaque genesis, so this is an append.
+                        let (ChainStep::Append, Some(row)) = (step, row.as_mut()) else {
+                            return Err(corrupt("journal invariant: opaque genesis"));
+                        };
+                        insert_opaque(&tx, row.log_ix, opaque, false)?;
+                        row.held.contiguous = opaque.counter();
+                        row.held.head_hash = opaque.hash();
+                        // No HLC fold: an opaque entry has no readable hlc.
+                    }
                 }
-                let Some(row) = row.as_mut() else {
-                    return Err(corrupt("journal invariant: append without a log row"));
-                };
-                insert_pending(&tx, row.log_ix, entry, decision)?;
-                row.held.contiguous = entry.counter;
-                row.held.head_hash = entry.hash;
                 stored += 1;
-                let fold = sync
-                    .hlc
-                    .lock()
-                    .map_err(|_| corrupt("hlc poisoned"))?
-                    .fold(wall, entry.hlc);
-                if let Fold::Skewed { ahead_ms } = fold {
-                    max_ahead = Some(max_ahead.map_or(ahead_ms, |seen| seen.max(ahead_ms)));
-                }
             }
         }
     }
@@ -1632,18 +1916,37 @@ pub fn store_forked(
     entries: &[Envelope],
     source: Option<NodeUuid>,
 ) -> Result<usize, ApiError> {
+    let entries: Vec<StoredEntry> = entries.iter().cloned().map(StoredEntry::from).collect();
+    store_forked_entries(tx, log, &entries, source)
+}
+
+/// [`store_forked`] over [`StoredEntry`]: an opaque side goes to
+/// `journal_opaque` with `branch = 1` (that table records no `source`).
+pub fn store_forked_entries(
+    tx: &Transaction<'_>,
+    log: &LogKey,
+    entries: &[StoredEntry],
+    source: Option<NodeUuid>,
+) -> Result<usize, ApiError> {
     let Some(row) = load_log(tx, log)? else {
         return Err(api_error(ErrorCode::NotFound, "unknown log"));
     };
     let source = source.map(|node| node.to_string());
     let mut inserted = 0;
     for entry in entries {
-        if entry.log != *log {
+        if entry.log() != *log {
             return Err(api_error(
                 ErrorCode::InvalidRequest,
                 "forked entry names another log",
             ));
         }
+        let entry = match entry {
+            StoredEntry::Known(entry) => entry,
+            StoredEntry::Opaque(opaque) => {
+                inserted += usize::from(insert_opaque(tx, row.log_ix, opaque, true)?);
+                continue;
+            }
+        };
         let needs = entry
             .needs
             .iter()
@@ -1673,6 +1976,89 @@ pub fn store_forked(
             .map_err(store_error)?;
     }
     Ok(inserted)
+}
+
+/// Stores a verified opaque entry of `log_ix` (a chain position, or with
+/// `branch` a conflicting-branch entry) and returns whether the row is new
+/// (an exact duplicate is ignored). Position clashes with `journal` abort in
+/// the guard triggers.
+pub(crate) fn insert_opaque(
+    tx: &Transaction<'_>,
+    log_ix: i64,
+    entry: &OpaqueEntry,
+    branch: bool,
+) -> Result<bool, ApiError> {
+    let new = tx
+        .execute(
+            "INSERT OR IGNORE INTO journal_opaque(log_ix,counter,hash,prev_hash,signature,raw,branch) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                log_ix,
+                i64::try_from(entry.counter()).unwrap_or(i64::MAX),
+                entry.hash().as_slice(),
+                entry.prev_hash().as_slice(),
+                entry.signature().as_slice(),
+                entry.raw(),
+                branch,
+            ],
+        )
+        .map_err(store_error)?;
+    Ok(new == 1)
+}
+
+/// Replaces the opaque chain row at `known`'s position with `known`, as a
+/// pending `journal` row, and returns its `ingest_seq`. The opaque row must
+/// exist with the same hash (`InvalidRequest "no opaque entry to promote"`
+/// otherwise, nothing changed).
+///
+/// The only path that deletes a `journal_opaque` row (ht-j87z.13 calls it);
+/// one transaction, the caller's. The marker row exempts that one delete from
+/// the append-only guard and is gone before this returns.
+#[allow(dead_code)] // ht-j87z.13 is the caller; tests exercise it until then
+pub(crate) fn promote_opaque(
+    tx: &Transaction<'_>,
+    log: &LogKey,
+    known: &Envelope,
+    decision: DecisionInstant,
+) -> Result<i64, ApiError> {
+    let Some(row) = load_log(tx, log)? else {
+        return Err(api_error(ErrorCode::NotFound, "unknown log"));
+    };
+    let key = params![
+        row.log_ix,
+        i64::try_from(known.counter).unwrap_or(i64::MAX),
+        known.hash.as_slice()
+    ];
+    let present: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM journal_opaque \
+             WHERE log_ix=?1 AND counter=?2 AND hash=?3 AND branch=0)",
+            key,
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if !present {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "no opaque entry to promote",
+        ));
+    }
+    tx.execute(
+        "INSERT INTO journal_opaque_promoting(log_ix,counter,hash) VALUES (?1,?2,?3)",
+        key,
+    )
+    .map_err(store_error)?;
+    tx.execute(
+        "DELETE FROM journal_opaque WHERE log_ix=?1 AND counter=?2 AND hash=?3 AND branch=0",
+        key,
+    )
+    .map_err(store_error)?;
+    tx.execute(
+        "DELETE FROM journal_opaque_promoting WHERE log_ix=?1 AND counter=?2 AND hash=?3",
+        key,
+    )
+    .map_err(store_error)?;
+    insert_pending(tx, row.log_ix, known, decision)
 }
 
 /// Freezes `log` at counter `at`, lower-only: an active log becomes frozen
@@ -1752,7 +2138,9 @@ impl crate::sync::journal_port::JournalPort for crate::store::SqliteStore {
             .context
             .sync()
             .map_or(BRANCH_WALK_MAX_STEPS, SyncState::branch_walk_bound);
-        serve_branch_within(&db, log, tip, from, limits, bound)
+        serve_branch_within(&db, log, tip, from, limits, bound, Rows::KnownPrefix)?
+            .map(known_only)
+            .transpose()
     }
 
     fn log_meta(&self, log: &LogKey, budget: &CallBudget) -> Result<Option<LogMeta>, ApiError> {

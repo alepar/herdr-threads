@@ -1,7 +1,7 @@
 //! The per-log chain rules: what one incoming entry means for the log it
 //! claims to extend (journal-core design, section 6).
 
-use super::{LogState, envelope::Envelope, envelope::EnvelopeError};
+use super::{LogState, envelope::EnvelopeError, envelope::StoredEntry};
 
 /// What the caller already holds of one origin log, loaded inside its write
 /// transaction. A plain value so [`check_next`] stays pure.
@@ -38,7 +38,7 @@ pub enum ChainStep {
     /// Entries before `expected` are missing.
     Gap { expected: u64 },
     /// First entry of an unknown log, self-certifying; the caller records the
-    /// log with [`Envelope::genesis_pubkey`].
+    /// log with [`StoredEntry::genesis_pubkey`].
     Genesis,
     /// Already held with the same hash.
     Duplicate,
@@ -58,14 +58,14 @@ pub enum ChainStep {
 /// (duplicate, then signature, then `AheadOfSelf`), unknown log, counter at
 /// or below the held prefix, freeze, gap, then `prev_hash` and signature. Hides that order from callers. Does not:
 /// touch the store or the clock, act on the step, or read the payload
-/// (except through [`Envelope::genesis_pubkey`] for a genesis). Role: shared
+/// (except through [`StoredEntry::genesis_pubkey`] for a genesis). Role: shared
 /// by `SqliteStore` and `MemoryJournal` so they cannot disagree. A mismatched
 /// hash or `prev_hash` whose signature does not verify is `Corrupt`, never a
 /// fork, so a damaged transfer cannot freeze a healthy log; this holds for the
 /// self log too.
-pub fn check_next(held: Option<&HeldLog>, entry: &Envelope) -> ChainStep {
+pub fn check_next(held: Option<&HeldLog>, entry: &StoredEntry) -> ChainStep {
     let Some(held) = held else {
-        if entry.counter != 1 {
+        if entry.counter() != 1 {
             return ChainStep::Gap { expected: 1 };
         }
         return match entry
@@ -77,7 +77,7 @@ pub fn check_next(held: Option<&HeldLog>, entry: &Envelope) -> ChainStep {
         };
     };
     if held.is_active_self {
-        if entry.counter <= held.contiguous && held.stored_hash == Some(entry.hash) {
+        if entry.counter() <= held.contiguous && held.stored_hash == Some(entry.hash()) {
             return ChainStep::Duplicate;
         }
         return match entry.verify(&held.pubkey) {
@@ -85,31 +85,31 @@ pub fn check_next(held: Option<&HeldLog>, entry: &Envelope) -> ChainStep {
             Err(err) => ChainStep::Corrupt(err),
         };
     }
-    if entry.counter <= held.contiguous {
-        if held.stored_hash == Some(entry.hash) {
+    if entry.counter() <= held.contiguous {
+        if held.stored_hash == Some(entry.hash()) {
             return ChainStep::Duplicate;
         }
         return signed_conflict(held, entry);
     }
     if let (LogState::Frozen, Some(frozen_at)) = (held.state, held.frozen_at)
-        && entry.counter > frozen_at
+        && entry.counter() > frozen_at
     {
         return ChainStep::BeyondFrozen;
     }
-    if entry.counter > held.contiguous.saturating_add(1) {
+    if entry.counter() > held.contiguous.saturating_add(1) {
         return ChainStep::Gap {
             expected: held.contiguous.saturating_add(1),
         };
     }
     match entry.verify(&held.pubkey) {
         Err(err) => ChainStep::Corrupt(err),
-        Ok(()) if entry.prev_hash != held.head_hash => ChainStep::Conflict,
+        Ok(()) if entry.prev_hash() != held.head_hash => ChainStep::Conflict,
         Ok(()) => ChainStep::Append,
     }
 }
 
 /// A different entry where one is held: a fork only if its author signed it.
-fn signed_conflict(held: &HeldLog, entry: &Envelope) -> ChainStep {
+fn signed_conflict(held: &HeldLog, entry: &StoredEntry) -> ChainStep {
     match entry.verify(&held.pubkey) {
         Ok(()) => ChainStep::Conflict,
         Err(err) => ChainStep::Corrupt(err),
@@ -122,9 +122,14 @@ mod tests {
     use crate::node::NodeIdentity;
     use crate::sync::{
         LogKey,
-        envelope::{Deps, GENESIS_KIND, UnsignedEnvelope},
+        envelope::{Deps, Envelope, GENESIS_KIND, UnsignedEnvelope},
         hlc::HlcStamp,
     };
+    use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
+
+    fn k(e: &Envelope) -> StoredEntry {
+        StoredEntry::from(e.clone())
+    }
 
     fn identity(n: u8) -> NodeIdentity {
         NodeIdentity::from_seed([n; 32])
@@ -210,10 +215,10 @@ mod tests {
         let (mut h, [_, _, e3]) = held(&id);
         h.is_active_self = true;
         let next = entry(&id, &id, 4, e3.hash, "four");
-        assert_eq!(check_next(Some(&h), &next), ChainStep::AheadOfSelf);
+        assert_eq!(check_next(Some(&h), &k(&next)), ChainStep::AheadOfSelf);
         // An own entry already held is a duplicate, not evidence.
         h.stored_hash = Some(e3.hash);
-        assert_eq!(check_next(Some(&h), &e3), ChainStep::Duplicate);
+        assert_eq!(check_next(Some(&h), &k(&e3)), ChainStep::Duplicate);
     }
 
     #[test]
@@ -222,7 +227,7 @@ mod tests {
         let (mut h, [_, e2, _]) = held(&id);
         h.is_active_self = true;
         h.stored_hash = Some(e2.hash);
-        assert_eq!(check_next(Some(&h), &e2), ChainStep::Duplicate);
+        assert_eq!(check_next(Some(&h), &k(&e2)), ChainStep::Duplicate);
     }
 
     #[test]
@@ -232,13 +237,13 @@ mod tests {
         h.is_active_self = true;
         let forged = entry(&id, &identity(9), 4, e3.hash, "four");
         assert_eq!(
-            check_next(Some(&h), &forged),
+            check_next(Some(&h), &k(&forged)),
             ChainStep::Corrupt(EnvelopeError::BadSignature)
         );
         h.stored_hash = Some(e2.hash);
         let rival = entry(&id, &identity(9), 2, e1.hash, "rival");
         assert_eq!(
-            check_next(Some(&h), &rival),
+            check_next(Some(&h), &k(&rival)),
             ChainStep::Corrupt(EnvelopeError::BadSignature)
         );
     }
@@ -251,7 +256,7 @@ mod tests {
         let mut t = entry(&id, &id, 4, e3.hash, "four");
         t.payload = br#"{"t":"changed"}"#.to_vec();
         assert_eq!(
-            check_next(Some(&h), &t),
+            check_next(Some(&h), &k(&t)),
             ChainStep::Corrupt(EnvelopeError::HashMismatch)
         );
     }
@@ -263,7 +268,7 @@ mod tests {
         h.is_active_self = true;
         h.stored_hash = Some(e2.hash);
         let rival = entry(&id, &id, 2, e1.hash, "rival");
-        assert_eq!(check_next(Some(&h), &rival), ChainStep::AheadOfSelf);
+        assert_eq!(check_next(Some(&h), &k(&rival)), ChainStep::AheadOfSelf);
     }
 
     #[test]
@@ -271,10 +276,13 @@ mod tests {
         let id = identity(1);
         let (h, [_, _, e3]) = held(&id);
         let far = entry(&id, &id, 6, e3.hash, "six");
-        assert_eq!(check_next(Some(&h), &far), ChainStep::Gap { expected: 4 });
+        assert_eq!(
+            check_next(Some(&h), &k(&far)),
+            ChainStep::Gap { expected: 4 }
+        );
         let unknown_log = entry(&id, &id, 2, [0; 32], "x");
         assert_eq!(
-            check_next(None, &unknown_log),
+            check_next(None, &k(&unknown_log)),
             ChainStep::Gap { expected: 1 }
         );
     }
@@ -282,7 +290,7 @@ mod tests {
     #[test]
     fn genesis_ok() {
         let id = identity(1);
-        assert_eq!(check_next(None, &genesis(&id)), ChainStep::Genesis);
+        assert_eq!(check_next(None, &k(&genesis(&id))), ChainStep::Genesis);
     }
 
     #[test]
@@ -292,7 +300,7 @@ mod tests {
         // Announces a key that does not hash to the log's node.
         let bad = genesis_with(&id, &other, &other);
         assert_eq!(
-            check_next(None, &bad),
+            check_next(None, &k(&bad)),
             ChainStep::Corrupt(EnvelopeError::UuidMismatch)
         );
     }
@@ -302,7 +310,7 @@ mod tests {
         let id = identity(1);
         let forged = genesis_with(&id, &id, &identity(2));
         assert_eq!(
-            check_next(None, &forged),
+            check_next(None, &k(&forged)),
             ChainStep::Corrupt(EnvelopeError::BadSignature)
         );
     }
@@ -313,7 +321,7 @@ mod tests {
         let mut not_genesis = entry(&id, &id, 1, [0; 32], "x");
         not_genesis.counter = 1;
         assert_eq!(
-            check_next(None, &not_genesis),
+            check_next(None, &k(&not_genesis)),
             ChainStep::Corrupt(EnvelopeError::NotGenesis)
         );
     }
@@ -323,7 +331,7 @@ mod tests {
         let id = identity(1);
         let (mut h, [_, e2, _]) = held(&id);
         h.stored_hash = Some(e2.hash);
-        assert_eq!(check_next(Some(&h), &e2), ChainStep::Duplicate);
+        assert_eq!(check_next(Some(&h), &k(&e2)), ChainStep::Duplicate);
     }
 
     #[test]
@@ -333,7 +341,7 @@ mod tests {
         h.stored_hash = Some(e2.hash);
         let rival = entry(&id, &id, 2, e1.hash, "rival");
         assert_ne!(rival.hash, e2.hash);
-        assert_eq!(check_next(Some(&h), &rival), ChainStep::Conflict);
+        assert_eq!(check_next(Some(&h), &k(&rival)), ChainStep::Conflict);
     }
 
     #[test]
@@ -343,7 +351,7 @@ mod tests {
         h.stored_hash = Some(e2.hash);
         let forged = entry(&id, &identity(9), 2, e1.hash, "rival");
         assert_eq!(
-            check_next(Some(&h), &forged),
+            check_next(Some(&h), &k(&forged)),
             ChainStep::Corrupt(EnvelopeError::BadSignature)
         );
     }
@@ -355,14 +363,14 @@ mod tests {
         h.state = LogState::Frozen;
         h.frozen_at = Some(3);
         let next = entry(&id, &id, 4, e3.hash, "four");
-        assert_eq!(check_next(Some(&h), &next), ChainStep::BeyondFrozen);
+        assert_eq!(check_next(Some(&h), &k(&next)), ChainStep::BeyondFrozen);
         // Freeze outranks a gap: a far entry of a frozen log is still beyond it.
         let far = entry(&id, &id, 9, e3.hash, "nine");
-        assert_eq!(check_next(Some(&h), &far), ChainStep::BeyondFrozen);
+        assert_eq!(check_next(Some(&h), &k(&far)), ChainStep::BeyondFrozen);
         // At or below the freeze counter the chain rules apply as for an active log.
         h.contiguous = 2;
         h.head_hash = held(&id).1[1].hash;
-        assert_eq!(check_next(Some(&h), &e3), ChainStep::Append);
+        assert_eq!(check_next(Some(&h), &k(&e3)), ChainStep::Append);
     }
 
     #[test]
@@ -370,7 +378,7 @@ mod tests {
         let id = identity(1);
         let (h, [_, _, e3]) = held(&id);
         let next = entry(&id, &id, 4, e3.hash, "four");
-        assert_eq!(check_next(Some(&h), &next), ChainStep::Append);
+        assert_eq!(check_next(Some(&h), &k(&next)), ChainStep::Append);
     }
 
     #[test]
@@ -378,7 +386,7 @@ mod tests {
         let id = identity(1);
         let (h, [e1, _, _]) = held(&id);
         let fork = entry(&id, &id, 4, e1.hash, "four");
-        assert_eq!(check_next(Some(&h), &fork), ChainStep::Conflict);
+        assert_eq!(check_next(Some(&h), &k(&fork)), ChainStep::Conflict);
     }
 
     #[test]
@@ -387,7 +395,7 @@ mod tests {
         let (h, [e1, _, _]) = held(&id);
         let forged = entry(&id, &identity(9), 4, e1.hash, "four");
         assert_eq!(
-            check_next(Some(&h), &forged),
+            check_next(Some(&h), &k(&forged)),
             ChainStep::Corrupt(EnvelopeError::BadSignature)
         );
     }
@@ -399,8 +407,92 @@ mod tests {
         let mut tampered = entry(&id, &id, 4, e3.hash, "four");
         tampered.payload = br#"{"t":"changed"}"#.to_vec();
         assert_eq!(
-            check_next(Some(&h), &tampered),
+            check_next(Some(&h), &k(&tampered)),
             ChainStep::Corrupt(EnvelopeError::HashMismatch)
         );
+    }
+
+    fn opaque(
+        id: &NodeIdentity,
+        signer: &NodeIdentity,
+        counter: u64,
+        prev: [u8; 32],
+    ) -> StoredEntry {
+        let unsigned = synthetic_unsigned(id, 1, counter, prev);
+        let (header, raw) = crate::test_support::opaque_entry::synthetic_parts(signer, &unsigned);
+        StoredEntry::Opaque(crate::sync::envelope::OpaqueEntry::new(header, raw).expect("shape"))
+    }
+
+    #[test]
+    fn opaque_append() {
+        let id = identity(1);
+        let (h, [_, _, e3]) = held(&id);
+        let next = StoredEntry::from(synthetic_entry(
+            &id,
+            &synthetic_unsigned(&id, 1, 4, e3.hash),
+        ));
+        assert_eq!(check_next(Some(&h), &next), ChainStep::Append);
+        // Same entry, wrong prev_hash, validly signed: a fork.
+        let fork = StoredEntry::from(synthetic_entry(
+            &id,
+            &synthetic_unsigned(&id, 1, 4, [0x77; 32]),
+        ));
+        assert_eq!(check_next(Some(&h), &fork), ChainStep::Conflict);
+    }
+
+    #[test]
+    fn opaque_duplicate() {
+        let id = identity(1);
+        let (mut h, [_, e2, _]) = held(&id);
+        let held_opaque = StoredEntry::from(synthetic_entry(
+            &id,
+            &synthetic_unsigned(&id, 1, 2, e2.prev_hash),
+        ));
+        h.stored_hash = Some(held_opaque.hash());
+        assert_eq!(check_next(Some(&h), &held_opaque), ChainStep::Duplicate);
+    }
+
+    #[test]
+    fn opaque_conflict_with_known() {
+        let id = identity(1);
+        let (mut h, [_, e2, _]) = held(&id);
+        h.stored_hash = Some(e2.hash);
+        let rival = StoredEntry::from(synthetic_entry(
+            &id,
+            &synthetic_unsigned(&id, 1, 2, e2.prev_hash),
+        ));
+        assert_ne!(rival.hash(), e2.hash);
+        assert_eq!(check_next(Some(&h), &rival), ChainStep::Conflict);
+    }
+
+    #[test]
+    fn opaque_bad_sig_is_corrupt() {
+        let id = identity(1);
+        let (h, [_, _, e3]) = held(&id);
+        // Shape-valid but signed by another key: ingest must not take it.
+        let forged = opaque(&id, &identity(9), 4, e3.hash);
+        assert_eq!(
+            check_next(Some(&h), &forged),
+            ChainStep::Corrupt(EnvelopeError::BadSignature)
+        );
+    }
+
+    #[test]
+    fn opaque_unknown_log_is_not_genesis() {
+        let id = identity(1);
+        // OpaqueEntry::new refuses counter 1 itself.
+        let unsigned = synthetic_unsigned(&id, 1, 1, [0; 32]);
+        let (header, raw) = crate::test_support::opaque_entry::synthetic_parts(&id, &unsigned);
+        assert_eq!(
+            crate::sync::envelope::OpaqueEntry::new(header, raw),
+            Err(EnvelopeError::NotGenesis)
+        );
+        // For an unknown log, counter 2 is a gap, never a genesis.
+        let second = StoredEntry::from(synthetic_entry(
+            &id,
+            &synthetic_unsigned(&id, 1, 2, [0x55; 32]),
+        ));
+        assert_eq!(check_next(None, &second), ChainStep::Gap { expected: 1 });
+        assert_eq!(second.genesis_pubkey(), Err(EnvelopeError::NotGenesis));
     }
 }
