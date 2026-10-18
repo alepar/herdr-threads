@@ -313,6 +313,8 @@ fn literal_name_paths_real_labels() {
             .data()["summary"]["seat"],
         seat
     );
+}
+
 // An interactive native fork is its own top-level session, not a worker and not a
 // replacement of the original session. Rejecting `fork` or superseding either
 // sibling loses lifecycle-qualified receipt authority when switching conversations.
