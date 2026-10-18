@@ -99,3 +99,7 @@ All run-scoped process/temp-file leak checks passed:
 | package | `94cc7b6a-d152-4c53-8f66-dc047d12b6d4` | clean |
 
 Evidence: `/tmp/ht-z70k-qualification-approved/summary.json`, step logs, `matrix.md`, per-release logs, branch environment records, `ci/` hosted metadata/logs and `reviews/` retained review reports. All five recorded `/tmp/rq.*` scratch roots are absent; the package fixture `/private/tmp/htpv-zd210m8v` was removed. The earlier sandbox attempt was stopped before the suite, its owned children were confirmed gone and its exact scratch root removed; its logs remain under `/tmp/ht-z70k-qualification`.
+
+## Warm-cache measurement (run 39159471900 on 166faeff6)
+
+First run after the caches were populated by cold run 39158112991. Test shard jobs took 13 to 14 min (cold 14.9 to 15.5, original baseline 20.0 to 24.3). Shard 1: Locked build 567 s (cold 624 s), tests 233 s. Release proof job 642 s of build and run (cold 803 s). The dependency cache therefore saves about 10% of compile time; most of the compile step is this workspace's own crate and test binaries, which change with every commit. The large saving came from running the release proof once instead of in all four shards. Further gains need less to compile per shard (fewer test binaries or a split build), not more caching.
