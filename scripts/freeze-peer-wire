@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Freeze the peer wire of a release as golden fixtures.
+#
+# Usage: scripts/freeze-peer-wire <version> --at <rev> [--check] [--out DIR]
+#   <version>  the fixture directory name under tests/fixtures/peer_wire/
+#   --at REV   the release to build the generator against (a tag or a commit)
+#   --check    regenerate into a temp dir and diff against the committed
+#              fixtures instead of writing; exit 1 on any difference
+#   --out DIR  write to (or, with --check, compare against) DIR instead of
+#              tests/fixtures/peer_wire/<version>; the MANIFEST `generator:`
+#              line is ignored (a later generator edit is fine while the
+#              output bytes stay identical)
+# Exit: 0 ok, 1 refusal or difference, 2 usage.
+#
+# Fixtures are append-only: an existing fixture directory is never
+# rewritten, a new release gets a new directory. They record what that
+# release's codec emits for deterministic inputs (seeded keys, fixed HLC,
+# fixed hello nonce and boot), not a live session.
+#
+# How: REV is checked out in a temporary git worktree, the generator
+# tests/support/peer_wire_freeze.rs is overlaid and registered there as a
+# `harness = false` test target, and it runs against that release's own
+# crate, so the frames and signed entries come from that release's codec.
+# The caller's checkout is not touched. The first run builds the old crate
+# (a few minutes); FREEZE_PEER_WIRE_TARGET (default target/freeze-peer-wire)
+# keeps the build for reruns, and `scripts/seed-worktree-target` can seed it
+# once from a warm target directory.
+set -euo pipefail
+export LC_ALL=C
+
+usage() {
+  sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//' >&2
+  exit 2
+}
+
+version=""
+rev=""
+check=0
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --at) [ $# -ge 2 ] || usage; rev=$2; shift 2 ;;
+    --check) check=1; shift ;;
+    --out) [ $# -ge 2 ] || usage; out=$2; shift 2 ;;
+    -h | --help) usage ;;
+    -*) echo "unknown option: $1" >&2; usage ;;
+    *) [ -z "$version" ] || usage; version=$1; shift ;;
+  esac
+done
+[ -n "$version" ] && [ -n "$rev" ] || usage
+
+root=$(CDPATH='' cd "$(dirname "$0")/.." && pwd -P)
+sha=$(git -C "$root" rev-parse --verify "$rev^{commit}")
+dest=${out:-$root/tests/fixtures/peer_wire/$version}
+
+if [ "$check" -eq 0 ] && [ -e "$dest" ]; then
+  echo "refusing: $dest exists; fixtures are append-only (add a new version directory)" >&2
+  exit 1
+fi
+
+sha256() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$@"; else sha256sum "$@"; fi
+}
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/freeze-peer-wire.XXXXXX")
+cleanup() {
+  git -C "$root" worktree remove --force "$tmp/wt" >/dev/null 2>&1 || true
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+git -C "$root" worktree add --detach "$tmp/wt" "$sha" >/dev/null 2>&1
+mkdir -p "$tmp/wt/tests/support" "$tmp/out"
+cp "$root/tests/support/peer_wire_freeze.rs" "$tmp/wt/tests/support/"
+cat >>"$tmp/wt/Cargo.toml" <<'TOML'
+
+[[test]]
+name = "peer_wire_freeze"
+path = "tests/support/peer_wire_freeze.rs"
+harness = false
+required-features = ["test-support"]
+TOML
+
+CARGO_TARGET_DIR="${FREEZE_PEER_WIRE_TARGET:-$root/target/freeze-peer-wire}" \
+  PEER_WIRE_FREEZE_OUT="$tmp/out" \
+  nice cargo test --locked --features test-support \
+  --manifest-path "$tmp/wt/Cargo.toml" --test peer_wire_freeze >&2
+
+generator_sha=$(sha256 "$root/tests/support/peer_wire_freeze.rs" | cut -d' ' -f1)
+{
+  echo "# Peer wire fixtures $version"
+  echo
+  echo "- release: $version"
+  echo "- at: $rev"
+  echo "- commit: $sha"
+  echo "- generator: tests/support/peer_wire_freeze.rs (sha256 $generator_sha)"
+  echo
+  echo "These files are what release $version's own codec emits for deterministic inputs (seeded keys, fixed HLC, fixed hello nonce and boot); they are not a recorded live session."
+  echo
+  echo "## Fact kinds"
+  echo
+  cat "$tmp/out/kinds.txt"
+  echo
+  echo "## Files"
+  echo
+} >"$tmp/out/MANIFEST.md"
+rm "$tmp/out/kinds.txt"
+(
+  cd "$tmp/out"
+  for f in $(ls | grep -v '^MANIFEST.md$' | sort); do sha256 "$f"; done
+) | sed 's/ \*/  /' >>"$tmp/out/MANIFEST.md"
+
+if [ "$check" -eq 1 ]; then
+  # The generator hash line records which file produced the fixtures; a later
+  # edit of the generator is fine as long as its output bytes are unchanged.
+  if diff -r -I '^- generator: ' "$tmp/out" "$dest"; then
+    echo "freeze-peer-wire: $version is byte-identical to $dest"
+    exit 0
+  fi
+  echo "regenerated fixture differs from $dest" >&2
+  exit 1
+fi
+mkdir -p "$dest"
+cp "$tmp/out/"* "$dest/"
+echo "freeze-peer-wire: wrote $dest"
