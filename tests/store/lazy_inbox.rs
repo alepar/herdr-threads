@@ -791,9 +791,12 @@ fn lazy_inbox_completion_exact_id_idempotent_authority() {
         0
     );
     assert_eq!(
-        conn.query_row("SELECT state FROM lazy_recipients", [], |r| r
-            .get::<_, String>(0))
-            .unwrap(),
+        conn.query_row(
+            "SELECT state FROM lazy_recipients WHERE seat_id='b'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
         "displayed"
     );
 }
@@ -839,9 +842,12 @@ fn lazy_inbox_addressed_leave_retire_archive() {
     )
     .unwrap();
     assert_eq!(
-        conn.query_row("SELECT count(*) FROM lazy_recipients", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
+        conn.query_row(
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id='b'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
         1
     );
     let err = herdr_threads::store::queries::query(
@@ -1079,7 +1085,7 @@ fn lazy_inbox_v2_small_budget_and_read_only_queries() {
     }
     assert_eq!(
         conn.query_row(
-            "SELECT state FROM lazy_recipients WHERE message_id=?1",
+            "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='b'",
             [id.as_str()],
             |r| r.get::<_, String>(0)
         )
@@ -1228,13 +1234,13 @@ fn lazy_inbox_completion_prevalidates_all_ids_and_authority_before_progress() {
     );
     // ht-54r.3: a different harness or native session is a different binding key, so a plain
     // call from it enrolls its own binding on the seat instead of being refused as "occupant
-    // context changed"; those two cases are no longer bad claims. The rest still are.
-    for bad in [1, 3, 4] {
+    // context changed"; those two cases are no longer bad claims. The author's seat
+    // now also has an addressed sibling row, so only execution/target mismatches remain.
+    for bad in [1, 3] {
         let mut caller = claim();
         match bad {
             1 => caller.execution = ExecutionId::new("other"),
-            3 => caller.target = HostTargetId::new("pa"),
-            _ => caller = send_request().claim,
+            _ => caller.target = HostTargetId::new("pa"),
         }
         let request = CompleteInboxDelivery {
             receipt_candidates: Vec::new(),
@@ -1245,9 +1251,12 @@ fn lazy_inbox_completion_prevalidates_all_ids_and_authority_before_progress() {
         };
         assert!(complete(&iso, request).is_err(), "bad case {bad}");
         assert_eq!(
-            conn.query_row("SELECT state FROM lazy_recipients", [], |r| r
-                .get::<_, String>(0))
-                .unwrap(),
+            conn.query_row(
+                "SELECT state FROM lazy_recipients WHERE seat_id='b'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
             "pending"
         );
     }
@@ -1279,14 +1288,17 @@ fn lazy_inbox_retirement_retains_pending_rows_and_excludes_new_sends() {
         DeliveryMode::Lazy,
     );
     assert_eq!(
-        conn.query_row("SELECT count(*) FROM lazy_recipients", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
+        conn.query_row(
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id='b'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
         1
     );
     assert_eq!(
         conn.query_row(
-            "SELECT state FROM lazy_recipients WHERE message_id=?1",
+            "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='b'",
             [id.as_str()],
             |r| r.get::<_, String>(0)
         )
@@ -1307,9 +1319,12 @@ fn lazy_inbox_retirement_retains_pending_rows_and_excludes_new_sends() {
         .is_err()
     );
     assert_eq!(
-        conn.query_row("SELECT state FROM lazy_recipients", [], |r| r
-            .get::<_, String>(0))
-            .unwrap(),
+        conn.query_row(
+            "SELECT state FROM lazy_recipients WHERE seat_id='b'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
         "pending"
     );
 }
@@ -1357,9 +1372,12 @@ fn lazy_inbox_completion_mismatched_permit_is_write_free() {
             .is_err()
     );
     assert_eq!(
-        conn.query_row("SELECT state FROM lazy_recipients", [], |r| r
-            .get::<_, String>(0))
-            .unwrap(),
+        conn.query_row(
+            "SELECT state FROM lazy_recipients WHERE seat_id='b'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
         "pending"
     );
     assert_eq!(conn.query_row("SELECT count(*) FROM operations WHERE operation_key IN ('original-done','changed-done')",[],|r|r.get::<_,i64>(0)).unwrap(),0);
@@ -1905,7 +1923,7 @@ fn partial_body_resumes_first_and_becomes_last_key() {
     assert_eq!((message, *body_start, *end), (&big, *body_end, 3000));
     let ordinal: i64 = conn
         .query_row(
-            "SELECT ordinal FROM lazy_recipients WHERE message_id=?1",
+            "SELECT ordinal FROM lazy_recipients WHERE message_id=?1 AND seat_id='b'",
             [big.as_str()],
             |r| r.get(0),
         )

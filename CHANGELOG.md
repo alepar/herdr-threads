@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Same-seat sibling delivery.** A Codex `/side` can send to its parent and other sessions through a joined thread. Each binding receives its siblings' sends, excluding only its own `sender_binding_id`; author-seat mail creates no receipt or ACK obligation. Other seats receive the usual delivery. Signed audiences retain the previous author exclusion for older peers. Fresh local sends gain sibling bookkeeping; old messages are not backfilled.
+- **One-way store upgrade to node schema 4.** Publication triggers exclude the exact sender binding from pending views. Older binaries refuse the upgraded local store; the signed message wire shape is unchanged.
+
 ## v2.1.1
 
 - **Daemon shutdown waits for its idle-exit monitor.** The idle-exit monitor thread was detached, so a stopping daemon could return while that thread still held the host session registry. It now joins with the other daemon workers before shutdown returns. No schema, protocol or model-visible text change.

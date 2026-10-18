@@ -6074,3 +6074,25 @@ fn concurrent_session_delta_upgrades_existing_bindings_and_old_binary_refuses() 
     );
     open_with(&db, schema::NODE_DELTAS).unwrap();
 }
+
+#[test]
+fn sibling_delivery_upgrade_preserves_rows_and_refuses_schema3_binary() {
+    let db = Connection::open_in_memory().unwrap();
+    let old = &schema::NODE_DELTAS[..2];
+    open_with(&db, old).unwrap();
+    assert_eq!(user_version(&db), 3);
+    db.execute("UPDATE local_node SET created_at=123", [])
+        .unwrap();
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    assert_eq!(user_version(&db), 4);
+    assert_eq!(
+        db.query_row("SELECT created_at FROM local_node", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        123
+    );
+    open_with(&db, schema::NODE_DELTAS).unwrap();
+    let detail = incompatible_detail(open_with(&db, old));
+    assert!(detail.contains("newer than this binary"), "{detail}");
+    assert_eq!(user_version(&db), 4);
+}

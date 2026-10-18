@@ -187,7 +187,7 @@ fn lazy_publication_creates_no_receipt_warning_or_attention() {
         conn.query_row("SELECT count(*) FROM lazy_recipients", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        1
+        2
     );
     assert_eq!(
         conn.query_row("SELECT count(*) FROM send_manifests", [], |r| r
@@ -363,13 +363,13 @@ fn lazy_publication_freezes_joined_human_unavailable_audience() {
     member(&conn, "retired", "retired", "joined");
     let request = send_request();
     ready(&context, &mut conn, &request);
-    assert_eq!(recipients(&conn), ["human", "unavailable"]);
+    assert_eq!(recipients(&conn), ["a", "human", "unavailable"]);
     publish(&iso, &context, &mut conn, &request);
     member(&conn, "later", "unresolved", "joined");
-    assert_eq!(recipients(&conn), ["human", "unavailable"]);
+    assert_eq!(recipients(&conn), ["a", "human", "unavailable"]);
     let id = preparation_id(&conn);
     assert!(!messages::abandon_send_preparation(&mut conn, &id).unwrap());
-    assert_eq!(recipients(&conn), ["human", "unavailable"]);
+    assert_eq!(recipients(&conn), ["a", "human", "unavailable"]);
 }
 #[test]
 fn lazy_publication_revision_fence_restart_and_replay() {
@@ -424,7 +424,7 @@ fn lazy_publication_revision_fence_restart_and_replay() {
             .unwrap(),
         1
     );
-    assert_eq!(recipients(&conn), ["b", "postseal"]);
+    assert_eq!(recipients(&conn), ["a", "b", "postseal"]);
     let mut changed = request.clone();
     changed.body = "changed".into();
     assert_eq!(
@@ -444,9 +444,11 @@ fn lazy_cleanup_deletes_one_bounded_unpublished_unit() {
     let progress = cleanup(&context, &mut conn, &id);
     assert_eq!(progress.processed_this_turn, 1);
     assert!(progress.has_more);
-    assert_eq!(recipients(&conn).len(), 1);
+    assert_eq!(recipients(&conn).len(), 2);
     drop(conn);
     let mut conn = context.open_writer().unwrap();
+    assert!(cleanup(&context, &mut conn, &id).has_more);
+    assert_eq!(recipients(&conn).len(), 1);
     assert!(cleanup(&context, &mut conn, &id).has_more);
     assert!(recipients(&conn).is_empty());
     assert!(!cleanup(&context, &mut conn, &id).has_more);
@@ -501,7 +503,7 @@ fn ordinary_publication_positive_control() {
         .unwrap(),
         1
     );
-    assert!(recipients(&conn).is_empty());
+    assert_eq!(recipients(&conn), ["a"]);
     assert!(
         herdr_threads::store::attention::wake_seat_attention(&conn, "b")
             .unwrap()
@@ -567,7 +569,7 @@ fn lazy_cleanup_cannot_delete_published_children() {
             .unwrap()
             .contains("unpublished discarded")
     );
-    assert_eq!(recipients(&conn), ["b"]);
+    assert_eq!(recipients(&conn), ["a", "b"]);
 }
 
 /// Every message the seat-level delivery-row seek returns within the current publication bound.

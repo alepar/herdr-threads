@@ -696,6 +696,144 @@ fn send_records_sender_binding_id() {
 }
 
 #[test]
+fn sends_reach_sibling_bindings_without_echo_or_self_receipts() {
+    use crate::protocol::priority::NudgeThreshold;
+    use crate::store::{lazy_delivery, read_cursors};
+    let iso = TestIsolation::new("sibling-send");
+    let (context, mut conn) = setup(&iso);
+    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,concurrent_session) VALUES ('a',1,'pa','b',1,1,'codex','side','00000000-0000-4000-8000-0000000000a2','cooperative_top_level',0,'term-pa','inc',1)", []).unwrap();
+    let binding = |session: &str| -> BindingId {
+        BindingId::new(
+            conn.query_row(
+                "SELECT binding_id FROM occupant_bindings WHERE native_session=?1",
+                [session],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap(),
+        )
+    };
+    let main = binding("n");
+    let side = binding("side");
+    for binding in [&main, &side] {
+        read_cursors::init_for_new_binding(&conn, binding).unwrap();
+    }
+    for (session, execution, sender, receiver) in [
+        ("side", "00000000-0000-4000-8000-0000000000a2", &side, &main),
+        ("n", "00000000-0000-4000-8000-0000000000aa", &main, &side),
+    ] {
+        let mut request = send_request();
+        request.operation = OperationId::new(format!("from-{session}"));
+        request.priority = Some(crate::protocol::priority::DeliveryPriority::new(0).unwrap());
+        request.claim.native_session = NativeSessionId::new(session);
+        request.claim.execution = ExecutionId::new(execution);
+        prepare_intent_send(&context, &mut conn, &request);
+        let result = messages::publish_send(
+            &context,
+            &mut conn,
+            &request,
+            &mut permit(&request),
+            &budget(),
+            || messages::MAX_BODY_BYTES,
+        )
+        .unwrap();
+        let crate::protocol::results::CommandResult::MessageSent(id) = result else {
+            panic!("unexpected result")
+        };
+        assert!(
+            lazy_delivery::binding_lazy_unread(&conn, sender, 100)
+                .unwrap()
+                .is_empty(),
+            "the sender never receives its own send"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM binding_pending WHERE binding_id=?1",
+                [sender.as_str()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "publication does not populate the sender's view"
+        );
+        lazy_delivery::seed_binding_pending(&conn, sender).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM binding_pending WHERE binding_id=?1",
+                [sender.as_str()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "reconnecting does not restore self-mail"
+        );
+        let unread = lazy_delivery::binding_lazy_unread(&conn, receiver, 100).unwrap();
+        assert_eq!(
+            unread.iter().map(|r| &r.message).collect::<Vec<_>>(),
+            [&id],
+            "a sibling receives the send"
+        );
+        assert!(
+            lazy_delivery::wake_frontier(&conn, "a", NudgeThreshold::new(0).unwrap())
+                .unwrap()
+                .is_some()
+        );
+        let frontier: i64 = conn
+            .query_row(
+                "SELECT decision_seq FROM messages WHERE id=?1",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        for (binding, owes) in [(sender, false), (receiver, true)] {
+            assert_eq!(
+                conn.query_row(
+                    crate::store::wake::LAZY_FRONTIER_UNREAD_SQL,
+                    rusqlite::params![binding.as_str(), "a", frontier],
+                    |r| r.get::<_, bool>(0)
+                )
+                .unwrap(),
+                owes,
+                "wake is owed only to a receiving binding"
+            );
+        }
+        assert!(
+            crate::store::effective::effective_receipt(&conn, id.as_str(), "a")
+                .unwrap()
+                .is_none(),
+            "sibling mail creates no seat receipt"
+        );
+        let tx = conn.transaction().unwrap();
+        lazy_delivery::complete_for_binding(
+            &tx,
+            &request.claim.instance,
+            &request.claim.seat,
+            Some(receiver),
+            std::slice::from_ref(&id),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let sequence: i64 = conn
+            .query_row(
+                "SELECT sequence FROM messages WHERE id=?1",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            read_cursors::cursor_for(&conn, receiver, &request.thread).unwrap(),
+            Some(sequence as u64),
+            "a sender's own earlier message is not a cursor barrier"
+        );
+        assert!(
+            lazy_delivery::wake_frontier(&conn, "a", NudgeThreshold::new(0).unwrap())
+                .unwrap()
+                .is_none(),
+            "the sender cannot hold a self-wake after its sibling displays"
+        );
+    }
+}
+
+#[test]
 fn direct_recipient_hash_binds_target_and_preserves_absent_payload() {
     use crate::store::schema::canonical_digest;
     let mut request = send_request();

@@ -56,9 +56,10 @@ pub(crate) use binding_lazy_scope_sql;
 
 /// Modern unread plus the unchanged top-level legacy-pending branch. The modern branch excludes
 /// the rows this binding displayed out of order above its cursor (`binding_row_displays`, written
-/// by `read_cursors::advance_through_displayed_with_change`), so every binding-level unread or
+/// by `read_cursors::advance_through_displayed_with_change`), and the exact sender_binding_id,
+/// so every binding-level unread or
 /// pending predicate, and `seat_unread_sql!` through it, inherits the exclusion (two point lookups:
-/// the message by (thread, sequence), then its mark by primary key; `CROSS JOIN` fixes that order). The named
+/// the message by (thread, sequence), then its mark by primary key). The named
 /// form accepts scalar inputs, with no required message alias; callers validate
 /// message/recipient/manifest identity against their canonical message row first.
 /// The historical aliases remain available through the zero-argument wrapper.
@@ -74,7 +75,7 @@ macro_rules! binding_lazy_unread_sql {
      instance: $instance:literal, sequence: $sequence:literal, publication: $publication:literal,
      legacy: $legacy:literal, role: $role:literal $(,)?) => {
         concat!(
-            "((",
+            "(((",
             $sequence,
             ">COALESCE((SELECT lc.seq FROM binding_cursors lc WHERE lc.binding_id=",
             $binding,
@@ -85,17 +86,19 @@ macro_rules! binding_lazy_unread_sql {
                 binding: $binding, seat: $seat, thread: $thread,
                 instance: $instance, publication: $publication,
             },
-            " AND NOT EXISTS(SELECT 1 FROM messages rdm CROSS JOIN binding_row_displays rd ON rd.message_id=rdm.id WHERE rd.binding_id=",
-            $binding,
-            " AND rdm.thread_id=",
-            $thread,
-            " AND rdm.sequence=",
-            $sequence,
-            ")) OR (",
+            ") OR (",
             $legacy,
             "=1 AND ",
             $role,
-            "='top_level'))"
+            "='top_level')) AND NOT EXISTS(SELECT 1 FROM messages rdm WHERE rdm.thread_id=",
+            $thread,
+            " AND rdm.sequence=",
+            $sequence,
+            " AND (rdm.sender_binding_id=",
+            $binding,
+            " OR (NOT (", $legacy, "=1 AND ", $role, "='top_level') AND EXISTS(SELECT 1 FROM binding_row_displays rd WHERE rd.message_id=rdm.id AND rd.binding_id=",
+            $binding,
+            ")))))"
         )
     };
 }

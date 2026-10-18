@@ -210,7 +210,7 @@ pub fn seed_preview(db: &Connection, seat: &SeatId, thread: &ThreadId) -> Result
 pub fn init_for_join(tx: &Connection, seat: &SeatId, thread: &ThreadId) -> Result<usize, ApiError> {
     tx.execute(
         "UPDATE lazy_recipients SET legacy_pending=1 WHERE seat_id=?1 AND thread_id=?2 AND legacy_pending=0 AND state='pending' \
-         AND message_id IN (SELECT m.id FROM messages m WHERE m.thread_id=?2 AND m.sequence>COALESCE(\
+         AND message_id IN (SELECT m.id FROM messages m WHERE m.thread_id=?2 AND m.actor_seat_id IS NOT ?1 AND m.sequence>COALESCE(\
            (SELECT MAX(c.seq) FROM binding_cursors c JOIN occupant_bindings o ON o.binding_id=c.binding_id \
              WHERE o.seat_id=?1 AND c.thread_id=?2),0))",
         params![seat.as_str(), thread.as_str()],
@@ -451,8 +451,8 @@ pub(super) fn advance_through_displayed_with_change(
     };
     let mut stmt = tx
         .prepare(&format!(
-            "SELECT x.sequence, EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} AND m.id=x.id) \
-             OR EXISTS(SELECT 1 FROM lazy_recipients lr WHERE lr.message_id=x.id AND lr.seat_id=?1), \
+            "SELECT x.sequence, (EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} AND m.id=x.id) \
+             OR EXISTS(SELECT 1 FROM lazy_recipients lr WHERE lr.message_id=x.id AND lr.seat_id=?1)) AND x.sender_binding_id IS NOT ?4, \
              {WALK_DISPLAY_ACKED}, \
              EXISTS(SELECT 1 FROM binding_row_displays d WHERE d.binding_id=?4 AND d.message_id=x.id) \
              FROM messages x WHERE x.thread_id=?2 AND x.sequence>?3 ORDER BY x.sequence"

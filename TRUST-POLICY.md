@@ -461,9 +461,23 @@ model open work, and summary closure never changes receipt state or installs glo
   observed Ctrl-C close emits no SessionEnd, so its binding remains connected until an
   actual native end event or process exit; closure is never inferred from UI state.
   Closing one never infers an end for its siblings. Native `/root` collaboration is internal
-  to that side's agent tree. An ht send is recorded under its sender binding but excludes
-  the author seat from automatic delivery, including its siblings; sibling relay remains
-  an explicit history read or a peer relay, not a new same-seat delivery right.
+  to that side's agent tree. Fresh local sends also stage a passive delivery row for the
+  author seat (ht-i4dd). Each binding reads messages sent by its siblings, including a
+  side's parent, but never a message whose `sender_binding_id` is its own binding id.
+  This applies to every harness through the neutral reader predicates. The local author
+  row is never a receipt, explicit ACK recipient, deadline, quorum member or unavailable
+  recipient warning. Membership and receipt ownership remain seat-level; ACK provenance
+  remains the actual acknowledging binding's claim. The signed `message.sent` audience
+  still excludes the author for compatibility with older peers. The author row is local
+  bookkeeping staged with a fresh send, excluded from signed-audience comparison, and
+  never synthesized by remote/binding-less historical replay. Upgrading does not backfill
+  old sends. New bindings retain the existing fresh-frontier semantics.
+  A voluntary leave/rejoin treats earlier author-seat sibling mail as history at the
+  new join head; it never promotes such rows to seat-wide legacy pending mail.
+  Peer/service rows retain the established pending-mail preservation on rejoin.
+  Wake eligibility uses only each reached binding's unread rows: the sender alone owes
+  no self-wake, a sibling's display never consumes another sibling's pending row, and
+  shared-process composer safety and priority thresholds remain unchanged.
 - *Liveness worker (ht-54r.23)*: the daemon re-checks the process fingerprint of every connected,
   open, non-human binding on a cadence (5 s) and, for the candidate's seat, before each wake decision.
   A binding whose process no longer exists, whose pid now has another start time, or that is
@@ -995,6 +1009,14 @@ already marks it); an old client's modes map `ordinary` to
 priority 0 and `lazy` to priority 1 (a request's own priority wins; its payload digest covers the priority only
 when carried, so journaled old-shape intents retry unchanged). A delivery audience is frozen by canonical
 preparation and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
+A fresh local send additionally stages an author-seat passive row for sibling delivery,
+without adding the author to its signed audience or ACK set (Independent lifecycle forks,
+above). Publication and reconnect seed omit the exact sender binding from that row's
+pending views. The unread predicate reuses its existing message-by-thread/sequence point
+and display-mark point to exclude sender_binding_id; its keyed relation-probe envelope
+is unchanged. Cursor display walks pass the sender's own rows without treating them as
+unread barriers. Node schema 4 updates the two publication/view triggers; older binaries
+refuse the upgraded store, while signed facts remain compatible with schema-3 peers.
 Each open binding (session) keeps its own pending view of delivery rows (user decision 2026-10-14): a row is
 pending for a binding until that binding displays it, by any display path (a completion, or a cursor-only
 display: a full `body` read, an `accept` display, a hook page whose completion then failed), its cursor
