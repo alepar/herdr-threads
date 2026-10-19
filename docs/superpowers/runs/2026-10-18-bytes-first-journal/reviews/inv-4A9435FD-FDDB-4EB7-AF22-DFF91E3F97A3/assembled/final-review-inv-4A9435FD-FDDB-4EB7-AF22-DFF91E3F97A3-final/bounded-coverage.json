@@ -1,0 +1,181 @@
+{
+ "inspected": [
+  {
+   "path": "src/sync/coordinator/ingest.rs",
+   "hunks": [
+    "@@ -10,6 +10,9 @@",
+    "@@ -20,6 +23,11 @@",
+    "@@ -34,18 +42,44 @@ pub(super) struct IngestJob {",
+    "@@ -74,6 +108,7 @@ pub(super) fn spawn_worker(",
+    "@@ -91,6 +126,7 @@ pub(super) fn spawn_worker(",
+    "@@ -116,14 +152,15 @@ pub(super) fn spawn_worker(",
+    "@@ -134,7 +171,112 @@ fn ingest_batch(",
+    "@@ -146,7 +288,7 @@ impl Actor {",
+    "@@ -170,14 +312,38 @@ impl Actor {",
+    "@@ -190,6 +356,7 @@ impl Actor {",
+    "@@ -220,7 +387,14 @@ impl Actor {",
+    "@@ -248,12 +422,51 @@ impl Actor {"
+   ]
+  },
+  {
+   "path": "src/sync/coordinator/serve.rs",
+   "hunks": [
+    "@@ -15,6 +15,11 @@",
+    "@@ -41,10 +46,46 @@ pub(super) struct ServeDone {",
+    "@@ -53,22 +94,22 @@ pub(super) struct ServeDone {",
+    "@@ -89,7 +130,7 @@ pub(super) const MAX_BRANCH_OUTSTANDING: usize = 4;",
+    "@@ -107,7 +148,13 @@ impl Actor {",
+    "@@ -145,10 +192,12 @@ impl Actor {",
+    "@@ -199,8 +248,8 @@ impl Actor {",
+    "@@ -214,16 +263,27 @@ impl Actor {",
+    "@@ -418,7 +478,18 @@ impl Actor {",
+    "@@ -434,7 +505,7 @@ impl Actor {",
+    "@@ -467,8 +538,8 @@ impl Actor {",
+    "@@ -489,7 +560,7 @@ impl Actor {",
+    "@@ -572,14 +643,26 @@ enum BranchSend {"
+   ]
+  },
+  {
+   "path": "src/sync/journal_port.rs",
+   "hunks": [
+    "@@ -3,7 +3,7 @@",
+    "@@ -11,10 +11,11 @@ use crate::protocol::time::CallBudget;",
+    "@@ -38,12 +39,22 @@ pub enum IngestOutcome {",
+    "@@ -51,12 +62,12 @@ pub enum ForkEvidence {",
+    "@@ -124,14 +135,16 @@ pub trait JournalPort: Send + Sync {",
+    "@@ -149,7 +162,7 @@ pub trait JournalPort: Send + Sync {",
+    "@@ -158,13 +171,14 @@ pub trait JournalPort: Send + Sync {"
+   ]
+  },
+  {
+   "path": "src/sync/chain.rs",
+   "hunks": [
+    "@@ -1,7 +1,7 @@",
+    "@@ -38,7 +38,7 @@ pub enum ChainStep {",
+    "@@ -58,14 +58,14 @@ pub enum ChainStep {",
+    "@@ -77,7 +77,7 @@ pub fn check_next(held: Option<&HeldLog>, entry: &Envelope) -> ChainStep {",
+    "@@ -85,31 +85,31 @@ pub fn check_next(held: Option<&HeldLog>, entry: &Envelope) -> ChainStep {",
+    "@@ -122,9 +122,14 @@ mod tests {",
+    "@@ -210,10 +215,10 @@ mod tests {",
+    "@@ -222,7 +227,7 @@ mod tests {",
+    "@@ -232,13 +237,13 @@ mod tests {",
+    "@@ -251,7 +256,7 @@ mod tests {",
+    "@@ -263,7 +268,7 @@ mod tests {",
+    "@@ -271,10 +276,13 @@ mod tests {",
+    "@@ -282,7 +290,7 @@ mod tests {",
+    "@@ -292,7 +300,7 @@ mod tests {",
+    "@@ -302,7 +310,7 @@ mod tests {",
+    "@@ -313,7 +321,7 @@ mod tests {",
+    "@@ -323,7 +331,7 @@ mod tests {",
+    "@@ -333,7 +341,7 @@ mod tests {",
+    "@@ -343,7 +351,7 @@ mod tests {",
+    "@@ -355,14 +363,14 @@ mod tests {",
+    "@@ -370,7 +378,7 @@ mod tests {",
+    "@@ -378,7 +386,7 @@ mod tests {",
+    "@@ -387,7 +395,7 @@ mod tests {",
+    "@@ -399,8 +407,146 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "CHANGELOG.md",
+   "hunks": [
+    "@@ -1,5 +1,10 @@"
+   ]
+  },
+  {
+   "path": "TRUST-POLICY.md",
+   "hunks": [
+    "@@ -2021,6 +2021,24 @@ These are decisions, not bugs. Each is safe to rely on only as stated."
+   ]
+  },
+  {
+   "path": "docs/operations.md",
+   "hunks": [
+    "@@ -304,6 +304,19 @@ Herdr has no atomic \"check native session and commit\" operation. A replacement o"
+   ]
+  },
+  {
+   "path": "src/sync/frame.rs",
+   "hunks": [
+    "@@ -13,7 +13,11 @@ use serde::{Deserialize, Serialize};",
+    "@@ -36,6 +40,10 @@ pub const MAX_HELLO_CAPS: usize = 32;",
+    "@@ -172,6 +180,161 @@ impl CloseReason {",
+    "@@ -220,7 +383,7 @@ pub enum PeerFrame {",
+    "@@ -232,7 +395,7 @@ pub enum PeerFrame {",
+    "@@ -274,25 +437,35 @@ impl PeerFrame {",
+    "@@ -305,7 +478,7 @@ impl PeerFrame {",
+    "@@ -412,6 +585,59 @@ mod tests {",
+    "@@ -460,7 +686,7 @@ mod tests {",
+    "@@ -505,7 +731,7 @@ mod tests {",
+    "@@ -716,7 +942,7 @@ mod tests {",
+    "@@ -744,7 +970,7 @@ mod tests {",
+    "@@ -843,7 +1069,7 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "src/sync/envelope.rs",
+   "hunks": [
+    "@@ -13,6 +13,19 @@ use crate::node::{NodeIdentity, NodeUuid};",
+    "@@ -22,6 +35,82 @@ pub const DEPS_MAX: usize = 4096;",
+    "@@ -202,11 +291,13 @@ impl Body<'_> {",
+    "@@ -364,6 +455,18 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {",
+    "@@ -445,9 +548,7 @@ impl Envelope {",
+    "@@ -481,6 +582,430 @@ impl Envelope {"
+   ]
+  },
+  {
+   "path": "src/sync/coordinator.rs",
+   "hunks": [
+    "@@ -67,11 +67,11 @@ use tokio::time::{Instant, MissedTickBehavior, timeout};",
+    "@@ -99,6 +99,7 @@ use ingest::{IngestDone, IngestJob};",
+    "@@ -266,7 +267,7 @@ pub enum BranchReply {",
+    "@@ -508,6 +509,9 @@ pub struct LinkStatus {",
+    "@@ -610,6 +614,23 @@ impl SyncHandle {",
+    "@@ -618,6 +639,14 @@ impl SyncCoordinator {",
+    "@@ -662,6 +691,9 @@ impl SyncCoordinator {",
+    "@@ -690,6 +722,7 @@ impl SyncCoordinator {",
+    "@@ -771,6 +804,10 @@ struct LinkEntry {",
+    "@@ -819,6 +856,12 @@ impl LinkEntry {",
+    "@@ -892,6 +935,9 @@ struct Actor {",
+    "@@ -1116,6 +1162,7 @@ impl Actor {",
+    "@@ -1741,7 +1788,9 @@ impl Actor {",
+    "@@ -2289,6 +2338,7 @@ impl Actor {",
+    "@@ -2466,8 +2516,10 @@ fn held_genesis_pubkey("
+   ]
+  },
+  {
+   "path": "src/store/journal.rs",
+   "hunks": [
+    "@@ -911,22 +1105,173 @@ fn hash_at(conn: &Connection, log_ix: i64, counter: u64) -> Result<Option<[u8; 3",
+    "@@ -1608,11 +2096,316 @@ pub fn store_forked("
+   ]
+  },
+  {
+   "path": "src/store/schema.rs",
+   "hunks": [
+    "@@ -344,7 +374,9 @@ pub(crate) fn initialize_with_deltas(",
+    "@@ -362,23 +394,113 @@ fn apply_deltas(conn: &Connection, deltas: &[NodeDelta], cache: bool) -> Result<"
+   ]
+  },
+  {
+   "path": "src/store/sync_status.rs",
+   "hunks": [
+    "@@ -80,7 +82,7 @@ pub fn per_log(",
+    "@@ -98,10 +100,38 @@ pub fn per_log("
+   ]
+  },
+  {
+   "path": "src/store/incarnations.rs",
+   "hunks": [
+    "@@ -214,10 +204,21 @@ pub struct ReissueProgress {",
+    "@@ -225,26 +226,81 @@ struct Candidate {",
+    "@@ -281,7 +337,7 @@ fn reissue_pass_ungated(",
+    "@@ -311,6 +367,7 @@ fn reissue_pass_ungated(",
+    "@@ -318,6 +375,10 @@ fn reissue_pass_ungated(",
+    "@@ -331,7 +392,7 @@ fn reissue_pass_ungated(",
+    "@@ -1539,18 +1618,23 @@ fn count_u32(value: i64) -> u32 {",
+    "@@ -1558,6 +1642,55 @@ fn pending_reissues(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u3"
+   ]
+  }
+ ]
+}
