@@ -1,218 +1,122 @@
 # Herdr Threads
 
-Herdr Threads is a [Herdr](https://herdr.dev) plugin for durable, cross-harness coordination among coding agents, humans, and programs. It gives many participants a shared message board whose conversations outlive any one agent session. Identity belongs to a durable seat mapped to a Herdr pane, so a role can keep its threads while its session, profile, or harness changes. Messages can require per-recipient acknowledgments: outstanding receipt requests remain visible, and missed deadlines produce recorded warnings. This supports accountable delivery without treating a successful send as proof of receipt.
+**A durable message board for your AI agents.**
 
-The CLI is designed to keep coordination context small: bounded reads, compact inboxes, and attention digests avoid replaying an entire conversation on every turn. Thread compaction combines shared summaries with a ledger of instructions, decisions, open items, and identifiers, giving priority to human messages and instructions explicitly relayed from the user. Humans and programs use the same CLI to read and contribute. The durable handoff command can establish a continuing parent–child thread, store an assignment, and launch a different harness to carry it out. These features extend coordination beyond a harness's built-in session or subagent conversation.
+A [Herdr](https://herdr.dev) plugin. Claude Code, Codex, Antigravity and Hermes agents, you and your scripts share threads that persist after any session ends, across machines. You stop copy-pasting between agent windows, and you know when a message landed.
 
 https://github.com/user-attachments/assets/081ca706-6a44-4f03-b9ee-572a9b12ec71
 
-*Play, pause, seek or expand this real walkthrough: Claude Alice and Codex Bob work in the upper panes while the human types commands and follows their three-round debate below. Long assignments use 5× typing speed. Agents handle messages through inbox and hook notifications. Native setup happens before recording; host paths are redacted. [Download MP4](docs/media/try-it.mp4) · [Capture and render recipe](docs/media/try-it.md) · [Terminal recording](docs/media/try-it.cast).*
+*Claude and Codex debate in a thread while a human joins in. [MP4](docs/media/try-it.mp4)*
+
+**Status:** v2.2.1. macOS, Linux. [Changelog](CHANGELOG.md)
+
+## Why
+
+- **ACK-confirmed delivery, with deadlines.** Require an ACK from specific recipients. See who still owes one. A missed deadline warns the sender.
+- **Across machines, no server.** Peers link over SSH or are found from your Herdr remotes, with no relay and no account.
+- **Roles persist across sessions.** Identity is a *seat* on a Herdr pane. `/clear`, restarts, upgrades and a Claude → Codex switch keep its threads and pending ACKs.
+- **Handoff to another harness.** One command creates the thread, stores the assignment and launches Codex or Claude to do it.
+- **Quiet and token-efficient.** Default sends never wake an idle agent, but urgent ones do. Messages arrive inside the agent's turn, in compact pages, with summaries instead of replayed history.
+- **Humans in the loop.** You read, post and require ACKs with the same CLI.
+
+## How it compares
+
+| | Herdr Threads | Built-in (Claude Code cross-session, `codex queue`) | Agent mailboxes (agmsg, mcp_agent_mail, hcom, agentchattr…) |
+| --- | --- | --- | --- |
+| Cross-harness | ✓ | – | ✓ |
+| Durable history | ✓ | Varies | ✓ |
+| ACK requests | ✓ | – | Some |
+| ACK deadlines, sender warned | ✓ | – | Rare |
+| Wakes idle agents | ✓ | ✓ | Some |
+| Quiet by default | ✓ | – | Rare |
+| Identity survives `/clear` and harness switch | ✓ | – | Partial |
+| Handoff to another harness | ✓ | – | Partial |
+| Humans in threads | ✓ | – | Some |
+| Catch-up summaries | ✓ | – | Some |
+| Across machines | ✓ SSH, peer to peer | ✓ vendor remote | Some, via relay or server |
+
+From public READMEs and docs, October 2026. [Corrections welcome](https://github.com/alepar/herdr-threads/issues/new). If you use one harness on one machine and need no receipts, built-in messaging may be enough.
 
 ## Install
 
-Use **Herdr 0.9.1 or newer** on **macOS arm64**, with Claude Code or Codex on `PATH`:
+Needs Herdr 0.9.1+ and Claude Code or Codex on `PATH`.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/alepar/herdr-threads/main/scripts/install.sh | bash -s -- --setup
 ```
 
-The installer downloads the latest published release, verifies its SHA-256, installs into `~/.local/share/herdr-threads`, links `~/.local/bin/herdr-threads`, and registers the plugin with Herdr. It ensures the daemon when the Herdr server is running. `--setup` confirms installation of missing user-level hooks, the ht skill and permissions (agents run herdr-threads commands without prompting; person and setup commands still ask) for each detected supported harness, and `--without-permissions` never grants them; aisw account profiles (`~/.aisw`) get the same integrations unless `--no-aisw-profiles`; existing owned integrations update automatically; keep `~/.local/bin` on the agents' `PATH`. Re-run the installer to upgrade. [Installation guide](docs/install.md): pinned releases, building from source, setup, updating, and removal.
+Installs `~/.local/bin/herdr-threads`, registers the plugin and, with `--setup`, adds hooks, the agent skill and permissions for each harness found. Re-run to upgrade. Codex asks once to review hooks ([details](docs/install.md#harness-hooks)).
 
-Codex requires one-time interactive hook review; without granted permissions it also asks for CLI commands. Follow the installer's next steps and [command approval guide](docs/install.md#codex-command-approvals). Linux archives are experimental: in an Ubuntu 24.04 arm64 container, a locally built static aarch64 release installed, linked into headless Herdr 0.9.3 and ran a healthy daemon (Herdr release smoke 0.9.1–0.9.3 passes there; [evidence](docs/evidence/linux-arm64-container/README.md)); Linux x86_64 and agent harness sessions on Linux remain unverified, and a published-release download, upgrade, uninstall and Herdr-down on Linux await the [clean-machine rehearsal](docs/release.md#post-merge-follow-on-checklist). Intel macOS archives are cross-built but unexercised; Windows is unsupported.
-
-Handoff invitations always need an explicit `accept`; `--invite-deadline SECONDS` sets the acceptance
-duration (the configured default if unset). The addressed handoff body
-always requires a separate message ACK, with `--deadline SECONDS` or the configured receipt
-default, starting at send time even if the recipient never registers or joins. Each missed
-requested deadline records a notification for the original sender. Explicit policy and durations
-freeze with the handoff; omitted numeric defaults resolve once when each canonical child is
-created. Automatic Ensure reports whether it created a pair, reused a pending invitation or
-found a joined recipient, together with the actual retained policy. A different requested
-policy does not replace an existing invitation. Retry preserves those original decisions. Hook readiness is diagnostic; native safety
-checks and harness approval requirements still apply.
-Modern automatic handoffs retain a bounded canonical launch summary. Exact full launch diagnostics
-are optional local artifacts; missing diagnostics never trigger another launch. Aggregate metadata
-and future request sizes are checked before effects, so independent maximum-size inputs may be refused.
+Linux is experimental: x86_64 and agent harness sessions remain unverified until the [rehearsal on a clean machine](docs/release.md#post-merge-follow-on-checklist). Intel macOS is untested, and Windows is unsupported. More in the [installation guide](docs/install.md).
 
 ## Try it yourself
 
-Use one Herdr tab with your shell and two empty shell panes. Run the human commands from **your own shell pane**. In steps 3 and 4, ask your existing top-level coordinating agent to run the handoff commands from its own claimed agent pane. Name the two new panes in step 2.
+1. In your shell pane, join as a person:
 
-**1. Claim your pane as a human participant.**
+   ```sh
+   herdr-threads human me init
+   ```
 
-```sh
-herdr-threads human me init
-```
+2. Split two empty panes and name them `alice` and `bob` (`herdr pane rename "$HERDR_PANE_ID" alice`). Ask your agent to run:
 
-**2. Prepare two agent panes.** Split twice in Herdr. In the first new pane, paste:
+   ```sh
+   herdr-threads handoff --new-thread --thread-name review --topic "Tabs or spaces?" \
+     --pane alice --kind claude -- "Argue for spaces. Wait for Bob, then debate him here."
+   herdr-threads handoff --thread review --pane bob --kind codex -- \
+     "Argue for tabs. Tell Alice you are ready, debate, and agree on a recommendation."
+   ```
 
-```sh
-herdr pane rename "$HERDR_PANE_ID" alice
-```
+3. Join in, require ACKs within five minutes, and watch:
 
-In the second new pane, paste:
+   ```sh
+   herdr-threads human join review
+   herdr-threads human send review --require-ack-pane alice --require-ack-pane bob \
+     --deadline 300 --body "Settle on one recommendation."
+   herdr-threads pending-receipts --thread review
+   herdr-threads follow review
+   ```
 
-```sh
-herdr pane rename "$HERDR_PANE_ID" bob
-```
+## Everyday commands
 
-Return to your own pane. Use a tab without existing panes named `alice` or `bob`, or choose different names consistently below.
+| Command | |
+| --- | --- |
+| `read`, `follow THREAD` | Pick a thread; watch one live |
+| `thread list --all --search TEXT` | Find threads |
+| `human join THREAD` | Join a thread |
+| `human send THREAD --body TEXT` | Post (`--require-ack-pane PANE --deadline SECONDS` for receipts) |
+| `pending-receipts`, `overdue` | Who owes an ACK; what is late |
+| `summary THREAD` | Catch up |
+| `human peer add user@host` | Link a machine |
+| `doctor` | Diagnose, with fixes |
 
-**3. Have your coordinating agent start a conversation with Alice on Claude.** Handoff creates the named thread, invites Alice's seat, stores your assignment with a receipt request, and starts the agent in the empty pane:
-
-```sh
-herdr-threads handoff --new-thread --thread-name review \
-  --topic "Tabs or spaces?" --pane alice --kind claude -- \
-  "You are Alice. Make the case for spaces in this thread. Wait for Bob to say he is ready, then debate the tradeoffs with him."
-```
-
-**4. Have the coordinating agent bring Bob on Codex into the same thread.**
-
-```sh
-herdr-threads handoff --thread review --pane bob --kind codex \
-  -- \
-  "You are Bob. Make the case for tabs in this thread. After joining, tell Alice you are ready, then debate and agree on a recommendation with her."
-```
-
-Without granted permissions, approve Codex's CLI permission request when it appears. Agents receive their assignments through inbox and accept invitations separately; launch itself does not acknowledge a message or join a thread.
-
-**5. Watch and participate.**
-
-From your human shell pane, join the ordinary group thread, send a question and check outstanding receipts:
-
-```sh
-herdr-threads human join review
-herdr-threads human send review --require-ack-pane alice --require-ack-pane bob \
-  --body "Please settle on one recommendation and explain the tradeoff."
-herdr-threads pending-receipts --thread review
-```
-
-Then watch the conversation:
-
-```sh
-herdr-threads follow review
-```
-
-Discover threads by case-sensitive literal substring in the thread name or topic:
-
-```sh
-herdr-threads thread list --all --search psa-global
-```
-
-Discovery is scoped to the selected Herdr instance. `--all` includes all memberships;
-`--joined` and `--invited` restrict membership. The default includes joined and
-invited threads when a seat is selected or inferred; without a seat it lists all
-memberships. Results are bounded pages: follow the returned continuation
-command to search further, including after an empty work-limited page. The CLI does
-not automatically traverse every page. The interactive picker's fuzzy filtering is
-separate from this literal CLI search. Then use
-`herdr-threads join THREAD` with an exact ID or name to join an active thread without
-an invitation (automatic pair channels allow only their two reserved seats). Pending invitations require `accept` or exact-revision `accept-required`
-instead. Archived threads must be reopened by a member or service owner. Repeated join
-is a no-op; joining after leaving starts a fresh membership interval and does not ACK
-old messages. An upgraded daemon advertising `thread.join_v1` is required.
-
-`follow THREAD` (also `ht follow THREAD`) is shorthand for `read THREAD --follow` and shows new messages as they arrive; Ctrl-C stops it. Both accept `--recent N` or `--after SEQUENCE`, `--no-system`, and `--max-bytes N`. Reading history does not ACK. A validated top-level agent's complete hook/channel delivery or default text `inbox` ACKs eligible fully displayed pending messages after output is written and flushed. Hooks name an inbox continuation only for incomplete or unavailable delivery; `inbox --machine`, `--json`, explicit `--seat`, and pane selectors are read-only. Humans can read and reply without owing ACKs. A recorded ACK confirms receipt, not agreement or completion.
-
-Names select panes within your current tab. Use `--space` and `--tab` to address another workspace or tab. Threads can span those locations; a duplicate thread name requires the exact ID printed by the CLI. Bare `herdr-threads read` opens a channel picker in a human terminal; bare `herdr-threads follow` selects a channel and then follows it. Rows show active/archived status, joined participant count, sampled messages per minute, and a compact last-message preview. Active channels come first, ranked by participants × (1 + sampled messages/minute). The sample uses the latest 512 timeline positions, counting ordinary messages over the elapsed time through now with a one-minute minimum. Participant counts exclude retired seats and pending invitations, and include accepted service requirements. Color highlights activity and selection on supporting terminals and honors `NO_COLOR`. Agents, scripts, `--machine`, and `--json` require an explicit thread name or ID. If the daemon lacks picker support, upgrade it or use an exact thread ID.
-
-The [recording recipe](docs/media/try-it.md) reproduces this walkthrough with bounded debate turns. The [earlier tea-party script](scripts/demo-tea-party.sh) and its [recording](docs/media/tea-party.mp4) remain historical examples. Every command has `--help`; [the agent guide](integrations/skill/SKILL.md) explains how agents participate.
-
-## Automatic direct channels
-
-Use an exact recipient seat when the work belongs in a continuing one-to-one conversation:
-
-```sh
-herdr-threads send --seat SEAT --body "Nonurgent work"
-herdr-threads send --seat SEAT --file assignment.txt
-herdr-threads send --seat SEAT --stdin
-herdr-threads send --seat SEAT --nudge --body "Please review"
-herdr-threads send --seat SEAT --require-ack SEAT --body "Please confirm receipt"
-herdr-threads human send --seat SEAT --body "A question"
-```
-
-`--seat` selects the recipient, never the caller. Choose either `send THREAD` (unchanged ordinary thread delivery) or `send --seat SEAT`; a thread and seat cannot be combined. Direct send reuses the instance's canonical channel for that exact pair of seats, independent of names or topics. It never adopts an unrelated manually created thread or follows a retired seat to a replacement. Missing, retired, foreign, unresolved, held or self targets refuse; a resolved unbound recipient is valid.
-
-Send defaults to priority 1: it freezes the target in the audience without waking it or promising receipt, acceptance or task adoption. `-p N` (0..9, 0 most urgent) sets the priority; an idle seat wakes only for priority at or below its `nudge-threshold` (default 0), and `--nudge` is `-p 0`. Direct `--require-ack` may name only the target seat (duplicates deduplicate); sender/third-seat requests and `--require-ack-pane` refuse. Body, deadline and relay rules remain the ordinary send rules.
-
-Creation joins both seats: a new 1:1 pair needs no invitation or `accept`, and its first message arrives by normal delivery at its own priority. No third seat can enroll, and services cannot adopt or own the channel. Names and topics are presentation; the default topic and goal are `1:1 SEAT_A SEAT_B` with sorted canonical seat IDs.
-
-Lifecycle decisions require explicit repair on the reported channel: `reopen THREAD` after archive, `join THREAD` after the caller leaves, `accept THREAD` for an invited caller, and `invite THREAD --seat SEAT` after the target leaves or rejects. Required invitations retain their ordinary acceptance rules. Direct routing never reopens, rejoins or reinvites automatically and never creates a replacement pair. Repair reuses the same channel and preserves existing messages and obligations.
-
-Direct send durably ensures the channel, then uses ordinary send. A later refusal or crash can leave an empty channel and invitation; use the reported `retry REF` or `pending-ops` rather than sending again. Retry keeps the original recipient, body and operation keys. A completed retry prints historical thread/message results without repeating effects.
-
-Handoff also selects this automatic pair when both channel flags are omitted:
-
-```sh
-herdr-threads handoff --existing --seat SEAT -- "Review this change"
-herdr-threads handoff --existing --pane PANE -- "Review this change"
-herdr-threads handoff --pane PANE --kind codex -- "Review this change"
-herdr-threads handoff --new-tab review --kind codex -- "Review this change"
-herdr-threads handoff --new-tab review --kind codex --profile-dir /absolute/profile \
-  --cwd /absolute/workdir -- "Review this change"
-```
-
-All handoffs require an original top-level Agent. Automatic handoff ensures the pair and sends the addressed assignment before guarded launch, where requested; it never accepts or ACKs for the peer. New-tab resolves its recipient before ensuring the pair. Use explicit `--thread THREAD` to deliver into a compatible joined channel, or `--new-thread` for a separate ordinary channel as in the group quickstart above. `--thread-name`, `--topic` and `--goal` require `--new-thread`. Automatic routing requires the new daemon capability and refuses older daemons before effects.
-
-`--profile-dir` and `--cwd` are new-tab options: both must name absolute existing directories and are canonicalized once before publication. Existing-seat delivery and guarded pane launches refuse either option before effects; plain `launch` is unchanged. Omitted cwd uses the invocation cwd; omitted profile keeps normal selection. Codex maps the selected directory to `CODEX_HOME`, Claude to `CLAUDE_CONFIG_DIR`, and Hermes to `HERMES_HOME`; a Hermes native named profile may resolve below that root. agy does not support explicit profile selection (new-tab cwd still works). No profile is created, hooks installed or authentication copied by this selection.
-
-The profile is declared child input, subject to shell initialization, not proof of the authenticated account. Retry preserves canonical directories, declared environment and saved native arguments despite changed caller defaults or symlink targets; current configuration checks still apply. If a saved directory disappears or stops being a directory, restore it and use the reported `retry REF`; new native effects refuse until repair. Existing unknown-creation and possible-start safeguards still apply. Diagnostics contain paths and declared environment, never credential contents. See the [handoff reference](docs/agent-usage.md#durable-handoff-and-recovery).
-
-## A role that survives its session
-
-A **seat** is the role's durable identity; the pane is where its current participant runs. Thread memberships, messages, and receipts belong to the seat rather than to a Claude or Codex session. A pane has one seat and the seat holds one **binding** per agent session (plus one per subagent), each with its own read cursors and liveness, so a second session in the pane never displaces the first: a new session of the same process (`/clear`, resume) supersedes its predecessor, and a session of another process is added beside it. You can upgrade the agent CLI, choose another profile, or switch from Claude to Codex without rebuilding the role's conversations, provided the new harness is set up for the same Herdr instance.
-
-Agent invitations are always priority 0 and need an explicit `accept` or `reject`: `herdr-threads invite THREAD --seat SEAT` uses the configured acceptance duration (five minutes if unset), or add `--deadline SECONDS` for an explicit duration. Acceptance confirms the invitation automatically; launch and registration do not. A missed deadline notifies the original inviter, including when the recipient never registers. Duplicate pending invitations keep their original policy and deadline. Human/operator invitations and required memberships keep their established semantics.
-
-The seat's threads remain available across restarts. Messages sent while its agent is out stay in the durable history; outstanding invitations and receipt requests are presented when the agent checks in again. Hooks surface pending attention, and after a supported context reset they guide the agent to summarize threads needing attention. `herdr-threads summary THREAD` returns a shared summary and recent messages when ready, or jobs for the agent to produce missing summary blocks. Summary generation uses agents, and factual retention depends on their output; the original messages remain readable.
-
-Because memberships, invitations and receipts belong to the seat, they are **shared by every session in the pane**: a `join` or `leave` by any session applies to all of them, and the first top-level session to ACK a message settles its receipt for the seat. Subagents read their own stream (their own cursor) and never write; their writes are refused with `subagent_read_only`. A session new to the seat sees per-thread history stats once (first contact), and a resumed session with more unread than one inbox page is fast-forwarded to the present with a `resumed past N messages` summary; `herdr-threads summary THREAD` catches up. Participants show as **active** while one of their bindings is connected and **inactive** otherwise. A person's pane (`human me init`) holds only the person's binding: it is refused while an agent is connected, and an agent's first call there ends it. A closed pane retires its seat and disconnects every binding; a thread left with no active participant archives after its quiet hour. See [agent usage](docs/agent-usage.md#sessions-bindings-and-the-shared-seat) and [operations](docs/operations.md#session-bindings-liveness-and-upgrades).
-
-Every agent command identifies its session from the harness environment (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`) and is refused with `session_claim_required` or `liveness_fingerprint_required` when it cannot. Codex under `codex app-server --managed-daemon` has no pane and is refused (`managed_daemon_refused`): keep Codex in its pane. After upgrading, re-run `herdr-threads setup` and restart running agents (see [updating](docs/install.md#updating)).
-
-A Herdr restart can make pane continuity uncertain. The plugin preserves the old seat and its obligations rather than guessing from a pane name. Resuming the matching session can reattach it; otherwise the operator explicitly rebinds the seat or chooses a fresh one. See [restore holds and repair](docs/operations.md#restore-holds-and-repair).
-
-This makes threads useful as a lasting project channel, a cross-harness review room, or a parent–child assignment channel that remains usable after either agent restarts. Agents forwarding your instructions should use `send --relays-user` so compaction gives those instructions the same priority as human-authored messages.
-
-## Cross-node sync
-
-Machines running herdr-threads can share threads, seats and messages. Link two machines with `herdr-threads human peer add user@host` (key-based ssh, and `herdr-threads` on the remote's `PATH` or `~/.local/bin`); the daemon also finds peers from `herdr machine list` and `herdr --remote` targets unless `sync.discover` is `false`. `herdr-threads peer list` and `herdr-threads sync status` show links, and seats on other machines appear as `remote`. Each machine keeps its data in `<state>/node/`; data from earlier versions in `<state>/instances/` is not used and `herdr-threads legacy purge` removes it. Details: [Cross-node sync](docs/install.md#cross-node-sync).
-
-## Trust model
-
-Herdr Threads coordinates cooperative agents running under one local account. A command in a pane acts as that pane's seat; child processes inheriting its context cannot be reliably distinguished from the top-level agent. Session and subagent attribution is cooperative: it rests on the harness environment and, for Claude subagents, on a rewrite of recognized `herdr-threads`/`ht` command lines (shapes such as `eval`, `bash -c` or `$(...)` stay attributed to the parent session). Receipts record the caller's claim, and summaries are derived data. The plugin is not a security boundary. The [trust policy](TRUST-POLICY.md) defines attribution, continuity, operator repair, and accepted limits.
+All are `herdr-threads` subcommands with `--help`. Agents learn the rest from the [skill](integrations/skill/SKILL.md) the installer adds.
 
 ## Supported harnesses
 
 | Harness | Status |
 | --- | --- |
-| Claude Code | Implemented. Native core-flow evidence includes 2.1.287; earlier captures cover 2.1.283–2.1.286. |
-| Codex | Implemented. Native core-flow evidence includes 0.159.3; approved CLI execution was separately measured on 0.160.0. |
-| Hermes | Experimental adapter and Python bridge. Native core-flow evidence on 0.21.5 with a private Herdr build that advertises the guarded launch process hint; bare `hermes` CLI sessions join through the plugin hooks once `setup hermes --profile NAME` is installed and enabled (re-run it after upgrading so the bridge sends the enrollment witness); `launch --kind hermes` adds wake support. [Scope and operator guide](integrations/hermes/README.md), [native evidence](docs/evidence/harness-adapters/native-acceptance/README.md). |
-| Antigravity (`agy`) | Implemented through an owned agy plugin (hooks for `SessionStart`, `PreInvocation` and `Stop`), hook-pull delivery and native idle wake; `launch` and `handoff --pane` are supported. Join through `herdr-threads setup agy`. [Operator guide](integrations/agy/README.md). |
-| Pi | Planned. |
-| OpenCode | Planned. |
+| Claude Code, Codex | Supported |
+| Antigravity (`agy`) | Supported ([guide](integrations/agy/README.md)) |
+| Hermes | Experimental ([guide](integrations/hermes/README.md)) |
+| Pi, OpenCode | Planned |
 
-Codex and Claude core hooks use registered contracts with strict payload validation. Setup and launch retain your selected executable or managed wrapper; ordinary setup, launch, hooks, doctor and daemon observation do not probe its version/help/schema. Setup configures hooks (plus, only with consent, the Codex pane environment block in your shell startup files: `setup codex --with-pane-env`) and adds no Codex sandbox socket, network or writable-root allowance. Runtime metadata is optional; `contract_declared` and valid callbacks do not prove native receipt or grant compact/rich poke capabilities. Run `herdr-threads doctor` for actual configuration and observed failures. Historical native results describe their recorded source revisions: the [validation report](docs/validation/report.md) includes a failed prompt-less Codex scenario, and wake followed by agent acknowledgment without an initial prompt remains unvalidated on the current release. See [compatibility](docs/compatibility/) and [Codex execution evidence](docs/evidence/codex-command-approvals/README.md) for scope and limitations.
+What was tested: [compatibility](docs/compatibility/), [validation report](docs/validation/report.md). To request another harness, [open an issue](https://github.com/alepar/herdr-threads/issues/new).
 
-Need another harness? [Open an issue](https://github.com/alepar/herdr-threads/issues/new) with the harness name and the workflow you want to use.
+## Trust model
 
-Adapter authors implement `HarnessAdapter` in one module and add one same-binary
-static `Registration`, plus module/build wiring and fixtures. The production registry
-contains Claude, Codex, Hermes and agy; test-support builds include a fourth fixture adapter.
-Optional installer, launch, composer and canary providers declare their own capability
-boundaries. Absent providers or native evidence domains yield explicit unavailable
-operations, never inferred native support. See the [author boundary](integrations/hermes/README.md#adapter-author-boundary)
-and local `herdr-threads adapters --json` discovery.
+For cooperative agents under one local account, not a security boundary. A command acts as its pane's seat, and receipts record what the caller claims. Details: [trust policy](TRUST-POLICY.md).
 
 ## Documentation
 
-- [Installation](docs/install.md): prerequisites, setup, upgrades, and removal.
-- [Agent usage](docs/agent-usage.md): command reference and hook behavior.
-- [Agent skill](integrations/skill/SKILL.md): participation and summary workflow, also printed by `herdr-threads skill`.
-- [Operations](docs/operations.md): health, delivery, recovery, and seat repair.
-- [Trust policy](TRUST-POLICY.md): identity, receipts, and accepted limits.
-- [Release evidence](docs/release.md), [validation](docs/validation/report.md), and [CLI names/handoff evidence](docs/evidence/cli-names-handoff/report.md): checks, native results, and known gaps.
+- [Installation](docs/install.md): setup, cross-machine sync, settings, upgrades, removal
+- [Agent and operator commands](docs/agent-usage.md): seats and sessions, direct channels, handoff
+- [Operations](docs/operations.md): health, delivery, recovery, seat repair
+- [Agent skill](integrations/skill/SKILL.md): how agents use it (`herdr-threads skill`)
+- [Release evidence](docs/release.md)
+
+## Contributing
+
+Issues and PRs are welcome. Rules and checks are in [AGENTS.md](AGENTS.md). New harness adapters: see the [adapter author boundary](integrations/hermes/README.md#adapter-author-boundary).
 
 ## License
 

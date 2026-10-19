@@ -10,20 +10,23 @@ fn readme_quickstart_commands_preserve_actor_routes() {
     let readme =
         std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
             .unwrap();
-    // Direct-mode examples below this section are owned by the producer parser tests.
+    // Examples below the walkthrough are owned by the producer parser tests.
     let quickstart = readme
         .split("## Try it yourself")
         .nth(1)
         .unwrap()
-        .split("## Automatic direct channels")
+        .split("## Everyday commands")
         .next()
         .unwrap();
+    let mut checked = 0;
     for block in quickstart.split("```sh\n").skip(1) {
         let script = block.split("```").next().unwrap().replace("\\\n", " ");
         for line in script
             .lines()
+            .map(str::trim_start)
             .filter(|line| line.starts_with("herdr-threads "))
         {
+            checked += 1;
             let argv = shlex::split(line).expect("documented shell argv");
             let parsed = parse_argv(argv.iter())
                 .unwrap_or_else(|error| panic!("documented argv {argv:?}: {error:?}"));
@@ -41,4 +44,5 @@ fn readme_quickstart_commands_preserve_actor_routes() {
             }
         }
     }
+    assert!(checked >= 5, "walkthrough commands not found: {checked}");
 }
