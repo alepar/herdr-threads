@@ -2917,6 +2917,7 @@ fn opaque_a(log: LogKey, counter: u64, prev: [u8; 32], tag: &str) -> StoredEntry
 // and an opaque row recorded in sync_reissues.
 #[test]
 fn reissue_reports_opaque_candidate() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut o = owner(3, 2); // journal tail: counters 3 and 4
     let branch_row = opaque_a(o.old, 3, o.entries[1].hash, "branch");
     let tail_row = opaque_a(o.old, 5, o.entries[3].hash, "tail");
@@ -3040,6 +3041,7 @@ fn opaque_forked_predecessor_cuts_its_known_descendants() {
 // it, and a cannot_reissue count that drops it.
 #[test]
 fn promoted_foreign_row_above_freeze_is_cannot_reissue() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut o = owner(3, 2); // journal tail: counters 3 and 4
     let tail_row = opaque_a(o.old, 5, o.entries[3].hash, "tail");
     let tx = o.conn.transaction().unwrap();
@@ -3094,6 +3096,7 @@ fn hex_of(hash: &[u8; 32]) -> String {
 // branch walk that does not serve the stored branch row.
 #[test]
 fn pulled_branch_with_opaque_entries_is_stored() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut o = owner(3, 2);
     let x3 = StoredEntry::from(signed_entry(o.old, 3, o.entries[1].hash, r#"{"id":"x3"}"#));
     let x4 = opaque_a(o.old, 4, x3.hash(), "x4");
@@ -3153,6 +3156,7 @@ fn pulled_branch_with_opaque_entries_is_stored() {
 // or freezes at the wrong counter; for both directions and the prev-link case.
 #[test]
 fn record_fork_with_opaque_sides_freezes_and_keeps_evidence() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     use crate::sync::incarnations::{Classified, classify_pair};
     let (a_store, b_store) = (Store::new(), Store::new());
     let (log, entries) = chain_of_a(&a_store, 2); // counters 1..=3

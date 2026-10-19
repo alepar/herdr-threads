@@ -913,6 +913,7 @@ mod tests {
     /// entries as stored, no line from the sink).
     #[test]
     fn opaque_fork_side_is_queued_as_stored() {
+        let _registry = crate::sync::envelope::hold_layout_registry();
         use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
 
         let rig = rig();

@@ -2177,6 +2177,8 @@ fn wrapped(entries: &[Envelope]) -> Vec<StoredEntry> {
 
 /// Node B holding A's genesis, put 1 and an opaque entry at counter 3.
 struct OpaqueStore {
+    // Keeps HTJRNL99 opaque for the test's life (no concurrent registration).
+    _registry: crate::sync::envelope::LayoutRegistryHold,
     _a: Store,
     _b: Store,
     ctx: StoreContext,
@@ -2187,6 +2189,7 @@ struct OpaqueStore {
 }
 
 fn with_opaque_three() -> OpaqueStore {
+    let registry = crate::sync::envelope::hold_layout_registry();
     let (a, b) = (Store::new(), Store::new());
     let (_actx, _aconn, log, known) = chain_of_a(&a, 1);
     let (ctx, mut conn) = opened_b(&b, 77);
@@ -2203,6 +2206,7 @@ fn with_opaque_three() -> OpaqueStore {
         }
     );
     OpaqueStore {
+        _registry: registry,
         _a: a,
         _b: b,
         ctx,
@@ -2358,6 +2362,7 @@ fn ingest_opaque_conflict_reports_fork() {
 
 #[test]
 fn ingest_opaque_bad_signature_is_corrupt_nothing_stored() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let (a, b) = (Store::new(), Store::new());
     let (_actx, _aconn, log, known) = chain_of_a(&a, 1);
     let (ctx, mut conn) = opened_b(&b, 77);
@@ -2393,6 +2398,7 @@ fn ingest_opaque_bad_signature_is_corrupt_nothing_stored() {
 
 #[test]
 fn opaque_append_does_not_fold_hlc() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let (a, b) = (Store::new(), Store::new());
     let (_actx, _aconn, log, known) = chain_of_a(&a, 1);
     let (ctx, mut conn) = opened_b(&b, 77);
