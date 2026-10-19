@@ -1,0 +1,213 @@
+{
+ "inspected": [
+  {
+   "path": "migrations/node/0005_bytes_first_journal.sql",
+   "hunks": [
+    "@@ -0,0 +1,59 @@"
+   ]
+  },
+  {
+   "path": "migrations/node/0005_bytes_first_journal_after.sql",
+   "hunks": [
+    "@@ -0,0 +1,35 @@"
+   ]
+  },
+  {
+   "path": "src/store/schema.rs",
+   "hunks": [
+    "@@ -38,6 +38,19 @@ pub const NODE_APPLICATION_ID: i32 = 0x4854_4E44;",
+    "@@ -47,6 +60,12 @@ pub(crate) struct NodeDelta {",
+    "@@ -64,14 +83,25 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[",
+    "@@ -362,23 +392,97 @@ fn apply_deltas(conn: &Connection, deltas: &[NodeDelta], cache: bool) -> Result<",
+    "@@ -441,12 +545,20 @@ fn expected_objects("
+   ]
+  },
+  {
+   "path": "src/store/connection.rs",
+   "hunks": [
+    "@@ -128,6 +128,9 @@ pub struct SyncState {"
+   ]
+  },
+  {
+   "path": "src/store/journal.rs",
+   "hunks": [
+    "@@ -30,6 +30,7 @@ use std::sync::Arc;",
+    "@@ -43,7 +44,8 @@ use crate::store::connection::{",
+    "@@ -200,10 +202,10 @@ pub(crate) fn verify_invariants(tx: &Connection) -> Result<(), ApiError> {",
+    "@@ -331,6 +333,7 @@ pub fn open(",
+    "@@ -348,6 +351,8 @@ pub fn open(",
+    "@@ -490,8 +495,8 @@ fn insert_pending(",
+    "@@ -506,6 +511,7 @@ fn insert_pending(",
+    "@@ -746,6 +752,147 @@ pub fn reissue(",
+    "@@ -773,24 +920,22 @@ struct RawEnvelope {",
+    "@@ -896,12 +1041,61 @@ fn load_log(conn: &Connection, log: &LogKey) -> Result<Option<LogRow>, ApiError>",
+    "@@ -911,22 +1105,173 @@ fn hash_at(conn: &Connection, log_ix: i64, counter: u64) -> Result<Option<[u8; 3",
+    "@@ -993,13 +1338,34 @@ pub fn stored_hash(",
+    "@@ -1007,33 +1373,20 @@ pub fn serve(",
+    "@@ -1041,11 +1394,14 @@ pub const BRANCH_WALK_MAX_STEPS: u64 = 65_536;",
+    "@@ -1054,58 +1410,113 @@ impl Batch {",
+    "@@ -1123,7 +1534,9 @@ fn batch_journal_range(",
+    "@@ -1131,10 +1544,39 @@ pub fn serve_branch(",
+    "@@ -1142,7 +1584,8 @@ fn serve_branch_within(",
+    "@@ -1151,25 +1594,19 @@ fn serve_branch_within(",
+    "@@ -1194,25 +1631,19 @@ fn serve_branch_within(",
+    "@@ -1304,6 +1735,21 @@ pub fn ingest(",
+    "@@ -1321,8 +1767,8 @@ pub fn ingest(",
+    "@@ -1335,7 +1781,7 @@ fn ingest_batch(",
+    "@@ -1353,8 +1799,8 @@ fn ingest_batch(",
+    "@@ -1369,7 +1815,7 @@ fn ingest_batch(",
+    "@@ -1400,58 +1846,72 @@ fn ingest_batch(",
+    "@@ -1571,6 +2031,18 @@ pub fn store_forked(",
+    "@@ -1578,24 +2050,40 @@ pub fn store_forked(",
+    "@@ -1608,11 +2096,310 @@ pub fn store_forked(",
+    "@@ -1674,9 +2461,9 @@ impl crate::sync::journal_port::JournalPort for crate::store::SqliteStore {",
+    "@@ -1686,13 +2473,13 @@ impl crate::sync::journal_port::JournalPort for crate::store::SqliteStore {",
+    "@@ -1706,11 +2493,11 @@ impl crate::sync::journal_port::JournalPort for crate::store::SqliteStore {"
+   ]
+  },
+  {
+   "path": "src/store/apply.rs",
+   "hunks": [
+    "@@ -858,6 +858,51 @@ fn unmet_dep(tx: &Transaction<'_>, head: &Head) -> Result<Option<String>, ApiErr",
+    "@@ -867,11 +912,18 @@ fn next_ready_head(tx: &Transaction<'_>, only_self_log: bool) -> Result<Option<i",
+    "@@ -984,6 +1036,8 @@ pub fn apply_pass("
+   ]
+  },
+  {
+   "path": "src/store/incarnations.rs",
+   "hunks": [
+    "@@ -47,9 +47,9 @@ use crate::protocol::results::{ApiError, ErrorCode};",
+    "@@ -98,22 +98,12 @@ pub fn record_fork(",
+    "@@ -123,10 +113,10 @@ pub fn record_fork(",
+    "@@ -214,10 +204,19 @@ pub struct ReissueProgress {",
+    "@@ -225,26 +224,42 @@ struct Candidate {",
+    "@@ -281,7 +296,7 @@ fn reissue_pass_ungated(",
+    "@@ -311,6 +326,7 @@ fn reissue_pass_ungated(",
+    "@@ -318,6 +334,10 @@ fn reissue_pass_ungated(",
+    "@@ -331,7 +351,7 @@ fn reissue_pass_ungated(",
+    "@@ -343,6 +363,15 @@ fn reissue_pass_ungated(",
+    "@@ -370,9 +399,19 @@ fn reissue_pass_ungated(",
+    "@@ -629,8 +668,8 @@ fn active_self(conn: &Connection) -> Result<ActiveSelf, ApiError> {",
+    "@@ -641,7 +680,7 @@ fn entry_at(conn: &Connection, log: &LogKey, counter: u64) -> Option<Envelope> {",
+    "@@ -695,7 +734,7 @@ pub fn owner_rotate(",
+    "@@ -744,8 +783,8 @@ fn rotate_for_fork(",
+    "@@ -786,7 +825,7 @@ pub fn restore_rotate(",
+    "@@ -994,13 +1033,8 @@ pub fn upsert_branch_tip(",
+    "@@ -1179,31 +1213,31 @@ fn note_failure(tx: &Transaction<'_>, branch_ix: i64, error: &str) -> Result<(),",
+    "@@ -1217,19 +1251,18 @@ fn verify_reply(branch: &BranchRow, entries: &[Envelope]) -> Result<(), String>",
+    "@@ -1252,7 +1285,7 @@ pub fn branch_progress(",
+    "@@ -1322,7 +1355,7 @@ pub fn branch_progress(",
+    "@@ -1331,15 +1364,17 @@ pub fn branch_progress(",
+    "@@ -1373,7 +1408,7 @@ fn complete_covered_siblings(",
+    "@@ -1387,9 +1422,9 @@ fn complete_covered_siblings(",
+    "@@ -1473,6 +1508,9 @@ pub struct LogRepair {",
+    "@@ -1539,18 +1577,20 @@ fn count_u32(value: i64) -> u32 {",
+    "@@ -1558,6 +1598,51 @@ fn pending_reissues(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u3",
+    "@@ -1602,9 +1687,12 @@ fn log_repairs(conn: &Connection) -> Result<Vec<LogRepair>, ApiError> {",
+    "@@ -1614,6 +1702,7 @@ fn log_repairs(conn: &Connection) -> Result<Vec<LogRepair>, ApiError> {",
+    "@@ -1893,11 +1982,13 @@ pub struct InvariantViolation {"
+   ]
+  },
+  {
+   "path": "src/store/sync_status.rs",
+   "hunks": [
+    "@@ -21,6 +21,7 @@",
+    "@@ -29,6 +30,7 @@ use crate::protocol::time::CallBudget;",
+    "@@ -80,7 +82,7 @@ pub fn per_log(",
+    "@@ -98,10 +100,38 @@ pub fn per_log(",
+    "@@ -121,13 +151,25 @@ pub fn per_log(",
+    "@@ -151,10 +193,13 @@ pub fn per_log(",
+    "@@ -175,6 +220,8 @@ pub fn unapplied_page(",
+    "@@ -311,11 +358,12 @@ pub fn verify(conn: &Connection) -> Result<Vec<ViolationRow>, ApiError> {",
+    "@@ -343,8 +391,9 @@ pub fn verify(conn: &Connection) -> Result<Vec<ViolationRow>, ApiError> {",
+    "@@ -370,8 +419,12 @@ fn rehash_entries(conn: &Connection, out: &mut Vec<ViolationRow>) -> Result<(),",
+    "@@ -387,21 +440,33 @@ fn rehash_entries(conn: &Connection, out: &mut Vec<ViolationRow>) -> Result<(),"
+   ]
+  },
+  {
+   "path": "src/sync/resync.rs",
+   "hunks": [
+    "@@ -47,9 +47,10 @@ use crate::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant};",
+    "@@ -440,14 +441,22 @@ pub struct SalvageReport {",
+    "@@ -474,6 +483,17 @@ pub fn salvage(",
+    "@@ -485,7 +505,12 @@ pub fn salvage(",
+    "@@ -495,10 +520,15 @@ pub fn salvage(",
+    "@@ -506,9 +536,18 @@ pub fn salvage(",
+    "@@ -518,6 +557,97 @@ pub fn salvage(",
+    "@@ -525,6 +655,7 @@ fn outcome_name(outcome: &IngestOutcome) -> &'static str {",
+    "@@ -1036,7 +1167,7 @@ mod tests {",
+    "@@ -1060,7 +1191,7 @@ mod tests {",
+    "@@ -1094,7 +1225,7 @@ mod tests {",
+    "@@ -1125,10 +1256,10 @@ mod tests {",
+    "@@ -1168,13 +1299,222 @@ mod tests {",
+    "@@ -1199,7 +1539,7 @@ mod tests {",
+    "@@ -1219,7 +1559,7 @@ mod tests {",
+    "@@ -1235,7 +1575,7 @@ mod tests {",
+    "@@ -1253,7 +1593,7 @@ mod tests {",
+    "@@ -1269,13 +1609,54 @@ mod tests {",
+    "@@ -1291,7 +1672,7 @@ mod tests {"
+   ]
+  },
+  {
+   "path": "CHANGELOG.md",
+   "hunks": [
+    "@@ -2,6 +2,8 @@"
+   ]
+  },
+  {
+   "path": "TRUST-POLICY.md",
+   "hunks": [
+    "@@ -2021,6 +2021,24 @@ These are decisions, not bugs. Each is safe to rely on only as stated."
+   ]
+  },
+  {
+   "path": "docs/operations.md",
+   "hunks": [
+    "@@ -304,6 +304,19 @@ Herdr has no atomic \"check native session and commit\" operation. A replacement o"
+   ]
+  },
+  {
+   "path": "Cargo.toml",
+   "hunks": [
+    "@@ -43,6 +43,11 @@ name = \"sync_resync\""
+   ]
+  },
+  {
+   "path": "RELEASE.md",
+   "hunks": [
+    "@@ -23,6 +23,8 @@ Each fix is done by a fixer in its own worktree and branch, with a bead (`bd`),",
+    "@@ -31,10 +33,12 @@ Start ordinary push/PR CI on the candidate SHA alongside local qualification; on",
+    "@@ -49,6 +53,8 @@ When CI is green on the release SHA: annotated tag `vX.Y.Z` (`git -c user.email="
+   ]
+  },
+  {
+   "path": "AGENTS.md",
+   "hunks": [
+    "@@ -2,7 +2,7 @@"
+   ]
+  },
+  {
+   "path": "docs/superpowers/runs/2026-10-18-bytes-first-journal/2026-10-18-bytes-first-journal-design.md",
+   "hunks": [
+    "@@ -0,0 +1,153 @@"
+   ]
+  },
+  {
+   "path": "src/sync/coordinator/serve.rs",
+   "hunks": [
+    "@@ -15,6 +15,11 @@",
+    "@@ -41,10 +46,46 @@ pub(super) struct ServeDone {",
+    "@@ -53,22 +94,22 @@ pub(super) struct ServeDone {",
+    "@@ -89,7 +130,7 @@ pub(super) const MAX_BRANCH_OUTSTANDING: usize = 4;",
+    "@@ -107,7 +148,13 @@ impl Actor {",
+    "@@ -145,10 +192,12 @@ impl Actor {",
+    "@@ -199,8 +248,8 @@ impl Actor {",
+    "@@ -214,16 +263,27 @@ impl Actor {",
+    "@@ -418,7 +478,18 @@ impl Actor {",
+    "@@ -434,7 +505,7 @@ impl Actor {",
+    "@@ -467,8 +538,8 @@ impl Actor {",
+    "@@ -489,7 +560,7 @@ impl Actor {"
+   ]
+  }
+ ]
+}
