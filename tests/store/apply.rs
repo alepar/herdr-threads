@@ -2276,3 +2276,307 @@ fn dependent_log_blocks_on_deps_string() {
         0
     );
 }
+
+// ---- promotion of parked_layout rows (ht-76u6.4) ------------------------------
+//
+// These register the HTJRNL99 parser process-wide: run them by filter under
+// `cargo test` (`promot`); under nextest every test is its own process.
+
+type Projection = (
+    Option<i64>,
+    Option<String>,
+    Option<i64>,
+    Option<Vec<u8>>,
+    Option<String>,
+    Option<String>,
+    Option<Vec<u8>>,
+);
+
+impl Node {
+    fn ingest_seq(&self, log: &LogKey, counter: u64) -> i64 {
+        self.conn
+            .query_row(
+                "SELECT j.ingest_seq FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix \
+                 WHERE l.node_uuid=?1 AND l.incarnation=?2 AND j.counter=?3",
+                params![log.node.to_string(), log.incarnation, counter as i64],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn projection(&self, log: &LogKey, counter: u64) -> Projection {
+        self.conn
+            .query_row(
+                "SELECT j.hlc,j.kind,j.kind_version,j.deps,j.creates,j.needs,j.payload FROM journal j \
+                 JOIN sync_logs l ON l.log_ix=j.log_ix \
+                 WHERE l.node_uuid=?1 AND l.incarnation=?2 AND j.counter=?3",
+                params![log.node.to_string(), log.incarnation, counter as i64],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .unwrap()
+    }
+
+    /// `(raw, hash, signature)` of one entry.
+    fn bytes(&self, log: &LogKey, counter: u64) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        self.conn
+            .query_row(
+                "SELECT j.raw,j.hash,j.signature FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix \
+                 WHERE l.node_uuid=?1 AND l.incarnation=?2 AND j.counter=?3",
+                params![log.node.to_string(), log.incarnation, counter as i64],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    }
+}
+
+fn empty_projection() -> Projection {
+    (None, None, None, None, None, None, None)
+}
+
+/// The projection `parse_synthetic` derives, in the stored column encoding.
+fn expected_projection(entry: &crate::sync::envelope::OpaqueEntry) -> Projection {
+    let e = crate::test_support::opaque_entry::parse_synthetic(entry).unwrap();
+    (
+        Some(i64::try_from(e.hlc.as_u64()).unwrap()),
+        Some(e.kind),
+        Some(i64::from(e.kind_version)),
+        Some(e.deps.encode()),
+        e.creates.as_ref().map(|k| k.as_str().to_owned()),
+        Some(
+            e.needs
+                .iter()
+                .map(EntityKey::as_str)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        Some(e.payload),
+    )
+}
+
+#[test]
+fn unknown_layout_row_stalls_log_with_opaque_layout() {
+    let mut s = stalled();
+    s.ingest_p_tail();
+    s.ingest_q();
+    let progress = s.c.pass();
+    assert_eq!(progress.applied, 1, "only Q's genesis: {progress:?}");
+    assert_eq!(s.c.projection(&s.p, 2), empty_projection());
+    assert_eq!(s.c.state(&s.p, 2), "parked_layout");
+    assert_eq!(s.c.state(&s.p, 3), "pending");
+    assert_eq!(
+        s.c.log_row(&s.p),
+        (1, 3, Some(OPAQUE_LAYOUT.to_owned())),
+        "applied_through stays at 1"
+    );
+    assert_eq!(
+        s.c.log_row(&s.q),
+        (1, 2, Some(blocked_text(&s.p, 3))),
+        "the dependent keeps its deps text"
+    );
+}
+
+#[test]
+fn promotion_fills_projection_and_successors_apply() {
+    let mut s = stalled();
+    s.ingest_p_tail();
+    s.ingest_q();
+    s.c.pass();
+    let before = s.c.bytes(&s.p, 2);
+    let _guard = crate::test_support::opaque_entry::understand_synthetic();
+    let progress = s.c.pass();
+    assert_eq!(progress.applied, 3, "P2, P3 and Q2: {progress:?}");
+    assert_eq!(s.c.projection(&s.p, 2), expected_projection(&s.opaque));
+    assert_eq!(s.c.bytes(&s.p, 2), before, "raw, hash, signature untouched");
+    for (log, counter) in [(&s.p, 2), (&s.p, 3), (&s.q, 2)] {
+        assert_eq!(s.c.state(log, counter), "applied");
+    }
+    assert_eq!(s.c.log_row(&s.p), (3, 3, None));
+    assert_eq!(s.c.log_row(&s.q), (2, 2, None));
+}
+
+#[test]
+fn promote_is_one_transaction() {
+    let mut s = stalled();
+    s.ingest_p_tail();
+    s.c.pass();
+    let seq = s.c.ingest_seq(&s.p, 2);
+    let _guard = crate::test_support::opaque_entry::understand_synthetic();
+    {
+        let tx = s.c.conn.transaction().unwrap();
+        assert_eq!(jr::promote(&tx, seq).unwrap(), jr::Promoted::Done);
+        let seen: (bool, String, Option<String>) = tx
+            .query_row(
+                "SELECT j.kind IS NOT NULL,j.apply_state,l.blocked_on FROM journal j \
+                 JOIN sync_logs l ON l.log_ix=j.log_ix WHERE j.ingest_seq=?1",
+                [seq],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(seen, (true, "pending".into(), None), "all three together");
+        // dropped without commit: rolled back
+    }
+    assert_eq!(s.c.projection(&s.p, 2), empty_projection());
+    assert_eq!(s.c.state(&s.p, 2), "parked_layout");
+    assert_eq!(s.c.log_row(&s.p).2.as_deref(), Some(OPAQUE_LAYOUT));
+}
+
+#[test]
+fn promotion_runs_at_store_open() {
+    let mut s = stalled();
+    s.ingest_p_tail();
+    s.c.pass();
+    assert_eq!(s.c.state(&s.p, 2), "parked_layout");
+    let _guard = crate::test_support::opaque_entry::understand_synthetic();
+    s.c.reopen(base());
+    assert_eq!(s.c.state(&s.p, 2), "pending", "promoted by open");
+    assert_eq!(s.c.projection(&s.p, 2), expected_projection(&s.opaque));
+    assert_eq!(s.c.log_row(&s.p), (1, 3, None), "stall cleared at open");
+    let progress = s.c.pass();
+    assert_eq!(progress.applied, 2, "{progress:?}");
+    assert_eq!(s.c.log_row(&s.p), (3, 3, None));
+}
+
+#[test]
+fn promotion_of_unparseable_row_is_noop() {
+    let mut s = stalled();
+    s.ingest_p_tail();
+    s.c.pass();
+    let seq = s.c.ingest_seq(&s.p, 2);
+    let changes = s.c.conn.total_changes();
+    assert_eq!(
+        jr::promote(&s.c.conn, seq).unwrap(),
+        jr::Promoted::NotUnderstood
+    );
+    assert_eq!(s.c.conn.total_changes(), changes, "nothing written");
+    assert_eq!(s.c.projection(&s.p, 2), empty_projection());
+    assert_eq!(s.c.state(&s.p, 2), "parked_layout");
+    assert_eq!(s.c.log_row(&s.p).2.as_deref(), Some(OPAQUE_LAYOUT));
+}
+
+#[test]
+fn promotion_is_idempotent() {
+    let mut s = stalled();
+    s.ingest_p_tail();
+    s.c.pass();
+    let seq = s.c.ingest_seq(&s.p, 2);
+    let _guard = crate::test_support::opaque_entry::understand_synthetic();
+    assert_eq!(jr::promote(&s.c.conn, seq).unwrap(), jr::Promoted::Done);
+    let (projection, bytes) = (s.c.projection(&s.p, 2), s.c.bytes(&s.p, 2));
+    let changes = s.c.conn.total_changes();
+    assert_eq!(
+        jr::promote(&s.c.conn, seq).unwrap(),
+        jr::Promoted::NotEligible
+    );
+    assert_eq!(s.c.conn.total_changes(), changes);
+    assert_eq!(s.c.projection(&s.p, 2), projection);
+    assert_eq!(s.c.bytes(&s.p, 2), bytes);
+    // A known row is not eligible either.
+    let genesis = s.c.ingest_seq(&s.p, 1);
+    assert_eq!(
+        jr::promote(&s.c.conn, genesis).unwrap(),
+        jr::Promoted::NotEligible
+    );
+}
+
+#[test]
+fn malformed_body_under_registered_magic_stays_parked() {
+    use crate::test_support::opaque_entry::{synthetic_malformed_entry, synthetic_unsigned};
+    let mut s = stalled();
+    let identity = NodeIdentity::from_seed([21; 32]);
+    let unsigned = synthetic_unsigned(&identity, s.p.incarnation, 2, s.opaque.prev_hash());
+    let bad = synthetic_malformed_entry(&identity, &unsigned);
+    let outcome =
+        jr::ingest_entries(&s.c.ctx, &mut s.c.conn, &s.p, vec![bad.into()], &budget()).unwrap();
+    assert!(
+        matches!(outcome, IngestOutcome::Stored { stored: 1, .. }),
+        "{outcome:?}"
+    );
+    let _guard = crate::test_support::opaque_entry::understand_synthetic();
+    let report = s.c.reopen(base());
+    assert_eq!(report.failed, 0, "store open succeeds");
+    let progress = s.c.pass();
+    assert_eq!(progress.applied, 0, "{progress:?}");
+    assert_eq!(s.c.state(&s.p, 2), "parked_layout");
+    assert_eq!(s.c.projection(&s.p, 2), empty_projection());
+    assert_eq!(s.c.log_row(&s.p).2.as_deref(), Some(OPAQUE_LAYOUT));
+    let (rows, _) = crate::store::sync_status::per_log(&s.c.conn, None, 10).unwrap();
+    let row = rows.iter().find(|(k, _)| *k == s.p).unwrap();
+    assert_eq!(
+        (row.1.parked_layout, row.1.cannot_promote),
+        (1, 1),
+        "promotion failure is visible"
+    );
+}
+
+#[test]
+fn promoted_row_still_served_opaque() {
+    use crate::sync::envelope::StoredEntry;
+    let mut s = stalled();
+    s.ingest_p_tail();
+    s.c.pass();
+    let _guard = crate::test_support::opaque_entry::understand_synthetic();
+    s.c.pass();
+    assert_eq!(s.c.state(&s.p, 2), "applied");
+    let served = jr::serve_entries(&s.c.conn, &s.p, 2, BatchLimits::default()).unwrap();
+    let StoredEntry::Opaque(opaque) = &served[0] else {
+        panic!(
+            "a promoted foreign-layout row is served opaque: {:?}",
+            served[0]
+        );
+    };
+    assert_eq!(opaque.raw(), s.opaque.raw());
+    opaque
+        .verify(&NodeIdentity::from_seed([21; 32]).public_key())
+        .expect("SHA-256(raw) == hash and the signature holds");
+    assert!(matches!(served[1], StoredEntry::Known(_)), "P3 stays known");
+    assert!(
+        jr::serve(&s.c.conn, &s.p, 2, BatchLimits::default())
+            .unwrap()
+            .is_empty(),
+        "the known-prefix serve stops before the opaque row"
+    );
+}
+
+#[test]
+fn journal_forked_rows_are_never_promoted() {
+    let mut s = stalled();
+    s.ingest_p_tail();
+    s.c.pass();
+    s.c.conn
+        .execute(
+            "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,signature,raw,needs,source_node,received_at) \
+             SELECT log_ix,2,?2,?3,?4,?5,NULL,NULL,0 FROM sync_logs WHERE node_uuid=?1",
+            params![
+                s.p.node.to_string(),
+                s.opaque.prev_hash().as_slice(),
+                [0x77u8; 32].as_slice(),
+                s.opaque.signature().as_slice(),
+                s.opaque.raw()
+            ],
+        )
+        .unwrap();
+    let _guard = crate::test_support::opaque_entry::understand_synthetic();
+    let tx = s.c.conn.transaction().unwrap();
+    let logged = std::sync::Mutex::default();
+    assert_eq!(
+        jr::promote_parked(&tx, &logged).unwrap(),
+        (1, 0),
+        "journal row only"
+    );
+    tx.commit().unwrap();
+    let kind: Option<String> =
+        s.c.conn
+            .query_row("SELECT kind FROM journal_forked", [], |r| r.get(0))
+            .unwrap();
+    assert_eq!(kind, None, "the fork row keeps its empty projection");
+}

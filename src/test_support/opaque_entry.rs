@@ -49,6 +49,24 @@ pub fn synthetic_entry(identity: &NodeIdentity, unsigned: &UnsignedEnvelope) -> 
     verify_opaque(header, raw, &identity.public_key()).expect("synthetic entry verifies")
 }
 
+/// A verified HTJRNL99 entry whose body [`parse_synthetic`] refuses (one
+/// trailing byte): a valid prefix and signature over a raw that a build which
+/// registered the layout still cannot parse.
+pub fn synthetic_malformed_entry(
+    identity: &NodeIdentity,
+    unsigned: &UnsignedEnvelope,
+) -> OpaqueEntry {
+    let (header, mut raw) = synthetic_parts(identity, unsigned);
+    raw.push(0);
+    let hash: [u8; 32] = Sha256::digest(&raw).into();
+    let header = OpaqueHeader {
+        hash,
+        signature: identity.sign(&hash),
+        ..header
+    };
+    verify_opaque(header, raw, &identity.public_key()).expect("malformed entry verifies")
+}
+
 /// A non-genesis entry in `identity`'s log `incarnation` at `counter` (>= 2)
 /// after `prev_hash`: kind `test.opaque` v1, empty deps and needs, payload
 /// `{"n":<counter>}`, fixed HLC.

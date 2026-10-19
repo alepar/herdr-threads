@@ -128,6 +128,9 @@ pub struct SyncState {
     pub(crate) incarnation_rng: std::sync::Mutex<XorShift>,
     /// When (UTC ms) the hourly skew line of each log was last written.
     pub(crate) skew_logged: std::sync::Mutex<std::collections::HashMap<crate::sync::LogKey, i64>>,
+    /// `ingest_seq` of every `parked_layout` row whose promotion failure was
+    /// already logged by this process (one line per row).
+    pub(crate) promote_logged: std::sync::Mutex<std::collections::HashSet<i64>>,
     /// Set when entries may be waiting to apply (startup, an ingest that stored
     /// a pending row, an apply pass that hit its limit); cleared by the Apply
     /// lane before each kicked pass. Authoring leaves it clear: it applies

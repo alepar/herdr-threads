@@ -333,6 +333,7 @@ pub fn open(
         branch_walk_bound: AtomicU64::new(BRANCH_WALK_MAX_STEPS),
         incarnation_rng: std::sync::Mutex::new(ctx.new_incarnation_rng()),
         skew_logged: std::sync::Mutex::default(),
+        promote_logged: std::sync::Mutex::default(),
         // The first Apply pass after start replays and drains regardless.
         own_history_hold: Arc::new(OwnHistoryHold::new(Arc::clone(&apply_hint))),
         apply_hint,
@@ -350,6 +351,8 @@ pub fn open(
         let incarnation = crate::store::incarnations::draw_unused_incarnation(&tx, &state)?;
         begin_incarnation_with(&tx, &state, decision, incarnation, None, host_label)?;
     }
+    // A build that has learned a layout promotes its parked entries at start.
+    promote_parked(&tx, &state.promote_logged)?;
     let opened = report(&tx, bootstrapped)?;
     tx.commit().map_err(store_error)?;
     // Installed after commit: a failed open leaves the context closed.
@@ -2140,6 +2143,263 @@ pub(crate) fn insert_parked_layout(
     )
     .map_err(store_error)?;
     Ok(())
+}
+
+/// What [`promote`] did to one `journal` row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Promoted {
+    /// Projection filled, `parked_layout` -> `pending`.
+    Done,
+    /// This build has no parser for the row's magic: unchanged.
+    NotUnderstood,
+    /// Not an empty-projection `parked_layout` row (already promoted, or
+    /// known): unchanged.
+    NotEligible,
+    /// Parse, shape, consistency or trigger failure: rolled back, the row
+    /// stays `parked_layout`.
+    Failed(String),
+}
+
+/// Promotes one `journal` row (never `journal_forked`) in the caller's
+/// transaction, inside its own SAVEPOINT so a failure leaves nothing behind.
+///
+/// Fills the projection from the layout parser this build registered for the
+/// row's magic, moves `parked_layout` -> `pending` in the same statement and,
+/// when the row is its log's next position, clears `blocked_on =
+/// opaque_layout`. `raw`, `hash` and `signature` are never written. A row
+/// that is not an empty-projection `parked_layout` row is [`Promoted::NotEligible`],
+/// so promotion is idempotent.
+pub(crate) fn promote(tx: &Connection, ingest_seq: i64) -> Result<Promoted, ApiError> {
+    tx.execute_batch("SAVEPOINT promote").map_err(store_error)?;
+    let outcome = match promote_in_savepoint(tx, ingest_seq) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            let _ = tx.execute_batch("ROLLBACK TO promote; RELEASE promote");
+            return Err(e);
+        }
+    };
+    if matches!(outcome, Promoted::Failed(_)) {
+        tx.execute_batch("ROLLBACK TO promote")
+            .map_err(store_error)?;
+    }
+    tx.execute_batch("RELEASE promote").map_err(store_error)?;
+    Ok(outcome)
+}
+
+fn promote_in_savepoint(tx: &Connection, ingest_seq: i64) -> Result<Promoted, ApiError> {
+    type Row = (
+        i64,
+        String,
+        i64,
+        i64,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        bool,
+        String,
+        i64,
+    );
+    let row: Option<Row> = tx
+        .query_row(
+            "SELECT j.log_ix,l.node_uuid,l.incarnation,j.counter,j.prev_hash,j.hash,j.signature, \
+                    j.raw,j.kind IS NULL,j.apply_state,l.applied_through \
+             FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix WHERE j.ingest_seq=?1",
+            [ingest_seq],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((
+        log_ix,
+        node,
+        incarnation,
+        counter,
+        prev,
+        hash,
+        signature,
+        raw,
+        empty,
+        state,
+        applied,
+    )) = row
+    else {
+        return Ok(Promoted::NotEligible);
+    };
+    if !empty || state != "parked_layout" {
+        return Ok(Promoted::NotEligible);
+    }
+    let Some(magic) = raw.first_chunk::<8>() else {
+        return Ok(Promoted::Failed("raw shorter than the magic".into()));
+    };
+    let Some(parser) = crate::sync::envelope::understood_layout(magic) else {
+        return Ok(Promoted::NotUnderstood);
+    };
+    let fail = |what: &str| Ok(Promoted::Failed(what.to_owned()));
+    let (Ok(node), Ok(incarnation), Ok(counter_u)) = (
+        node.parse::<NodeUuid>(),
+        u32::try_from(incarnation),
+        u64::try_from(counter),
+    ) else {
+        return Err(corrupt("journal invariant: malformed log row"));
+    };
+    let log = LogKey { node, incarnation };
+    let (Ok(prev_hash), Ok(hash), Ok(signature)) = (
+        <[u8; 32]>::try_from(prev),
+        <[u8; 32]>::try_from(hash),
+        <[u8; 64]>::try_from(signature),
+    ) else {
+        return Err(corrupt("journal invariant: hash or signature length"));
+    };
+    let header = OpaqueHeader {
+        log,
+        counter: counter_u,
+        prev_hash,
+        hash,
+        signature,
+    };
+    let entry = match OpaqueEntry::new(header, raw) {
+        Ok(entry) => entry,
+        Err(e) => return fail(&format!("shape: {e}")),
+    };
+    let envelope = match parser(&entry) {
+        Ok(envelope) => envelope,
+        Err(e) => return fail(&format!("parse: {e}")),
+    };
+    if let Err(e) = envelope.validate_shape() {
+        return fail(&format!("envelope: {e}"));
+    }
+    if envelope.log != log
+        || envelope.counter != counter_u
+        || envelope.prev_hash != prev_hash
+        || envelope.hash != hash
+        || envelope.signature != signature
+    {
+        return fail("parsed envelope does not match the stored header");
+    }
+    let needs = envelope
+        .needs
+        .iter()
+        .map(EntityKey::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let updated = tx.execute(
+        "UPDATE journal SET hlc=?2,kind=?3,kind_version=?4,deps=?5,creates=?6,needs=?7,payload=?8, \
+         apply_state='pending' WHERE ingest_seq=?1 AND kind IS NULL AND apply_state='parked_layout'",
+        params![
+            ingest_seq,
+            i64::try_from(envelope.hlc.as_u64()).unwrap_or(i64::MAX),
+            envelope.kind,
+            envelope.kind_version,
+            envelope.deps.encode(),
+            envelope.creates.as_ref().map(EntityKey::as_str),
+            needs,
+            envelope.payload,
+        ],
+    );
+    match updated {
+        Ok(1) => {}
+        Ok(_) => return Ok(Promoted::NotEligible),
+        Err(e) => return fail(&format!("store: {e}")),
+    }
+    if counter == applied + 1 {
+        tx.execute(
+            "UPDATE sync_logs SET blocked_on=NULL WHERE log_ix=?1 AND blocked_on='opaque_layout'",
+            [log_ix],
+        )
+        .map_err(store_error)?;
+    }
+    Ok(Promoted::Done)
+}
+
+/// Promotes every `parked_layout` row whose magic this build understands, in
+/// `ingest_seq` order; returns `(promoted, failed)`. Run at store open and at
+/// the start of every apply pass. A row-level failure never fails the caller:
+/// the row stays parked and its reason is logged once per process. Production
+/// builds understand no foreign layout, so the pass costs one indexed query.
+pub(crate) fn promote_parked(
+    tx: &Connection,
+    logged: &std::sync::Mutex<std::collections::HashSet<i64>>,
+) -> Result<(usize, usize), ApiError> {
+    let mut statement = tx
+        .prepare(
+            "SELECT j.ingest_seq,substr(j.raw,1,8) FROM journal j \
+             WHERE j.apply_state='parked_layout' ORDER BY j.ingest_seq",
+        )
+        .map_err(store_error)?;
+    let parked = statement
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
+        .map_err(store_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(store_error)?;
+    drop(statement);
+    let (mut promoted, mut failed) = (0, 0);
+    for (ingest_seq, magic) in parked {
+        let understood = <[u8; 8]>::try_from(magic.as_slice())
+            .ok()
+            .is_some_and(|m| crate::sync::envelope::understood_layout(&m).is_some());
+        if !understood {
+            continue;
+        }
+        match promote(tx, ingest_seq)? {
+            Promoted::Done => promoted += 1,
+            Promoted::Failed(reason) => {
+                failed += 1;
+                log_cannot_promote(tx, logged, ingest_seq, &magic, &reason);
+            }
+            Promoted::NotUnderstood | Promoted::NotEligible => {}
+        }
+    }
+    Ok((promoted, failed))
+}
+
+/// One daemon-log line per row per process for a failed promotion.
+fn log_cannot_promote(
+    tx: &Connection,
+    logged: &std::sync::Mutex<std::collections::HashSet<i64>>,
+    ingest_seq: i64,
+    magic: &[u8],
+    reason: &str,
+) {
+    let Ok(mut logged) = logged.lock() else {
+        return;
+    };
+    if !logged.insert(ingest_seq) {
+        return;
+    }
+    let at: Option<(String, i64, i64)> = tx
+        .query_row(
+            "SELECT l.node_uuid,l.incarnation,j.counter FROM journal j \
+             JOIN sync_logs l ON l.log_ix=j.log_ix WHERE j.ingest_seq=?1",
+            [ingest_seq],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let (label, counter) = at.map_or_else(
+        || (format!("seq{ingest_seq}"), 0),
+        |(node, inc, counter)| (log_label(&node, inc), counter),
+    );
+    let reason: String = reason.chars().take(80).collect();
+    eprintln!(
+        "sync: cannot promote journal entry {label}@{counter} (layout {}): {reason}",
+        String::from_utf8_lossy(magic).escape_debug()
+    );
 }
 
 /// Freezes `log` at counter `at`, lower-only: an active log becomes frozen

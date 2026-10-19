@@ -152,6 +152,10 @@ pub struct LogRow {
     /// relayed byte-exactly, never applied. Omitted from JSON when zero.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub parked_layout: u64,
+    /// Of the `parked_layout` entries, those whose layout this build has a
+    /// parser for but whose promotion failed. Omitted from JSON when zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cannot_promote: u64,
     pub failed: u64,
     pub frozen_at: Option<u64>,
     /// Entries a peer advertises beyond `counter`; `None` when no active link

@@ -1196,6 +1196,10 @@ fn sync_status(status: &StatusReply, out: &mut String) {
         if log.parked_layout > 0 {
             let _ = write!(out, " parked_layout={}", log.parked_layout);
         }
+        // At most 25 bytes (` cannot_promote=` + a u64), only when non-zero.
+        if log.cannot_promote > 0 {
+            let _ = write!(out, " cannot_promote={}", log.cannot_promote);
+        }
         // At most 7 + 200 bytes, only on a blocked log.
         if let Some(blocked) = &log.blocked_on {
             let _ = write!(out, " blocked={}", one_line(blocked));
