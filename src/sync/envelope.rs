@@ -904,19 +904,87 @@ pub fn understood_layout(magic: &[u8; 8]) -> Option<LayoutParser> {
 static UNDERSTOOD: std::sync::Mutex<Vec<([u8; 8], LayoutParser)>> =
     std::sync::Mutex::new(Vec::new());
 
-/// Marks `magic` parseable by `parser` until the guard drops. Process-global:
-/// a suite relying on it across threads must not share a process with suites
-/// that expect the magic to stay opaque. Refuses `HTJRNL01` (panics); a second
-/// registration of the same magic replaces the first.
+/// Serializes every test that registers a layout against every test that
+/// needs the registry untouched (see [`hold_layout_registry`]). Reentrant per
+/// thread through [`LAYOUT_HELD`], so one test may hold several tokens.
+#[cfg(any(test, feature = "test-support"))]
+static LAYOUT_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static LAYOUT_HELD: std::cell::RefCell<(usize, Option<std::sync::MutexGuard<'static, ()>>)> =
+        const { std::cell::RefCell::new((0, None)) };
+}
+
+/// One thread's share of [`LAYOUT_GATE`]; the gate opens when the last token of
+/// the thread drops. Not `Send`: it must drop on the thread that took it.
+#[cfg(any(test, feature = "test-support"))]
+struct LayoutGateToken(std::marker::PhantomData<*const ()>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl LayoutGateToken {
+    fn acquire() -> Self {
+        LAYOUT_HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            if held.0 == 0 {
+                held.1 = Some(
+                    LAYOUT_GATE
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+            }
+            held.0 += 1;
+        });
+        Self(std::marker::PhantomData)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for LayoutGateToken {
+    fn drop(&mut self) {
+        LAYOUT_HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            held.0 -= 1;
+            if held.0 == 0 {
+                held.1 = None;
+            }
+        });
+    }
+}
+
+/// Marks `magic` parseable by `parser` until the guard drops. Process-global,
+/// so the guard holds the registry gate for its whole life: a test that
+/// registers a layout never overlaps one that holds [`hold_layout_registry`]
+/// or registers another layout (a gate does not span processes; nextest runs
+/// one test per process anyway). Refuses `HTJRNL01` (panics); a second
+/// registration of the same magic on the same thread replaces the first.
 #[cfg(any(test, feature = "test-support"))]
 pub fn mark_layout_understood(magic: [u8; 8], parser: LayoutParser) -> UnderstoodLayoutGuard {
     assert_ne!(&magic, MAGIC, "HTJRNL01 is always understood natively");
+    let gate = LayoutGateToken::acquire();
     let mut list = UNDERSTOOD
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     list.retain(|(m, _)| *m != magic);
     list.push((magic, parser));
-    UnderstoodLayoutGuard { magic }
+    UnderstoodLayoutGuard { magic, _gate: gate }
+}
+
+/// Holds the registry gate without registering anything: while it lives, no
+/// other thread's test has a layout registered, so a test that expects a
+/// foreign magic to stay opaque takes it first.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use = "the registry is stable only while the hold lives"]
+pub fn hold_layout_registry() -> LayoutRegistryHold {
+    LayoutRegistryHold {
+        _gate: LayoutGateToken::acquire(),
+    }
+}
+
+/// The hold taken by [`hold_layout_registry`].
+#[cfg(any(test, feature = "test-support"))]
+pub struct LayoutRegistryHold {
+    _gate: LayoutGateToken,
 }
 
 /// Removes the registration made by [`mark_layout_understood`] on drop.
@@ -924,6 +992,8 @@ pub fn mark_layout_understood(magic: [u8; 8], parser: LayoutParser) -> Understoo
 #[must_use = "the layout is understood only while the guard lives"]
 pub struct UnderstoodLayoutGuard {
     magic: [u8; 8],
+    // Dropped after `drop` below has removed the registration.
+    _gate: LayoutGateToken,
 }
 
 #[cfg(any(test, feature = "test-support"))]

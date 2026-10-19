@@ -472,6 +472,7 @@ fn log_with_opaque_predecessor(fx: &mut Fixture, node: u8, prev3: u8) {
 // Kills: a J2 check that reports an opaque predecessor as a missing one.
 #[test]
 fn verify_j2_accepts_opaque_predecessor() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut fx = Fixture::new();
     log_with_opaque_predecessor(&mut fx, 0xdd, 2);
     let found = without_j3(verify(&fx.query()).unwrap());
@@ -482,6 +483,7 @@ fn verify_j2_accepts_opaque_predecessor() {
 // the link.
 #[test]
 fn verify_j2_flags_broken_link_after_opaque() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut fx = Fixture::new();
     log_with_opaque_predecessor(&mut fx, 0xdd, 9);
     let found = without_j3(verify(&fx.query()).unwrap());
@@ -535,6 +537,7 @@ fn insert_parked_layout(
 // printed for a log with none.
 #[test]
 fn per_log_counts_parked_layout() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut fx = Fixture::new();
     let a = fx.seed_log(0xaa, 1, &[("applied", None)]);
     fx.seed_log(0xbb, 1, &MIXED);
@@ -571,6 +574,7 @@ fn j3_at(found: &[crate::protocol::sync_admin::ViolationRow], counter: u64) -> V
 // that lets a row whose hash is not SHA-256(raw) pass.
 #[test]
 fn verify_rehashes_opaque_rows_by_raw() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut fx = Fixture::new();
     let a = fx.seed_log(0xaa, 1, &[("applied", None)]);
     let (raw, hash) = foreign_raw(0xaa, 2, [1; 32]);

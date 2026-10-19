@@ -2232,6 +2232,7 @@ impl Stalled {
 
 #[test]
 fn opaque_head_stops_log_with_opaque_layout() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut s = stalled();
     s.ingest_p_tail();
     let progress = s.c.pass();
@@ -2255,6 +2256,7 @@ fn opaque_head_stops_log_with_opaque_layout() {
 
 #[test]
 fn dependent_log_blocks_on_deps_string() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut s = stalled();
     s.ingest_p_tail();
     s.ingest_q();
@@ -2279,8 +2281,10 @@ fn dependent_log_blocks_on_deps_string() {
 
 // ---- promotion of parked_layout rows (ht-76u6.4) ------------------------------
 //
-// These register the HTJRNL99 parser process-wide: run them by filter under
-// `cargo test` (`promot`); under nextest every test is its own process.
+// These register the HTJRNL99 parser process-wide. A registering test holds the
+// layout registry gate for its life, and a test that expects the magic to stay
+// opaque takes `hold_layout_registry()`, so they never interleave under threaded
+// `cargo test`; under nextest every test is its own process anyway.
 
 type Projection = (
     Option<i64>,
@@ -2365,6 +2369,7 @@ fn expected_projection(entry: &crate::sync::envelope::OpaqueEntry) -> Projection
 
 #[test]
 fn unknown_layout_row_stalls_log_with_opaque_layout() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut s = stalled();
     s.ingest_p_tail();
     s.ingest_q();
@@ -2387,6 +2392,7 @@ fn unknown_layout_row_stalls_log_with_opaque_layout() {
 
 #[test]
 fn promotion_fills_projection_and_successors_apply() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut s = stalled();
     s.ingest_p_tail();
     s.ingest_q();
@@ -2406,6 +2412,7 @@ fn promotion_fills_projection_and_successors_apply() {
 
 #[test]
 fn promote_is_one_transaction() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut s = stalled();
     s.ingest_p_tail();
     s.c.pass();
@@ -2432,6 +2439,7 @@ fn promote_is_one_transaction() {
 
 #[test]
 fn promotion_runs_at_store_open() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut s = stalled();
     s.ingest_p_tail();
     s.c.pass();
@@ -2448,6 +2456,7 @@ fn promotion_runs_at_store_open() {
 
 #[test]
 fn promotion_of_unparseable_row_is_noop() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut s = stalled();
     s.ingest_p_tail();
     s.c.pass();
@@ -2465,6 +2474,7 @@ fn promotion_of_unparseable_row_is_noop() {
 
 #[test]
 fn promotion_is_idempotent() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut s = stalled();
     s.ingest_p_tail();
     s.c.pass();
@@ -2490,6 +2500,7 @@ fn promotion_is_idempotent() {
 
 #[test]
 fn malformed_body_under_registered_magic_stays_parked() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     use crate::test_support::opaque_entry::{synthetic_malformed_entry, synthetic_unsigned};
     let mut s = stalled();
     let identity = NodeIdentity::from_seed([21; 32]);
@@ -2520,6 +2531,7 @@ fn malformed_body_under_registered_magic_stays_parked() {
 
 #[test]
 fn promoted_row_still_served_opaque() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     use crate::sync::envelope::StoredEntry;
     let mut s = stalled();
     s.ingest_p_tail();
@@ -2549,6 +2561,7 @@ fn promoted_row_still_served_opaque() {
 
 #[test]
 fn journal_forked_rows_are_never_promoted() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut s = stalled();
     s.ingest_p_tail();
     s.c.pass();

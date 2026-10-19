@@ -1732,6 +1732,7 @@ fn holder(w: &World, known: &[Envelope], extra: Vec<StoredEntry>) -> Node {
 // dropped, and a fork reference built from anything but counter and hash.
 #[test]
 fn fork_opaque_vs_known_same_counter_freezes() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let w = world();
     let prefix = w.a.entries(&w.log, 1);
     let opaque = opaque_of_a(w.log, 3, w.a3.prev_hash, "held");
@@ -1775,6 +1776,7 @@ fn fork_opaque_vs_known_same_counter_freezes() {
 // opaque rival must put the rival in journal_forked with an empty projection.
 #[test]
 fn fork_known_vs_opaque_rival_stores_branch_row() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let w = world();
     let prefix = w.a.entries(&w.log, 1);
     let c = holder(&w, &prefix, vec![]);
@@ -1811,6 +1813,7 @@ fn fork_known_vs_opaque_rival_stores_branch_row() {
 // would freeze a healthy log.
 #[test]
 fn fork_opaque_prev_link_break_freezes() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let w = world();
     let prefix = w.a.entries(&w.log, 1);
     let c = holder(&w, &prefix, vec![]);
@@ -1871,6 +1874,7 @@ fn fork_opaque_prev_link_break_freezes() {
 // one line must say why.
 #[test]
 fn restore_of_opaque_own_entry_is_reported() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     use crate::sync::journal_port::ForkEvidence;
     use crate::sync::{LogHead, LogState};
     let w = restore_world();
@@ -1909,6 +1913,7 @@ fn restore_of_opaque_own_entry_is_reported() {
 // a repeated line on every pass.
 #[test]
 fn reissue_pass_reports_opaque_entries_once() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let w = world();
     let stray = opaque_of_a(w.log, 4, w.a3.hash, "stray");
     w.a.quantum(|tx, _ctx, _decision| {

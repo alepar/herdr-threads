@@ -1303,6 +1303,7 @@ mod tests {
     /// stop names that entry; a corrupt known entry is only "corrupt".
     #[test]
     fn salvage_reports_opaque_stop_by_name() {
+        let _registry = crate::sync::envelope::hold_layout_registry();
         use crate::sync::EnvelopeError;
         use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
 
@@ -1475,6 +1476,7 @@ mod tests {
 
     #[test]
     fn salvage_reads_a_schema_5_backup_with_an_opaque_entry() {
+        let _registry = crate::sync::envelope::hold_layout_registry();
         use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
 
         let (iso, _paths) = node("resync-salvage-schema5-opaque");
@@ -1614,6 +1616,7 @@ mod tests {
     /// opaque one included, and the log is not cut at that position.
     #[test]
     fn salvage_carries_opaque_entries() {
+        let _registry = crate::sync::envelope::hold_layout_registry();
         use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
 
         let (iso, _paths) = node("resync-salvage-opaque");

@@ -265,6 +265,7 @@ mod tests {
 
     #[test]
     fn understood_layout_hook() {
+        let _registry = crate::sync::envelope::hold_layout_registry();
         let id = identity(1);
         let entry = synthetic_entry(&id, &synthetic_unsigned(&id, 1, 2, [0x33; 32]));
         assert!(understood_layout(&SYNTHETIC_MAGIC).is_none());
