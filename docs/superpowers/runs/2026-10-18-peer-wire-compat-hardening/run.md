@@ -45,8 +45,8 @@ codeBuckets:
   pendingRetry: 
   parked: 
   stalled: false
-  review: not ready (unreviewed: whole-epic coverage and omission provenance remain incomplete)
-  sweep: SWEEP DEFERRED (caller-owned)
+  review: not ready (unreviewed: whole-epic coverage and omission provenance remain incomplete — provenance gaps in unrelated run 2026-10-17)
+  sweep: b8c05137e — 7816 passed, 1 failed, 0 errors, 48 skipped; failing: lazy_markers::lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary (known load flake class ht-3wm, ReadBudgetExhausted; passes 3/3 isolated); command: nice cargo nextest run --locked --all-targets --all-features @ b8c05137e
   worktreesKept: 
   processSweep: stopped 0 · survived 0 · unknown 0 · kept 0
 
@@ -57,6 +57,8 @@ stepBackCode-round-1: local — five independent findings, promotion surface swe
 scopeFilter-round-1: all 5 confirmed findings in-scope (orchestrator; no subagent: every finding is in a goal-named path) → ht-j87z.29 ht-j87z.30 ht-j87z.31 ht-j87z.32 ht-j87z.33
 parked:
 - run.md · degraded-verdict · "ht-j87z.13 promotion deferred to ht-evlm by orchestrator (blockers ht-50fc, ht-v9zy); R4 apply-after-upgrade not delivered — needs human acceptance"
-- final-review inv-500DAF36 · degraded-verdict · "base drift: main 9f1ca770d registers 0004_sibling_delivery; rename 0004_journal_opaque at base absorb before release"
 roastCodeExit: converged (round 2 empty late round, 5/5 resolved, 0 confirmed; [converged] tag withheld only by the review-readiness qualifier)
 baseAbsorbed: 9f1ca770d → b8c05137e, 3 conflicted files (CHANGELOG.md, src/store/schema.rs, tests/store/schema.rs); journal delta renumbered 0004→0005
+sweepFix: 0 failing in scope → none (the one failure is pre-existing load flake ht-3wm, outside this change) · re-run lazy_markers test isolated 3/3 pass @ b8c05137e
+leakCheck: no leaked test processes, no leaked temp files (run-id recorded)
+friction: 3 events
