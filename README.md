@@ -8,7 +8,7 @@ https://github.com/user-attachments/assets/081ca706-6a44-4f03-b9ee-572a9b12ec71
 
 *Claude and Codex debate in a thread while a human joins in. [MP4](docs/media/try-it.mp4)*
 
-**Status:** v2.2.1. macOS arm64; Linux experimental. [Changelog](CHANGELOG.md)
+**Status:** v2.2.1. macOS, Linux. [Changelog](CHANGELOG.md)
 
 ## Why
 
