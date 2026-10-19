@@ -2929,7 +2929,7 @@ fn reissue_reports_opaque_candidate() {
             |r| r.get(0),
         )
         .unwrap();
-    journal::insert_opaque(&tx, log_ix, tail_row.as_opaque().unwrap(), false, None, 0).unwrap();
+    journal::insert_parked_layout(&tx, log_ix, tail_row.as_opaque().unwrap(), 0).unwrap();
     tx.commit().unwrap();
 
     let before = status(&o.conn, &o.ctx).unwrap();
