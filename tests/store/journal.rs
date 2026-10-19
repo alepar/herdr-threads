@@ -2904,9 +2904,8 @@ mod single_table {
 
     #[test]
     fn promote_parked_returns_before_the_store_when_no_layout_is_understood() {
-        if crate::sync::envelope::any_layout_understood() {
-            return; // another test in this process registered a layout
-        }
+        let _registry = crate::sync::envelope::hold_layout_registry();
+        assert!(!crate::sync::envelope::any_layout_understood());
         // No `journal` table: any query would fail, so Ok proves the early return.
         let bare = Connection::open_in_memory().unwrap();
         let logged = std::sync::Mutex::default();

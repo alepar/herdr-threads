@@ -2981,6 +2981,7 @@ fn reissue_reports_opaque_candidate() {
 // the cannot_reissue tally.
 #[test]
 fn opaque_forked_predecessor_cuts_its_known_descendants() {
+    let _registry = crate::sync::envelope::hold_layout_registry();
     let mut o = owner(3, 2); // journal tail: counters 3 and 4
     let branch_row = opaque_a(o.old, 3, o.entries[1].hash, "branch");
     let tx = o.conn.transaction().unwrap();
