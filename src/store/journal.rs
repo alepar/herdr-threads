@@ -203,7 +203,8 @@ pub(crate) fn verify_invariants(tx: &Connection) -> Result<(), ApiError> {
             &format!(
                 "SELECT l.log_ix,l.node_uuid,l.incarnation,l.contiguous_counter,l.head_hash,l.applied_through, \
                  (l.log_ix IS (SELECT active_log_ix FROM local_node)), \
-                 COALESCE((SELECT MAX(counter) FROM {CHAIN_ROWS} j WHERE j.log_ix=l.log_ix),0), \
+                 MAX(COALESCE((SELECT MAX(counter) FROM journal j WHERE j.log_ix=l.log_ix),0), \
+                 COALESCE((SELECT MAX(counter) FROM journal_opaque o WHERE o.log_ix=l.log_ix AND o.branch=0),0)), \
                  (SELECT hash FROM {CHAIN_ROWS} j WHERE j.log_ix=l.log_ix AND j.counter=l.contiguous_counter) \
                  FROM sync_logs l ORDER BY l.log_ix"
             ),
