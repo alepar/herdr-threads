@@ -11,3 +11,6 @@ idea: Rework the peer-wire-compat-hardening storage bytes-first before 2.3.0 (us
 branch: super-auto/bytes-first-journal
 base: main
 spec: 2026-10-18-bytes-first-journal-design.md
+epic: ht-76u6
+approvals:
+- top-split · auto · all 7 children LEAF (no subepics)
