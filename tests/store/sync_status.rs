@@ -98,7 +98,7 @@ impl Fixture {
             .execute(
                 "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps, \
                  needs,payload,signature,ingested_at,apply_state,applied_seq,parked_on,apply_error,raw) \
-                 VALUES (?1,?2,?3,?4,1,'test.kind',1,x'',  '',x'7b7d',zeroblob(64),0,?5,?6,?7,?8,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
+                 VALUES (?1,?2,?3,?4,1,'test.kind',1,x'0000','',x'7b7d',zeroblob(64),0,?5,?6,?7,?8,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
                 params![
                     log_ix,
                     n,
@@ -489,4 +489,110 @@ fn verify_j2_flags_broken_link_after_opaque() {
     assert_eq!(found[0].invariant, "J2");
     assert_eq!(found[0].log.as_deref(), Some("dddddddd/1"));
     assert_eq!(found[0].counter, Some(3));
+}
+
+/// A valid unknown-layout (HTJRNL99) raw for the log of node byte `node`
+/// (incarnation 1) at `counter` after `prev`, with its SHA-256.
+fn foreign_raw(node: u8, counter: u64, prev: [u8; 32]) -> (Vec<u8>, [u8; 32]) {
+    use crate::test_support::opaque_entry::{synthetic_raw, synthetic_unsigned};
+    use sha2::{Digest, Sha256};
+    let identity = NodeIdentity::from_seed(SEED);
+    let mut unsigned = synthetic_unsigned(&identity, 1, counter, prev);
+    unsigned.log = LogKey {
+        node: format!("{node:02x}").repeat(16).parse().unwrap(),
+        incarnation: 1,
+    };
+    let raw = synthetic_raw(&unsigned);
+    let hash: [u8; 32] = Sha256::digest(&raw).into();
+    (raw, hash)
+}
+
+fn insert_parked_layout(
+    fx: &Fixture,
+    log_ix: i64,
+    counter: i64,
+    prev: [u8; 32],
+    raw: &[u8],
+    hash: [u8; 32],
+) {
+    fx.writer
+        .execute(
+            "INSERT INTO journal(log_ix,counter,hash,prev_hash,signature,raw,needs,ingested_at,apply_state) \
+             VALUES (?1,?2,?3,?4,zeroblob(64),?5,NULL,0,'parked_layout')",
+            params![log_ix, counter, hash.as_slice(), prev.as_slice(), raw],
+        )
+        .unwrap();
+    fx.writer
+        .execute(
+            "UPDATE sync_logs SET contiguous_counter=?2,head_hash=?3 WHERE log_ix=?1",
+            params![log_ix, counter, hash.as_slice()],
+        )
+        .unwrap();
+}
+
+// Kills: a parked_layout count missing from the log row, one attributed to the
+// wrong log, one that leaks into the other unapplied counts, and a JSON key
+// printed for a log with none.
+#[test]
+fn per_log_counts_parked_layout() {
+    let mut fx = Fixture::new();
+    let a = fx.seed_log(0xaa, 1, &[("applied", None)]);
+    fx.seed_log(0xbb, 1, &MIXED);
+    let (raw, hash) = foreign_raw(0xaa, 2, [1; 32]);
+    insert_parked_layout(&fx, a, 2, [1; 32], &raw, hash);
+    let db = fx.query();
+    let (rows, _) = per_log(&db, None, 10).unwrap();
+    let rows: Vec<LogRow> = rows.into_iter().map(|(_, row)| row).collect();
+    let a = rows.iter().find(|r| r.node == "aaaaaaaa").unwrap();
+    assert_eq!(a.parked_layout, 1);
+    assert_eq!((a.parked_unknown, a.parked_dep, a.failed), (0, 0, 0));
+    let b = rows.iter().find(|r| r.node == "bbbbbbbb").unwrap();
+    assert_eq!(b.parked_layout, 0);
+    assert_eq!((b.parked_unknown, b.parked_dep, b.failed), (1, 1, 1));
+    let json = serde_json::to_value(b).unwrap();
+    assert!(
+        json.get("parked_layout").is_none(),
+        "a zero count is omitted: {json}"
+    );
+    assert_eq!(serde_json::to_value(a).unwrap()["parked_layout"], 1);
+}
+
+fn j3_at(found: &[crate::protocol::sync_admin::ViolationRow], counter: u64) -> Vec<String> {
+    found
+        .iter()
+        .filter(|v| v.invariant == "J3" && v.log.as_deref() == Some("aaaaaaaa/1"))
+        .filter(|v| v.counter == Some(counter))
+        .map(|v| v.detail.clone())
+        .collect()
+}
+
+// Kills: a J3 walk that stops before an unknown-layout row (so never checks it),
+// one that re-hashes a foreign layout as HTJRNL01 (a valid row flagged), and one
+// that lets a row whose hash is not SHA-256(raw) pass.
+#[test]
+fn verify_rehashes_opaque_rows_by_raw() {
+    let mut fx = Fixture::new();
+    let a = fx.seed_log(0xaa, 1, &[("applied", None)]);
+    let (raw, hash) = foreign_raw(0xaa, 2, [1; 32]);
+    insert_parked_layout(&fx, a, 2, [1; 32], &raw, hash);
+    let found = verify(&fx.query()).unwrap();
+    assert_eq!(j3_at(&found, 2), Vec::<String>::new(), "{found:?}");
+
+    // A second log: the same shape but a hash that is not SHA-256(raw).
+    let b = fx.seed_log(0xbb, 1, &[("applied", None)]);
+    let (raw, _) = foreign_raw(0xbb, 2, [1; 32]);
+    insert_parked_layout(&fx, b, 2, [1; 32], &raw, [9; 32]);
+    let found = verify(&fx.query()).unwrap();
+    let bad: Vec<_> = found
+        .iter()
+        .filter(|v| v.invariant == "J3" && v.log.as_deref() == Some("bbbbbbbb/1"))
+        .filter(|v| v.counter == Some(2))
+        .collect();
+    assert_eq!(bad.len(), 1, "{found:?}");
+    assert_eq!(bad[0].detail, "hash does not match the entry's raw bytes");
+    assert_eq!(
+        j3_at(&found, 2),
+        Vec::<String>::new(),
+        "the valid log stays clean"
+    );
 }

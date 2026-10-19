@@ -21,6 +21,7 @@
 //!   Read-only by construction: nothing here opens a transaction that writes.
 
 use rusqlite::{Connection, Transaction, params};
+use sha2::{Digest, Sha256};
 
 use crate::node::{NodeTag, NodeUuid};
 use crate::protocol::results::{ApiError, ErrorCode};
@@ -28,8 +29,8 @@ use crate::protocol::sync_admin::{LogRow, PeerRow, UnappliedPage, UnappliedRow, 
 use crate::protocol::time::CallBudget;
 use crate::store::apply::{self, ApplyLimits, ApplyState, ReplayScope};
 use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
-use crate::store::journal::CHAIN_ROWS;
 use crate::store::{node_directory, sync_contacts, sync_dial_targets};
+use crate::sync::envelope::StoredEntry;
 use crate::sync::journal_port::ApplyProgress;
 use crate::sync::{BatchLimits, LogKey};
 
@@ -81,7 +82,7 @@ pub fn per_log(
         let mut statement = conn
             .prepare(
                 "SELECT log_ix,apply_state,COUNT(*) FROM journal \
-                 WHERE apply_state <> 'applied' AND apply_state IN ('parked_unknown','parked_dep','failed') \
+                 WHERE apply_state <> 'applied' AND apply_state IN ('parked_unknown','parked_dep','parked_layout','failed') \
                  GROUP BY log_ix,apply_state",
             )
             .map_err(store_error)?;
@@ -164,6 +165,7 @@ pub fn per_log(
                 applied_through: u64::try_from(applied).unwrap_or(0),
                 parked_unknown: count("parked_unknown"),
                 parked_dep: count("parked_dep"),
+                parked_layout: count("parked_layout"),
                 failed: count("failed"),
                 frozen_at: frozen.and_then(|k| u64::try_from(k).ok()),
                 lag: None,
@@ -189,6 +191,8 @@ pub fn unapplied_page(
     let after = i64::try_from(after.unwrap_or(0)).unwrap_or(i64::MAX);
     let mut statement = conn
         .prepare(
+            // Three states: a `parked_layout` row has no kind to list (it is
+            // counted per log in `per_log`).
             "SELECT j.ingest_seq,l.node_uuid,l.incarnation,j.counter,j.kind,j.apply_state, \
              j.parked_on,j.apply_error,d.tag \
              FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix \
@@ -324,13 +328,14 @@ pub fn verify(conn: &Connection) -> Result<Vec<ViolationRow>, ApiError> {
         });
     }
     let mut statement = conn
-        .prepare(&format!(
-            "SELECT l.node_uuid,l.incarnation,j.counter FROM {CHAIN_ROWS} j \
+        .prepare(
+            // Layout-agnostic: linkage reads only the envelope columns.
+            "SELECT l.node_uuid,l.incarnation,j.counter FROM journal j \
                  JOIN sync_logs l ON l.log_ix=j.log_ix \
-                 LEFT JOIN {CHAIN_ROWS} p ON p.log_ix=j.log_ix AND p.counter=j.counter-1 \
+                 LEFT JOIN journal p ON p.log_ix=j.log_ix AND p.counter=j.counter-1 \
                  WHERE j.counter > 1 AND (p.hash IS NULL OR p.hash <> j.prev_hash) \
-                 ORDER BY l.log_ix,j.counter LIMIT ?1"
-        ))
+                 ORDER BY l.log_ix,j.counter LIMIT ?1",
+        )
         .map_err(store_error)?;
     let rows = statement
         .query_map([i64::try_from(MAX_VIOLATIONS).unwrap_or(16)], |r| {
@@ -357,8 +362,9 @@ pub fn verify(conn: &Connection) -> Result<Vec<ViolationRow>, ApiError> {
     Ok(out)
 }
 
-/// J3: recomputes every stored entry's hash; stops listing at
-/// [`MAX_VIOLATIONS`] rows.
+/// J3: recomputes every stored entry's hash (a known entry from its canonical
+/// bytes, an opaque one as SHA-256 of its raw bytes, never as HTJRNL01);
+/// stops listing at [`MAX_VIOLATIONS`] rows.
 fn rehash_entries(conn: &Connection, out: &mut Vec<ViolationRow>) -> Result<(), ApiError> {
     let mut logs = Vec::new();
     {
@@ -384,8 +390,12 @@ fn rehash_entries(conn: &Connection, out: &mut Vec<ViolationRow>) -> Result<(), 
         let name = format!("{}/{incarnation}", node.get(..8).unwrap_or(&node));
         let mut from = 1u64;
         loop {
-            let batch = match crate::store::journal::serve(conn, &log, from, BatchLimits::default())
-            {
+            let batch = match crate::store::journal::serve_entries(
+                conn,
+                &log,
+                from,
+                BatchLimits::default(),
+            ) {
                 Ok(batch) => batch,
                 Err(error) => {
                     out.push(ViolationRow {
@@ -401,21 +411,33 @@ fn rehash_entries(conn: &Connection, out: &mut Vec<ViolationRow>) -> Result<(), 
                     continue 'logs;
                 }
             };
-            let Some(last) = batch.last().map(|envelope| envelope.counter) else {
+            let Some(last) = batch.last().map(|entry| match entry {
+                StoredEntry::Known(e) => e.counter,
+                StoredEntry::Opaque(o) => o.counter(),
+            }) else {
                 break;
             };
-            for envelope in &batch {
-                if envelope.compute_hash() != envelope.hash {
-                    out.push(ViolationRow {
-                        invariant: "J3".to_owned(),
-                        log: Some(name.clone()),
-                        counter: Some(envelope.counter),
-                        detail: "hash does not match the entry's canonical bytes".to_owned(),
-                    });
-                    listed += 1;
-                    if listed >= MAX_VIOLATIONS {
-                        break 'logs;
+            for entry in &batch {
+                let (counter, detail) = match entry {
+                    StoredEntry::Known(e) if e.compute_hash() != e.hash => {
+                        (e.counter, "hash does not match the entry's canonical bytes")
                     }
+                    StoredEntry::Opaque(o)
+                        if <[u8; 32]>::from(Sha256::digest(o.raw())) != o.hash() =>
+                    {
+                        (o.counter(), "hash does not match the entry's raw bytes")
+                    }
+                    _ => continue,
+                };
+                out.push(ViolationRow {
+                    invariant: "J3".to_owned(),
+                    log: Some(name.clone()),
+                    counter: Some(counter),
+                    detail: detail.to_owned(),
+                });
+                listed += 1;
+                if listed >= MAX_VIOLATIONS {
+                    break 'logs;
                 }
             }
             from = last.saturating_add(1);

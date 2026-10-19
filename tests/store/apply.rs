@@ -2038,6 +2038,107 @@ fn opaque_next_position_is_skipped_with_opaque_layout_recorded() {
     assert_eq!(c.conn.total_changes(), before);
 }
 
+/// Apply classifies a chain head by projection presence: an empty-projection
+/// head (`parked_layout`) stops its log with `opaque_layout` and is not
+/// selected, and the same row after its projection is filled (the promotion
+/// shape: direct UPDATE from all-NULL, `apply_state` to `pending`) is ready and
+/// applies. The row's raw is a real HTJRNL01 entry in both states, so a
+/// classification by raw magic would not see the difference.
+#[test]
+fn promoted_head_is_ready_and_empty_head_is_marked() {
+    let mut a = Node::new(31, base());
+    a.author::<PutKind>(&put("a1"));
+    a.author::<PutKind>(&put("a2"));
+    let mut donor = Node::new(32, base());
+    donor.ship(&a, a.log, 2);
+    type Cols = (
+        i64,
+        String,
+        i64,
+        Vec<u8>,
+        Option<String>,
+        String,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+    );
+    let (hlc, kind, version, deps, creates, needs, payload, raw, signature, hash, prev): Cols =
+        donor
+            .conn
+            .query_row(
+                "SELECT j.hlc,j.kind,j.kind_version,j.deps,j.creates,j.needs,j.payload,j.raw, \
+                        j.signature,j.hash,j.prev_hash FROM journal j \
+                 JOIN sync_logs l ON l.log_ix=j.log_ix WHERE l.node_uuid=?1 AND j.counter=2",
+                params![a.log.node.to_string()],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                        r.get(9)?,
+                        r.get(10)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+    let mut c = Node::new(33, base());
+    c.ship(&a, a.log, 1);
+    c.pass();
+    assert_eq!(c.log_row(&a.log), (1, 1, None));
+    c.conn
+        .execute(
+            "INSERT INTO journal(log_ix,counter,prev_hash,hash,signature,raw,needs,ingested_at,apply_state) \
+             SELECT log_ix,2,?2,?3,?4,?5,NULL,0,'parked_layout' FROM sync_logs WHERE node_uuid=?1",
+            params![a.log.node.to_string(), prev, hash, signature, raw],
+        )
+        .unwrap();
+    c.conn
+        .execute(
+            "UPDATE sync_logs SET contiguous_counter=2,head_hash=?2 WHERE node_uuid=?1",
+            params![a.log.node.to_string(), hash],
+        )
+        .unwrap();
+
+    let stalled = c.pass();
+    assert_eq!(stalled.applied, 0, "an empty-projection head is not ready");
+    assert_eq!(
+        c.log_row(&a.log),
+        (1, 2, Some("opaque_layout".into())),
+        "the log is marked blocked"
+    );
+    assert_eq!(c.state(&a.log, 2), "parked_layout");
+
+    c.conn
+        .execute(
+            "UPDATE journal SET hlc=?2,kind=?3,kind_version=?4,deps=?5,creates=?6,needs=?7,payload=?8, \
+             apply_state='pending' WHERE counter=2 AND log_ix=(SELECT log_ix FROM sync_logs WHERE node_uuid=?1)",
+            params![
+                a.log.node.to_string(),
+                hlc,
+                kind,
+                version,
+                deps,
+                creates,
+                needs,
+                payload
+            ],
+        )
+        .unwrap();
+    let released = c.pass();
+    assert_eq!(released.applied, 1, "{released:?}");
+    assert_eq!(c.state(&a.log, 2), "applied");
+    assert_eq!(c.log_row(&a.log).0, 2, "applied_through advanced");
+}
+
 // ---- opaque stall, cross-log stall and release (ht-j87z.10) ---------------------
 
 /// The cross-log scenario: log P (node A) holds known 1 (applied), an opaque

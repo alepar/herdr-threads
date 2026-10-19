@@ -2974,6 +2974,57 @@ fn reissue_reports_opaque_candidate() {
     assert_eq!((old.pending, old.cannot_reissue), (0, 2));
 }
 
+// Kills: a re-issue candidate read that classifies by projection presence (a
+// promoted foreign row, kind filled, would become a known candidate and fail
+// the worker with "re-issue source is opaque"), a pending count that includes
+// it, and a cannot_reissue count that drops it.
+#[test]
+fn promoted_foreign_row_above_freeze_is_cannot_reissue() {
+    let mut o = owner(3, 2); // journal tail: counters 3 and 4
+    let tail_row = opaque_a(o.old, 5, o.entries[3].hash, "tail");
+    let tx = o.conn.transaction().unwrap();
+    let log_ix: i64 = tx
+        .query_row(
+            "SELECT log_ix FROM sync_logs WHERE node_uuid=?1 AND incarnation=?2",
+            rusqlite::params![o.old.node.to_string(), o.old.incarnation],
+            |r| r.get(0),
+        )
+        .unwrap();
+    journal::insert_parked_layout(&tx, log_ix, tail_row.as_opaque().unwrap(), 0).unwrap();
+    // Promotion: the projection is filled from all-NULL and the row leaves
+    // parked_layout; its raw still carries a foreign magic.
+    tx.execute(
+        "UPDATE journal SET hlc=1,kind='test.opaque',kind_version=1,deps=x'',needs='', \
+         payload=x'7b7d',apply_state='pending' WHERE log_ix=?1 AND counter=5",
+        [log_ix],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+
+    let before = status(&o.conn, &o.ctx).unwrap();
+    let old = before.logs.iter().find(|l| l.log == o.old).unwrap();
+    assert_eq!(
+        (old.pending, old.cannot_reissue),
+        (2, 1),
+        "the promoted foreign row is reported, not pending"
+    );
+    let progress = o.pass(ALL);
+    assert_eq!(
+        progress,
+        ReissueProgress {
+            reissued: 2,
+            waiting: 0,
+            has_more: false,
+            cannot_reissue: 1
+        }
+    );
+    assert_eq!(
+        o.reissued_order(),
+        vec![o.entries[2].hash, o.entries[3].hash],
+        "only the HTJRNL01 rows"
+    );
+}
+
 fn hex_of(hash: &[u8; 32]) -> String {
     hash.iter().map(|b| format!("{b:02x}")).collect()
 }
