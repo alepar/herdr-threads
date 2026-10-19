@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-18-bytes-first-journal
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: design
+phase: roast-design
 codeMechanism: Workflow
 runTag: bytes-first-journal-20261019T012327
 context: Context: claude · planner=200K/167K · implementer=200K/167K · reviewer=200K/167K · finalReview=200K/167K · assembler=200K/167K · warn: planner, finalReview on a 200K model → set ANTHROPIC_DEFAULT_OPUS_MODEL=<model>[1m] or config.models.<role> to a 1M model · warn: implementer, reviewer, assembler on a 200K model → set ANTHROPIC_DEFAULT_SONNET_MODEL=<model>[1m] or config.models.<role> to a 1M model
@@ -14,3 +14,4 @@ spec: 2026-10-18-bytes-first-journal-design.md
 epic: ht-76u6
 approvals:
 - top-split · auto · all 7 children LEAF (no subepics)
+roastDesignRound: 1
