@@ -6076,11 +6076,34 @@ fn concurrent_session_delta_upgrades_existing_bindings_and_old_binary_refuses() 
 }
 
 #[test]
-fn journal_opaque_delta_upgrades_highest_main_store() {
+fn sibling_delivery_upgrade_preserves_rows_and_refuses_schema3_binary() {
     let db = Connection::open_in_memory().unwrap();
     let old = &schema::NODE_DELTAS[..2];
     open_with(&db, old).unwrap();
     assert_eq!(user_version(&db), 3);
+    db.execute("UPDATE local_node SET created_at=123", [])
+        .unwrap();
+    let schema4 = &schema::NODE_DELTAS[..3];
+    open_with(&db, schema4).unwrap();
+    assert_eq!(user_version(&db), 4);
+    assert_eq!(
+        db.query_row("SELECT created_at FROM local_node", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        123
+    );
+    open_with(&db, schema4).unwrap();
+    let detail = incompatible_detail(open_with(&db, old));
+    assert!(detail.contains("newer than this binary"), "{detail}");
+    assert_eq!(user_version(&db), 4);
+}
+
+#[test]
+fn journal_opaque_delta_upgrades_highest_main_store() {
+    let db = Connection::open_in_memory().unwrap();
+    let old = &schema::NODE_DELTAS[..3];
+    open_with(&db, old).unwrap();
+    assert_eq!(user_version(&db), 4);
     db.execute_batch(
         "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) \
          VALUES (1,'0123456789abcdef0123456789abcdef',1,0,zeroblob(32),zeroblob(32),2,zeroblob(32),0);",

@@ -1394,6 +1394,16 @@ fn run_wire_result<C: LocalClient + ?Sized, W: Write>(
     budget: &dyn Fn() -> CallBudget,
     writer: &mut W,
 ) -> Result<CommandResult, RunError> {
+    if matches!(&command, Command::SeatInspectBindings(_))
+        && !client.supports_capability(
+            crate::protocol::capabilities::SEAT_BINDING_DETAILS_V1,
+            &budget(),
+        )
+    {
+        return Err(invalid_request(
+            "seat binding details unavailable; daemon requires seat.binding_details_v1",
+        ));
+    }
     let command = match command {
         Command::Inbox(query)
             // A continuation must stay in the protocol that captured it.

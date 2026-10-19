@@ -516,13 +516,24 @@ fn earlier_tag_preparation_publishes_beside_a_new_message() {
     // carry the earlier tag.
     let tx = conn.transaction().unwrap();
     tx.execute_batch("PRAGMA defer_foreign_keys=ON").unwrap();
+    // Preserve the local author delivery row while changing its immutable keys.
+    tx.execute(
+        "CREATE TEMP TABLE earlier_tag_lazy_snapshot AS SELECT * FROM lazy_recipients WHERE preparation_id=?1",
+        [preparation.as_str()],
+    )
+    .unwrap();
+    tx.execute(
+        "DELETE FROM lazy_recipients WHERE preparation_id=?1",
+        [preparation.as_str()],
+    )
+    .unwrap();
     tx.execute(
         "UPDATE prepared_unavailable_warnings SET event_json=replace(event_json, ?1, ?2) WHERE preparation_id=?3",
         params![staged_message, old_message, preparation],
     )
     .unwrap();
     tx.execute(
-        "UPDATE send_preparations SET id=?1 WHERE id=?2",
+        "UPDATE send_preparations SET id=?1,status='building' WHERE id=?2",
         params![old_preparation, preparation],
     )
     .unwrap();
@@ -536,6 +547,18 @@ fn earlier_tag_preparation_publishes_beside_a_new_message() {
         params![old_preparation, preparation],
     )
     .unwrap();
+    tx.execute(
+        "INSERT INTO lazy_recipients(ordinal,preparation_id,message_id,thread_id,seat_id,state,legacy_pending,priority,decision_seq) SELECT ordinal,?1,?2,thread_id,seat_id,state,legacy_pending,priority,decision_seq FROM earlier_tag_lazy_snapshot",
+        params![old_preparation, old_message],
+    )
+    .unwrap();
+    tx.execute(
+        "UPDATE send_preparations SET status='sealed' WHERE id=?1",
+        [old_preparation],
+    )
+    .unwrap();
+    tx.execute_batch("DROP TABLE earlier_tag_lazy_snapshot")
+        .unwrap();
     tx.commit().unwrap();
 
     let old = messages::publish_send(
@@ -1548,6 +1571,11 @@ fn stale_preparation_cleans_and_rebuilds_with_new_generation() {
     )
     .unwrap();
     conn.execute(
+        "DELETE FROM lazy_recipients WHERE preparation_id=?1",
+        [first.as_str()],
+    )
+    .unwrap();
+    conn.execute(
         "UPDATE work_jobs SET status='complete' WHERE kind='preparation_cleanup' AND subject_id=?1",
         [first.as_str()],
     )
@@ -2209,6 +2237,11 @@ fn abandon_only_discards_expected_unpublished_generation() {
     .unwrap();
     conn.execute(
         "DELETE FROM prepared_unavailable_warnings WHERE preparation_id=?1",
+        [original.as_str()],
+    )
+    .unwrap();
+    conn.execute(
+        "DELETE FROM lazy_recipients WHERE preparation_id=?1",
         [original.as_str()],
     )
     .unwrap();

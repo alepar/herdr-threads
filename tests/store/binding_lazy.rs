@@ -44,6 +44,10 @@ fn lazy_with_priority(db: &Connection, n: i64, priority: i64) {
 
 /// `lazy_with_priority` in `thread`, at thread sequence and decision `n` (unique across threads).
 fn lazy_in(db: &Connection, thread: &str, n: i64, priority: i64) {
+    lazy_in_from(db, thread, n, priority, None);
+}
+
+fn lazy_in_from(db: &Connection, thread: &str, n: i64, priority: i64, sender: Option<&BindingId>) {
     db.execute(
         "INSERT OR IGNORE INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('a','34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",
         [],
@@ -52,7 +56,7 @@ fn lazy_in(db: &Connection, thread: &str, n: i64, priority: i64) {
     // The row, its preparation and its message carry one priority (lazy_recipient_source, lazy_manifest_source).
     db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b','scope',?1,zeroblob(32),?3,0,0,0,0,0,0,0,'building','lazy',?2)",params![format!("prep-{n}"),priority,thread]).unwrap();
     db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id,priority) VALUES(?1,?2,?4,'s',?3)",params![format!("prep-{n}"),format!("msg-{n}"),priority,thread]).unwrap();
-    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,actor_seat_id,priority) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b',?4,?2,'ordinary',?2,'passive',0,'lazy','a',?3)",params![format!("msg-{n}"),n,priority,thread]).unwrap();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode,actor_seat_id,priority,sender_binding_id) VALUES(?1,'34750f98bd59fcfc946da45aaabe933b',?4,?2,'ordinary',?2,'passive',0,'lazy',CASE WHEN ?5 IS NULL THEN 'a' ELSE 's' END,?3,?5)",params![format!("msg-{n}"),n,priority,thread,sender.map(BindingId::as_str)]).unwrap();
     db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'34750f98bd59fcfc946da45aaabe933b',?4,?3,0,?3,0,1,0)",params![format!("prep-{n}"),format!("msg-{n}"),n,thread]).unwrap();
 }
 
@@ -943,12 +947,12 @@ fn reconnect_reseeds_exactly_the_unread_rows() {
 
 #[test]
 fn the_view_triggers_spell_the_held_predicate() {
-    let v47 = include_str!("../../migrations/node/0001_node_baseline.sql");
+    let v47 = include_str!("../../migrations/node/0004_sibling_delivery.sql");
     for name in ["binding_pending_publish", "binding_pending_legacy_set"] {
         let statement = v47
             .split("\n\n")
             .map(str::trim)
-            .find(|s| s.starts_with(&format!("CREATE TRIGGER {name} ")))
+            .find(|s| s.contains(&format!("CREATE TRIGGER {name} ")))
             .unwrap();
         assert!(
             statement.contains(view_held_sql!("b")),
@@ -959,7 +963,7 @@ fn the_view_triggers_spell_the_held_predicate() {
     let publish = v47
         .split("\n\n")
         .map(str::trim)
-        .find(|s| s.starts_with("CREATE TRIGGER binding_pending_publish "))
+        .find(|s| s.contains("CREATE TRIGGER binding_pending_publish "))
         .unwrap();
     let scope = binding_lazy_scope_sql! {
         binding: "b.binding_id", seat: "NEW.seat_id", thread: "NEW.thread_id",
@@ -1292,4 +1296,94 @@ fn a_subagent_reads_its_own_view() {
     assert_eq!(view(&db, &sub), 1);
     disconnect_now(&db, &sub, DisconnectReason::EndEvent);
     assert_eq!(view(&db, &sub), 0);
+}
+
+// Kills: sender echo during reseeding, priority-blind sibling wake, and a sibling
+// display settling another sibling's wake frontier.
+#[test]
+fn sibling_send_views_keep_independent_priority_and_wake() {
+    let mut db = db();
+    let sender = enroll_binding(&db, "sender", None);
+    let one = enroll_binding(&db, "receiver-one", None);
+    let two = enroll_binding(&db, "receiver-two", None);
+    for (n, priority) in [(3, 1), (4, 0)] {
+        lazy_in_from(&db, "t", n, priority, Some(&sender));
+        let tx = db.transaction().unwrap();
+        note_published(&tx, &format!("prep-{n}")).unwrap();
+        tx.commit().unwrap();
+    }
+    assert!(unread(&db, &sender).is_empty());
+    assert_eq!(unread(&db, &one), [msg(3), msg(4)]);
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::new(0).unwrap()).unwrap(),
+        Some(4)
+    );
+    complete(&mut db, Some(&one), &[msg(4)]);
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::new(0).unwrap()).unwrap(),
+        Some(4),
+        "the other sibling still owes the urgent row"
+    );
+    complete(&mut db, Some(&two), &[msg(4)]);
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::new(0).unwrap()).unwrap(),
+        None,
+        "default priority is silent at T0"
+    );
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::new(-1).unwrap()).unwrap(),
+        Some(3)
+    );
+    disconnect_now(&db, &sender, DisconnectReason::ProcessExit);
+    plain_reconnect_now(&db, &sender);
+    disconnect_now(&db, &two, DisconnectReason::ProcessExit);
+    plain_reconnect_now(&db, &two);
+    assert!(unread(&db, &sender).is_empty());
+    assert_eq!(view(&db, &sender), 0);
+    assert_eq!(unread(&db, &two), [msg(3)]);
+}
+
+// Kills: promoting a node-local author row into a seat-wide legacy wake that
+// hides earlier legitimate peer mail when only the sender remains.
+#[test]
+fn rejoin_does_not_promote_self_mail_above_older_peer_wake() {
+    let mut db = db();
+    let sender = enroll_binding(&db, "sender", None);
+    lazy_with_priority(&db, 3, 0);
+    lazy_in_from(&db, "t", 4, 0, Some(&sender));
+    let tx = db.transaction().unwrap();
+    for n in [3, 4] {
+        note_published(&tx, &format!("prep-{n}")).unwrap();
+    }
+    tx.commit().unwrap();
+    read_cursors::init_for_join(&db, &SeatId::new("s"), &ThreadId::new("t")).unwrap();
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::new(0).unwrap()).unwrap(),
+        Some(3)
+    );
+    assert_eq!(unread(&db, &sender), [msg(3)]);
+    assert!(
+        db.query_row(
+            crate::store::wake::LAZY_FRONTIER_UNREAD_SQL,
+            params![sender.as_str(), "s", 3],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn rejoin_with_only_self_mail_owes_no_wake() {
+    let mut db = db();
+    let sender = enroll_binding(&db, "sender", None);
+    lazy_in_from(&db, "t", 3, 0, Some(&sender));
+    let tx = db.transaction().unwrap();
+    note_published(&tx, "prep-3").unwrap();
+    tx.commit().unwrap();
+    read_cursors::init_for_join(&db, &SeatId::new("s"), &ThreadId::new("t")).unwrap();
+    assert_eq!(
+        wake_frontier(&db, "s", NudgeThreshold::new(0).unwrap()).unwrap(),
+        None
+    );
+    assert!(unread(&db, &sender).is_empty());
 }

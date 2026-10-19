@@ -232,8 +232,8 @@ fn p1_group_send_rows_for_every_member_including_human() {
     let id = send(&context, &mut conn, &req);
     assert_eq!(
         rows(&conn),
-        vec![row("b", 1), row("c", 1), row("h", 1)],
-        "rows for every non-author member"
+        vec![row("a", 1), row("b", 1), row("c", 1), row("h", 1)],
+        "rows for the audience plus local author siblings"
     );
     assert_eq!(count(&conn, "SELECT count(*) FROM prepared_recipients"), 0);
     assert_eq!(manifest(&conn), (0, 0));
@@ -260,7 +260,10 @@ fn p0_without_ack_rows_only_no_receipt_or_deadline() {
     let mut req = request();
     req.priority = p(0);
     let id = send(&context, &mut conn, &req);
-    assert_eq!(rows(&conn), vec![row("b", 0), row("c", 0), row("h", 0)]);
+    assert_eq!(
+        rows(&conn),
+        vec![row("a", 0), row("b", 0), row("c", 0), row("h", 0)]
+    );
     assert_eq!(manifest(&conn), (0, 0));
     for seat in ["b", "c", "h"] {
         assert!(receipt(&conn, &id, seat).is_none(), "{seat}");
@@ -290,7 +293,7 @@ fn p0_send_to_unavailable_joined_member_publishes_the_warning() {
     let mut req = request();
     req.priority = p(0);
     send(&context, &mut conn, &req);
-    assert_eq!(rows(&conn), vec![row("b", 0)]);
+    assert_eq!(rows(&conn), vec![row("a", 0), row("b", 0)]);
     assert_eq!(manifest(&conn), (0, 1));
     assert_eq!(
         count(&conn, "SELECT count(*) FROM prepared_unavailable_warnings"),
@@ -303,7 +306,7 @@ fn p0_send_to_unavailable_joined_member_publishes_the_warning() {
     let mut req = request();
     req.priority = p(1);
     send(&context, &mut conn, &req);
-    assert_eq!(rows(&conn), vec![row("b", 1)]);
+    assert_eq!(rows(&conn), vec![row("a", 1), row("b", 1)]);
     assert_eq!(manifest(&conn), (0, 0));
 }
 
@@ -333,7 +336,7 @@ fn ack_send_receipt_for_explicit_rows_for_the_rest() {
     for seat in ["c", "h"] {
         assert!(receipt(&conn, &id, seat).is_none(), "{seat}");
     }
-    assert_eq!(rows(&conn), vec![row("c", 0), row("h", 0)]);
+    assert_eq!(rows(&conn), vec![row("a", 0), row("c", 0), row("h", 0)]);
     assert_eq!(message_mode(&conn), ("ordinary".to_owned(), 0));
     assert_eq!(manifest(&conn), (1, 0));
     assert_eq!(
@@ -353,7 +356,10 @@ fn only_human_explicit_recipient_gets_a_p0_row() {
     let mut req = request();
     req.invited_recipients = vec![SeatId::new("h")];
     let id = send(&context, &mut conn, &req);
-    assert_eq!(rows(&conn), vec![row("b", 0), row("c", 0), row("h", 0)]);
+    assert_eq!(
+        rows(&conn),
+        vec![row("a", 0), row("b", 0), row("c", 0), row("h", 0)]
+    );
     assert_eq!(count(&conn, "SELECT count(*) FROM prepared_recipients"), 0);
     for seat in ["b", "c", "h"] {
         assert!(receipt(&conn, &id, seat).is_none(), "{seat}");
@@ -470,12 +476,18 @@ fn old_client_shapes_map_and_keep_their_digest() {
     let iso = TestIsolation::new("prio-old-client");
     let (context, mut conn) = setup(&iso, GROUP);
     send(&context, &mut conn, &ordinary);
-    assert_eq!(rows(&conn), vec![row("b", 0), row("c", 0), row("h", 0)]);
+    assert_eq!(
+        rows(&conn),
+        vec![row("a", 0), row("b", 0), row("c", 0), row("h", 0)]
+    );
     assert_eq!(message_mode(&conn), ("lazy".to_owned(), 0));
     let iso = TestIsolation::new("prio-old-client-lazy");
     let (context, mut conn) = setup(&iso, GROUP);
     send(&context, &mut conn, &lazy);
-    assert_eq!(rows(&conn), vec![row("b", 1), row("c", 1), row("h", 1)]);
+    assert_eq!(
+        rows(&conn),
+        vec![row("a", 1), row("b", 1), row("c", 1), row("h", 1)]
+    );
     assert_eq!(message_mode(&conn), ("lazy".to_owned(), 1));
 }
 
@@ -509,7 +521,7 @@ fn retry_keeps_its_recorded_shape() {
         assert_eq!(error.code, ErrorCode::OperationPayloadMismatch);
         publish(&context, &mut conn, &old);
         assert_eq!(message_mode(&conn).1, expected);
-        assert_eq!(rows(&conn).len(), 3);
+        assert_eq!(rows(&conn).len(), 4);
         assert!(rows(&conn).iter().all(|(_, p)| *p == expected));
     }
 }
@@ -533,7 +545,10 @@ fn restart_keeps_priority() {
         count(&reopened, "SELECT priority FROM send_preparations"),
         3
     );
-    assert_eq!(rows(&reopened), vec![row("b", 3), row("c", 3), row("h", 3)]);
+    assert_eq!(
+        rows(&reopened),
+        vec![row("a", 3), row("b", 3), row("c", 3), row("h", 3)]
+    );
 }
 
 // Kills: the mixed ACK send breaking either settlement path: the receipt recipient settles its

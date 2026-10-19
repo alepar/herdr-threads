@@ -530,7 +530,8 @@ pub(super) struct AudienceWalk<'a> {
     /// recipient, gets a delivery row at `priority`.
     pub ack: &'a [&'a SeatId],
     pub priority: DeliveryPriority,
-    /// The sender, never its own recipient. `None` for a service author.
+    /// The sender, excluded from the signed audience and ACK set; its local
+    /// passive row serves only sibling bindings. `None` for a service author.
     pub exclude: Option<&'a SeatId>,
     pub duration: i64,
 }
@@ -584,6 +585,24 @@ pub(super) fn walk_audience(
             if let Some((ordinal, recipient, joined)) = row {
                 *cursor = ordinal;
                 visited += 1;
+                // Node-local sibling delivery is not part of the signed audience.
+                // Never stage a self receipt or an unavailable-recipient warning.
+                if joined
+                    && walk
+                        .exclude
+                        .is_some_and(|sender| recipient == sender.as_str())
+                {
+                    super::lazy_delivery::stage_recipient(
+                        tx,
+                        walk.prep_id,
+                        &MessageId::new(send_message_id_for_preparation(walk.prep_id).ok_or_else(
+                            || api_error(ErrorCode::StoreCorrupt, "invalid send preparation ID"),
+                        )?),
+                        walk.thread,
+                        &SeatId::new(&recipient),
+                        walk.priority,
+                    )?;
+                }
                 // An explicit recipient is staged by the explicit pass, once.
                 if joined
                     && walk
@@ -1183,7 +1202,8 @@ fn is_remote_seat(tx: &Transaction<'_>, seat: &str) -> Result<bool, ApiError> {
 
 /// Whether the audience staged for `prep_id` is the one `payload` fixed: the
 /// same thread, priority and recorded delivery mode, the same ack seats with
-/// the same timing, and a delivery row for exactly the local `none` recipients.
+/// the same timing, and a delivery row for exactly the local `none` recipients,
+/// plus the node-local author sibling row (never signed or receipt-bearing).
 fn check_staged_audience(
     tx: &Transaction<'_>,
     prep_id: &str,
@@ -1245,10 +1265,10 @@ fn check_staged_audience(
         let staged: Vec<String> = {
             let mut stmt = tx
                 .prepare(
-                    "SELECT seat_id FROM lazy_recipients WHERE preparation_id=?1 ORDER BY seat_id",
+                    "SELECT seat_id FROM lazy_recipients WHERE preparation_id=?1 AND seat_id<>?2 ORDER BY seat_id",
                 )
                 .map_err(store_error)?;
-            stmt.query_map([prep_id], |r| r.get(0))
+            stmt.query_map(params![prep_id, payload.author.as_str()], |r| r.get(0))
                 .map_err(store_error)?
                 .collect::<Result<_, _>>()
                 .map_err(store_error)?
@@ -1602,8 +1622,9 @@ pub fn publish_send(
             // The send-eligibility fence as the deciding writer found it, before the author's
             // own claim resolves below. That resolution (a plain call: enroll, reconnect, touch;
             // the supersede and placeholder hooks are lifecycle-only, the human end is the same
-            // seat) changes only the author's seat bindings, and the author is never a staged
-            // recipient, so a bump it causes cannot stale the staged recipient set.
+            // seat) changes only the author's seat bindings. The author's sibling row
+            // has no receipt, warning or availability evidence, so a bump it causes
+            // cannot stale the staged recipient set.
             let eligibility_before_author: i64 = tx
                 .query_row(
                     "SELECT h.send_eligibility_revision FROM threads t JOIN local_node h ON h.id=t.instance_id WHERE t.id=?1",

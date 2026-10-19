@@ -105,11 +105,20 @@ fn two_nodes_direct_send_and_ack() {
     assert_eq!(
         cluster.scalar(
             0,
-            "SELECT count(*) FROM lazy_recipients WHERE message_id = ?1",
-            &[&to_person],
+            "SELECT count(*) FROM lazy_recipients WHERE message_id = ?1 AND seat_id = ?2",
+            &[&to_person, &person.id],
         ),
         Some("0".into()),
         "the sender's node stages no row for a remote seat"
+    );
+    assert_eq!(
+        cluster.scalar(
+            0,
+            "SELECT count(*) FROM lazy_recipients WHERE message_id = ?1 AND seat_id = ?2",
+            &[&to_person, &a.id]
+        ),
+        Some("1".into()),
+        "the sender's node retains its local author sibling row"
     );
 
     // Overdue is recorded on the sender's node only.

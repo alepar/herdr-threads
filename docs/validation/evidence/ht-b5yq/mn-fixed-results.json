@@ -1,0 +1,252 @@
+[
+  {
+    "iteration": 0,
+    "code": 0,
+    "seconds": 2.5007677089888602
+  },
+  {
+    "iteration": 1,
+    "code": 0,
+    "seconds": 2.646377041004598
+  },
+  {
+    "iteration": 2,
+    "code": 0,
+    "seconds": 2.78174054203555
+  },
+  {
+    "iteration": 3,
+    "code": 0,
+    "seconds": 2.5782586249988526
+  },
+  {
+    "iteration": 4,
+    "code": 0,
+    "seconds": 3.437184500042349
+  },
+  {
+    "iteration": 5,
+    "code": 0,
+    "seconds": 3.298161332961172
+  },
+  {
+    "iteration": 6,
+    "code": 0,
+    "seconds": 3.096186999930069
+  },
+  {
+    "iteration": 7,
+    "code": 0,
+    "seconds": 3.0021987080108374
+  },
+  {
+    "iteration": 8,
+    "code": 0,
+    "seconds": 2.6905153749976307
+  },
+  {
+    "iteration": 9,
+    "code": 0,
+    "seconds": 2.6870377908926457
+  },
+  {
+    "iteration": 10,
+    "code": 0,
+    "seconds": 3.061866416828707
+  },
+  {
+    "iteration": 11,
+    "code": 0,
+    "seconds": 2.9536673750262707
+  },
+  {
+    "iteration": 12,
+    "code": 0,
+    "seconds": 2.7293689590878785
+  },
+  {
+    "iteration": 13,
+    "code": 0,
+    "seconds": 2.616284957854077
+  },
+  {
+    "iteration": 14,
+    "code": 0,
+    "seconds": 2.9364209580235183
+  },
+  {
+    "iteration": 15,
+    "code": 0,
+    "seconds": 2.870080916909501
+  },
+  {
+    "iteration": 16,
+    "code": 0,
+    "seconds": 2.499513000017032
+  },
+  {
+    "iteration": 17,
+    "code": 0,
+    "seconds": 2.6202790830284357
+  },
+  {
+    "iteration": 18,
+    "code": 0,
+    "seconds": 2.3486140000168234
+  },
+  {
+    "iteration": 19,
+    "code": 0,
+    "seconds": 2.485047083115205
+  },
+  {
+    "iteration": 20,
+    "code": 0,
+    "seconds": 2.474159042118117
+  },
+  {
+    "iteration": 21,
+    "code": 0,
+    "seconds": 2.7449788749217987
+  },
+  {
+    "iteration": 22,
+    "code": 0,
+    "seconds": 2.53042283304967
+  },
+  {
+    "iteration": 23,
+    "code": 0,
+    "seconds": 2.3243582078721374
+  },
+  {
+    "iteration": 24,
+    "code": 0,
+    "seconds": 2.760869791964069
+  },
+  {
+    "iteration": 25,
+    "code": 0,
+    "seconds": 2.839367415988818
+  },
+  {
+    "iteration": 26,
+    "code": 0,
+    "seconds": 2.6823043329641223
+  },
+  {
+    "iteration": 27,
+    "code": 0,
+    "seconds": 2.540543209062889
+  },
+  {
+    "iteration": 28,
+    "code": 0,
+    "seconds": 2.98092058300972
+  },
+  {
+    "iteration": 29,
+    "code": 0,
+    "seconds": 2.9737890420947224
+  },
+  {
+    "iteration": 30,
+    "code": 0,
+    "seconds": 2.573856374947354
+  },
+  {
+    "iteration": 31,
+    "code": 0,
+    "seconds": 2.4578404158819467
+  },
+  {
+    "iteration": 32,
+    "code": 0,
+    "seconds": 2.4791544580366462
+  },
+  {
+    "iteration": 33,
+    "code": 0,
+    "seconds": 2.3535605838987976
+  },
+  {
+    "iteration": 34,
+    "code": 0,
+    "seconds": 2.5661812080070376
+  },
+  {
+    "iteration": 35,
+    "code": 0,
+    "seconds": 2.4347255839966238
+  },
+  {
+    "iteration": 36,
+    "code": 0,
+    "seconds": 2.8642307920381427
+  },
+  {
+    "iteration": 37,
+    "code": 0,
+    "seconds": 2.8571273339912295
+  },
+  {
+    "iteration": 38,
+    "code": 0,
+    "seconds": 2.564648374915123
+  },
+  {
+    "iteration": 39,
+    "code": 0,
+    "seconds": 2.7296276250854135
+  },
+  {
+    "iteration": 40,
+    "code": 0,
+    "seconds": 2.91079045785591
+  },
+  {
+    "iteration": 41,
+    "code": 0,
+    "seconds": 2.721874958835542
+  },
+  {
+    "iteration": 42,
+    "code": 0,
+    "seconds": 2.98441791604273
+  },
+  {
+    "iteration": 43,
+    "code": 0,
+    "seconds": 2.9989449998829514
+  },
+  {
+    "iteration": 44,
+    "code": 0,
+    "seconds": 3.1012410828843713
+  },
+  {
+    "iteration": 45,
+    "code": 0,
+    "seconds": 2.9510977920144796
+  },
+  {
+    "iteration": 46,
+    "code": 0,
+    "seconds": 2.9688561249058694
+  },
+  {
+    "iteration": 47,
+    "code": 0,
+    "seconds": 2.8582394591066986
+  },
+  {
+    "iteration": 48,
+    "code": 0,
+    "seconds": 2.767985583981499
+  },
+  {
+    "iteration": 49,
+    "code": 0,
+    "seconds": 2.885242624906823
+  }
+]

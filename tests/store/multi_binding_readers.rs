@@ -259,6 +259,135 @@ fn participants_and_seat_views_list_the_seat_once() {
     assert_eq!(open.target, HostTargetId::new("p"));
 }
 
+/// A newer plain-call sibling must not mask the connected lifecycle binding.
+#[test]
+fn seat_inspect_prefers_connected_top_level_binding() {
+    let f = fixture();
+    f.db.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session' WHERE native_session<>'sess-A'", []).unwrap();
+    let b = bindings::match_claim(&f.db, &bindings::BindingKey::from_claim(&claim("sess-B")))
+        .unwrap()
+        .unwrap();
+    bindings::disconnect(
+        &f.db,
+        &b.binding_id,
+        bindings::DisconnectReason::ProcessExit,
+        UtcMillis(60),
+    )
+    .unwrap();
+    let CommandResult::SeatInspect(inspection) = query(
+        &f.store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &Command::SeatInspect(SeatInspectQuery {
+            seat: SeatId::new("s"),
+            page: PageRequest { limit: 1, ..page() },
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!("wrong result")
+    };
+    assert_eq!(
+        inspection.open_binding.unwrap().provenance,
+        "cooperative_top_level"
+    );
+    assert_eq!(open_count(&f.db), 3, "inspection must not end bindings");
+    assert_eq!(
+        bindings::list_connected(&f.db, &SeatId::new("s"))
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// Exact session consumers must not borrow a sibling's connected state.
+#[test]
+fn seat_inspect_exposes_exact_binding_identity_and_liveness() {
+    let f = fixture();
+    stale_binding_generations(&f.db);
+    f.db.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session' WHERE native_session='sess-B'", []).unwrap();
+    let CommandResult::SeatInspect(inspection) = query(
+        &f.store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &Command::SeatInspectBindings(SeatInspectQuery {
+            seat: SeatId::new("s"),
+            page: PageRequest { limit: 1, ..page() },
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!("wrong result")
+    };
+    assert!(
+        inspection
+            .history
+            .next_argv
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|arg| arg == "--binding-details")
+    );
+    let CommandResult::SeatInspect(legacy) = query(
+        &f.store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &Command::SeatInspect(SeatInspectQuery {
+            seat: SeatId::new("s"),
+            page: page(),
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!("wrong result")
+    };
+    for row in serde_json::to_value(&legacy.summary.bindings)
+        .unwrap()
+        .as_array()
+        .unwrap()
+    {
+        for field in ["binding_id", "native_session", "provenance"] {
+            assert!(
+                row.get(field).is_none(),
+                "legacy inspection stays compatible"
+            );
+        }
+    }
+    let rows = serde_json::to_value(&inspection.summary.bindings).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 3);
+    for (row, (session, connected, provenance)) in rows.as_array().unwrap().iter().zip([
+        ("sess-A", true, "cooperative_top_level"),
+        ("sess-B", true, "cooperative_env_session"),
+        ("sess-C", false, "cooperative_top_level"),
+    ]) {
+        let binding =
+            bindings::match_claim(&f.db, &bindings::BindingKey::from_claim(&claim(session)))
+                .unwrap()
+                .unwrap();
+        assert_eq!(row["binding_id"], binding.binding_id.as_str());
+        assert_eq!(row["native_session"], session);
+        assert_eq!(row["connected"], connected);
+        assert_eq!(row["provenance"], provenance);
+    }
+    let CommandResult::Seats(seats) = query(
+        &f.store,
+        "34750f98bd59fcfc946da45aaabe933b",
+        &Command::Seats(SeatsQuery {
+            page: page(),
+            target: None,
+            include_retired: false,
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!("wrong result")
+    };
+    let routine = serde_json::to_value(&seats.items[0].bindings).unwrap();
+    for row in routine.as_array().unwrap() {
+        for field in ["binding_id", "native_session", "provenance"] {
+            assert!(row.get(field).is_none(), "routine presence stays compact");
+        }
+    }
+    assert_eq!(open_count(&f.db), 3);
+}
+
 fn offer(claim: &CallerClaim) -> CommandResult {
     fn empty<T>() -> Page<T> {
         Page {

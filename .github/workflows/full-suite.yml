@@ -7,11 +7,12 @@ name: Full suite gate
 # correctness, not this budget. Manual dispatch only, on the exact SHA a
 # release qualifies. Setup and prewarm are ci.yml's tests job; the timer covers
 # only the run. No retry, no native or authenticated harness runs.
-# Capacity: the default profile runs one test per CPU. A standard ubuntu-24.04
-# runner has 4 vCPUs, and .config/nextest.toml records ~1800 test-seconds
-# (>= 450 s at 4 slots even with perfect packing), so on that runner this gate
-# is expected to fail: a red run there measures the runner, and a pass needs a
-# larger runner. The summary records the CPU count beside the wall time.
+# Capacity: the default profile runs 18 tests at a time, sized for the
+# 12-core development Mac (.config/nextest.toml). A standard ubuntu-24.04
+# runner has 4 vCPUs, and the suite records ~3000 test-seconds, so on that
+# runner this gate is expected to fail: a red run there measures the runner,
+# and a pass needs a larger runner. The summary records the CPU count beside
+# the wall time.
 
 on:
   workflow_dispatch:

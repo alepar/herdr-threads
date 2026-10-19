@@ -1,0 +1,11 @@
+
+running 7 tests
+test config_auto_ack::mod_channel_delivery_settles_the_remote_senders_receipt ... ok
+test config_auto_ack::incomplete_read_only_and_refused_displays_leave_the_receipt_pending ... ok
+test config_auto_ack::text_inbox_display_clears_the_remote_senders_due_tracking ... ok
+test config_auto_ack::offline_settlement_applies_once_after_heal_and_resync ... ok
+test config_direct::text_inbox_auto_ack_reaches_remote_sender_json_read_is_passive ... ok
+test support::received_seat_facts_are_not_ready_until_materialized ... ok
+test config_direct::two_nodes_direct_send_and_ack ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 20.45s

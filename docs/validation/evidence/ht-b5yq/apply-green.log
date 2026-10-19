@@ -1,0 +1,20 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v2.2.0 (/Users/alepar/AleCode/herdr-threads/.worktrees/ht-b5yq)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 05s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-51d8134974471731)
+
+running 12 tests
+test service::workers::apply_lane_tests::hold_wait_is_bounded_by_the_remaining_cap ... ok
+test service::workers::apply_lane_tests::worker_stops_on_factory_stop ... ok
+test service::workers::apply_lane_tests::clear_hint_skips_writer_turn ... ok
+test service::workers::apply_lane_tests::empty_pass_commits_nothing_kicks_nothing ... ok
+test service::workers::apply_lane_tests::held_foreign_entries_apply_at_the_hold_cap_without_new_ingest ... ok
+test service::workers::apply_lane_tests::kicked_ingest_applied_within_one_pass ... ok
+test service::workers::apply_lane_tests::ingest_sets_hint_only_for_stored_rows ... ok
+test service::workers::apply_lane_tests::lane_fault_degrades_health_then_recovers ... ok
+test service::workers::apply_lane_tests::a_pass_under_the_own_history_hold_is_not_a_drain ... ok
+test service::workers::apply_lane_tests::post_commit_called_with_self_tag_k_never_on_failure ... ok
+test service::workers::apply_lane_tests::ingest_then_drain_advances_the_drained_epoch ... ok
+test service::workers::apply_lane_tests::checkpoint_after_1024_applied ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 6065 filtered out; finished in 4.15s

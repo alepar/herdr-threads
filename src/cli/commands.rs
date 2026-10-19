@@ -152,9 +152,12 @@ impl SeatSlot {
                     .get_mut(index)
                     .ok_or_else(|| invalid("ACK recipient slot is out of range"))? = seat
             }
-            (Self::InspectSeat, CliAction::Wire(WireCommand::SeatInspect(query))) => {
-                query.seat = seat
-            }
+            (
+                Self::InspectSeat,
+                CliAction::Wire(
+                    WireCommand::SeatInspect(query) | WireCommand::SeatInspectBindings(query),
+                ),
+            ) => query.seat = seat,
             (Self::RetireSeat, CliAction::Mutation(MutationSpec::Retire(slot))) => *slot = seat,
             (
                 Self::RebindSeat,
@@ -209,9 +212,12 @@ impl SeatSlot {
                     | MutationSpec::DirectSend(super::direct_send::Request { require_ack, .. }),
                 ),
             ) => require_ack.get(index).map(SeatId::as_str),
-            (Self::InspectSeat, CliAction::Wire(WireCommand::SeatInspect(query))) => {
-                Some(query.seat.as_str())
-            }
+            (
+                Self::InspectSeat,
+                CliAction::Wire(
+                    WireCommand::SeatInspect(query) | WireCommand::SeatInspectBindings(query),
+                ),
+            ) => Some(query.seat.as_str()),
             (Self::RetireSeat, CliAction::Mutation(MutationSpec::Retire(seat))) => {
                 Some(seat.as_str())
             }
@@ -1467,6 +1473,9 @@ enum SeatSub {
     },
     /// Inspect one seat's mapping, binding and obligations.
     Inspect {
+        /// Include exact binding ids, native sessions and observation provenance.
+        #[arg(long)]
+        binding_details: bool,
         /// SEAT: exact ID or SPACE/TAB/PANE; single-quote path: names with \/ or \\ escapes
         seat: String,
         #[command(flatten)]
@@ -3182,11 +3191,20 @@ fn parse_cli_in_registry(
                         .unwrap_or_else(|| "pending-caller-selector".into()),
                 )))
             }
-            SeatSub::Inspect { page: args, .. } => {
-                CliAction::Wire(WireCommand::SeatInspect(SeatInspectQuery {
+            SeatSub::Inspect {
+                page: args,
+                binding_details,
+                ..
+            } => {
+                let query = SeatInspectQuery {
                     seat: placeholder_seat(),
                     page: page(args)?,
-                }))
+                };
+                CliAction::Wire(if binding_details {
+                    WireCommand::SeatInspectBindings(query)
+                } else {
+                    WireCommand::SeatInspect(query)
+                })
             }
             SeatSub::Retirements(args) => {
                 CliAction::Wire(WireCommand::RetirementJobs(RetirementJobsQuery {

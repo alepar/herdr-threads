@@ -442,7 +442,7 @@ pub struct SalvageReport {
 pub type SalvageIngest<'a> =
     dyn FnMut(&LogKey, Vec<StoredEntry>) -> Result<IngestOutcome, ApiError> + 'a;
 
-/// A backup from before node schema 4 (2.1.1 and older) has no
+/// A backup from before node schema 5 (2.2.x and older) has no
 /// `journal_opaque`, which the Chain-row reader selects from. An empty TEMP
 /// table of the same columns shadows the missing one, so the read is
 /// journal-only. TEMP objects live in this connection's temp database, never
@@ -473,7 +473,7 @@ fn shadow_missing_opaque_table(conn: &Connection) -> rusqlite::Result<()> {
 /// corrupt rows are never admitted. A store error from `ingest` itself ends
 /// the pass with that error: ingest is idempotent, so the caller runs the
 /// whole pass again. A `Headroom` stop sets [`SalvageReport::headroom`].
-/// A backup from before node schema 4 is read journal-only (see
+/// A backup from before node schema 5 is read journal-only (see
 /// [`shadow_missing_opaque_table`]).
 pub fn salvage(
     backup_db: &Path,
@@ -1208,10 +1208,10 @@ mod tests {
         assert!(!report.interrupted && report.unreadable.is_none());
     }
 
-    /// Turns a store built by this release into the shape of a 2.1.1 one
-    /// (node schema 3): every object that names `journal_opaque` is dropped,
-    /// triggers first, and `user_version` goes back to 3.
-    fn downgrade_to_schema_3(db: &Path) {
+    /// Turns a store built by this release into the shape of a 2.2.x one
+    /// (node schema 4): every object that names `journal_opaque` is dropped,
+    /// triggers first, and `user_version` goes back to 4.
+    fn downgrade_to_schema_4(db: &Path) {
         let conn = Connection::open(db).unwrap();
         let objects: Vec<(String, String)> = conn
             .prepare(
@@ -1229,7 +1229,7 @@ mod tests {
             conn.execute_batch(&format!("DROP {kind} \"{name}\""))
                 .unwrap();
         }
-        conn.execute_batch("PRAGMA user_version=3").unwrap();
+        conn.execute_batch("PRAGMA user_version=4").unwrap();
         let left: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%journal_opaque%' OR sql LIKE '%journal_opaque%'",
@@ -1237,18 +1237,18 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(left, 0, "no 0004 object is left");
+        assert_eq!(left, 0, "no 0005 object is left");
     }
 
-    /// A backup from before node schema 4 has no `journal_opaque`: salvage
+    /// A backup from before node schema 5 has no `journal_opaque`: salvage
     /// reads it journal-only, recovers every entry and leaves the file alone.
     #[test]
-    fn salvage_reads_a_pre_0004_backup() {
-        let (iso, _paths) = node("resync-salvage-schema3");
+    fn salvage_reads_a_pre_0005_backup() {
+        let (iso, _paths) = node("resync-salvage-schema4");
         let db = iso.path("backup.db");
         let logs = three_logs();
         build_store(&db, &logs);
-        downgrade_to_schema_3(&db);
+        downgrade_to_schema_4(&db);
         let held = backup_logs(&db);
 
         let mut got: std::collections::BTreeMap<LogKey, Vec<StoredEntry>> = Default::default();

@@ -4601,3 +4601,39 @@ fn every_seat_valued_clap_argument_is_a_recorded_slot() {
     // Every sample is reached by the walk (no stale table entries).
     assert_eq!(covered, samples.len(), "samples {samples:?} vs found {found:?}");
 }
+
+/// Explicit details select the new read without changing legacy seat inspection.
+#[test]
+fn seat_inspect_binding_details_selects_opt_in_read() {
+    let mut action = parse_argv(["herdr-threads", "seat", "inspect", "s1", "--binding-details"]).unwrap().action;
+    SeatSlot::InspectSeat.set(&mut action, SeatId::new("frozen")).unwrap();
+    assert_eq!(SeatSlot::InspectSeat.current(&action), Some("frozen"));
+    assert!(matches!(action, CliAction::Wire(WireCommand::SeatInspectBindings(q)) if q.seat.as_str() == "frozen"));
+}
+
+#[test]
+fn seat_inspect_binding_details_refuses_an_older_daemon_before_query() {
+    struct OlderDaemon;
+    impl crate::ports::LocalClient for OlderDaemon {
+        fn call(&self, _: WireCommand, _: &crate::protocol::time::CallBudget) -> Result<CommandResult, ApiError> {
+            panic!("an unsupported details query must not be sent");
+        }
+        fn call_with_output(&self, _: WireCommand, _: &OutputSpec, _: &crate::protocol::time::CallBudget) -> Result<CommandResult, ApiError> {
+            panic!("an unsupported details query must not be sent");
+        }
+        fn supports_capability(&self, _: &str, _: &crate::protocol::time::CallBudget) -> bool { false }
+    }
+    let mut out = Vec::new();
+    let err = crate::cli::run_wire(
+        WireCommand::SeatInspectBindings(SeatInspectQuery {
+            seat: SeatId::new("s"), page: crate::protocol::pagination::PageRequest::default(),
+        }),
+        &OutputSpec { format: OutputFormat::Json, context: Default::default() },
+        &OlderDaemon,
+        &|| crate::protocol::time::CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX), cancellation: Default::default(),
+        }, &mut out,
+    ).unwrap_err();
+    assert!(err.to_string().contains("seat.binding_details_v1"));
+    assert!(out.is_empty());
+}

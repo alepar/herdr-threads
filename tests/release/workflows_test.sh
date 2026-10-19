@@ -75,13 +75,13 @@ check "ci.yml: clippy default features -D warnings" bash -c \
 check "ci.yml: package-lifecycle cargo test enables test-support" bash -c \
   'yq ".jobs.package-lifecycle.steps[].run" "$1" | grep -qE -- "cargo test --locked (--features test-support|--all-features) --test package"' _ "$ci"
 check "ci.yml: deterministic job ends with an always() leak check" bash -c \
-  'test "$(yq ".jobs.deterministic.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()"' _ "$ci"
+  'test "$(yq ".jobs.deterministic.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "$2"' _ "$ci" "always() && needs.changes.outputs.heavy == 'true'"
 check "ci.yml: tests job runs on Linux in four shards" bash -c \
   'test "$(yq ".jobs.tests.runs-on" "$1")" = ubuntu-24.04 && test "$(yq -o=json -I=0 ".jobs.tests.strategy.matrix.shard" "$1")" = "[1,2,3,4]"' _ "$ci"
 check "ci.yml: tests job partitions nextest by slice" bash -c \
   'yq ".jobs.tests.steps[].run" "$1" | grep -qF -- "--partition \"slice:\$SHARD/4\""' _ "$ci"
 check "ci.yml: tests job ends with an always() leak check" bash -c \
-  'test "$(yq ".jobs.tests.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()"' _ "$ci"
+  'test "$(yq ".jobs.tests.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "$2"' _ "$ci" "always() && needs.changes.outputs.heavy == 'true'"
 check "ci.yml: clippy runs on macOS and Linux" bash -c \
   'test "$(yq -o=json -I=0 ".jobs.clippy.strategy.matrix.runner" "$1")" = "[\"macos-15\",\"ubuntu-24.04\"]"' _ "$ci"
 check "ci.yml: actionlint job exists" test "$(yq '.jobs | has("actionlint")' "$ci")" = true
@@ -97,11 +97,72 @@ check "ci.yml: linux-e2e never runs the live wake matrix or --check-upstream" ba
 check "ci.yml: linux-e2e references no secrets or tokens" bash -c \
   '! yq ".jobs.linux-e2e" "$1" | grep -qE "secrets\b|GITHUB_TOKEN|github\.token"' _ "$ci"
 check "ci.yml: linux-e2e ends with an always() leak check" bash -c \
-  'test "$(yq ".jobs.linux-e2e.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()" \
-   && test "$(yq ".jobs.linux-e2e.steps[-1].run" "$1")" = "scripts/check-no-leaked-processes --run-id \"\$HT_LEAK_RUN_ID\" --grace 15"' _ "$ci"
-check "ci.yml: linux-e2e runs on every push and pull request (no job-level if)" bash -c \
-  'test "$(yq ".jobs.linux-e2e | has(\"if\")" "$1")" = false \
+  'test "$(yq ".jobs.linux-e2e.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "$2" \
+   && test "$(yq ".jobs.linux-e2e.steps[-1].run" "$1")" = "scripts/check-no-leaked-processes --run-id \"\$HT_LEAK_RUN_ID\" --grace 15"' _ "$ci" "always() && needs.changes.outputs.heavy == 'true'"
+check "ci.yml: linux-e2e runs on every push and pull request (always evaluates detector)" bash -c \
+  'test "$(yq ".jobs.linux-e2e.if" "$1")" = "always()" \
    && test "$(yq "(.on | has(\"push\")) and (.on | has(\"pull_request\")) and .on.push == null and .on.pull_request == null" "$1")" = true' _ "$ci"
+
+rust_caches() {
+  local job
+  for job in tests clippy build-targets release-proof; do
+    test "$(yq ".jobs.\"$job\".steps[] | select(.uses == \"Swatinem/rust-cache@*\") | .with.cache-bin" "$ci")" = false >/dev/null || return 1
+    # Restoring after toolchain installation ensures the actual rustc identity keys the cache.
+    local rust cache
+    rust=$(yq ".jobs.\"$job\".steps | to_entries | .[] | select(.value.name == \"Rust toolchain\") | .key" "$ci")
+    cache=$(yq ".jobs.\"$job\".steps | to_entries | .[] | select(.value.uses == \"Swatinem/rust-cache@*\") | .key" "$ci")
+    [ -n "$rust" ] && [ -n "$cache" ] && [ "$rust" -lt "$cache" ] >/dev/null || return 1
+  done
+  yq '.jobs.release-proof.steps[] | select(.uses == "Swatinem/rust-cache@*") | .with.workspaces' "$ci" | grep -F '. -> target/failpoints-release' >/dev/null || return 1
+  yq '.jobs.release-proof.steps[] | select(.uses == "Swatinem/rust-cache@*") | .with.workspaces' "$ci" | grep -F '. -> target/failpoints-control' >/dev/null
+}
+check "ci.yml: pinned Rust dependency caches include separate proof targets after toolchain setup" rust_caches
+
+proof_once() {
+  local proof='manifest::failpoints_are_compiled_out_of_release_builds'
+  yq '.jobs.release-proof.steps[].run' "$ci" | grep -F "cargo test --locked --all-features --test package $proof -- --exact --nocapture" >/dev/null || return 1
+  yq '.jobs.tests.steps[].run' "$ci" | grep -F "not (binary(package) & test(=$proof))" >/dev/null || return 1
+  ! yq '.jobs.tests.steps[].run' "$ci" | grep -F 'check_failpoints_absent.sh --prebuild'
+}
+check "ci.yml: release proof retains Rust assertions once outside all four timed shards" proof_once
+
+docs_filter() {
+  local job
+  test "$(yq '.jobs.changes.outputs.heavy' "$ci")" = '${{ steps.paths.outputs.heavy }}' || return 1
+  for job in tests deterministic linux-e2e clippy build-targets actionlint release-proof; do
+    case "$job" in
+      actionlint) test "$(yq -o=json -I=0 '.jobs.actionlint.needs' "$ci")" = '["changes","release-proof"]' || return 1 ;;
+      *) test "$(yq ".jobs.\"$job\".needs" "$ci")" = changes || return 1 ;;
+    esac
+    test "$(yq ".jobs.\"$job\".if" "$ci")" = "always()" || return 1
+    yq ".jobs.\"$job\".steps[].if" "$ci" | while IFS= read -r condition; do
+      case "$condition" in "always()"|*"needs.changes.outputs.heavy == 'true'"*) ;; *) return 1 ;; esac
+    done || return 1
+  done
+}
+check "ci.yml: docs-only filter preserves every stable job and gates its steps" docs_filter
+detector_failure_blocks() {
+  local job script outcome heavy
+  for job in tests deterministic linux-e2e clippy build-targets actionlint release-proof; do
+    script=$(yq ".jobs.\"$job\".steps[0].run" "$ci")
+    for outcome in failure skipped cancelled; do
+      if DETECTOR_RESULT="$outcome" HEAVY=true bash -c "$script"; then return 1; fi
+    done
+    for heavy in '' invalid; do
+      if DETECTOR_RESULT=success HEAVY="$heavy" bash -c "$script"; then return 1; fi
+    done
+    DETECTOR_RESULT=success HEAVY=false bash -c "$script" || return 1
+    DETECTOR_RESULT=success HEAVY=true bash -c "$script" || return 1
+  done
+  test "$(yq '.jobs.actionlint.steps[-1].env.PROOF_RESULT' "$ci")" = '${{ needs.release-proof.result }}' || return 1
+  script=$(yq '.jobs.actionlint.steps[-1].run' "$ci")
+  for outcome in failure skipped cancelled; do
+    if PROOF_RESULT="$outcome" bash -c "$script"; then return 1; fi
+  done
+  PROOF_RESULT=success bash -c "$script"
+}
+check "ci.yml: detector failure/missing output and proof failure fail stable checks" detector_failure_blocks
+check "ci.yml: changed-path detector event semantics" python3 -m unittest discover -s scripts/tests -p test_ci_changed_paths.py
 
 full=.github/workflows/full-suite.yml
 check "full-suite.yml: manual dispatch only, contents read" bash -c \

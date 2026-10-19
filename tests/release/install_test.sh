@@ -163,6 +163,9 @@ case "$1 $2" in
 "plugin action") up; n=$(( $(cat "$d/n" 2>/dev/null || echo 0) + 1 )); echo $n > "$d/n"; echo "action $4" >> "$d/actions"
     # Which package version the action ran from (the registered root's VERSION).
     echo "$4 $(cat "$(cat "$reg")/VERSION" 2>/dev/null)" >> "$d/action-versions"
+    if [ -e "$d/real-actions" ]; then
+        "$(cat "$reg")/bin/herdr-threads" daemon "$4" > "$d/real-action-output" 2>&1
+    fi
     # $FAKE_HERDR_DIR/stop.fail makes every stop action exit 1.
     if [ "$4" = stop ] && [ -e "$d/stop.fail" ]; then echo 1; else echo 0; fi > "$d/code-$n"
     echo "{\"result\":{\"log\":{\"log_id\":\"plugin-log-$n\",\"status\":\"running\"}}}" ;;
@@ -307,6 +310,28 @@ expect "upgrade reports the old executable stopped the daemon" \
 expect "next steps: daemon running, so check with doctor" has "Check it: herdr-threads doctor"
 expect "next steps: daemon running, no start-Herdr step" bash -c "! grep -qF 'Start Herdr' '$out'"
 
+# A hook re-ensures the old executable immediately before the directory swap.
+# The installer must replace that process even though its first stop succeeded.
+cat > "$tools/mv" <<'EOF_MV'
+#!/bin/bash
+if [ "$1" = "$HOME/.local/share/herdr-threads" ] && [ "$2" = "$1.old" ]; then
+    "$1/bin/herdr-threads" daemon ensure > "$FAKE_HERDR_DIR/race-ensure" 2>&1 || exit 1
+    cp "$XDG_STATE_HOME/herdr/plugins/herdr-threads/node/endpoint.json" "$FAKE_HERDR_DIR/raced-endpoint"
+fi
+exec /bin/mv "$@"
+EOF_MV
+chmod 755 "$tools/mv"
+touch "$root/real-actions"
+install --version v0.1.0 --no-setup
+[ "$status" = 0 ] || fail "upgrade with a racing hook exits 0" "$(cat "$out")"
+raced_pid=$("$binary" internal json-field pid < "$root/raced-endpoint")
+current_pid=$("$binary" internal json-field pid < "$root/st/herdr/plugins/herdr-threads/node/endpoint.json")
+expect "upgrade replaces the daemon restarted by a hook before the swap" [ "$current_pid" != "$raced_pid" ]
+"${run_env[@]}" "$link" daemon stop >/dev/null
+rm "$tools/mv" "$root/real-actions"
+install --no-setup
+[ "$status" = 0 ] || fail "restore latest after racing hook" "$(cat "$out")"
+
 # --- 3b. the old executable cannot stop the daemon ----------------------------
 # A failed old-binary stop must be visible: warn with the running daemon's pid
 # (from its endpoint.json) and the manual kill. Without a live daemon, say
@@ -320,6 +345,11 @@ expect "next steps: daemon running, no start-Herdr step" bash -c "! grep -qF 'St
     chmod 700 "$fake_instance"
     printf '{"software_version":"0.1.1","protocol_version":1,"pid":%s,"socket_inode":1}\n' \
         "$fake_pid" > "$fake_instance/endpoint.json"
+    # A successful Herdr action must not hide a daemon from another version.
+    install --version v0.1.1 --no-setup
+    expect "version mismatch after ensure exits 3" [ "$status" = 3 ]
+    expect "version mismatch names the running and installed versions" has "runs 0.1.1; installed executable is"
+    expect "version mismatch has an incomplete final status" has "running daemon does not match the installed executable"
     : > "$root/actions"
     : > "$root/action-versions"
     install --version v0.1.0

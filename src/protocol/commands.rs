@@ -35,6 +35,8 @@ pub enum Command {
     PickerDirectory(PickerDirectoryQuery),
     Seats(SeatsQuery),
     SeatInspect(SeatInspectQuery),
+    /// Read-only per-binding identity and liveness; gated by seat.binding_details_v1.
+    SeatInspectBindings(SeatInspectQuery),
     Inbox(InboxQuery),
     /// Bounded read-only content page for the text inbox. Receipt changes use
     /// a separate accountable command after the caller displays this page.
@@ -1580,7 +1582,7 @@ impl Command {
             Self::Directory(v) => Some(&v.page),
             Self::PickerDirectory(v) => Some(&v.page),
             Self::Seats(v) => Some(&v.page),
-            Self::SeatInspect(v) => Some(&v.page),
+            Self::SeatInspect(v) | Self::SeatInspectBindings(v) => Some(&v.page),
             Self::Inbox(v) | Self::InboxBatch(v) | Self::InboxBatchV2(v) => Some(&v.page),
             Self::Warnings(v) => Some(&v.page),
             Self::ActiveWarnings(v) => Some(&v.page),

@@ -495,7 +495,10 @@ fn ack_send_on_an_auto_joined_pair_has_a_receipt_and_no_invitation() {
         .unwrap();
     assert_eq!(count(&db, "invitations"), 0);
     assert_eq!(count(&db, "prepared_recipients WHERE seat_id='s2'"), 1);
-    assert_eq!(count(&db, "lazy_recipients"), 0);
+    assert_eq!(count(&db, "prepared_recipients WHERE seat_id='s1'"), 0);
+    assert_eq!(count(&db, "lazy_recipients"), 1);
+    assert_eq!(count(&db, "lazy_recipients WHERE seat_id='s1'"), 1);
+    assert_eq!(count(&db, "lazy_recipients WHERE seat_id='s2'"), 0);
     drop(store);
     drop(db);
     let _ = std::fs::remove_file(path);

@@ -277,6 +277,7 @@ fn capability_constants_are_stable() {
     assert_eq!(HARNESS_EVIDENCE, "hook.harness_evidence");
     assert_eq!(HARNESS_STATES, "harness.states");
     assert_eq!(SEAT_MANAGED_LAUNCH, "seat.managed_launch");
+    assert_eq!(SEAT_BINDING_DETAILS_V1, "seat.binding_details_v1");
     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
     assert_eq!(HOOK_CONTEXT_RECEIPTS_V1, "hook.context_receipts_v1");
@@ -299,6 +300,7 @@ fn capability_constants_are_stable() {
             "harness.states",
             "harness.health_v2",
             "seat.managed_launch",
+            "seat.binding_details_v1",
             "seat.continuity_same_session_v1",
             "inbox.batch_v1",
             "invitation.reject_v1",
@@ -346,6 +348,26 @@ fn every_advertised_capability_has_a_handler() {
             HARNESS_STATES => probe_harness_states(),
             HARNESS_HEALTH_V2 => health_v2_capability_is_negotiated_only_with_cached_provider(),
             SEAT_MANAGED_LAUNCH => probe_seat_managed_launch(),
+            SEAT_BINDING_DETAILS_V1 => {
+                let command =
+                    Command::SeatInspectBindings(crate::protocol::commands::SeatInspectQuery {
+                        seat: crate::protocol::ids::SeatId::new("missing-seat"),
+                        page: Default::default(),
+                    });
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap())
+                        .unwrap(),
+                    command
+                );
+                assert_eq!(
+                    daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4())
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
             SAME_SESSION_CONTINUITY_V1 => {
                 let command =
                     Command::ContinuityCheckIn(crate::protocol::commands::ContinuityCheckIn {
@@ -981,6 +1003,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "hook.harness_evidence",
             "harness.states",
             "seat.managed_launch",
+            "seat.binding_details_v1",
             "seat.continuity_same_session_v1",
             "inbox.batch_v1",
             "invitation.reject_v1",

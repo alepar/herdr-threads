@@ -1159,7 +1159,7 @@ fn lazy_local_send_authors_none_receipts() {
     let mut want = vec![&s.acker, &s.human];
     want.sort();
     assert_eq!(seats, want);
-    assert_eq!(s.count("SELECT count(*) FROM lazy_recipients"), 2);
+    assert_eq!(s.count("SELECT count(*) FROM lazy_recipients"), 3);
     assert_eq!(
         s.count("SELECT count(*) FROM work_jobs WHERE kind='send_attention'"),
         0
@@ -1394,8 +1394,8 @@ fn lazy_send_lists_remote_members_but_stages_no_row_for_them() {
     );
     assert_eq!(
         s.count("SELECT count(*) FROM lazy_recipients"),
-        2,
-        "only the two local members hold a lazy row"
+        3,
+        "two local recipients plus node-local author siblings hold a row"
     );
     assert_no_local_delivery_for_remote(&s.db());
 }
@@ -1484,4 +1484,92 @@ fn legacy_message_roles_use_only_frozen_relay_and_intent_claims() {
         );
         assert_eq!(rows, vec![(expected.map(str::to_owned), true)]);
     }
+}
+
+// A strict legacy peer contract: signed audiences exclude the author. This
+// intentionally wraps only the changed contract, retaining the real signed
+// exchange, origin checks, materializer and remote delivery paths.
+struct LegacyAudienceMessage;
+impl FactKind for LegacyAudienceMessage {
+    const NAME: &'static str = MessageSent::NAME;
+    const MAJOR: u32 = MessageSent::MAJOR;
+    type Payload = MessageSentPayload;
+    fn creates(p: &Self::Payload) -> Option<EntityKey> {
+        MessageSent::creates(p)
+    }
+    fn needs(p: &Self::Payload) -> Vec<EntityKey> {
+        MessageSent::needs(p)
+    }
+    fn apply(
+        tx: &rusqlite::Transaction<'_>,
+        cx: &mut herdr_threads::sync::facts::ApplyContext<'_>,
+        p: Self::Payload,
+    ) -> Result<(), herdr_threads::sync::facts::FactError> {
+        if p.recipients.iter().any(|r| r.seat == p.author) {
+            return Err(herdr_threads::sync::facts::FactError::Rejected(
+                ApiError::new(ErrorCode::InvalidRequest, "legacy audience includes author"),
+            ));
+        }
+        MessageSent::apply(tx, cx, p)
+    }
+}
+
+#[test]
+fn sibling_bookkeeping_keeps_legacy_peer_audience_compatible() {
+    use herdr_threads::sync::facts::{NodeGenesis, NodeRetag, membership, seat, thread};
+    let legacy = Box::leak(Box::new(
+        FactRegistry::builder()
+            .with::<NodeGenesis>()
+            .with::<NodeRetag>()
+            .with::<seat::SeatCreated>()
+            .with::<seat::SeatRetired>()
+            .with::<thread::ThreadCreated>()
+            .with::<membership::MembershipJoined>()
+            .with::<LegacyAudienceMessage>()
+            .build(),
+    ));
+    let s = Sender::new();
+    let ctx = s.store.context();
+    let mut db = s.db();
+    ctx.execute_decision(
+        &mut db,
+        |_| Ok(()),
+        |tx, d, ()| {
+            for seat in [&s.author, &s.acker, &s.human] {
+                herdr_threads::store::seats::ensure_published(tx, ctx, d, seat)?;
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    let peer = Node::with(211, legacy);
+    let target = peer.local_seat();
+    peer.enroll(&target, "codex", "legacy-peer").unwrap();
+    peer.publish(&target).unwrap();
+    fact_exchange::sync(&s.store, &peer.store);
+    peer.joined(&s.thread, &target, 1).unwrap();
+    fact_exchange::sync(&peer.store, &s.store);
+    let request = s.request("compatible-sibling-send", DeliveryMode::Lazy, None);
+    let CommandResult::MessageSent(message) = s.send(&request).unwrap() else {
+        panic!("not sent")
+    };
+    assert_eq!(s.count("SELECT count(*) FROM lazy_recipients WHERE seat_id=(SELECT actor_seat_id FROM messages WHERE kind='ordinary' LIMIT 1)"), 1, "local author sibling row exists");
+    fact_exchange::sync(&s.store, &peer.store);
+    assert_eq!(
+        peer.count(&format!(
+            "SELECT count(*) FROM lazy_recipients WHERE message_id='{}' AND seat_id='{}'",
+            message.as_str(),
+            target.as_str()
+        )),
+        1,
+        "legacy peer applies the signed fact and delivers to its local member"
+    );
+    assert_eq!(
+        peer.count(&format!(
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id='{}'",
+            s.author.as_str()
+        )),
+        0,
+        "local sibling bookkeeping never replicates"
+    );
 }

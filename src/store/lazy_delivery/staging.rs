@@ -6,7 +6,8 @@ pub const CLEANUP_CANDIDATES_SQL: &str = "SELECT ordinal FROM lazy_recipients IN
 /// the preparation (set once; the audience was frozen at seal), then give every recipient whose
 /// current nudge threshold admits its row's priority the new-attention write so the dispatcher
 /// re-judges it. A recipient the threshold does not admit is untouched. Two set-based statements
-/// over the preparation's recipients.
+/// over the preparation's recipients. An author row schedules work only when a connected
+/// top-level sibling holds it in its pending view; the sender alone owes no wake work.
 pub fn note_published(tx: &Transaction<'_>, preparation: &str) -> Result<(), ApiError> {
     tx.execute(
         "UPDATE lazy_recipients SET decision_seq=(SELECT decision_seq FROM send_manifests WHERE preparation_id=?1) WHERE preparation_id=?1 AND decision_seq IS NULL",
@@ -15,7 +16,7 @@ pub fn note_published(tx: &Transaction<'_>, preparation: &str) -> Result<(), Api
     .map_err(store_error)?;
     tx.execute(
         &format!(
-            "INSERT INTO wake_work(seat_id,reason_bits,attention_version) SELECT DISTINCT r.seat_id,1,1 FROM lazy_recipients r INDEXED BY lazy_recipients_preparation_ordinal JOIN seats s ON s.id=r.seat_id WHERE r.preparation_id=?1 AND s.is_local=1 AND {} ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
+            "INSERT INTO wake_work(seat_id,reason_bits,attention_version) SELECT DISTINCT r.seat_id,1,1 FROM lazy_recipients r INDEXED BY lazy_recipients_preparation_ordinal JOIN seats s ON s.id=r.seat_id JOIN messages m ON m.id=r.message_id WHERE r.preparation_id=?1 AND s.is_local=1 AND {} AND (r.seat_id IS NOT m.actor_seat_id OR EXISTS(SELECT 1 FROM occupant_bindings b CROSS JOIN binding_pending p ON p.binding_id=b.binding_id AND p.ordinal=r.ordinal WHERE b.seat_id=r.seat_id AND b.binding_id IS NOT m.sender_binding_id AND b.ended_at IS NULL AND b.role='top_level' AND b.liveness='connected')) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
             crate::store::seats::THRESHOLD_ADMITS_SQL
         ),
         [preparation],

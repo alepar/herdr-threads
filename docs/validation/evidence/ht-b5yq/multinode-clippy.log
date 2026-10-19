@@ -1,0 +1,3 @@
+nice: setpriority: Operation not permitted
+    Checking herdr-threads v2.2.0 (/Users/alepar/AleCode/herdr-threads/.worktrees/ht-b5yq)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.89s

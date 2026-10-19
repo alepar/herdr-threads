@@ -1131,10 +1131,18 @@ impl<'de> Deserialize<'de> for PresenceAvailability {
     }
 }
 
-/// One open binding as shown in presence listings; session ids are not presentation data.
+/// One open binding. Exact identity is included only by opt-in seat inspection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BindingPresence {
+    /// Absent in routine presence listings and legacy seat inspection responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_id: Option<BindingId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_session: Option<NativeSessionId>,
+    /// The binding's observation provenance, not native session attestation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<String>,
     pub harness: String,
     /// `top_level` or `subagent`.
     pub role: String,
@@ -1157,7 +1165,8 @@ pub struct HoldSummary {
     pub reason_data: String,
     pub detail_argv: Vec<String>,
 }
-/// A seat's open (not ended) binding, the single answer every A4 guard reads.
+/// A representative open binding, preferring connected top-level sessions.
+/// This scalar is not evidence about any particular native session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpenBindingSummary {

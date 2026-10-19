@@ -7864,3 +7864,114 @@ fn assert_child_lifecycle(legacy_store: bool) {
         assert_eq!(fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='{seat}' AND native_session='lifecycle-parent' AND agent_id='' AND observation_provenance='cooperative_top_level' AND liveness='connected'")), 1);
     }
 }
+
+// ht-0coj: reproduce child-only presence after an actual SessionEnd, then exercise
+// the genuine resume that must reconnect the exact parent. Current/child events
+// cannot turn an end-event disconnect into a lifecycle claim (TRUST-POLICY A4).
+#[test]
+fn codex_end_event_stays_disconnected_until_genuine_resume() {
+    use herdr_threads::cli::hook::installed_event_argv;
+    use herdr_threads::harness::setup::native_event_command;
+
+    let fx = Fixture::start();
+    let invoke = |event: &str, payload: Vec<u8>| {
+        let command = native_event_command(
+            &installed_event_argv(
+                BIN,
+                Some(fx.state.to_str().unwrap()),
+                Some(fx.host.to_str().unwrap()),
+                Harness::Codex,
+                event,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let output = run_hook(&command, "w9:p3", &fx.host, &payload);
+        assert_eq!(output.code, Some(0));
+        assert!(output.stderr.is_empty(), "{}", output.stderr);
+        output
+    };
+    let start = |session, source| {
+        invoke(
+            "SessionStart",
+            Payload::session_start(session, source)
+                .codex(source)
+                .bytes(),
+        )
+    };
+    let end = |session: &str| {
+        invoke(
+            "SessionEnd",
+            Payload::bare("SessionEnd")
+                .with("session_id", session.into())
+                .bytes(),
+        )
+    };
+    let child = |event: &str, agent: &str| {
+        invoke(
+            event,
+            serde_json::to_vec(&serde_json::json!({
+                "hook_event_name": event, "session_id": "main", "turn_id": "turn-child",
+                "agent_id": agent, "agent_type": "worker", "transcript_path": null,
+                "cwd": "/tmp", "model": "gpt-test", "permission_mode": "default"
+            }))
+            .unwrap(),
+        )
+    };
+    let parent_state = || {
+        fx.count_text("SELECT json_array(binding_id,liveness,disconnect_reason,disconnected_at,observed_at) FROM occupant_bindings WHERE seat_id='cx' AND native_session='main' AND agent_id='' AND ended_at IS NULL")
+    };
+    start("main", "startup");
+    let parent_id = fx.count_text("SELECT binding_id FROM occupant_bindings WHERE seat_id='cx' AND native_session='main' AND agent_id=''");
+    end("main");
+    let ended = parent_state();
+    assert_eq!(fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='cx' AND native_session='main' AND role='top_level' AND liveness='disconnected' AND disconnect_reason='liveness_end_event'"), 1);
+
+    // Closing independent sessions leaves their end events scoped to themselves.
+    for session in ["side-a", "side-b"] {
+        start(session, "fork");
+        end(session);
+    }
+    assert_eq!(parent_state(), ended);
+    invoke(
+        "UserPromptSubmit",
+        Payload::bare("UserPromptSubmit")
+            .with("session_id", "main".into())
+            .with("turn_id", "turn-current".into())
+            .bytes(),
+    );
+    invoke(
+        "PreToolUse",
+        Payload::pre_tool_use("main", "ls")
+            .codex("turn-tool")
+            .bytes(),
+    );
+    child("SubagentStart", "child-a");
+    assert_eq!(
+        parent_state(),
+        ended,
+        "Current and child start never reconnect an ended parent"
+    );
+    assert_eq!(fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='cx' AND role='top_level' AND liveness='connected'"), 0);
+    assert_eq!(fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='cx' AND role='subagent' AND liveness='connected'"), 1);
+
+    let resumed = start("main", "resume");
+    assert!(!context_of(&resumed).contains("CallerUnverified"));
+    assert_eq!(fx.count_text("SELECT binding_id FROM occupant_bindings WHERE seat_id='cx' AND native_session='main' AND agent_id=''"), parent_id);
+    assert_eq!(fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='cx' AND native_session='main' AND agent_id='' AND liveness='connected' AND disconnect_reason IS NULL AND disconnected_at IS NULL AND observation_provenance='cooperative_top_level'"), 1);
+    let reconnected = parent_state();
+    child("SubagentStop", "child-a");
+    child("SubagentStart", "child-b");
+    child("SubagentStop", "child-b");
+    invoke(
+        "PreToolUse",
+        Payload::pre_tool_use("main", "ls")
+            .codex("turn-after-resume")
+            .bytes(),
+    );
+    assert_eq!(
+        parent_state(),
+        reconnected,
+        "child stop and subsequent Current do not disconnect the resumed parent"
+    );
+}

@@ -1450,6 +1450,7 @@ impl LocalService for DomainService {
             | Command::PickerDirectory(_)
             | Command::Seats(_)
             | Command::SeatInspect(_)
+            | Command::SeatInspectBindings(_)
             | Command::Inbox(_)
             | Command::InboxBatch(_)
             | Command::InboxBatchV2(_)

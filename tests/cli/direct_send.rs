@@ -211,6 +211,15 @@ impl Fixture {
             .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
             .unwrap()
     }
+    fn lazy_seats(&self) -> Vec<String> {
+        self.db
+            .prepare("SELECT seat_id FROM lazy_recipients ORDER BY seat_id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
     fn recovery(&self) -> String {
         self.journal.page(&Default::default()).unwrap().items[0]
             .recovery_ref
@@ -268,7 +277,7 @@ fn modern_ordinary_direct_send_with_receipt_capability_commits_exact_ordinary_bo
             .is_empty()
     );
     assert_eq!(f.count("direct_threads"), 1);
-    assert_eq!(f.count("lazy_recipients"), 0);
+    assert_eq!(f.lazy_seats(), ["seat-a"]);
     let message: String = f.db.query_row(
         "SELECT id FROM messages WHERE body='modern ordinary' AND kind='ordinary' AND delivery_mode='ordinary'",
         [], |row| row.get(0),
@@ -544,7 +553,7 @@ fn historical_lazy_direct_retry_is_exempt_from_receipt_capability() {
             .is_empty()
     );
     assert_eq!(f.count("direct_threads"), 1);
-    assert_eq!(f.count("lazy_recipients"), 1);
+    assert_eq!(f.lazy_seats(), ["seat-a", "seat-b"]);
     assert_eq!(f.count("receipts"), 0);
     assert_eq!(f.count("receipt_state"), 0);
     let calls = f.client.calls.lock().unwrap();
@@ -696,7 +705,7 @@ fn lost_committed_replies_restart_with_exact_keys_body_and_lazy_audience() {
             .unwrap();
         assert_eq!(f.count("direct_threads"), 1);
         assert_eq!(f.count("invitations"), 0);
-        assert_eq!(f.count("lazy_recipients"), 1);
+        assert_eq!(f.lazy_seats(), ["seat-a", "seat-b"]);
         assert_eq!(
             f.db.query_row(
                 "SELECT count(*) FROM messages WHERE body='frozen body'",
@@ -1010,7 +1019,7 @@ fn resolved_unbound_peer_is_a_valid_lazy_target() {
         &mut vec![],
     )
     .unwrap();
-    assert_eq!(f.count("lazy_recipients"), 1);
+    assert_eq!(f.lazy_seats(), ["seat-a", "seat-b"]);
     assert_eq!(f.count("receipts"), 0);
 }
 
@@ -1027,12 +1036,12 @@ fn nudge_and_explicit_target_ack_use_ordinary_delivery() {
         f.run(&args, &mut vec![]).unwrap();
         if nudge_only {
             // Only an explicit ACK recipient owes a receipt (D9): a bare nudge is a priority-0 row.
-            assert_eq!(f.count("lazy_recipients"), 1);
+            assert_eq!(f.lazy_seats(), ["seat-a", "seat-b"]);
             assert_eq!(f.count("receipts"), 0);
             assert_eq!(f.count("invitations"), 0);
             continue;
         }
-        assert_eq!(f.count("lazy_recipients"), 0);
+        assert_eq!(f.lazy_seats(), ["seat-a"]);
         let message: String =
             f.db.query_row("SELECT id FROM messages WHERE body='hello'", [], |r| {
                 r.get(0)

@@ -255,8 +255,9 @@ after closing it is not promised. The observed Ctrl-C close emits no SessionEnd,
 so the side binding stays connected until a native end event or process exit;
 UI closure is not treated as identity/liveness evidence. Its native `send_message /root` addresses the
 side's own native tree, not the source conversation. An ht send reaches other
-seats with the side's sender attribution; the author seat (including main) is
-excluded from automatic delivery. Main may explicitly read the shared thread's
-history, or another seat can relay back for automatic delivery. A direct send
-to one's own seat is refused. Same-seat sibling delivery is separate follow-up
-work; no implicit native-to-ht bridge is installed.
+seats and sibling bindings on its seat, including main, through a joined thread.
+Only the exact sending binding is excluded, by `sender_binding_id`. Siblings
+keep their own read cursors and see each other's sends without creating a
+self-receipt or ACK obligation. Use a shared joined thread to address main;
+a direct pair to one's own seat remains refused. No implicit native-to-ht
+bridge is installed.

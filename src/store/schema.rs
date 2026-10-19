@@ -71,7 +71,11 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
     },
     NodeDelta {
         version: 4,
-        sql: include_str!("../../migrations/node/0004_journal_opaque.sql"),
+        sql: include_str!("../../migrations/node/0004_sibling_delivery.sql"),
+    },
+    NodeDelta {
+        version: 5,
+        sql: include_str!("../../migrations/node/0005_journal_opaque.sql"),
     },
 ];
 
