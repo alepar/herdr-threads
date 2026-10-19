@@ -141,3 +141,13 @@ Ships as 2.3.0 (minor: no wire change, a local schema delta, downgrade refused a
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+### 2026-10-19: integration sweep (ht-76u6.8)
+
+Swept the integrated tree (tasks 1, 2, 4, 5, 7, 9, 10 plus the task 6 relay and promotion tests) against the goal. No gap needed an inline fix.
+
+- Static checks: migrations `0001`-`0004` are untouched. `journal_opaque`, `CHAIN_ROWS`, `BRANCH_ROWS` and `insert_opaque` no longer appear in `src/` or `migrations/`. No peer wire fixture was added or rewritten by this epic (`tests/fixtures/peer_wire/2.0.4` and `2.1.1` come from ht-j87z.6).
+- Gates green: `cargo clippy --locked --all-targets --all-features -- -D warnings`, `check-harness-neutral`, `check-wire-compat` (0 violations, 0 stale), `check-default-features`, `cargo fmt --check`.
+- Full `cargo nextest run --locked --all-targets --all-features`: 7856 passed, 0 failed. This covers the migration round-trip (fresh and populated schema 4 to 5, corrupted projection and corrupted forked row abort, maximal entry, trigger and index set), the relay and promotion suites (`opaque_relay`, `opaque_promotion`), wire byte-identity and `peer_wire_fixtures`, `legacy_wire_v211` and `journal_port_contract`. The leak checks found no leaked processes or temp files.
+- Divergences from the design as written: delta 0005 ships as two SQL files (`0005_bytes_first_journal.sql` and `0005_bytes_first_journal_after.sql`) around the Rust copy step; the `apply_state` CHECK admits `parked_layout`, as design roast r1 requires. The task 2 bridge definitions of `CHAIN_ROWS` and `BRANCH_ROWS` were removed again by the reader audit (task 10).
+- Timing: the run took 371 s, over the 300 s budget, because `package manifest::failpoints_are_compiled_out_of_release_builds` did a cold release build (335 s) in this fresh worktree. It does not depend on this change.
