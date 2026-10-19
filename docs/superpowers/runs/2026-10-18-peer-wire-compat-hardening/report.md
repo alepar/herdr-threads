@@ -30,7 +30,7 @@ Report written by the orchestrator, not a drafter subagent (deviation recorded i
 
 ## Verification
 
-- **Full suite.** `nice cargo nextest run --locked --all-targets --all-features` at fb02fcf9 (merge b8c05137e): 7816 passed, 1 failed, 48 skipped, 368 s.
+- **Full suite.** `nice cargo nextest run --locked --all-targets --all-features` at b8c05137e (only run-state docs commits since): 7816 passed, 1 failed, 48 skipped, 368 s.
 - **The failure.** `lazy_markers::lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary` failed with `ReadBudgetExhausted` under suite load. It is the known flake class ht-3wm (commented there), passes 3/3 in isolation, and is unrelated to this change.
 - **Leak checks.** No leaked processes or temp files.
 - **Merge agent's checks after the absorb:** clippy -D warnings, check-default-features, check-harness-neutral, check-wire-compat, fmt, and the focused schema, journal, resync, peer_wire, opaque_relay and legacy_wire tests all pass.
