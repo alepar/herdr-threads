@@ -18,7 +18,7 @@ The peer-wire-compat-hardening branch (unreleased) added `journal_opaque`, a sec
 
 1. `journal` and `journal_forked` gain `raw BLOB NOT NULL` (canonical bytes). Their projection columns become nullable, all-or-none per row (`hlc, kind, kind_version, deps, needs, payload`; `creates` stays optional). `journal_opaque` and `CHAIN_ROWS` are removed. Delta 0005 is rewritten in place (unreleased; no store has applied it outside test fixtures).
 2. `NodeDelta` gains `rebuild` and a Rust `post` step. Delta 0005 rebuilds `journal`/`journal_forked` with `foreign_keys` off outside the transaction (the SQLite-documented procedure). The Rust step copies every row while computing `raw` from the projection, and aborts with `StoreCorrupt` unless `SHA-256(raw) == hash` for every row, which makes the migration provably exact. No placeholder and no trigger exemption for `raw` exist.
-3. One reader: rows decode to `StoredEntry::Known` (projection present) or `StoredEntry::Opaque` (projection NULL) from the single table. Serving uses `raw` for opaque items, and the known wire shape is unchanged (built from the projection, exactly as today).
+3. One reader: a row decodes to `StoredEntry::Known` only when `raw` carries the HTJRNL01 magic (its projection is then present and its canonical encoding equals `raw`). Every other row decodes to `StoredEntry::Opaque` from `raw`, whether its projection is NULL or filled by promotion. Chain checks, verification, fork evidence, re-issue and serving therefore never re-hash a foreign layout as HTJRNL01. Apply reads the projection columns directly. Serving uses `raw` for opaque items, and the known wire shape is unchanged (built from the projection, exactly as today).
 4. Unknown-layout rows use a new `apply_state='parked_layout'`, not `parked_unknown`, so existing readers stay correct. Promotion is a projection update, allowed by the trigger only from an all-NULL projection on `journal` rows. It runs at store open and in the apply pass for rows whose magic the binary now parses (including a test-support understood-layout hook), sets `apply_state='pending'` and clears the log's `opaque_layout` block in one transaction, so successors apply through the normal pass. A promoted entry is served Known only if its HTJRNL01 encoding equals `raw`, and otherwise opaque. ht-evlm closes as superseded.
 
 ## Decision points, by section
@@ -56,12 +56,9 @@ Reader audit: every `journal`/`journal_forked` reader that filters or aggregates
 
 Recommended: a table rebuild, done the SQLite-documented way, driven from Rust with no placeholder and no exemption.
 
-- **Runner.** `NodeDelta` gains `rebuild: bool` and `post: Option<fn(&Connection) -> Result<(), ApiError>>`. For a rebuild delta the runner sets `PRAGMA foreign_keys=OFF` *before* `BEGIN IMMEDIATE`; inside the transaction it does steps 1–4 below; it then queries `PRAGMA foreign_key_check` from Rust and aborts unless it returns zero rows, commits, and turns `foreign_keys` back on in every outcome. This fixes the deferred-counter COMMIT failure: with foreign keys on inside the transaction, the DROP of a referenced parent fails at COMMIT even though `foreign_key_check` is empty.
-- **Steps.**
-  1. The delta SQL creates `journal_new` and `journal_forked_new` with the final shape.
-  2. The Rust step reads every old row, builds `UnsignedEnvelope` from the projection plus the log's node and incarnation, computes `raw = canonical_bytes()`, checks `SHA-256(raw) == hash` (abort with `StoreCorrupt` otherwise), and inserts the complete row into the new table. No placeholder ever exists, so the `length(raw) >= 68` CHECK holds row by row and nothing ever UPDATEs `raw`.
-  3. The step drops the old tables and renames the new ones.
-  4. The step runs a second embedded SQL file that creates the indexes and the full trigger set.
+- **Runner.** `NodeDelta` becomes `{ version, sql, rebuild: Option<Rebuild> }`, where `Rebuild { copy: fn(&Connection) -> Result<(), ApiError>, sql_after: &'static str }`. For a rebuild delta the runner sets `PRAGMA foreign_keys=OFF` *before* `BEGIN IMMEDIATE`, then runs `sql` (creates `journal_new`, `journal_forked_new`), `copy` (row copy only, no DDL), then `sql_after` (DROP old tables, RENAME new ones, CREATE the indexes and the full trigger set). It then queries `PRAGMA foreign_key_check` from Rust and aborts unless it returns zero rows, commits, and restores `foreign_keys` on every path. This fixes the deferred-counter COMMIT failure: with foreign keys on inside the transaction, the DROP of a referenced parent fails at COMMIT even though `foreign_key_check` is empty.
+- **Schema audit.** Every DDL statement stays in replayable SQL. The open-time expected-object replay (`expected_objects`) runs `sql` and then `sql_after` for a rebuild delta. `copy` is a no-op on the empty in-memory database, so the replay performs the same create→drop→rename sequence, and `verify_at` sees identical `sqlite_master` text, including SQLite's quoting of a renamed table (`CREATE TABLE "journal"(…)`). Nobody hand-writes the post-rename DDL. A test runs `verify_at` after migrating both a fresh store and a populated schema-4 store.
+- **Steps (row copy).** `copy` reads every old row, builds `UnsignedEnvelope` from the projection plus the log's node and incarnation, computes `raw = canonical_bytes()`, checks `SHA-256(raw) == hash` (abort with `StoreCorrupt` otherwise) and inserts the complete row into the new table. No placeholder ever exists, so the `length(raw) >= 68` CHECK holds row by row and nothing ever UPDATEs `raw`.
 - **Trigger set after migration**, asserted by a test that compares `sqlite_master`:
   - `journal_envelope_immutable`: `log_ix, counter, prev_hash, hash, signature, raw, ingested_at` are never changed; projection columns may change only when every OLD projection column is NULL (promotion);
   - `journal_append_only`;
@@ -83,7 +80,7 @@ Discarded:
 
 ### 4. Reads, serving and relay
 
-Recommended: one row decoder (`journal::entries_from` and its siblings) yields `StoredEntry`. `CHAIN_ROWS` and every union is deleted, and the readers go back to plain `journal`/`journal_forked` queries. Unchanged in behaviour and tests:
+Recommended: one row decoder (`journal::entries_from` and its siblings) yields `StoredEntry`, classified by `raw`'s magic, not by projection presence (Key decision 3). A promoted foreign-layout row stays `Opaque` for every chain, verification and serving path, while apply and materialisation read its projection. `CHAIN_ROWS` and every union is deleted, and the readers go back to plain `journal`/`journal_forked` queries. Unchanged in behaviour and tests:
 - serving (`WireItem::Known` from the projection, byte-identical to today; `WireItem::Opaque` from `raw`, only toward `envelope.opaque.v1`);
 - the capability gate, the withheld-log parking and `withheld_logs`;
 - the oversize path (OPAQUE_MAX_BYTES applies to unknown-layout `raw`);
@@ -101,7 +98,7 @@ Recommended: `journal::promote(tx, log, counter)` (journal rows only) parses `ra
 - sets `apply_state='pending'` (from `parked_layout`);
 - clears `sync_logs.blocked_on` when it reads `opaque_layout`.
 
-All of this happens in one transaction, and the normal apply pass then applies the entry and its successors (ingest_seq is the row's own, so FKs from materialisation work unchanged). Triggers: at store open (after migrations), and in the apply pass when the head row is projection-NULL and parseable. The promoted entry's `raw` and hash are untouched. Serving rule (one place, in the serve conversion): an entry is served as `WireItem::Known` only when `HTJRNL01 canonical_bytes(projection) == raw`; otherwise it is served as `WireItem::Opaque` from `raw`, gated by `envelope.opaque.v1` exactly like an unpromoted entry. A promoted non-HTJRNL01 entry is therefore still served opaque and withheld from 2.1.1 peers, consistent with the TRUST-POLICY accepted limit. The §7 promotion test asserts what a capability peer and a non-capability peer receive after promotion.
+All of this happens in one transaction, and the normal apply pass then applies the entry and its successors (ingest_seq is the row's own, so FKs from materialisation work unchanged). Triggers: at store open (after migrations), and in the apply pass when the head row is projection-NULL and parseable. The promoted entry's `raw` and hash are untouched. Serving and verification rule (one place, the row decoder's magic classification): an entry is `Known`, and served as `WireItem::Known`, only for HTJRNL01 `raw`. Any other entry, promoted or not, is `Opaque`: it is verified by `SHA-256(raw) == hash` plus the signature, and served as `WireItem::Opaque` from `raw`, gated by `envelope.opaque.v1`. A promoted non-HTJRNL01 entry is therefore still served opaque and withheld from 2.1.1 peers, consistent with the TRUST-POLICY accepted limit. The §7 promotion test asserts what a capability peer and a non-capability peer receive after promotion.
 
 Failure: a parse error, shape check or trigger refusal during promotion leaves the row `parked_layout` with its log stalled, records a diagnostic (daemon log line plus the sync-status cannot-promote count), and never fails store open or the apply pass.
 
@@ -114,11 +111,18 @@ The following stay as they are: the capability `envelope.opaque.v1`, the WireIte
 ### 7. Tests
 
 Required:
-- A schema-4 store with representative rows (every builtin fact kind, a forked pair, applied and parked rows) migrates. Every row's `raw` equals canonical bytes, `SHA-256(raw) == hash`, and serving every log produces frames byte-identical to the frames served from the schema-4 store before migration (captured before upgrading).
+- A schema-4 store with representative rows migrates. The rows cover every builtin fact kind, a forked pair, applied and parked rows, and populated `thread_registers` and `sync_reissues` child rows, so the FK-off runner is exercised. After migration:
+  - every row's `raw` equals its canonical bytes and `SHA-256(raw) == hash`;
+  - serving every log produces frames byte-identical to those served from the schema-4 store before migration (captured before upgrading);
+  - `PRAGMA foreign_key_check` is empty;
+  - `verify_at` passes on reopen.
+- A fresh store reaches schema 5 and passes `verify_at`.
+- The `sqlite_master` trigger and index set after migration equals the expected list in §3.
 - A corrupted projection makes the migration abort with the store left at schema 4.
-- An unknown-magic (HTJRNL99) entry is stored with a NULL projection, relayed byte-exactly to a capability peer, withheld from a non-capability peer, and stalls its log.
-- After the test-hook upgrade, the entry is promoted: projection filled, raw/hash unchanged, the stalled successors apply, and `blocked_on` clears.
-- The trigger refuses any projection change on a known row and any raw/hash change.
+- An unknown-magic (HTJRNL99) entry is stored with a NULL projection and `parked_layout`, relayed byte-exactly to a capability peer, withheld from a non-capability peer, and stalls its log.
+- After the test-hook upgrade, the entry is promoted: projection filled, raw/hash unchanged, the stalled successors apply, and `blocked_on` clears. It still decodes as `Opaque` and verifies by raw hash and signature. A capability peer still receives it as `WireItem::Opaque`, and a non-capability peer still does not receive it.
+- A malformed body under a registered magic leaves the row `parked_layout`; store open and the apply pass succeed, and a diagnostic is recorded.
+- The trigger refuses any projection change on a row whose projection is already filled, and any raw/hash change.
 - Existing 2.3.0 suites (`opaque_relay`, `peer_wire`, `legacy_wire`, `journal_port_contract`, resync, incarnations) stay green.
 
 ### 8. Rollout
