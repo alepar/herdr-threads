@@ -374,7 +374,9 @@ pub(crate) fn initialize_with_deltas(
 /// Audit a node store at its stamped version, then apply each missing delta in
 /// its own `BEGIN IMMEDIATE` (statements and `user_version` bump commit together;
 /// a failure rolls both back), auditing the result against the baseline plus the
-/// deltas up to that version.
+/// deltas up to that version. The version is re-read inside each delta's
+/// `BEGIN IMMEDIATE`, so a connection that waited on the lock while another
+/// applied the delta skips it.
 fn apply_deltas(conn: &Connection, deltas: &[NodeDelta], cache: bool) -> Result<(), ApiError> {
     let mut version = schema_version(conn)?;
     verify_at(conn, deltas, version, cache)?;
@@ -393,7 +395,8 @@ fn apply_deltas(conn: &Connection, deltas: &[NodeDelta], cache: bool) -> Result<
             continue;
         }
         apply_delta(conn, delta)?;
-        version = delta.version;
+        // On a skip another connection may have gone past `delta.version`.
+        version = schema_version(conn)?;
         verify_at(conn, deltas, version, cache)?;
     }
     Ok(())
@@ -402,8 +405,9 @@ fn apply_deltas(conn: &Connection, deltas: &[NodeDelta], cache: bool) -> Result<
 /// Apply one missing delta in its own `BEGIN IMMEDIATE`. A rebuild delta
 /// (`Rebuild`) runs with foreign keys off, which only takes effect outside a
 /// transaction, so the pragma is set before `BEGIN` and restored to its prior
-/// value on every path.
-fn apply_delta(conn: &Connection, delta: &NodeDelta) -> Result<(), ApiError> {
+/// value on every path. Returns whether this call applied the delta (`false`:
+/// another connection had already applied it).
+fn apply_delta(conn: &Connection, delta: &NodeDelta) -> Result<bool, ApiError> {
     let Some(rebuild) = delta.rebuild else {
         return run_delta_transaction(conn, delta, |conn| {
             conn.execute_batch(delta.sql).map_err(store_error)
@@ -429,23 +433,37 @@ fn apply_delta(conn: &Connection, delta: &NodeDelta) -> Result<(), ApiError> {
     let restored = conn
         .pragma_update(None, "foreign_keys", prior)
         .map_err(store_error);
-    applied.and(restored)
+    applied.and_then(|was_applied| restored.map(|()| was_applied))
 }
 
-/// `BEGIN IMMEDIATE`, `body`, the `user_version` bump, `COMMIT`; any error after
-/// the `BEGIN` rolls everything back and returns the original error.
+/// `BEGIN IMMEDIATE`, a re-read of `user_version` (at or past `delta.version`:
+/// roll back, nothing written, `Ok(false)`), `body`, the `user_version` bump,
+/// `COMMIT` (`Ok(true)`); any error after the `BEGIN` rolls everything back and
+/// returns the original error.
 fn run_delta_transaction(
     conn: &Connection,
     delta: &NodeDelta,
     body: impl FnOnce(&Connection) -> Result<(), ApiError>,
-) -> Result<(), ApiError> {
+) -> Result<bool, ApiError> {
     conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-    let applied = body(conn).and_then(|()| {
+    let applied = schema_version(conn).and_then(|current| {
+        if current >= delta.version {
+            return Ok(false);
+        }
+        body(conn)?;
         conn.pragma_update(None, "user_version", delta.version)
-            .map_err(store_error)
+            .map_err(store_error)?;
+        Ok(true)
     });
     match applied {
-        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Ok(true) => conn
+            .execute_batch("COMMIT")
+            .map(|()| true)
+            .map_err(store_error),
+        Ok(false) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Ok(false)
+        }
         Err(error) => {
             let _ = conn.execute_batch("ROLLBACK");
             Err(error)

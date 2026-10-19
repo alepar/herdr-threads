@@ -6123,6 +6123,75 @@ fn rebuild_delta_commits_on_populated_store_with_fk_children() {
 }
 
 #[test]
+fn second_connection_skips_delta_applied_while_it_waited() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::time::{Duration, Instant};
+
+    static COPIES: AtomicUsize = AtomicUsize::new(0);
+    static B_WAITING: AtomicBool = AtomicBool::new(false);
+
+    fn race_copy(_: &Connection) -> Result<(), crate::protocol::results::ApiError> {
+        COPIES.fetch_add(1, Ordering::SeqCst);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !B_WAITING.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "B never blocked on A's lock");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        Ok(())
+    }
+    // Its `sql_after` fails with "table already exists" when the delta runs twice.
+    const RACE_DELTA: schema::NodeDelta = schema::NodeDelta {
+        version: 2,
+        sql: "CREATE TABLE race_new(x INTEGER)",
+        rebuild: Some(schema::Rebuild {
+            copy: race_copy,
+            sql_after: "CREATE TABLE race_after(x INTEGER)",
+        }),
+    };
+
+    let path = db_path();
+    let a = Connection::open(&path).unwrap();
+    a.pragma_update(None, "journal_mode", "WAL").unwrap();
+    open_with(&a, &[]).unwrap();
+    let b = Connection::open(&path).unwrap();
+    b.pragma_update(None, "journal_mode", "WAL").unwrap();
+    // SQLite calls the busy handler only once B's `BEGIN IMMEDIATE` is blocked on
+    // A's write lock, i.e. after B read user_version 1 outside the lock.
+    b.busy_handler(Some(|_| {
+        B_WAITING.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(5));
+        true
+    }))
+    .unwrap();
+
+    let a_thread = std::thread::spawn(move || {
+        open_with(&a, &[RACE_DELTA]).unwrap();
+        a
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while COPIES.load(Ordering::SeqCst) == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "A never reached its rebuild copy"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    open_with(&b, &[RACE_DELTA]).unwrap();
+    let a = a_thread.join().unwrap();
+
+    assert_eq!(
+        COPIES.load(Ordering::SeqCst),
+        1,
+        "the rebuild body ran once"
+    );
+    for db in [&a, &b] {
+        assert_eq!(user_version(db), 2);
+        assert!(table_exists(db, "race_new"));
+        assert!(table_exists(db, "race_after"));
+    }
+}
+
+#[test]
 fn rebuild_delta_reopen_passes_schema_audit_on_populated_store() {
     let db = populated_v2(true);
     let deltas = [FK_PARENT_DELTA, rebuild_delta(copy_all)];
