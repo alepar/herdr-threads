@@ -2496,3 +2496,427 @@ fn store_forked_keeps_opaque_branch_row() {
         .unwrap();
     assert_eq!(known_side, known[..2]);
 }
+
+// ---- Single-table row decoder and serving (ht-76u6.9) ----------------------
+
+mod single_table {
+    use super::*;
+    use crate::sync::envelope::{
+        DEPS_MAX, Deps, KIND_MAX, MAGIC, NEEDS_MAX, PAYLOAD_MAX, RAW_MAX, UnsignedEnvelope,
+        verify_opaque,
+    };
+    use crate::sync::frame::WireItem;
+    use crate::sync::{ENTITY_KEY_MAX, EntityKey};
+    use crate::test_support::opaque_entry::{known_raw_stub, parse_synthetic};
+
+    fn wire(entry: &StoredEntry) -> String {
+        serde_json::to_string(&WireItem::from(entry)).unwrap()
+    }
+
+    fn key(text: &str) -> EntityKey {
+        EntityKey::new(text).unwrap()
+    }
+
+    fn peer_id(seed: u8) -> NodeIdentity {
+        NodeIdentity::from_seed([seed; 32])
+    }
+
+    fn genesis_of(id: &NodeIdentity) -> Envelope {
+        let hex: String = id
+            .public_key()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let genesis = UnsignedEnvelope {
+            log: LogKey {
+                node: id.uuid(),
+                incarnation: 1,
+            },
+            counter: 1,
+            prev_hash: [0; 32],
+            hlc: HlcStamp::from_parts(1_700_000_000_001, 1),
+            kind: "node.genesis".into(),
+            kind_version: 1,
+            deps: Deps::empty(),
+            creates: None,
+            needs: vec![],
+            payload: format!(r#"{{"pubkey":"{hex}"}}"#).into_bytes(),
+        };
+        genesis.validate_shape().unwrap();
+        genesis.seal(id)
+    }
+
+    /// An entry after `prev` that carries deps, a creates key and needs.
+    fn rich_after(id: &NodeIdentity, prev: &Envelope, kind: &str) -> Envelope {
+        let me = prev.log;
+        let other = LogKey {
+            node: peer_id(99).uuid(),
+            incarnation: 1,
+        };
+        let entry = UnsignedEnvelope {
+            log: me,
+            counter: prev.counter + 1,
+            prev_hash: prev.hash,
+            hlc: HlcStamp::from_parts(1_700_000_000_000 + prev.counter, 2),
+            kind: kind.into(),
+            kind_version: 1,
+            deps: Deps::new(vec![(other, 3)], &me).unwrap(),
+            creates: Some(key(&format!("e:{}", prev.counter + 1))),
+            needs: vec![key("m1"), key("t1")],
+            payload: format!(r#"{{"n":{}}}"#, prev.counter).into_bytes(),
+        };
+        entry.validate_shape().unwrap();
+        entry.seal(id)
+    }
+
+    fn chain_for(id: &NodeIdentity, kinds: &[&str]) -> Vec<Envelope> {
+        let mut chain = vec![genesis_of(id)];
+        for kind in kinds {
+            let next = rich_after(id, chain.last().unwrap(), kind);
+            chain.push(next);
+        }
+        chain
+    }
+
+    /// The largest entry `validate_shape` admits.
+    fn maximal_after(id: &NodeIdentity, prev: &Envelope) -> Envelope {
+        let me = prev.log;
+        let long_key = |i: usize| {
+            let head = format!("k{i:04}.");
+            key(&format!(
+                "{head}{}",
+                "x".repeat(ENTITY_KEY_MAX - head.len())
+            ))
+        };
+        let deps = Deps::new(
+            (0..DEPS_MAX)
+                .map(|i| {
+                    let mut node = [0u8; 16];
+                    node[..8].copy_from_slice(&(i as u64 + 1).to_be_bytes());
+                    (
+                        LogKey {
+                            node: NodeUuid::from_bytes(node),
+                            incarnation: 1,
+                        },
+                        1,
+                    )
+                })
+                .collect(),
+            &me,
+        )
+        .unwrap();
+        let entry = UnsignedEnvelope {
+            log: me,
+            counter: prev.counter + 1,
+            prev_hash: prev.hash,
+            hlc: HlcStamp::from_parts(1_700_000_000_500, 1),
+            kind: format!("a.{}", "b".repeat(KIND_MAX - 2)),
+            kind_version: 2,
+            deps,
+            creates: Some(long_key(0)),
+            needs: (1..=NEEDS_MAX).map(long_key).collect(),
+            payload: format!("\"{}\"", "x".repeat(PAYLOAD_MAX - 2)).into_bytes(),
+        };
+        entry.validate_shape().unwrap();
+        entry.seal(id)
+    }
+
+    const KINDS: [&str; 4] = [
+        "seat.created",
+        "thread.created",
+        "message.sent",
+        "receipt.settled",
+    ];
+
+    fn insert_v4_log(db: &Connection, log_ix: i64, id: &NodeIdentity, chain: &[Envelope]) {
+        let head = chain.last().unwrap();
+        db.execute(
+            "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,applied_through,first_seen_at) \
+             VALUES (?1,?2,1,0,?3,?4,?5,?6,0,0)",
+            params![
+                log_ix,
+                id.uuid().to_string(),
+                id.public_key().as_slice(),
+                chain[0].hash.as_slice(),
+                head.counter as i64,
+                head.hash.as_slice(),
+            ],
+        )
+        .unwrap();
+        for e in chain {
+            let needs = e
+                .needs
+                .iter()
+                .map(EntityKey::as_str)
+                .collect::<Vec<_>>()
+                .join("\n");
+            db.execute(
+                "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,needs,payload,signature,ingested_at,apply_state) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0,'pending')",
+                params![
+                    log_ix,
+                    e.counter as i64,
+                    e.prev_hash.as_slice(),
+                    e.hash.as_slice(),
+                    e.hlc.as_u64() as i64,
+                    e.kind,
+                    e.kind_version,
+                    e.deps.encode(),
+                    e.creates.as_ref().map(EntityKey::as_str),
+                    needs,
+                    e.payload,
+                    e.signature.as_slice(),
+                ],
+            )
+            .unwrap();
+        }
+    }
+
+    /// A schema-4 store migrated to the latest schema serves, entry by entry,
+    /// the frames the projection-built entries gave before.
+    #[test]
+    fn served_known_frames_byte_identical_across_migration() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", true).unwrap();
+        let init = |deltas: &[schema::NodeDelta]| {
+            schema::initialize_with_deltas(
+                &db,
+                || UtcMillis(0),
+                Some(&crate::test_support::test_node_seed()),
+                deltas,
+                false,
+            )
+            .unwrap();
+        };
+        init(&schema::NODE_DELTAS[..3]);
+        let (a, b) = (peer_id(11), peer_id(12));
+        let logs = [
+            (1i64, &a, chain_for(&a, &KINDS)),
+            (2, &b, chain_for(&b, &KINDS[..2])),
+        ];
+        for (log_ix, id, chain) in &logs {
+            insert_v4_log(&db, *log_ix, id, chain);
+        }
+        init(schema::NODE_DELTAS);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM journal WHERE substr(raw,1,8)=x'48544a524e4c3031'"
+            ),
+            logs.iter().map(|(_, _, c)| c.len() as i64).sum::<i64>()
+        );
+        for (_, _, chain) in &logs {
+            let log = chain[0].log;
+            let served = serve_entries(&db, &log, 1, BatchLimits::default()).unwrap();
+            assert_eq!(served.len(), chain.len());
+            for (got, original) in served.iter().zip(chain) {
+                assert_eq!(
+                    wire(got),
+                    wire(&StoredEntry::Known(original.clone())),
+                    "counter {}",
+                    original.counter
+                );
+            }
+            assert_eq!(serve(&db, &log, 1, BatchLimits::default()).unwrap(), *chain);
+        }
+    }
+
+    #[test]
+    fn known_ingest_stores_canonical_raw() {
+        let (sa, sb) = (Store::new(), Store::new());
+        let (_actx, _aconn, log, entries) = chain_of_a(&sa, 3);
+        let (ctx, mut conn) = opened_b(&sb, 77);
+        ingest_into(&ctx, &mut conn, &log, &entries).unwrap();
+        for e in &entries {
+            let raw: Vec<u8> = conn
+                .query_row(
+                    "SELECT j.raw FROM journal j JOIN sync_logs l USING(log_ix) \
+                     WHERE l.node_uuid=?1 AND j.counter=?2",
+                    params![log.node.to_string(), e.counter as i64],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(raw, e.canonical_bytes(), "counter {}", e.counter);
+            assert_eq!(&raw[..8], MAGIC);
+        }
+    }
+
+    #[test]
+    fn maximal_known_entry_ingests_and_serves() {
+        let store = Store::new();
+        let (ctx, mut conn) = opened_b(&store, 77);
+        let id = peer_id(12);
+        let genesis = genesis_of(&id);
+        let maximal = maximal_after(&id, &genesis);
+        let log = genesis.log;
+        let chain = vec![genesis, maximal];
+        let outcome = ingest_into(&ctx, &mut conn, &log, &chain).unwrap();
+        assert!(
+            matches!(outcome, IngestOutcome::Stored { stored: 2, .. }),
+            "{outcome:?}"
+        );
+        let raw_len: i64 = conn
+            .query_row(
+                "SELECT length(raw) FROM journal j JOIN sync_logs l USING(log_ix) \
+                 WHERE l.node_uuid=?1 AND j.counter=2",
+                [log.node.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw_len as usize, chain[1].canonical_bytes().len());
+        assert!(raw_len as usize <= RAW_MAX);
+        assert!(raw_len as usize > PAYLOAD_MAX);
+        assert_eq!(
+            serve_entries(
+                &conn,
+                &log,
+                1,
+                BatchLimits {
+                    entries: 256,
+                    bytes: usize::MAX
+                }
+            )
+            .unwrap(),
+            wrapped(&chain)
+        );
+    }
+
+    #[test]
+    fn promoted_foreign_row_still_decodes_opaque() {
+        let s = with_opaque_three();
+        let parsed = parse_synthetic(&s.opaque).unwrap();
+        let updated = s
+            .conn
+            .execute(
+                "UPDATE journal SET hlc=?1,kind=?2,kind_version=?3,deps=?4,creates=?5,needs=?6,payload=?7,apply_state='pending' \
+                 WHERE counter=3 AND kind IS NULL",
+                params![
+                    parsed.hlc.as_u64() as i64,
+                    parsed.kind,
+                    parsed.kind_version,
+                    parsed.deps.encode(),
+                    parsed.creates.as_ref().map(EntityKey::as_str),
+                    "",
+                    parsed.payload,
+                ],
+            )
+            .unwrap();
+        assert_eq!(updated, 1);
+        assert_eq!(
+            count(
+                &s.conn,
+                "SELECT COUNT(*) FROM journal WHERE counter=3 AND kind IS NOT NULL"
+            ),
+            1,
+            "the projection is filled"
+        );
+
+        let served = serve_entries(&s.conn, &s.log, 1, BatchLimits::default()).unwrap();
+        let third = served[2]
+            .as_opaque()
+            .expect("a promoted foreign row stays opaque");
+        assert_eq!(third.raw(), s.opaque.raw());
+        assert_eq!(*third, s.opaque);
+        let header = OpaqueHeader {
+            log: s.log,
+            counter: third.counter(),
+            prev_hash: third.prev_hash(),
+            hash: third.hash(),
+            signature: third.signature(),
+        };
+        verify_opaque(header, third.raw().to_vec(), &identity().public_key()).unwrap();
+        assert_eq!(wire(&served[2]), wire(&StoredEntry::from(s.opaque.clone())));
+
+        assert_eq!(
+            stored_hash(&s.conn, &s.log, 3).unwrap(),
+            Some(s.opaque.hash())
+        );
+        let log_ix: i64 = s
+            .conn
+            .query_row(
+                "SELECT log_ix FROM sync_logs WHERE node_uuid=?1",
+                [s.log.node.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(held_at(&s.conn, log_ix, 3, &s.opaque.hash(), false).unwrap());
+        // The known prefix still stops before the promoted foreign row.
+        assert_eq!(
+            serve(&s.conn, &s.log, 1, BatchLimits::default()).unwrap(),
+            s.known
+        );
+        assert!(
+            serve(&s.conn, &s.log, 3, BatchLimits::default())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn known_row_without_projection_is_corrupt() {
+        let store = Store::new();
+        let (_ctx, conn, _) = opened(&store);
+        let log = chain_log(&conn, 2, h(2));
+        insert_known_row(&conn, log, 1, [0; 32], h(1));
+        conn.execute(
+            "INSERT INTO journal(log_ix,counter,hash,prev_hash,signature,raw,needs,ingested_at,apply_state) \
+             VALUES (?1,2,?2,?3,zeroblob(64),?4,NULL,0,'parked_layout')",
+            params![log, h(2).as_slice(), h(1).as_slice(), known_raw_stub()],
+        )
+        .unwrap();
+        for result in [
+            serve_entries(&conn, &chain_key(), 1, BatchLimits::default()).map(|_| ()),
+            serve(&conn, &chain_key(), 1, BatchLimits::default()).map(|_| ()),
+        ] {
+            let error = result.unwrap_err();
+            assert_eq!(error.code, ErrorCode::StoreCorrupt);
+            assert!(
+                error.detail.contains("HTJRNL01 row without projection"),
+                "{}",
+                error.detail
+            );
+        }
+    }
+
+    #[test]
+    fn journal_opaque_is_gone() {
+        let store = Store::new();
+        let (_ctx, conn, _) = opened(&store);
+        let mentions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE name LIKE '%journal_opaque%' OR sql LIKE '%journal_opaque%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mentions, 0);
+    }
+
+    #[test]
+    fn known_sql_matches_magic() {
+        let magic = std::str::from_utf8(MAGIC).unwrap();
+        assert!(KNOWN_SQL.contains(&format!("CAST('{magic}' AS BLOB)")));
+        assert_eq!(
+            known_sql("j"),
+            KNOWN_SQL.replace("substr(raw", "substr(j.raw")
+        );
+        assert!(known_sql("j").contains(&format!("CAST('{magic}' AS BLOB)")));
+        // The predicate is true for the magic and false for any other layout.
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE t(raw BLOB)").unwrap();
+        db.execute(
+            "INSERT INTO t VALUES (?1),(?2)",
+            params![known_raw_stub(), b"HTJRNL99rest".to_vec()],
+        )
+        .unwrap();
+        let matching: Vec<bool> = db
+            .prepare(&format!("SELECT {} FROM t ORDER BY rowid", known_sql("t")))
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(matching, [true, false]);
+    }
+}

@@ -201,13 +201,11 @@ pub fn applied_vector(conn: &Connection) -> Result<Vec<(LogKey, u64)>, ApiError>
 pub(crate) fn verify_invariants(tx: &Connection) -> Result<(), ApiError> {
     let mut statement = tx
         .prepare(
-            &format!(
-                "SELECT l.log_ix,l.node_uuid,l.incarnation,l.contiguous_counter,l.head_hash,l.applied_through, \
+            "SELECT l.log_ix,l.node_uuid,l.incarnation,l.contiguous_counter,l.head_hash,l.applied_through, \
                  (l.log_ix IS (SELECT active_log_ix FROM local_node)), \
                  COALESCE((SELECT MAX(counter) FROM journal j WHERE j.log_ix=l.log_ix),0), \
-                 (SELECT hash FROM {CHAIN_ROWS} j WHERE j.log_ix=l.log_ix AND j.counter=l.contiguous_counter) \
-                 FROM sync_logs l ORDER BY l.log_ix"
-            ),
+                 (SELECT hash FROM journal j WHERE j.log_ix=l.log_ix AND j.counter=l.contiguous_counter) \
+                 FROM sync_logs l ORDER BY l.log_ix",
         )
         .map_err(store_error)?;
     let rows = statement
@@ -1063,15 +1061,13 @@ pub(crate) fn held_at(
         return Ok(false);
     };
     let branches = if include_branches {
-        format!(
-            " OR EXISTS(SELECT 1 FROM {BRANCH_ROWS} b WHERE b.log_ix=?1 AND b.counter=?2 AND b.hash=?3)"
-        )
+        " OR EXISTS(SELECT 1 FROM journal_forked b WHERE b.log_ix=?1 AND b.counter=?2 AND b.hash=?3)"
     } else {
-        String::new()
+        ""
     };
     conn.query_row(
         &format!(
-            "SELECT EXISTS(SELECT 1 FROM {CHAIN_ROWS} c WHERE c.log_ix=?1 AND c.counter=?2 AND c.hash=?3){branches}"
+            "SELECT EXISTS(SELECT 1 FROM journal c WHERE c.log_ix=?1 AND c.counter=?2 AND c.hash=?3){branches}"
         ),
         params![log_ix, counter, hash.as_slice()],
         |r| r.get(0),
@@ -1087,9 +1083,7 @@ pub(crate) fn branch_prev(
     hash: &[u8; 32],
 ) -> Result<Option<[u8; 32]>, ApiError> {
     conn.query_row(
-        &format!(
-            "SELECT prev_hash FROM {BRANCH_ROWS} b WHERE b.log_ix=?1 AND b.counter=?2 AND b.hash=?3"
-        ),
+        "SELECT prev_hash FROM journal_forked b WHERE b.log_ix=?1 AND b.counter=?2 AND b.hash=?3",
         params![
             log_ix,
             i64::try_from(counter).unwrap_or(i64::MAX),
@@ -1108,7 +1102,7 @@ fn hash_at(conn: &Connection, log_ix: i64, counter: u64) -> Result<Option<[u8; 3
         return Ok(None);
     };
     conn.query_row(
-        &format!("SELECT hash FROM {CHAIN_ROWS} c WHERE c.log_ix=?1 AND c.counter=?2"),
+        "SELECT hash FROM journal c WHERE c.log_ix=?1 AND c.counter=?2",
         params![log_ix, counter],
         |r| r.get::<_, Vec<u8>>(0),
     )
@@ -1118,19 +1112,134 @@ fn hash_at(conn: &Connection, log_ix: i64, counter: u64) -> Result<Option<[u8; 3
     .transpose()
 }
 
-/// The stored columns of one opaque row, read before decoding.
-struct RawOpaque {
+/// How far a chain read goes past the entries this node understands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Rows {
+    /// Every row, known and opaque.
+    All,
+    /// The known (HTJRNL01) rows before the first non-HTJRNL01 one; that row is
+    /// not decoded and ends the read. What the store-level `Envelope` readers
+    /// (`serve`, `serve_branch`, `sync_status`'s rehash) serve.
+    KnownPrefix,
+}
+
+/// SQL truth of "this row's `raw` is an HTJRNL01 entry" (design §4, roast r3):
+/// the chain, verify, fork, re-issue and serve paths classify by it, never by
+/// projection presence. Only apply/materialize use projection presence.
+pub(crate) const KNOWN_SQL: &str = "substr(raw,1,8)=CAST('HTJRNL01' AS BLOB)";
+
+/// [`KNOWN_SQL`] on a table alias (`known_sql("j")`).
+pub(crate) fn known_sql(alias: &str) -> String {
+    KNOWN_SQL.replacen("substr(raw", &format!("substr({alias}.raw"), 1)
+}
+
+/// The select list of every chain or branch read over `table` (`journal` or
+/// `journal_forked`, aliased `t`); callers append their `WHERE` and `ORDER BY`.
+/// Columns, in [`StoredRow::read`] order: `counter, prev_hash, hash, signature,
+/// known`, the row's raw bytes, then the seven projection columns. The raw
+/// bytes are read only for a non-HTJRNL01 row under [`Rows::All`]; a known row
+/// is built from its projection and never reads `raw`, and a prefix read never
+/// reads a foreign row's blobs. A foreign row's projection (promoted or not) is
+/// never read.
+fn row_select(table: &str, rows: Rows) -> String {
+    let known = known_sql("t");
+    let raw = match rows {
+        Rows::All => format!("CASE WHEN {known} THEN NULL ELSE t.raw END"),
+        Rows::KnownPrefix => "NULL".to_owned(),
+    };
+    let when = |column: &str| format!("CASE WHEN {known} THEN t.{column} END");
+    format!(
+        "SELECT t.counter,t.prev_hash,t.hash,t.signature,({known}) AS known,{raw},{},{},{},{},{},{},{} FROM {table} t",
+        when("hlc"),
+        when("kind"),
+        when("kind_version"),
+        when("deps"),
+        when("creates"),
+        when("needs"),
+        when("payload"),
+    )
+}
+
+/// The stored projection of an HTJRNL01 row.
+struct Projection {
+    hlc: i64,
+    kind: String,
+    kind_version: u32,
+    deps: Vec<u8>,
+    creates: Option<String>,
+    needs: String,
+    payload: Vec<u8>,
+}
+
+/// One row of a chain or branch read, as stored, read before decoding so a
+/// decode failure is a typed `StoreCorrupt` and not a SQLite error.
+struct StoredRow {
     counter: i64,
     prev_hash: Vec<u8>,
     hash: Vec<u8>,
     signature: Vec<u8>,
-    raw: Vec<u8>,
+    /// [`KNOWN_SQL`] held: `raw` is an HTJRNL01 entry.
+    known: bool,
+    raw: Option<Vec<u8>>,
+    projection: Option<Projection>,
 }
 
-impl RawOpaque {
-    /// Rebuilds the header from the row and shape-checks it. No signature
-    /// check on read, as [`RawEnvelope::decode`] does none.
-    fn decode(self, log: &LogKey) -> Result<OpaqueEntry, ApiError> {
+impl StoredRow {
+    /// Reads the columns of [`row_select`].
+    fn read(r: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        let known: bool = r.get(4)?;
+        let projection = match r.get::<_, Option<i64>>(6)? {
+            Some(hlc) if known => Some(Projection {
+                hlc,
+                kind: r.get(7)?,
+                kind_version: r.get(8)?,
+                deps: r.get(9)?,
+                creates: r.get(10)?,
+                needs: r.get(11)?,
+                payload: r.get(12)?,
+            }),
+            _ => None,
+        };
+        Ok(Self {
+            counter: r.get(0)?,
+            prev_hash: r.get(1)?,
+            hash: r.get(2)?,
+            signature: r.get(3)?,
+            known,
+            raw: r.get(5)?,
+            projection,
+        })
+    }
+
+    /// `None` for a non-HTJRNL01 row under [`Rows::KnownPrefix`]: the cut.
+    fn decode(self, log: &LogKey, rows: Rows) -> Result<Option<StoredEntry>, ApiError> {
+        if self.known {
+            let Some(projection) = self.projection else {
+                return Err(corrupt(
+                    "journal invariant: HTJRNL01 row without projection",
+                ));
+            };
+            return Ok(Some(StoredEntry::Known(
+                RawEnvelope {
+                    counter: self.counter,
+                    prev_hash: self.prev_hash,
+                    hlc: projection.hlc,
+                    kind: projection.kind,
+                    kind_version: projection.kind_version,
+                    deps: projection.deps,
+                    creates: projection.creates,
+                    needs: projection.needs,
+                    payload: projection.payload,
+                    hash: self.hash,
+                    signature: self.signature,
+                }
+                .decode(log)?,
+            )));
+        }
+        if rows == Rows::KnownPrefix {
+            return Ok(None);
+        }
+        // No signature check on read, as the known arm does none.
         let bad = || corrupt("journal invariant: stored opaque entry");
         let header = OpaqueHeader {
             log: *log,
@@ -1139,71 +1248,11 @@ impl RawOpaque {
             hash: self.hash.try_into().map_err(|_| bad())?,
             signature: self.signature.try_into().map_err(|_| bad())?,
         };
-        OpaqueEntry::new(header, self.raw).map_err(|_| bad())
+        let raw = self.raw.ok_or_else(bad)?;
+        OpaqueEntry::new(header, raw)
+            .map(|entry| Some(StoredEntry::Opaque(entry)))
+            .map_err(|_| bad())
     }
-}
-
-/// How far a chain read goes past the entries this node understands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Rows {
-    /// Every row, known and opaque.
-    All,
-    /// The known rows before the first opaque one; that row is not decoded
-    /// and ends the read. What the store-level `Envelope` readers (`serve`,
-    /// `serve_branch`, `sync_status`'s rehash) serve.
-    KnownPrefix,
-}
-
-/// One row of a chain or branch read, before decoding.
-enum RawRow {
-    Known(RawEnvelope),
-    Opaque(RawOpaque),
-    /// An opaque row met under [`Rows::KnownPrefix`]; its blobs are unread.
-    Cut,
-}
-
-impl RawRow {
-    /// Reads the shared layout of [`entry_select`]: `opaque`, `counter`, the
-    /// eleven [`RawEnvelope::read_at`] columns, then the row's raw-entry columns.
-    fn read(r: &rusqlite::Row<'_>, rows: Rows) -> rusqlite::Result<Self> {
-        if !r.get::<_, bool>(0)? {
-            return RawEnvelope::read_at(r, 2).map(Self::Known);
-        }
-        if rows == Rows::KnownPrefix {
-            return Ok(Self::Cut);
-        }
-        Ok(Self::Opaque(RawOpaque {
-            counter: r.get(1)?,
-            prev_hash: r.get(13)?,
-            hash: r.get(14)?,
-            signature: r.get(15)?,
-            raw: r.get(16)?,
-        }))
-    }
-
-    /// `None` for [`RawRow::Cut`].
-    fn decode(self, log: &LogKey) -> Result<Option<StoredEntry>, ApiError> {
-        Ok(match self {
-            Self::Known(raw) => Some(StoredEntry::Known(raw.decode(log)?)),
-            Self::Opaque(raw) => Some(StoredEntry::Opaque(raw.decode(log)?)),
-            Self::Cut => None,
-        })
-    }
-}
-
-/// The select list and joins of one chain or branch read over `rows` (an
-/// alias of [`CHAIN_ROWS`] or [`BRANCH_ROWS`]); `known` is the table the row
-/// lives in (`journal` or `journal_forked`). An opaque row's projection
-/// columns are NULL and unread; its `prev_hash`, `hash`, `signature` and `raw`
-/// come from the same row.
-fn entry_select(rows: &str, known: &str) -> String {
-    format!(
-        "SELECT c.opaque,c.counter,\
-         k.counter,k.prev_hash,k.hlc,k.kind,k.kind_version,k.deps,k.creates,k.needs,k.payload,k.hash,k.signature,\
-         k.prev_hash,k.hash,k.signature,k.raw \
-         FROM {rows} c \
-         JOIN {known} k ON k.log_ix=c.log_ix AND k.counter=c.counter AND k.hash=c.hash"
-    )
 }
 
 /// The chain position `counter` of `log` as a stored entry, known or opaque.
@@ -1394,9 +1443,9 @@ impl Batch {
 /// batch is full. With [`Rows::KnownPrefix`] it also stops, closing the
 /// batch, at the first opaque row, before reading that row's blobs.
 ///
-/// The only functions in this file that read an opaque row's raw bytes are this
-/// one, [`entry_at_position`] (through it) and [`branch_entry`]; [`insert_opaque`]
-/// writes them.
+/// The only functions in this file that read a foreign row's raw bytes are this
+/// one, [`entry_at_position`] (through it) and [`branch_entry`]; the writers are
+/// [`insert_parked_layout`] and `insert_forked`.
 pub(crate) fn entries_from(
     conn: &Connection,
     log_ix: i64,
@@ -1408,8 +1457,8 @@ pub(crate) fn entries_from(
 ) -> Result<(), ApiError> {
     let mut statement = conn
         .prepare(&format!(
-            "{} WHERE c.log_ix=?1 AND c.counter>=?2 AND c.counter<=?3 ORDER BY c.counter",
-            entry_select(CHAIN_ROWS, "journal")
+            "{} WHERE t.log_ix=?1 AND t.counter>=?2 AND t.counter<=?3 ORDER BY t.counter",
+            row_select("journal", rows)
         ))
         .map_err(store_error)?;
     let found = statement
@@ -1419,11 +1468,11 @@ pub(crate) fn entries_from(
                 i64::try_from(from).unwrap_or(i64::MAX),
                 to.map_or(i64::MAX, |to| i64::try_from(to).unwrap_or(i64::MAX))
             ],
-            |r| RawRow::read(r, rows),
+            StoredRow::read,
         )
         .map_err(store_error)?;
     for raw in found {
-        let Some(entry) = raw.map_err(store_error)?.decode(log)? else {
+        let Some(entry) = raw.map_err(store_error)?.decode(log, rows)? else {
             batch.closed = true;
             break;
         };
@@ -1455,22 +1504,22 @@ fn branch_entry(
     let raw = conn
         .query_row(
             &format!(
-                "{} WHERE c.log_ix=?1 AND c.counter=?2 AND c.hash=?3",
-                entry_select(BRANCH_ROWS, "journal_forked")
+                "{} WHERE t.log_ix=?1 AND t.counter=?2 AND t.hash=?3",
+                row_select("journal_forked", rows)
             ),
             params![
                 log_ix,
                 i64::try_from(counter).unwrap_or(i64::MAX),
                 hash.as_slice()
             ],
-            |r| RawRow::read(r, rows),
+            StoredRow::read,
         )
         .optional()
         .map_err(store_error)?;
     Ok(match raw {
         None => BranchRead::Missing,
         Some(raw) => raw
-            .decode(log)?
+            .decode(log, rows)?
             .map_or(BranchRead::Cut, |entry| BranchRead::Entry(Box::new(entry))),
     })
 }
@@ -1698,9 +1747,10 @@ pub fn ingest(
     ingest_entries(ctx, conn, log, entries, budget)
 }
 
-/// [`ingest`] over [`StoredEntry`]: an opaque append is stored in
-/// the `journal` table with an empty projection, moves the head and does not fold the HLC. Fork evidence
-/// carries both sides as stored, known or opaque.
+/// [`ingest`] over [`StoredEntry`]: an unknown-layout append is stored in
+/// `journal` with an empty projection and `apply_state = 'parked_layout'`, moves
+/// the head and does not fold the HLC. Fork evidence carries both sides as
+/// stored, known or opaque.
 pub fn ingest_entries(
     ctx: &StoreContext,
     conn: &mut Connection,
@@ -1862,7 +1912,7 @@ fn ingest_batch(
                         let (ChainStep::Append, Some(row)) = (step, row.as_mut()) else {
                             return Err(corrupt("journal invariant: opaque genesis"));
                         };
-                        insert_opaque(&tx, row.log_ix, opaque, false, None, decision.utc.0)?;
+                        insert_parked_layout(&tx, row.log_ix, opaque, decision.utc.0)?;
                         row.held.contiguous = opaque.counter();
                         row.held.head_hash = opaque.hash();
                         // No HLC fold: an opaque entry has no readable hlc.
@@ -1993,7 +2043,7 @@ pub fn store_forked(
     store_forked_entries(tx, log, &entries, source)
 }
 
-/// [`store_forked`] over [`StoredEntry`]: an opaque side goes to
+/// [`store_forked`] over [`StoredEntry`]: an unknown-layout side goes to
 /// `journal_forked` with an empty projection.
 pub fn store_forked_entries(
     tx: &Transaction<'_>,
@@ -2013,32 +2063,34 @@ pub fn store_forked_entries(
                 "forked entry names another log",
             ));
         }
-        let entry = match entry {
-            StoredEntry::Known(entry) => entry,
-            StoredEntry::Opaque(opaque) => {
-                inserted += usize::from(insert_opaque(
-                    tx,
-                    row.log_ix,
-                    opaque,
-                    true,
-                    source.as_deref(),
-                    0,
-                )?);
-                continue;
-            }
-        };
-        let needs = entry
-            .needs
-            .iter()
-            .map(EntityKey::as_str)
-            .collect::<Vec<_>>()
-            .join("\n");
-        inserted += tx
-            .execute(
+        inserted += usize::from(insert_forked(tx, row.log_ix, entry, source.as_deref())?);
+    }
+    Ok(inserted)
+}
+
+/// Stores one verified fork-branch entry of `log_ix` in `journal_forked`,
+/// ignoring an exact duplicate, and returns whether the row is new. A known
+/// entry carries its projection and `raw = canonical_bytes()`; an unknown-layout
+/// one only its header and `raw`.
+fn insert_forked(
+    tx: &Transaction<'_>,
+    log_ix: i64,
+    entry: &StoredEntry,
+    source: Option<&str>,
+) -> Result<bool, ApiError> {
+    let new = match entry {
+        StoredEntry::Known(entry) => {
+            let needs = entry
+                .needs
+                .iter()
+                .map(EntityKey::as_str)
+                .collect::<Vec<_>>()
+                .join("\n");
+            tx.execute(
                 "INSERT OR IGNORE INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,needs,payload,signature,source_node,received_at,raw) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,CAST(strftime('%s','now') AS INTEGER)*1000,?14)",
                 params![
-                    row.log_ix,
+                    log_ix,
                     i64::try_from(entry.counter).unwrap_or(i64::MAX),
                     entry.prev_hash.as_slice(),
                     entry.hash.as_slice(),
@@ -2054,51 +2106,41 @@ pub fn store_forked_entries(
                     entry.canonical_bytes(),
                 ],
             )
-            .map_err(store_error)?;
+        }
+        StoredEntry::Opaque(opaque) => tx.execute(
+            "INSERT OR IGNORE INTO journal_forked(log_ix,counter,prev_hash,hash,signature,raw,needs,source_node,received_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,CAST(strftime('%s','now') AS INTEGER)*1000)",
+            params![
+                log_ix,
+                i64::try_from(opaque.counter()).unwrap_or(i64::MAX),
+                opaque.prev_hash().as_slice(),
+                opaque.hash().as_slice(),
+                opaque.signature().as_slice(),
+                opaque.raw(),
+                source,
+            ],
+        ),
     }
-    Ok(inserted)
+    .map_err(store_error)?;
+    Ok(new == 1)
 }
 
-/// Stores a verified opaque entry of `log_ix` (a chain position in `journal`,
-/// or with `branch` a conflicting-branch entry in `journal_forked`), with an
-/// empty projection, and returns whether the row is new. A chain position is
-/// a plain INSERT (`check_next` proved it free; `UNIQUE(log_ix, counter)`
-/// guards it); a branch row ignores an exact duplicate. `source` and
-/// `ingested_at` are the branch row's source node and the chain row's
-/// ingestion time.
-pub(crate) fn insert_opaque(
-    tx: &Transaction<'_>,
+/// Stores a verified unknown-layout entry as chain position `counter` of
+/// `log_ix`: a `journal` row with an empty projection and `apply_state =
+/// 'parked_layout'`. A plain INSERT (`check_next` proved the position free;
+/// `UNIQUE(log_ix, counter)` guards it). `ingested_at` is the ingestion time.
+pub(crate) fn insert_parked_layout(
+    tx: &Connection,
     log_ix: i64,
     entry: &OpaqueEntry,
-    branch: bool,
-    source: Option<&str>,
     ingested_at: i64,
-) -> Result<bool, ApiError> {
-    let counter = i64::try_from(entry.counter()).unwrap_or(i64::MAX);
-    if branch {
-        let new = tx
-            .execute(
-                "INSERT OR IGNORE INTO journal_forked(log_ix,counter,prev_hash,hash,signature,raw,needs,source_node,received_at) \
-                 VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,CAST(strftime('%s','now') AS INTEGER)*1000)",
-                params![
-                    log_ix,
-                    counter,
-                    entry.prev_hash().as_slice(),
-                    entry.hash().as_slice(),
-                    entry.signature().as_slice(),
-                    entry.raw(),
-                    source,
-                ],
-            )
-            .map_err(store_error)?;
-        return Ok(new == 1);
-    }
+) -> Result<(), ApiError> {
     tx.execute(
         "INSERT INTO journal(log_ix,counter,prev_hash,hash,signature,raw,needs,ingested_at,apply_state) \
          VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,'parked_layout')",
         params![
             log_ix,
-            counter,
+            i64::try_from(entry.counter()).unwrap_or(i64::MAX),
             entry.prev_hash().as_slice(),
             entry.hash().as_slice(),
             entry.signature().as_slice(),
@@ -2107,7 +2149,7 @@ pub(crate) fn insert_opaque(
         ],
     )
     .map_err(store_error)?;
-    Ok(true)
+    Ok(())
 }
 
 /// Freezes `log` at counter `at`, lower-only: an active log becomes frozen
