@@ -38,6 +38,7 @@ codeBuckets:
   worktreesKept: 
   processSweep: stopped 0 · survived 0 · unknown 0 · kept 0
 roastCodeRound: 2
-roast-code: 2026-10-18-bytes-first-journal-roast-pr-1.md
+roast-code: 2026-10-18-bytes-first-journal-roast-pr-1.md, 2026-10-18-bytes-first-journal-roast-pr-2.md
 stepBackCode-round-1: local — orchestrator inline: six independent findings (changelog, perf, re-issue cut, test race, docs, pre-existing FYI); no mechanical trigger
 scopeFilter-round-1: all 6 in scope (orchestrator) → ht-76u6.18 ht-76u6.19 ht-76u6.20 ht-76u6.21 ht-76u6.22
+roastCodeExit: converged (round 2: 6/6 resolved, 1 new Nit (docs for the re-issue terminal cut) fixed inline by orchestrator; [converged] withheld only by the readiness qualifier)
