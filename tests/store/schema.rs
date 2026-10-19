@@ -5849,6 +5849,7 @@ fn fork_tables_verify() {
 const PROBE_DELTA: schema::NodeDelta = schema::NodeDelta {
     version: 2,
     sql: "CREATE TABLE delta_probe(x INTEGER)",
+    rebuild: None,
 };
 
 fn open_with(
@@ -5941,6 +5942,7 @@ fn failing_delta_rolls_back() {
     let bad = schema::NodeDelta {
         version: 2,
         sql: "CREATE TABLE a(x); CREATE TABLE a(x);",
+        rebuild: None,
     };
     open_with(&db, &[bad]).unwrap_err();
     assert_eq!(user_version(&db), 1);
@@ -5993,9 +5995,190 @@ fn misnumbered_delta_list_refused() {
     let skip = schema::NodeDelta {
         version: 3,
         sql: "CREATE TABLE s(x)",
+        rebuild: None,
     };
     let detail = incompatible_detail(open_with(&db, &[skip]));
     assert!(detail.contains("misnumbered"), "{detail}");
+}
+
+// Rebuild deltas (table rebuild with foreign keys off outside the transaction).
+
+// v2: a parent referenced by a child foreign key.
+const FK_PARENT_DELTA: schema::NodeDelta = schema::NodeDelta {
+    version: 2,
+    sql: "CREATE TABLE probe_parent(id INTEGER PRIMARY KEY, v TEXT NOT NULL);
+          CREATE TABLE probe_child(id INTEGER PRIMARY KEY,
+              pid INTEGER NOT NULL REFERENCES probe_parent(id));
+          CREATE INDEX probe_child_pid ON probe_child(pid);",
+    rebuild: None,
+};
+const REBUILD_SQL: &str = "CREATE TABLE probe_parent_new(id INTEGER PRIMARY KEY, v TEXT);";
+const REBUILD_AFTER: &str = "DROP TABLE probe_parent;
+    ALTER TABLE probe_parent_new RENAME TO probe_parent;
+    CREATE INDEX probe_parent_v ON probe_parent(v);
+    CREATE TRIGGER probe_parent_append_only BEFORE DELETE ON probe_parent
+    BEGIN SELECT RAISE(ABORT, 'probe_parent_append_only'); END;";
+
+fn copy_all(db: &Connection) -> Result<(), crate::protocol::results::ApiError> {
+    db.execute_batch("INSERT INTO probe_parent_new(id, v) SELECT id, v FROM probe_parent")
+        .map_err(store_error)
+}
+
+fn copy_skipping_one(db: &Connection) -> Result<(), crate::protocol::results::ApiError> {
+    db.execute_batch(
+        "INSERT INTO probe_parent_new(id, v) SELECT id, v FROM probe_parent WHERE id <> 1",
+    )
+    .map_err(store_error)
+}
+
+fn copy_fails(_: &Connection) -> Result<(), crate::protocol::results::ApiError> {
+    Err(api_error(ErrorCode::StoreCorrupt, "probe copy refused"))
+}
+
+const fn rebuild_delta_with(
+    copy: fn(&Connection) -> Result<(), crate::protocol::results::ApiError>,
+    sql_after: &'static str,
+) -> schema::NodeDelta {
+    schema::NodeDelta {
+        version: 3,
+        sql: REBUILD_SQL,
+        rebuild: Some(schema::Rebuild { copy, sql_after }),
+    }
+}
+
+const fn rebuild_delta(
+    copy: fn(&Connection) -> Result<(), crate::protocol::results::ApiError>,
+) -> schema::NodeDelta {
+    rebuild_delta_with(copy, REBUILD_AFTER)
+}
+
+fn fk_on(db: &Connection) -> bool {
+    db.pragma_query_value(None, "foreign_keys", |r| r.get(0))
+        .unwrap()
+}
+
+fn populate(db: &Connection) {
+    db.execute_batch(
+        "INSERT INTO probe_parent(id, v) VALUES (1,'a'),(2,'b');
+         INSERT INTO probe_child(id, pid) VALUES (10,1),(11,2);",
+    )
+    .unwrap();
+}
+
+fn rows(db: &Connection, sql: &str) -> i64 {
+    db.query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+/// A populated store at v2 with foreign keys on, as production opens it.
+fn populated_v2(foreign_keys: bool) -> Connection {
+    let db = Connection::open_in_memory().unwrap();
+    db.pragma_update(None, "foreign_keys", foreign_keys)
+        .unwrap();
+    open_with(&db, &[FK_PARENT_DELTA]).unwrap();
+    populate(&db);
+    assert_eq!(fk_on(&db), foreign_keys);
+    db
+}
+
+fn assert_rebuild_rolled_back(db: &Connection) {
+    assert_eq!(user_version(db), 2);
+    assert!(!table_exists(db, "probe_parent_new"));
+    assert_eq!(rows(db, "SELECT count(*) FROM probe_parent"), 2);
+    assert_eq!(rows(db, "SELECT count(*) FROM probe_child"), 2);
+    assert!(
+        db.execute("INSERT INTO probe_parent(id, v) VALUES (3, NULL)", [])
+            .is_err(),
+        "the old NOT NULL column must survive the rollback"
+    );
+    assert!(fk_on(db), "foreign keys restored on the failure path");
+    open_with(db, &[FK_PARENT_DELTA]).unwrap();
+}
+
+#[test]
+fn rebuild_delta_commits_on_populated_store_with_fk_children() {
+    let db = populated_v2(true);
+    open_with(&db, &[FK_PARENT_DELTA, rebuild_delta(copy_all)]).unwrap();
+    assert_eq!(user_version(&db), 3);
+    assert_eq!(rows(&db, "SELECT count(*) FROM probe_parent"), 2);
+    db.execute("INSERT INTO probe_parent(id, v) VALUES (3, NULL)", [])
+        .unwrap();
+    assert_eq!(
+        rows(&db, "SELECT count(*) FROM pragma_foreign_key_check"),
+        0
+    );
+    assert!(fk_on(&db));
+    assert!(
+        db.execute("INSERT INTO probe_child(id, pid) VALUES (12, 99)", [])
+            .is_err(),
+        "foreign keys enforced against the renamed table"
+    );
+}
+
+#[test]
+fn rebuild_delta_reopen_passes_schema_audit_on_populated_store() {
+    let db = populated_v2(true);
+    let deltas = [FK_PARENT_DELTA, rebuild_delta(copy_all)];
+    open_with(&db, &deltas).unwrap();
+    open_with(&db, &deltas).unwrap();
+    let names: Vec<String> = db
+        .prepare("SELECT name FROM sqlite_master WHERE name LIKE 'probe_parent%' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        names,
+        ["probe_parent", "probe_parent_append_only", "probe_parent_v"]
+    );
+}
+
+#[test]
+fn rebuild_delta_applies_on_fresh_store_and_passes_schema_audit() {
+    let db = Connection::open_in_memory().unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let deltas = [FK_PARENT_DELTA, rebuild_delta(copy_all)];
+    open_with(&db, &deltas).unwrap();
+    assert_eq!(user_version(&db), 3);
+    open_with(&db, &deltas).unwrap();
+}
+
+#[test]
+fn failing_rebuild_copy_rolls_back_and_restores_foreign_keys() {
+    let db = populated_v2(true);
+    let error = open_with(&db, &[FK_PARENT_DELTA, rebuild_delta(copy_fails)]).unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt, "{error:?}");
+    assert!(error.detail.contains("probe copy refused"), "{error:?}");
+    assert_rebuild_rolled_back(&db);
+}
+
+#[test]
+fn failing_rebuild_sql_after_rolls_back() {
+    let db = populated_v2(true);
+    let broken = rebuild_delta_with(
+        copy_all,
+        "DROP TABLE probe_parent; DROP TABLE no_such_table;",
+    );
+    open_with(&db, &[FK_PARENT_DELTA, broken]).unwrap_err();
+    assert_rebuild_rolled_back(&db);
+}
+
+#[test]
+fn rebuild_leaving_fk_violation_aborts() {
+    let db = populated_v2(true);
+    let error = open_with(&db, &[FK_PARENT_DELTA, rebuild_delta(copy_skipping_one)]).unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt, "{error:?}");
+    assert!(error.detail.contains("foreign_key_check"), "{error:?}");
+    assert_rebuild_rolled_back(&db);
+}
+
+#[test]
+fn rebuild_restores_prior_foreign_keys_off() {
+    let db = populated_v2(false);
+    assert!(!fk_on(&db));
+    open_with(&db, &[FK_PARENT_DELTA, rebuild_delta(copy_all)]).unwrap();
+    assert_eq!(user_version(&db), 3);
+    assert!(!fk_on(&db), "the prior value is restored, not forced on");
 }
 
 #[test]
