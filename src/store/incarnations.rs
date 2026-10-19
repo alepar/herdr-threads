@@ -211,7 +211,7 @@ pub struct ReissueProgress {
     pub cannot_reissue: usize,
 }
 
-/// `CANDIDATES.src` of a `journal_opaque` row: counted, never re-issued.
+/// `CANDIDATES.src` of an opaque row (raw without the HTJRNL01 magic): counted, never re-issued.
 const SRC_OPAQUE: i64 = 2;
 
 /// One re-issue candidate: an entry of a frozen own log above its freeze, or
@@ -231,7 +231,7 @@ struct Candidate {
 /// then `log_ix`, then counter (so each branch keeps its own order and the
 /// branches of one counter are adjacent), the `journal` branch before the
 /// forked ones, and a forked branch's rows by arrival. `node.genesis` never
-/// qualifies. The `journal_opaque` rows (main chain above the freeze, and
+/// qualifies. The opaque rows (main chain above the freeze, and
 /// fork branches) come last with `src = 2`: they are reported, not re-issued.
 const CANDIDATES: &str = "\
 SELECT log_ix,node_uuid,incarnation,counter,hash,prev_hash,src FROM (\
@@ -247,8 +247,13 @@ SELECT log_ix,node_uuid,incarnation,counter,hash,prev_hash,src FROM (\
    AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=f.log_ix AND r.source_counter=f.counter AND r.source_hash=f.hash) \
  UNION ALL \
  SELECT l.first_seen_at,l.log_ix,l.node_uuid,l.incarnation,o.counter,o.hash,o.prev_hash,2,0 \
- FROM sync_logs l JOIN journal_opaque o ON o.log_ix=l.log_ix \
- WHERE l.is_self=1 AND l.state='frozen' AND (o.branch=1 OR o.counter>l.frozen_at_counter)\
+ FROM sync_logs l JOIN journal o ON o.log_ix=l.log_ix \
+ WHERE l.is_self=1 AND l.state='frozen' AND o.counter>l.frozen_at_counter \
+   AND substr(o.raw,1,8)<>CAST('HTJRNL01' AS BLOB) \
+ UNION ALL \
+ SELECT l.first_seen_at,l.log_ix,l.node_uuid,l.incarnation,o.counter,o.hash,o.prev_hash,2,0 \
+ FROM sync_logs l JOIN journal_forked o ON o.log_ix=l.log_ix \
+ WHERE l.is_self=1 AND l.state='frozen' AND substr(o.raw,1,8)<>CAST('HTJRNL01' AS BLOB)\
 ) ORDER BY seen,log_ix,counter,src,seq";
 
 /// Re-issues the union of every branch tail of the frozen own logs into the
@@ -1591,8 +1596,10 @@ fn pending_reissues(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u3
 fn cannot_reissue(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u32, ApiError> {
     let n: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM journal_opaque o \
-             WHERE o.log_ix=?1 AND (o.branch=1 OR o.counter>?2)",
+            "SELECT (SELECT COUNT(*) FROM journal o WHERE o.log_ix=?1 AND o.counter>?2 \
+                      AND substr(o.raw,1,8)<>CAST('HTJRNL01' AS BLOB)) \
+                  + (SELECT COUNT(*) FROM journal_forked o WHERE o.log_ix=?1 \
+                      AND substr(o.raw,1,8)<>CAST('HTJRNL01' AS BLOB))",
             params![log_ix, frozen_at],
             |r| r.get(0),
         )

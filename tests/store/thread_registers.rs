@@ -29,8 +29,8 @@ fn db_with_journal(n: i64) -> Connection {
     .unwrap();
     for counter in 1..=n {
         db.execute(
-            "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state) \
-             VALUES (1,?1,zeroblob(32),zeroblob(32),10,'k',1,x'',x'00',zeroblob(64),0,'pending')",
+            "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state,raw) \
+             VALUES (1,?1,zeroblob(32),zeroblob(32),10,'k',1,x'',x'00',zeroblob(64),0,'pending',x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
             [counter],
         )
         .unwrap();

@@ -2661,8 +2661,8 @@ fn check_invariants_reports_seeded_i2_and_i3() {
     // I2: a forked row at the freeze counter (2) is a violation; 3 is fine.
     o.conn
         .execute(
-            "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,received_at) \
-             SELECT log_ix,2,zeroblob(32),randomblob(32),0,'test.put',1,X'',X'',zeroblob(64),0 \
+            "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,received_at,raw) \
+             SELECT log_ix,2,zeroblob(32),randomblob(32),0,'test.put',1,X'',X'',zeroblob(64),0,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' \
              FROM sync_logs WHERE state='frozen'",
             [],
         )
@@ -2839,12 +2839,15 @@ fn log_ix_of(conn: &Connection, log: &LogKey) -> i64 {
 }
 
 fn insert_opaque(conn: &Connection, log_ix: i64, counter: i64, hash: [u8; 32], branch: i64) {
-    conn.execute(
-        "INSERT INTO journal_opaque(log_ix,counter,hash,prev_hash,signature,raw,branch) \
-         VALUES (?1,?2,?3,zeroblob(32),zeroblob(64),zeroblob(68),?4)",
-        params![log_ix, counter, hash.as_slice(), branch],
-    )
-    .unwrap();
+    let sql = if branch == 0 {
+        "INSERT INTO journal(log_ix,counter,hash,prev_hash,signature,raw,needs,ingested_at,apply_state) \
+         VALUES (?1,?2,?3,zeroblob(32),zeroblob(64),zeroblob(68),NULL,0,'parked_layout')"
+    } else {
+        "INSERT INTO journal_forked(log_ix,counter,hash,prev_hash,signature,raw,needs,received_at) \
+         VALUES (?1,?2,?3,zeroblob(32),zeroblob(64),zeroblob(68),NULL,0)"
+    };
+    conn.execute(sql, params![log_ix, counter, hash.as_slice()])
+        .unwrap();
 }
 
 // Kills: a first-entry check that reads `journal` and `journal_forked` only,
@@ -2926,7 +2929,7 @@ fn reissue_reports_opaque_candidate() {
             |r| r.get(0),
         )
         .unwrap();
-    journal::insert_opaque(&tx, log_ix, tail_row.as_opaque().unwrap(), false).unwrap();
+    journal::insert_opaque(&tx, log_ix, tail_row.as_opaque().unwrap(), false, None, 0).unwrap();
     tx.commit().unwrap();
 
     let before = status(&o.conn, &o.ctx).unwrap();
@@ -3005,19 +3008,22 @@ fn pulled_branch_with_opaque_entries_is_stored() {
             short: false
         }
     );
-    assert_eq!(count(&o.conn, "SELECT COUNT(*) FROM journal_forked"), 1);
     assert_eq!(
         count(
             &o.conn,
-            "SELECT COUNT(*) FROM journal_opaque WHERE branch=1 AND counter=4"
+            "SELECT COUNT(*) FROM journal_forked WHERE kind IS NOT NULL"
         ),
         1
     );
     assert_eq!(
         count(
             &o.conn,
-            "SELECT COUNT(*) FROM journal_opaque WHERE branch=0"
+            "SELECT COUNT(*) FROM journal_forked WHERE kind IS NULL AND counter=4"
         ),
+        1
+    );
+    assert_eq!(
+        count(&o.conn, "SELECT COUNT(*) FROM journal WHERE kind IS NULL"),
         0
     );
     let served = journal::serve_branch_entries(
@@ -3062,7 +3068,7 @@ fn record_fork_with_opaque_sides_freezes_and_keeps_evidence() {
     assert_eq!(
         count(
             &conn,
-            "SELECT COUNT(*) FROM journal_opaque WHERE counter=3 AND branch=0"
+            "SELECT COUNT(*) FROM journal WHERE kind IS NULL AND counter=3"
         ),
         1,
         "the held opaque row stays on the chain, once"
@@ -3086,7 +3092,7 @@ fn record_fork_with_opaque_sides_freezes_and_keeps_evidence() {
     assert_eq!(
         count(
             &conn,
-            "SELECT COUNT(*) FROM journal_opaque WHERE counter=4 AND branch=1"
+            "SELECT COUNT(*) FROM journal_forked WHERE kind IS NULL AND counter=4"
         ),
         1
     );

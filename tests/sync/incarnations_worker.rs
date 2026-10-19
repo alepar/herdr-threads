@@ -1759,7 +1759,7 @@ fn fork_opaque_vs_known_same_counter_freezes() {
         "the known rival is the off-chain row"
     );
     assert_eq!(
-        c.count("SELECT COUNT(*) FROM journal_opaque WHERE counter=3 AND branch=0"),
+        c.count("SELECT COUNT(*) FROM journal WHERE kind IS NULL AND counter=3"),
         1,
         "the opaque side stays the main-chain row"
     );
@@ -1772,7 +1772,7 @@ fn fork_opaque_vs_known_same_counter_freezes() {
 }
 
 // Kills: the opposite direction handled differently: a known held side with an
-// opaque rival must put the rival in journal_opaque as a branch row.
+// opaque rival must put the rival in journal_forked with an empty projection.
 #[test]
 fn fork_known_vs_opaque_rival_stores_branch_row() {
     let w = world();
@@ -1789,11 +1789,14 @@ fn fork_known_vs_opaque_rival_stores_branch_row() {
     core.work();
     assert_eq!(c.count("SELECT COUNT(*) FROM sync_forks"), 1);
     assert_eq!(
-        c.count("SELECT COUNT(*) FROM journal_opaque WHERE counter=3 AND branch=1"),
+        c.count("SELECT COUNT(*) FROM journal_forked WHERE kind IS NULL AND counter=3"),
         1,
         "the opaque rival is an off-chain row"
     );
-    assert_eq!(c.count("SELECT COUNT(*) FROM journal_forked"), 0);
+    assert_eq!(
+        c.count("SELECT COUNT(*) FROM journal_forked WHERE kind IS NOT NULL"),
+        0
+    );
     assert_eq!(
         c.count(&format!(
             "SELECT frozen_at_counter FROM sync_logs WHERE incarnation={}",
@@ -1830,7 +1833,7 @@ fn fork_opaque_prev_link_break_freezes() {
         "frozen below the entry the break proves"
     );
     assert_eq!(
-        c.count("SELECT COUNT(*) FROM journal_opaque WHERE counter=4 AND branch=1"),
+        c.count("SELECT COUNT(*) FROM journal_forked WHERE kind IS NULL AND counter=4"),
         1
     );
 

@@ -756,15 +756,15 @@ fn sync_verify_healthy_and_seeded_violation() {
     let log_ix = db.last_insert_rowid();
     db.execute(
         "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,needs, \
-         payload,signature,ingested_at,apply_state,applied_seq) \
-         VALUES (?1,1,zeroblob(32),zeroblob(32),1,'test.kind',1,x'0000','',x'7b7d',zeroblob(64),0,'applied',777777)",
+         payload,signature,ingested_at,apply_state,applied_seq,raw) \
+         VALUES (?1,1,zeroblob(32),zeroblob(32),1,'test.kind',1,x'0000','',x'7b7d',zeroblob(64),0,'applied',777777,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
         [log_ix],
     )
     .unwrap();
     db.execute(
         "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,needs, \
-         payload,signature,received_at) \
-         VALUES (?1,1,zeroblob(32),x'0101010101010101010101010101010101010101010101010101010101010101',1,'test.kind',1,x'','',x'7b7d',zeroblob(64),0)",
+         payload,signature,received_at,raw) \
+         VALUES (?1,1,zeroblob(32),x'0101010101010101010101010101010101010101010101010101010101010101',1,'test.kind',1,x'','',x'7b7d',zeroblob(64),0,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
         [log_ix],
     )
     .unwrap();
@@ -807,8 +807,8 @@ fn sync_verify_reports_a_tampered_entry() {
     let log_ix = db.last_insert_rowid();
     db.execute(
         "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,needs, \
-         payload,signature,ingested_at,apply_state) \
-         VALUES (?1,1,zeroblob(32),x'0909090909090909090909090909090909090909090909090909090909090909',1,'test.kind',1,x'0000','',x'7b7d',zeroblob(64),0,'failed')",
+         payload,signature,ingested_at,apply_state,raw) \
+         VALUES (?1,1,zeroblob(32),x'0909090909090909090909090909090909090909090909090909090909090909',1,'test.kind',1,x'0000','',x'7b7d',zeroblob(64),0,'failed',x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
         [log_ix],
     )
     .unwrap();
@@ -854,8 +854,8 @@ fn seed_unknown_kind_entries(node: &Node) {
     for n in 1..=2i64 {
         db.execute(
             "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,needs, \
-             payload,signature,ingested_at,apply_state) \
-             VALUES (?1,?2,?3,?4,1,'unknown.kind',1,x'','',x'7b7d',zeroblob(64),0,'parked_unknown')",
+             payload,signature,ingested_at,apply_state,raw) \
+             VALUES (?1,?2,?3,?4,1,'unknown.kind',1,x'','',x'7b7d',zeroblob(64),0,'parked_unknown',x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
             rusqlite::params![log_ix, n, vec![(n - 1) as u8; 32], vec![n as u8; 32]],
         )
         .unwrap();

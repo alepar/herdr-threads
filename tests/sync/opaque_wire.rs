@@ -169,7 +169,7 @@ async fn opaque_successor_parks_on_relay() {
     assert!(rr.ended_links().is_empty(), "{:?}", rr.ended_links());
     assert!(rc.ended_links().is_empty());
     assert_eq!(
-        scalar(&capless, "SELECT count(*) || '' FROM journal_opaque").as_deref(),
+        scalar(&capless, "SELECT ((SELECT count(*) FROM journal WHERE kind IS NULL) + (SELECT count(*) FROM journal_forked WHERE kind IS NULL)) || ''").as_deref(),
         Some("0"),
         "nothing opaque reached it"
     );

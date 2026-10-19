@@ -5007,9 +5007,17 @@ fn insert_journal(
     parked_on: Option<&str>,
 ) -> rusqlite::Result<usize> {
     db.execute(
-        "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state,applied_seq,parked_on) \
-         VALUES (2,?1,?2,?3,10,'k',1,x'',x'00',zeroblob(64),0,?4,?5,?6)",
-        params![counter, hash_blob(1), hash_blob(2), state, applied_seq, parked_on],
+        "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state,applied_seq,parked_on,raw) \
+         VALUES (2,?1,?2,?3,10,'k',1,x'',x'00',zeroblob(64),0,?4,?5,?6,?7)",
+        params![
+            counter,
+            hash_blob(1),
+            hash_blob(2),
+            state,
+            applied_seq,
+            parked_on,
+            crate::test_support::opaque_entry::known_raw_stub()
+        ],
     )
 }
 
@@ -5248,9 +5256,9 @@ fn fact_attribution_staging_verifies() {
 
 fn insert_forked(db: &Connection) {
     db.execute(
-        "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,source_node,received_at) \
-         VALUES (2,3,zeroblob(32),zeroblob(32),1,'k',1,x'',x'00',zeroblob(64),NULL,0)",
-        [],
+        "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,source_node,received_at,raw) \
+         VALUES (2,3,zeroblob(32),zeroblob(32),1,'k',1,x'',x'00',zeroblob(64),NULL,0,?1)",
+        [crate::test_support::opaque_entry::known_raw_stub()],
     )
     .unwrap();
 }
@@ -6281,169 +6289,720 @@ fn sibling_delivery_upgrade_preserves_rows_and_refuses_schema3_binary() {
     assert_eq!(user_version(&db), 4);
 }
 
-#[test]
-fn journal_opaque_delta_upgrades_highest_main_store() {
-    let db = Connection::open_in_memory().unwrap();
-    let old = &schema::NODE_DELTAS[..3];
-    open_with(&db, old).unwrap();
-    assert_eq!(user_version(&db), 4);
-    db.execute_batch(
-        "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,first_seen_at) \
-         VALUES (1,'0123456789abcdef0123456789abcdef',1,0,zeroblob(32),zeroblob(32),2,zeroblob(32),0);",
-    )
-    .unwrap();
-    for counter in [1i64, 2] {
+/// Node schema 5, the bytes-first journal (ht-76u6): the delta rebuilds
+/// `journal` / `journal_forked` with `raw` as truth and a nullable projection.
+mod bytes_first {
+    use super::*;
+    use crate::node::NodeIdentity;
+    use crate::sync::envelope::{
+        CANONICAL_MAX, DEPS_MAX, Deps, Envelope, KIND_MAX, NEEDS_MAX, PAYLOAD_MAX, RAW_MAX,
+        UnsignedEnvelope,
+    };
+    use crate::sync::hlc::HlcStamp;
+    use crate::sync::{EntityKey, LogKey};
+    use rusqlite::types::Value;
+    use sha2::{Digest, Sha256};
+
+    /// Every builtin kind except `node.genesis`, with the kind-agnostic copy in
+    /// mind: only `validate_shape` has to pass, so every payload is `{}`.
+    const KINDS: [&str; 12] = [
+        "node.retag",
+        "seat.created",
+        "seat.retired",
+        "thread.created",
+        "thread.register",
+        "thread.direct",
+        "invitation.created",
+        "invitation.answered",
+        "membership.joined",
+        "membership.left",
+        "message.sent",
+        "receipt.settled",
+    ];
+
+    const JOURNAL_COLUMNS: &str = "ingest_seq,log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,needs,payload,signature,ingested_at,apply_state,applied_seq,parked_on,apply_error";
+    const FORKED_COLUMNS: &str = "forked_ix,log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,needs,payload,signature,source_node,received_at";
+
+    struct Fixture {
+        /// `(ingest_seq, envelope)` of every schema-4 `journal` row.
+        journal: Vec<(i64, Envelope)>,
+        /// `(forked_ix, envelope)` of every schema-4 `journal_forked` row.
+        forked: Vec<(i64, Envelope)>,
+        /// `ingest_seq` of the maximal entry of log B.
+        maximal: i64,
+        /// `ingest_seq` values the child rows point at.
+        register_src: i64,
+        reissue_target: i64,
+    }
+
+    fn identity_of(seed: u8) -> NodeIdentity {
+        NodeIdentity::from_seed([seed; 32])
+    }
+
+    fn log_of(id: &NodeIdentity) -> LogKey {
+        LogKey {
+            node: id.uuid(),
+            incarnation: 1,
+        }
+    }
+
+    fn unsigned(
+        id: &NodeIdentity,
+        counter: u64,
+        prev_hash: [u8; 32],
+        kind: &str,
+        payload: Vec<u8>,
+    ) -> UnsignedEnvelope {
+        let genesis = counter == 1;
+        UnsignedEnvelope {
+            log: log_of(id),
+            counter,
+            prev_hash,
+            hlc: HlcStamp::from_parts(1_700_000_000_000 + counter, counter as u16),
+            kind: kind.into(),
+            kind_version: 1,
+            deps: Deps::empty(),
+            creates: (!genesis && counter.is_multiple_of(5)).then(|| key(&format!("e:{counter}"))),
+            needs: if !genesis && counter.is_multiple_of(7) {
+                vec![key("m1"), key("t1")]
+            } else {
+                vec![]
+            },
+            payload,
+        }
+    }
+
+    fn key(text: &str) -> EntityKey {
+        EntityKey::new(text).unwrap()
+    }
+
+    fn genesis_of(id: &NodeIdentity) -> Envelope {
+        let hex: String = id
+            .public_key()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let payload = format!(r#"{{"pubkey":"{hex}"}}"#).into_bytes();
+        let envelope = unsigned(id, 1, [0; 32], "node.genesis", payload);
+        envelope.validate_shape().unwrap();
+        envelope.seal(id)
+    }
+
+    /// The largest entry `validate_shape` admits.
+    fn maximal_after(id: &NodeIdentity, prev: [u8; 32]) -> Envelope {
+        let me = log_of(id);
+        let long_key = |i: usize| {
+            let head = format!("k{i:04}.");
+            key(&format!(
+                "{head}{}",
+                "x".repeat(crate::sync::ENTITY_KEY_MAX - head.len())
+            ))
+        };
+        let deps = Deps::new(
+            (0..DEPS_MAX)
+                .map(|i| {
+                    let mut node = [0u8; 16];
+                    node[..8].copy_from_slice(&(i as u64 + 1).to_be_bytes());
+                    (
+                        LogKey {
+                            node: crate::node::NodeUuid::from_bytes(node),
+                            incarnation: 1,
+                        },
+                        1,
+                    )
+                })
+                .collect(),
+            &me,
+        )
+        .unwrap();
+        let envelope = UnsignedEnvelope {
+            log: me,
+            counter: 2,
+            prev_hash: prev,
+            hlc: HlcStamp::from_parts(1_700_000_000_500, 1),
+            kind: format!("a.{}", "b".repeat(KIND_MAX - 2)),
+            kind_version: 2,
+            deps,
+            creates: Some(long_key(0)),
+            needs: (1..=NEEDS_MAX).map(long_key).collect(),
+            payload: format!("\"{}\"", "x".repeat(PAYLOAD_MAX - 2)).into_bytes(),
+        };
+        envelope.validate_shape().unwrap();
+        envelope.seal(id)
+    }
+
+    fn insert_log(db: &Connection, log_ix: i64, id: &NodeIdentity, head: &Envelope, applied: i64) {
         db.execute(
-            "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state) \
-             VALUES (1,?1,zeroblob(32),randomblob(32),1,'k',1,x'',x'00',zeroblob(64),0,'pending')",
+            "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,contiguous_counter,head_hash,applied_through,first_seen_at) \
+             VALUES (?1,?2,1,0,?3,?4,?5,?6,?7,0)",
+            params![
+                log_ix,
+                id.uuid().to_string(),
+                id.public_key().as_slice(),
+                head.hash.as_slice(),
+                head.counter as i64,
+                head.hash.as_slice(),
+                applied,
+            ],
+        )
+        .unwrap();
+    }
+
+    /// One schema-4 `journal` row (no `raw` column yet).
+    #[allow(clippy::too_many_arguments)]
+    fn insert_v4_journal(
+        db: &Connection,
+        ingest_seq: i64,
+        log_ix: i64,
+        e: &Envelope,
+        ingested_at: i64,
+        state: &str,
+        applied_seq: Option<i64>,
+        parked_on: Option<&str>,
+        apply_error: Option<&str>,
+    ) -> rusqlite::Result<usize> {
+        let needs = e
+            .needs
+            .iter()
+            .map(EntityKey::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        db.execute(
+            &format!("INSERT INTO journal({JOURNAL_COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)"),
+            params![
+                ingest_seq,
+                log_ix,
+                e.counter as i64,
+                e.prev_hash.as_slice(),
+                e.hash.as_slice(),
+                e.hlc.as_u64() as i64,
+                e.kind,
+                e.kind_version,
+                e.deps.encode(),
+                e.creates.as_ref().map(EntityKey::as_str),
+                needs,
+                e.payload,
+                e.signature.as_slice(),
+                ingested_at,
+                state,
+                applied_seq,
+                parked_on,
+                apply_error,
+            ],
+        )
+    }
+
+    fn insert_v4_forked(db: &Connection, forked_ix: i64, log_ix: i64, e: &Envelope) {
+        let needs = e
+            .needs
+            .iter()
+            .map(EntityKey::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        db.execute(
+            &format!("INSERT INTO journal_forked({FORKED_COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"),
+            params![
+                forked_ix,
+                log_ix,
+                e.counter as i64,
+                e.prev_hash.as_slice(),
+                e.hash.as_slice(),
+                e.hlc.as_u64() as i64,
+                e.kind,
+                e.kind_version,
+                e.deps.encode(),
+                e.creates.as_ref().map(EntityKey::as_str),
+                needs,
+                e.payload,
+                e.signature.as_slice(),
+                "ab".repeat(16),
+                forked_ix * 100,
+            ],
+        )
+        .unwrap();
+    }
+
+    /// A schema-4 store (foreign keys on, as production opens it) holding two
+    /// peer logs: A with a genesis and one entry of every other builtin kind in
+    /// every apply state plus a forked rival, B with a genesis and the maximal
+    /// entry; a `thread_registers` and a `sync_reissues` row point at journal
+    /// rows. `ingest_seq` values have gaps, so a copy that renumbers is caught.
+    fn schema4_store() -> (Connection, Fixture) {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", true).unwrap();
+        open_with(&db, &schema::NODE_DELTAS[..3]).unwrap();
+        assert_eq!(user_version(&db), 4);
+        let (a, b) = (identity_of(11), identity_of(12));
+
+        let mut chain_a = vec![genesis_of(&a)];
+        for (index, kind) in KINDS.iter().enumerate() {
+            let prev = chain_a.last().unwrap().hash;
+            let envelope = unsigned(&a, index as u64 + 2, prev, kind, b"{}".to_vec());
+            envelope.validate_shape().unwrap();
+            chain_a.push(envelope.seal(&a));
+        }
+        let genesis_b = genesis_of(&b);
+        let maximal = maximal_after(&b, genesis_b.hash);
+
+        insert_log(&db, 1, &a, chain_a.last().unwrap(), 3);
+        insert_log(&db, 2, &b, &maximal, 0);
+
+        let states: [(&str, Option<&str>, Option<&str>); 6] = [
+            ("applied", None, None),
+            ("applied", None, None),
+            ("pending", None, None),
+            ("parked_unknown", None, None),
+            ("parked_dep", Some("m1"), None),
+            ("failed", None, Some("handler refused")),
+        ];
+        let mut journal = Vec::new();
+        let mut next_applied = 0;
+        for (index, envelope) in chain_a.iter().enumerate() {
+            // The genesis is applied; entries after the table run out are pending.
+            let (state, parked_on, error) = if index == 0 {
+                ("applied", None, None)
+            } else {
+                states
+                    .get(index - 1)
+                    .copied()
+                    .unwrap_or(("pending", None, None))
+            };
+            let applied_seq = (state == "applied").then(|| {
+                next_applied += 1;
+                next_applied
+            });
+            let ingest_seq = 3 * index as i64 + 1;
+            insert_v4_journal(
+                &db,
+                ingest_seq,
+                1,
+                envelope,
+                10 * index as i64,
+                state,
+                applied_seq,
+                parked_on,
+                error,
+            )
+            .unwrap();
+            journal.push((ingest_seq, envelope.clone()));
+        }
+        let top = 3 * chain_a.len() as i64 + 1;
+        insert_v4_journal(
+            &db,
+            top,
+            2,
+            &genesis_b,
+            5,
+            "applied",
+            Some(next_applied + 1),
+            None,
+            None,
+        )
+        .unwrap();
+        journal.push((top, genesis_b));
+        let maximal_seq = top + 3;
+        insert_v4_journal(
+            &db,
+            maximal_seq,
+            2,
+            &maximal,
+            6,
+            "pending",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        journal.push((maximal_seq, maximal));
+
+        // A conflicting rival of A's counter 8, kept off-chain.
+        let held = chain_a[7].clone();
+        let rival = unsigned(
+            &a,
+            held.counter,
+            held.prev_hash,
+            &held.kind,
+            br#"{"fork":1}"#.to_vec(),
+        );
+        rival.validate_shape().unwrap();
+        let rival = rival.seal(&a);
+        assert_ne!(rival.hash, held.hash);
+        insert_v4_forked(&db, 4, 1, &rival);
+        let forked = vec![(4, rival)];
+
+        let register_src = journal[1].0;
+        let reissue_target = journal[2].0;
+        db.execute(
+            "INSERT INTO thread_registers(thread_id,field,value,hlc,node_uuid,src_ingest_seq) VALUES ('t','topic','x',1,?1,?2)",
+            params![a.uuid().to_string(), register_src],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sync_reissues(source_log_ix,source_counter,source_hash,target_ingest_seq,reissued_at) VALUES (1,2,?1,?2,0)",
+            params![chain_a[1].hash.as_slice(), reissue_target],
+        )
+        .unwrap();
+        (
+            db,
+            Fixture {
+                journal,
+                forked,
+                maximal: maximal_seq,
+                register_src,
+                reissue_target,
+            },
+        )
+    }
+
+    fn dump(db: &Connection, sql: &str) -> Vec<Vec<Value>> {
+        let mut statement = db.prepare(sql).unwrap();
+        let width = statement.column_count();
+        statement
+            .query_map([], |r| (0..width).map(|i| r.get::<_, Value>(i)).collect())
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    fn names(db: &Connection, sql: &str) -> Vec<String> {
+        let mut statement = db.prepare(sql).unwrap();
+        statement
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    fn fk_violations(db: &Connection) -> i64 {
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    /// Migrating a populated schema-4 store (thread_registers and
+    /// sync_reissues rows included) commits, keeps every stored column, fills
+    /// `raw` with the canonical bytes, leaves foreign keys intact and passes
+    /// the schema audit on reopen.
+    #[test]
+    fn bytes_first_delta_migrates_populated_schema4_store() {
+        let (db, fixture) = schema4_store();
+        let journal_before = dump(
+            &db,
+            &format!("SELECT {JOURNAL_COLUMNS} FROM journal ORDER BY ingest_seq"),
+        );
+        let forked_before = dump(
+            &db,
+            &format!("SELECT {FORKED_COLUMNS} FROM journal_forked ORDER BY forked_ix"),
+        );
+        let seq_before = rows(&db, "SELECT seq FROM sqlite_sequence WHERE name='journal'");
+        assert_eq!(journal_before.len(), fixture.journal.len());
+
+        open_with(&db, schema::NODE_DELTAS).unwrap();
+
+        assert_eq!(user_version(&db), 5);
+        assert!(fk_on(&db), "foreign keys are back on");
+        assert_eq!(fk_violations(&db), 0);
+        assert_eq!(
+            journal_before,
+            dump(
+                &db,
+                &format!("SELECT {JOURNAL_COLUMNS} FROM journal ORDER BY ingest_seq")
+            ),
+            "every stored journal column is carried over verbatim"
+        );
+        assert_eq!(
+            forked_before,
+            dump(
+                &db,
+                &format!("SELECT {FORKED_COLUMNS} FROM journal_forked ORDER BY forked_ix")
+            ),
+        );
+        for (ingest_seq, envelope) in &fixture.journal {
+            let (raw, hash): (Vec<u8>, Vec<u8>) = db
+                .query_row(
+                    "SELECT raw,hash FROM journal WHERE ingest_seq=?1",
+                    [ingest_seq],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(raw, envelope.canonical_bytes(), "journal row {ingest_seq}");
+            assert_eq!(Sha256::digest(&raw).as_slice(), hash.as_slice());
+        }
+        for (forked_ix, envelope) in &fixture.forked {
+            let (raw, hash): (Vec<u8>, Vec<u8>) = db
+                .query_row(
+                    "SELECT raw,hash FROM journal_forked WHERE forked_ix=?1",
+                    [forked_ix],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(raw, envelope.canonical_bytes(), "forked row {forked_ix}");
+            assert_eq!(Sha256::digest(&raw).as_slice(), hash.as_slice());
+        }
+        // The children still point at the same rows.
+        assert_eq!(
+            rows(&db, "SELECT src_ingest_seq FROM thread_registers"),
+            fixture.register_src
+        );
+        assert_eq!(
+            rows(&db, "SELECT target_ingest_seq FROM sync_reissues"),
+            fixture.reissue_target
+        );
+        // The AUTOINCREMENT high-water mark survived: the next row follows it.
+        assert_eq!(
+            rows(&db, "SELECT seq FROM sqlite_sequence WHERE name='journal'"),
+            seq_before
+        );
+        db.execute(
+            "INSERT INTO journal(log_ix,counter,prev_hash,hash,signature,raw,needs,ingested_at,apply_state) \
+             VALUES (2,3,zeroblob(32),randomblob(32),zeroblob(64),zeroblob(68),NULL,0,'parked_layout')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(db.last_insert_rowid(), seq_before + 1);
+        open_with(&db, schema::NODE_DELTAS).unwrap();
+    }
+
+    /// The `raw` CHECK is the literal `RAW_MAX`, which is also the largest
+    /// canonical entry's room: the maximal entry copies, one byte more is refused.
+    #[test]
+    fn bytes_first_delta_copies_maximal_entry() {
+        let (db, fixture) = schema4_store();
+        open_with(&db, schema::NODE_DELTAS).unwrap();
+        let length: i64 = db
+            .query_row(
+                "SELECT length(raw) FROM journal WHERE ingest_seq=?1",
+                [fixture.maximal],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(length as usize, CANONICAL_MAX);
+        const { assert!(CANONICAL_MAX <= RAW_MAX) };
+        assert!(
+            schema::NODE_DELTAS[3].sql.contains(&RAW_MAX.to_string()),
+            "the DDL carries the RAW_MAX literal"
+        );
+        let unknown = |len: usize, counter: i64| {
+            db.execute(
+                "INSERT INTO journal(log_ix,counter,prev_hash,hash,signature,raw,needs,ingested_at,apply_state) \
+                 VALUES (2,?1,zeroblob(32),randomblob(32),zeroblob(64),zeroblob(?2),NULL,0,'parked_layout')",
+                params![counter, len as i64],
+            )
+        };
+        unknown(RAW_MAX, 3).unwrap();
+        let message = abort_message(unknown(RAW_MAX + 1, 4));
+        assert!(message.contains("CHECK constraint failed"), "{message}");
+    }
+
+    /// A row whose projection does not re-encode to its hash aborts the whole
+    /// migration: the store stays at schema 4, with no half-built table.
+    #[test]
+    fn bytes_first_delta_aborts_on_corrupted_projection() {
+        let (db, fixture) = schema4_store();
+        let (_, envelope) = &fixture.journal[1];
+        let mut bad = envelope.clone();
+        bad.counter = 40;
+        bad.hash = [0x66; 32];
+        insert_v4_journal(&db, 900, 1, &bad, 0, "pending", None, None, None).unwrap();
+
+        let error = open_with(&db, schema::NODE_DELTAS).unwrap_err();
+        assert_eq!(error.code, ErrorCode::StoreCorrupt, "{error:?}");
+        assert!(error.detail.contains("journal row 900"), "{}", error.detail);
+
+        assert_eq!(user_version(&db), 4);
+        assert_eq!(
+            rows(
+                &db,
+                "SELECT count(*) FROM pragma_table_info('journal') WHERE name='raw'"
+            ),
+            0
+        );
+        assert!(!table_exists(&db, "journal_new"));
+        assert!(!table_exists(&db, "journal_forked_new"));
+        assert!(fk_on(&db), "foreign keys restored on the failure path");
+        open_with(&db, &schema::NODE_DELTAS[..3]).unwrap();
+    }
+
+    /// The same check covers the forked table.
+    #[test]
+    fn bytes_first_delta_aborts_on_corrupted_forked_row() {
+        let (db, fixture) = schema4_store();
+        let mut bad = fixture.forked[0].1.clone();
+        bad.counter = 41;
+        bad.hash = [0x77; 32];
+        insert_v4_forked(&db, 901, 1, &bad);
+        let error = open_with(&db, schema::NODE_DELTAS).unwrap_err();
+        assert_eq!(error.code, ErrorCode::StoreCorrupt, "{error:?}");
+        assert!(
+            error.detail.contains("journal_forked row 901"),
+            "{}",
+            error.detail
+        );
+        assert_eq!(user_version(&db), 4);
+    }
+
+    #[test]
+    fn fresh_store_reaches_schema_5_and_passes_audit() {
+        let db = Connection::open_in_memory().unwrap();
+        open_with(&db, schema::NODE_DELTAS).unwrap();
+        assert_eq!(user_version(&db), 5);
+        open_with(&db, schema::NODE_DELTAS).unwrap();
+        for table in ["journal", "journal_forked"] {
+            assert_eq!(
+                rows(
+                    &db,
+                    &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name='raw'")
+                ),
+                1,
+                "{table}"
+            );
+        }
+        assert!(!table_exists(&db, "journal_opaque"));
+        assert!(!table_exists(&db, "journal_new"));
+        assert!(!table_exists(&db, "journal_forked_new"));
+    }
+
+    #[test]
+    fn bytes_first_schema_objects_match_design() {
+        let (db, _) = schema4_store();
+        open_with(&db, schema::NODE_DELTAS).unwrap();
+        assert_eq!(
+            names(
+                &db,
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name IN ('journal','journal_forked') ORDER BY name",
+            ),
+            [
+                "journal_append_only",
+                "journal_applied_terminal",
+                "journal_envelope_immutable",
+                "journal_forked_append_only",
+                "journal_forked_immutable",
+            ]
+        );
+        assert_eq!(
+            names(
+                &db,
+                "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' AND tbl_name IN ('journal','journal_forked') ORDER BY name",
+            ),
+            [
+                "journal_applied_seq",
+                "journal_creates",
+                "journal_forked_creates",
+                "journal_parked_on",
+                "journal_unapplied",
+            ]
+        );
+        assert_eq!(
+            rows(
+                &db,
+                "SELECT count(*) FROM sqlite_master WHERE name LIKE '%journal_opaque%' OR name LIKE '%journal_new%' OR sql LIKE '%journal_opaque%' OR sql LIKE '%journal_new%' OR sql LIKE '%journal_forked_new%'"
+            ),
+            0
+        );
+        // The unique partial index is still unique and partial.
+        let sql: String = db
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='journal_applied_seq'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            sql.contains("UNIQUE") && sql.contains("WHERE applied_seq IS NOT NULL"),
+            "{sql}"
+        );
+    }
+
+    fn insert_unknown(db: &Connection, counter: i64) {
+        db.execute(
+            "INSERT INTO journal(log_ix,counter,prev_hash,hash,signature,raw,needs,ingested_at,apply_state) \
+             VALUES (2,?1,zeroblob(32),randomblob(32),zeroblob(64),zeroblob(68),NULL,0,'parked_layout')",
             [counter],
         )
         .unwrap();
     }
-    open_with(&db, schema::NODE_DELTAS).unwrap();
-    assert_eq!(user_version(&db), schema::NODE_LATEST_SCHEMA_VERSION);
-    let columns: Vec<String> = db
-        .prepare("SELECT name FROM pragma_table_info('journal_opaque') ORDER BY cid")
-        .unwrap()
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    assert_eq!(
-        columns,
-        [
-            "log_ix",
-            "counter",
-            "hash",
-            "prev_hash",
-            "signature",
-            "raw",
-            "branch"
-        ]
-    );
-    let kept: i64 = db
-        .query_row("SELECT COUNT(*) FROM journal", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(kept, 2);
-    for (kind, name) in [
-        ("trigger", "journal_opaque_immutable"),
-        ("trigger", "journal_opaque_append_only"),
-        ("trigger", "journal_opaque_position_taken"),
-        ("trigger", "journal_position_taken_by_opaque"),
-    ] {
-        let found: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type=?1 AND name=?2",
-                [kind, name],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(found, 1, "{kind} {name}");
+
+    /// Signed data never changes, on a known row and on an empty-projection one.
+    #[test]
+    fn journal_trigger_refuses_envelope_changes() {
+        let db = journal_db();
+        insert_journal(&db, 1, "pending", None, None).unwrap();
+        insert_unknown(&db, 2);
+        for (counter, label) in [(1, "known"), (2, "unknown")] {
+            for assignment in [
+                "log_ix=1",
+                "counter=9",
+                "prev_hash=randomblob(32)",
+                "hash=randomblob(32)",
+                "signature=randomblob(64)",
+                "raw=zeroblob(69)",
+                "ingested_at=9",
+            ] {
+                let message = abort_message(db.execute(
+                    &format!("UPDATE journal SET {assignment} WHERE counter={counter}"),
+                    [],
+                ));
+                assert!(
+                    message.contains("journal_envelope_immutable"),
+                    "{label} {assignment}: {message}"
+                );
+            }
+        }
     }
-    let promoting: i64 = db
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE name='journal_opaque_promoting'",
+
+    #[test]
+    fn journal_trigger_refuses_projection_change_on_known_row() {
+        let db = journal_db();
+        insert_journal(&db, 1, "pending", None, None).unwrap();
+        for assignment in [
+            "hlc=11",
+            "kind='z'",
+            "kind_version=2",
+            "deps=x'0000'",
+            "creates='e'",
+            "needs='n'",
+            "payload=x'01'",
+        ] {
+            let message =
+                abort_message(db.execute(&format!("UPDATE journal SET {assignment}"), []));
+            assert!(
+                message.contains("journal_envelope_immutable"),
+                "{assignment}: {message}"
+            );
+        }
+        // Bookkeeping columns stay writable.
+        db.execute(
+            "UPDATE journal SET apply_state='failed', apply_error='e'",
             [],
-            |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(promoting, 0);
-    assert!(
-        open_with(&db, old)
-            .unwrap_err()
-            .detail
-            .contains("newer than this binary")
-    );
-}
-
-fn opaque_hash(last: u8) -> [u8; 32] {
-    let mut hash = [0u8; 32];
-    hash[31] = last;
-    hash
-}
-
-fn insert_opaque_raw(
-    db: &Connection,
-    log_ix: i64,
-    counter: i64,
-    hash: u8,
-    branch: i64,
-) -> rusqlite::Result<usize> {
-    db.execute(
-        "INSERT INTO journal_opaque(log_ix,counter,hash,prev_hash,signature,raw,branch) \
-         VALUES (?1,?2,?3,zeroblob(32),zeroblob(64),zeroblob(68),?4)",
-        rusqlite::params![log_ix, counter, opaque_hash(hash).as_slice(), branch],
-    )
-}
-
-#[test]
-fn journal_opaque_rows_are_immutable() {
-    let db = journal_db();
-    insert_opaque_raw(&db, 2, 3, 7, 0).unwrap();
-    for assignment in [
-        "counter=4",
-        "hash=zeroblob(32)",
-        "prev_hash=randomblob(32)",
-        "signature=randomblob(64)",
-        "raw=zeroblob(69)",
-        "branch=1",
-        "log_ix=1",
-    ] {
-        let message =
-            abort_message(db.execute(&format!("UPDATE journal_opaque SET {assignment}"), []));
-        assert!(
-            message.contains("journal_opaque_immutable"),
-            "{assignment}: {message}"
-        );
     }
-}
 
-#[test]
-fn journal_opaque_rejects_every_delete() {
-    let db = journal_db();
-    insert_opaque_raw(&db, 2, 3, 7, 0).unwrap();
-    insert_opaque_raw(&db, 2, 4, 8, 1).unwrap();
-    for sql in [
-        "DELETE FROM journal_opaque",
-        "DELETE FROM journal_opaque WHERE branch=1",
-    ] {
-        let message = abort_message(db.execute(sql, []));
-        assert!(
-            message.contains("journal_opaque_append_only"),
-            "{sql}: {message}"
-        );
-    }
-    let message = abort_message(db.execute(
-        "DELETE FROM journal_opaque WHERE counter=3 AND hash=?1",
-        [opaque_hash(7).as_slice()],
-    ));
-    assert!(message.contains("journal_opaque_append_only"), "{message}");
-    let rows: i64 = db
-        .query_row("SELECT COUNT(*) FROM journal_opaque", [], |r| r.get(0))
+    /// Promotion: an empty projection may be filled once, all at once.
+    #[test]
+    fn journal_trigger_allows_projection_fill_from_null_once() {
+        let db = journal_db();
+        insert_unknown(&db, 3);
+        insert_unknown(&db, 4);
+        db.execute(
+            "UPDATE journal SET hlc=5,kind='k',kind_version=1,deps=x'',creates=NULL,needs='',payload=x'7b7d',apply_state='pending' WHERE counter=3",
+            [],
+        )
         .unwrap();
-    assert_eq!(rows, 2);
-}
-
-#[test]
-fn duplicate_position_across_tables_rejected() {
-    let db = journal_db();
-    // journal first, then an opaque chain row at the same counter.
-    insert_journal(&db, 3, "pending", None, None).unwrap();
-    let message = abort_message(insert_opaque_raw(&db, 2, 3, 7, 0));
-    assert!(
-        message.contains("journal_opaque_position_taken"),
-        "{message}"
-    );
-    // A branch row at a held counter is allowed.
-    assert_eq!(insert_opaque_raw(&db, 2, 3, 8, 1).unwrap(), 1);
-    // Opaque first, then a journal row at the same counter.
-    insert_opaque_raw(&db, 2, 4, 7, 0).unwrap();
-    let message = abort_message(insert_journal(&db, 4, "pending", None, None));
-    assert!(
-        message.contains("journal_opaque_position_taken"),
-        "{message}"
-    );
-    // A branch row alone does not take the position.
-    insert_opaque_raw(&db, 2, 5, 9, 1).unwrap();
-    insert_journal(&db, 5, "pending", None, None).unwrap();
+        let message = abort_message(db.execute("UPDATE journal SET kind='k2' WHERE counter=3", []));
+        assert!(message.contains("journal_envelope_immutable"), "{message}");
+        let message =
+            abort_message(db.execute("UPDATE journal SET payload=x'01' WHERE counter=3", []));
+        assert!(message.contains("journal_envelope_immutable"), "{message}");
+        // A partial fill breaks the all-or-none projection CHECK.
+        let message = abort_message(db.execute("UPDATE journal SET kind='k' WHERE counter=4", []));
+        assert!(message.contains("CHECK constraint failed"), "{message}");
+        // The promotion also has to leave parked_layout.
+        let message = abort_message(db.execute(
+            "UPDATE journal SET hlc=5,kind='k',kind_version=1,deps=x'',needs='',payload=x'7b7d' WHERE counter=4",
+            [],
+        ));
+        assert!(message.contains("CHECK constraint failed"), "{message}");
+    }
 }

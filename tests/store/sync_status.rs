@@ -97,8 +97,8 @@ impl Fixture {
         self.writer
             .execute(
                 "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps, \
-                 needs,payload,signature,ingested_at,apply_state,applied_seq,parked_on,apply_error) \
-                 VALUES (?1,?2,?3,?4,1,'test.kind',1,x'',  '',x'7b7d',zeroblob(64),0,?5,?6,?7,?8)",
+                 needs,payload,signature,ingested_at,apply_state,applied_seq,parked_on,apply_error,raw) \
+                 VALUES (?1,?2,?3,?4,1,'test.kind',1,x'',  '',x'7b7d',zeroblob(64),0,?5,?6,?7,?8,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
                 params![
                     log_ix,
                     n,
@@ -313,8 +313,8 @@ fn verify_healthy_and_seeded_violations() {
     fx.writer
         .execute(
             "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version, \
-             deps,needs,payload,signature,received_at) \
-             VALUES (?1,2,zeroblob(32),zeroblob(32),1,'test.kind',1,x'','',x'7b7d',zeroblob(64),0)",
+             deps,needs,payload,signature,received_at,raw) \
+             VALUES (?1,2,zeroblob(32),zeroblob(32),1,'test.kind',1,x'','',x'7b7d',zeroblob(64),0,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
             [g],
         )
         .unwrap();
@@ -328,8 +328,8 @@ fn verify_healthy_and_seeded_violations() {
     fx.writer
         .execute(
             "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,needs, \
-             payload,signature,ingested_at,apply_state,applied_seq) \
-             VALUES (?1,2,zeroblob(32),?2,1,'test.kind',1,x'','',x'7b7d',zeroblob(64),0,'applied',?3)",
+             payload,signature,ingested_at,apply_state,applied_seq,raw) \
+             VALUES (?1,2,zeroblob(32),?2,1,'test.kind',1,x'','',x'7b7d',zeroblob(64),0,'applied',?3,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
             params![h, vec![2u8; 32], 99_999],
         )
         .unwrap();
@@ -448,16 +448,16 @@ fn log_with_opaque_predecessor(fx: &mut Fixture, node: u8, prev3: u8) {
     let log_ix = fx.seed_log(node, 1, &[("applied", None)]);
     fx.writer
         .execute(
-            "INSERT INTO journal_opaque(log_ix,counter,hash,prev_hash,signature,raw,branch) \
-             VALUES (?1,2,?2,?3,zeroblob(64),zeroblob(68),0)",
+            "INSERT INTO journal(log_ix,counter,hash,prev_hash,signature,raw,needs,ingested_at,apply_state) \
+             VALUES (?1,2,?2,?3,zeroblob(64),zeroblob(68),NULL,0,'parked_layout')",
             params![log_ix, vec![2u8; 32], vec![1u8; 32]],
         )
         .unwrap();
     fx.writer
         .execute(
             "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,needs, \
-             payload,signature,ingested_at,apply_state) \
-             VALUES (?1,3,?2,?3,1,'test.kind',1,x'','',x'7b7d',zeroblob(64),0,'pending')",
+             payload,signature,ingested_at,apply_state,raw) \
+             VALUES (?1,3,?2,?3,1,'test.kind',1,x'','',x'7b7d',zeroblob(64),0,'pending',x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
             params![log_ix, vec![prev3; 32], vec![3u8; 32]],
         )
         .unwrap();

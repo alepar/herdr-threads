@@ -97,8 +97,11 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
     },
     NodeDelta {
         version: 5,
-        sql: include_str!("../../migrations/node/0005_journal_opaque.sql"),
-        rebuild: None,
+        sql: include_str!("../../migrations/node/0005_bytes_first_journal.sql"),
+        rebuild: Some(Rebuild {
+            copy: super::journal::copy_rows_with_raw,
+            sql_after: include_str!("../../migrations/node/0005_bytes_first_journal_after.sql"),
+        }),
     },
 ];
 

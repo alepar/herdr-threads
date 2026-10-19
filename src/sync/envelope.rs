@@ -40,6 +40,26 @@ const DEP_LEN: usize = 28;
 /// prev_hash[32]`.
 pub const PREFIX_LEN: usize = 68;
 
+/// Largest `raw` a journal row holds: the literal `length(raw) <= 786432`
+/// CHECK of node schema 5 (ht-76u6). Above both the largest entry
+/// `validate_shape` admits ([`CANONICAL_MAX`]) and [`OPAQUE_MAX_BYTES`].
+pub const RAW_MAX: usize = 786_432;
+/// Canonical byte length of the largest HTJRNL01 entry `validate_shape` admits.
+pub const CANONICAL_MAX: usize = PREFIX_LEN
+    + 8
+    + 2
+    + KIND_MAX
+    + 4
+    + 4
+    + (2 + DEPS_MAX * DEP_LEN)
+    + 1
+    + (2 + crate::sync::ENTITY_KEY_MAX)
+    + 2
+    + NEEDS_MAX * (2 + crate::sync::ENTITY_KEY_MAX)
+    + 4
+    + PAYLOAD_MAX;
+const _: () = assert!(CANONICAL_MAX <= RAW_MAX && OPAQUE_MAX_BYTES <= RAW_MAX);
+
 /// The 68-byte layout-agnostic prefix (see [`MAGIC`]). Owns writing and
 /// parsing those bytes; callers never slice prefix offsets by hand. Must not
 /// read past byte 68 or decide whether a magic is known. The prefix declares
@@ -1582,6 +1602,56 @@ mod tests {
         assert_eq!(OPAQUE_MAX_BYTES, 384 * 1024);
         const { assert!(OPAQUE_MAX_BYTES <= PAYLOAD_MAX) };
         const { assert!(2 * OPAQUE_MAX_BYTES + 4096 < 1 << 20) };
+    }
+
+    /// The largest entry `validate_shape` admits seals to exactly
+    /// [`CANONICAL_MAX`] bytes, which fits the schema-5 `raw` CHECK.
+    #[test]
+    fn canonical_max_is_the_largest_admitted_entry() {
+        assert_eq!(CANONICAL_MAX, 680_769);
+        let id = identity(1);
+        let me = own(&id);
+        let long_key = |i: usize| {
+            let head = format!("k{i:04}.");
+            key(&format!(
+                "{head}{}",
+                "x".repeat(crate::sync::ENTITY_KEY_MAX - head.len())
+            ))
+        };
+        let deps = Deps::new(
+            (0..DEPS_MAX)
+                .map(|i| {
+                    let mut node = [0u8; 16];
+                    node[..8].copy_from_slice(&(i as u64 + 1).to_be_bytes());
+                    (
+                        LogKey {
+                            node: NodeUuid::from_bytes(node),
+                            incarnation: 1,
+                        },
+                        1,
+                    )
+                })
+                .collect(),
+            &me,
+        )
+        .unwrap();
+        let mut max = UnsignedEnvelope {
+            log: me,
+            counter: 7,
+            prev_hash: [0xab; 32],
+            hlc: HlcStamp::from_parts(1_700_000_000_123, 9),
+            kind: format!("a.{}", "b".repeat(KIND_MAX - 2)),
+            kind_version: 2,
+            deps,
+            creates: Some(long_key(0)),
+            needs: (1..=NEEDS_MAX).map(long_key).collect(),
+            payload: format!("\"{}\"", "x".repeat(PAYLOAD_MAX - 2)).into_bytes(),
+        };
+        assert_eq!(max.validate_shape(), Ok(()));
+        assert_eq!(max.canonical_bytes().len(), CANONICAL_MAX);
+        // One more of anything is refused, so nothing larger exists.
+        max.needs.push(long_key(NEEDS_MAX + 1));
+        assert_eq!(max.validate_shape(), bad("needs"));
     }
 
     #[test]

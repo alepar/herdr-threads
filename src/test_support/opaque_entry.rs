@@ -164,6 +164,14 @@ pub fn understand_synthetic() -> UnderstoodLayoutGuard {
     mark_layout_understood(SYNTHETIC_MAGIC, parse_synthetic)
 }
 
+/// 68 bytes: `HTJRNL01` then zeros. For SQL fixtures that insert a projection
+/// row directly; it hashes to nothing and is never served as raw.
+pub fn known_raw_stub() -> Vec<u8> {
+    let mut raw = vec![0u8; 68];
+    raw[..8].copy_from_slice(b"HTJRNL01");
+    raw
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
