@@ -2025,9 +2025,14 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   understand (a magic other than `HTJRNL01`). It verifies only the 68-byte layout-agnostic prefix against the
   item's header (log, counter, previous hash), `SHA-256(raw)` against the entry hash and the author's ed25519
   signature over that hash; it reads nothing else in the bytes. Provenance: relayed, unvalidated content. The
-  content is never applied here and attributes no act to anyone; the log stops applying at that entry
-  (`blocked_on = opaque_layout`) and later entries of the log wait behind it until an upgraded build parses it.
-  An own-log opaque entry cannot be re-issued by a node that does not understand it. The entry is sent only to
+  entry is stored in the journal itself, its signed bytes (`raw`), hash and signature as truth and an empty
+  projection (`parked_layout`). The content is never applied while the projection is empty and attributes no act
+  to anyone; the log stops applying at that entry (`blocked_on = opaque_layout`) and later entries of the log wait
+  behind it. An upgrade that understands the layout promotes the entry in place at store open or in the apply
+  pass (the projection is derived from `raw`, the signed data untouched) and the stalled successors apply; a
+  promoted entry is still verified and served as opaque (raw hash and signature) and withheld from peers without
+  `envelope.opaque.v1`. A failed promotion leaves the entry parked, logs once and shows `cannot_promote`.
+  Re-issue never copies a foreign-layout entry, promoted or not (`cannot_reissue`). The entry is sent only to
   peers that advertised `envelope.opaque.v1`; a peer that did not (a 2.1.1 node) is sent the known prefix only,
   keeps its link and receives no error, so a future-layout entry does not cross such a node and logs behind it
   do not reach nodes beyond it until it upgrades. An opaque entry over 384 KiB (`OPAQUE_MAX_BYTES`) is refused at
