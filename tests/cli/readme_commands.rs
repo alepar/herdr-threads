@@ -18,12 +18,15 @@ fn readme_quickstart_commands_preserve_actor_routes() {
         .split("## Everyday commands")
         .next()
         .unwrap();
+    let mut checked = 0;
     for block in quickstart.split("```sh\n").skip(1) {
         let script = block.split("```").next().unwrap().replace("\\\n", " ");
         for line in script
             .lines()
+            .map(str::trim_start)
             .filter(|line| line.starts_with("herdr-threads "))
         {
+            checked += 1;
             let argv = shlex::split(line).expect("documented shell argv");
             let parsed = parse_argv(argv.iter())
                 .unwrap_or_else(|error| panic!("documented argv {argv:?}: {error:?}"));
@@ -41,4 +44,5 @@ fn readme_quickstart_commands_preserve_actor_routes() {
             }
         }
     }
+    assert!(checked >= 5, "walkthrough commands not found: {checked}");
 }
