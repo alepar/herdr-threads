@@ -634,6 +634,35 @@ fn status_json_carries_blocked_on() {
     );
 }
 
+// Kills: a parked_layout count missing from the text or JSON, one printed on a
+// log with none, and a decode that needs the field (an older daemon's reply
+// has none).
+#[test]
+fn status_reports_parked_layout() {
+    let rig = Rig::new(Node::new(SEED_A, 1));
+    let mut status = rig.status();
+    let plain = text(Reply::Status(Box::new(status.clone())));
+    assert!(!plain.contains("parked_layout"), "{plain}");
+    assert!(
+        serde_json::to_value(&status).unwrap()["logs"][0]
+            .get("parked_layout")
+            .is_none()
+    );
+
+    status.logs[0].parked_layout = 4;
+    let rendered = text(Reply::Status(Box::new(status.clone())));
+    let log_line = rendered.lines().find(|l| l.starts_with("log ")).unwrap();
+    assert!(log_line.ends_with(" parked_layout=4"), "{log_line}");
+    let mut json = serde_json::to_value(&status).unwrap();
+    assert_eq!(json["logs"][0]["parked_layout"], 4);
+    json["logs"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("parked_layout");
+    let decoded: crate::protocol::sync_admin::StatusReply = serde_json::from_value(json).unwrap();
+    assert_eq!(decoded.logs[0].parked_layout, 0);
+}
+
 // Kills: a withheld_logs count missing from the JSON or the link line, one
 // printed on a link that parked nothing, a decode that needs the field (an
 // older daemon's reply has none) and one that drops the pre-rename `withheld`

@@ -131,6 +131,10 @@ pub struct PeerRow {
     pub last_error: Option<String>,
 }
 
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
 /// One log, as `sync status` shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogRow {
@@ -144,6 +148,10 @@ pub struct LogRow {
     pub applied_through: u64,
     pub parked_unknown: u64,
     pub parked_dep: u64,
+    /// Entries of a signed layout this node does not understand: stored and
+    /// relayed byte-exactly, never applied. Omitted from JSON when zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub parked_layout: u64,
     pub failed: u64,
     pub frozen_at: Option<u64>,
     /// Entries a peer advertises beyond `counter`; `None` when no active link

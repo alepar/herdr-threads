@@ -1038,16 +1038,6 @@ fn load_log(conn: &Connection, log: &LogKey) -> Result<Option<LogRow>, ApiError>
     }))
 }
 
-/// Chain positions of every log: the `journal` rows. The Chain-row reader's one
-/// SQL source; a reader of chain positions selects from it, never from
-/// `journal` alone. `opaque` is 1 for a row whose `raw` does not carry the
-/// HTJRNL01 magic, i.e. a signed layout this node does not understand.
-pub(crate) const CHAIN_ROWS: &str = "(SELECT log_ix,counter,prev_hash,hash,(substr(raw,1,8)<>CAST('HTJRNL01' AS BLOB)) AS opaque FROM journal)";
-
-/// Fork-branch rows of every log: `journal_forked`. `forked_ix` orders them;
-/// `opaque` is as for [`CHAIN_ROWS`].
-pub(crate) const BRANCH_ROWS: &str = "(SELECT log_ix,counter,prev_hash,hash,(substr(raw,1,8)<>CAST('HTJRNL01' AS BLOB)) AS opaque,forked_ix FROM journal_forked)";
-
 /// Whether `(counter, hash)` of `log_ix` is a chain position, or with
 /// `include_branches` also a fork-branch row.
 pub(crate) fn held_at(
@@ -1119,7 +1109,7 @@ pub(crate) enum Rows {
     All,
     /// The known (HTJRNL01) rows before the first non-HTJRNL01 one; that row is
     /// not decoded and ends the read. What the store-level `Envelope` readers
-    /// (`serve`, `serve_branch`, `sync_status`'s rehash) serve.
+    /// (`serve`, `serve_branch`) serve.
     KnownPrefix,
 }
 

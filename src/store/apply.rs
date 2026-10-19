@@ -38,7 +38,7 @@ use crate::protocol::ids::SeatId;
 use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::time::{Clock, MonoInstant};
 use crate::store::connection::{DecisionInstant, StoreContext, SyncState, api_error, store_error};
-use crate::store::journal::{self, CHAIN_ROWS};
+use crate::store::journal;
 use crate::store::seats;
 use crate::sync::envelope::Deps;
 use crate::sync::facts::{FactError, FactKind};
@@ -875,12 +875,14 @@ fn mark_opaque_heads(
     only_self_log: bool,
 ) -> Result<(), ApiError> {
     let mut statement = tx
-        .prepare(&format!(
+        .prepare(
+            // Apply classifies a head by projection presence (`kind IS NULL`:
+            // a `parked_layout` row, or any row not yet promoted).
             "SELECT l.log_ix FROM sync_logs l \
-             JOIN {CHAIN_ROWS} c ON c.log_ix=l.log_ix AND c.counter=l.applied_through+1 \
-             WHERE l.applied_through<l.contiguous_counter AND c.opaque=1 \
-               AND l.blocked_on IS NOT ?1"
-        ))
+             JOIN journal j ON j.log_ix=l.log_ix AND j.counter=l.applied_through+1 \
+             WHERE l.applied_through<l.contiguous_counter AND j.kind IS NULL \
+               AND l.blocked_on IS NOT ?1",
+        )
         .map_err(store_error)?;
     let stalled = statement
         .query_map(params![OPAQUE_LAYOUT], |r| r.get::<_, i64>(0))
@@ -913,17 +915,15 @@ fn next_ready_head(tx: &Transaction<'_>, only_self_log: bool) -> Result<Option<i
     mark_opaque_heads(tx, active_log, only_self_log)?;
     let mut statement = tx
         .prepare(
-            // Reads the union of chain positions; an opaque head stops its
-            // log and is skipped here (`c.opaque=0`); `mark_opaque_heads`
-            // records `blocked_on = opaque_layout` for it.
-            &format!(
-                "SELECT l.log_ix,l.node_uuid,l.incarnation,l.blocked_on,j.ingest_seq,j.deps \
-                 FROM sync_logs l \
-                 JOIN {CHAIN_ROWS} c ON c.log_ix=l.log_ix AND c.counter=l.applied_through+1 \
-                 LEFT JOIN journal j ON j.log_ix=c.log_ix AND j.counter=c.counter AND c.opaque=0 \
-                 WHERE l.applied_through<l.contiguous_counter AND c.opaque=0 \
-                 ORDER BY j.ingest_seq"
-            ),
+            // An empty-projection head (`kind IS NULL`) stops its log and is
+            // skipped here; `mark_opaque_heads` records
+            // `blocked_on = opaque_layout` for it. A promoted row has its
+            // projection filled and applies like any other.
+            "SELECT l.log_ix,l.node_uuid,l.incarnation,l.blocked_on,j.ingest_seq,j.deps \
+             FROM sync_logs l \
+             JOIN journal j ON j.log_ix=l.log_ix AND j.counter=l.applied_through+1 \
+             WHERE l.applied_through<l.contiguous_counter AND j.kind IS NOT NULL \
+             ORDER BY j.ingest_seq",
         )
         .map_err(store_error)?;
     let heads = statement

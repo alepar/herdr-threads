@@ -47,7 +47,7 @@ use crate::protocol::results::{ApiError, ErrorCode};
 use crate::protocol::time::UtcMillis;
 use crate::store::connection::DecisionInstant;
 use crate::store::connection::{StoreContext, SyncState, api_error, store_error};
-use crate::store::journal::{self, BRANCH_ROWS};
+use crate::store::journal::{self, known_sql};
 use crate::sync::coordinator::{CloneKind, CloneReport};
 use crate::sync::envelope::{Envelope, GENESIS_KIND, StoredEntry};
 use crate::sync::facts::{GenesisPayload, Predecessor};
@@ -233,28 +233,33 @@ struct Candidate {
 /// forked ones, and a forked branch's rows by arrival. `node.genesis` never
 /// qualifies. The opaque rows (main chain above the freeze, and
 /// fork branches) come last with `src = 2`: they are reported, not re-issued.
-const CANDIDATES: &str = "\
+fn candidates_sql() -> String {
+    let (kj, kf, ko) = (known_sql("j"), known_sql("f"), known_sql("o"));
+    format!(
+        "\
 SELECT log_ix,node_uuid,incarnation,counter,hash,prev_hash,src FROM (\
  SELECT l.first_seen_at AS seen,l.log_ix AS log_ix,l.node_uuid AS node_uuid,l.incarnation AS incarnation,\
         j.counter AS counter,j.hash AS hash,j.prev_hash AS prev_hash,0 AS src,j.ingest_seq AS seq \
  FROM sync_logs l JOIN journal j ON j.log_ix=l.log_ix \
- WHERE l.is_self=1 AND l.state='frozen' AND j.counter>l.frozen_at_counter AND j.kind<>?1 \
+ WHERE l.is_self=1 AND l.state='frozen' AND j.counter>l.frozen_at_counter AND {kj} AND j.kind<>?1 \
    AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=j.log_ix AND r.source_counter=j.counter AND r.source_hash=j.hash) \
  UNION ALL \
  SELECT l.first_seen_at,l.log_ix,l.node_uuid,l.incarnation,f.counter,f.hash,f.prev_hash,1,f.forked_ix \
  FROM sync_logs l JOIN journal_forked f ON f.log_ix=l.log_ix \
- WHERE l.is_self=1 AND l.state='frozen' AND f.kind<>?1 \
+ WHERE l.is_self=1 AND l.state='frozen' AND {kf} AND f.kind<>?1 \
    AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=f.log_ix AND r.source_counter=f.counter AND r.source_hash=f.hash) \
  UNION ALL \
  SELECT l.first_seen_at,l.log_ix,l.node_uuid,l.incarnation,o.counter,o.hash,o.prev_hash,2,0 \
  FROM sync_logs l JOIN journal o ON o.log_ix=l.log_ix \
  WHERE l.is_self=1 AND l.state='frozen' AND o.counter>l.frozen_at_counter \
-   AND substr(o.raw,1,8)<>CAST('HTJRNL01' AS BLOB) \
+   AND NOT ({ko}) \
  UNION ALL \
  SELECT l.first_seen_at,l.log_ix,l.node_uuid,l.incarnation,o.counter,o.hash,o.prev_hash,2,0 \
  FROM sync_logs l JOIN journal_forked o ON o.log_ix=l.log_ix \
- WHERE l.is_self=1 AND l.state='frozen' AND substr(o.raw,1,8)<>CAST('HTJRNL01' AS BLOB)\
-) ORDER BY seen,log_ix,counter,src,seq";
+ WHERE l.is_self=1 AND l.state='frozen' AND NOT ({ko})\
+) ORDER BY seen,log_ix,counter,src,seq"
+    )
+}
 
 /// Re-issues the union of every branch tail of the frozen own logs into the
 /// active self log, in the caller's transaction, until `limits` stop it.
@@ -291,7 +296,7 @@ fn reissue_pass_ungated(
     limits: ReissueLimits,
 ) -> Result<ReissueProgress, ApiError> {
     let candidates = {
-        let mut statement = tx.prepare(CANDIDATES).map_err(store_error)?;
+        let mut statement = tx.prepare(&candidates_sql()).map_err(store_error)?;
         let rows = statement
             .query_map([GENESIS_KIND], |r| {
                 Ok((
@@ -1572,18 +1577,20 @@ fn count_u32(value: i64) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
-/// Not-yet-re-issued entries of an own frozen log (the `CANDIDATES` rule,
+/// Not-yet-re-issued entries of an own frozen log (the `candidates_sql` rule,
 /// counted).
 fn pending_reissues(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u32, ApiError> {
+    let (kj, kf) = (known_sql("j"), known_sql("f"));
     let pending: i64 = conn
         .query_row(
+            &format!(
             "SELECT \
-              (SELECT COUNT(*) FROM journal j WHERE j.log_ix=?1 AND j.counter>?2 AND j.kind<>?3 \
+              (SELECT COUNT(*) FROM journal j WHERE j.log_ix=?1 AND j.counter>?2 AND {kj} AND j.kind<>?3 \
                  AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=j.log_ix \
                                 AND r.source_counter=j.counter AND r.source_hash=j.hash)) \
-            + (SELECT COUNT(*) FROM journal_forked f WHERE f.log_ix=?1 AND f.kind<>?3 \
+            + (SELECT COUNT(*) FROM journal_forked f WHERE f.log_ix=?1 AND {kf} AND f.kind<>?3 \
                  AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=f.log_ix \
-                                AND r.source_counter=f.counter AND r.source_hash=f.hash))",
+                                AND r.source_counter=f.counter AND r.source_hash=f.hash))"),
             params![log_ix, frozen_at, GENESIS_KIND],
             |r| r.get(0),
         )
@@ -1592,14 +1599,17 @@ fn pending_reissues(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u3
 }
 
 /// Opaque entries of an own frozen log that no re-issue can copy (the
-/// `CANDIDATES` `src = 2` arm, counted).
+/// `candidates_sql` `src = 2` arm, counted).
 fn cannot_reissue(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u32, ApiError> {
+    let ko = known_sql("o");
     let n: i64 = conn
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM journal o WHERE o.log_ix=?1 AND o.counter>?2 \
-                      AND substr(o.raw,1,8)<>CAST('HTJRNL01' AS BLOB)) \
+            &format!(
+                "SELECT (SELECT COUNT(*) FROM journal o WHERE o.log_ix=?1 AND o.counter>?2 \
+                      AND NOT ({ko})) \
                   + (SELECT COUNT(*) FROM journal_forked o WHERE o.log_ix=?1 \
-                      AND substr(o.raw,1,8)<>CAST('HTJRNL01' AS BLOB))",
+                      AND NOT ({ko}))"
+            ),
             params![log_ix, frozen_at],
             |r| r.get(0),
         )
@@ -1608,7 +1618,7 @@ fn cannot_reissue(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u32,
 }
 
 /// The own frozen logs that hold opaque entries no re-issue can copy, with
-/// their counts (the `CANDIDATES` `src = 2` arm, per log).
+/// their counts (the `candidates_sql` `src = 2` arm, per log).
 pub fn cannot_reissue_logs(conn: &Connection) -> Result<Vec<(LogKey, u32)>, ApiError> {
     let rows: Vec<(i64, String, u32, i64)> = {
         let mut statement = conn
@@ -1974,9 +1984,10 @@ pub fn check_invariants(conn: &Connection) -> Result<Vec<InvariantViolation>, Ap
     let mut i2 = conn
         .prepare(&format!(
             "SELECT l.node_uuid,l.incarnation,f.counter,l.frozen_at_counter \
-                 FROM {BRANCH_ROWS} f JOIN sync_logs l ON l.log_ix=f.log_ix \
+                 FROM journal_forked f JOIN sync_logs l ON l.log_ix=f.log_ix \
                  WHERE f.counter<=l.frozen_at_counter \
-                 ORDER BY f.opaque,f.forked_ix,f.log_ix,f.counter"
+                 ORDER BY (NOT {}),f.forked_ix,f.log_ix,f.counter",
+            known_sql("f")
         ))
         .map_err(store_error)?;
     let rows = i2
