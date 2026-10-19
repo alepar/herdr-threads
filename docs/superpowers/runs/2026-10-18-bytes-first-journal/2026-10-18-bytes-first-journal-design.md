@@ -29,7 +29,7 @@ Recommended: `journal(ingest_seq, log_ix, counter, prev_hash, hash, signature, r
 
 Constraints:
 - A CHECK that the projection is all-present or all-null.
-- `length(raw) <= 524288 + header bound`.
+- `length(raw) <= RAW_MAX` where `RAW_MAX = 786432` (768 KiB), a fixed number written into the DDL. It covers the largest valid HTJRNL01 entry (68-byte prefix + hlc + kind (≤64) + kind_version + DEPS_MAX×28 ≈ 114.7 KB deps + creates (≤162) + NEEDS_MAX×(2+160) ≈ 41.5 KB needs + PAYLOAD_MAX 524288 + length prefixes ≈ 681 KB), with headroom. It is also far above OPAQUE_MAX_BYTES (384 KiB), which still bounds unknown-layout raw at ingest. A const assertion in `envelope.rs` checks that the computed maximal canonical size is ≤ RAW_MAX.
 - `CHECK(length(raw) >= 68)`.
 - The existing per-column checks, now applied only when the column is non-NULL.
 - `UNIQUE(log_ix, counter)` kept.
@@ -50,7 +50,13 @@ Recommended: an unknown-layout row is inserted with a NULL projection and a new 
 
 The apply pass stops a log at a `parked_layout` row and writes `sync_logs.blocked_on = 'opaque_layout'`, keeping the 2.3.0 status surface and wording; dependents in other logs keep the existing `deps <node8>/<inc>@<c>` blocked state. `sync status` reports `parked_layout` as its own count.
 
-Reader audit: every `journal`/`journal_forked` reader that filters or aggregates on projection columns gets an explicit NULL rule. The rules are: predicates on `kind` become `kind IS NOT NULL AND …` (incarnations `pending_reissues` and the forked/known candidate queries); aggregates such as `MAX(hlc)` ignore NULL (unchanged semantics); and the genesis read requires a projection (genesis is always HTJRNL01). Every `journal_opaque` reference is re-pointed to the projection-NULL rows of `journal`/`journal_forked`. Task 3 owns the inventory, with one line per reader in its report.
+Reader audit: classification in SQL uses the same rule as the decoder, the magic of `raw` (`substr(raw,1,8) = CAST('HTJRNL01' AS BLOB)`), never projection presence. The rules are:
+- known-entry predicates (incarnations `pending_reissues`, the known re-issue candidate arm, `kind <> ?` filters) add the HTJRNL01-magic condition;
+- every former `journal_opaque` arm (the opaque re-issue candidates, `cannot_reissue`, fork evidence) selects the non-HTJRNL01 rows, promoted or not, so a promoted foreign-layout row in a frozen own log counts as `cannot_reissue`, never as a known candidate;
+- aggregates such as `MAX(hlc)` ignore NULL (unchanged);
+- the genesis read requires HTJRNL01 (genesis always is).
+
+Apply and materialisation are the only readers that use projection presence. Task 3 owns the inventory, with one line per reader in its report.
 
 ### 3. Migration (delta 0005, rewritten)
 
@@ -59,6 +65,7 @@ Recommended: a table rebuild, done the SQLite-documented way, driven from Rust w
 - **Runner.** `NodeDelta` becomes `{ version, sql, rebuild: Option<Rebuild> }`, where `Rebuild { copy: fn(&Connection) -> Result<(), ApiError>, sql_after: &'static str }`. For a rebuild delta the runner sets `PRAGMA foreign_keys=OFF` *before* `BEGIN IMMEDIATE`, then runs `sql` (creates `journal_new`, `journal_forked_new`), `copy` (row copy only, no DDL), then `sql_after` (DROP old tables, RENAME new ones, CREATE the indexes and the full trigger set). It then queries `PRAGMA foreign_key_check` from Rust and aborts unless it returns zero rows, commits, and restores `foreign_keys` on every path. This fixes the deferred-counter COMMIT failure: with foreign keys on inside the transaction, the DROP of a referenced parent fails at COMMIT even though `foreign_key_check` is empty.
 - **Schema audit.** Every DDL statement stays in replayable SQL. The open-time expected-object replay (`expected_objects`) runs `sql` and then `sql_after` for a rebuild delta. `copy` is a no-op on the empty in-memory database, so the replay performs the same create→drop→rename sequence, and `verify_at` sees identical `sqlite_master` text, including SQLite's quoting of a renamed table (`CREATE TABLE "journal"(…)`). Nobody hand-writes the post-rename DDL. A test runs `verify_at` after migrating both a fresh store and a populated schema-4 store.
 - **Steps (row copy).** `copy` reads every old row, builds `UnsignedEnvelope` from the projection plus the log's node and incarnation, computes `raw = canonical_bytes()`, checks `SHA-256(raw) == hash` (abort with `StoreCorrupt` otherwise) and inserts the complete row into the new table. No placeholder ever exists, so the `length(raw) >= 68` CHECK holds row by row and nothing ever UPDATEs `raw`.
+- **Index set after migration** (recreated by `sql_after`, since DROP TABLE removes them): `journal_applied_seq` (UNIQUE, partial), `journal_unapplied`, `journal_creates`, `journal_parked_on`, exactly as in the baseline. `journal_forked`'s uniqueness stays a table constraint. A test compares the post-migration index list against this list.
 - **Trigger set after migration**, asserted by a test that compares `sqlite_master`:
   - `journal_envelope_immutable`: `log_ix, counter, prev_hash, hash, signature, raw, ingested_at` are never changed; projection columns may change only when every OLD projection column is NULL (promotion);
   - `journal_append_only`;
@@ -117,7 +124,9 @@ Required:
   - `PRAGMA foreign_key_check` is empty;
   - `verify_at` passes on reopen.
 - A fresh store reaches schema 5 and passes `verify_at`.
-- The `sqlite_master` trigger and index set after migration equals the expected list in §3.
+- The `sqlite_master` trigger and index sets after migration equal the lists in §3.
+- The migration fixture includes a maximal-size HTJRNL01 row (PAYLOAD_MAX payload, DEPS_MAX deps, NEEDS_MAX needs) that copies under RAW_MAX, plus a known-layout ingest of the same entry after migration.
+- A promoted HTJRNL99 row in a frozen own log counts as `cannot_reissue`, and the re-issue pass does not fail.
 - A corrupted projection makes the migration abort with the store left at schema 4.
 - An unknown-magic (HTJRNL99) entry is stored with a NULL projection and `parked_layout`, relayed byte-exactly to a capability peer, withheld from a non-capability peer, and stalls its log.
 - After the test-hook upgrade, the entry is promoted: projection filled, raw/hash unchanged, the stalled successors apply, and `blocked_on` clears. It still decodes as `Opaque` and verifies by raw hash and signature. A capability peer still receives it as `WireItem::Opaque`, and a non-capability peer still does not receive it.

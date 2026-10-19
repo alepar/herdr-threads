@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-18-bytes-first-journal
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: roast-design
+phase: code
 codeMechanism: Workflow
 runTag: bytes-first-journal-20261019T012327
 context: Context: claude · planner=200K/167K · implementer=200K/167K · reviewer=200K/167K · finalReview=200K/167K · assembler=200K/167K · warn: planner, finalReview on a 200K model → set ANTHROPIC_DEFAULT_OPUS_MODEL=<model>[1m] or config.models.<role> to a 1M model · warn: implementer, reviewer, assembler on a 200K model → set ANTHROPIC_DEFAULT_SONNET_MODEL=<model>[1m] or config.models.<role> to a 1M model
@@ -15,6 +15,9 @@ epic: ht-76u6
 approvals:
 - top-split · auto · all 7 children LEAF (no subepics)
 roastDesignRound: 3
-roast-design: 2026-10-18-bytes-first-journal-roast-design-1.md, 2026-10-18-bytes-first-journal-roast-design-2.md
+roast-design: 2026-10-18-bytes-first-journal-roast-design-1.md, 2026-10-18-bytes-first-journal-roast-design-2.md, 2026-10-18-bytes-first-journal-roast-design-3.md
 stepBackDesign-round-1: local — orchestrator inline (no step-back dispatch): findings cluster on migration mechanics (FK rebuild, placeholder, marker, fk_check), state reuse, promoted serving; each has a concrete local fix; no mechanical trigger
 stepBackDesign-round-2: local — orchestrator inline: schema-audit replay, magic-based decode, test list; no mechanical trigger
+roastDesignExit: capped at round 3 — 0 Blocking; 3 confirmed (2 Should-fix, 1 Nit) fixed inline as spec/bead corrections (RAW_MAX, magic-based SQL classification, index list)
+codeBuckets:
+  sweep: SWEEP DEFERRED (caller-owned)
