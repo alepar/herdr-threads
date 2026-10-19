@@ -17,9 +17,9 @@ The peer-wire-compat-hardening branch (unreleased) added `journal_opaque`, a sec
 ## Key decisions made
 
 1. `journal` and `journal_forked` gain `raw BLOB NOT NULL` (canonical bytes). Their projection columns become nullable, all-or-none per row (`hlc, kind, kind_version, deps, needs, payload`; `creates` stays optional). `journal_opaque` and `CHAIN_ROWS` are removed. Delta 0005 is rewritten in place (unreleased; no store has applied it outside test fixtures).
-2. `NodeDelta` gains an optional Rust `post` step run in the same transaction as the delta's SQL. 0005's post step backfills `raw` for every pre-existing row by recomputing HTJRNL01 canonical bytes from the projection, and refuses with `StoreCorrupt` unless `SHA-256(raw) == hash` for every row. That check is what makes the migration provably exact.
+2. `NodeDelta` gains `rebuild` and a Rust `post` step. Delta 0005 rebuilds `journal`/`journal_forked` with `foreign_keys` off outside the transaction (the SQLite-documented procedure). The Rust step copies every row while computing `raw` from the projection, and aborts with `StoreCorrupt` unless `SHA-256(raw) == hash` for every row, which makes the migration provably exact. No placeholder and no trigger exemption for `raw` exist.
 3. One reader: rows decode to `StoredEntry::Known` (projection present) or `StoredEntry::Opaque` (projection NULL) from the single table. Serving uses `raw` for opaque items, and the known wire shape is unchanged (built from the projection, exactly as today).
-4. Promotion is a projection update guarded by a trigger exemption that allows writing projection columns only when they were NULL. It runs at store open and in the apply pass for rows whose magic the binary now parses (including a test-support understood-layout hook). It sets `apply_state='pending'` and clears the log's `blocked_on` in the same transaction, so successors apply through the normal pass. ht-evlm closes as superseded.
+4. Unknown-layout rows use a new `apply_state='parked_layout'`, not `parked_unknown`, so existing readers stay correct. Promotion is a projection update, allowed by the trigger only from an all-NULL projection on `journal` rows. It runs at store open and in the apply pass for rows whose magic the binary now parses (including a test-support understood-layout hook), sets `apply_state='pending'` and clears the log's `opaque_layout` block in one transaction, so successors apply through the normal pass. A promoted entry is served Known only if its HTJRNL01 encoding equals `raw`, and otherwise opaque. ht-evlm closes as superseded.
 
 ## Decision points, by section
 
@@ -35,8 +35,7 @@ Constraints:
 - `UNIQUE(log_ix, counter)` kept.
 
 `journal_forked` mirrors this shape (raw, nullable projection, the same CHECK). The guard triggers become:
-- `journal_immutable` forbids changing `log_ix, counter, prev_hash, hash, signature, raw, ingest_seq` always, and the projection columns unless every old value is NULL (promotion);
-- `journal_append_only` is unchanged.
+- the full trigger set is listed in §3 (`journal_envelope_immutable` keeps `ingested_at`; `journal_applied_terminal` and the forked triggers are recreated).
 
 The prefix fields (`log_ix`, `counter`, `prev_hash`) stay as columns: they are needed for indexes and chain continuity, and the CHECK ties them to `raw` through an ingest-time verification (EntryPrefix).
 
@@ -47,25 +46,40 @@ Discarded:
 
 ### 2. Unknown layout apply semantics
 
-Recommended: an unknown-layout row is inserted with `apply_state='parked_unknown'` and a NULL projection. Unlike a known-kind `parked_unknown` row, which advances `applied_through`, the apply pass stops a log at a row whose projection is NULL. It writes `sync_logs.blocked_on = 'opaque_layout'`, keeping the 2.3.0 status surface and wording. Dependents in other logs keep the existing `deps <node8>/<inc>@<c>` blocked state. The distinction is made in one place: the apply head scan reads the projection-NULL flag.
+Recommended: an unknown-layout row is inserted with a NULL projection and a new `apply_state='parked_layout'` (the CHECK list changes anyway, since the table is rebuilt). The user's brief said `parked_unknown`; the design roast showed that reusing it breaks existing readers that read `kind`/`kind_version` as non-null for every `parked_unknown` row (`replay_candidates` at startup and operator replay, the unapplied status page) and silently changes the `parked_unknown` counters. A distinct state keeps every existing reader correct and gives status its own counter.
 
-Discarded: a new `apply_state` value (it would change the CHECK list and every status counter for no gain).
+The apply pass stops a log at a `parked_layout` row and writes `sync_logs.blocked_on = 'opaque_layout'`, keeping the 2.3.0 status surface and wording; dependents in other logs keep the existing `deps <node8>/<inc>@<c>` blocked state. `sync status` reports `parked_layout` as its own count.
+
+Reader audit: every `journal`/`journal_forked` reader that filters or aggregates on projection columns gets an explicit NULL rule. The rules are: predicates on `kind` become `kind IS NOT NULL AND …` (incarnations `pending_reissues` and the forked/known candidate queries); aggregates such as `MAX(hlc)` ignore NULL (unchanged semantics); and the genesis read requires a projection (genesis is always HTJRNL01). Every `journal_opaque` reference is re-pointed to the projection-NULL rows of `journal`/`journal_forked`. Task 3 owns the inventory, with one line per reader in its report.
 
 ### 3. Migration (delta 0005, rewritten)
 
-Recommended: delta 0005 does the following in one transaction:
-1. With `PRAGMA defer_foreign_keys=ON`, create `journal_new` and `journal_forked_new`.
-2. `INSERT … SELECT` all rows with `raw` set to an empty placeholder, rejected later.
-3. Drop the old tables, rename the new ones and recreate the indexes and triggers.
-4. Run `PRAGMA foreign_key_check`, which must be empty.
+Recommended: a table rebuild, done the SQLite-documented way, driven from Rust with no placeholder and no exemption.
 
-The Rust post step then computes canonical bytes for every row through the existing `UnsignedEnvelope::canonical_bytes` (a projection plus the log's node and incarnation from `sync_logs`). It sets `raw` through a migration-only exemption marker, and asserts `SHA-256(raw) == hash` and that `verify` passes against the log's genesis public key where the genesis is known. Any mismatch aborts the migration with `StoreCorrupt` and the store stays at schema 4. The placeholder is never visible after commit: the post step's final query asserts that no row has an empty `raw`.
+- **Runner.** `NodeDelta` gains `rebuild: bool` and `post: Option<fn(&Connection) -> Result<(), ApiError>>`. For a rebuild delta the runner sets `PRAGMA foreign_keys=OFF` *before* `BEGIN IMMEDIATE`; inside the transaction it does steps 1–4 below; it then queries `PRAGMA foreign_key_check` from Rust and aborts unless it returns zero rows, commits, and turns `foreign_keys` back on in every outcome. This fixes the deferred-counter COMMIT failure: with foreign keys on inside the transaction, the DROP of a referenced parent fails at COMMIT even though `foreign_key_check` is empty.
+- **Steps.**
+  1. The delta SQL creates `journal_new` and `journal_forked_new` with the final shape.
+  2. The Rust step reads every old row, builds `UnsignedEnvelope` from the projection plus the log's node and incarnation, computes `raw = canonical_bytes()`, checks `SHA-256(raw) == hash` (abort with `StoreCorrupt` otherwise), and inserts the complete row into the new table. No placeholder ever exists, so the `length(raw) >= 68` CHECK holds row by row and nothing ever UPDATEs `raw`.
+  3. The step drops the old tables and renames the new ones.
+  4. The step runs a second embedded SQL file that creates the indexes and the full trigger set.
+- **Trigger set after migration**, asserted by a test that compares `sqlite_master`:
+  - `journal_envelope_immutable`: `log_ix, counter, prev_hash, hash, signature, raw, ingested_at` are never changed; projection columns may change only when every OLD projection column is NULL (promotion);
+  - `journal_append_only`;
+  - `journal_applied_terminal`;
+  - `journal_forked_immutable` (unchanged: no UPDATE at all);
+  - `journal_forked_append_only`.
+- **Failure.** Any mismatch or error rolls back, leaving the store at schema 4.
+- **No exemption marker.** No trigger text carries a migration bypass, because `raw` is written only by INSERT.
 
-`NodeDelta { version, sql, post: Option<fn(&Transaction) -> Result<(), ApiError>> }` is the one extension point. The 2.3.0 delta (journal_opaque) is replaced wholesale, keeping the number 0005, since nothing released carries it.
+`journal_forked` rows are never promoted. Readers treat a NULL projection there as opaque fork evidence, and promotion touches only `journal`.
+
+The 2.3.0 delta (`journal_opaque`) is replaced wholesale, keeping the number 0005, since nothing released carries it.
 
 Discarded:
-- Pure-SQL canonical encoding with `unhex`/`printf` and a recursive CTE for `needs` (fragile, and duplicates the encoder).
-- Lazy backfill on read (two code paths forever).
+- Defer-foreign-keys inside the transaction (it fails at COMMIT on any store with `thread_registers`/`sync_reissues` rows).
+- A placeholder plus a raw UPDATE through a marker (it violates the CHECK, and the marker would become a permanent bypass in audited trigger text).
+- Pure-SQL canonical encoding.
+- Lazy backfill on read.
 
 ### 4. Reads, serving and relay
 
@@ -82,12 +96,14 @@ Discarded: serving known entries from `raw` by re-parsing (no benefit; the proje
 
 ### 5. Promotion
 
-Recommended: `journal::promote(tx, log, counter)` parses `raw` with the layouts the binary understands (production: HTJRNL01 only; test-support: an understood-layout registry the synthetic HTJRNL99 builder can register). On success it:
+Recommended: `journal::promote(tx, log, counter)` (journal rows only) parses `raw` with the layouts the binary understands (production: HTJRNL01 only; test-support: an understood-layout registry the synthetic HTJRNL99 builder can register). On success it:
 - writes the projection columns (allowed by the trigger only from all-NULL);
-- sets `apply_state='pending'`;
+- sets `apply_state='pending'` (from `parked_layout`);
 - clears `sync_logs.blocked_on` when it reads `opaque_layout`.
 
-All of this happens in one transaction, and the normal apply pass then applies the entry and its successors (ingest_seq is the row's own, so FKs from materialisation work unchanged). Triggers: at store open (after migrations), and in the apply pass when the head row is projection-NULL and parseable. The promoted entry's `raw` and hash are untouched. It is then served as `Known` to every peer, because a known projection exists and its canonical bytes equal `raw` by hash. If the projection's re-encoding were not equal to `raw` for a future layout, that layout's own serving rules apply; this release understands only HTJRNL01 in production.
+All of this happens in one transaction, and the normal apply pass then applies the entry and its successors (ingest_seq is the row's own, so FKs from materialisation work unchanged). Triggers: at store open (after migrations), and in the apply pass when the head row is projection-NULL and parseable. The promoted entry's `raw` and hash are untouched. Serving rule (one place, in the serve conversion): an entry is served as `WireItem::Known` only when `HTJRNL01 canonical_bytes(projection) == raw`; otherwise it is served as `WireItem::Opaque` from `raw`, gated by `envelope.opaque.v1` exactly like an unpromoted entry. A promoted non-HTJRNL01 entry is therefore still served opaque and withheld from 2.1.1 peers, consistent with the TRUST-POLICY accepted limit. The §7 promotion test asserts what a capability peer and a non-capability peer receive after promotion.
+
+Failure: a parse error, shape check or trigger refusal during promotion leaves the row `parked_layout` with its log stalled, records a diagnostic (daemon log line plus the sync-status cannot-promote count), and never fails store open or the apply pass.
 
 Discarded: promotion by moving rows between tables (the 2.3.0 dead end).
 

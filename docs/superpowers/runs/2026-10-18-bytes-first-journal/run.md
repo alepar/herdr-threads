@@ -14,4 +14,6 @@ spec: 2026-10-18-bytes-first-journal-design.md
 epic: ht-76u6
 approvals:
 - top-split · auto · all 7 children LEAF (no subepics)
-roastDesignRound: 1
+roastDesignRound: 2
+roast-design: 2026-10-18-bytes-first-journal-roast-design-1.md
+stepBackDesign-round-1: local — orchestrator inline (no step-back dispatch): findings cluster on migration mechanics (FK rebuild, placeholder, marker, fk_check), state reuse, promoted serving; each has a concrete local fix; no mechanical trigger
