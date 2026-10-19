@@ -10,12 +10,12 @@ fn readme_quickstart_commands_preserve_actor_routes() {
     let readme =
         std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
             .unwrap();
-    // Direct-mode examples below this section are owned by the producer parser tests.
+    // Examples below the walkthrough are owned by the producer parser tests.
     let quickstart = readme
         .split("## Try it yourself")
         .nth(1)
         .unwrap()
-        .split("## Automatic direct channels")
+        .split("## Everyday commands")
         .next()
         .unwrap();
     for block in quickstart.split("```sh\n").skip(1) {
