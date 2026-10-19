@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-18-peer-wire-compat-hardening
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: roast-code
+phase: report
 codeMechanism: Workflow
 runTag: peer-wire-compat-hardening-20261018T171300
 context: Context: claude · planner=200K/167K · implementer=200K/167K · reviewer=200K/167K · finalReview=200K/167K · assembler=200K/167K · warn: planner, finalReview on a 200K model → set ANTHROPIC_DEFAULT_OPUS_MODEL=<model>[1m] or config.models.<role> to a 1M model · warn: implementer, reviewer, assembler on a 200K model → set ANTHROPIC_DEFAULT_SONNET_MODEL=<model>[1m] or config.models.<role> to a 1M model
@@ -59,3 +59,4 @@ parked:
 - run.md · degraded-verdict · "ht-j87z.13 promotion deferred to ht-evlm by orchestrator (blockers ht-50fc, ht-v9zy); R4 apply-after-upgrade not delivered — needs human acceptance"
 - final-review inv-500DAF36 · degraded-verdict · "base drift: main 9f1ca770d registers 0004_sibling_delivery; rename 0004_journal_opaque at base absorb before release"
 roastCodeExit: converged (round 2 empty late round, 5/5 resolved, 0 confirmed; [converged] tag withheld only by the review-readiness qualifier)
+baseAbsorbed: 9f1ca770d → b8c05137e, 3 conflicted files (CHANGELOG.md, src/store/schema.rs, tests/store/schema.rs); journal delta renumbered 0004→0005
