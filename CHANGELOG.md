@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## v2.2.1
 
 - **Peer wire carries entries of future layouts.** A new additive capability, `envelope.opaque.v1`, lets a node verify (prefix, hash, signature), store and relay journal entries whose signed layout it does not understand, byte-exactly: they are stored and relayed, never applied, and the log stalls at that entry until a release that understands the layout (promotion is not part of this release). Entries are sent only to peers that advertise the capability and withheld from the rest, so they do not cross a 2.1.1 node; an opaque entry over 384 KiB is refused and its log stalls on that node. HTJRNL01 and every existing frame are unchanged, and 2.1.1 peers see byte-identical traffic. One-way store upgrade to node schema 5, adding `journal_opaque`; older binaries then refuse the store, so back up the state directory first. New `sync status` text, each only when non-empty: ` blocked=<text>` on a log row (about 210 bytes at most), ` withheld_logs=<n>` on a link row (logs parked on that link because the peer cannot take their next, opaque entry; at most 25) and ` cannot_reissue=<n>` on a repair row (at most 24). See `docs/operations.md`, "Peer wire compatibility and opaque entries".
 - **Wire compatibility checks.** Frozen 2.0.4 and 2.1.1 golden wire fixtures with a decode test (`scripts/freeze-peer-wire` writes them, append-only), a frozen 2.1.1 shadow decoder that every frame emitted toward a non-advertising peer must decode with, and `scripts/check-wire-compat`, a lint added to the per-change checks that rejects `deny_unknown_fields`, a wire field without `serde(default)` and an ungated new frame variant. No runtime change.
 - **Coordinator skill guidance.** Coordinator sessions run `herdr-threads nudge-threshold 1` when taking the role, so default p1 messages (including informational updates) wake them while idle; other roles keep the default threshold 0. The skill no longer suggests `nudge-threshold -1` for coordinators and describes the p1 wake correctly. Skill text only.
+- **Faster, steadier qualification.** Test, CI and release-process changes only, with no product behavior change: docs-only CI skipping, a single release failpoint proof, rust dependency caching, `scripts/release-qualify`, an 18-wide nextest run, and fixes for the apply-lane and multinode test flakes.
 
 ## v2.2.0
 
