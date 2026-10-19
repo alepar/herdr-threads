@@ -62,3 +62,4 @@ baseAbsorbed: 9f1ca770d → b8c05137e, 3 conflicted files (CHANGELOG.md, src/sto
 sweepFix: 0 failing in scope → none (the one failure is pre-existing load flake ht-3wm, outside this change) · re-run lazy_markers test isolated 3/3 pass @ b8c05137e
 leakCheck: no leaked test processes, no leaked temp files (run-id recorded)
 friction: 3 events
+handoff: main tab (seat sQ0VVjdFD4f9, w4:t1) nudged p0 to merge and release — message mQ0VDOru9uUb in dlx5Kb7kgke; branch tip 811ea3119; phase 7 merge belongs to the main tab / user
