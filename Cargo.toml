@@ -44,6 +44,11 @@ path = "tests/daemon/sync_resync.rs"
 required-features = ["test-support"]
 
 [[test]]
+name = "opaque_promotion"
+path = "tests/sync/opaque_promotion.rs"
+required-features = ["test-support"]
+
+[[test]]
 name = "package"
 path = "tests/package.rs"
 required-features = ["test-support"]
