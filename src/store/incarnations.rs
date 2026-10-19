@@ -208,6 +208,8 @@ pub struct ReissueProgress {
     /// their freeze, or on a fork branch: they have no fields to copy, so
     /// they are never re-issued, and are counted on every pass instead of
     /// being silently absent.
+    /// Known fork-branch rows chained on an opaque one are counted too: no
+    /// re-issued predecessor will ever exist for them.
     pub cannot_reissue: usize,
 }
 
@@ -231,13 +233,17 @@ struct Candidate {
 /// then `log_ix`, then counter (so each branch keeps its own order and the
 /// branches of one counter are adjacent), the `journal` branch before the
 /// forked ones, and a forked branch's rows by arrival. `node.genesis` never
-/// qualifies. The opaque rows (main chain above the freeze, and
-/// fork branches) come last with `src = 2`: they are reported, not re-issued.
+/// qualifies. The opaque rows (main chain above the freeze, and fork
+/// branches) and the known fork-branch rows chained on an opaque one
+/// ([`fork_cut_cte`]) come last with `src = 2`: they are reported, not
+/// re-issued.
 fn candidates_sql() -> String {
     let (kj, kf, ko) = (known_sql("j"), known_sql("f"), known_sql("o"));
+    let cut = fork_cut_cte(FROZEN_SELF_LOGS);
+    let cut_rule = cut_counts_sql("o");
     format!(
         "\
-SELECT log_ix,node_uuid,incarnation,counter,hash,prev_hash,src FROM (\
+WITH RECURSIVE {cut} SELECT log_ix,node_uuid,incarnation,counter,hash,prev_hash,src FROM (\
  SELECT l.first_seen_at AS seen,l.log_ix AS log_ix,l.node_uuid AS node_uuid,l.incarnation AS incarnation,\
         j.counter AS counter,j.hash AS hash,j.prev_hash AS prev_hash,0 AS src,j.ingest_seq AS seq \
  FROM sync_logs l JOIN journal j ON j.log_ix=l.log_ix \
@@ -248,6 +254,7 @@ SELECT log_ix,node_uuid,incarnation,counter,hash,prev_hash,src FROM (\
  FROM sync_logs l JOIN journal_forked f ON f.log_ix=l.log_ix \
  WHERE l.is_self=1 AND l.state='frozen' AND {kf} AND f.kind<>?1 \
    AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=f.log_ix AND r.source_counter=f.counter AND r.source_hash=f.hash) \
+   AND NOT EXISTS(SELECT 1 FROM fork_cut c WHERE c.log_ix=f.log_ix AND c.counter=f.counter AND c.hash=f.hash) \
  UNION ALL \
  SELECT l.first_seen_at,l.log_ix,l.node_uuid,l.incarnation,o.counter,o.hash,o.prev_hash,2,0 \
  FROM sync_logs l JOIN journal o ON o.log_ix=l.log_ix \
@@ -256,8 +263,42 @@ SELECT log_ix,node_uuid,incarnation,counter,hash,prev_hash,src FROM (\
  UNION ALL \
  SELECT l.first_seen_at,l.log_ix,l.node_uuid,l.incarnation,o.counter,o.hash,o.prev_hash,2,0 \
  FROM sync_logs l JOIN journal_forked o ON o.log_ix=l.log_ix \
- WHERE l.is_self=1 AND l.state='frozen' AND NOT ({ko})\
+ JOIN fork_cut c ON c.log_ix=o.log_ix AND c.counter=o.counter AND c.hash=o.hash \
+ WHERE l.is_self=1 AND l.state='frozen' AND ({cut_rule})\
 ) ORDER BY seen,log_ix,counter,src,seq"
+    )
+}
+
+/// `o.log_ix` condition selecting every frozen own log.
+const FROZEN_SELF_LOGS: &str =
+    "o.log_ix IN (SELECT log_ix FROM sync_logs WHERE is_self=1 AND state='frozen')";
+
+/// The fork-branch rows no re-issue can reach (roast ht-76u6.20): every
+/// opaque `journal_forked` row under `log_filter` (a condition on `o.log_ix`),
+/// and transitively every forked row chained on one (`counter+1`, `prev_hash`
+/// its hash). The opaque rows have no fields to copy; their known descendants
+/// could only follow a re-issued predecessor, which never exists. All count as
+/// `cannot_reissue`; none is a candidate or pending. `UNION` (not `UNION ALL`)
+/// keeps the recursion finite on any cycle.
+fn fork_cut_cte(log_filter: &str) -> String {
+    let ko = known_sql("o");
+    format!(
+        "fork_cut(log_ix,counter,hash) AS (\
+          SELECT o.log_ix,o.counter,o.hash FROM journal_forked o WHERE {log_filter} AND NOT ({ko}) \
+          UNION \
+          SELECT f.log_ix,f.counter,f.hash FROM journal_forked f JOIN fork_cut c \
+            ON f.log_ix=c.log_ix AND f.counter=c.counter+1 AND f.prev_hash=c.hash)"
+    )
+}
+
+/// Which `fork_cut` rows (joined as `alias`, a `journal_forked` row) are
+/// reported as `cannot_reissue`: the opaque ones, and known descendants not
+/// already re-issued (one an older binary re-issued stays done, uncounted).
+fn cut_counts_sql(alias: &str) -> String {
+    let known = known_sql(alias);
+    format!(
+        "NOT ({known}) OR NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix={alias}.log_ix \
+           AND r.source_counter={alias}.counter AND r.source_hash={alias}.hash)"
     )
 }
 
@@ -1581,16 +1622,19 @@ fn count_u32(value: i64) -> u32 {
 /// counted).
 fn pending_reissues(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u32, ApiError> {
     let (kj, kf) = (known_sql("j"), known_sql("f"));
+    let cut = fork_cut_cte("o.log_ix=?1");
     let pending: i64 = conn
         .query_row(
             &format!(
-            "SELECT \
+            "WITH RECURSIVE {cut} SELECT \
               (SELECT COUNT(*) FROM journal j WHERE j.log_ix=?1 AND j.counter>?2 AND {kj} AND j.kind<>?3 \
                  AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=j.log_ix \
                                 AND r.source_counter=j.counter AND r.source_hash=j.hash)) \
             + (SELECT COUNT(*) FROM journal_forked f WHERE f.log_ix=?1 AND {kf} AND f.kind<>?3 \
                  AND NOT EXISTS(SELECT 1 FROM sync_reissues r WHERE r.source_log_ix=f.log_ix \
-                                AND r.source_counter=f.counter AND r.source_hash=f.hash))"),
+                                AND r.source_counter=f.counter AND r.source_hash=f.hash) \
+                 AND NOT EXISTS(SELECT 1 FROM fork_cut c WHERE c.log_ix=f.log_ix \
+                                AND c.counter=f.counter AND c.hash=f.hash))"),
             params![log_ix, frozen_at, GENESIS_KIND],
             |r| r.get(0),
         )
@@ -1598,17 +1642,21 @@ fn pending_reissues(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u3
     Ok(count_u32(pending))
 }
 
-/// Opaque entries of an own frozen log that no re-issue can copy (the
-/// `candidates_sql` `src = 2` arm, counted).
+/// Entries of an own frozen log that no re-issue can copy: its opaque entries
+/// and the known fork-branch rows chained on an opaque one ([`fork_cut_cte`])
+/// that are not re-issued (the `candidates_sql` `src = 2` arms, counted).
 fn cannot_reissue(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u32, ApiError> {
     let ko = known_sql("o");
+    let cut = fork_cut_cte("o.log_ix=?1");
+    let rule = cut_counts_sql("o");
     let n: i64 = conn
         .query_row(
             &format!(
-                "SELECT (SELECT COUNT(*) FROM journal o WHERE o.log_ix=?1 AND o.counter>?2 \
-                      AND NOT ({ko})) \
-                  + (SELECT COUNT(*) FROM journal_forked o WHERE o.log_ix=?1 \
-                      AND NOT ({ko}))"
+                "WITH RECURSIVE {cut} SELECT (SELECT COUNT(*) FROM journal o WHERE o.log_ix=?1 \
+                      AND o.counter>?2 AND NOT ({ko})) \
+                  + (SELECT COUNT(*) FROM journal_forked o \
+                      JOIN fork_cut c ON c.log_ix=o.log_ix AND c.counter=o.counter AND c.hash=o.hash \
+                      WHERE o.log_ix=?1 AND ({rule}))"
             ),
             params![log_ix, frozen_at],
             |r| r.get(0),
@@ -1617,8 +1665,8 @@ fn cannot_reissue(conn: &Connection, log_ix: i64, frozen_at: i64) -> Result<u32,
     Ok(count_u32(n))
 }
 
-/// The own frozen logs that hold opaque entries no re-issue can copy, with
-/// their counts (the `candidates_sql` `src = 2` arm, per log).
+/// The own frozen logs that hold entries no re-issue can copy, with their
+/// counts ([`cannot_reissue`], per log).
 pub fn cannot_reissue_logs(conn: &Connection) -> Result<Vec<(LogKey, u32)>, ApiError> {
     let rows: Vec<(i64, String, u32, i64)> = {
         let mut statement = conn

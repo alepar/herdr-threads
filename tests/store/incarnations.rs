@@ -2974,6 +2974,66 @@ fn reissue_reports_opaque_candidate() {
     assert_eq!((old.pending, old.cannot_reissue), (0, 2));
 }
 
+// Kills: known fork-branch rows chained on an opaque forked row left waiting
+// forever (waiting > 0, pending stuck), a cut that stops at the direct child
+// (the grandchild would wait), a cut row re-issued, and a cut row missing from
+// the cannot_reissue tally.
+#[test]
+fn opaque_forked_predecessor_cuts_its_known_descendants() {
+    let mut o = owner(3, 2); // journal tail: counters 3 and 4
+    let branch_row = opaque_a(o.old, 3, o.entries[1].hash, "branch");
+    let tx = o.conn.transaction().unwrap();
+    journal::store_forked_entries(&tx, &o.old, std::slice::from_ref(&branch_row), None).unwrap();
+    tx.commit().unwrap();
+    let child = o.fork(4, branch_row.hash(), "child");
+    let grandchild = o.fork(5, child.hash, "grandchild");
+
+    let before = status(&o.conn, &o.ctx).unwrap();
+    let old = before.logs.iter().find(|l| l.log == o.old).unwrap();
+    assert_eq!(
+        (old.pending, old.cannot_reissue),
+        (2, 3),
+        "the main tail pends; the opaque row and its descendants are reported"
+    );
+
+    let progress = o.pass(ALL);
+    assert_eq!(
+        progress,
+        ReissueProgress {
+            reissued: 2,
+            waiting: 0,
+            has_more: false,
+            cannot_reissue: 3
+        }
+    );
+    assert_eq!(
+        o.reissued_order(),
+        vec![o.entries[2].hash, o.entries[3].hash]
+    );
+    for hash in [child.hash, grandchild.hash] {
+        assert_eq!(
+            count(
+                &o.conn,
+                format!(
+                    "SELECT COUNT(*) FROM sync_reissues WHERE source_hash=x'{}'",
+                    hex_of(&hash)
+                )
+                .as_str()
+            ),
+            0,
+            "a cut descendant is never re-issued"
+        );
+    }
+    let again = o.pass(ALL);
+    assert_eq!(
+        (again.reissued, again.waiting, again.cannot_reissue),
+        (0, 0, 3)
+    );
+    let after = status(&o.conn, &o.ctx).unwrap();
+    let old = after.logs.iter().find(|l| l.log == o.old).unwrap();
+    assert_eq!((old.pending, old.cannot_reissue), (0, 3));
+}
+
 // Kills: a re-issue candidate read that classifies by projection presence (a
 // promoted foreign row, kind filled, would become a known candidate and fail
 // the worker with "re-issue source is opaque"), a pending count that includes
