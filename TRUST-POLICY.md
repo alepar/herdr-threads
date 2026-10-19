@@ -2033,7 +2033,7 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   promoted entry is still verified and served as opaque (raw hash and signature) and withheld from peers without
   `envelope.opaque.v1`. A failed promotion leaves the entry parked, logs once and shows `cannot_promote`.
   Re-issue never copies a foreign-layout entry, promoted or not (`cannot_reissue`). The entry is sent only to
-  peers that advertised `envelope.opaque.v1`; a peer that did not (a 2.1.1 node) is sent the known prefix only,
+  peers that advertised `envelope.opaque.v1`; a peer that did not (any release before 2.3.0, 2.2.1 and older) is sent the known prefix only,
   keeps its link and receives no error, so a future-layout entry does not cross such a node and logs behind it
   do not reach nodes beyond it until it upgrades. An opaque entry over 384 KiB (`OPAQUE_MAX_BYTES`) is refused at
   ingest, with the entries before it stored and no source penalised, and stalls its log on that node (logged
