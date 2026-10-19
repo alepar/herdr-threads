@@ -47,9 +47,10 @@ use crate::protocol::time::{CallBudget, Cancellation, Clock, MonoInstant};
 use crate::store::journal;
 use crate::store::sync_dial_targets::DialTarget;
 use crate::sync::coordinator::SyncHandle;
-use crate::sync::envelope::StoredEntry;
+use crate::sync::envelope::{Deps, Envelope, StoredEntry};
+use crate::sync::hlc::HlcStamp;
 use crate::sync::journal_port::IngestOutcome;
-use crate::sync::{BatchLimits, LogKey};
+use crate::sync::{BatchLimits, EntityKey, LogKey};
 
 /// The marker's file name inside the node directory.
 pub const MARKER_FILE: &str = "resync.json";
@@ -446,8 +447,16 @@ pub type SalvageIngest<'a> =
 /// ascending in batches of [`SALVAGE_BATCH_ENTRIES`], to `ingest`, logs in
 /// [`LogKey`] order.
 ///
-/// A log stops at the first outcome other than `Stored` or at a SQLite error
-/// reading it, and the next log goes on. `ingest` verifies every entry, so
+/// The backup has one of two shapes, detected once by its `journal.raw`
+/// column. With it (schema 5, this release), entries are served byte-exact by
+/// [`journal::serve_entries`], unknown layouts as `Opaque`. Without it
+/// (schema 4, 2.2.x and older: parsed columns only) every row is rebuilt from
+/// its columns by [`legacy_entries`] as a known entry; ingest verifies it and
+/// stores its recomputed canonical bytes, as delta 5 does for a live store.
+///
+/// A log stops at the first outcome other than `Stored` or at a read error
+/// (a SQLite error, or a schema-4 row that does not decode), and the next log
+/// goes on. `ingest` verifies every entry, so
 /// corrupt rows are never admitted. A store error from `ingest` itself ends
 /// the pass with that error: ingest is idempotent, so the caller runs the
 /// whole pass again. A `Headroom` stop sets [`SalvageReport::headroom`].
@@ -474,6 +483,17 @@ pub fn salvage(
         }
     };
     report.logs = vector.0.len();
+    let has_raw = match conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('journal') WHERE name='raw')",
+        [],
+        |r| r.get::<_, bool>(0),
+    ) {
+        Ok(found) => found,
+        Err(error) => {
+            report.unreadable = Some(error.to_string());
+            return Ok(report);
+        }
+    };
     let limits = BatchLimits {
         entries: SALVAGE_BATCH_ENTRIES,
         bytes: SALVAGE_BATCH_BYTES,
@@ -485,7 +505,12 @@ pub fn salvage(
                 report.interrupted = true;
                 return Ok(report);
             }
-            let batch = match journal::serve_entries(&conn, log, from, limits) {
+            let read = if has_raw {
+                journal::serve_entries(&conn, log, from, limits)
+            } else {
+                legacy_entries(&conn, log, from, limits)
+            };
+            let batch = match read {
                 Ok(batch) => batch,
                 Err(error) => {
                     report.stopped.push(SalvageStop {
@@ -530,6 +555,97 @@ pub fn salvage(
         }
     }
     Ok(report)
+}
+
+/// The schema-4 reader of [`salvage`]: the entries of `log` from counter
+/// `from`, built from the projection columns (the backup has no `raw`), in
+/// batches by the rules of [`journal::serve_entries`]: at most `limits.entries`,
+/// stopping before the entry whose canonical size would pass `limits.bytes`,
+/// always at least one. A row that does not decode is an error, which stops
+/// the log.
+fn legacy_entries(
+    conn: &Connection,
+    log: &LogKey,
+    from: u64,
+    limits: BatchLimits,
+) -> Result<Vec<StoredEntry>, ApiError> {
+    let bad = |what: &str| {
+        ApiError::new(
+            ErrorCode::StoreCorrupt,
+            format!("schema-4 backup row: {what}"),
+        )
+    };
+    let sql_err =
+        |error: rusqlite::Error| ApiError::new(ErrorCode::StoreCorrupt, error.to_string());
+    let mut statement = conn
+        .prepare(
+            "SELECT j.counter,j.prev_hash,j.hlc,j.kind,j.kind_version,j.deps,j.creates,j.needs, \
+             j.payload,j.hash,j.signature FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix \
+             WHERE l.node_uuid=?1 AND l.incarnation=?2 AND j.counter>=?3 ORDER BY j.counter",
+        )
+        .map_err(sql_err)?;
+    let mut rows = statement
+        .query(rusqlite::params![
+            log.node.to_string(),
+            log.incarnation,
+            i64::try_from(from.max(1)).unwrap_or(i64::MAX)
+        ])
+        .map_err(sql_err)?;
+    let mut out: Vec<StoredEntry> = Vec::new();
+    let mut bytes = 0usize;
+    while let Some(r) = rows.next().map_err(sql_err)? {
+        let envelope = Envelope {
+            log: *log,
+            counter: u64::try_from(r.get::<_, i64>(0).map_err(sql_err)?)
+                .map_err(|_| bad("counter"))?,
+            prev_hash: r
+                .get::<_, Vec<u8>>(1)
+                .map_err(sql_err)?
+                .try_into()
+                .map_err(|_| bad("prev_hash"))?,
+            hlc: HlcStamp::from_u64(
+                u64::try_from(r.get::<_, i64>(2).map_err(sql_err)?).map_err(|_| bad("hlc"))?,
+            ),
+            kind: r.get(3).map_err(sql_err)?,
+            kind_version: r.get(4).map_err(sql_err)?,
+            deps: Deps::decode(&r.get::<_, Vec<u8>>(5).map_err(sql_err)?, log)
+                .map_err(|_| bad("deps"))?,
+            creates: r
+                .get::<_, Option<String>>(6)
+                .map_err(sql_err)?
+                .map(EntityKey::new)
+                .transpose()
+                .map_err(|_| bad("creates"))?,
+            needs: r
+                .get::<_, String>(7)
+                .map_err(sql_err)?
+                .split('\n')
+                .filter(|key| !key.is_empty())
+                .map(EntityKey::new)
+                .collect::<Result<_, _>>()
+                .map_err(|_| bad("needs"))?,
+            payload: r.get(8).map_err(sql_err)?,
+            hash: r
+                .get::<_, Vec<u8>>(9)
+                .map_err(sql_err)?
+                .try_into()
+                .map_err(|_| bad("hash"))?,
+            signature: r
+                .get::<_, Vec<u8>>(10)
+                .map_err(sql_err)?
+                .try_into()
+                .map_err(|_| bad("signature"))?,
+        };
+        let size = envelope.canonical_bytes().len();
+        if out.len() >= limits.entries.max(1)
+            || (!out.is_empty() && bytes.saturating_add(size) > limits.bytes)
+        {
+            break;
+        }
+        bytes = bytes.saturating_add(size);
+        out.push(StoredEntry::from(envelope));
+    }
+    Ok(out)
 }
 
 fn outcome_name(outcome: &IngestOutcome) -> &'static str {
@@ -1218,6 +1334,178 @@ mod tests {
                 "{why}"
             );
         }
+    }
+
+    /// A schema-4 backup (2.2.x shape: no `raw` column, `user_version` 4) of
+    /// the known `logs`, copied out of a store this release built.
+    fn schema4_backup(dst: &Path, logs: &[(LogKey, Vec<StoredEntry>)]) {
+        use crate::store::schema;
+        let built = dst.with_extension("built");
+        build_store(&built, logs);
+        let conn = Connection::open(dst).unwrap();
+        schema::initialize_with_deltas(
+            &conn,
+            || crate::protocol::time::UtcMillis(0),
+            Some(&crate::test_support::test_node_seed()),
+            &schema::NODE_DELTAS[..3],
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            4
+        );
+        conn.execute("ATTACH DATABASE ?1 AS built", [built.to_str().unwrap()])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sync_logs(log_ix,node_uuid,incarnation,is_self,pubkey,genesis_hash,\
+             contiguous_counter,head_hash,applied_through,blocked_on,state,frozen_at_counter,\
+             skew_ahead_ms,first_seen_at) \
+             SELECT log_ix,node_uuid,incarnation,node_uuid=(SELECT id FROM local_node),\
+             pubkey,genesis_hash,contiguous_counter,head_hash,applied_through,blocked_on,state,\
+             frozen_at_counter,skew_ahead_ms,first_seen_at FROM built.sync_logs \
+             WHERE log_ix NOT IN (SELECT log_ix FROM main.sync_logs)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO journal(ingest_seq,log_ix,counter,prev_hash,hlc,kind,kind_version,deps,\
+             creates,needs,payload,hash,signature,ingested_at,apply_state,applied_seq,parked_on,\
+             apply_error) \
+             SELECT ingest_seq,log_ix,counter,prev_hash,hlc,kind,kind_version,deps,creates,needs,\
+             payload,hash,signature,ingested_at,apply_state,applied_seq,parked_on,apply_error \
+             FROM built.journal WHERE kind IS NOT NULL \
+             AND log_ix NOT IN (SELECT log_ix FROM main.sync_logs WHERE is_self=1)",
+            [],
+        )
+        .unwrap();
+        conn.execute("DETACH DATABASE built", []).unwrap();
+    }
+
+    fn has_raw_column(db: &Path) -> bool {
+        let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('journal') WHERE name='raw')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn salvage_reads_a_schema_4_backup() {
+        let (iso, _paths) = node("resync-salvage-schema4");
+        let backup = iso.path("backup4.db");
+        let logs = three_logs();
+        let held: u64 = logs.iter().map(|(_, e)| e.len() as u64).sum();
+        schema4_backup(&backup, &logs);
+        assert!(!has_raw_column(&backup));
+        let before = std::fs::read(&backup).unwrap();
+
+        let mut got: std::collections::BTreeMap<LogKey, Vec<StoredEntry>> = Default::default();
+        let mut ingest = |log: &LogKey, batch: Vec<StoredEntry>| {
+            let count = batch.len();
+            got.entry(*log).or_default().extend(batch);
+            Ok(stored(count))
+        };
+        let report = salvage(&backup, &mut ingest, &|| false).unwrap();
+
+        assert!(report.stopped.is_empty(), "{:?}", report.stopped);
+        assert_eq!(report.entries, held, "the own genesis log is empty here");
+        for (log, entries) in &logs {
+            assert_eq!(&got[log], entries, "every entry, equal to the original");
+        }
+        assert_eq!(std::fs::read(&backup).unwrap(), before, "backup untouched");
+        assert!(!has_raw_column(&backup));
+    }
+
+    #[test]
+    fn salvage_batches_a_schema_4_backup_by_limits() {
+        let (iso, _paths) = node("resync-salvage-schema4-limits");
+        let backup = iso.path("backup4.db");
+        let (log, entries) = foreign(46, 4);
+        schema4_backup(&backup, &[(log, entries.clone())]);
+        let conn = Connection::open_with_flags(&backup, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let one = BatchLimits {
+            entries: 2,
+            bytes: usize::MAX,
+        };
+        assert_eq!(legacy_entries(&conn, &log, 2, one).unwrap(), entries[1..3]);
+        let tiny = BatchLimits {
+            entries: usize::MAX,
+            bytes: 1,
+        };
+        assert_eq!(
+            legacy_entries(&conn, &log, 1, tiny).unwrap(),
+            entries[..1],
+            "at least one entry, even over the byte limit"
+        );
+    }
+
+    #[test]
+    fn salvage_stops_a_schema_4_log_at_a_row_that_does_not_decode() {
+        let (iso, _paths) = node("resync-salvage-schema4-bad");
+        let backup = iso.path("backup4.db");
+        let (log, entries) = foreign(47, 2);
+        schema4_backup(&backup, &[(log, entries)]);
+        {
+            let conn = Connection::open(&backup).unwrap();
+            conn.execute("DROP TRIGGER journal_envelope_immutable", [])
+                .unwrap();
+            conn.execute(
+                "UPDATE journal SET deps=x'ff' WHERE counter=2 AND log_ix=\
+                 (SELECT log_ix FROM sync_logs WHERE node_uuid=?1)",
+                [log.node.to_string()],
+            )
+            .unwrap();
+        }
+        let mut seen = 0usize;
+        let mut ingest = |_: &LogKey, batch: Vec<StoredEntry>| {
+            seen += batch.len();
+            Ok(stored(batch.len()))
+        };
+        // The batch read fails as a whole, so nothing of the log is handed on.
+        let report = salvage(&backup, &mut ingest, &|| false).unwrap();
+        let stops: Vec<_> = report.stopped.iter().filter(|s| s.log == log).collect();
+        assert_eq!(stops.len(), 1, "{:?}", report.stopped);
+        assert!(stops[0].why.starts_with("read: "), "{}", stops[0].why);
+        assert_eq!(seen, 0);
+    }
+
+    #[test]
+    fn salvage_reads_a_schema_5_backup_with_an_opaque_entry() {
+        use crate::test_support::opaque_entry::{synthetic_entry, synthetic_unsigned};
+
+        let (iso, _paths) = node("resync-salvage-schema5-opaque");
+        let id = NodeIdentity::from_seed([48; 32]);
+        let (log, mut entries) = foreign(48, 0);
+        let one = entries[0].hash();
+        let opaque = synthetic_entry(&id, &synthetic_unsigned(&id, log.incarnation, 2, one));
+        entries.push(StoredEntry::from(opaque.clone()));
+        let three = synthetic_unsigned(&id, log.incarnation, 3, opaque.hash()).seal(&id);
+        entries.push(StoredEntry::from(three));
+        let backup = iso.path("backup5.db");
+        build_store(&backup, &[(log, entries.clone())]);
+        assert!(has_raw_column(&backup));
+
+        let mut got: Vec<StoredEntry> = Vec::new();
+        let mut ingest = |l: &LogKey, batch: Vec<StoredEntry>| {
+            if *l == log {
+                got.extend(batch.clone());
+            }
+            Ok(stored(batch.len()))
+        };
+        let report = salvage(&backup, &mut ingest, &|| false).unwrap();
+        assert!(report.stopped.is_empty(), "{:?}", report.stopped);
+        assert_eq!(got.len(), 3);
+        assert!(!got[0].is_opaque() && !got[2].is_opaque());
+        assert_eq!(
+            got[1].as_opaque().map(|o| o.raw().to_vec()),
+            Some(opaque.raw().to_vec()),
+            "entry 2 arrives as Opaque, byte for byte"
+        );
+        assert_eq!(got, entries);
     }
 
     #[test]
