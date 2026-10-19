@@ -51,10 +51,11 @@ codeBuckets:
   processSweep: stopped 0 · survived 0 · unknown 0 · kept 0
 
 roastCodeRound: 2
-roast-code: 2026-10-18-peer-wire-compat-hardening-roast-pr-1.md
+roast-code: 2026-10-18-peer-wire-compat-hardening-roast-pr-1.md, 2026-10-18-peer-wire-compat-hardening-roast-pr-2.md
 findingsLedger: findings-ledger.md
 stepBackCode-round-1: local — five independent findings, promotion surface swept as one cluster bead
 scopeFilter-round-1: all 5 confirmed findings in-scope (orchestrator; no subagent: every finding is in a goal-named path) → ht-j87z.29 ht-j87z.30 ht-j87z.31 ht-j87z.32 ht-j87z.33
 parked:
 - run.md · degraded-verdict · "ht-j87z.13 promotion deferred to ht-evlm by orchestrator (blockers ht-50fc, ht-v9zy); R4 apply-after-upgrade not delivered — needs human acceptance"
 - final-review inv-500DAF36 · degraded-verdict · "base drift: main 9f1ca770d registers 0004_sibling_delivery; rename 0004_journal_opaque at base absorb before release"
+roastCodeExit: converged (round 2 empty late round, 5/5 resolved, 0 confirmed; [converged] tag withheld only by the review-readiness qualifier)
