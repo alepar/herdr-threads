@@ -865,6 +865,22 @@ impl From<OpaqueEntry> for StoredEntry {
 /// raw magic.
 pub type LayoutParser = fn(&OpaqueEntry) -> Result<Envelope, EnvelopeError>;
 
+/// Whether this build understands any layout besides HTJRNL01; production
+/// builds never do, so a promotion pass has nothing to look for.
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn any_layout_understood() -> bool {
+    false
+}
+
+/// Whether any layout is currently registered with [`mark_layout_understood`].
+#[cfg(any(test, feature = "test-support"))]
+pub fn any_layout_understood() -> bool {
+    !UNDERSTOOD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_empty()
+}
+
 /// The parser for `magic`, if this build understands it. Production builds
 /// understand no layout but HTJRNL01 and always return `None`.
 #[cfg(not(any(test, feature = "test-support")))]

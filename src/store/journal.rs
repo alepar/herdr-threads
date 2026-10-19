@@ -2326,21 +2326,27 @@ fn promote_in_savepoint(tx: &Connection, ingest_seq: i64) -> Result<Promoted, Ap
     Ok(Promoted::Done)
 }
 
+/// The parked rows in `ingest_seq` order. The redundant `<> 'applied'` lets
+/// SQLite use the partial index `journal_unapplied`, which it cannot prove
+/// from `= 'parked_layout'` alone.
+const PARKED_SQL: &str = "SELECT j.ingest_seq,substr(j.raw,1,8) FROM journal j \
+     WHERE j.apply_state<>'applied' AND j.apply_state='parked_layout' ORDER BY j.ingest_seq";
+
 /// Promotes every `parked_layout` row whose magic this build understands, in
 /// `ingest_seq` order; returns `(promoted, failed)`. Run at store open and at
 /// the start of every apply pass. A row-level failure never fails the caller:
 /// the row stays parked and its reason is logged once per process. Production
-/// builds understand no foreign layout, so the pass costs one indexed query.
+/// builds understand no foreign layout, so the pass returns before touching the
+/// store; otherwise the scan is an index search on the partial
+/// `journal_unapplied` ([`PARKED_SQL`]).
 pub(crate) fn promote_parked(
     tx: &Connection,
     logged: &std::sync::Mutex<std::collections::HashSet<i64>>,
 ) -> Result<(usize, usize), ApiError> {
-    let mut statement = tx
-        .prepare(
-            "SELECT j.ingest_seq,substr(j.raw,1,8) FROM journal j \
-             WHERE j.apply_state='parked_layout' ORDER BY j.ingest_seq",
-        )
-        .map_err(store_error)?;
+    if !crate::sync::envelope::any_layout_understood() {
+        return Ok((0, 0));
+    }
+    let mut statement = tx.prepare(PARKED_SQL).map_err(store_error)?;
     let parked = statement
         .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
         .map_err(store_error)?

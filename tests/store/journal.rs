@@ -2879,6 +2879,35 @@ mod single_table {
     }
 
     #[test]
+    fn promote_parked_scan_uses_the_unapplied_index() {
+        let store = Store::new();
+        let (_ctx, conn, _) = opened(&store);
+        let plan = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {PARKED_SQL}"))
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("; ");
+        assert!(
+            plan.contains("USING INDEX journal_unapplied") && !plan.contains("SCAN"),
+            "{plan}"
+        );
+    }
+
+    #[test]
+    fn promote_parked_returns_before_the_store_when_no_layout_is_understood() {
+        if crate::sync::envelope::any_layout_understood() {
+            return; // another test in this process registered a layout
+        }
+        // No `journal` table: any query would fail, so Ok proves the early return.
+        let bare = Connection::open_in_memory().unwrap();
+        let logged = std::sync::Mutex::default();
+        assert_eq!(promote_parked(&bare, &logged).unwrap(), (0, 0));
+    }
+
+    #[test]
     fn journal_opaque_is_gone() {
         let store = Store::new();
         let (_ctx, conn, _) = opened(&store);
