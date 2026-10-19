@@ -21,7 +21,7 @@ Each fix is done by a fixer in its own worktree and branch, with a bead (`bd`), 
 
 ## 2. Release branch
 
-In the standing release worktree (`.worktrees/herdr-095`): create `release/X.Y.Z` from `main`, cherry-pick or merge the fixers' commits, then add one "Prepare vX.Y.Z" commit: bump `Cargo.toml` and `herdr-plugin.toml` (line 3), run `cargo update -p herdr-threads --offline`, and add the `CHANGELOG.md` entry (heading `## vX.Y.Z`). On macOS use `sed -i ''`; check the diff, since a failed `sed` leaves the version unbumped.
+In a release worktree (a fresh `git worktree add -b release/X.Y.Z .worktrees/NAME main`, seeded with `scripts/seed-worktree-target target .worktrees/NAME`; the previous one can be reused): create `release/X.Y.Z` from `main`, cherry-pick or merge the fixers' commits, then add one "Prepare vX.Y.Z" commit: bump `Cargo.toml` and `herdr-plugin.toml` (line 3), run `cargo update -p herdr-threads --offline`, and add the `CHANGELOG.md` entry (heading `## vX.Y.Z`). On macOS use `sed -i ''`; check the diff, since a failed `sed` leaves the version unbumped.
 
 A lane that adds a node schema delta (`migrations/node/NNNN_*.sql` and its `NODE_DELTAS` entry in `src/store/schema.rs`) takes the next free number when it merges: deltas are numbered by position, and a released delta is never renamed or edited. If `main` shipped a delta with the same number meanwhile, rename the lane's file, renumber its entry after the released one, and fix the tests that name the start point (`tests/store/schema.rs`); never hard-code the number elsewhere.
 
