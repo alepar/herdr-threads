@@ -38,6 +38,19 @@ pub const NODE_APPLICATION_ID: i32 = 0x4854_4E44;
 /// The `schema_identity.marker` of a node store.
 pub const NODE_SCHEMA_MARKER: &str = "herdr-threads-node-v1";
 
+/// A table rebuild done the SQLite-documented way (foreign keys off outside the
+/// transaction): `NodeDelta::sql` creates the new tables, `copy` moves the rows
+/// (DML only, no DDL), `sql_after` drops the old tables, renames the new ones and
+/// recreates indexes and triggers. Every DDL statement stays in replayable SQL.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Rebuild {
+    /// Row copy from the old tables into the ones `sql` created. Runs inside the
+    /// delta's transaction; never issues DDL (the schema audit replays only SQL).
+    pub(crate) copy: fn(&Connection) -> Result<(), ApiError>,
+    /// DDL after the copy: DROP old tables, RENAME new ones, CREATE indexes and triggers.
+    pub(crate) sql_after: &'static str,
+}
+
 /// One forward migration applied on top of the baseline.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NodeDelta {
@@ -47,6 +60,12 @@ pub(crate) struct NodeDelta {
     /// The statements, applied in one `BEGIN IMMEDIATE` together with the
     /// `user_version` bump.
     pub(crate) sql: &'static str,
+    /// `Some` for a table-rebuild delta; see [`Rebuild`]. A rebuild delta runs
+    /// with foreign keys off (restored afterwards), `sql`, `copy`, `sql_after`,
+    /// a `foreign_key_check` that must come back empty, then the `user_version`
+    /// bump, all in one `BEGIN IMMEDIATE`. The schema audit replays `sql` then
+    /// `sql_after` (never `copy`).
+    pub(crate) rebuild: Option<Rebuild>,
 }
 
 /// Forward migrations after the baseline, in `version` order (2, 3, ...), each an
@@ -64,18 +83,22 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
     NodeDelta {
         version: 2,
         sql: include_str!("../../migrations/node/0002_replayed_message_roles.sql"),
+        rebuild: None,
     },
     NodeDelta {
         version: 3,
         sql: include_str!("../../migrations/node/0003_concurrent_session_bindings.sql"),
+        rebuild: None,
     },
     NodeDelta {
         version: 4,
         sql: include_str!("../../migrations/node/0004_sibling_delivery.sql"),
+        rebuild: None,
     },
     NodeDelta {
         version: 5,
         sql: include_str!("../../migrations/node/0005_journal_opaque.sql"),
+        rebuild: None,
     },
 ];
 
@@ -366,21 +389,95 @@ fn apply_deltas(conn: &Connection, deltas: &[NodeDelta], cache: bool) -> Result<
         if delta.version <= version {
             continue;
         }
-        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-        let applied = conn
-            .execute_batch(delta.sql)
-            .and_then(|()| conn.pragma_update(None, "user_version", delta.version));
-        match applied {
-            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(store_error(error));
-            }
-        }
+        apply_delta(conn, delta)?;
         version = delta.version;
         verify_at(conn, deltas, version, cache)?;
     }
     Ok(())
+}
+
+/// Apply one missing delta in its own `BEGIN IMMEDIATE`. A rebuild delta
+/// (`Rebuild`) runs with foreign keys off, which only takes effect outside a
+/// transaction, so the pragma is set before `BEGIN` and restored to its prior
+/// value on every path.
+fn apply_delta(conn: &Connection, delta: &NodeDelta) -> Result<(), ApiError> {
+    let Some(rebuild) = delta.rebuild else {
+        return run_delta_transaction(conn, delta, |conn| {
+            conn.execute_batch(delta.sql).map_err(store_error)
+        });
+    };
+    if !conn.is_autocommit() {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            format!("rebuild delta {} needs autocommit", delta.version),
+        ));
+    }
+    let prior: bool = conn
+        .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+        .map_err(store_error)?;
+    conn.pragma_update(None, "foreign_keys", false)
+        .map_err(store_error)?;
+    let applied = run_delta_transaction(conn, delta, |conn| {
+        conn.execute_batch(delta.sql).map_err(store_error)?;
+        (rebuild.copy)(conn)?;
+        conn.execute_batch(rebuild.sql_after).map_err(store_error)?;
+        check_foreign_keys(conn, delta.version)
+    });
+    let restored = conn
+        .pragma_update(None, "foreign_keys", prior)
+        .map_err(store_error);
+    applied.and(restored)
+}
+
+/// `BEGIN IMMEDIATE`, `body`, the `user_version` bump, `COMMIT`; any error after
+/// the `BEGIN` rolls everything back and returns the original error.
+fn run_delta_transaction(
+    conn: &Connection,
+    delta: &NodeDelta,
+    body: impl FnOnce(&Connection) -> Result<(), ApiError>,
+) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let applied = body(conn).and_then(|()| {
+        conn.pragma_update(None, "user_version", delta.version)
+            .map_err(store_error)
+    });
+    match applied {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+/// A rebuild may not leave a dangling reference: `PRAGMA foreign_key_check`
+/// (checked from Rust, not in the replayable SQL) must report no row.
+fn check_foreign_keys(conn: &Connection, version: i64) -> Result<(), ApiError> {
+    let mut stmt = conn
+        .prepare("SELECT \"table\", rowid, parent FROM pragma_foreign_key_check")
+        .map_err(store_error)?;
+    let mut violations = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<i64>>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(store_error)?;
+    let Some(first) = violations.next().transpose().map_err(store_error)? else {
+        return Ok(());
+    };
+    let more = violations.count();
+    let (table, rowid, parent) = first;
+    Err(api_error(
+        ErrorCode::StoreCorrupt,
+        format!(
+            "schema delta {version}: foreign_key_check reports {} violation(s), first: {table} rowid {} -> {parent}",
+            more + 1,
+            rowid.map_or_else(|| "none".to_owned(), |r| r.to_string()),
+        ),
+    ))
 }
 
 /// The creating transaction's node rows: `local_node`, then the self row of
@@ -445,12 +542,20 @@ fn expected_objects(
         .execute_batch(NODE_BASELINE)
         .expect("NODE_BASELINE applies to an empty database");
     for delta in deltas.iter().filter(|d| d.version <= version) {
-        memory.execute_batch(delta.sql).map_err(|error| {
+        let does_not_apply = |error: rusqlite::Error| {
             api_error(
                 ErrorCode::IncompatibleSchema,
                 format!("schema delta {} does not apply: {error}", delta.version),
             )
-        })?;
+        };
+        memory.execute_batch(delta.sql).map_err(does_not_apply)?;
+        // A rebuild's `copy` is skipped: the tables are empty here, the replay
+        // only needs the DDL sequence (create, drop, rename) for the stored text.
+        if let Some(rebuild) = delta.rebuild {
+            memory
+                .execute_batch(rebuild.sql_after)
+                .map_err(does_not_apply)?;
+        }
     }
     let built = Arc::new(schema_objects(&memory).map_err(store_error)?);
     if cache {
