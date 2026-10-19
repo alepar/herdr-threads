@@ -14,6 +14,7 @@ spec: 2026-10-18-bytes-first-journal-design.md
 epic: ht-76u6
 approvals:
 - top-split · auto · all 7 children LEAF (no subepics)
+- review-collection · {"invocationId":"inv-239E1565-1CFB-44FF-9208-D3750DC138F8","workspace":"/Users/alepar/AleCode/herdr-threads/.worktrees/super-auto-bytes-first-journal/.superpowers/sdd/ht-76u6-plan","reviewPath":"/Users/alepar/AleCode/herdr-threads/.worktrees/super-auto-bytes-first-journal/.superpowers/sdd/ht-76u6-plan/final-review-inv-239E1565-1CFB-44FF-9208-D3750DC138F8.md","review":"pending","required":[],"settled":false}
 roastDesignRound: 3
 roast-design: 2026-10-18-bytes-first-journal-roast-design-1.md, 2026-10-18-bytes-first-journal-roast-design-2.md, 2026-10-18-bytes-first-journal-roast-design-3.md
 stepBackDesign-round-1: local — orchestrator inline (no step-back dispatch): findings cluster on migration mechanics (FK rebuild, placeholder, marker, fk_check), state reuse, promoted serving; each has a concrete local fix; no mechanical trigger
