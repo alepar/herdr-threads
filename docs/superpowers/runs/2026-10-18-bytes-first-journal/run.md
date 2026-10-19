@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-18-bytes-first-journal
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: roast-code
+phase: report
 codeMechanism: Workflow
 runTag: bytes-first-journal-20261019T012327
 context: Context: claude · planner=200K/167K · implementer=200K/167K · reviewer=200K/167K · finalReview=200K/167K · assembler=200K/167K · warn: planner, finalReview on a 200K model → set ANTHROPIC_DEFAULT_OPUS_MODEL=<model>[1m] or config.models.<role> to a 1M model · warn: implementer, reviewer, assembler on a 200K model → set ANTHROPIC_DEFAULT_SONNET_MODEL=<model>[1m] or config.models.<role> to a 1M model
@@ -34,7 +34,7 @@ codeBuckets:
   parked: 
   stalled: false
   review: not ready (unreviewed: whole-epic coverage and omission provenance remain incomplete)
-  sweep: SWEEP DEFERRED (caller-owned)
+  sweep: 3be83dfe3 — 7858 passed, 2 failed, 0 errors, 48 skipped; failing: latency::history_and_health_stay_fast_under_a_party_with_a_slow_host (ht-1tl3), no_leaks::sigkill_killed_run_leaves_no_processes (ht-oxdk) — both load flakes, 2/2 isolated pass; command: nice cargo nextest run --locked --all-targets --all-features @ 3be83dfe3
   worktreesKept: 
   processSweep: stopped 0 · survived 0 · unknown 0 · kept 0
 roastCodeRound: 2
@@ -42,3 +42,7 @@ roast-code: 2026-10-18-bytes-first-journal-roast-pr-1.md, 2026-10-18-bytes-first
 stepBackCode-round-1: local — orchestrator inline: six independent findings (changelog, perf, re-issue cut, test race, docs, pre-existing FYI); no mechanical trigger
 scopeFilter-round-1: all 6 in scope (orchestrator) → ht-76u6.18 ht-76u6.19 ht-76u6.20 ht-76u6.21 ht-76u6.22
 roastCodeExit: converged (round 2: 6/6 resolved, 1 new Nit (docs for the re-issue terminal cut) fixed inline by orchestrator; [converged] withheld only by the readiness qualifier)
+baseAbsorbed: 07d7655cb → 3be83dfe3, 0 conflicted files (README only)
+sweepFix: 0 failing in scope → none (2 load flakes filed ht-1tl3 ht-oxdk, 2/2 isolated pass) @ 3be83dfe3
+leakCheck: no leaked test processes, no leaked temp files
+friction: 3 events
