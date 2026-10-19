@@ -858,8 +858,11 @@ impl From<OpaqueEntry> for StoredEntry {
 /// Parses one understood non-HTJRNL01 layout into a Known envelope. The
 /// returned Envelope carries the opaque entry's hash and signature, which were
 /// verified over the raw bytes; `Envelope::verify` (which recomputes HTJRNL01
-/// bytes) does not apply to it. How a promoted entry is stored and served is
-/// ht-j87z.13's decision.
+/// bytes) does not apply to it. Promotion (`store::journal::promote`) fills the
+/// stored row's projection from this envelope and moves the row from
+/// `parked_layout` to `pending`; `raw`, `hash` and `signature` stay as received,
+/// and the row is still decoded, verified and served as an opaque entry by its
+/// raw magic.
 pub type LayoutParser = fn(&OpaqueEntry) -> Result<Envelope, EnvelopeError>;
 
 /// The parser for `magic`, if this build understands it. Production builds

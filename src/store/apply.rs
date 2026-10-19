@@ -1036,6 +1036,8 @@ pub fn apply_pass(
     limits: ApplyLimits,
 ) -> Result<ApplyProgress, ApiError> {
     let sync = ctx.sync()?;
+    // Entries of a layout this build learned since they were parked.
+    journal::promote_parked(tx, &sync.promote_logged)?;
     let mut run = Run::new(ctx.clock(), limits);
     let hold = sync.own_history_hold.active(ctx.clock().monotonic_now());
     loop {

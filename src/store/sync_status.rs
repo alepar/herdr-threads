@@ -100,6 +100,34 @@ pub fn per_log(
             unapplied.insert((log_ix, state), u64::try_from(count).unwrap_or(0));
         }
     }
+    // Parked rows of a layout this build has a parser for: promotion failed.
+    let mut cannot_promote = std::collections::BTreeMap::<i64, u64>::new();
+    {
+        let mut statement = conn
+            .prepare(
+                "SELECT log_ix,substr(raw,1,8),COUNT(*) FROM journal \
+                 WHERE apply_state='parked_layout' GROUP BY log_ix,substr(raw,1,8)",
+            )
+            .map_err(store_error)?;
+        let rows = statement
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(store_error)?;
+        for row in rows {
+            let (log_ix, magic, count) = row.map_err(store_error)?;
+            let understood = <[u8; 8]>::try_from(magic.as_slice())
+                .ok()
+                .is_some_and(|m| crate::sync::envelope::understood_layout(&m).is_some());
+            if understood {
+                *cannot_promote.entry(log_ix).or_default() += u64::try_from(count).unwrap_or(0);
+            }
+        }
+    }
     let mut statement = conn
         .prepare(
             "SELECT l.log_ix,l.node_uuid,l.incarnation,l.is_self,l.contiguous_counter,l.head_hash, \
@@ -166,6 +194,7 @@ pub fn per_log(
                 parked_unknown: count("parked_unknown"),
                 parked_dep: count("parked_dep"),
                 parked_layout: count("parked_layout"),
+                cannot_promote: cannot_promote.get(&log_ix).copied().unwrap_or(0),
                 failed: count("failed"),
                 frozen_at: frozen.and_then(|k| u64::try_from(k).ok()),
                 lag: None,
