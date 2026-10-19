@@ -1439,8 +1439,8 @@ fn delivery_suppressed_journal_and_forked_any_state() {
         .unwrap();
     x2.conn
         .execute(
-            "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,payload,signature,received_at) \
-             VALUES (?1,9,zeroblob(32),zeroblob(32),1,'test.put',1,x'',?2,x'',zeroblob(64),0)",
+            "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,payload,signature,received_at,raw) \
+             VALUES (?1,9,zeroblob(32),zeroblob(32),1,'test.put',1,x'',?2,x'',zeroblob(64),0,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
             params![log_ix, "e:forked"],
         )
         .unwrap();
@@ -1456,8 +1456,8 @@ fn delivery_suppressed_journal_and_forked_any_state() {
         .unwrap();
     x2.conn
         .execute(
-            "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,payload,signature,received_at) \
-             VALUES (?1,9,zeroblob(32),zeroblob(32),1,'test.put',1,x'',?2,x'',zeroblob(64),0)",
+            "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,payload,signature,received_at,raw) \
+             VALUES (?1,9,zeroblob(32),zeroblob(32),1,'test.put',1,x'',?2,x'',zeroblob(64),0,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
             params![a_ix, "e:foreign-fork"],
         )
         .unwrap();
@@ -1716,8 +1716,8 @@ impl Node {
     fn forked_settlement(&self, log: &LogKey, creates: &str) {
         self.conn
             .execute(
-                "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,payload,signature,received_at) \
-                 SELECT log_ix,9,zeroblob(32),zeroblob(32),1,'test.settle',1,x'',?3,x'',zeroblob(64),0 \
+                "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,payload,signature,received_at,raw) \
+                 SELECT log_ix,9,zeroblob(32),zeroblob(32),1,'test.settle',1,x'',?3,x'',zeroblob(64),0,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' \
                  FROM sync_logs WHERE node_uuid=?1 AND incarnation=?2",
                 params![log.node.to_string(), log.incarnation, creates],
             )
@@ -1995,17 +1995,22 @@ fn opaque_next_position_is_skipped_with_opaque_layout_recorded() {
     let hash = |n: u8| [n; 32].to_vec();
     c.conn
         .execute(
-            "INSERT INTO journal_opaque(log_ix,counter,hash,prev_hash,signature,raw,branch) \
-             SELECT log_ix,2,?2,?3,zeroblob(64),zeroblob(68),0 FROM sync_logs WHERE node_uuid=?1",
+            "INSERT INTO journal(log_ix,counter,hash,prev_hash,signature,raw,needs,ingested_at,apply_state) \
+             SELECT log_ix,2,?2,?3,zeroblob(64),zeroblob(68),NULL,0,'parked_layout' FROM sync_logs WHERE node_uuid=?1",
             params![node, hash(2), hash(1)],
         )
         .unwrap();
     c.conn
         .execute(
-            "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state) \
-             SELECT log_ix,3,?2,?3,5,'test.put',1,x'0000',x'00',zeroblob(64),0,'pending' \
+            "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state,raw) \
+             SELECT log_ix,3,?2,?3,5,'test.put',1,x'0000',x'00',zeroblob(64),0,'pending',?4 \
              FROM sync_logs WHERE node_uuid=?1",
-            params![node, hash(2), hash(3)],
+            params![
+                node,
+                hash(2),
+                hash(3),
+                crate::test_support::opaque_entry::known_raw_stub()
+            ],
         )
         .unwrap();
     c.conn

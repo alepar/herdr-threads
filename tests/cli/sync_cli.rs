@@ -361,8 +361,8 @@ fn seed_foreign_log(fx: &Fixture, node: &str, entries: &[(&str, Option<&str>)]) 
         let n = index as i64 + 1;
         db.execute(
             "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,needs, \
-             payload,signature,ingested_at,apply_state,parked_on,apply_error) \
-             VALUES (?1,?2,?3,?4,1,'unknown.kind',1,x'0000','',x'7b7d',zeroblob(64),0,?5,?6,?7)",
+             payload,signature,ingested_at,apply_state,parked_on,apply_error,raw) \
+             VALUES (?1,?2,?3,?4,1,'unknown.kind',1,x'0000','',x'7b7d',zeroblob(64),0,?5,?6,?7,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
             rusqlite::params![
                 log_ix,
                 n,
@@ -394,8 +394,8 @@ fn sync_verify_healthy_and_seeded_violation() {
     .unwrap();
     db.execute(
         "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,needs, \
-         payload,signature,received_at) \
-         VALUES (?1,1,zeroblob(32),x'0909090909090909090909090909090909090909090909090909090909090909',1,'unknown.kind',1,x'','',x'7b7d',zeroblob(64),0)",
+         payload,signature,received_at,raw) \
+         VALUES (?1,1,zeroblob(32),x'0909090909090909090909090909090909090909090909090909090909090909',1,'unknown.kind',1,x'','',x'7b7d',zeroblob(64),0,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
         [log_ix],
     )
     .unwrap();

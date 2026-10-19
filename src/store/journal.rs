@@ -30,6 +30,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use sha2::{Digest, Sha256};
 
 pub use crate::sync::facts::Predecessor;
 
@@ -203,8 +204,7 @@ pub(crate) fn verify_invariants(tx: &Connection) -> Result<(), ApiError> {
             &format!(
                 "SELECT l.log_ix,l.node_uuid,l.incarnation,l.contiguous_counter,l.head_hash,l.applied_through, \
                  (l.log_ix IS (SELECT active_log_ix FROM local_node)), \
-                 MAX(COALESCE((SELECT MAX(counter) FROM journal j WHERE j.log_ix=l.log_ix),0), \
-                 COALESCE((SELECT MAX(counter) FROM journal_opaque o WHERE o.log_ix=l.log_ix AND o.branch=0),0)), \
+                 COALESCE((SELECT MAX(counter) FROM journal j WHERE j.log_ix=l.log_ix),0), \
                  (SELECT hash FROM {CHAIN_ROWS} j WHERE j.log_ix=l.log_ix AND j.counter=l.contiguous_counter) \
                  FROM sync_logs l ORDER BY l.log_ix"
             ),
@@ -494,8 +494,8 @@ fn insert_pending(
         .collect::<Vec<_>>()
         .join("\n");
     tx.execute(
-        "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,needs,payload,signature,ingested_at,apply_state) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'pending')",
+        "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,needs,payload,signature,ingested_at,apply_state,raw) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'pending',?14)",
         params![
             log_ix,
             envelope.counter as i64,
@@ -510,6 +510,7 @@ fn insert_pending(
             envelope.payload,
             envelope.signature.as_slice(),
             decision.utc.0,
+            envelope.canonical_bytes(),
         ],
     )
     .map_err(store_error)?;
@@ -750,6 +751,147 @@ pub fn reissue(
     })
 }
 
+/// Node schema 5 row copy (ht-76u6): moves every `journal` and `journal_forked`
+/// row of a schema-4 store into `journal_new` / `journal_forked_new`, computing
+/// `raw` as the canonical bytes of the stored projection and refusing
+/// (`StoreCorrupt`) any row whose SHA-256 is not its stored hash. DML only: it
+/// runs inside the delta transaction, and the schema audit replays only the
+/// delta SQL. `ingest_seq` / `forked_ix` are preserved (`thread_registers` and
+/// `sync_reissues` point at them) and so are the AUTOINCREMENT high-water marks.
+pub(crate) fn copy_rows_with_raw(conn: &Connection) -> Result<(), ApiError> {
+    // Columns 3..=13 are the eleven `RawEnvelope::read_at` columns.
+    let mut read = conn
+        .prepare(
+            "SELECT j.ingest_seq, l.node_uuid, l.incarnation, j.counter, j.prev_hash, j.hlc, \
+             j.kind, j.kind_version, j.deps, j.creates, j.needs, j.payload, j.hash, j.signature, \
+             j.log_ix, j.ingested_at, j.apply_state, j.applied_seq, j.parked_on, j.apply_error \
+             FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix ORDER BY j.ingest_seq",
+        )
+        .map_err(store_error)?;
+    let mut write = conn
+        .prepare(
+            "INSERT INTO journal_new(ingest_seq,log_ix,counter,prev_hash,hash,signature,raw,hlc,kind,\
+             kind_version,deps,creates,needs,payload,ingested_at,apply_state,applied_seq,parked_on,apply_error) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+        )
+        .map_err(store_error)?;
+    let mut rows = read.query([]).map_err(store_error)?;
+    while let Some(r) = rows.next().map_err(store_error)? {
+        let ingest_seq: i64 = r.get(0).map_err(store_error)?;
+        let raw = recompute_raw(r, "journal", ingest_seq)?;
+        write
+            .execute(params![
+                ingest_seq,
+                r.get::<_, i64>(14).map_err(store_error)?,
+                r.get::<_, i64>(3).map_err(store_error)?,
+                r.get::<_, Vec<u8>>(4).map_err(store_error)?,
+                r.get::<_, Vec<u8>>(12).map_err(store_error)?,
+                r.get::<_, Vec<u8>>(13).map_err(store_error)?,
+                raw,
+                r.get::<_, i64>(5).map_err(store_error)?,
+                r.get::<_, String>(6).map_err(store_error)?,
+                r.get::<_, i64>(7).map_err(store_error)?,
+                r.get::<_, Vec<u8>>(8).map_err(store_error)?,
+                r.get::<_, Option<String>>(9).map_err(store_error)?,
+                r.get::<_, String>(10).map_err(store_error)?,
+                r.get::<_, Vec<u8>>(11).map_err(store_error)?,
+                r.get::<_, i64>(15).map_err(store_error)?,
+                r.get::<_, String>(16).map_err(store_error)?,
+                r.get::<_, Option<i64>>(17).map_err(store_error)?,
+                r.get::<_, Option<String>>(18).map_err(store_error)?,
+                r.get::<_, Option<String>>(19).map_err(store_error)?,
+            ])
+            .map_err(store_error)?;
+    }
+    drop(rows);
+
+    let mut read = conn
+        .prepare(
+            "SELECT j.forked_ix, l.node_uuid, l.incarnation, j.counter, j.prev_hash, j.hlc, \
+             j.kind, j.kind_version, j.deps, j.creates, j.needs, j.payload, j.hash, j.signature, \
+             j.log_ix, j.source_node, j.received_at \
+             FROM journal_forked j JOIN sync_logs l ON l.log_ix=j.log_ix ORDER BY j.forked_ix",
+        )
+        .map_err(store_error)?;
+    let mut write = conn
+        .prepare(
+            "INSERT INTO journal_forked_new(forked_ix,log_ix,counter,prev_hash,hash,signature,raw,hlc,kind,\
+             kind_version,deps,creates,needs,payload,source_node,received_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+        )
+        .map_err(store_error)?;
+    let mut rows = read.query([]).map_err(store_error)?;
+    while let Some(r) = rows.next().map_err(store_error)? {
+        let forked_ix: i64 = r.get(0).map_err(store_error)?;
+        let raw = recompute_raw(r, "journal_forked", forked_ix)?;
+        write
+            .execute(params![
+                forked_ix,
+                r.get::<_, i64>(14).map_err(store_error)?,
+                r.get::<_, i64>(3).map_err(store_error)?,
+                r.get::<_, Vec<u8>>(4).map_err(store_error)?,
+                r.get::<_, Vec<u8>>(12).map_err(store_error)?,
+                r.get::<_, Vec<u8>>(13).map_err(store_error)?,
+                raw,
+                r.get::<_, i64>(5).map_err(store_error)?,
+                r.get::<_, String>(6).map_err(store_error)?,
+                r.get::<_, i64>(7).map_err(store_error)?,
+                r.get::<_, Vec<u8>>(8).map_err(store_error)?,
+                r.get::<_, Option<String>>(9).map_err(store_error)?,
+                r.get::<_, String>(10).map_err(store_error)?,
+                r.get::<_, Vec<u8>>(11).map_err(store_error)?,
+                r.get::<_, Option<String>>(15).map_err(store_error)?,
+                r.get::<_, i64>(16).map_err(store_error)?,
+            ])
+            .map_err(store_error)?;
+    }
+    drop(rows);
+
+    // An explicit-rowid insert already moves the high-water mark to the maximum;
+    // this keeps any gap the old table's counter had.
+    for (old, new) in [
+        ("journal", "journal_new"),
+        ("journal_forked", "journal_forked_new"),
+    ] {
+        conn.execute(
+            "UPDATE sqlite_sequence SET seq=(SELECT seq FROM sqlite_sequence WHERE name=?1) \
+             WHERE name=?2 AND seq < (SELECT seq FROM sqlite_sequence WHERE name=?1)",
+            params![old, new],
+        )
+        .map_err(store_error)?;
+    }
+    Ok(())
+}
+
+/// The canonical bytes of one schema-4 row read in [`copy_rows_with_raw`]'s
+/// layout (log node and incarnation at 1 and 2, the eleven envelope columns from
+/// 3), checked against the stored hash.
+fn recompute_raw(r: &rusqlite::Row<'_>, table: &str, row_id: i64) -> Result<Vec<u8>, ApiError> {
+    let node: String = r.get(1).map_err(store_error)?;
+    let incarnation: i64 = r.get(2).map_err(store_error)?;
+    let label = log_label(&node, incarnation);
+    let bad = |what: &str| {
+        corrupt(format!(
+            "schema delta 5: {table} row {row_id} ({label}): {what}"
+        ))
+    };
+    let log = LogKey {
+        node: node.parse().map_err(|_| bad("malformed node uuid"))?,
+        incarnation: u32::try_from(incarnation).map_err(|_| bad("incarnation"))?,
+    };
+    let stored = RawEnvelope::read_at(r, 3).map_err(store_error)?;
+    let counter = stored.counter;
+    let hash = stored.hash.clone();
+    let envelope = stored.decode(&log)?;
+    let raw = envelope.canonical_bytes();
+    if Sha256::digest(&raw).as_slice() != hash.as_slice() {
+        return Err(bad(&format!(
+            "counter {counter} does not re-encode to its hash"
+        )));
+    }
+    Ok(raw)
+}
+
 /// What [`freeze`] did to a log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FreezeOutcome {
@@ -898,18 +1040,15 @@ fn load_log(conn: &Connection, log: &LogKey) -> Result<Option<LogRow>, ApiError>
     }))
 }
 
-/// Chain positions of every log: the `journal` rows and the main-chain
-/// (`branch = 0`) rows of `journal_opaque`. The Chain-row reader's one SQL
-/// source; a reader of chain positions selects from it, never from
-/// `journal` alone (ht-j87z design section 4). `opaque` is 1 for a row whose
-/// signed layout this node does not understand.
-pub(crate) const CHAIN_ROWS: &str = "(SELECT log_ix,counter,prev_hash,hash,0 AS opaque FROM journal \
-     UNION ALL SELECT log_ix,counter,prev_hash,hash,1 AS opaque FROM journal_opaque WHERE branch=0)";
+/// Chain positions of every log: the `journal` rows. The Chain-row reader's one
+/// SQL source; a reader of chain positions selects from it, never from
+/// `journal` alone. `opaque` is 1 for a row whose `raw` does not carry the
+/// HTJRNL01 magic, i.e. a signed layout this node does not understand.
+pub(crate) const CHAIN_ROWS: &str = "(SELECT log_ix,counter,prev_hash,hash,(substr(raw,1,8)<>CAST('HTJRNL01' AS BLOB)) AS opaque FROM journal)";
 
-/// Fork-branch rows of every log: `journal_forked` and the `branch = 1` rows
-/// of `journal_opaque`. `forked_ix` orders the known rows (NULL for opaque).
-pub(crate) const BRANCH_ROWS: &str = "(SELECT log_ix,counter,prev_hash,hash,0 AS opaque,forked_ix FROM journal_forked \
-     UNION ALL SELECT log_ix,counter,prev_hash,hash,1 AS opaque,NULL AS forked_ix FROM journal_opaque WHERE branch=1)";
+/// Fork-branch rows of every log: `journal_forked`. `forked_ix` orders them;
+/// `opaque` is as for [`CHAIN_ROWS`].
+pub(crate) const BRANCH_ROWS: &str = "(SELECT log_ix,counter,prev_hash,hash,(substr(raw,1,8)<>CAST('HTJRNL01' AS BLOB)) AS opaque,forked_ix FROM journal_forked)";
 
 /// Whether `(counter, hash)` of `log_ix` is a chain position, or with
 /// `include_branches` also a fork-branch row.
@@ -979,7 +1118,7 @@ fn hash_at(conn: &Connection, log_ix: i64, counter: u64) -> Result<Option<[u8; 3
     .transpose()
 }
 
-/// The stored columns of one `journal_opaque` row, read before decoding.
+/// The stored columns of one opaque row, read before decoding.
 struct RawOpaque {
     counter: i64,
     prev_hash: Vec<u8>,
@@ -1025,7 +1164,7 @@ enum RawRow {
 
 impl RawRow {
     /// Reads the shared layout of [`entry_select`]: `opaque`, `counter`, the
-    /// eleven [`RawEnvelope::read_at`] columns, then the `journal_opaque` columns.
+    /// eleven [`RawEnvelope::read_at`] columns, then the row's raw-entry columns.
     fn read(r: &rusqlite::Row<'_>, rows: Rows) -> rusqlite::Result<Self> {
         if !r.get::<_, bool>(0)? {
             return RawEnvelope::read_at(r, 2).map(Self::Known);
@@ -1053,18 +1192,17 @@ impl RawRow {
 }
 
 /// The select list and joins of one chain or branch read over `rows` (an
-/// alias of [`CHAIN_ROWS`] or [`BRANCH_ROWS`]); `known` is the table a known
-/// row lives in (`journal` or `journal_forked`) and `opaque_branch` the
-/// `journal_opaque.branch` value of its opaque rows.
-fn entry_select(rows: &str, known: &str, opaque_branch: u8) -> String {
+/// alias of [`CHAIN_ROWS`] or [`BRANCH_ROWS`]); `known` is the table the row
+/// lives in (`journal` or `journal_forked`). An opaque row's projection
+/// columns are NULL and unread; its `prev_hash`, `hash`, `signature` and `raw`
+/// come from the same row.
+fn entry_select(rows: &str, known: &str) -> String {
     format!(
         "SELECT c.opaque,c.counter,\
          k.counter,k.prev_hash,k.hlc,k.kind,k.kind_version,k.deps,k.creates,k.needs,k.payload,k.hash,k.signature,\
-         o.prev_hash,o.hash,o.signature,o.raw \
+         k.prev_hash,k.hash,k.signature,k.raw \
          FROM {rows} c \
-         LEFT JOIN {known} k ON k.log_ix=c.log_ix AND k.counter=c.counter AND k.hash=c.hash AND c.opaque=0 \
-         LEFT JOIN journal_opaque o ON o.log_ix=c.log_ix AND o.counter=c.counter AND o.hash=c.hash \
-         AND c.opaque=1 AND o.branch={opaque_branch}"
+         JOIN {known} k ON k.log_ix=c.log_ix AND k.counter=c.counter AND k.hash=c.hash"
     )
 }
 
@@ -1256,9 +1394,9 @@ impl Batch {
 /// batch is full. With [`Rows::KnownPrefix`] it also stops, closing the
 /// batch, at the first opaque row, before reading that row's blobs.
 ///
-/// The only functions in this file that select from `journal_opaque` are this
-/// one, [`entry_at_position`] (through it), [`branch_entry`] and
-/// [`insert_opaque`].
+/// The only functions in this file that read an opaque row's raw bytes are this
+/// one, [`entry_at_position`] (through it) and [`branch_entry`]; [`insert_opaque`]
+/// writes them.
 pub(crate) fn entries_from(
     conn: &Connection,
     log_ix: i64,
@@ -1271,7 +1409,7 @@ pub(crate) fn entries_from(
     let mut statement = conn
         .prepare(&format!(
             "{} WHERE c.log_ix=?1 AND c.counter>=?2 AND c.counter<=?3 ORDER BY c.counter",
-            entry_select(CHAIN_ROWS, "journal", 0)
+            entry_select(CHAIN_ROWS, "journal")
         ))
         .map_err(store_error)?;
     let found = statement
@@ -1305,7 +1443,7 @@ enum BranchRead {
 }
 
 /// The fork-branch row `(counter, hash)` of `log_ix`: a `journal_forked` row
-/// or a `branch = 1` `journal_opaque` row.
+/// row, known or opaque.
 fn branch_entry(
     conn: &Connection,
     log_ix: i64,
@@ -1318,7 +1456,7 @@ fn branch_entry(
         .query_row(
             &format!(
                 "{} WHERE c.log_ix=?1 AND c.counter=?2 AND c.hash=?3",
-                entry_select(BRANCH_ROWS, "journal_forked", 1)
+                entry_select(BRANCH_ROWS, "journal_forked")
             ),
             params![
                 log_ix,
@@ -1561,7 +1699,7 @@ pub fn ingest(
 }
 
 /// [`ingest`] over [`StoredEntry`]: an opaque append is stored in
-/// `journal_opaque`, moves the head and does not fold the HLC. Fork evidence
+/// the `journal` table with an empty projection, moves the head and does not fold the HLC. Fork evidence
 /// carries both sides as stored, known or opaque.
 pub fn ingest_entries(
     ctx: &StoreContext,
@@ -1724,7 +1862,7 @@ fn ingest_batch(
                         let (ChainStep::Append, Some(row)) = (step, row.as_mut()) else {
                             return Err(corrupt("journal invariant: opaque genesis"));
                         };
-                        insert_opaque(&tx, row.log_ix, opaque, false)?;
+                        insert_opaque(&tx, row.log_ix, opaque, false, None, decision.utc.0)?;
                         row.held.contiguous = opaque.counter();
                         row.held.head_hash = opaque.hash();
                         // No HLC fold: an opaque entry has no readable hlc.
@@ -1856,7 +1994,7 @@ pub fn store_forked(
 }
 
 /// [`store_forked`] over [`StoredEntry`]: an opaque side goes to
-/// `journal_opaque` with `branch = 1` (that table records no `source`).
+/// `journal_forked` with an empty projection.
 pub fn store_forked_entries(
     tx: &Transaction<'_>,
     log: &LogKey,
@@ -1878,7 +2016,14 @@ pub fn store_forked_entries(
         let entry = match entry {
             StoredEntry::Known(entry) => entry,
             StoredEntry::Opaque(opaque) => {
-                inserted += usize::from(insert_opaque(tx, row.log_ix, opaque, true)?);
+                inserted += usize::from(insert_opaque(
+                    tx,
+                    row.log_ix,
+                    opaque,
+                    true,
+                    source.as_deref(),
+                    0,
+                )?);
                 continue;
             }
         };
@@ -1890,8 +2035,8 @@ pub fn store_forked_entries(
             .join("\n");
         inserted += tx
             .execute(
-                "INSERT OR IGNORE INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,needs,payload,signature,source_node,received_at) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,CAST(strftime('%s','now') AS INTEGER)*1000)",
+                "INSERT OR IGNORE INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,needs,payload,signature,source_node,received_at,raw) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,CAST(strftime('%s','now') AS INTEGER)*1000,?14)",
                 params![
                     row.log_ix,
                     i64::try_from(entry.counter).unwrap_or(i64::MAX),
@@ -1906,6 +2051,7 @@ pub fn store_forked_entries(
                     entry.payload,
                     entry.signature.as_slice(),
                     source,
+                    entry.canonical_bytes(),
                 ],
             )
             .map_err(store_error)?;
@@ -1913,32 +2059,55 @@ pub fn store_forked_entries(
     Ok(inserted)
 }
 
-/// Stores a verified opaque entry of `log_ix` (a chain position, or with
-/// `branch` a conflicting-branch entry) and returns whether the row is new
-/// (an exact duplicate is ignored). Position clashes with `journal` abort in
-/// the guard triggers.
+/// Stores a verified opaque entry of `log_ix` (a chain position in `journal`,
+/// or with `branch` a conflicting-branch entry in `journal_forked`), with an
+/// empty projection, and returns whether the row is new. A chain position is
+/// a plain INSERT (`check_next` proved it free; `UNIQUE(log_ix, counter)`
+/// guards it); a branch row ignores an exact duplicate. `source` and
+/// `ingested_at` are the branch row's source node and the chain row's
+/// ingestion time.
 pub(crate) fn insert_opaque(
     tx: &Transaction<'_>,
     log_ix: i64,
     entry: &OpaqueEntry,
     branch: bool,
+    source: Option<&str>,
+    ingested_at: i64,
 ) -> Result<bool, ApiError> {
-    let new = tx
-        .execute(
-            "INSERT OR IGNORE INTO journal_opaque(log_ix,counter,hash,prev_hash,signature,raw,branch) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![
-                log_ix,
-                i64::try_from(entry.counter()).unwrap_or(i64::MAX),
-                entry.hash().as_slice(),
-                entry.prev_hash().as_slice(),
-                entry.signature().as_slice(),
-                entry.raw(),
-                branch,
-            ],
-        )
-        .map_err(store_error)?;
-    Ok(new == 1)
+    let counter = i64::try_from(entry.counter()).unwrap_or(i64::MAX);
+    if branch {
+        let new = tx
+            .execute(
+                "INSERT OR IGNORE INTO journal_forked(log_ix,counter,prev_hash,hash,signature,raw,needs,source_node,received_at) \
+                 VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,CAST(strftime('%s','now') AS INTEGER)*1000)",
+                params![
+                    log_ix,
+                    counter,
+                    entry.prev_hash().as_slice(),
+                    entry.hash().as_slice(),
+                    entry.signature().as_slice(),
+                    entry.raw(),
+                    source,
+                ],
+            )
+            .map_err(store_error)?;
+        return Ok(new == 1);
+    }
+    tx.execute(
+        "INSERT INTO journal(log_ix,counter,prev_hash,hash,signature,raw,needs,ingested_at,apply_state) \
+         VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,'parked_layout')",
+        params![
+            log_ix,
+            counter,
+            entry.prev_hash().as_slice(),
+            entry.hash().as_slice(),
+            entry.signature().as_slice(),
+            entry.raw(),
+            ingested_at,
+        ],
+    )
+    .map_err(store_error)?;
+    Ok(true)
 }
 
 /// Freezes `log` at counter `at`, lower-only: an active log becomes frozen

@@ -92,9 +92,9 @@ fn apply_state(node: &Node, log: &LogKey, counter: u64) -> Option<String> {
 /// `(raw, hash, signature)` of the main-chain opaque row at `counter`.
 fn opaque_row(node: &Node, log: &LogKey, counter: u64) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let sql = format!(
-        "SELECT o.raw,o.hash,o.signature FROM journal_opaque o \
+        "SELECT o.raw,o.hash,o.signature FROM journal o \
          JOIN sync_logs l ON l.log_ix=o.log_ix \
-         WHERE l.node_uuid='{}' AND l.incarnation={} AND o.counter={counter} AND o.branch=0",
+         WHERE l.node_uuid='{}' AND l.incarnation={} AND o.counter={counter} AND o.kind IS NULL",
         log.node, log.incarnation
     );
     node.query(&sql, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -332,7 +332,7 @@ async fn capless_third_node_is_withheld_and_stays_healthy() {
         );
     }
     assert_eq!(
-        scalar(&c, "SELECT count(*) || '' FROM journal_opaque").as_deref(),
+        scalar(&c, "SELECT ((SELECT count(*) FROM journal WHERE kind IS NULL) + (SELECT count(*) FROM journal_forked WHERE kind IS NULL)) || ''").as_deref(),
         Some("0"),
         "nothing opaque reached it"
     );

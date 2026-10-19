@@ -681,8 +681,8 @@ fn unapplied_self_entry_trips_commit_guard() {
             |tx, d, ()| {
                 // An entry appended behind Journal's back: no apply.
                 tx.execute(
-                    "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state) \
-                     SELECT log_ix,2,head_hash,zeroblob(32),1,'test.put',1,x'0000',x'7b7d',zeroblob(64),?1,'pending' \
+                    "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state,raw) \
+                     SELECT log_ix,2,head_hash,zeroblob(32),1,'test.put',1,x'0000',x'7b7d',zeroblob(64),?1,'pending',x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' \
                      FROM sync_logs",
                     [d.utc.0],
                 )
@@ -741,8 +741,8 @@ fn insert_foreign(
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,needs,payload,signature,ingested_at,apply_state) \
-         SELECT log_ix,?1,zeroblob(32),zeroblob(32),5,?2,1,x'0000',?3,?4,?5,zeroblob(64),0,'pending' \
+        "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,creates,needs,payload,signature,ingested_at,apply_state,raw) \
+         SELECT log_ix,?1,zeroblob(32),zeroblob(32),5,?2,1,x'0000',?3,?4,?5,zeroblob(64),0,'pending',x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' \
          FROM sync_logs WHERE node_uuid=?6",
         params![counter, kind, creates, needs, payload.as_bytes(), PEER],
     )
@@ -1941,7 +1941,7 @@ fn reissue_parked_dep_parks() {
     assert_eq!(revision(&conn), 0, "the handler did not run");
 }
 
-// ---- Chain-row reader over journal and journal_opaque (ht-j87z.11) ----------
+// ---- Chain-row reader over journal and journal_forked (ht-j87z.11) ----------
 
 const CHAIN_NODE: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
@@ -1963,8 +1963,8 @@ fn chain_log(conn: &Connection, contiguous: i64, head: [u8; 32]) -> i64 {
 
 fn insert_known_row(conn: &Connection, log_ix: i64, counter: i64, prev: [u8; 32], hash: [u8; 32]) {
     conn.execute(
-        "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state) \
-         VALUES (?1,?2,?3,?4,5,'test.put',1,x'0000',x'00',zeroblob(64),0,'pending')",
+        "INSERT INTO journal(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,ingested_at,apply_state,raw) \
+         VALUES (?1,?2,?3,?4,5,'test.put',1,x'0000',x'00',zeroblob(64),0,'pending',x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
         params![log_ix, counter, prev.as_slice(), hash.as_slice()],
     )
     .unwrap();
@@ -1972,8 +1972,8 @@ fn insert_known_row(conn: &Connection, log_ix: i64, counter: i64, prev: [u8; 32]
 
 fn insert_forked_row(conn: &Connection, log_ix: i64, counter: i64, prev: [u8; 32], hash: [u8; 32]) {
     conn.execute(
-        "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,source_node,received_at) \
-         VALUES (?1,?2,?3,?4,5,'test.put',1,x'0000',x'00',zeroblob(64),NULL,0)",
+        "INSERT INTO journal_forked(log_ix,counter,prev_hash,hash,hlc,kind,kind_version,deps,payload,signature,source_node,received_at,raw) \
+         VALUES (?1,?2,?3,?4,5,'test.put',1,x'0000',x'00',zeroblob(64),NULL,0,x'48544a524e4c3031000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000')",
         params![log_ix, counter, prev.as_slice(), hash.as_slice()],
     )
     .unwrap();
@@ -1981,8 +1981,8 @@ fn insert_forked_row(conn: &Connection, log_ix: i64, counter: i64, prev: [u8; 32
 
 /// Raw SQL with an undecodable `raw` (the row is only ever read through the
 /// `Rows::KnownPrefix` paths, which stop before it); `branch` is 0 for a
-/// chain position, 1 for a fork branch. Decodable rows come from
-/// `insert_opaque`.
+/// chain position (a `journal` row), 1 for a fork branch (a `journal_forked`
+/// row). Decodable rows come from `insert_opaque`.
 fn insert_opaque_row(
     conn: &Connection,
     log_ix: i64,
@@ -1991,13 +1991,23 @@ fn insert_opaque_row(
     hash: [u8; 32],
     branch: i64,
 ) {
+    let sql = if branch == 0 {
+        "INSERT INTO journal(log_ix,counter,hash,prev_hash,signature,raw,needs,ingested_at,apply_state) \
+         VALUES (?1,?2,?3,?4,zeroblob(64),zeroblob(68),NULL,0,'parked_layout')"
+    } else {
+        "INSERT INTO journal_forked(log_ix,counter,hash,prev_hash,signature,raw,needs,received_at) \
+         VALUES (?1,?2,?3,?4,zeroblob(64),zeroblob(68),NULL,0)"
+    };
     conn.execute(
-        "INSERT INTO journal_opaque(log_ix,counter,hash,prev_hash,signature,raw,branch) \
-         VALUES (?1,?2,?3,?4,zeroblob(64),zeroblob(68),?5)",
-        params![log_ix, counter, hash.as_slice(), prev.as_slice(), branch],
+        sql,
+        params![log_ix, counter, hash.as_slice(), prev.as_slice()],
     )
     .unwrap();
 }
+
+/// Count of opaque (empty-projection) rows in `journal` and `journal_forked`.
+const OPAQUE_ROWS: &str = "SELECT (SELECT COUNT(*) FROM journal WHERE kind IS NULL) \
+     + (SELECT COUNT(*) FROM journal_forked WHERE kind IS NULL)";
 
 fn chain_key() -> LogKey {
     LogKey {
@@ -2227,7 +2237,10 @@ fn ingest_stores_opaque_and_moves_head() {
     assert_eq!((contiguous, head_hash), (4, four.hash.to_vec()));
     let opaque_rows: Vec<(i64, i64)> = s
         .conn
-        .prepare("SELECT counter,branch FROM journal_opaque")
+        .prepare(
+            "SELECT counter,0 FROM journal WHERE kind IS NULL \
+             UNION ALL SELECT counter,1 FROM journal_forked WHERE kind IS NULL",
+        )
         .unwrap()
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap()
@@ -2238,7 +2251,7 @@ fn ingest_stores_opaque_and_moves_head() {
         .conn
         .prepare(
             "SELECT j.counter FROM journal j JOIN sync_logs l USING(log_ix) \
-             WHERE l.node_uuid=?1 ORDER BY j.counter",
+             WHERE l.node_uuid=?1 AND j.kind IS NOT NULL ORDER BY j.counter",
         )
         .unwrap()
         .query_map([s.log.node.to_string()], |r| r.get(0))
@@ -2304,7 +2317,7 @@ fn ingest_opaque_duplicate_is_duplicate() {
             head: head(3, s.opaque.hash()),
         }
     );
-    assert_eq!(count(&s.conn, "SELECT COUNT(*) FROM journal_opaque"), 1);
+    assert_eq!(count(&s.conn, OPAQUE_ROWS), 1);
 }
 
 #[test]
@@ -2340,7 +2353,7 @@ fn ingest_opaque_conflict_reports_fork() {
             },
         }
     );
-    assert_eq!(count(&conn, "SELECT COUNT(*) FROM journal_opaque"), 0);
+    assert_eq!(count(&conn, OPAQUE_ROWS), 0);
 }
 
 #[test]
@@ -2364,7 +2377,7 @@ fn ingest_opaque_bad_signature_is_corrupt_nothing_stored() {
             reason: EnvelopeError::BadSignature,
         }
     );
-    assert_eq!(count(&conn, "SELECT COUNT(*) FROM journal_opaque"), 0);
+    assert_eq!(count(&conn, OPAQUE_ROWS), 0);
     assert_eq!(
         count(
             &conn,
@@ -2397,7 +2410,7 @@ fn opaque_append_does_not_fold_hlc() {
         before,
         "an opaque entry has no readable hlc to fold"
     );
-    assert_eq!(count(&conn, "SELECT COUNT(*) FROM journal_opaque"), 1);
+    assert_eq!(count(&conn, OPAQUE_ROWS), 1);
 }
 
 #[test]
@@ -2415,7 +2428,7 @@ fn store_forked_keeps_opaque_branch_row() {
     assert_eq!(
         count(
             &s.conn,
-            "SELECT COUNT(*) FROM journal_opaque WHERE branch=0 AND counter=3"
+            "SELECT COUNT(*) FROM journal WHERE kind IS NULL AND counter=3"
         ),
         1
     );
@@ -2457,11 +2470,17 @@ fn store_forked_keeps_opaque_branch_row() {
     assert_eq!(
         count(
             &conn,
-            "SELECT COUNT(*) FROM journal_opaque WHERE branch=1 AND counter=3"
+            "SELECT COUNT(*) FROM journal_forked WHERE kind IS NULL AND counter=3"
         ),
         1
     );
-    assert_eq!(count(&conn, "SELECT COUNT(*) FROM journal_forked"), 0);
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM journal_forked WHERE kind IS NOT NULL"
+        ),
+        0
+    );
     let main = serve_branch_entries(&conn, &log, (3, known[2].hash), 1, limits)
         .unwrap()
         .unwrap();
