@@ -109,8 +109,8 @@ Metadata owns ID, context spelling, host aliases and supported scope; registry
 validation rejects collisions and Human aliases. Typed admission belongs to that
 registration; it grants parser capability, never canonical caller authority.
 
-The production registry contains three adapters: Claude, Codex, Hermes. Test-support
-builds add the fourth fixture that exercises generic consumers. `adapters --json`
+The production registry contains four adapters: Claude, Codex, Hermes and agy.
+Test-support builds add a fixture adapter that exercises generic consumers. `adapters --json`
 is same-binary metadata discovery, not installation or native recognition. Optional
 installer/launch/composer/canary providers declare capabilities explicitly; absent
 providers yield unavailable operations. Installer policy owns hook inspection and
