@@ -2,9 +2,13 @@
 //!
 //! An author's log `[genesis, HTJRNL99 entry 2, known 3]` and a dependent log
 //! whose entry 2 depends on the author's entry 2 travel source -> relay -> third
-//! node. Promotion of a stored opaque entry is deferred to ht-evlm, so the stall
-//! (`blocked_on = opaque_layout`, dependents on the `deps` string) is permanent
-//! in this release, also across a restart.
+//! node. Without a build that understands the layout nothing promotes the
+//! stored entry, so the stall (`blocked_on = opaque_layout`, dependents on the
+//! `deps` string) holds, also across a restart. The row sits in the journal
+//! table with an empty projection (`kind IS NULL`, `apply_state =
+//! 'parked_layout'`) and its raw bytes, hash and signature intact. The upgrade
+//! that promotes it is `opaque_promotion` (its own binary: it registers a
+//! layout, which is process-wide state).
 //!
 //! The runtime is `test_support::sync_node::SyncNode` over duplex links, as in
 //! `opaque_wire`. No process is spawned and no process-wide state is kept,
@@ -202,7 +206,15 @@ fn assert_stalled(node: &Node, f: &Fixture, who: &str) {
     );
 }
 
+/// The row at counter 2 is stored bytes-first: empty projection (`kind IS NULL`,
+/// which `opaque_row` selects on), parked as `parked_layout`, and its raw,
+/// hash and signature equal the original's.
 fn assert_opaque_bytes(node: &Node, f: &Fixture, who: &str) {
+    assert_eq!(
+        apply_state(node, &f.log, 2).as_deref(),
+        Some("parked_layout"),
+        "{who}: the opaque row is parked"
+    );
     let row = opaque_row(node, &f.log, 2).unwrap_or_else(|| panic!("{who}: no opaque row"));
     assert_eq!(row.0, f.opaque.raw(), "{who}: raw");
     assert_eq!(row.1, f.opaque.hash(), "{who}: hash");
@@ -245,7 +257,7 @@ async fn relay_forwards_htjrnl99_to_third_node_byte_exactly() {
     }
     assert_eq!(nc.head_of(&f.log), Some((3, f.entries[2].hash())));
 
-    for (node, who) in [(&r, "relay"), (&c, "third")] {
+    for (node, who) in [(&a, "source"), (&r, "relay"), (&c, "third")] {
         wait_until("the stall shows", PATIENCE, || {
             blocked_on(node, &f.log).as_deref() == Some("opaque_layout")
                 && blocked_on(node, &f.q).as_deref() == Some(f.deps_text.as_str())
@@ -253,6 +265,7 @@ async fn relay_forwards_htjrnl99_to_third_node_byte_exactly() {
         .await;
         assert_stalled(node, &f, who);
     }
+    assert_opaque_bytes(&a, &f, "source");
 
     // Nothing promotes it: still stalled after a settle window.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -330,6 +343,28 @@ async fn capless_third_node_is_withheld_and_stays_healthy() {
             "{who}: {:?}",
             node.lines()
         );
+    }
+    // The capless node holds no row at or past the withheld counter of the log.
+    assert_eq!(
+        scalar(
+            &c,
+            &format!(
+                "SELECT count(*) || '' FROM journal j JOIN sync_logs l ON l.log_ix=j.log_ix \
+                 WHERE l.node_uuid='{}' AND l.incarnation={} AND j.counter >= 2",
+                f.log.node, f.log.incarnation
+            )
+        )
+        .as_deref(),
+        Some("0"),
+        "the capless node holds nothing from counter 2 of the log"
+    );
+    // Source and relay both hold the entry bytes-first.
+    for (node, who) in [(&a, "source"), (&r, "relay")] {
+        wait_until("the stall shows", PATIENCE, || {
+            blocked_on(node, &f.log).as_deref() == Some("opaque_layout")
+        })
+        .await;
+        assert_opaque_bytes(node, &f, who);
     }
     assert_eq!(
         scalar(&c, "SELECT ((SELECT count(*) FROM journal WHERE kind IS NULL) + (SELECT count(*) FROM journal_forked WHERE kind IS NULL)) || ''").as_deref(),
