@@ -95,11 +95,48 @@ pub(crate) fn check_directories(
     Ok(())
 }
 
+/// Defense in depth before tab creation: the retained environment projection must
+/// equal the adapter's own projection of the retained profile directory, re-derived
+/// here from the plan's harness id. `LaunchDirectoryContext::validate` only bounds
+/// the shape (one identifier-shaped key whose value is the profile directory), so a
+/// frozen plan whose key a same-user store writer substituted (outside the
+/// cooperative model, TRUST-POLICY) is refused on the first-run and retry paths
+/// instead of reaching `create_tab`. Core names no environment variable: the
+/// adapter looked up through the registry owns the projection.
+pub(crate) fn check_projection(
+    harness: crate::harness::registry::OccupantHarness,
+    context: Option<&crate::protocol::handoff::LaunchDirectoryContext>,
+) -> Result<(), RunError> {
+    check_projection_with_registry(crate::harness::registry::builtins(), harness, context)
+}
+
+pub(crate) fn check_projection_with_registry(
+    registry: &crate::harness::registry::Registry,
+    harness: crate::harness::registry::OccupantHarness,
+    context: Option<&crate::protocol::handoff::LaunchDirectoryContext>,
+) -> Result<(), RunError> {
+    let Some(context) = context else {
+        return Ok(());
+    };
+    let registration = crate::harness::launch::launch_registration(registry, harness)?;
+    let policy = registration.launch_policy().ok_or_else(|| {
+        super::invalid_request("retained profile projection lacks an adapter launch policy")
+    })?;
+    if policy.explicit_directory_env(&context.profile_dir)? != context.env {
+        return Err(super::invalid_request(
+            "retained profile projection differs from adapter",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn check_bootstrap_directories(
+    harness: crate::harness::registry::OccupantHarness,
     cwd: &std::path::Path,
     context: Option<&crate::protocol::handoff::LaunchDirectoryContext>,
 ) -> Result<(), RunError> {
     check_directories(context)?;
+    check_projection(harness, context)?;
     if !cwd.is_dir() {
         return Err(super::invalid_request(
             "bootstrap cwd disappeared or is not a directory",
@@ -893,6 +930,7 @@ pub fn resume_to_attachment<
         ));
     }
     check_bootstrap_directories(
+        identity.payload.launch.harness,
         &identity.payload.cwd,
         identity.payload.directory_context.as_ref(),
     )?;
@@ -982,6 +1020,7 @@ pub fn resume_to_attachment<
         ));
     }
     let outcome = match check_bootstrap_directories(
+        identity.payload.launch.harness,
         &identity.payload.cwd,
         identity.payload.directory_context.as_ref(),
     ) {
@@ -2036,6 +2075,7 @@ pub(crate) fn resume_to_writer<
             clock,
             &mut || {
                 check_bootstrap_directories(
+                    identity.payload.launch.harness,
                     &identity.payload.cwd,
                     identity.payload.directory_context.as_ref(),
                 )

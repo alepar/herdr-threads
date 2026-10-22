@@ -438,6 +438,7 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
         return Err(unknown(reference, current.attempt));
     }
     super::check_bootstrap_directories(
+        id.plan.payload.launch.harness,
         &id.plan.payload.cwd,
         id.plan.payload.directory_context.as_ref(),
     )?;
@@ -523,6 +524,7 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
         return Err(invalid("automatic submission check differs"));
     }
     let outcome = match super::check_bootstrap_directories(
+        id.plan.payload.launch.harness,
         &id.plan.payload.cwd,
         id.plan.payload.directory_context.as_ref(),
     ) {
@@ -754,6 +756,7 @@ pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTabPort + ?Size
     }
     if progress.launch.is_none() && !progress.possible_start {
         super::check_bootstrap_directories(
+            id.plan.payload.launch.harness,
             &id.plan.payload.cwd,
             id.plan.payload.directory_context.as_ref(),
         )?;
@@ -777,6 +780,7 @@ pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTabPort + ?Size
         let result = launcher.launch(&effective, &attachment.resolved_seat, &mut |possible| {
             if possible {
                 super::check_bootstrap_directories(
+                    id.plan.payload.launch.harness,
                     &id.plan.payload.cwd,
                     id.plan.payload.directory_context.as_ref(),
                 )

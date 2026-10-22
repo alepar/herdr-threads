@@ -452,6 +452,63 @@ fn profile_directory_disappeared_selection_refuses_publication() {
     assert!(publish(&journal, &identity, 1).is_err());
     assert!(journal.resolve_recovery_ref("local:1").is_err());
 }
+// Shape validation admits any identifier-shaped key whose value is the profile
+// directory; only the adapter's re-derived projection refuses a substituted key.
+#[test]
+fn profile_directory_submission_rederives_adapter_projection() {
+    use crate::harness::registry::{OccupantHarness, builtins};
+    let temp = Temp::new();
+    let profile = temp.path().canonicalize().unwrap();
+    let projection = |harness: OccupantHarness| {
+        crate::harness::launch::launch_registration(builtins(), harness)
+            .unwrap()
+            .launch_policy()
+            .unwrap()
+            .explicit_directory_env(&profile)
+            .unwrap()
+    };
+    let context = |harness| crate::protocol::handoff::LaunchDirectoryContext {
+        profile_dir: profile.clone(),
+        cwd: profile.clone(),
+        env: projection(harness),
+    };
+    for harness in [OccupantHarness::Codex, OccupantHarness::Claude] {
+        let genuine = context(harness);
+        assert_eq!(genuine.validate(), Ok(()));
+        check_bootstrap_directories(harness, &profile, Some(&genuine)).unwrap();
+        let mut substituted = genuine.clone();
+        substituted.env = [(
+            "LD_PRELOAD".to_owned(),
+            profile.to_str().unwrap().to_owned(),
+        )]
+        .into();
+        assert_eq!(substituted.validate(), Ok(()));
+        let error = check_bootstrap_directories(harness, &profile, Some(&substituted)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("retained profile projection differs from adapter"),
+            "{error}"
+        );
+        let mut swapped = genuine.clone();
+        swapped.env = projection(if harness == OccupantHarness::Codex {
+            OccupantHarness::Claude
+        } else {
+            OccupantHarness::Codex
+        });
+        assert!(check_bootstrap_directories(harness, &profile, Some(&swapped)).is_err());
+    }
+    check_bootstrap_directories(OccupantHarness::Codex, &profile, None).unwrap();
+    assert!(
+        check_bootstrap_directories(
+            OccupantHarness::Human,
+            &profile,
+            Some(&context(OccupantHarness::Codex))
+        )
+        .is_err()
+    );
+}
+
 #[test]
 fn publication_validation_has_zero_journal_effects() {
     let temp = Temp::new();
@@ -1381,6 +1438,14 @@ mod live {
         fn with_request(fault: Fault, request: Request, argv: Option<Vec<String>>) -> Self {
             Self::with_layout(fault, request, argv, false, false)
         }
+        /// A same-user store writer's edit of the frozen plan, applied before publication.
+        fn tampered(
+            fault: Fault,
+            request: Request,
+            tamper: &dyn Fn(&mut crate::protocol::handoff::BootstrapIdentity),
+        ) -> Self {
+            Self::build(fault, request, None, false, false, Some(tamper))
+        }
         fn aligned(fault: Fault, argv: Option<Vec<String>>) -> Self {
             Self::with_layout(
                 fault,
@@ -1397,8 +1462,21 @@ mod live {
             aligned: bool,
             maximal: bool,
         ) -> Self {
+            Self::build(fault, request, argv, aligned, maximal, None)
+        }
+        fn build(
+            fault: Fault,
+            request: Request,
+            argv: Option<Vec<String>>,
+            aligned: bool,
+            maximal: bool,
+            tamper: Option<&dyn Fn(&mut crate::protocol::handoff::BootstrapIdentity)>,
+        ) -> Self {
             let temp = Temp::new();
             let mut identity = prepared(&request, temp.path()).unwrap();
+            if let Some(tamper) = tamper {
+                tamper(&mut identity);
+            }
             if let Some(argv) = argv {
                 identity.payload.launch.argv = argv;
                 // A V2 plan freezes the adapter's composition of these very arguments.
@@ -1861,6 +1939,38 @@ mod live {
         downstream(&f, &mut launcher, &mut Vec::new()).unwrap();
         assert_eq!(launcher.starts, 1);
         assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+    }
+
+    // A frozen plan whose projection key was substituted passes shape validation
+    // and publication, and is refused before any reservation or native call.
+    #[test]
+    fn profile_directory_substituted_projection_never_reaches_tab_creation() {
+        let temp = Temp::new();
+        let selected = temp.path().join("selected");
+        std::fs::create_dir(&selected).unwrap();
+        let mut r = request();
+        r.profile_dir = Some(selected.canonicalize().unwrap());
+        let f = Fixture::tampered(Fault::None, r, &|identity| {
+            let context = identity.payload.directory_context.as_mut().unwrap();
+            let value = context.profile_dir.to_str().unwrap().to_owned();
+            context.env = [("LD_PRELOAD".to_owned(), value)].into();
+            identity.payload.env = context.env.clone();
+            identity.digest = identity.semantic_digest().unwrap();
+        });
+        let error = f.run().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("retained profile projection differs from adapter"),
+            "{error}"
+        );
+        let state = f.peer.state.lock().unwrap();
+        assert_eq!(state.native_calls, 0);
+        assert!(
+            !state.calls.iter().any(|call| call.contains("reserve")),
+            "{:?}",
+            state.calls
+        );
     }
 
     #[test]
