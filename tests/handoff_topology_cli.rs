@@ -1169,6 +1169,129 @@ fn selected_profile_unfinished_public_retry_keeps_original_child_env_and_cwd() {
     }
 }
 
+// `--model` is folded into the frozen caller argv through the adapter's own option, so
+// the refused first start, the retry and the helper all launch it; the body never carries it.
+#[test]
+fn new_tab_model_reaches_first_start_and_retry() {
+    for (kind, flag) in [("claude", "--model"), ("codex", "-m")] {
+        for explicit in [false, true] {
+            let f = Fixture::new();
+            let binary = f.iso.path(kind);
+            let thread = f.named_thread();
+            let mut args = vec![
+                "handoff",
+                "--new-tab",
+                "Picked",
+                "--kind",
+                kind,
+                "--harness-binary",
+                binary.to_str().unwrap(),
+                "--model",
+                "pick model",
+            ];
+            if explicit {
+                args.extend(["--thread", thread.as_str()]);
+            }
+            args.extend(["--", BODY]);
+            f.host.state.lock().unwrap().busy_starts = usize::MAX;
+            let refused = f.run(&args, "");
+            assert!(!refused.status.success());
+            let frame: Value = serde_json::from_slice(&refused.stdout).unwrap();
+            let pending = frame
+                .get("bootstrap")
+                .or_else(|| frame.get("handoff"))
+                .unwrap_or(&frame);
+            assert_eq!(pending["possible_start"], false, "{frame}");
+            let recovery = pending["recovery_ref"].as_str().unwrap().to_owned();
+            f.host.state.lock().unwrap().busy_starts = 0;
+            let done = successful(f.run(&["retry", &recovery], "--model changed-model"));
+            assert!(done.to_string().contains("started"), "{done}");
+            let starts = f.host.requests("agent.start");
+            assert!(starts.len() > 1);
+            for start in &starts {
+                assert_eq!(
+                    &start["params"]["args"].as_array().unwrap()[..2],
+                    &[json!(flag), json!("pick model")],
+                    "{start}"
+                );
+            }
+            let state = f.host.state.lock().unwrap();
+            assert_eq!(
+                &state.helpers[0]["capture"]["argv"].as_array().unwrap()[..2],
+                &[json!(flag), json!("pick model")]
+            );
+            drop(state);
+            assert!(!BODY.contains("pick model"));
+            let bodies: Vec<String> = f
+                .db()
+                .prepare("SELECT body FROM messages WHERE body IS NOT NULL")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(bodies.iter().any(|body| body == BODY), "{bodies:?}");
+            assert!(bodies.iter().all(|body| !body.contains("pick model")));
+        }
+    }
+}
+
+// A harness without model selection refuses `--model` before any reservation or native call;
+// an unsupported shape is refused the same way, and `--existing` conflicts.
+#[test]
+fn handoff_model_refusals_precede_effects() {
+    let f = Fixture::new();
+    let agy = f.iso.path("agy");
+    let codex = f.iso.path("codex");
+    for (args, needle) in [
+        (
+            vec![
+                "--kind",
+                "agy",
+                "--harness-binary",
+                agy.to_str().unwrap(),
+                "--model",
+                "m",
+            ],
+            "--model: selected harness has no model selection",
+        ),
+        (
+            vec![
+                "--kind",
+                "codex",
+                "--harness-binary",
+                codex.to_str().unwrap(),
+                "--model=-x",
+            ],
+            "invalid --model",
+        ),
+    ] {
+        let mut full = vec!["handoff", "--new-tab", "Picked"];
+        full.extend(args);
+        full.extend(["--", BODY]);
+        let out = f.run(&full, "");
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(needle), "{stderr}");
+    }
+    let out = f.run(
+        &[
+            "handoff",
+            "--existing",
+            "--pane",
+            "w4:p2",
+            "--model",
+            "m",
+            "--",
+            BODY,
+        ],
+        "",
+    );
+    assert!(!out.status.success());
+    assert!(f.host.requests("agent.start").is_empty());
+    assert!(f.host.requests("tab.create").is_empty());
+}
+
 // Plain launch into a fresh shell uses the same bounded product retry.
 #[test]
 fn new_pane_readiness_plain_launch_starts_once() {

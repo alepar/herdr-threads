@@ -1249,6 +1249,18 @@ pub trait LaunchPolicy: Send + Sync {
             "explicit profile directory unavailable",
         ))
     }
+    /// Optional adapter-owned model selection: the caller argv with the harness's own
+    /// model option for `model` applied. The model passes through unchanged, never checked
+    /// against a known list or version; absence is an honest refusal.
+    fn apply_model(
+        &self,
+        _: Vec<String>,
+        _: &str,
+    ) -> Result<Vec<String>, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "selected harness has no model selection",
+        ))
+    }
     /// Optional pure original-caller grammar. Absence is honest unsupported handoff.
     fn prepare_startup_input(
         &self,

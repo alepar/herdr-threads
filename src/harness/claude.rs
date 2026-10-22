@@ -1258,6 +1258,16 @@ impl LaunchPolicy for ClaudeAdapter {
     fn native_options_env(&self) -> Option<&'static str> {
         Some("HERDR_THREADS_CLAUDE_OPTS")
     }
+    fn apply_model(
+        &self,
+        caller: Vec<String>,
+        model: &str,
+    ) -> Result<Vec<String>, crate::protocol::results::ApiError> {
+        Ok(["--model".into(), model.into()]
+            .into_iter()
+            .chain(caller)
+            .collect())
+    }
     fn resolve_scope(
         &self,
         request: &LaunchRequest,

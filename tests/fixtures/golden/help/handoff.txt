@@ -60,6 +60,8 @@ Options:
           [possible values: claude, codex, hermes, agy, synthetic_fourth]
       --harness-binary <HARNESS_BINARY>
           
+      --model <MODEL>
+          Model for the launched agent, passed unchanged to the harness's own model option
       --name <NAME>
           Herdr agent name, distinct from --thread-name
       --agent-arg <AGENT_ARGS>

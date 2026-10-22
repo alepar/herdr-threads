@@ -1901,6 +1901,9 @@ struct HandoffArgs {
     kind: Option<String>,
     #[arg(long)]
     harness_binary: Option<String>,
+    /// Model for the launched agent, passed unchanged to the harness's own model option.
+    #[arg(long, conflicts_with = "existing")]
+    model: Option<String>,
     /// Herdr agent name, distinct from --thread-name.
     #[arg(long)]
     name: Option<String>,
@@ -2111,6 +2114,36 @@ fn harness_arg(
         .agent(name)
         .map(|id| crate::harness::registry::OccupantHarness::Agent(id).into())
         .map_err(|error| invalid(format!("{error}; select a registered agent harness")))
+}
+
+/// Folds `--model` into the caller argv through the selected adapter, before any plan is
+/// frozen, so first-run, retry and automatic launches all carry it. Only the argument's shape
+/// is checked here; the value is never matched against a known model list or version.
+fn model_argv(
+    kind: &str,
+    model: Option<String>,
+    argv: Vec<String>,
+    registry: &crate::harness::registry::Registry,
+) -> Result<Vec<String>, ApiError> {
+    let Some(model) = model else {
+        return Ok(argv);
+    };
+    if model.is_empty()
+        || model.len() > 256
+        || model.starts_with('-')
+        || model.chars().any(char::is_control)
+    {
+        return Err(invalid("invalid --model"));
+    }
+    let harness = harness_arg(kind, registry)?;
+    crate::harness::launch::launch_registration(registry, harness.occupant())?
+        .launch_policy()
+        .expect("checked provider")
+        .apply_model(argv, &model)
+        .map_err(|mut error| {
+            error.detail = format!("--model: {}", error.detail);
+            error
+        })
 }
 
 fn invalid(detail: impl Into<String>) -> ApiError {
@@ -3362,7 +3395,7 @@ fn parse_cli_in_registry(
                 disposition,
             })
         }
-        Top::Handoff(args) => {
+        Top::Handoff(mut args) => {
             if !args.new_thread
                 && (args.thread_name.is_some() || args.topic.is_some() || args.goal.is_some())
             {
@@ -3387,6 +3420,14 @@ fn parse_cli_in_registry(
             };
             policy.validate().map_err(invalid)?;
             let body = super::input::read_body(args.body, args.file, args.stdin)?;
+            if !args.existing {
+                args.agent_args = model_argv(
+                    args.kind.as_deref().expect("kind required"),
+                    args.model.take(),
+                    std::mem::take(&mut args.agent_args),
+                    registry,
+                )?;
+            }
             if args.new_tab.is_some() || args.existing {
                 if args.existing
                     && (args.harness_binary.is_some()
