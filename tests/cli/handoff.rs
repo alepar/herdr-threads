@@ -5371,3 +5371,45 @@ fn a_human_handoff_requests_the_confirming_invitation_policy() {
         "require_ack"
     );
 }
+
+/// ht-b5yq: `flock` belongs to the open file description, and a spawn on
+/// another thread briefly holds a copy of every descriptor. A lock this
+/// process released is then still held through that copy, so an immediate
+/// re-lock must wait for the copy to close instead of reporting a running
+/// handoff; a copy that stays open is still refused, after the bound.
+#[test]
+fn handoff_lock_waits_out_a_transient_descriptor_copy_and_refuses_a_lasting_one() {
+    let (_temp, journal) = journal();
+    let reference = frozen(&journal);
+    // A spawned child's in-flight copy of the descriptor: same description.
+    let held = lock(&journal, &reference).unwrap();
+    let copy = held.try_clone().unwrap();
+    drop(held);
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+    let child_exec = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(copy);
+        closed_tx.send(()).unwrap();
+    });
+    let relocked = lock(&journal, &reference).expect("lock after the copy closes");
+    closed_rx
+        .try_recv()
+        .expect("the re-lock succeeded only after the copy closed");
+    child_exec.join().unwrap();
+    // A copy that never closes is a genuinely held lock.
+    let lasting = relocked.try_clone().unwrap();
+    drop(relocked);
+    let started = std::time::Instant::now();
+    let error = lock(&journal, &reference).unwrap_err();
+    assert!(
+        started.elapsed() >= HANDOFF_LOCK_WAIT,
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        error.to_string(),
+        "handoff already running; retry after it finishes"
+    );
+    drop(lasting);
+    lock(&journal, &reference).unwrap();
+}

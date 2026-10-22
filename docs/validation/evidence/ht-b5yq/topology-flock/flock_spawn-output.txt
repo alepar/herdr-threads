@@ -1,0 +1,3 @@
+spawner_threads=0 iterations=200000 relock_failures=0
+spawner_threads=2 iterations=200000 relock_failures=15801
+spawner_threads=4 iterations=200000 relock_failures=30191

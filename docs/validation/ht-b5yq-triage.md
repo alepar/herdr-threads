@@ -71,6 +71,66 @@ samples when the error is permit expiry. Prefer assertion context on the retry
 fixture to a speculative product change, blanket serialization or timeout
 increase. A passing bounded run cannot exonerate the unnamed historical test.
 
+## Topology retry: attributed (2026-10-21)
+
+Note: the section above is the 2026-10-18 record and stays as written. Its
+selection (25 names, `--test-threads=3`) did not reproduce the failure.
+
+The historical command was `cargo test --lib topology_handoff`: 194 tests in
+one libtest process, with default test threads. Rerun in that shape under load,
+it fails. The load was two concurrent runs plus eight Python busy loops on a
+12-core machine. Every failure is the per-operation handoff lock refusing a
+fixture's second `run()` with `handoff already running; retry after it
+finishes`, even though each fixture has its own journal:
+
+| Selection (40 loaded runs each) | Failed runs | Failing tests |
+|---|---|---|
+| all 194 matching tests | 5 | `live_possible_save_failure_reports_exact_uncertainty` (3), `live_only_typed_zero_submission_allocates_distinct_next_attempt`, `live_moved_scope_at_resolve_or_attach_retains_exact_creation` |
+| same, `--skip live_owned_process_` | 0 | none |
+| all 194, with the fix ([results](evidence/ht-b5yq/topology-flock/fixed-results.json)) | 0 | none |
+
+The three skipped `live_owned_process_*` tests spawn the test binary as a
+child (absolute path, so `posix_spawn`). `handoff::lock` uses `flock`, which
+belongs to the open file description. While another thread is inside a
+spawn, the kernel holds a copy of every descriptor, close-on-exec ones
+included, until the child's exec closes them. A fixture that drops its lock
+`File` and immediately re-locks can therefore find its own released lock
+still held. The typed-zero failure is the same refusal: that test ignores the
+second run's result, so it shows up as one native call instead of two.
+
+A standalone C probe isolates the mechanism from the test suite. One thread
+opens a file with close-on-exec, takes a non-blocking `flock`, closes it,
+reopens it and locks again. Other threads run `posix_spawn /usr/bin/true` in
+a loop. In 200,000 iterations the re-lock failed 0 times with no spawner,
+15,801 times with two and 30,191 times with four
+([source](evidence/ht-b5yq/topology-flock/flock_spawn.c),
+[output](evidence/ht-b5yq/topology-flock/flock_spawn-output.txt)).
+
+Under nextest every test is its own process, so suite runs do not hit this.
+It needs a spawn on another thread of the same process, overlapping a release
+and re-lock. In production that means a multi-threaded caller that spawns
+children. The effect is a false `handoff already running` refusal that a retry
+clears; no duplicate effect can follow from it.
+
+Fix: `handoff::lock` retries a contended lock every 2 ms for up to
+`HANDOFF_LOCK_WAIT` (1 s), the same bound and step as the journal's allocator
+lock. A transient copy closes within that time. A genuinely running handoff
+holds the lock for its whole run and is still refused, after the wait. The CLI
+contention tests in `tests/handoff_topology_cli.rs` hold the lock across the
+whole CLI run and keep their expected message. The regression
+`handoff_lock_waits_out_a_transient_descriptor_copy_and_refuses_a_lasting_one`
+imitates the child's copy with `try_clone`. It fails on the original lock
+([red](evidence/ht-b5yq/topology-flock/lock-red.log)), and it also checks that
+a copy that stays open is refused after the bound.
+
+Evidence: [baseline](evidence/ht-b5yq/topology-flock/baseline-results.json)
+with three failing logs, [no-spawn
+control](evidence/ht-b5yq/topology-flock/no-spawn-results.json), and the loop
+driver [hunt.py](evidence/ht-b5yq/topology-flock/hunt.py). It reads the lib
+test binary path from `libbin.txt` and a leak run id from `runid.txt` in its
+own directory. Its arguments are runs, lanes, busy loops, filter, tag and extra
+libtest arguments.
+
 ## Validation
 
 - Deterministic red probe: fails with applied puts 0 versus expected 2 while

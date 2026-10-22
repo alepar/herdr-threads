@@ -1,0 +1,292 @@
+[
+ {
+  "run": 0,
+  "exit": 0,
+  "wall": 28.96,
+  "inner": "28.52",
+  "failed": []
+ },
+ {
+  "run": 1,
+  "exit": 0,
+  "wall": 29.72,
+  "inner": "29.30",
+  "failed": []
+ },
+ {
+  "run": 2,
+  "exit": 0,
+  "wall": 27.94,
+  "inner": "27.88",
+  "failed": []
+ },
+ {
+  "run": 3,
+  "exit": 101,
+  "wall": 27.18,
+  "inner": "27.14",
+  "failed": [
+   "cli::topology_handoff::tests::live::live_moved_scope_at_resolve_or_attach_retains_exact_creation"
+  ]
+ },
+ {
+  "run": 4,
+  "exit": 0,
+  "wall": 21.58,
+  "inner": "21.55",
+  "failed": []
+ },
+ {
+  "run": 5,
+  "exit": 0,
+  "wall": 21.24,
+  "inner": "21.20",
+  "failed": []
+ },
+ {
+  "run": 6,
+  "exit": 0,
+  "wall": 26.0,
+  "inner": "25.98",
+  "failed": []
+ },
+ {
+  "run": 7,
+  "exit": 0,
+  "wall": 26.59,
+  "inner": "26.56",
+  "failed": []
+ },
+ {
+  "run": 8,
+  "exit": 0,
+  "wall": 29.02,
+  "inner": "29.00",
+  "failed": []
+ },
+ {
+  "run": 9,
+  "exit": 101,
+  "wall": 28.76,
+  "inner": "28.72",
+  "failed": [
+   "cli::topology_handoff::tests::live::live_only_typed_zero_submission_allocates_distinct_next_attempt"
+  ]
+ },
+ {
+  "run": 10,
+  "exit": 0,
+  "wall": 28.59,
+  "inner": "28.56",
+  "failed": []
+ },
+ {
+  "run": 11,
+  "exit": 0,
+  "wall": 28.4,
+  "inner": "28.32",
+  "failed": []
+ },
+ {
+  "run": 12,
+  "exit": 0,
+  "wall": 29.12,
+  "inner": "29.10",
+  "failed": []
+ },
+ {
+  "run": 13,
+  "exit": 0,
+  "wall": 29.58,
+  "inner": "29.56",
+  "failed": []
+ },
+ {
+  "run": 14,
+  "exit": 0,
+  "wall": 30.26,
+  "inner": "30.23",
+  "failed": []
+ },
+ {
+  "run": 15,
+  "exit": 0,
+  "wall": 29.82,
+  "inner": "29.80",
+  "failed": []
+ },
+ {
+  "run": 16,
+  "exit": 0,
+  "wall": 26.67,
+  "inner": "26.64",
+  "failed": []
+ },
+ {
+  "run": 17,
+  "exit": 0,
+  "wall": 26.87,
+  "inner": "26.85",
+  "failed": []
+ },
+ {
+  "run": 18,
+  "exit": 0,
+  "wall": 24.31,
+  "inner": "24.29",
+  "failed": []
+ },
+ {
+  "run": 19,
+  "exit": 0,
+  "wall": 23.98,
+  "inner": "23.90",
+  "failed": []
+ },
+ {
+  "run": 20,
+  "exit": 0,
+  "wall": 19.83,
+  "inner": "19.82",
+  "failed": []
+ },
+ {
+  "run": 21,
+  "exit": 0,
+  "wall": 19.73,
+  "inner": "19.71",
+  "failed": []
+ },
+ {
+  "run": 22,
+  "exit": 0,
+  "wall": 18.45,
+  "inner": "18.42",
+  "failed": []
+ },
+ {
+  "run": 23,
+  "exit": 0,
+  "wall": 18.05,
+  "inner": "18.03",
+  "failed": []
+ },
+ {
+  "run": 24,
+  "exit": 101,
+  "wall": 23.13,
+  "inner": "23.10",
+  "failed": [
+   "cli::topology_handoff::tests::live::live_possible_save_failure_reports_exact_uncertainty"
+  ]
+ },
+ {
+  "run": 25,
+  "exit": 0,
+  "wall": 23.9,
+  "inner": "23.86",
+  "failed": []
+ },
+ {
+  "run": 26,
+  "exit": 0,
+  "wall": 17.19,
+  "inner": "17.17",
+  "failed": []
+ },
+ {
+  "run": 27,
+  "exit": 0,
+  "wall": 17.91,
+  "inner": "17.88",
+  "failed": []
+ },
+ {
+  "run": 28,
+  "exit": 0,
+  "wall": 18.77,
+  "inner": "18.74",
+  "failed": []
+ },
+ {
+  "run": 29,
+  "exit": 0,
+  "wall": 19.25,
+  "inner": "19.23",
+  "failed": []
+ },
+ {
+  "run": 30,
+  "exit": 0,
+  "wall": 18.95,
+  "inner": "18.93",
+  "failed": []
+ },
+ {
+  "run": 31,
+  "exit": 101,
+  "wall": 18.93,
+  "inner": "18.91",
+  "failed": [
+   "cli::topology_handoff::tests::live::live_possible_save_failure_reports_exact_uncertainty"
+  ]
+ },
+ {
+  "run": 32,
+  "exit": 0,
+  "wall": 18.45,
+  "inner": "18.43",
+  "failed": []
+ },
+ {
+  "run": 33,
+  "exit": 0,
+  "wall": 18.31,
+  "inner": "18.29",
+  "failed": []
+ },
+ {
+  "run": 34,
+  "exit": 0,
+  "wall": 21.36,
+  "inner": "21.34",
+  "failed": []
+ },
+ {
+  "run": 35,
+  "exit": 0,
+  "wall": 21.29,
+  "inner": "21.26",
+  "failed": []
+ },
+ {
+  "run": 36,
+  "exit": 0,
+  "wall": 20.84,
+  "inner": "20.84",
+  "failed": []
+ },
+ {
+  "run": 37,
+  "exit": 101,
+  "wall": 20.94,
+  "inner": "20.84",
+  "failed": [
+   "cli::topology_handoff::tests::live::live_possible_save_failure_reports_exact_uncertainty"
+  ]
+ },
+ {
+  "run": 38,
+  "exit": 0,
+  "wall": 22.47,
+  "inner": "22.46",
+  "failed": []
+ },
+ {
+  "run": 39,
+  "exit": 0,
+  "wall": 22.31,
+  "inner": "22.26",
+  "failed": []
+ }
+]

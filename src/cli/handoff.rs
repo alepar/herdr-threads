@@ -473,6 +473,16 @@ pub(crate) fn load_progress<T: serde::de::DeserializeOwned + Default>(
     }
     serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
+/// How long [`lock`] keeps retrying a contended handoff lock before it refuses.
+///
+/// `flock` belongs to the open file description, and a process spawn
+/// (`posix_spawn` or `fork`) on another thread briefly copies every
+/// descriptor, close-on-exec ones included, until the child's exec closes
+/// them. A lock this process just released can therefore still read as held
+/// for the length of a concurrent spawn (ht-b5yq). A genuinely running
+/// handoff holds the lock far longer than this bound and is still refused.
+const HANDOFF_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
 pub(crate) fn lock(journal: &Journal, reference: &IntentRef) -> io::Result<File> {
     let file = OpenOptions::new()
         .write(true)
@@ -485,9 +495,20 @@ pub(crate) fn lock(journal: &Journal, reference: &IntentRef) -> io::Result<File>
                 .root()
                 .join(format!("handoff-{}.lock", reference.operation.as_str())),
         )?;
-    file.try_lock()
-        .map_err(|_| io::Error::other("handoff already running; retry after it finishes"))?;
-    Ok(file)
+    let start = std::time::Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < HANDOFF_LOCK_WAIT => {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Err(_) => {
+                return Err(io::Error::other(
+                    "handoff already running; retry after it finishes",
+                ));
+            }
+        }
+    }
 }
 
 pub(crate) fn membership<C: LocalClient + ?Sized>(

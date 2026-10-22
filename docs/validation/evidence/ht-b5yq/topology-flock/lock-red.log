@@ -1,0 +1,2 @@
+thread 'cli::handoff::tests::handoff_lock_waits_out_a_transient_descriptor_copy_and_refuses_a_lasting_one' (175458221) panicked at src/cli/../../tests/cli/handoff.rs:5394:47:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6216 filtered out; finished in 0.02s
