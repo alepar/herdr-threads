@@ -1659,6 +1659,9 @@ struct CheckedIn {
     attention: Option<AttentionCommit>,
     /// The bounded inbox page read for this top-level event.
     lazy: Option<super::hook_inbox::InboxOffer>,
+    /// Why this event has no page although one was due (`inbox_offer`): one stderr
+    /// diagnostic, never model-visible text.
+    page_failure: Option<String>,
     /// Daemon route for the lazy completion (stamped by `check_in`).
     link: Option<super::hook_inbox::CompletionLink>,
 }
@@ -2460,6 +2463,7 @@ impl PaneCall<'_> {
                 recovery: None,
                 attention: None,
                 lazy: None,
+                page_failure: None,
                 link: None,
             });
         // The daemon moved this binding's cursors past a backlog beyond one page: the gap is
@@ -2559,6 +2563,7 @@ impl PaneCall<'_> {
                     recovery: None,
                     attention: None,
                     lazy: None,
+                    page_failure: None,
                     link: None,
                 });
             }
@@ -2577,6 +2582,7 @@ impl PaneCall<'_> {
                 recovery: None,
                 attention: None,
                 lazy: None,
+                page_failure: None,
                 link: None,
             });
         }
@@ -2604,7 +2610,7 @@ impl PaneCall<'_> {
             // channel delivers itself.
             // One rule for both boundaries (TRUST-POLICY A8): a hook-pull seat's lazy
             // rows ride only `DeliveryPull`, never this page.
-            let lazy = (crate::delivery::routing::hook_inbox_page(
+            let (lazy, page_failure) = match (crate::delivery::routing::hook_inbox_page(
                 crate::harness::registry::builtins().delivery_policy(event.harness.as_str()),
                 boundary.live,
             ) && !boundary.text.is_empty())
@@ -2614,8 +2620,11 @@ impl PaneCall<'_> {
                     event,
                     boundary.mark.as_ref().map(|(key, _)| key.as_str()),
                 )
-            })
-            .flatten();
+            }) {
+                Some(Ok(offer)) => (offer, None),
+                Some(Err(reason)) => (None, Some(reason)),
+                None => (None, None),
+            };
             let attention = boundary.mark.map(|(key, token)| AttentionCommit {
                 contexts,
                 key,
@@ -2640,6 +2649,7 @@ impl PaneCall<'_> {
                 recovery: self.recovery_rows(event, seat),
                 attention,
                 lazy,
+                page_failure,
                 link: None,
             });
         }
@@ -2680,10 +2690,19 @@ impl PaneCall<'_> {
                 )
             })
         {
-            done.lazy = self
+            match self
                 .session_journal(event, seat, generation)
-                .ok()
-                .and_then(|contexts| self.inbox_offer(&contexts, event, Some(key.as_str())));
+                .map_err(|error| {
+                    let (Failure::Quiet(detail)
+                    | Failure::Unavailable(detail)
+                    | Failure::UnavailableDetail(detail, _)) = error;
+                    format!("inbox page skipped: session journal: {detail}")
+                })
+                .and_then(|contexts| self.inbox_offer(&contexts, event, Some(key.as_str())))
+            {
+                Ok(offer) => done.lazy = offer,
+                Err(reason) => done.page_failure = Some(reason),
+            }
         }
         Ok(done)
     }
@@ -2753,6 +2772,7 @@ impl PaneCall<'_> {
                 token,
             }),
             lazy: None,
+            page_failure: None,
             link: None,
         })
     }
@@ -2802,14 +2822,21 @@ impl PaneCall<'_> {
     }
 
     /// One bounded inbox page for the registered top-level execution, read
-    /// within the hook deadline; any failure shows none.
+    /// within the hook deadline (`Ok(None)`: no page is due for this context);
+    /// a failure shows none and names itself (the `Err` is the hook's stderr
+    /// diagnostic, with the read's budget and elapsed time).
     fn inbox_offer(
         &self,
         contexts: &crate::harness::context::ContextJournal,
         event: &LifecycleEvent,
         mark_key: Option<&str>,
-    ) -> Option<super::hook_inbox::InboxOffer> {
-        let saved = contexts.current().ok()??;
+    ) -> Result<Option<super::hook_inbox::InboxOffer>, String> {
+        let Some(saved) = contexts
+            .current()
+            .map_err(|error| format!("inbox page skipped: saved context: {error:?}"))?
+        else {
+            return Ok(None);
+        };
         // The claim must be the session this event presented for, never a
         // context that replaced it in between.
         if saved.harness != event.harness
@@ -2819,13 +2846,26 @@ impl PaneCall<'_> {
                 .as_ref()
                 .is_some_and(|native| saved.session != SessionReference::Native(native.clone()))
         {
-            return None;
+            return Ok(None);
         }
-        let claim = contexts.claim(&saved).ok()?;
-        let capped = self.deadline.min(
-            self.clock.instant_now() + crate::protocol::time::external_bound(INBOX_READ_BUDGET),
-        );
+        let claim = contexts
+            .claim(&saved)
+            .map_err(|error| format!("inbox page skipped: claim: {error:?}"))?;
+        let started = self.clock.instant_now();
+        let capped = self
+            .deadline
+            .min(started + crate::protocol::time::external_bound(INBOX_READ_BUDGET));
         super::hook_inbox::read_page(self.client, claim, &budget(capped, self.clock.as_ref()))
+            .map_err(|reason| {
+                format!(
+                    "inbox page not read: {reason} (budget {} ms, elapsed {} ms)",
+                    capped.saturating_duration_since(started).as_millis(),
+                    self.clock
+                        .instant_now()
+                        .saturating_duration_since(started)
+                        .as_millis()
+                )
+            })
     }
 
     /// The recovery block of a top-level Compact/Resume/Clear event: one
@@ -3186,6 +3226,7 @@ fn lifecycle_check_in(
         recovery: None,
         attention,
         lazy: None,
+        page_failure: None,
         link: None,
     })
 }
@@ -3974,6 +4015,7 @@ fn run_admitted_hook_since(
             recovery,
             attention,
             lazy,
+            page_failure,
             link,
         }) => {
             let composition_event = LifecycleEvent {
@@ -4034,6 +4076,9 @@ fn run_admitted_hook_since(
             };
             let (stdout, consumes, diagnostic) =
                 encode_prepared_result(registration, admitted, decoded, prepared_kind, context);
+            // A page that was due but could not be read names its reason on stderr (never
+            // to the model), so a missing row can be attributed instead of guessed at.
+            let diagnostic = diagnostic.or(page_failure);
             // A tool boundary (or a turn start, which checks in the same way) is inside the
             // turn; a lifecycle check-in may leave the session idle.
             let in_turn = |offer: &super::hook_inbox::InboxOffer| {

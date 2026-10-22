@@ -1451,9 +1451,14 @@ fn config5_resume_within_a_page_and_past_it() {
             )
             .data();
     }
+    // A send's delivery row is published by its attention job: resume only after every job has
+    // run, or the page (and the cursor it advances) stops before the last send (ht-0zcn).
+    smoke.wait_projected();
     let behind = smoke.cursor(&binding.id, &thread).unwrap();
     let out = smoke.hook(&codex, &codex_start("codex-r", "resume"));
     assert_eq!(out.code, 0, "{}", out.text());
+    // Hook exit 0 is fail-open: a page-read or completion failure names itself on stderr.
+    assert!(out.stderr.is_empty(), "{}", out.text());
     assert!(!out.stdout.contains("resumed past"), "{}", out.stdout);
     assert_eq!(
         smoke.binding(&seat, "codex", "codex-r", "").liveness,
@@ -1465,7 +1470,8 @@ fn config5_resume_within_a_page_and_past_it() {
             "SELECT MAX(sequence) FROM messages WHERE thread_id=?1 AND kind='ordinary'",
             &[&thread]
         )),
-        "complete resume display advances the cursor"
+        "complete resume display advances the cursor: {}",
+        out.stdout
     );
     assert!(smoke.cursor(&binding.id, &thread).unwrap() > behind);
     for n in 1..=3 {
@@ -1529,6 +1535,12 @@ fn config5_resume_within_a_page_and_past_it() {
         assert!(out.text().contains("store_busy"), "{}", out.text());
         std::thread::sleep(Duration::from_millis(100));
     };
+    // The resume page's room depends on its check-in text (ht-0zcn): only a warning the
+    // attribution worker has projected rides the check-in as an offered notice, and without that
+    // line the untrimmed offer just fits under the hook bound and leaves no room for the owed row,
+    // which then (by design) waits behind the continuation line. Resume only after the workers
+    // have projected everything, so the check-in carries the clear notice.
+    smoke.wait_projected();
     let resume_frontier = smoke.head(&thread);
     let out = smoke.hook(&codex, &codex_start("codex-r", "resume"));
     assert_eq!(out.code, 0, "{}", out.text());
@@ -1548,6 +1560,11 @@ fn config5_resume_within_a_page_and_past_it() {
     // Reconnection can append unavailability-clear events before the page
     // read. The display must cover at least the entire pre-resume head.
     assert!(smoke.cursor(&binding.id, &thread).unwrap() >= resume_frontier);
+    assert!(
+        out.stdout.contains("offered notices: "),
+        "the projected clear notice rides the check-in: {}",
+        out.stdout
+    );
     assert!(
         out.stdout.contains(&format!("message {owed} ")),
         "the owed inbox row was injected (a history preview is not delivery): {}",
@@ -1570,6 +1587,25 @@ fn config5_resume_within_a_page_and_past_it() {
         ack_binding, binding.id,
         "the resumed binding completed the receipt"
     );
+}
+
+impl Smoke {
+    /// Waits until the daemon's workers have projected every warning and send attention job, so
+    /// a hook's check-in and page see each published message and notice (ht-0zcn).
+    fn wait_projected(&self) {
+        wait_until(
+            "the warning and attention projections",
+            Duration::from_secs(20),
+            || {
+                self.count(
+                    "SELECT (SELECT count(*) FROM warning_jobs WHERE status IN ('pending','failed')) \
+                     + (SELECT count(*) FROM work_jobs \
+                        WHERE kind='send_attention' AND status IN ('pending','failed'))",
+                    &[],
+                ) == 0
+            },
+        );
+    }
 }
 
 // ---- configuration 6 -----------------------------------------------------------------------

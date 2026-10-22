@@ -2550,7 +2550,16 @@ fn native_hook_scaled_resume_injects_receipt_after_delayed_inbox() {
         context.contains("More inbox content may remain"),
         "{context}"
     );
-    assert!(production.stderr.is_empty(), "{}", production.stderr);
+    // The missed page is attributed on stderr (never to the model): the read's
+    // outcome with its budget and elapsed time.
+    assert!(
+        production
+            .stderr
+            .contains("herdr-threads hook: inbox page not read: ")
+            && production.stderr.contains(" (budget 500 ms, elapsed "),
+        "{}",
+        production.stderr
+    );
     assert_eq!(acked(), 0, "an undisplayed receipt stays pending");
 
     // The standard test scale covers the page read, so this hook actually

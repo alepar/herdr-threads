@@ -213,10 +213,10 @@ fn page_is_read_only_for_top_level_claims_on_a_capable_daemon() {
         deadline: crate::protocol::time::MonoInstant(u64::MAX),
         cancellation: Default::default(),
     };
-    assert!(read_page(&NoCaps, claim(), &budget).is_none());
+    assert!(read_page(&NoCaps, claim(), &budget).unwrap().is_none());
     let mut child = claim();
     child.role = CallerRole::Subagent;
-    assert!(read_page(&NoCaps, child, &budget).is_none());
+    assert!(read_page(&NoCaps, child, &budget).unwrap().is_none());
 }
 
 // Kills: a page whose escaped form overflows the Hermes result envelope
@@ -441,7 +441,9 @@ fn commit(offer: &InboxOffer, lazy: Vec<MessageId>, displayed: Vec<MessageId>) -
 fn inbox_sends_claim_and_advances_after_full_flush() {
     let items = vec![lazy("m1", "quiet"), ordinary("m2", "needs receipt", true)];
     let daemon = Recording::new(CAPS, items);
-    let offer = read_page(&daemon, claim(), &far_budget()).expect("a page");
+    let offer = read_page(&daemon, claim(), &far_budget())
+        .unwrap()
+        .expect("a page");
     assert!(offer.cursors);
     let Command::InboxBatchV2(query) = &daemon.calls()[0] else {
         panic!("first call reads the page")
@@ -477,7 +479,9 @@ fn inbox_sends_claim_and_advances_after_full_flush() {
 
     // A daemon without per-binding cursors gets the seat read and no cursor command.
     let old = Recording::new(&CAPS[..3], vec![lazy("m1", "quiet")]);
-    let offer = read_page(&old, claim(), &far_budget()).expect("a page");
+    let offer = read_page(&old, claim(), &far_budget())
+        .unwrap()
+        .expect("a page");
     assert!(!offer.cursors);
     let Command::InboxBatchV2(query) = &old.calls()[0] else {
         panic!("read")
@@ -512,12 +516,15 @@ fn in_turn_presentation_is_sent_only_to_a_daemon_that_records_it() {
     let old = Recording::new(CAPS, items.clone());
     assert!(
         !read_page(&old, claim(), &far_budget())
+            .unwrap()
             .expect("a page")
             .in_turn_offer
     );
     let caps = [CAPS, &[crate::protocol::capabilities::IN_TURN_OFFER]].concat();
     let daemon = Recording::new(&caps, items);
-    let offer = read_page(&daemon, claim(), &far_budget()).expect("a page");
+    let offer = read_page(&daemon, claim(), &far_budget())
+        .unwrap()
+        .expect("a page");
     assert!(offer.in_turn_offer);
     let (_, lazy_ids, displayed, invitations) =
         append_presented(String::new(), &offer, &prefix(), 4096);
@@ -838,7 +845,9 @@ fn complete_hook_delivery_needs_no_inbox_or_explicit_ack_command() {
 #[test]
 fn successful_empty_inbox_is_known_complete() {
     let daemon = Recording::new(CAPS, vec![]);
-    let offer = read_page(&daemon, claim(), &far_budget()).expect("successful empty snapshot");
+    let offer = read_page(&daemon, claim(), &far_budget())
+        .unwrap()
+        .expect("successful empty snapshot");
     let (context, _) = append("context".into(), &offer, &prefix(), 4096);
     assert_eq!(context, "context");
 }
@@ -864,7 +873,7 @@ fn legacy_daemon_withholds_receipts_without_unsupported_completion() {
         &CAPS[1..],
         vec![lazy("m1", "first"), ordinary("m2", "receipt", true)],
     );
-    let offer = read_page(&old, claim(), &far_budget()).unwrap();
+    let offer = read_page(&old, claim(), &far_budget()).unwrap().unwrap();
     assert!(!offer.receipt_completion);
     let rendered = render(String::new(), &offer, &prefix(), 4096);
     assert_eq!(rendered.coverage, DeliveryCoverage::Incomplete);
@@ -882,7 +891,7 @@ fn legacy_daemon_withholds_receipts_without_unsupported_completion() {
 #[test]
 fn receipt_only_completion_uses_original_claim_and_no_fake_lazy_ids() {
     let daemon = Recording::new(CAPS, vec![ordinary("m1", "receipt", true)]);
-    let offer = read_page(&daemon, claim(), &far_budget()).unwrap();
+    let offer = read_page(&daemon, claim(), &far_budget()).unwrap().unwrap();
     let rendered = render(String::new(), &offer, &prefix(), 4096);
     let mut done = commit(&offer, rendered.lazy, rendered.displayed);
     done.receipts = rendered.receipts;

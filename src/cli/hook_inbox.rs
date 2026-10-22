@@ -86,17 +86,18 @@ pub struct InboxOffer {
 }
 
 /// Read the page: top-level claims only, only from a daemon serving the v2
-/// inbox and hook lazy delivery. Any failure shows nothing.
+/// inbox and hook lazy delivery (`Ok(None)` otherwise: no page is due). A
+/// failed read shows nothing; the `Err` names it for the hook's stderr diagnostic.
 pub fn read_page<C: LocalClient + ?Sized>(
     client: &C,
     claim: CallerClaim,
     budget: &CallBudget,
-) -> Option<InboxOffer> {
+) -> Result<Option<InboxOffer>, String> {
     if claim.role != CallerRole::TopLevel
         || !client.supports_capability(INBOX_BATCH_V2, budget)
         || !client.supports_capability(LAZY_HOOK_DELIVERY, budget)
     {
-        return None;
+        return Ok(None);
     }
     let output = OutputSpec {
         format: OutputFormat::Text,
@@ -121,18 +122,18 @@ pub fn read_page<C: LocalClient + ?Sized>(
             &output,
             budget,
         )
-        .ok()?
+        .map_err(|error| format!("{:?}: {}", error.code, error.detail))?
     else {
-        return None;
+        return Err("the daemon returned no inbox page".to_owned());
     };
     let in_turn_offer = cursors && client.supports_capability(IN_TURN_OFFER, budget);
-    Some(InboxOffer {
+    Ok(Some(InboxOffer {
         receipt_completion: client.supports_capability(HOOK_CONTEXT_RECEIPTS_V1, budget),
         page,
         claim,
         cursors,
         in_turn_offer,
-    })
+    }))
 }
 
 /// Whether `item` is shown complete (bodies from offset zero to their end).
