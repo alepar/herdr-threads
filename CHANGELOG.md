@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## v2.3.1
 
+- **Handoff fixes.** The launch gate now re-derives the adapter's profile environment projection before every tab creation or retried launch and refuses a plan whose retained projection differs (ht-wnpv). The handoff lock waits up to 1 s for a transient descriptor copy from a concurrent spawn before refusing, which removes a `cargo test` in-process flake and leaves a really running handoff refused as before (ht-b5yq). The hook names a failed inbox page read on stderr with the budget and elapsed time; stderr only, no model-visible change (ht-0zcn, with a test race fix for `config5_resume_within_a_page_and_past_it`).
 - **`handoff --model MODEL`.** A new-tab or pane handoff launch can choose the launched agent's model: the adapter maps it to the harness's own option (Claude `--model`, Codex `-m`), placed before the caller arguments and frozen with them in the launch plan, so retries and automatic completion launch the same model. The value is passed through, never checked against a model list or version; agy and Hermes refuse it before any effect, and `--existing` conflicts with it. Model-visible text: one `handoff --help` option line (82 bytes) and one skill sentence (213 bytes).
 
 ## v2.3.0
