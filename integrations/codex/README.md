@@ -86,9 +86,12 @@ command. The decoder accepts any `tool_name` and reads none of `tool_input`
 (the tool's own arguments); the gated Bash invocation parser alone still
 requires a bounded Bash `tool_input.command`. The `write_stdin` polls of a
 running command and code-mode `wait` emit no `PreToolUse`, so they are not
-boundaries. Installs made before this change keep their `^Bash$` group, and
-inspection reports them as not installed until `herdr-threads setup codex`
-rewrites that group in place.
+boundaries. A payload over the 64 KiB parse bound (a large patch) is decoded
+without its `tool_input` (read up to 16 MiB), so it stays a boundary. Installs
+made before this change keep their `^Bash$` group: inspection of a recorded
+install reports it as not installed until `herdr-threads setup codex` rewrites
+that group in place (a hand-copied, unrecorded one is adopted and rewritten by
+the same `setup`).
 
 **Hook trust.** Codex runs a user hook only once trusted: `hooks/list` reports a
 freshly written `hooks.json` hook as `trustStatus: untrusted` (0.159.2, scratch

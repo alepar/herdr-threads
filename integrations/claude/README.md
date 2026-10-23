@@ -8,7 +8,7 @@ The Rust adapter declares `SessionStart`, `PreToolUse` (every tool), `UserPrompt
 - `SubagentStart`: no matcher, command hook, timeout 10
 - `SubagentStop`: no matcher, command hook, timeout 10
 
-A subagent's `PreToolUse` Bash call that runs `herdr-threads` or `ht` is rewritten through `hookSpecificOutput.updatedInput` to carry `--agent-id=<agent_id>` right after the command word (`claude::subagent_rewrite_output`, `harness::claude_rewrite`); the hook never returns `permissionDecision`. `SubagentStart` renders the fixed child guidance; `SubagentStop` is quiet. `UserPromptSubmit` checks in like a Bash tool boundary, so a turn (a prompt the human typed, or a native wake) starts with its pending items in context; a quiet turn gets no output.
+A subagent's `PreToolUse` Bash call that runs `herdr-threads` or `ht` is rewritten through `hookSpecificOutput.updatedInput` to carry `--agent-id=<agent_id>` right after the command word (`claude::subagent_rewrite_output`, `harness::claude_rewrite`); the hook never returns `permissionDecision`. `SubagentStart` renders the fixed child guidance; `SubagentStop` is quiet. `UserPromptSubmit` checks in like a tool boundary, so a turn (a prompt the human typed, or a native wake) starts with its pending items in context; a quiet turn gets no output.
 
 ## Permission rules
 

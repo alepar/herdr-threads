@@ -856,6 +856,7 @@ pub static SETTINGS_KIND: super::setup::SettingsKindSpec = super::setup::Setting
     }),
     adoption_note: "",
     legacy_upgrade_warning: "",
+    superseded_matchers: &[("PreToolUse", "Bash")],
     permission_rules: permission_rules::settings_rules,
 };
 /// The engine handle of [`SETTINGS_KIND`].
@@ -999,6 +1000,11 @@ impl HarnessAdapter for ClaudeAdapter {
     }
     fn rewrite_hook_output(&self, input: &[u8], existing_stdout: &[u8]) -> Option<Vec<u8>> {
         subagent_rewrite_output(input, existing_stdout)
+    }
+    /// A Write/Edit or MCP `PreToolUse` can carry megabytes of `tool_input`, which the decoder
+    /// never reads.
+    fn compact_hook_input(&self, input: &[u8]) -> Option<Vec<u8>> {
+        super::adapter::without_payload_field(input, "PreToolUse", "tool_input")
     }
     fn receipt_admission_summary(&self) -> Option<String> {
         Some("declared".into())

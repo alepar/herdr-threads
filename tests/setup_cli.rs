@@ -2065,6 +2065,13 @@ fn stale_record_beside_unattributable_hooks_is_preserved() {
             }),
         ),
         (
+            // Only a matcher an earlier declaration wrote (`^Bash$`) is upgraded in place.
+            "user matcher",
+            Box::new(|_, hooks| {
+                hooks["hooks"]["PreToolUse"][0]["matcher"] = "Edit".into();
+            }),
+        ),
+        (
             "undeclared event",
             Box::new(|s, hooks| {
                 hooks["hooks"]["Interrupt"] =

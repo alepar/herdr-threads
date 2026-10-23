@@ -2760,6 +2760,25 @@ fn mail_reaches_the_next_non_bash_claude_tool_hook() {
         "{}",
         String::from_utf8_lossy(&repeat.stdout)
     );
+    // A Write whose content exceeds the 64 KiB parse bound is still a boundary: its
+    // `tool_input` is dropped before decoding, with no stderr diagnostic.
+    let big = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "mail before a large write"],
+    ));
+    let content = "x".repeat(200 * 1024);
+    let context = context_of(&tool(
+        "Write",
+        serde_json::json!({"file_path": "/tmp/big", "content": content}),
+    ));
+    assert!(context.contains(&big), "{context}");
+    let repeat = read();
+    assert!(
+        repeat.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&repeat.stdout)
+    );
 }
 
 // Every tool is a tool boundary (ht-all-tools): a Codex turn that only edits with `apply_patch`
@@ -2852,7 +2871,17 @@ fn mail_reaches_the_next_non_bash_codex_tool_hook() {
     assert!(context.contains("mail before a spawn"), "{context}");
     assert!(context.contains(&second), "{context}");
     assert!(!context.contains("mail for a patch-only turn"), "{context}");
-    let repeat = codex_tool(5, "apply_patch", patch);
+    // A patch larger than the 64 KiB parse bound is still a boundary, with no stderr diagnostic.
+    let third = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "mail before a large patch"],
+    ));
+    let large =
+        serde_json::json!({"command": format!("*** Begin Patch\n{}", "+x\n".repeat(80 * 1024))});
+    let context = context_of(&codex_tool(5, "apply_patch", large));
+    assert!(context.contains(&third), "{context}");
+    let repeat = codex_tool(6, "apply_patch", patch);
     assert!(
         repeat.stdout.is_empty(),
         "{}",

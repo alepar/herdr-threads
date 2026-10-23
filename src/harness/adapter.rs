@@ -62,6 +62,11 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn rewrite_hook_output(&self, _input: &[u8], _existing_stdout: &[u8]) -> Option<Vec<u8>> {
         None
     }
+    /// A copy of a hook payload larger than the parse bound without fields this adapter never
+    /// reads (such as a tool's own arguments), so the event still decodes. `None`: unchanged.
+    fn compact_hook_input(&self, _input: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
     fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection> {
         let observed = self.classify(input);
         self.contracts()
@@ -2100,6 +2105,16 @@ impl DecodedEvent {
             agent_id: self.metadata.agent_id.clone(),
         })
     }
+}
+/// `input` without the top-level `key` when it is an `event` payload: the shared shape of an
+/// adapter's [`HarnessAdapter::compact_hook_input`].
+pub(crate) fn without_payload_field(input: &[u8], event: &str, key: &str) -> Option<Vec<u8>> {
+    let mut value: serde_json::Value = serde_json::from_slice(input).ok()?;
+    if value.get("hook_event_name")?.as_str()? != event {
+        return None;
+    }
+    value.as_object_mut()?.remove(key)?;
+    serde_json::to_vec(&value).ok()
 }
 pub(crate) fn encode_context(
     event: &DecodedEvent,

@@ -1643,7 +1643,8 @@ impl ContextJournal {
         }
         operation
     }
-    /// Replace the attention mark of the binding `key` atomically (last writer wins per key).
+    /// Advance the attention mark of the binding `key` atomically to its join with `token`, so
+    /// concurrent tool boundaries that each read an older mark never move it backwards.
     /// The other bindings' marks are kept; a file of another version is replaced.
     pub fn set_attention_mark(
         &self,
@@ -1668,9 +1669,13 @@ impl ContextJournal {
             .max()
             .unwrap_or(0)
             + 1;
+        let token = marks
+            .marks
+            .get(key)
+            .map_or(*token, |stored| stored.token.join(token));
         marks
             .marks
-            .insert(key.to_owned(), AttentionMarkEntry { token: *token, at });
+            .insert(key.to_owned(), AttentionMarkEntry { token, at });
         while marks.marks.len() > MAX_ATTENTION_MARKS {
             let Some(oldest) = marks
                 .marks

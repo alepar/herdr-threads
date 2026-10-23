@@ -10,7 +10,7 @@
 //! any resume continuity attempt. They then perform the durable Lifecycle CheckIn
 //! through the context journal with exact replay;
 //! a definitively rejected pending request is abandoned as terminal. Tool-boundary
-//! hooks (Claude and Codex Bash PreToolUse, Codex compact) read the seat's
+//! hooks (Claude and Codex PreToolUse on every tool, Codex compact) read the seat's
 //! server-side attention digest, compare only its token with the last token
 //! shown to the execution, and make one non-durable Current CheckIn only when it
 //! advanced; they write nothing to either journal. Both classes use the same
@@ -70,6 +70,9 @@ pub const TOOL_BUDGET: Duration = Duration::from_millis(1500);
 pub const LIFECYCLE_BUDGET: Duration = Duration::from_millis(5000);
 /// Native input bound shared with the adapters.
 pub const MAX_STDIN: usize = 65_536;
+/// Largest payload read for an adapter's `compact_hook_input`: a tool boundary's own
+/// arguments (a written file, a patch) may exceed [`MAX_STDIN`] while the event stays small.
+const MAX_COMPACTABLE_STDIN: usize = 16 << 20;
 /// Encoded `additionalContext` bound shared with the adapter branches.
 pub const MAX_CONTEXT: usize = 4096;
 const WATCHDOG_MARGIN: Duration = Duration::from_millis(150);
@@ -4460,11 +4463,19 @@ pub fn run_process_with(
     };
     let mut stdin = Vec::new();
     let read_ok = (&mut input)
-        .take(MAX_STDIN as u64 + 1)
+        .take(MAX_COMPACTABLE_STDIN as u64 + 1)
         .read_to_end(&mut stdin)
         .is_ok();
     if !read_ok {
         stdin.clear();
+    }
+    if stdin.len() > MAX_STDIN
+        && stdin.len() <= MAX_COMPACTABLE_STDIN
+        && let Some(compact) = registration_for(args.harness)
+            .ok()
+            .and_then(|registration| registration.compact_hook_input(&stdin))
+    {
+        stdin = compact;
     }
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let state_dir = hook_state_dir(&args);

@@ -155,6 +155,9 @@ pub struct SettingsKindSpec {
     pub adoption_note: &'static str,
     /// Pushed when setup rewrites a pre-per-event registration (Codex: the re-trust warning).
     pub legacy_upgrade_warning: &'static str,
+    /// `(event, matcher)` an earlier declaration wrote: a copied owned group with one of these in
+    /// place of the declared matcher is adopted and upgraded; any other matcher is an edit.
+    pub superseded_matchers: &'static [(&'static str, &'static str)],
     /// Rules a separate permission component owns in this file, per `permissions` list (`allow`, `ask`), stripped when
     /// deciding whether the file is still the recorded base plus groups. Empty for a kind whose file holds none.
     pub permission_rules: fn() -> Vec<(&'static str, Vec<String>)>,
@@ -2392,7 +2395,8 @@ pub struct Adoptable {
 /// Whether `bytes` hold, under each declared event they register at all, exactly one group
 /// running this hook command registered for that event (`--event <event>`)
 /// apart from its owner marker, all with one valid marker, each exactly the declared group for
-/// `<command> # herdr-threads-owner:<id>`. A copy made by an older setup lacks the events declared
+/// `<command> # herdr-threads-owner:<id>` (or, for a copy made by an older setup, that group with a
+/// superseded matcher). A copy made by an older setup lacks the events declared
 /// since: it is adopted with the events it has (setup then upgrades it like a recorded older
 /// declaration; `owned` lists only those). Any registration of the command that is unmarked or
 /// edited ([`registrations`]), without `--event`, with another event's argument or under an
@@ -2441,7 +2445,7 @@ pub fn find_adoptable(
         .entries(&owned_command(hook_argv, &installation_id)?)?
         .into_iter()
         .filter(|entry| events.contains(&entry.event))
-        .map(|entry| present_but_matcher(&value, &entry))
+        .map(|entry| present_but_matcher(kind, &value, &entry))
         .collect::<Option<Vec<OwnedEntry>>>()
     else {
         return Ok(None);
@@ -2452,21 +2456,32 @@ pub fn find_adoptable(
     }))
 }
 
-/// The group under `entry`'s event that is `entry`'s group apart from its matcher, as present:
-/// an older declaration may have narrowed the matcher (a Bash-only `PreToolUse`), and setup then
-/// upgrades the adopted group like a recorded older declaration.
-fn present_but_matcher(value: &Value, entry: &OwnedEntry) -> Option<OwnedEntry> {
-    let unmatched = |group: &Value| {
-        let mut group = group.clone();
-        group.as_object_mut()?.remove("matcher");
-        Some(group)
-    };
-    let wanted = unmatched(&entry.group)?;
-    let group = value["hooks"][&entry.event]
-        .as_array()?
+/// The group under `entry`'s event that is `entry`'s group, or `entry`'s group with a matcher an
+/// earlier declaration wrote ([`SettingsKindSpec::superseded_matchers`], a Bash-only
+/// `PreToolUse`), as present; setup then upgrades the adopted group like a recorded older
+/// declaration. Any other matcher is an edit.
+fn present_but_matcher(
+    kind: SettingsKind,
+    value: &Value,
+    entry: &OwnedEntry,
+) -> Option<OwnedEntry> {
+    let groups = value["hooks"][&entry.event].as_array()?;
+    if groups.contains(&entry.group) {
+        return Some(entry.clone());
+    }
+    let group = kind
+        .spec()
+        .superseded_matchers
         .iter()
-        .find(|group| unmatched(group).as_ref() == Some(&wanted))?;
-    owned(&entry.event, group.clone()).ok()
+        .filter(|(event, _)| *event == entry.event)
+        .find_map(|(_, matcher)| {
+            let mut group = entry.group.clone();
+            group
+                .as_object_mut()?
+                .insert("matcher".into(), (*matcher).into());
+            groups.contains(&group).then_some(group)
+        })?;
+    owned(&entry.event, group).ok()
 }
 
 /// The hook commands registered under one event array.

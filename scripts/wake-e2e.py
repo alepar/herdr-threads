@@ -25,8 +25,8 @@ channel already delivered it, so the skill's bare-wake rule must not fire (Deliv
 depends on model behaviour; the row records the count (inbox_calls) and calls-<recipient>.txt the logged calls.
 busy-fail-send-ack/group (Claude only) makes the busy turn's last tool fail: the ACK request must still arrive and be
 acknowledged inside that turn, with no wake after it.
-busy-tool-p1/group is busy-send-p1 whose turn calls no shell command after the send, only a non-shell tool (Codex
-`apply_patch`, Claude's file-read tool): the item must arrive at that tool's boundary (every tool is one).
+busy-tool-p1/group (Codex only) is busy-send-p1 whose turn calls no shell command after the send, only `apply_patch`:
+the item must arrive at that tool's boundary (every tool is one). Claude's mod delivers at every tool already.
 
 Isolation: an isolated daemon and state dir (driven by --bin, default the repo's bin/herdr-threads), owned hooks
 installed by the public `setup` CLI into scratch HOME / CLAUDE_CONFIG_DIR / CODEX_HOME copies, one owned Herdr
@@ -180,8 +180,7 @@ BUSY_FAIL_PROMPT = ("Busy-turn test {tag}: run the shell command `{hold}; sleep 
 BUSY_TOOL_PROMPT = ("Busy-turn test {tag}: run the shell command `{hold}`, then {tool}; run no other shell command in "
                     "this turn. Then handle any herdr-threads items exactly as your standing instructions say, and "
                     "finally print BUSY-DONE.")
-BUSY_TOOL = {"codex": "use your apply_patch tool (not the shell) to add the file `{dir}/patched.txt` containing `x`",
-             "claude": f"read the file `{REPO / 'README.md'}` with your file-read tool (Read)"}
+BUSY_TOOL = "use your apply_patch tool (not the shell) to add the file `{dir}/patched.txt` containing `x`"
 BUSY_AFTER_S = 40.0
 # The busy turn's native end: a line of the agent's output that is BUSY-DONE apart from bullets, markup or a final
 # period. It is searched only after the prompt's own "BUSY-DONE." so a wrapped prompt line never matches.
@@ -1525,7 +1524,7 @@ class Recipient:
         tag = f"{case} {self.run.run_id}"
         with BusyBarrier(self.run.root) as hold:
             if action.startswith("busy-tool-"):
-                prompt = BUSY_TOOL_PROMPT.format(tag=tag, hold=hold.command(), tool=BUSY_TOOL[self.harness].format(dir=hold.path))
+                prompt = BUSY_TOOL_PROMPT.format(tag=tag, hold=hold.command(), tool=BUSY_TOOL.format(dir=hold.path))
             else:
                 prompt = (BUSY_FAIL_PROMPT if fail else BUSY_PROMPT).format(tag=tag, hold=hold.command())
             self.run.herdr("agent", "prompt", self.pane, prompt)
@@ -1583,6 +1582,8 @@ class Recipient:
                 checks["opening_message_delivered_in_turn"] = ref["message"] in in_turn
         else:
             checks["delivered_in_turn"] = ref["message"] in in_turn
+            if action.startswith("busy-tool-"):
+                checks["tool_ran"] = (hold.path / "patched.txt").exists()
             if kind == "ack":
                 checks["ack"] = self.receipt(ref["message"])
         self.settled()
@@ -1590,7 +1591,8 @@ class Recipient:
                   and checks["busy_turn_end_seen"] is True
                   and checks["wake_prompts_in_busy_turn"] == 0 and checks["wake_prompts_after_busy_turn"] == 0
                   and all(v is True or v == "acknowledged" for k, v in checks.items()
-                          if k in ("joined", "opening_message_delivered_in_turn", "delivered_in_turn", "ack")))
+                          if k in ("joined", "opening_message_delivered_in_turn", "delivered_in_turn", "ack",
+                                   "tool_ran")))
         self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
                          "expect_wake": False,
                          "woke": checks["self_started_turn_after_s"] is not None
@@ -2324,13 +2326,13 @@ Run.record = record
 
 def applies(recipient, case):
     """Side cases run on Codex recipients only; the plain-hooks Codex runs nothing else. Hooks cases run only on the
-    hooks-only Claude, which runs nothing else. End-of-turn cases run on hooked Codex recipients; Claude cases on the
-    mod Claude recipients."""
+    hooks-only Claude, which runs nothing else. End-of-turn and busy-tool cases run on hooked Codex recipients
+    (Claude's mod delivers at every tool already); Claude cases on the mod Claude recipients."""
     if case in SIDE_CASES:
         return recipient.harness == "codex"
     if getattr(recipient, "hooks_only", False) or case in HOOKS_CASES:
         return getattr(recipient, "hooks_only", False) and case in HOOKS_CASES
-    if case in EOT_CASES:
+    if case in EOT_CASES or case.startswith("busy-tool-"):
         return recipient.harness == "codex" and not getattr(recipient, "plain", False)
     if case in WAKE_BLOCK_CASES or case in UNRECEIVED_CASES:
         return recipient.harness == "codex" and recipient.threshold == 0 and not getattr(recipient, "plain", False)

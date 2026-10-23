@@ -47,6 +47,7 @@ pub static SETTINGS_KIND: SettingsKindSpec = SettingsKindSpec {
     }),
     adoption_note: "",
     legacy_upgrade_warning: "",
+    superseded_matchers: &[],
     permission_rules: crate::harness::setup::no_permission_rules,
 };
 pub const fn settings_kind() -> SettingsKind {

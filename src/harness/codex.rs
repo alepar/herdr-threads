@@ -1297,6 +1297,7 @@ pub static SETTINGS_KIND: super::setup::SettingsKindSpec = super::setup::Setting
     owned_allow: None,
     adoption_note: ", so Codex's recorded trust for them stays valid",
     legacy_upgrade_warning: RETRUST_WARNING,
+    superseded_matchers: &[("PreToolUse", "^Bash$")],
     permission_rules: super::setup::no_permission_rules,
 };
 /// The engine handle of [`SETTINGS_KIND`].
@@ -1487,6 +1488,11 @@ impl HarnessAdapter for CodexAdapter {
             .iter()
             .map(|hook| hook.event)
             .collect()
+    }
+    /// An `apply_patch` or MCP `PreToolUse` can carry megabytes of `tool_input`, which the
+    /// context decoder never reads.
+    fn compact_hook_input(&self, input: &[u8]) -> Option<Vec<u8>> {
+        super::adapter::without_payload_field(input, "PreToolUse", "tool_input")
     }
     fn receipt_admission_summary(&self) -> Option<String> {
         Some("declared".into())

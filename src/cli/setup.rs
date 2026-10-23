@@ -4,11 +4,11 @@
 //!
 //! Setup is user-level, the way Herdr installs its own agent hooks:
 //!
-//! - Claude: the adapter's declared hook groups (SessionStart and Bash
+//! - Claude: the adapter's declared hook groups (SessionStart and every-tool
 //!   PreToolUse) and the permission allow rule `claude::HERDR_THREADS_ALLOW_RULE`
 //!   (`Bash(herdr-threads *)`) go into `$CLAUDE_CONFIG_DIR/settings.json`
 //!   (default `~/.claude/settings.json`), merged with the hooks already there.
-//! - Codex: the declared hook groups (SessionStart, SubagentStart, Bash
+//! - Codex: the declared hook groups (SessionStart, SubagentStart, every-tool
 //!   PreToolUse) go into `$CODEX_HOME/hooks.json` (default
 //!   `~/.codex/hooks.json`). No sandbox allowance is installed. Historical
 //!   config.toml ownership remains inspectable and removable by unsetup.

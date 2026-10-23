@@ -658,7 +658,7 @@ fn private_write(path: &std::path::Path, contents: &str) {
 // Kills: one attention mark for the whole pane (a second session's write would erase the first's
 // and re-present its attention), a mark keyed by anything but the binding key (the session and
 // agent id of a subagent would share their parent's mark), a read-modify-write that drops the
-// other keys, and a mark that is not last-writer-wins per key.
+// other keys, and a same-binding write that moves the mark backwards.
 #[test]
 fn attention_marks_are_kept_per_binding_key() {
     let path = dir();
@@ -689,10 +689,22 @@ fn attention_marks_are_kept_per_binding_key() {
     assert_eq!(j.attention_mark(&parent), Some(first));
     assert_eq!(j.attention_mark(&other), Some(second));
     assert_eq!(j.attention_mark(&child), None, "a subagent has its own key");
-    // Last writer wins per key.
+    // Another binding's read replaces the key's mark.
     j.set_attention_mark(&parent, &second).unwrap();
     assert_eq!(j.attention_mark(&parent), Some(second));
     assert_eq!(j.attention_mark(&other), Some(second));
+    // A concurrent tool boundary of the same binding that read an older digest commits last:
+    // the mark joins, it never moves backwards (every tool is a boundary, so these overlap).
+    let stale = crate::protocol::attention::AttentionToken {
+        receipt: Some((8, 0)),
+        lazy: Some((3, 0)),
+        unavailability_episode: 1,
+        binding: Some(22),
+        ..Default::default()
+    };
+    j.set_attention_mark(&parent, &stale).unwrap();
+    assert_eq!(j.attention_mark(&parent), Some(second.join(&stale)));
+    assert_eq!(j.attention_mark(&parent).unwrap().receipt, Some((9, 0)));
     // An OccupantContext names the same key a claim of its session does.
     let ctx = context(crate::node::NodeUuid::new_v4(), Uuid::new_v4(), 1);
     assert_eq!(ctx.mark_key(), "codex:same-session:");

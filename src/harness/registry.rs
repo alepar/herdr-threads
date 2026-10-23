@@ -209,6 +209,7 @@ trait ErasedAdapter: Send + Sync {
     fn binding_policy(&self) -> BindingPolicy;
     fn required_hook_events(&self) -> Vec<&'static str>;
     fn rewrite_hook_output(&self, input: &[u8], existing_stdout: &[u8]) -> Option<Vec<u8>>;
+    fn compact_hook_input(&self, input: &[u8]) -> Option<Vec<u8>>;
     fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection>;
     fn nonholding_unavailable_reasons(
         &self,
@@ -344,6 +345,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn rewrite_hook_output(&self, input: &[u8], existing_stdout: &[u8]) -> Option<Vec<u8>> {
         self.0.rewrite_hook_output(input, existing_stdout)
+    }
+    fn compact_hook_input(&self, input: &[u8]) -> Option<Vec<u8>> {
+        self.0.compact_hook_input(input)
     }
     fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection> {
         self.0.evidence_observations(input)
@@ -648,6 +652,9 @@ impl Registration {
     }
     pub fn rewrite_hook_output(&self, input: &[u8], existing_stdout: &[u8]) -> Option<Vec<u8>> {
         self.adapter.rewrite_hook_output(input, existing_stdout)
+    }
+    pub fn compact_hook_input(&self, input: &[u8]) -> Option<Vec<u8>> {
+        self.adapter.compact_hook_input(input)
     }
     pub fn evidence_observations(
         &self,

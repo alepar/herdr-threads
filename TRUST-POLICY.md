@@ -1160,7 +1160,7 @@ cooperative claim that the row entered the model's context through the mod (`coo
 by the request; the daemon stores only the row's `displayed` progress and no per-row source. Like every lazy completion it is presentation bookkeeping: no ACK actor,
 adoption or proof of consumption.
 
-A standard native hook (top-level SessionStart, Bash PreToolUse, Codex or Claude UserPromptSubmit, a due Codex
+A standard native hook (top-level SessionStart, PreToolUse on any tool, Codex or Claude UserPromptSubmit, a due Codex
 Stop or qualified turn; never a subagent event) is a third completion source. A Codex Stop presents only when the daemon
 answers `TurnEndDue` true for the session's claim (an item that would wake the seat idle; decided against the
 canonical view, A2), at most once per turn (`stop_hook_active`), and its context reaches the model as the turn's

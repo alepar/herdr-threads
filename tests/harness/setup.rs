@@ -2879,6 +2879,7 @@ mod extension_proof {
         }),
         adoption_note: "",
         legacy_upgrade_warning: "",
+        superseded_matchers: &[],
         permission_rules: crate::harness::setup::no_permission_rules,
     };
     static HOOK_KIND: SettingsKindSpec = SettingsKindSpec {
@@ -2888,6 +2889,7 @@ mod extension_proof {
         owned_allow: None,
         adoption_note: "",
         legacy_upgrade_warning: "",
+        superseded_matchers: &[],
         permission_rules: crate::harness::setup::no_permission_rules,
     };
 
