@@ -814,6 +814,15 @@ fn is_hermes_launcher(record: &crate::ports::ProcessRecord) -> bool {
 }
 
 impl HarnessAdapter for HermesAdapter {
+    /// A hook-registered binding's `pre_llm_call` injects the pending items on the woken turn, so
+    /// its native wake is content-free; other evidence keeps the `inbox` marker.
+    fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str {
+        if provenance == Some(crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE) {
+            crate::notification::policy::WAKE_UP
+        } else {
+            crate::notification::policy::MARKER
+        }
+    }
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         Some(&HermesCanary)
     }

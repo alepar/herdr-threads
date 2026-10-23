@@ -67,6 +67,19 @@ pub const CONTRACT: HarnessContract = HarnessContract {
                 f("agent_type", Str, false),
             ],
         },
+        // The turn start: a woken or prompted turn gets its pending items before the model
+        // runs, so the native wake prompt carries no content.
+        EventContract {
+            event: "UserPromptSubmit",
+            class: EventClass::Tool,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("prompt", Str, false),
+                f("agent_id", Str, false),
+                f("agent_type", Str, false),
+            ],
+        },
         EventContract {
             event: "SubagentStart",
             class: EventClass::Lifecycle,
@@ -409,6 +422,8 @@ fn parse_hooks_2_1_283(
             field(&value, "tool_use_id")?.ok_or(ContextError::Invalid)?;
             (name, EventKind::Tool)
         }
+        // A turn start checks in like a tool boundary (Current mode).
+        "UserPromptSubmit" => (name, EventKind::Tool),
         "SubagentStart" | "SubagentStop" if agent_id.is_some() => (name, EventKind::Startup),
         "SessionStart" => {
             let source = field(&value, "source")?.ok_or(ContextError::Invalid)?;
@@ -802,6 +817,10 @@ pub fn declared_hook_groups(command: &str) -> Vec<(&'static str, Value)> {
             json!({"matcher":"Bash","hooks":[{"type":"command","command":event_command(command, "PreToolUse"),"timeout":10}]}),
         ),
         (
+            "UserPromptSubmit",
+            json!({"hooks":[{"type":"command","command":event_command(command, "UserPromptSubmit"),"timeout":10}]}),
+        ),
+        (
             "SubagentStart",
             json!({"hooks":[{"type":"command","command":event_command(command, "SubagentStart"),"timeout":10}]}),
         ),
@@ -845,12 +864,12 @@ pub const fn settings_kind() -> super::setup::SettingsKind {
 /// Help and report fragments of the Claude adapter (verbatim from the core text they replace).
 static TEXT: AdapterText = AdapterText {
     setup_scope: "  claude  $CLAUDE_CONFIG_DIR/settings.json (default ~/.claude/settings.json), created as `{}`
-          when absent. Adds the hook groups (SessionStart, Bash PreToolUse) beside the hooks
-          already there. Agent permissions are a separate component, written only with
-          consent: allow rules for `herdr-threads` and `ht`, and ask rules for `human`, `setup`,
-          `unsetup`, `doctor fix` and `internal installer-integrations`. An older installation's
-          owned `Bash(herdr-threads *)` rule is kept and gains the ask rules. A rule you already
-          have is left as yours.",
+          when absent. Adds the hook groups (SessionStart, Bash PreToolUse, UserPromptSubmit)
+          beside the hooks already there. Agent permissions are a separate component, written
+          only with consent: allow rules for `herdr-threads` and `ht`, and ask rules for
+          `human`, `setup`, `unsetup`, `doctor fix` and `internal installer-integrations`. An
+          older installation's owned `Bash(herdr-threads *)` rule is kept and gains the ask
+          rules. A rule you already have is left as yours.",
     setup_foreground: "Claude: merge `disableAgentView: true` into
 user settings.json, or set its env.CLAUDE_CODE_DISABLE_AGENT_VIEW to `1`.",
     setup_notes: "Claude prompt suggestions: Claude shows a dim prompt suggestion in its input box after every
@@ -935,6 +954,15 @@ impl super::adapter::CanaryStrategy for ClaudeCanary {
     }
 }
 impl HarnessAdapter for ClaudeAdapter {
+    /// A hook-registered binding's turn start injects the pending items (`UserPromptSubmit`), so
+    /// its native wake is content-free; other evidence keeps the `inbox` marker.
+    fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str {
+        if provenance == Some(crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE) {
+            crate::notification::policy::WAKE_UP
+        } else {
+            crate::notification::policy::MARKER
+        }
+    }
     fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
         Some(self)
     }
@@ -1100,6 +1128,11 @@ impl HarnessAdapter for ClaudeAdapter {
                     always_send: false,
                 },
                 super::evidence::EvidenceEvent {
+                    native_event: "UserPromptSubmit",
+                    milestone: None,
+                    always_send: false,
+                },
+                super::evidence::EvidenceEvent {
                     native_event: "SubagentStop",
                     milestone: None,
                     always_send: false,
@@ -1167,7 +1200,16 @@ impl HarnessAdapter for ClaudeAdapter {
             }
         }
         parse_event_for_contract(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
-            .map(|event| DecodedEvent::from_native_payload(event, &input.bytes))
+            .map(|event| {
+                let turn_start = event.source == "UserPromptSubmit";
+                let mut decoded = DecodedEvent::from_native_payload(event, &input.bytes);
+                // A Current check-in decodes as a tool boundary; the output names the event
+                // that ran.
+                if turn_start {
+                    decoded.metadata.native_event = "UserPromptSubmit".into();
+                }
+                decoded
+            })
             .map_err(DecodeFailure::Native)
     }
     fn encode(

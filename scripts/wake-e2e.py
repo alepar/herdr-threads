@@ -103,6 +103,11 @@ MIXED_DEADLINE_S = 90
 # Codex with its hooks feature off, so every session binds by a plain CLI call only (as Main's seat did on
 # 2026-10-13): no lifecycle claim ranks the group, the same-process rule leaves all three connected.
 SIDE_CASES = ("side-nudge/group", "side-draft/group")
+# Opt-in Claude case, never in the default matrix: `cl-hooks`, a Claude installed by `setup claude --hooks-only` (no
+# delivery mod), gets an ACK request while idle at T=0. Herdr must type the content-free `herdr-threads: wake up`, the
+# UserPromptSubmit hook must put the message into the woken turn, and its ACK must come from that hook's display
+# (`via: hook_context`), not from an `inbox` round trip. cl-hooks runs nothing else.
+HOOKS_CASES = ("hooks-wake/group",)
 SIDE_FORKS = 2
 SIDE_DEADLINE_S = 45
 SIDE_DRAFT = "draft-kept-by-wake-e2e"
@@ -147,6 +152,25 @@ def side_nudge_passed(setup_ok, woke, checks):
         return first
     sibling_woke = checks.get("sibling_wake_s") is not None or bool(checks.get("sibling_woke_before_watch"))
     return first and sibling_woke and bool(checks.get("sibling_delivered"))
+
+
+# A Claude tool-call line (`⏺ Bash(...)`, `⏺ Read(...)`).
+TOOL_CALL = re.compile(r"^\s*⏺\s*[A-Z][A-Za-z]*\(")
+
+
+def wake_turn(screen, mid):
+    """The lines of the turn whose last `RECEIVED` line names `mid`, from its prompt (the wake text, prompt glyph
+    stripped) through that line, when the prompt was a wake; else []."""
+    lines = screen.splitlines()
+    end = max((i for i, l in enumerate(lines) if "RECEIVED" in l and mid in l), default=None)
+    if end is None:
+        return []
+    for i in range(end, -1, -1):
+        text = lines[i].lstrip()
+        if text.startswith(("›", "❯")):
+            prompt = text.lstrip("›❯ ").strip()
+            return [prompt] + [l.strip() for l in lines[i + 1:end + 1]] if is_wake_line(prompt) else []
+    return []
 
 
 def received_in_wake_turn(screen, mid):
@@ -451,6 +475,7 @@ class Run:
         self.state = self.root / "state"
         self.home = self.root / "home"
         self.claude_cfg = self.root / "claude-config"
+        self.claude_hooks_cfg = self.root / "claude-hooks-config"  # cl-hooks: `setup claude --hooks-only`
         self.codex_home = self.root / "codex-home"
         self.bindir = self.root / "bin"
         self.bin = str(Path(args.bin).resolve())
@@ -604,6 +629,14 @@ class Run:
         self.ht("daemon", "health", tag="daemon:health", timeout=20)
         setup_env = {"HOME": str(self.home), "CLAUDE_CONFIG_DIR": str(self.claude_cfg), "CODEX_HOME": str(self.codex_home),
                      "CLAUDE_CODE_PLUGIN_DIRS": ""}  # never copy a real installed mod into the scratch layer
+        # cl-hooks first: `--hooks-only` removes the mod files of the shared state dir, which the full Claude setup
+        # below then reinstalls for the other Claude recipients.
+        if getattr(self, "hooks_cases", False):
+            self.claude_hooks_cfg.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.ht("setup", "claude", "--hooks-only", "--with-permissions", tag="setup:claude:hooks-only",
+                    env=dict(setup_env, CLAUDE_CONFIG_DIR=str(self.claude_hooks_cfg)), timeout=120)
+            if self.linux:
+                seed_claude_config(self.claude_hooks_cfg, self.cwd, os.environ)
         for h in self.args.harness:
             self.ht("setup", h, "--with-permissions", env=setup_env, tag=f"setup:{h}", timeout=120)
         if self.linux and "claude" in self.args.harness:
@@ -659,23 +692,32 @@ class Run:
         if "codex" in self.args.harness and getattr(self, "side_cases", False):
             pane = self.tab("co-plain")
             self.recipients.append(Recipient(self, "co-plain", "codex", 0, pane, self.seat(pane), plain=True))
+        if "claude" in self.args.harness and getattr(self, "hooks_cases", False):
+            pane = self.tab("cl-hooks")
+            self.recipients.append(Recipient(self, "cl-hooks", "claude", 0, pane, self.seat(pane), hooks_only=True))
         print(f"  workspace {self.workspace}: coordinators {self.coord_seats()}; " +
               ", ".join(f"{r.name}={r.seat}" for r in self.recipients), flush=True)
 
-    def launch_line(self, harness, plain=False):
+    def launch_line(self, harness, plain=False, hooks_only=False):
         q = shlex.quote
         path = f"PATH={q(str(self.bindir))}:\"$PATH\""
         if harness == "claude":
+            # hooks_only: the `setup claude --hooks-only` installation, and no mod directory at all.
+            scratch = self.claude_hooks_cfg if hooks_only else self.claude_cfg
             argv = ["command", "claude", "--setting-sources", "project,local", "--settings",
-                    str(self.claude_cfg / "settings.json"), "--permission-mode", self.args.claude_permission_mode]
+                    str(scratch / "settings.json"), "--permission-mode", self.args.claude_permission_mode]
             if self.args.claude_model:
                 argv += ["--model", self.args.claude_model]
             if self.linux:  # the scratch config setup installed into; the credential comes from the environment
-                cfg = f"CLAUDE_CONFIG_DIR={q(str(self.claude_cfg))} "
+                cfg = f"CLAUDE_CONFIG_DIR={q(str(scratch))} "
             else:
                 cfg = f"CLAUDE_CONFIG_DIR={q(self.args.claude_config_dir)} " if self.args.claude_config_dir else ""
-            cfg += f"CLAUDE_CODE_PLUGIN_DIRS={q(str(self.state / 'claude-mod' / 'herdr-threads'))} "
-            return f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_PID; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
+            unset = "CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_PID"
+            if hooks_only:
+                unset += " CLAUDE_CODE_PLUGIN_DIRS"
+            else:
+                cfg += f"CLAUDE_CODE_PLUGIN_DIRS={q(str(self.state / 'claude-mod' / 'herdr-threads'))} "
+            return f"unset {unset}; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
         # shell_snapshot off: the snapshot replays the interactive ~/.zshrc PATH, which can put an installed
         # herdr-threads ahead of the candidate's bin dir (ht-l16); a non-interactive login shell keeps it first.
         argv = ["command", "codex", "--no-daemon", "-C", self.cwd, "--dangerously-bypass-hook-trust",
@@ -1004,9 +1046,10 @@ def wake_count(text):
 
 
 class Recipient:
-    def __init__(self, run, name, harness, threshold, pane, seat, plain=False):
+    def __init__(self, run, name, harness, threshold, pane, seat, plain=False, hooks_only=False):
         self.run, self.name, self.harness, self.threshold, self.pane, self.seat = run, name, harness, threshold, pane, seat
         self.plain = plain  # Codex hooks feature off: every binding is a plain CLI call
+        self.hooks_only = hooks_only  # Claude without the delivery mod: hooks and the native wake only
         self.last_wake = 0.0
         self.group = None
         self.pair = None
@@ -1104,7 +1147,12 @@ class Recipient:
         # serial on both platforms.
         serial = self.harness == "codex"
         with (self.run.codex_start if serial else contextlib.nullcontext()):
-            line = self.run.launch_line(self.harness, plain=True) if self.plain else self.run.launch_line(self.harness)
+            if self.plain:
+                line = self.run.launch_line(self.harness, plain=True)
+            elif self.hooks_only:
+                line = self.run.launch_line(self.harness, hooks_only=True)
+            else:
+                line = self.run.launch_line(self.harness)
             self.run.herdr("pane", "run", self.pane, line)
             end = time.time() + 180
             while time.time() < end:
@@ -1183,11 +1231,14 @@ class Recipient:
         return False, "absent"
 
     def receipt(self, mid):
+        return self.receipt_row(mid).get("effective_status")
+
+    def receipt_row(self, mid):
         data = self.coord("delivery", "recipients", mid)
         for row in walk(data):
             if row.get("seat") == self.seat and "effective_status" in row:
-                return row["effective_status"]
-        return None
+                return row
+        return {}
 
     def watch_quiet(self, seconds):
         """Seconds until the idle recipient started a turn on its own, or None if it stayed idle throughout."""
@@ -1490,6 +1541,8 @@ class Recipient:
     def case(self, case):
         if case.startswith("side-"):
             return self.side_case(case)
+        if case.startswith("hooks-"):
+            return self.hooks_case(case)
         if case.startswith("busy-"):
             return self.busy_case(case)
         action, channel = case.split("/")
@@ -1573,6 +1626,51 @@ class Recipient:
                "expect_wake": expect, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
                "checks": checks, "ref": ref, "result": "PASS" if passed else "FAIL", "utc": utc()}
         self.run.record(row)
+
+    def hooks_case(self, case):
+        """HOOKS_CASES: an idle hooks-only Claude at T=0 gets an ACK request (p0). It must wake within the window on
+        the content-free native prompt, and the woken turn must show the message with its ACK settled by the
+        UserPromptSubmit hook's display (`via: hook_context`): the turn made no `inbox` round trip."""
+        gap = SPACING_S - (time.time() - self.last_wake)
+        if gap > 0:
+            self.run.stopping.wait(gap)
+        self.wait_idle()
+        mid = self.send("ack", f"{case} {self.run.run_id}", direct=False)
+        t_wake = self.watch_for_wake(WAKE_WINDOW_S)
+        woke = t_wake is not None
+        if woke:
+            self.last_wake = time.time()
+        self.wait_idle()
+        self.settled()
+        checks = {"delivered": self.on_screen(mid)}
+        turn = wake_turn(self.screen(1000), mid)
+        checks["content_free_wake"] = bool(turn) and turn[0] == "herdr-threads: wake up"
+        checks["received_in_wake_turn"] = bool(turn)
+        # The UserPromptSubmit hook must have delivered it: a Bash call (the skill's bare-wake `inbox`, whose
+        # PreToolUse page would also settle the ACK via hook_context) before RECEIVED fails the case.
+        checks["tool_call_before_received"] = any(TOOL_CALL.search(line) for line in turn[1:])
+        row = {}
+        for _ in range(20):
+            row = self.receipt_row(mid)
+            if row.get("effective_status") == "acknowledged":
+                break
+            time.sleep(1)
+        checks["ack"] = row.get("effective_status")
+        try:
+            via = json.loads((row.get("ack_provenance") or {}).get("native_observation") or "{}").get("via")
+        except ValueError:
+            via = None
+        checks["ack_via"] = via
+        checks["trailing_wake_s"] = self.watch_quiet(max(0.0, SPACING_S - (time.time() - self.last_wake)))
+        if checks["trailing_wake_s"] is not None:
+            self.wait_idle()
+            self.settled()
+        passed = (woke and checks["delivered"] and checks["content_free_wake"]
+                  and not checks["tool_call_before_received"] and checks["received_in_wake_turn"] and checks["ack"] == "acknowledged"
+                  and via == "hook_context" and checks["trailing_wake_s"] is None)
+        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
+                         "expect_wake": True, "woke": woke, "t_wake_s": t_wake, "checks": checks,
+                         "ref": {"message": mid}, "result": "PASS" if passed else "FAIL", "utc": utc()})
 
     def mixed_order_case(self, case):
         """p5, p1, p0 and an ACK request with a deadline go to an idle recipient; each page it is woken for must list
@@ -1723,9 +1821,12 @@ Run.record = record
 
 
 def applies(recipient, case):
-    """Side cases run on Codex recipients only; the plain-hooks Codex runs nothing else."""
+    """Side cases run on Codex recipients only; the plain-hooks Codex runs nothing else. Hooks cases run only on the
+    hooks-only Claude, which runs nothing else."""
     if case in SIDE_CASES:
         return recipient.harness == "codex"
+    if getattr(recipient, "hooks_only", False) or case in HOOKS_CASES:
+        return getattr(recipient, "hooks_only", False) and case in HOOKS_CASES
     return not getattr(recipient, "plain", False)
 
 
@@ -1787,7 +1888,8 @@ def main(argv=None):
     ap.add_argument("--bin", default=str(REPO / "bin" / "herdr-threads"), help="herdr-threads binary under test")
     ap.add_argument("--harness", default="claude,codex", help="comma-separated: claude,codex")
     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
-                    + "; opt-in, Codex only: " + ", ".join(SIDE_CASES))
+                    + "; opt-in, Codex only: " + ", ".join(SIDE_CASES)
+                    + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES))
     ap.add_argument("--evidence-dir", help="default: sibling ht-wake-evidence.<run id>")
     ap.add_argument("--keep", action="store_true", help="leave the workspace and daemon running for inspection")
     ap.add_argument("--claude-model", help="passed as --model (default: the account default)")
@@ -1821,7 +1923,8 @@ def main(argv=None):
                   "(--approve-for-me); pass --codex-args to choose explicitly", file=sys.stderr)
     args.harness = [h for h in args.harness.split(",") if h]
     cases = [c for c in args.cases.split(",") if c]
-    unknown = [c for c in cases if c not in CASES + SIDE_CASES] + [h for h in args.harness if h not in ("claude", "codex")]
+    unknown = ([c for c in cases if c not in CASES + SIDE_CASES + HOOKS_CASES]
+               + [h for h in args.harness if h not in ("claude", "codex")])
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")
     def terminate(signum, _frame):
@@ -1834,6 +1937,7 @@ def main(argv=None):
     saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
     signal.signal(signal.SIGTERM, terminate)  # SIGTERM takes the same cleanup path as Ctrl-C
     run.side_cases = any(c in SIDE_CASES for c in cases)
+    run.hooks_cases = any(c in HOOKS_CASES for c in cases)
     rc = EXIT_FAIL
     try:
         run.preflight()

@@ -1585,7 +1585,12 @@ fn interrupted_drift_upgrade_resumes_or_removes_from_each_real_boundary() {
             let after: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
             let original: Value = serde_json::from_slice(original).unwrap();
             let mut expected = original.clone();
-            for event in ["PreToolUse", "SubagentStart", "SubagentStop"] {
+            for event in [
+                "PreToolUse",
+                "UserPromptSubmit",
+                "SubagentStart",
+                "SubagentStop",
+            ] {
                 if after["hooks"][event] == json!([]) {
                     expected["hooks"][event] = json!([]);
                 }
@@ -1864,8 +1869,9 @@ fn prepared_install_under_earlier_declaration_converges_on_resetup() {
             json!({"other":1,"later":"keep","hooks":{
                 "SessionStart":[expected[0].group.clone()],
                 "PreToolUse":[expected[1].group.clone()],
-                "SubagentStart":[expected[2].group.clone()],
-                "SubagentStop":[expected[3].group.clone()]
+                "UserPromptSubmit":[expected[2].group.clone()],
+                "SubagentStart":[expected[3].group.clone()],
+                "SubagentStop":[expected[4].group.clone()]
             }}),
             "{name}"
         );
@@ -2114,7 +2120,8 @@ fn changed_file_drift_upgrade_keeps_empty_owned_event_arrays_the_recorded_base_h
                 "PreToolUse",
                 "SessionStart",
                 "SubagentStart",
-                "SubagentStop"
+                "SubagentStop",
+                "UserPromptSubmit"
             ],
             "{name}"
         );
@@ -2428,6 +2435,7 @@ fn claude_setup_registers_event_per_group() {
         [
             "SessionStart",
             "PreToolUse",
+            "UserPromptSubmit",
             "SubagentStart",
             "SubagentStop"
         ]

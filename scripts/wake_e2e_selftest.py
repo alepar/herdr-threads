@@ -2228,6 +2228,39 @@ class SideCases(unittest.TestCase):
                          {("cl-nudge", "send-nudge/group"), ("co-nudge", "send-nudge/group"),
                           ("co-nudge", "side-nudge/group"), ("co-plain", "side-nudge/group")})
 
+    def test_hooks_cases_run_on_the_hooks_only_claude_only_and_it_runs_nothing_else(self):
+        r = lambda name, harness, hooks_only=False: SimpleNamespace(name=name, harness=harness, plain=False,
+                                                                     hooks_only=hooks_only)
+        run = SimpleNamespace(recipients=[r("cl-t0", "claude"), r("co-t0", "codex"),
+                                          r("cl-hooks", "claude", True)])
+        self.assertEqual(W.expected_rows(run, ["send-p0/group", "hooks-wake/group"]),
+                         {("cl-t0", "send-p0/group"), ("co-t0", "send-p0/group"),
+                          ("cl-hooks", "hooks-wake/group")})
+
+    def test_wake_turn_is_the_woken_turn_and_sees_a_tool_call_before_received(self):
+        hook = ("❯ herdr-threads: wake up\n⏺ RECEIVED [herdr-threads] message mA in tT from sX [p0]: x\n")
+        self.assertEqual(W.wake_turn(hook, "mA")[0], "herdr-threads: wake up")
+        self.assertFalse(any(W.TOOL_CALL.search(l) for l in W.wake_turn(hook, "mA")[1:]))
+        pulled = ("❯ herdr-threads: wake up\n⏺ Bash(herdr-threads inbox)\n  ⎿ message mA ...\n"
+                  "⏺ RECEIVED [herdr-threads] message mA in tT from sX [p0]: x\n")
+        self.assertTrue(any(W.TOOL_CALL.search(l) for l in W.wake_turn(pulled, "mA")[1:]))
+        # an earlier wake turn (setup) never stands in for the measured one
+        later = "❯ herdr-threads: wake up\n⏺ ok\n❯ hello\n⏺ RECEIVED [herdr-threads] message mA x\n"
+        self.assertEqual(W.wake_turn(later, "mA"), [])
+        self.assertEqual(W.wake_turn(hook, "mOTHER"), [])
+
+    def test_hooks_only_claude_launch_loads_its_own_installation_and_no_mod(self):
+        for mode in W.HARNESS_MODES:
+            run = launch_run(parsed_args(["--harness-mode", mode]))
+            run.claude_hooks_cfg = run.claude_cfg.parent / "claude-hooks-config"
+            hooks = run.launch_line("claude", hooks_only=True)
+            self.assertIn(str(run.claude_hooks_cfg / "settings.json"), hooks, mode)
+            self.assertNotIn("CLAUDE_CODE_PLUGIN_DIRS=", hooks, mode)
+            self.assertIn("CLAUDE_CODE_PLUGIN_DIRS;", hooks, mode)  # unset, never inherited from the server
+            full = run.launch_line("claude")
+            self.assertIn("CLAUDE_CODE_PLUGIN_DIRS=", full, mode)
+            self.assertNotIn(str(run.claude_hooks_cfg), full, mode)
+
     def test_side_nudge_wakes_main_after_a_sibling_displayed_the_p0(self):
         """ht-yha.62: once the side binding displayed the sibling p0, main must still be woken and shown it."""
         first = {"delivered": True}

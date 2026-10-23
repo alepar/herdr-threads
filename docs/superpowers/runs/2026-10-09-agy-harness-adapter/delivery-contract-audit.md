@@ -83,6 +83,16 @@ Enforcement:
   tool boundary and answered under its own `hookEventName`; a quiet turn coalesces to empty output. A Codex that never
   fires it degrades to tool-boundary delivery. Pinned by `tests/hook_entrypoint.rs`
   `lazy_mail_reaches_the_next_codex_user_prompt_hook`.
+- Claude hooks-only turn start (ht-turnstart, 2026-10-23): without the mod, a woken Claude got the `inbox` marker and
+  spent a Bash `inbox` round trip, because no turn-start hook injected. The Claude adapter now also owns
+  `UserPromptSubmit` (`src/harness/claude.rs` `declared_hook_groups`), the same Current check-in as the Bash boundary
+  (a live mod channel still keeps the page out), and a `cooperative_top_level` binding's native wake is the
+  content-free `herdr-threads: wake up`, as for Codex (rules 3 and 6; rules 1, 2, 4 and 5 unchanged: wake eligibility,
+  idle and draft guards are untouched). Hermes' native wake text follows the same rule (`pre_llm_call` injects). An
+  install that predates the hook keeps working: the stale-install finding asks for `setup claude`, and a bare wake
+  falls back to the skill's one `inbox` call. Pinned by `tests/hook_entrypoint.rs`
+  `lazy_mail_reaches_the_next_claude_user_prompt_hook`, `tests/scheduler/wake_text.rs`
+  `hook_evidence_keeps_recovery_and_parked_inbox_hints` and the opt-in wake e2e case `hooks-wake/group`.
 - Hook-pull seats (agy) carry bodies only through `DeliveryPull` (`src/service/delivery_pull.rs`), completed by
   `DeliveryConfirm`. The decision is `src/delivery/routing.rs:35` `hook_inbox_page`: a hook-pull seat's standard hook
   reads no page at either boundary, and the daemon enforces it

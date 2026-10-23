@@ -87,7 +87,7 @@ What we do today:
 - Pending items are presented in (priority asc, deadline asc with none last, created asc) order: the inbox v2 min-head merge `src/store/queries/inbox_v2/order.rs` (deadline-bearing p0 items through the bounded `DEADLINE_WINDOW` in `deadline_window.rs`), and `batch_order` in `src/delivery/assemble.rs` plus its mirror in `register.js` for watch batches.
 - Wakes happen only for idle sessions; a generating or tool-running session is served in-turn, never nudged (rule 4).
 - Bodies are delivered in-turn instead of `herdr-threads inbox` round trips (rule 3): `integrations/claude/mod/hooks/register.js` (tool.call context), `src/harness/agy/delivery.rs` (PreInvocation systemMessage).
-- Hook-registered Codex bindings (`cooperative_top_level`) and agy use content-free native wake prompts (`herdr-threads: wake up`; R18); the Claude mod submits `wake up` under Claude Code's plugin attribution; Codex bindings with only plain CLI or managed-launch evidence, recovery hints and parked items retain the `inbox` hint: `src/notification/policy.rs` (`WAKE_UP`), `DeliveryPolicy::wake_text` in `src/harness/adapter.rs`, the mod's idle path in `register.js`.
+- Hook-registered (`cooperative_top_level`) Codex, Claude (hooks-only stack) and Hermes bindings and agy use content-free native wake prompts (`herdr-threads: wake up`; R18), because their turn-start hook (`UserPromptSubmit`, `pre_llm_call`, `PreInvocation`) injects the pending items; the Claude mod submits `wake up` under Claude Code's plugin attribution; bindings with only plain CLI or managed-launch evidence, recovery hints and parked items retain the `inbox` hint: `src/notification/policy.rs` (`WAKE_UP`), `DeliveryPolicy::wake_text` and `HarnessAdapter::binding_wake_text` in `src/harness/adapter.rs`, the mod's idle path in `register.js`.
 - Per-message framing is one header line (`[herdr-threads] <kind> <id> in <thread> from <sender>[ markers]:`; the markers include `[pN]` for every priority except the default 1, 4 bytes) plus an indented body, no static explanation per delivery (R17): `src/delivery/frame.rs`, `register.js` `frame()`.
 - The skill explains framing, markers and the trust stance once per session; the full skill loads on demand, not in every check-in: `integrations/skill/SKILL.md` (Trust model), `src/harness/agy/plugin.rs` (agy plugin `skills/`).
 - Long bodies are truncated at 8 KiB with a one-line `body <id>` continuation; pages are bounded (32 items / 64 KiB): `src/protocol/watch.rs` (`WATCH_BODY_LIMIT_BYTES`), `src/delivery/page.rs`, `src/service/delivery_pull.rs` (`PAGE_MAX_BLOCKS`, `PAGE_MAX_TEXT_BYTES`).
@@ -109,6 +109,7 @@ python3 scripts/wake-e2e.py                   # both harnesses, all cases (~10 m
 #   --codex-auth-home DIR   Codex home whose auth.json is copied (default $CODEX_HOME or ~/.codex)
 #   --harness claude|codex  --cases CASE,...  --keep (leave the workspace up)  --evidence-dir DIR
 #   opt-in, not in the default matrix: --harness codex --cases side-nudge/group,side-draft/group
+#   opt-in, not in the default matrix: --harness claude --cases hooks-wake/group (hooks-only Claude, no mod)
 scripts/wake-e2e-herdr 0.9.5 [ARGS...]        # the same run inside a private server of one listed Herdr release
 ```
 

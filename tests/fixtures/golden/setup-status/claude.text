@@ -6,6 +6,7 @@ commands.PreToolUse: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<ro
 commands.SessionStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'SessionStart'
 commands.SubagentStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'SubagentStart'
 commands.SubagentStop: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'SubagentStop'
+commands.UserPromptSubmit: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'UserPromptSubmit'
 current_command_matches: true
 foreground.CLAUDE_CODE_DISABLE_AGENT_VIEW: none
 foreground.advice: Set disableAgentView to true in Claude's user settings.json (merge {"disableAgentView":true} into the existing object), or set env.CLAUDE_CODE_DISABLE_AGENT_VIEW to "1" there. This disables agent view, --bg/background and on-demand daemon mode. CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is a different setting and does not replace this choice.

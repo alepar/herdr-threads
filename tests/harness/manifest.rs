@@ -1321,7 +1321,7 @@ fn runtime_reason() -> FetchReason {
             .unwrap(),
         domain: "native_payload".into(),
         origin: crate::harness::evidence::EvidenceOrigin::NativePayload,
-        contract_id: "f527a509c67d2f32".into(),
+        contract_id: "fc1e3270060b4b87".into(),
     }
 }
 // Catches an empty rich source being used in place of the actual cached exact domain.
@@ -1584,6 +1584,6 @@ fn runtime_manifest_retains_current_and_historical_contracts_in_same_domain() {
         m.runtime_row("claude", &identity, &descriptor)
             .unwrap()
             .contract_id,
-        "f527a509c67d2f32"
+        "fc1e3270060b4b87"
     );
 }

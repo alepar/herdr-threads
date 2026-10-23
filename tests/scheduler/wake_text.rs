@@ -465,41 +465,51 @@ fn the_inbox_marker_follows_the_composer_bindings_parking() {
     );
 }
 
-/// Kills: hook evidence overriding recovery or parked-item inbox fallbacks.
+/// Kills: hook evidence overriding recovery or parked-item inbox fallbacks, a content-free wake for
+/// a plain CLI binding (no turn-start hook to inject), and a harness whose turn-start hook injects
+/// (Codex `UserPromptSubmit`, Claude `UserPromptSubmit`, Hermes `pre_llm_call`) left on the marker.
 #[test]
-fn codex_hook_evidence_keeps_recovery_and_parked_inbox_hints() {
-    let authority = || ReservedWakeAuthority::Cooperative {
-        terminal: TerminalId::new("terminal"),
-        incarnation: "incarnation".into(),
-        binding_generation: Some(1),
-        harness: Some("codex".into()),
-        targets: vec![crate::ports::WakeTarget {
-            binding: BindingId::new("binding"),
-            harness: "codex".into(),
-            provenance: "cooperative_top_level".into(),
-            fingerprint_pid: Some(111),
-        }],
-    };
-    for (parked, expected) in [(false, WAKE_UP), (true, MARKER)] {
+fn hook_evidence_keeps_recovery_and_parked_inbox_hints() {
+    for harness in ["codex", "claude", "hermes"] {
+        let authority = |provenance: &str| ReservedWakeAuthority::Cooperative {
+            terminal: TerminalId::new("terminal"),
+            incarnation: "incarnation".into(),
+            binding_generation: Some(1),
+            harness: Some(harness.into()),
+            targets: vec![crate::ports::WakeTarget {
+                binding: BindingId::new("binding"),
+                harness: harness.into(),
+                provenance: provenance.into(),
+                fingerprint_pid: Some(111),
+            }],
+        };
+        for (provenance, parked, expected) in [
+            ("cooperative_top_level", false, WAKE_UP),
+            ("cooperative_top_level", true, MARKER),
+            ("cooperative_env_session", false, MARKER),
+        ] {
+            assert_eq!(
+                typed_through(
+                    authority(provenance),
+                    observation(false),
+                    None,
+                    FakeOutlook { parked, only: None },
+                    vec![111]
+                ),
+                [expected],
+                "{harness} {provenance} parked={parked}"
+            );
+        }
         assert_eq!(
-            typed_through(
-                authority(),
-                observation(false),
-                None,
-                FakeOutlook { parked, only: None },
-                vec![111]
+            typed_for(
+                ReservedWakeAuthority::RecoveryHint {
+                    execution: ExecutionId::new("execution"),
+                },
+                true,
+                Some(harness)
             ),
-            [expected]
+            [MARKER],
+            "{harness}"
         );
     }
-    assert_eq!(
-        typed_for(
-            ReservedWakeAuthority::RecoveryHint {
-                execution: ExecutionId::new("execution"),
-            },
-            true,
-            Some("codex")
-        ),
-        [MARKER]
-    );
 }

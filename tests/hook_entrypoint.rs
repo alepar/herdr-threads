@@ -2906,6 +2906,69 @@ fn lazy_mail_reaches_the_next_codex_user_prompt_hook() {
     );
 }
 
+// ht-turnstart: a hooks-only Claude turn start (a typed prompt or the content-free native wake)
+// checks in like a tool boundary, so the pending row rides the UserPromptSubmit hook answered
+// under its own event name, and the model needs no `inbox` round trip; a quiet turn stays empty.
+// Kills: a Claude adapter with no turn-start hook (the item waited for the next Bash call) and
+// an answer named for PreToolUse (Claude rejects a mismatched hookEventName).
+#[test]
+fn lazy_mail_reaches_the_next_claude_user_prompt_hook() {
+    let fx = Fixture::start();
+    fx.register("w9:p1", "sess-1");
+    fx.register("w9:p2", "peer-sess");
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "claude-turn"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    let claude_turn = |prompt: &str| {
+        let hook = fx.hook(
+            "w9:p1",
+            &Payload::bare("UserPromptSubmit")
+                .with("session_id", "sess-1".into())
+                .with("transcript_path", "/tmp/t.jsonl".into())
+                .with("cwd", "/tmp".into())
+                .with("permission_mode", "default".into())
+                .with("prompt", prompt.into())
+                .bytes(),
+        );
+        assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+        assert!(hook.stderr.is_empty(), "{}", hook.stderr);
+        hook
+    };
+    let quiet = claude_turn("hello");
+    assert!(
+        quiet.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&quiet.stdout)
+    );
+    let displayed = || {
+        fx.count("SELECT count(*) FROM lazy_recipients WHERE seat_id='seat' AND state='displayed'")
+    };
+    for (n, prompt) in [(1, herdr_threads::notification::policy::WAKE_UP), (2, "hi")] {
+        let body = format!("claude turn body {n}");
+        let id = data(fx.cooperative("peer", "w9:p2", &["send", &thread, "--body", &body]));
+        let delivered = claude_turn(prompt);
+        assert_eq!(
+            delivered.context()["hookSpecificOutput"]["hookEventName"],
+            "UserPromptSubmit"
+        );
+        let context = context_of(&delivered);
+        assert!(context.contains(INBOX_HEADER), "{context}");
+        assert!(context.contains(&body), "{context}");
+        assert!(context.contains(&id), "{context}");
+        assert_eq!(displayed(), n);
+    }
+    let repeat = claude_turn("again");
+    assert!(
+        repeat.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&repeat.stdout)
+    );
+}
+
 // Retained from fix2 (root adoption, wave-1 fix1 item a): more than 100
 // instance threads, so the check-in inbox page (100 scanned threads) is
 // truncated; a new invitation, then a new require-ack message, in thread 106

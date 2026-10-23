@@ -711,8 +711,9 @@ model open work, and summary closure never changes receipt state or installs glo
 **A5. Who may do what.**
 
 Delivery and authority gates read the binding's role, liveness and harness, never its observation provenance. Wake **text** may use the reached
-bindings' canonical provenance as cooperative hook-registration evidence: Codex uses the
-content-free prompt only when every possible composer recipient is `cooperative_top_level`.
+bindings' canonical provenance as cooperative hook-registration evidence: Codex, Claude (the
+hooks-only stack, whose `UserPromptSubmit` hook injects at turn start) and Hermes (`pre_llm_call`)
+use the content-free prompt only when every possible composer recipient is `cooperative_top_level`.
 A final canonical target/evidence comparison restores the inbox hint if bindings changed
 after reservation (without invalidating the wake). Plain CLI and managed-launch bindings
 retain the inbox hint, as do missing evidence,
@@ -1126,7 +1127,7 @@ cooperative claim that the row entered the model's context through the mod (`coo
 by the request; the daemon stores only the row's `displayed` progress and no per-row source. Like every lazy completion it is presentation bookkeeping: no ACK actor,
 adoption or proof of consumption.
 
-A standard native hook (top-level SessionStart, Bash PreToolUse, Codex UserPromptSubmit or qualified turn;
+A standard native hook (top-level SessionStart, Bash PreToolUse, Codex or Claude UserPromptSubmit or qualified turn;
 never a subagent event) is a third completion source. Only a digest the hook explicitly requests (`AttentionDigestQuery.lazy`)
 reports pending lazy rows and a lazy token key, so a lazy arrival moves the hook's change marker; the wake
 frontier, wake candidates, prompts, pokes, deadlines and warnings never read delivery rows, except that a seat

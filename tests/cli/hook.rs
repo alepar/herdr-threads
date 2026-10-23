@@ -175,7 +175,7 @@ fn installed_argv_and_hook_parser_are_one_contract() {
                 settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
                 registered("PreToolUse")
             );
-            assert_eq!(plan.owned.len(), 4);
+            assert_eq!(plan.owned.len(), 5);
             plan.owned
         } else {
             let codex = crate::harness::codex::setup::plan_codex_for_version(
@@ -344,15 +344,14 @@ fn native_event_entrypoints_validate_registered_pairs_and_keep_legacy_syntax() {
         assert_eq!(dedicated, legacy);
         assert_eq!(dedicated.event.as_deref(), Some(event));
     }
-    // Cross-harness pairs: `UserPromptSubmit` is a declared Codex event Claude does not
-    // declare (Claude declares SubagentStart/SubagentStop since 86bb0385).
+    // Cross-harness pairs: `SessionEnd` is a declared Codex event Claude does not declare.
     for words in [
-        vec!["ht", "hook-event", "claude", "UserPromptSubmit"],
+        vec!["ht", "hook-event", "claude", "SessionEnd"],
         vec!["ht", "hook-event", "codex", "Bogus"],
         vec!["ht", "hook-event", "human", "SessionStart"],
         vec!["ht", "hook-event", "claude"],
         vec!["ht", "hook-event", "claude", "--event", "SessionStart"],
-        vec!["ht", "hook", "claude", "--event", "UserPromptSubmit"],
+        vec!["ht", "hook", "claude", "--event", "SessionEnd"],
     ] {
         assert!(
             matches!(parse_hook_argv(&os(&words)), Some(Err(_))),
@@ -432,7 +431,7 @@ fn native_event_commands_preserve_exact_route_and_executable_spelling() {
         shlex::split(&native_event_command(&quoted).unwrap()).unwrap(),
         quoted
     );
-    assert!(installed_event_argv("ht", None, None, Harness::Claude, "UserPromptSubmit").is_err());
+    assert!(installed_event_argv("ht", None, None, Harness::Claude, "SessionEnd").is_err());
     assert!(native_event_command(&installed_argv("ht", None, None, Harness::Claude)).is_err());
     assert!(
         native_event_command(&[
