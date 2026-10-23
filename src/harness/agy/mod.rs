@@ -89,6 +89,7 @@ impl HarnessAdapter for AgyAdapter {
             extra_guidance: AGY_COMMAND_GUIDANCE,
             empty_lifecycle: true,
             session_start_hint: true,
+            guidance_every_turn: false,
         }
     }
     fn contracts(&self) -> &'static [ContractDescriptor] {

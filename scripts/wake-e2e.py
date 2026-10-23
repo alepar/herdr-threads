@@ -2232,6 +2232,41 @@ def summary(run, cases):
     return bool(expected) and not missing and not extra and passed == len(rows)
 
 
+def codex_hook_guidance(run):
+    """ht-static-once: Codex records each hook context as a developer message in its rollout (one file per session,
+    without the hook event name). The fixed instruction is session-scoped: a session carries it at most once per
+    session start plus once per compaction, never on its delivering tool or turn hooks. Counting per rollout keeps the
+    judgement independent of which optional lines a near-budget start trimmed. None without a Codex recipient or
+    rollout; else the counts and whether they pass."""
+    sessions = getattr(run, "codex_home", Path("/nonexistent")) / "sessions"
+    if not any(getattr(r, "harness", None) == "codex" for r in getattr(run, "recipients", [])) or not sessions.is_dir():
+        return None
+    marker, rows = "Before using threads, run herdr-threads skill", "herdr-threads inbox rows"
+    counts = {"rollouts": 0, "guidance_contexts": 0, "delivering_hooks": 0, "over_allowance": 0}
+    for path in sorted(sessions.rglob("*.jsonl")):
+        guidance, compactions = 0, 0
+        for line in path.read_text(errors="replace").splitlines():
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(item, dict):
+                continue
+            payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+            if "compact" in f"{item.get('type')} {payload.get('type')}".lower():
+                compactions += 1
+            if item.get("type") != "response_item" or payload.get("role") != "developer":
+                continue
+            text = "".join(c.get("text", "") for c in payload.get("content") or [] if isinstance(c, dict))
+            guidance += marker in text
+            counts["delivering_hooks"] += rows in text
+        counts["rollouts"] += 1
+        counts["guidance_contexts"] += guidance
+        counts["over_allowance"] += max(0, guidance - 1 - compactions)
+    counts["pass"] = counts["guidance_contexts"] > 0 and counts["over_allowance"] == 0
+    return counts
+
+
 def write_evidence(run, rc):
     """report.md / results.json, written after cleanup so they carry its outcome and the final exit code."""
     facts = dict(getattr(run, "facts", {}), finished_utc=utc(), exit_code=rc)
@@ -2244,13 +2279,14 @@ def write_evidence(run, rc):
     with run.lock:  # workers left running after an interrupt may still append
         results = list(run.results)
     doc = {"facts": facts, "completeness": getattr(run, "completeness", None), "cleanup": run.cleanup_report,
-           "results": results}
+           "codex_hook_guidance": getattr(run, "hook_guidance", None), "results": results}
     # One redaction pass over each whole document: facts (versions, flags) and cleanup diagnostics carry helper text.
     secrets = getattr(run, "secrets", None)
     secrets = secret_values(os.environ) if secrets is None else secrets
     (run.ev / "results.json").write_text(redact(json.dumps(doc, indent=2), secrets))
     (run.ev / "report.md").write_text(redact(
         f"# wake e2e {run.run_id}\n\n```json\n{json.dumps(facts, indent=2)}\n```\n\n{getattr(run, 'table', '')}\n\n"
+        f"codex hook guidance: `{json.dumps(getattr(run, 'hook_guidance', None))}`\n\n"
         f"cleanup: `{json.dumps(run.cleanup_report)}`\n\nexit code: {rc}\n", secrets))
 
 
@@ -2326,6 +2362,11 @@ def main(argv=None):
                 if w.is_alive():
                     w.join(timeout=0.5)
         rc = EXIT_OK if summary(run, cases) else EXIT_FAIL
+        run.hook_guidance = codex_hook_guidance(run)
+        if run.hook_guidance is not None:
+            print(f"codex hook guidance (static once per session): {json.dumps(run.hook_guidance)}", flush=True)
+            if not run.hook_guidance["pass"]:
+                rc = EXIT_FAIL
     except Refused as e:
         print(redact(f"wake-e2e: refused: {e}", secret_values(os.environ)), file=sys.stderr)
         rc = EXIT_REFUSED

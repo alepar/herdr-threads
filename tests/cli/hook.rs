@@ -744,8 +744,11 @@ fn native_hooks_use_one_mailbox_read_for_multiple_pending_threads() {
                     "{harness:?}: {fixed}"
                 );
             }
-            assert!(
+            // The instruction is session-scoped on Codex; Claude, which
+            // decodes no compact re-entry, keeps it on every hook.
+            assert_eq!(
                 fixed.contains("finish your turn; hooks notify"),
+                ev.kind != EventKind::Tool || harness == Harness::Claude,
                 "{harness:?}: {fixed}"
             );
             assert!(fixed.contains("accept thread-a"), "{harness:?}: {fixed}");
@@ -1566,7 +1569,9 @@ fn skill_hint_is_sessionstart_only() {
 
 // Kills: relying only on the optional SessionStart hint, which is dropped
 // when an offer exceeds the budget. The load instruction must remain fixed
-// for both supported harnesses, without loading the guide on every tool call.
+// on lifecycle check-ins for both supported harnesses; a Codex tool call
+// carries none of it (token rule (a)), a Claude one keeps it (no compact
+// re-entry decodes for Claude).
 #[test]
 fn communication_guide_instruction_survives_offer_trimming() {
     for harness in [Harness::Claude, Harness::Codex] {
@@ -1578,16 +1583,77 @@ fn communication_guide_instruction_survives_offer_trimming() {
             let bytes = encode_native(&ev, text.as_bytes(), &[], None, None, None, None);
             let context = additional_context(&bytes);
             assert!(context.len() <= MAX_CONTEXT);
-            assert!(
+            let lifecycle = ev.kind != EventKind::Tool || harness == Harness::Claude;
+            assert_eq!(
                 context.contains("Before using threads, run herdr-threads skill"),
+                lifecycle,
                 "{harness:?}: {context}"
             );
-            assert!(context.contains("unless its guide is in context"));
+            assert_eq!(
+                context.contains("unless its guide is in context"),
+                lifecycle
+            );
         }
     }
     let child = render_context(Role::Subagent, &[], true).unwrap();
     assert!(!child.contains("Before using threads"));
     assert!(child.contains("forbidden to subagents"));
+}
+
+// ht-static-once: compaction drops what the session start said and tool
+// boundaries no longer repeat it, so a compact re-entry restates the fixed
+// section even when the check-in has nothing new (empty text), for Claude too
+// (whose empty startups stay silent). Hermes compacts in place without a
+// lifecycle event and keeps the section on every turn. Kills: a compact
+// re-entry that stays silent, and dropping Hermes' per-turn section.
+#[test]
+fn compact_restates_the_fixed_section_and_hermes_keeps_it_every_turn() {
+    let instruction = render_context(Role::TopLevel, &[], true).unwrap();
+    for harness in [Harness::Claude, Harness::Codex] {
+        let mut compact = event(CLAUDE_START);
+        compact.harness = harness;
+        compact.kind = EventKind::Compact;
+        let context =
+            additional_context(&encode_native(&compact, b"", &[], None, None, None, None));
+        assert!(context.starts_with(&instruction), "{harness:?}: {context}");
+        let mut tool = event(CLAUDE_TOOL);
+        tool.harness = harness;
+        assert!(encode_native(&tool, b"", &[], None, None, None, None).is_empty());
+    }
+    let registry = crate::harness::registry::builtins();
+    let hermes = registry
+        .by_id(registry.agent("hermes").unwrap())
+        .unwrap()
+        .output_policy();
+    let text = format!("{instruction}\nsmall offer\n");
+    let tool = event(CLAUDE_TOOL);
+    let every_turn = compose_context(
+        &tool,
+        &hermes,
+        false,
+        text.as_bytes(),
+        &[],
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(every_turn.starts_with(&instruction), "{every_turn}");
+    let once = compose_context(
+        &tool,
+        &OutputPolicy::default(),
+        false,
+        text.as_bytes(),
+        &[],
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(!once.contains(instruction.trim_end()), "{once}");
+    assert!(once.starts_with(PEER_DATA_NOTICE), "{once}");
 }
 
 // W6-R3: a missing digest (the best-effort query failed) still emits the D2
@@ -2054,6 +2120,39 @@ fn unavailable_daemon_is_reported_only_for_top_level_lifecycle() {
     assert!(
         context.starts_with("herdr-threads: check-in unavailable ("),
         "{context}"
+    );
+    // ht-static-once: a failed compact re-entry still restates the fixed
+    // section (tool hooks no longer do), followed by the report. Kills: a
+    // compact failure that drops the section for the rest of the session.
+    let codex = observe_harness_in(Harness::Codex, None, Duration::from_millis(100), None).unwrap();
+    let codex_args = HookArgs {
+        harness: Harness::Codex,
+        ..args(&root)
+    };
+    let compact = run_hook(
+        &codex_args,
+        &codex,
+        br#"{"hook_event_name":"SessionStart","session_id":"s","source":"compact"}"#,
+        &herdr(),
+        deadline,
+        clock(),
+        None,
+    );
+    let value: serde_json::Value = serde_json::from_slice(&compact.stdout).unwrap();
+    let text = value["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        text.starts_with(crate::harness::TOP_LEVEL_INSTRUCTION),
+        "{text}"
+    );
+    assert!(
+        text.contains(crate::harness::codex::CODEX_COMMAND_GUIDANCE),
+        "{text}"
+    );
+    assert!(
+        text.contains("herdr-threads: check-in unavailable ("),
+        "{text}"
     );
     // Kills: a diagnose command without --state-dir for a private state dir
     // the pane would not detect (pane agents do not inherit
@@ -4508,8 +4607,11 @@ mod continuity_gate {
         assert_eq!(failing.reads(), 1);
         let none = HotClient::answering(&[]);
         assert!(pane.call(&none).recovery_rows(&compact, &seat).is_none());
-        // A quiet event without recovery rows stays silent.
-        assert!(encode_native(&compact, b"", &[], None, None, None, None).is_empty());
+        // A quiet compact without recovery rows restates only the fixed
+        // section (ht-static-once): no recovery line.
+        let quiet = additional_context(&encode_native(&compact, b"", &[], None, None, None, None));
+        assert!(quiet.contains("Before using threads"), "{quiet}");
+        assert!(!quiet.contains("Context was reset"), "{quiet}");
     }
 }
 
@@ -4604,8 +4706,11 @@ fn codex_compact_emits_recovery_text_for_hot_threads() {
             serde_json::json!({"thread":"t-b","topic":"beta","hot":"pending_receipt"}),
         ]
     );
-    // Without a recovery block the same quiet event stays silent.
-    assert!(encode_native(&compact, b"", &[], None, None, None, None).is_empty());
+    // Without a recovery block the same quiet event restates only the fixed
+    // section (ht-static-once).
+    let quiet = additional_context(&encode_native(&compact, b"", &[], None, None, None, None));
+    assert!(!quiet.contains(&instruction), "{quiet}");
+    assert!(quiet.contains("Before using threads"), "{quiet}");
 }
 
 // Kills: recovery text keyed on one harness or one kind only (Claude resume and

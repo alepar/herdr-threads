@@ -1695,6 +1695,7 @@ impl HarnessAdapter for CodexAdapter {
             extra_guidance: CODEX_COMMAND_GUIDANCE,
             empty_lifecycle: true,
             session_start_hint: true,
+            guidance_every_turn: false,
         }
     }
     fn decode(

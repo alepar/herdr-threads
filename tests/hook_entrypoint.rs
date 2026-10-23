@@ -2780,6 +2780,166 @@ fn lazy_mail_reaches_the_next_codex_tool_hook() {
     );
 }
 
+// ht-static-once (token rule (a)): the fixed instruction section (top-level
+// instruction, child restriction, Codex command guidance) is session-scoped.
+// SessionStart startup and compact carry it; a delivering PreToolUse or
+// UserPromptSubmit carries only the rows, so a body that did not fit beside
+// the fixed section now arrives whole. Kills: repeating the section on every
+// delivering check-in, and dropping it from the compact re-entry.
+#[test]
+fn codex_static_guidance_rides_lifecycle_check_ins_only() {
+    const INSTRUCTION: &str = "Before using threads, run herdr-threads skill";
+    const CHILD: &str = "Subagents may discover, read and summarize";
+    const GUIDANCE: &str = "Codex: run herdr-threads (ht) commands outside the sandbox";
+    let fx = Fixture::start();
+    fx.register("w9:p2", "peer-sess");
+    let started = fx.codex_hook(
+        "w9:p3",
+        &Payload::session_start("cx-sess", "startup")
+            .codex("t0")
+            .bytes(),
+    );
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let start = context_of(&started);
+    for fixed in [INSTRUCTION, CHILD, GUIDANCE] {
+        assert!(start.contains(fixed), "{fixed}: {start}");
+    }
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "codex-static"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
+    text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", &["accept", &thread]);
+    // About 3 KiB: whole beside the ready commands and digest, but not also
+    // beside the about 1.75 KB fixed section, under the 4 KiB bound.
+    let body = format!("static-once {}", "b".repeat(3000));
+    let id = data(fx.cooperative("peer", "w9:p2", &["send", &thread, "--body", &body]));
+    let tool = fx.codex_hook(
+        "w9:p3",
+        &Payload::pre_tool_use("cx-sess", "ls")
+            .codex("t1")
+            .with("tool_use_id", "call_1".into())
+            .bytes(),
+    );
+    assert_eq!(tool.code, Some(0), "{}", tool.stderr);
+    let context = context_of(&tool);
+    assert!(
+        context.len() <= herdr_threads::cli::hook::MAX_CONTEXT,
+        "{}",
+        context.len()
+    );
+    assert!(
+        context.contains(&id) && context.contains(&body),
+        "{context}"
+    );
+    for fixed in [INSTRUCTION, CHILD, GUIDANCE] {
+        assert!(!context.contains(fixed), "{fixed}: {context}");
+    }
+    let id = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "static-once turn"],
+    ));
+    let turn = fx.codex_hook(
+        "w9:p3",
+        &Payload::bare("UserPromptSubmit")
+            .with("session_id", "cx-sess".into())
+            .with("transcript_path", serde_json::Value::Null)
+            .with("cwd", "/tmp".into())
+            .with("model", "gpt-5".into())
+            .with("permission_mode", "default".into())
+            .with("prompt", "hello".into())
+            .with("turn_id", "t2".into())
+            .bytes(),
+    );
+    assert_eq!(turn.code, Some(0), "{}", turn.stderr);
+    let context = context_of(&turn);
+    assert!(context.contains(&id), "{context}");
+    for fixed in [INSTRUCTION, CHILD, GUIDANCE] {
+        assert!(!context.contains(fixed), "{fixed}: {context}");
+    }
+    // Compaction drops what the session start said: the compact re-entry
+    // brings the section back even with nothing new pending.
+    let compacted = fx.codex_hook(
+        "w9:p3",
+        &Payload::session_start("cx-sess", "compact")
+            .codex("t3")
+            .bytes(),
+    );
+    assert_eq!(compacted.code, Some(0), "{}", compacted.stderr);
+    let context = context_of(&compacted);
+    for fixed in [INSTRUCTION, CHILD, GUIDANCE] {
+        assert!(context.contains(fixed), "{fixed}: {context}");
+    }
+    // The restated section is presentation only: the next tool call is quiet.
+    let after = fx.codex_hook(
+        "w9:p3",
+        &Payload::pre_tool_use("cx-sess", "ls")
+            .codex("t4")
+            .with("tool_use_id", "call_4".into())
+            .bytes(),
+    );
+    assert_eq!(after.code, Some(0), "{}", after.stderr);
+    assert!(
+        after.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&after.stdout)
+    );
+}
+
+// ht-static-once for Claude hooks: the production Claude contract decodes no
+// SessionStart compact, so no re-entry could restate the fixed section after a
+// compaction; Claude keeps it on every delivering Bash PreToolUse. Kills:
+// applying the Codex once-per-session rule to Claude.
+#[test]
+fn claude_static_guidance_rides_every_delivering_hook() {
+    const INSTRUCTION: &str = "Before using threads, run herdr-threads skill";
+    const CHILD: &str = "Subagents may discover, read and summarize";
+    let fx = Fixture::start();
+    fx.register("w9:p2", "peer-sess");
+    let started = fx.hook("w9:p1", &start("cl-sess"));
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let context = context_of(&started);
+    assert!(
+        context.contains(INSTRUCTION) && context.contains(CHILD),
+        "{context}"
+    );
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "claude-static"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    text_cli(
+        &fx,
+        "claude",
+        "cl-sess",
+        "seat",
+        "w9:p1",
+        &["accept", &thread],
+    );
+    let id = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "claude static-once"],
+    ));
+    let tool = fx.hook("w9:p1", &tool("cl-sess"));
+    assert_eq!(tool.code, Some(0), "{}", tool.stderr);
+    let context = context_of(&tool);
+    assert!(context.contains(&id), "{context}");
+    assert!(
+        context.contains(INSTRUCTION) && context.contains(CHILD),
+        "{context}"
+    );
+    // The compact source still fails decoding (and stays silent).
+    let compact = fx.hook(
+        "w9:p1",
+        &Payload::session_start("cl-sess", "compact").bytes(),
+    );
+    assert!(compact.stdout.is_empty());
+}
+
 /// One in-process CLI run as `harness` session `session` of `seat` in `pane`, in text output
 /// (no `--json`); returns stdout.
 fn text_cli(

@@ -1185,6 +1185,10 @@ impl HarnessAdapter for ClaudeAdapter {
             extra_guidance: "",
             empty_lifecycle: false,
             session_start_hint: true,
+            // The production contract decodes no SessionStart compact
+            // (`parse_event_for_contract`), so a compacted session would never
+            // get the fixed section back: keep it on every delivering hook.
+            guidance_every_turn: true,
         }
     }
     fn decode(

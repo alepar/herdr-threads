@@ -1978,6 +1978,10 @@ pub struct OutputPolicy {
     pub extra_guidance: &'static str,
     pub empty_lifecycle: bool,
     pub session_start_hint: bool,
+    /// Repeat the fixed instruction section on every turn, not only on
+    /// lifecycle check-ins: the harness can compact a session's first turn
+    /// away without a lifecycle event.
+    pub guidance_every_turn: bool,
 }
 impl DecodedEvent {
     pub fn from_native(event: super::LifecycleEvent) -> Self {

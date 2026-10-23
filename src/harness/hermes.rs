@@ -863,6 +863,15 @@ impl HarnessAdapter for HermesAdapter {
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         super::context::QualifiedTurnPolicy::StartupAttach
     }
+    /// Hermes compacts in place by default (`compression.in_place`): the session id
+    /// stays, no lifecycle check-in follows, and the protected head that held the
+    /// first turn's guidance decays after the first compaction.
+    fn output_policy(&self) -> super::adapter::OutputPolicy {
+        super::adapter::OutputPolicy {
+            guidance_every_turn: true,
+            ..Default::default()
+        }
+    }
     fn enrollment_policy(&self) -> EnrollmentPolicy {
         EnrollmentPolicy::WitnessedStartAndUnownedTurn
     }

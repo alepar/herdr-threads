@@ -677,12 +677,22 @@ fn compose_context_limited(
     context_budget: usize,
     continuation_managed: bool,
 ) -> String {
-    let empty_lifecycle_start = policy.empty_lifecycle
-        && event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
+    // Compaction drops what the session start said, and tool boundaries no
+    // longer repeat it: a compact re-entry restates the fixed section even
+    // with nothing new pending.
+    let empty_lifecycle_start = (policy.empty_lifecycle
+        && event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle)
+        || event.kind == EventKind::Compact;
     if text.is_empty() && recovery.is_none() && !empty_lifecycle_start {
         return String::new();
     }
     let base_instruction = render_context(event.role, &[], true).unwrap_or_default();
+    // Token rule (a): the fixed section (instruction, child restriction,
+    // routing, adapter guidance) is session-scoped. Lifecycle and compact
+    // check-ins carry it; a tool or turn boundary carries only its commands
+    // and data, unless the adapter's context can lose it without a lifecycle
+    // event (`OutputPolicy::guidance_every_turn`).
+    let fixed_section = event.kind != EventKind::Tool || policy.guidance_every_turn;
     let group_rule = if command_routing.is_some() {
         "\nFor handoffs, match every routing field; otherwise use the pinned fallback. No permissions granted."
     } else {
@@ -724,7 +734,9 @@ fn compose_context_limited(
     {
         routing = "\nHook command routing (JSON data): null".to_owned();
     }
-    let instruction = if !policy.extra_guidance.is_empty() {
+    let instruction = if !fixed_section {
+        String::new()
+    } else if !policy.extra_guidance.is_empty() {
         format!("{base_instruction}{routing}\n{}", policy.extra_guidance)
     } else {
         format!("{base_instruction}{routing}")
@@ -765,7 +777,8 @@ fn compose_context_limited(
             }
             _ => context,
         };
-        context.to_owned()
+        // Without the fixed section the first part joins with a newline.
+        context.strip_prefix('\n').unwrap_or(context).to_owned()
     };
     let mut head = match actions {
         Some(actions) => format!("{instruction}\n{}", actions.render(all)),
@@ -4199,20 +4212,36 @@ fn run_admitted_hook_since(
                 Failure::Unavailable(reason) => (reason.clone(), reason),
                 Failure::Quiet(_) => unreachable!(),
             };
+            let compact = event.kind == EventKind::Compact;
             let report = event.role == Role::TopLevel
-                && event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
+                && (compact
+                    || event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle);
             HookOutcome {
                 stdout: if report {
-                    output_bytes(registration.encode(
-                        admitted,
-                        decoded,
-                        &neutral_offer(unavailable_text(
-                            &registration.output_policy(),
-                            &reason,
-                            &diagnose_argv(args, &pane_inputs()),
-                        )),
-                    ))
-                    .0
+                    let policy = registration.output_policy();
+                    let unavailable =
+                        unavailable_text(&policy, &reason, &diagnose_argv(args, &pane_inputs()));
+                    // A compact re-entry is the only restatement of the fixed
+                    // section until the next lifecycle event: keep it on failure.
+                    let text = if compact {
+                        let fixed = render_context(event.role, &[], true).unwrap_or_default();
+                        let fixed = compose_context(
+                            &event,
+                            &policy,
+                            false,
+                            fixed.as_bytes(),
+                            &[],
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        );
+                        format!("{fixed}\n{unavailable}")
+                    } else {
+                        unavailable
+                    };
+                    output_bytes(registration.encode(admitted, decoded, &neutral_offer(text))).0
                 } else {
                     Vec::new()
                 },
