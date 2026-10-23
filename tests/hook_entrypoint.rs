@@ -3037,6 +3037,18 @@ fn codex_stop_continues_once_for_a_waking_item_and_stays_quiet_otherwise() {
         "w9:p2",
         &["send", &thread, "-p", "0", "--body", "codex stop p0 body"],
     ));
+    // An earlier wake reservation already covers the p0's frontier (the idle wake would not fire
+    // for it again): the ending turn still serves it in place. Kills `has_actionable_work` as
+    // the turn-end predicate.
+    rusqlite::Connection::open(&fx.db)
+        .unwrap()
+        .execute(
+            "INSERT INTO wake_work(seat_id,reason_bits,retry_step,minimum_delay_ms,effective_delay_ms,last_lazy_ordinal) \
+             SELECT 'cx',0,0,30000,30000,MAX(decision_seq) FROM lazy_recipients WHERE seat_id='cx' \
+             ON CONFLICT(seat_id) DO UPDATE SET last_lazy_ordinal=excluded.last_lazy_ordinal",
+            [],
+        )
+        .unwrap();
     let continued = codex_stop(3, false);
     let decision: serde_json::Value = serde_json::from_slice(&continued.stdout).unwrap();
     assert_eq!(decision["decision"], "block", "{decision}");

@@ -1131,7 +1131,13 @@ A standard native hook (top-level SessionStart, Bash PreToolUse, Codex or Claude
 Stop or qualified turn; never a subagent event) is a third completion source. A Codex Stop presents only when the daemon
 answers `TurnEndDue` true for the session's claim (an item that would wake the seat idle; decided against the
 canonical view, A2), at most once per turn (`stop_hook_active`), and its context reaches the model as the turn's
-continuation prompt (a user-role hook prompt), not as developer context; the claim is the same. Only a digest the hook explicitly requests (`AttentionDigestQuery.lazy`)
+continuation prompt (a user-role hook prompt), not as developer context; the claim is the same. Accepted limit: the
+completion follows the hook's flushed stdout, as for every hook, so if Codex discards the block (another matching
+Stop hook returns `continue: false`, which overrides every block), the shown rows are completed and their in-turn
+offer withholds the idle wake although the model never saw them. Once Codex accepts the block it records the prompt
+in the conversation before sampling again, so a later interrupt leaves it for the next turn. Confirming the
+continuation from the rollout at the next hook would close this; until then a co-installed Stop hook that ends turns
+with `continue: false` defeats end-of-turn delivery for the items it shadows. Only a digest the hook explicitly requests (`AttentionDigestQuery.lazy`)
 reports pending lazy rows and a lazy token key, so a lazy arrival moves the hook's change marker; the wake
 frontier, wake candidates, prompts, pokes, deadlines and warnings never read delivery rows, except that a seat
 is woken for its own rows its nudge threshold admits (wake eligibility only, above). When the hook
