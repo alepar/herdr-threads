@@ -108,6 +108,14 @@ SIDE_CASES = ("side-nudge/group", "side-draft/group")
 # UserPromptSubmit hook must put the message into the woken turn, and its ACK must come from that hook's display
 # (`via: hook_context`), not from an `inbox` round trip. cl-hooks runs nothing else.
 HOOKS_CASES = ("hooks-wake/group",)
+# Opt-in Codex case (ht-end-of-turn), never in the default matrix: the p0 is sent while the turn's only tool is held, so
+# it arrives after the last tool boundary. The turn's Stop hook must continue it with the page as the continuation
+# prompt (a `<hook_prompt>` in the rollout naming the message), with no wake typed during or after the turn.
+EOT_CASES = ("eot-send-p0/group",)
+EOT_PROMPT = ("End-of-turn test {tag}: run the shell command `{hold}` and no other command, then print EOT-DONE and end "
+              "your turn. If herdr-threads items reach you after that, handle them exactly as your standing "
+              "instructions say without running any command, and print EOT-DONE again.")
+EOT_DONE_LINE = re.compile(r"^[^\w\n]*EOT-DONE[^\w\n]*$", re.M)
 SIDE_FORKS = 2
 SIDE_DEADLINE_S = 45
 SIDE_DRAFT = "draft-kept-by-wake-e2e"
@@ -1020,18 +1028,19 @@ class BusyBarrier:
             raise RuntimeError("busy tool exited before publication completed")
 
 
-def busy_turn_split(text, anchor):
+def busy_turn_split(text, anchor, done=BUSY_DONE_LINE, prompt_end_text=BUSY_PROMPT_END, last=False):
     """Split the screen at the busy turn's native boundaries: (in_turn, after_turn, end_seen). `in_turn` runs from
-    the busy prompt `anchor` to the agent's BUSY-DONE line, `after_turn` is everything later; None if the prompt
-    is not on screen."""
+    the busy prompt `anchor` to the agent's done line (the last one with `last`: a continued turn prints it twice),
+    `after_turn` is everything later; None if the prompt is not on screen."""
     at = text.find(anchor)  # the prompt itself: an agent echoing the tag later must not move it
     if at < 0:
         return None
     rest = text[at:]
-    prompt_end = rest.find(BUSY_PROMPT_END)
-    end = BUSY_DONE_LINE.search(rest, prompt_end + len(BUSY_PROMPT_END) if prompt_end >= 0 else 0)
-    if end is None:
+    prompt_end = rest.find(prompt_end_text)
+    ends = list(done.finditer(rest, prompt_end + len(prompt_end_text) if prompt_end >= 0 else 0))
+    if not ends:
         return rest, "", False
+    end = ends[-1] if last else ends[0]
     return rest[:end.end()], rest[end.end():], True
 
 
@@ -1330,6 +1339,62 @@ class Recipient:
                          "hello_sent": False, "checks": checks, "ref": ref,
                          "result": "PASS" if passed else "FAIL", "utc": utc()})
 
+    # ---------- end-of-turn case (ht-end-of-turn) ----------
+    def rollout_hook_prompts(self):
+        """Every `<hook_prompt>` text in the run's scratch Codex rollouts (the Stop continuation's record)."""
+        found = []
+        for path in sorted((self.run.codex_home / "sessions").rglob("*.jsonl")):
+            for line in path.read_text(errors="replace").splitlines():
+                if "<hook_prompt" in line:
+                    found.append(line)
+        return found
+
+    def eot_case(self, case):
+        gap = SPACING_S - (time.time() - self.last_wake)
+        if gap > 0:
+            self.run.stopping.wait(gap)  # spacing ends early when cleanup begins
+        self.wait_idle()
+        tag = f"{case} {self.run.run_id}"
+        with BusyBarrier(self.run.root) as hold:
+            self.run.herdr("agent", "prompt", self.pane, EOT_PROMPT.format(tag=tag, hold=hold.command()))
+            hold.wait_entered()
+            busy_at_send = self.status()
+            checks = {"busy_at_send": busy_at_send}
+            mid = self.send("p0", f"{case} {self.run.run_id}", direct=False)
+            hold.assert_held()
+        anchor = f"End-of-turn test {tag}"
+        split_at = lambda: busy_turn_split(self.screen(1000), anchor, EOT_DONE_LINE, "EOT-DONE and end", last=True)
+        end, idle_since = time.time() + TURN_TIMEOUT_MS / 1000, None
+        while time.time() < end:
+            idle_since = (idle_since or time.time()) if self.status() in IDLE else None
+            if idle_since and time.time() - idle_since > BUSY_END_GRACE_S:
+                break
+            time.sleep(0.5)
+        checks["self_started_turn_after_s"] = self.watch_quiet(BUSY_AFTER_S)
+        self.wait_idle()
+        split = split_at()
+        if split is None:
+            in_turn, after_turn, checks["turn_end_seen"] = "", "", "prompt not on screen"
+        else:
+            in_turn, after_turn, checks["turn_end_seen"] = split
+        checks["wake_prompts_in_turn"] = wake_count(in_turn)
+        checks["wake_prompts_after_turn"] = wake_count(after_turn)
+        prompts = self.rollout_hook_prompts()
+        checks["continuation_names_message"] = any(mid in p for p in prompts)
+        checks["hook_prompts"] = len(prompts)
+        checks["displayed"] = bool(self.displayed_by(self.binding_ids(), mid))
+        self.settled()
+        passed = (busy_at_send not in IDLE and checks["self_started_turn_after_s"] is None
+                  and checks["turn_end_seen"] is True
+                  and checks["wake_prompts_in_turn"] == 0 and checks["wake_prompts_after_turn"] == 0
+                  and checks["continuation_names_message"] is True and checks["displayed"] is True)
+        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
+                         "expect_wake": False,
+                         "woke": checks["self_started_turn_after_s"] is not None
+                         or checks["wake_prompts_in_turn"] != 0 or checks["wake_prompts_after_turn"] != 0,
+                         "t_wake_s": None, "hello_sent": False, "checks": checks, "ref": {"message": mid},
+                         "result": "PASS" if passed else "FAIL", "utc": utc()})
+
     # ---------- side cases (ht-327) ----------
     def store_rows(self, sql, args=()):
         """Read-only rows from the run's own daemon store (never a shared one)."""
@@ -1543,6 +1608,8 @@ class Recipient:
             return self.side_case(case)
         if case.startswith("hooks-"):
             return self.hooks_case(case)
+        if case.startswith("eot-"):
+            return self.eot_case(case)
         if case.startswith("busy-"):
             return self.busy_case(case)
         action, channel = case.split("/")
@@ -1822,11 +1889,13 @@ Run.record = record
 
 def applies(recipient, case):
     """Side cases run on Codex recipients only; the plain-hooks Codex runs nothing else. Hooks cases run only on the
-    hooks-only Claude, which runs nothing else."""
+    hooks-only Claude, which runs nothing else. End-of-turn cases run on hooked Codex recipients."""
     if case in SIDE_CASES:
         return recipient.harness == "codex"
     if getattr(recipient, "hooks_only", False) or case in HOOKS_CASES:
         return getattr(recipient, "hooks_only", False) and case in HOOKS_CASES
+    if case in EOT_CASES:
+        return recipient.harness == "codex" and not getattr(recipient, "plain", False)
     return not getattr(recipient, "plain", False)
 
 
@@ -1888,7 +1957,7 @@ def main(argv=None):
     ap.add_argument("--bin", default=str(REPO / "bin" / "herdr-threads"), help="herdr-threads binary under test")
     ap.add_argument("--harness", default="claude,codex", help="comma-separated: claude,codex")
     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
-                    + "; opt-in, Codex only: " + ", ".join(SIDE_CASES)
+                    + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES)
                     + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES))
     ap.add_argument("--evidence-dir", help="default: sibling ht-wake-evidence.<run id>")
     ap.add_argument("--keep", action="store_true", help="leave the workspace and daemon running for inspection")
@@ -1923,7 +1992,7 @@ def main(argv=None):
                   "(--approve-for-me); pass --codex-args to choose explicitly", file=sys.stderr)
     args.harness = [h for h in args.harness.split(",") if h]
     cases = [c for c in args.cases.split(",") if c]
-    unknown = ([c for c in cases if c not in CASES + SIDE_CASES + HOOKS_CASES]
+    unknown = ([c for c in cases if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES]
                + [h for h in args.harness if h not in ("claude", "codex")])
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")
