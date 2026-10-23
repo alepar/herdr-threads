@@ -236,6 +236,13 @@ pub trait HarnessAdapter: Send + Sync + 'static {
         self.delivery_policy()
             .map_or(crate::notification::policy::MARKER, |p| p.wake_text())
     }
+    /// Whether a binding with this canonical provenance gets pending items in its turns from a
+    /// hook or channel. `false` leaves it only its own `inbox`, so its other text commands name
+    /// the pending count. Text only, like [`Self::binding_wake_text`]: never a delivery or
+    /// authority gate. Default: hooks deliver.
+    fn binding_turn_delivery(&self, _provenance: Option<&str>) -> bool {
+        true
+    }
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         None
     }

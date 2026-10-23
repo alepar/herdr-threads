@@ -1133,6 +1133,7 @@ pub fn read_digest_as<C: LocalClient + ?Sized>(
             seat: seat.clone(),
             lazy: client.supports_capability(LAZY_HOOK_DELIVERY, budget),
             claim: binding_digest_claim(client, claim, budget),
+            cli_hint: false,
         }),
         budget,
     )?;
@@ -1282,6 +1283,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
                 seat: claim.seat.clone(),
                 lazy: client.supports_capability(LAZY_HOOK_DELIVERY, budget),
                 claim: binding_digest_claim(client, Some(&claim), budget),
+                cli_hint: false,
             }),
             budget,
         ) {
@@ -1439,6 +1441,7 @@ pub fn subagent_boundary<C: LocalClient + ?Sized>(
                 seat: claim.seat.clone(),
                 lazy: client.supports_capability(LAZY_HOOK_DELIVERY, budget),
                 claim: Some(claim.clone()),
+                cli_hint: false,
             }),
             budget,
         )

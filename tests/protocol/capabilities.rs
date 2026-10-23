@@ -288,6 +288,7 @@ fn capability_constants_are_stable() {
     assert_eq!(IN_TURN_OFFER, "inbox.in_turn_offer_v1");
     assert_eq!(INBOX_THREAD_SCOPE, "inbox.thread_scope_v1");
     assert_eq!(INBOX_PUSHED_HOLD, "inbox.pushed_hold_v1");
+    assert_eq!(CLI_PENDING_HINT, "attention.cli_pending_hint_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -327,7 +328,8 @@ fn capability_constants_are_stable() {
             "send.priority_v1",
             "seat.nudge_threshold_v1",
             "direct.auto_join_v1",
-            "inbox.pushed_hold_v1"
+            "inbox.pushed_hold_v1",
+            "attention.cli_pending_hint_v1",
         ]
     );
 }
@@ -500,6 +502,7 @@ fn every_advertised_capability_has_a_handler() {
                         seat: crate::protocol::ids::SeatId::new("s"),
                         lazy: false,
                         claim: None,
+                        cli_hint: false,
                     },
                 );
                 assert!(command.validate().is_ok());
@@ -586,6 +589,7 @@ fn every_advertised_capability_has_a_handler() {
                         seat: crate::protocol::ids::SeatId::new("s"),
                         lazy: true,
                         claim: None,
+                        cli_hint: false,
                     },
                 );
                 assert!(command.validate().is_ok());
@@ -654,10 +658,35 @@ fn every_advertised_capability_has_a_handler() {
                             agent_id: Some(crate::protocol::ids::AgentId::new("ag")),
                             liveness: None,
                         }),
+                        cli_hint: false,
                     });
                 // A subagent may read its own digest: validation does not refuse the role.
                 assert!(command.validate().is_ok());
                 let json = serde_json::to_value(&command).unwrap();
+                assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
+            CLI_PENDING_HINT => {
+                // The opt-in flag is on the wire only when set, round-trips, and reaches the
+                // store's digest read (an unknown seat is NotFound). The decision itself:
+                // `pending_hint::hookless_caller_sees_pending_count_on_top_of_text_commands`.
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
+                let command =
+                    Command::AttentionDigest(crate::protocol::commands::AttentionDigestQuery {
+                        seat: crate::protocol::ids::SeatId::new("s"),
+                        lazy: false,
+                        claim: None,
+                        cli_hint: true,
+                    });
+                assert!(command.validate().is_ok());
+                let json = serde_json::to_value(&command).unwrap();
+                assert_eq!(json.to_string().matches("\"cli_hint\":true").count(), 1);
                 assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
                 assert_eq!(
                     handler
@@ -1031,6 +1060,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "seat.nudge_threshold_v1",
             "direct.auto_join_v1",
             "inbox.pushed_hold_v1",
+            "attention.cli_pending_hint_v1",
             "invitation.confirmation_v1"
         ]
     );

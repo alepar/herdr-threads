@@ -720,6 +720,13 @@ recovery hints and parked items. This selects text only; it grants no delivery o
 authority and changes no wake eligibility. Hook registration is an observed cooperative
 claim, not a guarantee that a later hook executes; the skill's bare-wake recovery remains
 available if hooks subsequently stop running.
+The CLI's pending-count line uses the same evidence the same way: the daemon reports, in the
+reading binding's attention digest, that a top-level binding has no turn delivery (the adapter's
+`binding_turn_delivery` for its harness and canonical provenance, and no live mod channel), and
+the CLI then prints one `[herdr-threads] N pending: herdr-threads inbox` line on top of that
+caller's other text commands. Text only: it reads a digest, displays no item, and settles,
+ACKs or advances nothing. A wrong reading costs one redundant line or a missing one; delivery
+and wake are unchanged.
 
 | Action | Who |
 |---|---|

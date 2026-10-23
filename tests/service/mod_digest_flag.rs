@@ -133,6 +133,7 @@ fn flags(service: &DomainService, seat: &str) -> (bool, bool) {
         seat: SeatId::new(seat),
         lazy: false,
         claim: None,
+        cli_hint: false,
     };
     let peer = || PeerIdentity::from_kernel(501);
     let plain = match service
@@ -206,6 +207,7 @@ fn claimed_flags(service: &DomainService, claim: CallerClaim) -> (bool, bool) {
         seat: SeatId::new("s"),
         lazy: false,
         claim: Some(claim.clone()),
+        cli_hint: false,
     };
     let peer = || PeerIdentity::from_kernel(501);
     let plain = match service

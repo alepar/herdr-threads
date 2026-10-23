@@ -127,6 +127,11 @@ mod pane_close_retirement;
 #[cfg(feature = "test-support")]
 #[path = "cli/peer_stdio.rs"]
 mod peer_stdio;
+/// ht-piggyback: the pending-count line on a hookless caller's text commands, on an isolated
+/// Herdr session.
+#[cfg(feature = "test-support")]
+#[path = "integration/pending_hint.rs"]
+mod pending_hint;
 /// ht-54r.25: session-binding flows the smoke configurations do not assert (settle once, one-shot).
 #[cfg(feature = "test-support")]
 #[path = "integration/session_bindings_e2e.rs"]

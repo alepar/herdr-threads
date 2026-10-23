@@ -200,6 +200,7 @@ impl LocalClient for Script {
                     lazy: None,
                     mail: None,
                     mod_channel_live: self.live,
+                    no_turn_delivery: false,
                 }))
             }
             Command::InboxBatchV2(query) => {

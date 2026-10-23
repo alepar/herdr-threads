@@ -499,6 +499,7 @@ fn digest_for(
             None => None,
         },
         mod_channel_live: false,
+        no_turn_delivery: false,
     };
     Ok(DigestRun {
         digest,

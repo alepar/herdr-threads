@@ -30,6 +30,7 @@ pub mod output;
 pub mod panes;
 pub mod peer;
 pub(crate) mod peer_locations;
+mod pending_hint;
 mod picker;
 pub mod retry;
 mod seat_resolution;
@@ -1343,11 +1344,10 @@ where
     match parsed.action {
         CliAction::Wire(command) => {
             let (_, client) = connection.get()?;
-            let read = command.clone();
-            let result = run_wire_result(command, &parsed.output, client, budget, writer)?;
-            if text_read
-                && let Some(message) = full_body_read(&read, &result)
-                && let Some(claim) = body_reader_claim(
+            // An agent's text read: its claim serves the pending-count line (ht-piggyback) and
+            // a full body read's cursor advance.
+            let reader = if text_read {
+                body_reader_claim(
                     &parsed.output,
                     caller_pane,
                     context,
@@ -1355,6 +1355,28 @@ where
                     connection,
                     clock.as_ref(),
                 )
+            } else {
+                None
+            };
+            if let Some(claim) = &reader
+                && !matches!(
+                    &command,
+                    Command::Inbox(_) | Command::InboxBatch(_) | Command::InboxBatchV2(_)
+                )
+            {
+                pending_hint::write(
+                    &parsed.output,
+                    parsed.presentation,
+                    claim,
+                    client,
+                    budget,
+                    writer,
+                );
+            }
+            let read = command.clone();
+            let result = run_wire_result(command, &parsed.output, client, budget, writer)?;
+            if let Some(message) = full_body_read(&read, &result)
+                && let Some(claim) = reader
             {
                 advance_over_body_read(client, clock.as_ref(), claim, message);
             }
@@ -3846,6 +3868,31 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             clock,
             writer,
             role,
+        );
+    }
+    // ht-piggyback: a caller without turn delivery sees its pending count on top of any text
+    // command but those that display mail or check in themselves.
+    if !matches!(
+        &parsed.action,
+        CliAction::Wire(Command::Inbox(_) | Command::InboxBatch(_) | Command::InboxBatchV2(_))
+            | CliAction::CachedCheckIn(_)
+            | CliAction::Mutation(
+                MutationSpec::CheckIn
+                    | MutationSpec::CheckInLifecycle { .. }
+                    | MutationSpec::Accept(_)
+                    | MutationSpec::AcceptRequired { .. }
+            )
+    ) && contexts.is_agent_caller()
+        && let Ok(Some(context)) = contexts.current()
+        && let Ok(claim) = role_claim(contexts, &context, role)
+    {
+        pending_hint::write(
+            &parsed.output,
+            parsed.presentation,
+            &claim,
+            client,
+            &|| cooperative_budget(clock),
+            writer,
         );
     }
     let text_read = text_display(&parsed);

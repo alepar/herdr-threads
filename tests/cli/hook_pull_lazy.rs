@@ -175,6 +175,7 @@ impl crate::ports::LocalService for Service {
                         ..none()
                     }),
                     mail: None,
+                    no_turn_delivery: false,
                 }))
             }
             Command::CheckIn(check_in) => {

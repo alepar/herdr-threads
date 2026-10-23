@@ -1577,6 +1577,7 @@ impl Mailbox {
             warnings: AttentionClass::default(),
             unavailability_open: false,
             mod_channel_live: self.mod_live.load(std::sync::atomic::Ordering::SeqCst),
+            no_turn_delivery: false,
         }
     }
     fn items(&self) -> Vec<crate::protocol::results::InboxItem> {

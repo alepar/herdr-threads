@@ -319,6 +319,12 @@ pub struct AttentionDigest {
     /// commands. Set by the domain service, never by the store; absent on the wire when false.
     #[serde(default, skip_serializing_if = "is_false")]
     pub mod_channel_live: bool,
+    /// The reading binding has neither turn hooks nor a live mod channel, so only its own
+    /// `inbox` (or `accept`) shows its mail; the CLI then names the pending count on its other
+    /// text output. Set only when the query asked (`AttentionDigestQuery.cli_hint`), decided by
+    /// the daemon from the binding's harness and canonical provenance; absent when false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub no_turn_delivery: bool,
 }
 
 impl AttentionDigest {

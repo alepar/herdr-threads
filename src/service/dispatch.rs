@@ -1497,6 +1497,7 @@ impl LocalService for DomainService {
                     CommandResult::AttentionDigest(digest)
                     | CommandResult::AttentionDigestDelivery { digest, .. } => {
                         digest.mod_channel_live = live;
+                        digest.no_turn_delivery &= !live;
                     }
                     _ => {}
                 }

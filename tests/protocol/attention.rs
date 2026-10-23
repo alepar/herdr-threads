@@ -104,6 +104,7 @@ fn digest_bounds_are_explicit() {
         unavailability_open: false,
         mod_channel_live: false,
         mail: None,
+        no_turn_delivery: false,
     };
     assert_eq!(digest.validate(), Ok(()));
     assert!(!digest.is_empty());
@@ -138,6 +139,7 @@ fn mod_channel_live_absent_when_false_and_round_trips_when_true() {
         unavailability_open: false,
         mod_channel_live: false,
         mail: None,
+        no_turn_delivery: false,
     };
     let quiet = serde_json::to_value(&digest).unwrap();
     assert!(quiet.get("mod_channel_live").is_none(), "{quiet}");
@@ -212,6 +214,7 @@ fn digest_lazy_class_is_bounded_and_counted() {
         lazy: None,
         mod_channel_live: false,
         mail: None,
+        no_turn_delivery: false,
     };
     assert!(digest.validate().is_ok() && digest.is_empty());
     assert!(!digest.summary().contains("messages"));

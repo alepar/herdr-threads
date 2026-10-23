@@ -591,6 +591,11 @@ pub struct AttentionDigestQuery {
     /// session has no binding yet reads the seat-level digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim: Option<CallerClaim>,
+    /// Also report whether the claimed binding lacks turn delivery
+    /// (`AttentionDigest.no_turn_delivery`). Sent only to a daemon advertising
+    /// `attention.cli_pending_hint_v1`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cli_hint: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -67,6 +67,10 @@ pub const BINDING_CURSORS: &str = "inbox.binding_cursors_v1";
 /// unread mail and notice frontier, and the digest token carries the binding (ht-54r.9).
 pub const BINDING_DIGEST: &str = "attention.binding_digest_v1";
 
+/// `AttentionDigestQuery.cli_hint`: the digest says whether the claimed binding lacks turn
+/// delivery (`AttentionDigest.no_turn_delivery`), so a text command can name its pending count.
+pub const CLI_PENDING_HINT: &str = "attention.cli_pending_hint_v1";
+
 /// In-turn presentation: `AdvanceCursors.in_turn` (and its `invitations`) records, for a
 /// top-level binding, the displayed messages whose receipt is still pending and the displayed
 /// pending invitations, and the wake candidate owes that occupant no idle wake for them
@@ -157,6 +161,7 @@ pub const ADVERTISED: &[&str] = &[
     SEAT_NUDGE_THRESHOLD_V1,
     DIRECT_AUTO_JOIN_V1,
     INBOX_PUSHED_HOLD,
+    CLI_PENDING_HINT,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

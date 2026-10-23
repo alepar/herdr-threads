@@ -302,6 +302,28 @@ fn registry_wake_text_is_the_marker_unless_the_policy_injects() {
     assert_eq!(registry.wake_text("agy"), WAKE_UP);
 }
 
+/// Kills: a pending-count line for a hook-served binding, or none for a plain-CLI Codex one
+/// (ht-piggyback); an unregistered harness has no hooks.
+#[test]
+fn registry_turn_delivery_follows_hook_registration_evidence() {
+    use crate::protocol::authority::{
+        COOPERATIVE_ENV_SESSION_PROVENANCE, COOPERATIVE_TOP_LEVEL_PROVENANCE,
+        MANAGED_LAUNCH_PROVENANCE,
+    };
+    let registry = builtins();
+    let codex = |provenance| registry.binding_turn_delivery("codex", Some(provenance));
+    assert!(codex(COOPERATIVE_TOP_LEVEL_PROVENANCE));
+    assert!(!codex(COOPERATIVE_ENV_SESSION_PROVENANCE));
+    assert!(!codex(MANAGED_LAUNCH_PROVENANCE));
+    for id in ["claude", "hermes", "agy"] {
+        assert!(
+            registry.binding_turn_delivery(id, Some(COOPERATIVE_ENV_SESSION_PROVENANCE)),
+            "{id}"
+        );
+    }
+    assert!(!registry.binding_turn_delivery("unknown", None));
+}
+
 /// Kills: a dispatcher that types the marker for every harness, or the minimal text for all.
 #[test]
 fn native_wake_types_the_bound_harness_wake_text() {

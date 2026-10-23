@@ -293,6 +293,7 @@ trait ErasedAdapter: Send + Sync {
     fn hook_step(&self) -> Option<&dyn HookStep>;
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy>;
     fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str;
+    fn binding_turn_delivery(&self, provenance: Option<&str>) -> bool;
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy>;
     fn text(&self) -> &'static AdapterText;
     fn default_config_root(&self, environment: &SetupEnvironment) -> Option<std::path::PathBuf>;
@@ -519,6 +520,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn binding_wake_text(&self, provenance: Option<&str>) -> &'static str {
         self.0.binding_wake_text(provenance)
+    }
+    fn binding_turn_delivery(&self, provenance: Option<&str>) -> bool {
+        self.0.binding_turn_delivery(provenance)
     }
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         self.0.canary_strategy()
@@ -1429,6 +1433,14 @@ impl Registry {
             .map_or(crate::notification::policy::MARKER, |r| {
                 r.adapter.binding_wake_text(provenance)
             })
+    }
+    /// Whether a binding of this harness with this canonical provenance gets turn delivery. An
+    /// unregistered harness has no hooks.
+    pub fn binding_turn_delivery(&self, harness_id: &str, provenance: Option<&str>) -> bool {
+        self.registrations
+            .iter()
+            .find(|r| r.metadata().id == harness_id)
+            .is_some_and(|r| r.adapter.binding_turn_delivery(provenance))
     }
     /// Ids of harnesses that deliver through a push channel (for the clap parser).
     pub fn push_channel_ids(&self) -> Vec<&'static str> {

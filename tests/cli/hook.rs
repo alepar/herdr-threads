@@ -677,6 +677,7 @@ fn digest(invitations: &[(&str, &str)], receipts: &[(&str, &str)]) -> AttentionD
         unavailability_open: false,
         mod_channel_live: false,
         mail: None,
+        no_turn_delivery: false,
     }
 }
 fn prefix(state: &str) -> Vec<String> {
@@ -5810,6 +5811,7 @@ mod mod_channel_live {
                         warnings: AttentionClass::default(),
                         unavailability_open: false,
                         mod_channel_live: self.live.load(Ordering::SeqCst),
+                        no_turn_delivery: false,
                     }))
                 }
                 Command::Directory(_) => Ok(CommandResult::Directory(empty())),
@@ -6361,6 +6363,7 @@ mod mod_channel_live {
                         warnings: AttentionClass::default(),
                         unavailability_open: false,
                         mod_channel_live: false,
+                        no_turn_delivery: false,
                     }))
                 }
                 Command::Directory(_) => Ok(CommandResult::Directory(empty())),

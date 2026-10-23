@@ -914,6 +914,7 @@ impl Fixture {
                 seat: herdr_threads::protocol::ids::SeatId::new(&self.b),
                 lazy: true,
                 claim: Some(self.world.seat_claim(&self.b)),
+                cli_hint: false,
             }))
             .unwrap()
             .to_string()

@@ -1397,6 +1397,11 @@ impl HarnessAdapter for CodexAdapter {
             crate::notification::policy::MARKER
         }
     }
+    /// Only a hook-registered binding (`cooperative_top_level`) has turn hooks; a plain-CLI or
+    /// managed-launch binding reads its mail through `inbox` alone.
+    fn binding_turn_delivery(&self, provenance: Option<&str>) -> bool {
+        provenance == Some(crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE)
+    }
 
     fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
         Some(self)

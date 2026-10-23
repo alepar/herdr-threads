@@ -430,6 +430,7 @@ fn attention_digest(
         .as_ref()
         .filter(|claim| claim.harness != crate::protocol::authority::Harness::Human);
     let mut binding = None;
+    let mut no_turn_delivery = false;
     let mut digest = match claim {
         None => super::attention::seat_digest(db, instance, &q.seat, &check)?.digest,
         Some(claim) => {
@@ -444,6 +445,9 @@ fn attention_digest(
                 Some(row) => {
                     let run =
                         super::attention::binding_digest(db, instance, &row.binding_id, &check)?;
+                    no_turn_delivery = q.cli_hint
+                        && !crate::harness::registry::builtins()
+                            .binding_turn_delivery(&row.harness, Some(&row.provenance));
                     binding = Some(row.binding_id);
                     run.digest
                 }
@@ -487,6 +491,7 @@ fn attention_digest(
             None => super::attention::add_lazy(db, instance, &mut digest)?,
         }
     }
+    digest.no_turn_delivery = no_turn_delivery;
     Ok((digest, binding))
 }
 

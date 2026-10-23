@@ -303,6 +303,7 @@ impl crate::ports::LocalService for Service {
                     mod_channel_live: false,
                     lazy: None,
                     mail: None,
+                    no_turn_delivery: false,
                 }))
             }
             Command::CheckIn(check_in) => {
