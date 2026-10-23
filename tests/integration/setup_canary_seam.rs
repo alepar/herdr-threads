@@ -319,7 +319,7 @@ fn consumer_rejects(harness: &'static str) {
             "PreToolUse matcher Edit",
             bytes.clone(),
             Config::Write(to_vec(&config)),
-            |r| r.contains("no owned PreToolUse(Bash)"),
+            |r| r.contains("no owned every-tool PreToolUse"),
         ));
     }
     for bad in [

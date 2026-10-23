@@ -281,8 +281,8 @@ fn versioned_codex_input_normalizes_native_fields_and_rejects_missing_evidence()
     for key in [
         "session_id",
         "turn_id",
+        "tool_name",
         "tool_use_id",
-        "tool_input",
         "hook_event_name",
     ] {
         let mut v = pre_tool("session-1", "turn-1", "call-1", "true");
@@ -297,8 +297,6 @@ fn versioned_codex_input_normalizes_native_fields_and_rejects_missing_evidence()
         ("turn_id", json!(5)),
         ("agent_id", json!(5)),
         ("session_id", json!("")),
-        ("tool_input", json!({"command": 7})),
-        ("tool_input", json!({"command": "a\u{0}b"})),
     ] {
         let mut v = pre_tool("session-1", "turn-1", "call-1", "true");
         v[key] = bad;
@@ -308,11 +306,15 @@ fn versioned_codex_input_normalizes_native_fields_and_rejects_missing_evidence()
             "bad {key}"
         );
     }
+    // Every tool is a boundary, whatever its input.
     let mut other = pre_tool("session-1", "turn-1", "call-1", "true");
-    other["tool_name"] = json!("Read");
+    other["tool_name"] = json!("apply_patch");
+    other["tool_input"] = json!({"command": 7});
     assert_eq!(
-        codex::parse_event_for_version(&bytes(&other), "external-event", &pinned()),
-        Err(ContextError::Invalid)
+        codex::parse_event_for_version(&bytes(&other), "external-event", &pinned())
+            .unwrap()
+            .kind,
+        EventKind::Tool
     );
     assert!(codex::parse_event_for_version(&vec![b'x'; 65537], "id", &pinned()).is_err());
 }
@@ -390,11 +392,7 @@ fn declaration_reports_native_transport_and_receipt_unsupported() {
         [
             ("SessionStart", None, HookPurpose::Lifecycle),
             ("SubagentStart", None, HookPurpose::ChildStart),
-            (
-                "PreToolUse",
-                Some("^Bash$"),
-                HookPurpose::ToolBoundaryContext
-            ),
+            ("PreToolUse", Some("*"), HookPurpose::ToolBoundaryContext),
             ("UserPromptSubmit", None, HookPurpose::TurnStartContext),
             ("Stop", None, HookPurpose::TurnEndContinuation),
             ("SubagentStop", None, HookPurpose::EndEvent),
@@ -431,6 +429,27 @@ fn invocation_rewrite_is_unreachable_behind_the_unsupported_gate() {
         child.scoped_command(),
         Err(TransportError::Context(ContextError::Child))
     );
+}
+
+/// The gated invocation parser stays Bash-only although the context hook now runs for every tool.
+#[test]
+fn invocation_parser_is_bash_only_with_a_bounded_command() {
+    let valid = pre_tool("session-1", "turn-7", "call-9", "true");
+    assert!(codex::parse_tool_invocation(&bytes(&valid), "e", &pinned()).is_ok());
+    let mut patch = valid.clone();
+    patch["tool_name"] = json!("apply_patch");
+    assert_eq!(
+        codex::parse_tool_invocation(&bytes(&patch), "e", &pinned()),
+        Err(ContextError::Invalid)
+    );
+    for command in [json!(null), json!(7), json!("bad\u{0000}command")] {
+        let mut invalid = valid.clone();
+        invalid["tool_input"]["command"] = command;
+        assert_eq!(
+            codex::parse_tool_invocation(&bytes(&invalid), "e", &pinned()),
+            Err(ContextError::Invalid)
+        );
+    }
 }
 
 #[test]
@@ -490,16 +509,16 @@ fn setup_declares_only_context_hooks_behind_the_version_witness() {
     assert_eq!(
         pre.groups.len(),
         2,
-        "user group kept, owned Bash group added"
+        "user group kept, owned every-tool group added"
     );
     assert_eq!(pre.groups[0], existing[0].groups[0]);
-    assert_eq!(pre.groups[1]["matcher"], "^Bash$");
+    assert_eq!(pre.groups[1]["matcher"], "*");
     let pre_flag = plan
         .launch_argv
         .iter()
         .find(|a| a.starts_with("hooks.PreToolUse="))
-        .expect("context-only Bash PreToolUse group is published");
-    assert!(pre_flag.contains("user-hook") && pre_flag.contains("^Bash$"));
+        .expect("context-only PreToolUse group is published");
+    assert!(pre_flag.contains("user-hook") && pre_flag.contains(r#""*""#));
     assert!(
         plan.launch_argv
             .iter()
@@ -887,8 +906,7 @@ fn every_declared_hook_is_installed_by_setup_and_encodes_context_only() {
             HookPurpose::ChildStart => bytes(&subagent_start("session-1", "turn-1", "c", "w")),
             HookPurpose::ToolBoundaryContext => {
                 let v = pre_tool("session-1", "turn-1", "call-1", "true");
-                let tool = v["tool_name"].as_str().unwrap();
-                assert_eq!(hook.matcher, Some(format!("^{tool}$").as_str()));
+                assert_eq!(hook.matcher, Some("*"));
                 let invocation =
                     codex::parse_tool_invocation(&bytes(&v), "event", &pinned()).unwrap();
                 assert_eq!(
@@ -1459,13 +1477,7 @@ fn versionless_codex_contract_preserves_strict_shape_and_child_suppression() {
     let event = codex::parse_event_for_contract(&bytes(&child), "event", &contract).unwrap();
     assert_eq!(event.role, Role::Subagent);
     assert!(!event.can_check_in());
-    for key in [
-        "session_id",
-        "turn_id",
-        "tool_name",
-        "tool_use_id",
-        "tool_input",
-    ] {
+    for key in ["session_id", "turn_id", "tool_name", "tool_use_id"] {
         let mut invalid = valid.clone();
         invalid.as_object_mut().unwrap().remove(key);
         assert!(
@@ -1473,10 +1485,23 @@ fn versionless_codex_contract_preserves_strict_shape_and_child_suppression() {
             "{key}"
         );
     }
-    for command in [json!(null), json!(7), json!("bad\u{0000}command")] {
-        let mut invalid = valid.clone();
-        invalid["tool_input"]["command"] = command;
-        assert!(codex::parse_event_for_contract(&bytes(&invalid), "event", &contract).is_err());
+    // Every tool is a boundary: its `tool_input` is the tool's own arguments, never checked.
+    for (tool, input) in [
+        ("apply_patch", json!({"command": "*** Begin Patch"})),
+        (
+            "mcp__docs__search",
+            json!({"command": ["not", "a", "string"]}),
+        ),
+        ("spawn_agent", json!({"message": "go"})),
+        ("view_image", json!("raw arguments")),
+    ] {
+        let mut other = valid.clone();
+        other["tool_name"] = json!(tool);
+        other["tool_input"] = input;
+        let event = codex::parse_event_for_contract(&bytes(&other), "event", &contract).unwrap();
+        assert_eq!(event.kind, EventKind::Tool, "{tool}");
+        other.as_object_mut().unwrap().remove("tool_input");
+        assert!(codex::parse_event_for_contract(&bytes(&other), "event", &contract).is_ok());
     }
     assert!(codex::parse_event_for_contract(&bytes(&valid), "", &contract).is_err());
     assert!(codex::parse_event_for_contract(&vec![b'x'; 65537], "event", &contract).is_err());

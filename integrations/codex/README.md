@@ -48,8 +48,8 @@ unversioned public entry.
 
 `harness::setup::plan_codex_for_version` builds exactly the owned hook groups
 listed in `DECLARATION.owned_hooks` from an executable hook command argv:
-`SessionStart` (lifecycle), `SubagentStart` (child start), a Bash
-`PreToolUse` group (matcher `^Bash$`) for tool-boundary attention context, and
+`SessionStart` (lifecycle), `SubagentStart` (child start), a `PreToolUse`
+group (matcher `*`, every tool) for tool-boundary attention context, and
 the two end events `SubagentStop` and `SessionEnd`, which only disconnect the
 binding they name (no output at all). Every group is context-only: its output is `hookSpecificOutput.{hookEventName,
 additionalContext}` and never `permissionDecision` or `updatedInput`. The
@@ -72,9 +72,23 @@ Codex also keeps the hooks of `$CODEX_HOME/config.toml`, `/etc/codex` and
 trusted project `.codex/` layers (app-server `hooks/list` with a scratch
 `CODEX_HOME` on 0.157.1, 0.158.0 and 0.159.2); setup reads those only to report
 them and to refuse when one already holds the exact hook command. Inspection
-requires the installed groups, including the Bash matcher, to match the
+requires the installed groups, including the `*` matcher, to match the
 declaration. The tool-boundary hook entrypoint (non-durable attention read and
 coalescing) is owned by the hook layer, not this adapter.
+
+**Every tool is a boundary.** Codex 0.163 runs `PreToolUse` for every function
+tool under its own `tool_name` (`Bash` for `exec_command`, `apply_patch`,
+`mcp__<server>__<tool>`, `spawn_agent`, and the default for the rest;
+`core/src/tools/registry.rs`, `hook_names.rs`) and records each hook's
+`additionalContext` the same way. So mail reaches a turn that only edits
+files or calls MCP tools at its next tool call, not only at the next shell
+command. The decoder accepts any `tool_name` and reads none of `tool_input`
+(the tool's own arguments); the gated Bash invocation parser alone still
+requires a bounded Bash `tool_input.command`. The `write_stdin` polls of a
+running command and code-mode `wait` emit no `PreToolUse`, so they are not
+boundaries. Installs made before this change keep their `^Bash$` group, and
+inspection reports them as not installed until `herdr-threads setup codex`
+rewrites that group in place.
 
 **Hook trust.** Codex runs a user hook only once trusted: `hooks/list` reports a
 freshly written `hooks.json` hook as `trustStatus: untrusted` (0.159.2, scratch
@@ -86,7 +100,13 @@ own `hooks.json` hook is trusted the same way: Herdr writes the hook and
 no trust. Setup never writes or relaxes trust either; `setup-status codex`
 lists the owned keys and whether a hash is recorded. Setup appends, so the
 trust keys of existing hooks keep their positions. Approval policy is
-untouched.
+untouched. Codex's trust hash covers the matcher (`hook_hash` in
+`hooks/src/engine/discovery.rs`), so the upgrade from `^Bash$` to `*` leaves
+the rewritten `pre_tool_use` hook `Modified` (not trusted) until the next
+review (the next interactive start, or `/hooks`): until then Codex skips it and
+turns get no tool-boundary delivery, while the other groups keep their trust.
+`setup-status codex` still shows `trust_recorded: true` for that key, because
+it reports only that a hash is recorded, never that it matches.
 
 **Command rules.** Hooks grant no permission. A separate permission component
 (with consent, or `setup codex --with-permissions`) owns the whole file

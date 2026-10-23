@@ -475,13 +475,16 @@ fn versionless_hook_contracts_decode_without_path_or_probes() {
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "");
         for (key, value) in [
             ("agent_id", serde_json::json!("child")),
-            ("tool_name", serde_json::json!("Unknown")),
             ("hook_event_name", serde_json::json!("FutureSchema")),
         ] {
             let mut invalid: serde_json::Value = serde_json::from_slice(payload).unwrap();
             invalid[key] = value;
             assert!(parse_event(&absent, &serde_json::to_vec(&invalid).unwrap()).is_err(), "{harness:?}: {key}");
         }
+        // Every tool is a boundary, not only Bash.
+        let mut other: serde_json::Value = serde_json::from_slice(payload).unwrap();
+        other["tool_name"] = serde_json::json!("Unknown");
+        assert_eq!(parse_event(&absent, &serde_json::to_vec(&other).unwrap()).unwrap().kind, EventKind::Tool, "{harness:?}");
         for key in ["session_id", "tool_name", "tool_use_id"] {
             let mut invalid: serde_json::Value = serde_json::from_slice(payload).unwrap();
             invalid.as_object_mut().unwrap().remove(key);

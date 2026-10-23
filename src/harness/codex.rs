@@ -8,8 +8,8 @@
 //! preserves ordinary deny/approval decisions or reaches the daemon socket
 //! under the intended policy. This adapter therefore emits context only. Its
 //! setup declaration installs context hooks only: lifecycle, child start, and
-//! a Bash `PreToolUse` group whose output is `additionalContext` and never a
-//! permission decision or `updatedInput`.
+//! a `PreToolUse` group on every tool whose output is `additionalContext` and
+//! never a permission decision or `updatedInput`.
 pub mod doctor;
 pub mod pane_env;
 pub mod permission_rules;
@@ -44,11 +44,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// The native hook payload contract `check_hooks_v1`, `parse_shape` and
-/// `parse_tool_invocation` consume. Kept in step with the parsers by the drift
-/// tests in `tests/harness/contract.rs`: a parser that requires an undeclared
-/// field fails them. Changing it changes the contract id, which must be
-/// deliberate.
+/// The native hook payload contract `check_hooks_v1` and `parse_shape`
+/// consume. Kept in step with the parsers by the drift tests in
+/// `tests/harness/contract.rs`: a parser that requires an undeclared field
+/// fails them. Changing it changes the contract id, which must be deliberate.
+/// `PreToolUse` fires for every tool, whose `tool_input` is the tool's own
+/// arguments, so the contract declares none of it; the gated Bash invocation
+/// parser ([`parse_tool_invocation`]) reads `tool_input.command` as a Bash-only
+/// value constraint.
 pub const CONTRACT: HarnessContract = HarnessContract {
     harness: "codex",
     discriminator: "hook_event_name",
@@ -89,7 +92,6 @@ pub const CONTRACT: HarnessContract = HarnessContract {
                 f("turn_id", Str, true),
                 f("tool_name", Str, true),
                 f("tool_use_id", Str, true),
-                f("tool_input.command", Str, true),
                 f("agent_id", Str, false),
                 f("agent_type", Str, false),
             ],
@@ -245,7 +247,8 @@ pub enum HookPurpose {
     Lifecycle,
     /// `SubagentStart` child context; children never gain root authority.
     ChildStart,
-    /// Bash `PreToolUse` bounded attention at tool boundaries. Output is only
+    /// `PreToolUse` bounded attention at every tool boundary (Bash, `apply_patch`,
+    /// MCP, `spawn_agent` and the other function tools Codex hooks). Output is only
     /// `hookSpecificOutput.{hookEventName, additionalContext}`; 0.157.1 accepts
     /// that shape without a decision (source-read), and a live 0.158.0 run
     /// delivered it to the model without blocking the tool call.
@@ -300,7 +303,7 @@ pub const DECLARATION: Declaration = Declaration {
         },
         OwnedHook {
             event: "PreToolUse",
-            matcher: Some("^Bash$"),
+            matcher: Some("*"),
             purpose: HookPurpose::ToolBoundaryContext,
         },
         OwnedHook {
@@ -983,10 +986,14 @@ pub fn parse_tool_invocation(
         return Err(ContextError::Invalid);
     }
     let value = input(bytes, event_id)?;
+    if field(&value, "tool_name")?.as_deref() != Some("Bash") {
+        return Err(ContextError::Invalid);
+    }
     let turn_id = field(&value, "turn_id")?.ok_or(ContextError::Invalid)?;
     let tool_use_id = field(&value, "tool_use_id")?.ok_or(ContextError::Invalid)?;
     let command = value["tool_input"]["command"]
         .as_str()
+        .filter(|command| command.len() <= 65_536 && !command.contains('\0'))
         .ok_or(ContextError::Invalid)?
         .to_owned();
     Ok(ToolInvocation {
@@ -1049,15 +1056,6 @@ fn check_hooks_v1(value: &Value) -> Result<(), ContextError> {
             required(value, "turn_id")?;
             // HooksV1 PreToolUse carries child identity as a pair or not at all.
             if field(value, "agent_id")?.is_some() != field(value, "agent_type")?.is_some() {
-                return Err(ContextError::Invalid);
-            }
-            let command = value
-                .get("tool_input")
-                .and_then(|v| v.as_object())
-                .and_then(|v| v.get("command"))
-                .and_then(|v| v.as_str())
-                .ok_or(ContextError::Invalid)?;
-            if command.len() > 65_536 || command.contains('\0') {
                 return Err(ContextError::Invalid);
             }
         }
@@ -1243,7 +1241,8 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
         }
         "SubagentStart" | "SubagentStop" => (name, EventKind::Startup, Role::Subagent),
         "SessionEnd" => (name, EventKind::Startup, Role::TopLevel),
-        "PreToolUse" if field(value, "tool_name")?.as_deref() == Some("Bash") => {
+        "PreToolUse" => {
+            required(value, "tool_name")?;
             required(value, "tool_use_id")?;
             (name, EventKind::Tool, role)
         }
@@ -1264,7 +1263,7 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
     })
 }
 
-/// Codex's declared hook groups (SessionStart, SubagentStart, Bash PreToolUse, UserPromptSubmit,
+/// Codex's declared hook groups (SessionStart, SubagentStart, PreToolUse, UserPromptSubmit,
 /// Stop, SubagentStop, SessionEnd) in the `hooks.json` form. The 10 s timeout bounds Codex's wait (its default is 600 s); the hook's own
 /// watchdog ends it far earlier. SessionEnd declares 3 s: Codex clamps a SessionEnd timeout to 3 s
 /// and warns about a longer one at every start.
@@ -1308,7 +1307,7 @@ pub const fn settings_kind() -> super::setup::SettingsKind {
 /// Help and report fragments of the Codex adapter (verbatim from the core text they replace).
 static TEXT: AdapterText = AdapterText {
     setup_scope: "  codex   $CODEX_HOME/hooks.json (default ~/.codex/hooks.json) for the hook groups
-          (SessionStart, SubagentStart, Bash PreToolUse, UserPromptSubmit, Stop). With consent,
+          (SessionStart, SubagentStart, PreToolUse, UserPromptSubmit, Stop). With consent,
           agent permissions go in their own file, $CODEX_HOME/rules/herdr-threads.rules:
           an allow rule for `herdr-threads` and `ht` and prompt rules for the same human
           and setup commands.

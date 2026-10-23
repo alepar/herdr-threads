@@ -483,7 +483,7 @@ fn installed_command_is_the_hook_entrypoint_argv() {
             "{event}: {command}"
         );
     }
-    assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+    assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "*");
 }
 
 const SUBAGENT_EVENTS: [&str; 2] = ["SubagentStart", "SubagentStop"];
@@ -877,7 +877,7 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
             "{event}: {owned}"
         );
     }
-    assert_eq!(hooks["hooks"]["PreToolUse"][0]["matcher"], "^Bash$");
+    assert_eq!(hooks["hooks"]["PreToolUse"][0]["matcher"], "*");
     let trust = report["trust"]["hooks"].as_array().unwrap();
     let keys: Vec<&str> = trust.iter().map(|k| k["key"].as_str().unwrap()).collect();
     let file = s.hooks().display().to_string();

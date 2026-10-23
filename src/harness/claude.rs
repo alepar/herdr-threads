@@ -418,7 +418,8 @@ fn parse_hooks_2_1_283(
         Role::TopLevel
     };
     let (source, kind) = match name.as_str() {
-        "PreToolUse" if field(&value, "tool_name")?.as_deref() == Some("Bash") => {
+        "PreToolUse" => {
+            field(&value, "tool_name")?.ok_or(ContextError::Invalid)?;
             field(&value, "tool_use_id")?.ok_or(ContextError::Invalid)?;
             (name, EventKind::Tool)
         }
@@ -577,7 +578,8 @@ pub fn encode_tool_response(
     let value: Value = serde_json::from_slice(input_bytes).map_err(|_| ContextError::Invalid)?;
     let mut specific = json!({"hookEventName":"PreToolUse"});
     if !invocation_context.is_empty() {
-        if invocation_context.len() > 1024
+        if value.get("tool_name").and_then(Value::as_str) != Some("Bash")
+            || invocation_context.len() > 1024
             || !invocation_context
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
@@ -814,7 +816,7 @@ pub fn declared_hook_groups(command: &str) -> Vec<(&'static str, Value)> {
         ),
         (
             "PreToolUse",
-            json!({"matcher":"Bash","hooks":[{"type":"command","command":event_command(command, "PreToolUse"),"timeout":10}]}),
+            json!({"matcher":"*","hooks":[{"type":"command","command":event_command(command, "PreToolUse"),"timeout":10}]}),
         ),
         (
             "UserPromptSubmit",
@@ -864,7 +866,7 @@ pub const fn settings_kind() -> super::setup::SettingsKind {
 /// Help and report fragments of the Claude adapter (verbatim from the core text they replace).
 static TEXT: AdapterText = AdapterText {
     setup_scope: "  claude  $CLAUDE_CONFIG_DIR/settings.json (default ~/.claude/settings.json), created as `{}`
-          when absent. Adds the hook groups (SessionStart, Bash PreToolUse, UserPromptSubmit)
+          when absent. Adds the hook groups (SessionStart, PreToolUse, UserPromptSubmit)
           beside the hooks already there. Agent permissions are a separate component, written
           only with consent: allow rules for `herdr-threads` and `ht`, and ask rules for
           `human`, `setup`, `unsetup`, `doctor fix` and `internal installer-integrations`. An

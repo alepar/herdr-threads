@@ -25,6 +25,8 @@ channel already delivered it, so the skill's bare-wake rule must not fire (Deliv
 depends on model behaviour; the row records the count (inbox_calls) and calls-<recipient>.txt the logged calls.
 busy-fail-send-ack/group (Claude only) makes the busy turn's last tool fail: the ACK request must still arrive and be
 acknowledged inside that turn, with no wake after it.
+busy-tool-p1/group is busy-send-p1 whose turn calls no shell command after the send, only a non-shell tool (Codex
+`apply_patch`, Claude's file-read tool): the item must arrive at that tool's boundary (every tool is one).
 
 Isolation: an isolated daemon and state dir (driven by --bin, default the repo's bin/herdr-threads), owned hooks
 installed by the public `setup` CLI into scratch HOME / CLAUDE_CONFIG_DIR / CODEX_HOME copies, one owned Herdr
@@ -99,7 +101,8 @@ EXIT_OK, EXIT_FAIL, EXIT_REFUSED = 0, 1, 2
 CASES = ("invite/group", "pair-open/1:1", "send-p1/group", "send-p0/group", "send-p3/group", "send-ack/group",
          "send-p1/1:1", "send-p0/1:1", "send-p3/1:1", "send-ack/1:1", "mixed-order/group",
          "busy-invite/group", "busy-invite/1:1", "busy-send-p1/group", "busy-send-p0/group", "busy-send-ack/group",
-         "busy-send-p1/1:1", "busy-send-p0/1:1", "busy-send-ack/1:1", "busy-fail-send-ack/group")
+         "busy-send-p1/1:1", "busy-send-p0/1:1", "busy-send-ack/1:1", "busy-fail-send-ack/group",
+         "busy-tool-p1/group")
 # Claude only: the busy turn's last tool fails, and the item must still arrive (and be ACKed) inside the turn. The
 # mod's context rides an errored tool result and is settled by the next model request (ht-mod-busy).
 CLAUDE_CASES = ("busy-fail-send-ack/group",)
@@ -172,6 +175,13 @@ BUSY_PROMPT = ("Busy-turn test {tag}: run the shell command `{hold}`, then run t
 # The `sleep 2` keeps the failing tool running until the item has reached the mod (as `sleep 1` does in BUSY_PROMPT).
 BUSY_FAIL_PROMPT = ("Busy-turn test {tag}: run the shell command `{hold}; sleep 2; exit 3` (it fails on purpose), then run no "
                     "other tool: name the id of every herdr-threads item you received, and finally print BUSY-DONE.")
+# busy-tool-*: after the hold, the turn's only tool is a non-shell one, so the item can arrive in that turn only at
+# that tool's boundary.
+BUSY_TOOL_PROMPT = ("Busy-turn test {tag}: run the shell command `{hold}`, then {tool}; run no other shell command in "
+                    "this turn. Then handle any herdr-threads items exactly as your standing instructions say, and "
+                    "finally print BUSY-DONE.")
+BUSY_TOOL = {"codex": "use your apply_patch tool (not the shell) to add the file `{dir}/patched.txt` containing `x`",
+             "claude": f"read the file `{REPO / 'README.md'}` with your file-read tool (Read)"}
 BUSY_AFTER_S = 40.0
 # The busy turn's native end: a line of the agent's output that is BUSY-DONE apart from bullets, markup or a final
 # period. It is searched only after the prompt's own "BUSY-DONE." so a wrapped prompt line never matches.
@@ -1514,8 +1524,11 @@ class Recipient:
         self.wait_idle()
         tag = f"{case} {self.run.run_id}"
         with BusyBarrier(self.run.root) as hold:
-            prompt = BUSY_FAIL_PROMPT if fail else BUSY_PROMPT
-            self.run.herdr("agent", "prompt", self.pane, prompt.format(tag=tag, hold=hold.command()))
+            if action.startswith("busy-tool-"):
+                prompt = BUSY_TOOL_PROMPT.format(tag=tag, hold=hold.command(), tool=BUSY_TOOL[self.harness].format(dir=hold.path))
+            else:
+                prompt = (BUSY_FAIL_PROMPT if fail else BUSY_PROMPT).format(tag=tag, hold=hold.command())
+            self.run.herdr("agent", "prompt", self.pane, prompt)
             hold.wait_entered()
             busy_at_send = self.status()
             checks = {"busy_at_send": busy_at_send}

@@ -1,12 +1,12 @@
 //! Payload contract declarations: canonical form, pinned ids, drift against
 //! the production parsers, the violation classifier and version normalization.
+use crate::harness::claude;
 use crate::harness::codex::{self, InstalledVersion};
 use crate::harness::contract::{
     Classification, EventClass, EventContract, HarnessContract, JsonType, Malformed,
     canonical_json, classify, contract_for, contract_id, contract_ids_json, field,
     normalize_version,
 };
-use crate::harness::{claude, context::EventKind};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -72,12 +72,9 @@ fn parse_accepts(harness: &str, bytes: &[u8]) -> bool {
         _ => {
             let version = InstalledVersion::pinned_for_test();
             let ok = codex::parse_event_for_version(bytes, "e", &version);
-            match ok {
-                Ok(event) if event.kind == EventKind::Tool => {
-                    codex::parse_tool_invocation(bytes, "e", &version).is_ok()
-                }
-                other => other.is_ok(),
-            }
+            // The gated Bash invocation parser reads `tool_input.command`, a Bash-only value
+            // constraint outside the every-tool contract; its own tests cover it.
+            ok.is_ok()
         }
     }
 }
@@ -196,7 +193,7 @@ fn canonical_json_sorts_keys_events_and_fields() {
 #[test]
 fn contract_ids_are_pinned() {
     assert_eq!(contract_id(&claude::CONTRACT), "3fe315da64a17fe6");
-    assert_eq!(contract_id(&codex::CONTRACT), "fe43bd0318d7c1c7");
+    assert_eq!(contract_id(&codex::CONTRACT), "80e2f1c9b6b255fa");
 }
 
 #[test]
@@ -325,15 +322,34 @@ fn classify_missing_required_field_is_violation() {
             field: "source"
         }
     );
-    // Nested path.
+    // A tool's own input is no contract term: PreToolUse fires for every tool.
     let bytes = with(&codex_fixture("03-pretooluse-bash-root.json"), |v| {
         v["tool_input"] = json!({});
     });
     assert_eq!(
         classify(&codex::CONTRACT, Some("PreToolUse"), &bytes),
+        Classification::Ok {
+            event: "PreToolUse"
+        }
+    );
+    // Nested path.
+    const NESTED: HarnessContract = HarnessContract {
+        harness: "nested",
+        discriminator: "e",
+        events: &[EventContract {
+            event: "E",
+            class: EventClass::Tool,
+            fields: &[
+                field("e", JsonType::String, true),
+                field("a.b", JsonType::String, true),
+            ],
+        }],
+    };
+    assert_eq!(
+        classify(&NESTED, None, br#"{"e":"E","a":{}}"#),
         Classification::Violation {
-            event: "PreToolUse",
-            field: "tool_input.command"
+            event: "E",
+            field: "a.b"
         }
     );
     // A required string-or-null key must still be present.
@@ -594,7 +610,7 @@ fn adapters_local_dispatch_keeps_legacy_contract_id_bytes() {
     .unwrap();
     assert_eq!(
         String::from_utf8(legacy).unwrap(),
-        "{\"claude\":\"3fe315da64a17fe6\",\"codex\":\"fe43bd0318d7c1c7\",\"normalize\":{\"claude\":{\"2.1.286 (Claude Code)\":\"2.1.286\"},\"codex\":{\"codex-cli 0.158.0\":\"0.158.0\"}}}\n"
+        "{\"claude\":\"3fe315da64a17fe6\",\"codex\":\"80e2f1c9b6b255fa\",\"normalize\":{\"claude\":{\"2.1.286 (Claude Code)\":\"2.1.286\"},\"codex\":{\"codex-cli 0.158.0\":\"0.158.0\"}}}\n"
     );
     let mut output = Vec::new();
     crate::cli::run_in_pane(["herdr-threads", "adapters", "--json"], None, &mut output).unwrap();
@@ -617,7 +633,7 @@ fn adapters_local_dispatch_keeps_legacy_contract_id_bytes() {
     let row = |id: &str| discovery.adapters.iter().find(|row| row.id == id).unwrap();
     for (id, pinned) in [
         ("claude", "3fe315da64a17fe6"),
-        ("codex", "fe43bd0318d7c1c7"),
+        ("codex", "80e2f1c9b6b255fa"),
     ] {
         assert_eq!(row(id).legacy_contract_id.as_deref(), Some(pinned));
         assert!(row(id).contracts.iter().all(|domain| domain.id != pinned));

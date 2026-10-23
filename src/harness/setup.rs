@@ -2437,18 +2437,36 @@ pub fn find_adoptable(
     let Some(installation_id) = id else {
         return Ok(None);
     };
-    let owned: Vec<OwnedEntry> = kind
+    let Some(owned) = kind
         .entries(&owned_command(hook_argv, &installation_id)?)?
         .into_iter()
         .filter(|entry| events.contains(&entry.event))
-        .collect();
-    if exact_present(&value, &owned).len() != owned.len() {
+        .map(|entry| present_but_matcher(&value, &entry))
+        .collect::<Option<Vec<OwnedEntry>>>()
+    else {
         return Ok(None);
-    }
+    };
     Ok(Some(Adoptable {
         installation_id,
         owned,
     }))
+}
+
+/// The group under `entry`'s event that is `entry`'s group apart from its matcher, as present:
+/// an older declaration may have narrowed the matcher (a Bash-only `PreToolUse`), and setup then
+/// upgrades the adopted group like a recorded older declaration.
+fn present_but_matcher(value: &Value, entry: &OwnedEntry) -> Option<OwnedEntry> {
+    let unmatched = |group: &Value| {
+        let mut group = group.clone();
+        group.as_object_mut()?.remove("matcher");
+        Some(group)
+    };
+    let wanted = unmatched(&entry.group)?;
+    let group = value["hooks"][&entry.event]
+        .as_array()?
+        .iter()
+        .find(|group| unmatched(group).as_ref() == Some(&wanted))?;
+    owned(&entry.event, group.clone()).ok()
 }
 
 /// The hook commands registered under one event array.

@@ -852,7 +852,7 @@ fn child_tool_hook_cannot_carry_parent_transport_or_receipt_prompt() {
 fn claude_declared_hooks_include_lifecycle_and_bash_without_permission_controls() {
     let hooks = claude::declared_hooks("/tmp/space 雪/hook").unwrap();
     assert!(hooks["SessionStart"].is_array());
-    assert_eq!(hooks["PreToolUse"][0]["matcher"], "Bash");
+    assert_eq!(hooks["PreToolUse"][0]["matcher"], "*");
     assert!(!hooks.to_string().contains("permissionDecision"));
 }
 

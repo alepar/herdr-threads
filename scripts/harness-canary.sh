@@ -549,13 +549,13 @@ if cmd == "setup-assert":  # HARNESS DIAGNOSTIC_VERSION OUTFILE CONFIGDIR -> `pa
     # qualify it. The independent t0.version check retains diagnostic V.
     elif harness == "claude":
         settings = load(os.path.join(confdir, "settings.json"))
-        pre = [g for g in owned_groups(settings, "PreToolUse", setup, os.path.join(confdir, "settings.json")) if "Bash" in str(g.get("matcher", ""))]
+        pre = [g for g in owned_groups(settings, "PreToolUse", setup, os.path.join(confdir, "settings.json")) if g.get("matcher") == "*"]
         if not owned_groups(settings, "SessionStart", setup, os.path.join(confdir, "settings.json")):
             print("fail\tclaude settings.json has no owned SessionStart group")
         elif not pre:
-            print("fail\tclaude settings.json has no owned PreToolUse(Bash) group")
+            print("fail\tclaude settings.json has no owned every-tool PreToolUse group")
         else:
-            print("pass\tinstalled; owned SessionStart and PreToolUse(Bash) groups present")
+            print("pass\tinstalled; owned SessionStart and every-tool PreToolUse groups present")
     else:
         hooks = load(os.path.join(confdir, "hooks.json"))
         missing = [e for e in ("SessionStart", "SubagentStart", "PreToolUse") if not owned_groups(hooks, e, setup, os.path.join(confdir, "hooks.json"))]

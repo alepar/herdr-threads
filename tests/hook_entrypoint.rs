@@ -2698,6 +2698,168 @@ fn native_hook_completion_failures_retry_on_the_next_unchanged_attention_hook() 
     }
 }
 
+/// A `PreToolUse` payload for a tool other than Bash: the tool's own name and arguments.
+fn other_tool(payload: Payload, tool: &str, input: serde_json::Value) -> Vec<u8> {
+    payload
+        .with("tool_name", tool.into())
+        .with("tool_input", input)
+        .bytes()
+}
+
+// Every tool is a tool boundary (ht-all-tools): on Claude's hooks-only path, mail sent mid-turn
+// reaches the next non-Bash tool call (Read, an MCP tool) through the real hook entrypoint, once,
+// and the next call is quiet. Kills: a Bash-only decoder (the hook would stay silent), and a
+// second display of the same row.
+#[test]
+fn mail_reaches_the_next_non_bash_claude_tool_hook() {
+    let fx = Fixture::start();
+    let started = fx.hook("w9:p1", &start("sess-1"));
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let peer = fx.hook("w9:p2", &start("peer-sess"));
+    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "every-tool"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    let tool = |name: &str, input: serde_json::Value| {
+        let hook = fx.hook(
+            "w9:p1",
+            &other_tool(Payload::pre_tool_use("sess-1", "ls"), name, input),
+        );
+        assert_eq!(hook.code, Some(0), "{name}: {}", hook.stderr);
+        assert!(hook.stderr.is_empty(), "{name}: {}", hook.stderr);
+        hook
+    };
+    let read = || tool("Read", serde_json::json!({"file_path": "/tmp/x"}));
+    // Drain whatever the accept left, then the boundary is quiet.
+    read();
+    let quiet = read();
+    assert!(
+        quiet.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&quiet.stdout)
+    );
+    let id = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "mail for a read-only turn"],
+    ));
+    let context = context_of(&tool(
+        "mcp__docs__search",
+        serde_json::json!({"command": ["not", "a", "string"]}),
+    ));
+    assert!(context.contains(INBOX_HEADER), "{context}");
+    assert!(context.contains("mail for a read-only turn"), "{context}");
+    assert!(context.contains(&id), "{context}");
+    let repeat = read();
+    assert!(
+        repeat.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&repeat.stdout)
+    );
+}
+
+// Every tool is a tool boundary (ht-all-tools): a Codex turn that only edits with `apply_patch`
+// or calls MCP tools and `spawn_agent` gets mail sent mid-turn at its next tool call through the
+// real hook entrypoint, once, and the next call is quiet. Kills: a Bash-only `parse_shape`, a
+// contract that still requires `tool_input.command` (MCP and `spawn_agent` carry none), and a
+// second display of the same row.
+#[test]
+fn mail_reaches_the_next_non_bash_codex_tool_hook() {
+    let fx = Fixture::start();
+    fx.register("w9:p2", "peer-sess");
+    let started = fx.codex_hook(
+        "w9:p3",
+        &Payload::session_start("cx-sess", "startup")
+            .codex("t0")
+            .bytes(),
+    );
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "codex-every-tool"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
+    let mut out = Vec::new();
+    let _codex = agent_origin("codex", "cx-sess");
+    herdr_threads::cli::run(
+        [
+            "herdr-threads",
+            "--json",
+            "--state-dir",
+            fx.state.to_str().unwrap(),
+            "--host-endpoint",
+            fx.host.to_str().unwrap(),
+            "--cooperative-seat",
+            "cx",
+            "--cooperative-target",
+            "w9:p3",
+            "--cooperative-harness",
+            "codex",
+            "--cooperative-role",
+            "top-level",
+            "accept",
+            &thread,
+        ],
+        &mut out,
+    )
+    .unwrap();
+    let codex_tool = |n: u32, name: &str, input: serde_json::Value| {
+        let payload = Payload::pre_tool_use("cx-sess", "ls")
+            .codex(&format!("t{n}"))
+            .with("tool_use_id", format!("call_{n}").into());
+        let hook = fx.codex_hook("w9:p3", &other_tool(payload, name, input));
+        assert_eq!(hook.code, Some(0), "{name}: {}", hook.stderr);
+        assert!(hook.stderr.is_empty(), "{name}: {}", hook.stderr);
+        hook
+    };
+    let patch = serde_json::json!({"command": "*** Begin Patch\n*** End Patch\n"});
+    let quiet = codex_tool(1, "apply_patch", patch.clone());
+    assert!(
+        quiet.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&quiet.stdout)
+    );
+    let first = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "mail for a patch-only turn"],
+    ));
+    let context = context_of(&codex_tool(2, "apply_patch", patch.clone()));
+    assert!(context.contains(INBOX_HEADER), "{context}");
+    assert!(context.contains("mail for a patch-only turn"), "{context}");
+    assert!(context.contains(&first), "{context}");
+    let repeat = codex_tool(3, "mcp__docs__search", serde_json::json!({"query": "q"}));
+    assert!(
+        repeat.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&repeat.stdout)
+    );
+    let second = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "mail before a spawn"],
+    ));
+    let context = context_of(&codex_tool(
+        4,
+        "spawn_agent",
+        serde_json::json!({"message": "go"}),
+    ));
+    assert!(context.contains("mail before a spawn"), "{context}");
+    assert!(context.contains(&second), "{context}");
+    assert!(!context.contains("mail for a patch-only turn"), "{context}");
+    let repeat = codex_tool(5, "apply_patch", patch);
+    assert!(
+        repeat.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&repeat.stdout)
+    );
+}
+
 // Lazy hook delivery for Codex: the same digest marker and inbox page reach
 // a Codex Bash PreToolUse. Kills: a Claude-only implementation.
 #[test]

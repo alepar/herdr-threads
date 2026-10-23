@@ -431,7 +431,7 @@ fn codex_user_hooks_install_inspect_and_remove_keep_existing_groups() {
         start[0]["hooks"][0]["command"],
         "bash '/h/herdr-agent-state.sh' session"
     );
-    assert_eq!(value["hooks"]["PreToolUse"][0]["matcher"], "^Bash$");
+    assert_eq!(value["hooks"]["PreToolUse"][0]["matcher"], "*");
     assert!(
         value["hooks"]["SubagentStart"][0]["hooks"][0]["command"]
             .as_str()
