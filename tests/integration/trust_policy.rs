@@ -1310,9 +1310,10 @@ fn send_right_after_ensure_before_reconciliation_pass_gives_no_warning_and_a_tim
             &["thread", "create", "--topic", "prepass"],
         )
         .text("thread create");
-    world
-        .run(None, Some(a_pane), &["invite", &thread, "--seat", &b])
-        .data("invite");
+    let invited = world.run(None, Some(a_pane), &["invite", &thread, "--seat", &b]);
+    invited.data("invite");
+    // A wakeable (Claude) invitee is never reported as `wake=no_wake` (ht-wake-outcome).
+    assert!(!invited.stderr.contains("wake="), "{}", invited.stderr);
     world
         .run(None, Some(b_pane), &["accept", &thread])
         .data("accept");
@@ -1333,6 +1334,7 @@ fn send_right_after_ensure_before_reconciliation_pass_gives_no_warning_and_a_tim
         ],
     );
     assert_eq!(sent.code, 0, "{}{}", sent.stderr, sent.value);
+    assert!(!sent.stderr.contains("wake="), "{}", sent.stderr);
     assert!(
         !sent.stderr.contains("recipient_unavailable")
             && !sent.value.to_string().contains("recipient_unavailable"),

@@ -3828,6 +3828,12 @@ pub trait HostPort: Send + Sync {
     ) -> Result<HostObservation, ApiError> {
         self.observe_current_target(target, context)
     }
+    /// The block the last wake attempt for `seat` met in the host, while recent. A diagnostic of
+    /// that attempt, not of the screen now: cleared by an attempt that gets past the composer
+    /// checks, and read as none once old. Default: none recorded.
+    fn wake_block(&self, _seat: &SeatId) -> Option<crate::protocol::results::WakeBlock> {
+        None
+    }
     /// Pids of the processes Herdr reports in the pane's foreground (not its shell), for the
     /// composer wake of a seat with wake targets (spec §3 Wake). Empty when Herdr reports none
     /// or the adapter cannot ask: the composer wake then does not fire.

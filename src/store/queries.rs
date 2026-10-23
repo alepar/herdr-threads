@@ -367,6 +367,7 @@ fn query_inner(
         }
         Command::Participants(q) => participants(&db, instance, q, store.clock().utc_now(), output),
         Command::ParticipantLocations(q) => participant_locations(&db, instance, q),
+        Command::WakeStatus(q) => wake_status_seats(&db, instance, q),
         Command::Seats(q) => seats(&db, instance, q, output),
         Command::Diagnostics(q) => diagnostics(&db, instance, q, store.clock().utc_now(), output),
         Command::Recipients(q) => recipients(&db, instance, q, store.clock().utc_now(), output),
@@ -6387,6 +6388,73 @@ mod tests;
 #[cfg(test)]
 #[path = "../../tests/store/multi_binding_readers.rs"]
 mod multi_binding_readers_tests;
+
+/// The local seats a wake status query names (its `seats`, then the priority-0 delivery
+/// recipients of its `message`, or with `all` every local seat with an open binding), at most
+/// `MAX_BATCH_ITEMS`, the observer left out, each with its representative open binding's
+/// harness. The daemon adds the blocks (`DomainService::wake_status`).
+fn wake_status_seats(
+    db: &QueryConnection,
+    instance: &str,
+    q: &crate::protocol::commands::WakeStatusQuery,
+) -> Result<CommandResult, ApiError> {
+    let limit = crate::protocol::commands::MAX_BATCH_ITEMS;
+    let mut seats: Vec<String> = q.seats.iter().map(|s| s.as_str().to_owned()).collect();
+    let mut collect = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Result<(), ApiError> {
+        let mut statement = db.prepare(sql).map_err(|e| db.map_error(e))?;
+        let rows = statement
+            .query_map(params, |r| r.get::<_, String>(0))
+            .map_err(|e| db.map_error(e))?;
+        for row in rows {
+            seats.push(row.map_err(|e| db.map_error(e))?);
+        }
+        Ok(())
+    };
+    let message = match &q.message {
+        Some(message) if message_owned(db, instance, message)? => Some(message),
+        _ => None,
+    };
+    if let Some(message) = message {
+        collect(
+            "SELECT DISTINCT seat_id FROM lazy_recipients WHERE message_id=?1 AND priority=0 ORDER BY seat_id LIMIT ?2",
+            &[&message.as_str(), &(limit as i64)],
+        )?;
+    }
+    if q.all {
+        collect(
+            "SELECT s.id FROM seats s WHERE s.instance_id=?1 AND s.is_local=1 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL) ORDER BY s.ordinal LIMIT ?2",
+            &[&instance, &(limit as i64)],
+        )?;
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut rows = Vec::new();
+    for seat in seats {
+        if rows.len() == limit
+            || q.observer.as_ref().is_some_and(|o| o.as_str() == seat)
+            || !seen.insert(seat.clone())
+        {
+            continue;
+        }
+        let local: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2 AND is_local=1)",
+                rusqlite::params![seat, instance],
+                |r| r.get(0),
+            )
+            .map_err(|e| db.map_error(e))?;
+        if !local {
+            continue;
+        }
+        let harness = open_binding(db, &seat)?.map(|binding| binding.harness);
+        rows.push(crate::protocol::results::SeatWakeStatus {
+            seat: SeatId::new(seat),
+            harness,
+            wake: None,
+            first: false,
+        });
+    }
+    Ok(CommandResult::WakeStatus(rows))
+}
 
 /// One bounded query under the canonical read transaction; no host labels or client hints.
 fn participant_locations(

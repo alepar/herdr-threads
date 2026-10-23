@@ -123,6 +123,8 @@ pub(crate) enum Daemon {
 pub(crate) struct DaemonDetails {
     pub(crate) states: Result<HarnessStatesReport, String>,
     rich: Result<crate::protocol::results::HarnessHealthV2Report, String>,
+    /// `report.wake` (`wake_report`).
+    wake: Value,
 }
 
 /// Negotiate once, with the exact Health call's deadline and cancellation.
@@ -166,7 +168,8 @@ fn daemon_details(client: &dyn LocalClient, budget: &CallBudget) -> DaemonDetail
     } else {
         Err("the daemon does not advertise harness.states (an older daemon)".into())
     };
-    DaemonDetails { states, rich }
+    let wake = wake_report(client, &capabilities, budget);
+    DaemonDetails { states, rich, wake }
 }
 
 pub(crate) fn probe_daemon(
@@ -214,6 +217,61 @@ pub(crate) fn probe_daemon(
             exit::code_name(&error.code)
         ))),
     }
+}
+
+/// Per-seat wake blocks of the local seats with open bindings (`Command::WakeStatus`):
+/// `{"seats": [...]}` with every listed seat, or `{"error": ...}` when the daemon has none.
+fn wake_report(
+    client: &dyn LocalClient,
+    capabilities: &Result<crate::protocol::capabilities::Capabilities, String>,
+    budget: &CallBudget,
+) -> Value {
+    use crate::protocol::capabilities::WAKE_STATUS_V1;
+    match capabilities {
+        Err(error) => return json!({"error": error}),
+        Ok(capabilities) if !capabilities.supports(WAKE_STATUS_V1) => {
+            return json!({"error": "the daemon does not advertise seat.wake_status_v1 (an older daemon)"});
+        }
+        Ok(_) => {}
+    }
+    let query = crate::protocol::commands::WakeStatusQuery {
+        all: true,
+        seats: Vec::new(),
+        message: None,
+        observer: None,
+    };
+    match client.call(Command::WakeStatus(query), budget) {
+        Ok(CommandResult::WakeStatus(rows)) => json!({"seats": rows}),
+        Ok(_) => json!({"error": "the daemon answered wake status with another result"}),
+        Err(error) => json!({"error": format!(
+            "wake status failed: {} ({})",
+            error.detail,
+            exit::code_name(&error.code)
+        )}),
+    }
+}
+
+/// `wake: <seat> <harness> wake=<reason>` for each blocked seat of `report.wake`; with `debug`,
+/// `wake: unavailable: <error>` when the daemon gave no wake status.
+fn wake_text(report: &Value, debug: bool) -> String {
+    let Some(seats) = report["wake"]["seats"].as_array() else {
+        return match report["wake"]["error"].as_str() {
+            Some(error) if debug => format!("wake: unavailable: {}\n", clean(error)),
+            _ => String::new(),
+        };
+    };
+    seats
+        .iter()
+        .filter(|row| row["wake"].is_string())
+        .map(|row| {
+            format!(
+                "wake: {} {} wake={}\n",
+                scalar(&row["seat"]),
+                scalar(&row["harness"]),
+                scalar(&row["wake"])
+            )
+        })
+        .collect()
 }
 
 /// The node directory, when it exists and fails the 0700 ownership checks
@@ -934,6 +992,7 @@ fn report_captured(
                     }
                 }
                 Ok(Daemon::Reachable(health, answered)) => {
+                    report["wake"] = answered.wake;
                     states = answered.states;
                     rich = answered.rich;
                     daemon_limitations = health.limitations.clone();
@@ -1330,6 +1389,7 @@ pub(crate) fn render_debug_text_in(
             "skill.summary_procedure: {}\n",
             scalar(&report["skill"]["summary_procedure"])
         ));
+        out.push_str(&wake_text(report, true));
         for registration in text_adapters(report, registry) {
             out.push_str(&registration.doctor_text(
                 &report["hooks"][registration.metadata().id],
@@ -1380,6 +1440,7 @@ pub(crate) fn render_text_in(
     if daemon["version_matches"] == json!(false) {
         out.push_str("issue: daemon version differs from this CLI; inspect with --debug\n");
     }
+    out.push_str(&wake_text(report, false));
     out.push_str(&super::legacy::report_lines(&report["legacy"]));
     for registration in &adapters {
         let hooks = &report["hooks"][registration.metadata().id];

@@ -45,6 +45,7 @@ pub mod topology_handoff;
 pub mod topology_recover;
 mod topology_runtime;
 pub mod wake_on;
+mod wake_warning;
 pub mod watch;
 
 use crate::{
@@ -4031,6 +4032,12 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         CliAction::Mutation(MutationSpec::DirectSend(request)) => {
             let context = current()?;
             let claim = contexts.claim(&context).map_err(context_run_error)?;
+            // A direct send's priority-0 recipients: the target at p0, and its ACK recipients.
+            let mut wake_seats = request.require_ack.clone();
+            if request.priority.is_some_and(|p| p.get() == 0) {
+                wake_seats.insert(0, request.target.clone());
+            }
+            let wake_claim = claim.clone();
             direct_send::start(
                 request,
                 claim,
@@ -4040,6 +4047,14 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 &parsed.output,
                 writer,
             )?;
+            wake_warning::show(
+                client,
+                &cooperative_budget(clock),
+                &wake_claim,
+                wake_seats,
+                None,
+                &mut io::stderr(),
+            );
         }
         CliAction::Mutation(mutation) => {
             let context = current()?;
@@ -4063,6 +4078,18 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 }
                 _ => None,
             };
+            // The priority-0 recipients the warning asks about: ACK recipients and, for a p0
+            // send, its delivery recipients (`p0_send`); an invitee.
+            let (wake_seats, p0_send) = match &mutation {
+                MutationSpec::Send {
+                    priority,
+                    require_ack,
+                    ..
+                } => (require_ack.clone(), priority.get() == 0),
+                MutationSpec::Invite { seat, .. } => (vec![seat.clone()], false),
+                _ => (Vec::new(), false),
+            };
+            let wake_claim = claim.clone();
             // The wire shape of a send is decided once, here, and recorded: a retry replays it.
             let semantic = SemanticMutation::freeze(cooperative_semantic(mutation)?, claim)?;
             require_invitation_confirmation_capability(client, clock, &semantic)?;
@@ -4077,6 +4104,23 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 writer,
             )
             .map_err(retry_failure)?;
+            if matches!(
+                result,
+                CommandResult::MessageSent(_) | CommandResult::Invitation(_)
+            ) {
+                let message = match &result {
+                    CommandResult::MessageSent(message) if p0_send => Some(message.clone()),
+                    _ => None,
+                };
+                wake_warning::show(
+                    client,
+                    &cooperative_budget(clock),
+                    &wake_claim,
+                    wake_seats,
+                    message,
+                    &mut io::stderr(),
+                );
+            }
             if let Some((thread, claim)) = accepted_thread
                 && matches!(
                     result,

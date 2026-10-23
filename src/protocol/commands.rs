@@ -58,6 +58,9 @@ pub enum Command {
     History(HistoryQuery),
     Participants(ParticipantsQuery),
     ParticipantLocations(ParticipantLocationsQuery),
+    /// Why a local seat's idle session cannot be woken (`WAKE_STATUS_V1`). Reads only, except the
+    /// observer's report bookkeeping (`WakeStatusQuery.observer`).
+    WakeStatus(WakeStatusQuery),
     Recipients(RecipientsQuery),
     DeliveryInspect(DeliveryInspectQuery),
     PendingReceipts(PendingReceiptsQuery),
@@ -512,6 +515,22 @@ pub struct ParticipantsQuery {
 pub struct ParticipantLocationsQuery {
     pub thread: ThreadId,
     pub seats: Vec<SeatId>,
+}
+/// The wake status of local seats: the named `seats`, plus the priority-0 delivery recipients of
+/// `message`, or with `all` every local seat with an open binding (doctor). With `observer` (the
+/// sender's own seat, a cooperative claim) a `no_wake` row says whether it is the first report of
+/// that seat to the observer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WakeStatusQuery {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seats: Vec<SeatId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<MessageId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observer: Option<SeatId>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1498,6 +1517,9 @@ impl Command {
                 if query.seats.is_empty() || query.seats.len() > MAX_BATCH_ITEMS =>
             {
                 Err("participant location batch must contain 1..=100 seats")
+            }
+            Self::WakeStatus(query) if query.seats.len() > MAX_BATCH_ITEMS => {
+                Err("wake status batch must contain at most 100 seats")
             }
             Self::AcceptRequired(accept) => accept.validate(),
             Self::Reject(reject) => validate_rejection_reason(&reject.reason),

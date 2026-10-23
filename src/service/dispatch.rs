@@ -115,7 +115,16 @@ pub struct DomainService {
     sync_admin: Option<Arc<super::sync_admin::SyncAdmin>>,
     pub(super) presentation: super::delivery_presentation::PresentationState,
     pub(super) delivery_pull: Arc<super::delivery_pull::DeliveryPullState>,
+    /// The (observer, seat) pairs whose `no_wake` was reported: a send warns its sender once
+    /// per seat while the seat stays `no_wake` (`Command::WakeStatus`). In memory, so a daemon
+    /// restart reports each again.
+    wake_reports: std::sync::Mutex<WakeReports>,
 }
+
+type WakeReports =
+    std::collections::HashSet<(crate::protocol::ids::SeatId, crate::protocol::ids::SeatId)>;
+/// Bound on `wake_reports`: past it the set starts over (each `no_wake` may be reported again).
+const MAX_WAKE_REPORTS: usize = 4_096;
 
 impl DomainService {
     pub fn new(instance: String, store: Arc<dyn StorePort>, clock: Arc<dyn Clock>) -> Self {
@@ -132,6 +141,7 @@ impl DomainService {
             sync_admin: None,
             delivery_pull: Default::default(),
             presentation: Default::default(),
+            wake_reports: Default::default(),
         }
     }
     /// Share the offered ledger with the wake lane (the same instance the wake worker reads).
@@ -231,6 +241,63 @@ impl DomainService {
         ));
         self.bootstrap_store = Some(store);
         Ok(self)
+    }
+
+    /// `Command::WakeStatus`: the store names the seats and their harnesses. A known harness with
+    /// no idle-wake path is `no_wake`; otherwise any attached host reports the block its last
+    /// wake attempt for the seat met (never attaching one). With an observer, `first` marks a
+    /// `no_wake` not yet reported to it; a seat that is no longer `no_wake` forgets the report.
+    fn wake_status(
+        &self,
+        query: &crate::protocol::commands::WakeStatusQuery,
+        read: &ReadContext,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        use crate::protocol::results::WakeBlock;
+        let CommandResult::WakeStatus(mut rows) =
+            self.store
+                .query(&Command::WakeStatus(query.clone()), read, budget)?
+        else {
+            return Err(error(
+                ErrorCode::StoreCorrupt,
+                "unexpected wake status result",
+            ));
+        };
+        let hosts = self
+            .hosts
+            .as_ref()
+            .map_or_else(Vec::new, |hosts| hosts.attached());
+        let registry = crate::harness::registry::builtins();
+        for row in &mut rows {
+            let Some(harness) = row.harness.as_deref() else {
+                continue;
+            };
+            row.wake = match registry.has_idle_wake(harness) {
+                Some(false) => Some(WakeBlock::NoWake),
+                Some(true) => hosts
+                    .iter()
+                    .find_map(|host| host.port().wake_block(&row.seat)),
+                None => None,
+            };
+        }
+        if let Some(observer) = &query.observer {
+            let mut reports = self
+                .wake_reports
+                .lock()
+                .map_err(|_| error(ErrorCode::StoreCorrupt, "wake report lock poisoned"))?;
+            for row in &mut rows {
+                let key = (observer.clone(), row.seat.clone());
+                if row.wake != Some(WakeBlock::NoWake) {
+                    reports.remove(&key);
+                    continue;
+                }
+                if reports.len() >= MAX_WAKE_REPORTS && !reports.contains(&key) {
+                    reports.clear();
+                }
+                row.first = reports.insert(key);
+            }
+        }
+        Ok(CommandResult::WakeStatus(rows))
     }
 
     /// The session of the Herdr server `locator` names.
@@ -1590,6 +1657,7 @@ impl LocalService for DomainService {
                 }
                 self.cooperative_mutation(PermitMutation::CheckIn(check), peer, budget, read, true)
             }
+            Command::WakeStatus(query) => self.wake_status(&query, &read, budget),
             Command::ResolveSeat(request) => {
                 let preparation = self.attached_host(&request.host, budget)?;
                 preparation

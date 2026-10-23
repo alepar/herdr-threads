@@ -1407,6 +1407,22 @@ impl Registry {
             .find(|r| r.metadata().id == harness_id)
             .and_then(|r| r.adapter.delivery_policy())
     }
+    /// Whether an idle session of this harness id has any wake path: the harness wakes itself
+    /// (`IdleWake::Channel`) or Herdr can type into its composer (a composer policy). `None` for
+    /// an id this build does not register (`human` included).
+    pub fn has_idle_wake(&self, harness_id: &str) -> Option<bool> {
+        let adapter = &self
+            .registrations
+            .iter()
+            .find(|r| r.metadata().id == harness_id)?
+            .adapter;
+        Some(
+            adapter.composer_policy().is_some()
+                || adapter
+                    .delivery_policy()
+                    .is_some_and(|p| p.idle_wake() == IdleWake::Channel),
+        )
+    }
     /// The binding policy of an agent harness id; `"human"` and unknown ids give the default.
     pub fn binding_policy(&self, harness_id: &str) -> BindingPolicy {
         self.registrations
@@ -1543,6 +1559,19 @@ mod tests {
         UnsupportedOperation { adapter, operation }
     }
     use super::*;
+
+    /// The send warning's `no_wake` rests on this classification: Claude (channel), Codex and agy
+    /// (composer) wake; Hermes has neither; an unregistered id is unknown, never `no_wake`.
+    #[test]
+    fn idle_wake_classification_of_the_builtins() {
+        let registry = builtins();
+        for id in ["claude", "codex", "agy"] {
+            assert_eq!(registry.has_idle_wake(id), Some(true), "{id}");
+        }
+        assert_eq!(registry.has_idle_wake("hermes"), Some(false));
+        assert_eq!(registry.has_idle_wake("human"), None);
+        assert_eq!(registry.has_idle_wake("pi"), None);
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct TestAdapter {
         metadata: &'static AdapterMetadata,

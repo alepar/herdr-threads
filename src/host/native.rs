@@ -16,7 +16,7 @@ use crate::ports::{
 use crate::protocol::{
     authority::Harness,
     ids::{HostBootId, HostCallId, HostTargetId, SeatId, TerminalId},
-    results::{ApiError, CapabilityState, ErrorCode},
+    results::{ApiError, CapabilityState, ErrorCode, WakeBlock},
     time::{CallBudget, Clock},
 };
 use std::{
@@ -70,6 +70,11 @@ const COMPOSER_TAIL_LINES: usize = 4;
 
 const FOCUSED_EMPTY_MILLIS: u64 = 60_000;
 const MAX_EMPTY_WINDOWS: usize = 1_024;
+/// How long a wake attempt's recorded block is reported (`HostPort::wake_block`): past it the
+/// block is stale (the screen may have changed with no further attempt) and reads as none.
+const WAKE_BLOCK_MILLIS: u64 = 10 * 60_000;
+/// Bound on recorded blocks; expired ones are pruned first, then a new seat is not recorded.
+const MAX_WAKE_BLOCKS: usize = 1_024;
 
 struct EmptyComposerWindow {
     target: SafeWakeTarget,
@@ -85,6 +90,9 @@ pub struct NativeCli {
     /// Observation order within one (boot, epoch). Never reused by this adapter.
     sequence: AtomicU64,
     empty_windows: Mutex<HashMap<SeatId, EmptyComposerWindow>>,
+    /// The block each seat's last wake attempt met, with when (monotonic ms) it was recorded
+    /// (`HostPort::wake_block`).
+    wake_blocks: Mutex<HashMap<SeatId, (WakeBlock, u64)>>,
     /// What the last answered `ping` reported, for Health: the admitted
     /// release, or None before any answer or after one the floor refused.
     release: Mutex<Option<super::compatibility::HostRelease>>,
@@ -790,6 +798,7 @@ impl NativeCli {
             epoch: AtomicU64::new(1),
             sequence: AtomicU64::new(1),
             empty_windows: Mutex::new(HashMap::new()),
+            wake_blocks: Mutex::new(HashMap::new()),
             release: Mutex::new(None),
         }
     }
@@ -1249,6 +1258,12 @@ impl HostPort for NativeCli {
         context: &HostCallContext,
     ) -> Result<HostObservation, ApiError> {
         self.observe_target(target, context, true)
+    }
+
+    fn wake_block(&self, seat: &SeatId) -> Option<WakeBlock> {
+        let now = self.clock.monotonic_now().0;
+        let (block, at) = *self.wake_blocks.lock().ok()?.get(seat)?;
+        (now.saturating_sub(at) < WAKE_BLOCK_MILLIS).then_some(block)
     }
 
     /// The pane's non-shell foreground processes from Herdr's `pane.process_info` (advisory,
@@ -1781,6 +1796,25 @@ impl NativeCli {
         false
     }
 
+    /// Records the block a wake attempt met (`None`: the attempt got past the composer checks).
+    fn note_wake_block(&self, seat: &SeatId, block: Option<WakeBlock>) {
+        let Ok(mut blocks) = self.wake_blocks.lock() else {
+            return;
+        };
+        let Some(block) = block else {
+            blocks.remove(seat);
+            return;
+        };
+        let now = self.clock.monotonic_now().0;
+        if blocks.len() >= MAX_WAKE_BLOCKS && !blocks.contains_key(seat) {
+            blocks.retain(|_, (_, at)| now.saturating_sub(*at) < WAKE_BLOCK_MILLIS);
+            if blocks.len() >= MAX_WAKE_BLOCKS {
+                return;
+            }
+        }
+        blocks.insert(seat.clone(), (block, now));
+    }
+
     fn submit_prompt_mode(
         &self,
         target: &SafeWakeTarget,
@@ -1873,16 +1907,26 @@ impl NativeCli {
             .get("focused")
             .and_then(serde_json::Value::as_bool)
             .ok_or_else(|| refuse("unreadable pane focus"))?;
-        if self.read_composer(&target.target, harness, context)? != ComposerRead::Empty {
-            return Err(refuse("composer is nonempty or unreadable"));
+        match self.read_composer(&target.target, harness, context)? {
+            ComposerRead::Empty => {}
+            ComposerRead::Unreadable => {
+                self.note_wake_block(&target.seat, Some(WakeBlock::Unreadable));
+                return Err(refuse("composer is unreadable"));
+            }
+            _ => {
+                self.note_wake_block(&target.seat, None);
+                return Err(refuse("composer is nonempty"));
+            }
         }
         self.check_epoch(target.epoch)?;
         self.check_context(context)?;
         if !self.focused_empty_ready(target, focused, previous) {
+            self.note_wake_block(&target.seat, Some(WakeBlock::Focused));
             return Err(refuse(
                 "focused composer has not been observed empty for one minute",
             ));
         }
+        self.note_wake_block(&target.seat, None);
         if budget.cancellation.is_cancelled() {
             return Err(error(ErrorCode::Cancelled, "wake prompt cancelled"));
         }
@@ -4471,10 +4515,62 @@ pub(crate) mod tests {
             let result = cli.submit_prompt(&target, "wake marker", &context);
             if at < 60_000 {
                 assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+                assert_eq!(cli.wake_block(&target.seat), Some(WakeBlock::Focused));
             } else {
                 assert_eq!(result.unwrap(), ports::PromptOutcome::Submitted);
+                assert_eq!(cli.wake_block(&target.seat), None);
             }
         }
+        worker.join().unwrap();
+        fs::remove_file(socket).unwrap();
+    }
+
+    /// A recorded block is reported for `WAKE_BLOCK_MILLIS` only: an old attempt says nothing
+    /// about the screen now.
+    #[test]
+    fn a_recorded_wake_block_expires() {
+        let clock = Arc::new(NudgeClock(AtomicU64::new(0)));
+        let cli = NativeCli::new(PathBuf::from("/unused-wake-block-test"), clock.clone());
+        let seat = SeatId::new("seat_1");
+        cli.note_wake_block(&seat, Some(WakeBlock::Unreadable));
+        clock.0.store(WAKE_BLOCK_MILLIS - 1, Ordering::SeqCst);
+        assert_eq!(cli.wake_block(&seat), Some(WakeBlock::Unreadable));
+        clock.0.store(WAKE_BLOCK_MILLIS, Ordering::SeqCst);
+        assert_eq!(cli.wake_block(&seat), None);
+        cli.note_wake_block(&seat, Some(WakeBlock::Focused));
+        assert_eq!(cli.wake_block(&seat), Some(WakeBlock::Focused));
+        cli.note_wake_block(&seat, None);
+        assert_eq!(cli.wake_block(&seat), None);
+    }
+
+    /// An unreadable composer is recorded as the seat's wake block; the next wake that reads an
+    /// empty composer and submits clears it.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn unreadable_composer_records_a_wake_block_until_a_wake_submits() {
+        let agent = wake_agent("idle", Some("claude"), "term_1");
+        let (socket, cli, worker) = serve_sequence(vec![
+            pane_exchange(),
+            recheck_exchange(agent.clone()),
+            detection_exchange("unknown layout"),
+            recheck_exchange(agent),
+            detection_exchange(claude_screen(&[""])),
+            prompt_exchange("wake marker"),
+        ]);
+        let observation = cli
+            .observe_current_target(&HostTargetId::new("w4:p1"), &pane_agent_context())
+            .unwrap();
+        let mut target = cli
+            .safe_wake_target(&SeatId::new("seat_1"), &observation)
+            .unwrap();
+        target.bound_harness = Some("claude".into());
+        assert_eq!(cli.wake_block(&target.seat), None);
+        let refused = cli.submit_prompt(&target, "wake marker", &wake_context(&observation));
+        assert_eq!(refused.unwrap_err().code, ErrorCode::TargetUnsafe);
+        assert_eq!(cli.wake_block(&target.seat), Some(WakeBlock::Unreadable));
+        let submitted = cli.submit_prompt(&target, "wake marker", &wake_context(&observation));
+        assert_eq!(submitted.unwrap(), ports::PromptOutcome::Submitted);
+        assert_eq!(cli.wake_block(&target.seat), None);
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
     }

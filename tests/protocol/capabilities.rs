@@ -291,6 +291,7 @@ fn capability_constants_are_stable() {
     assert_eq!(INBOX_PUSHED_HOLD, "inbox.pushed_hold_v1");
     assert_eq!(CLI_PENDING_HINT, "attention.cli_pending_hint_v1");
     assert_eq!(TURN_END_DUE, "turn_end.due_v1");
+    assert_eq!(WAKE_STATUS_V1, "seat.wake_status_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -333,7 +334,8 @@ fn capability_constants_are_stable() {
             "direct.auto_join_v1",
             "inbox.pushed_hold_v1",
             "attention.cli_pending_hint_v1",
-            "turn_end.due_v1"
+            "turn_end.due_v1",
+            "seat.wake_status_v1"
         ]
     );
 }
@@ -497,6 +499,7 @@ fn every_advertised_capability_has_a_handler() {
                 assert!(!ADVERTISED.contains(&AUTOMATIC_HANDOFF_V1));
             }
             PARTICIPANT_LOCATIONS => probe_participant_locations(),
+            WAKE_STATUS_V1 => probe_wake_status(),
             PICKER_DIRECTORY_V1 => probe_picker_directory(),
             MESSAGE_DELIVERY_MODES => probe_message_delivery_modes(),
             ATTENTION_NOTICE_DELIVERY => {
@@ -1092,6 +1095,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "inbox.pushed_hold_v1",
             "attention.cli_pending_hint_v1",
             "turn_end.due_v1",
+            "seat.wake_status_v1",
             "invitation.confirmation_v1"
         ]
     );
@@ -1741,6 +1745,29 @@ fn probe_participant_locations() {
     let command = Command::ParticipantLocations(ParticipantLocationsQuery {
         thread: ThreadId::new("t1"),
         seats: vec![SeatId::new("s1")],
+    });
+    assert!(command.validate().is_ok());
+    assert_eq!(
+        serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+        command
+    );
+    assert_eq!(
+        handler
+            .handle(command, PeerIdentity::from_kernel(501), &budget())
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+}
+
+fn probe_wake_status() {
+    use crate::protocol::{commands::WakeStatusQuery, ids::*};
+    let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
+    let command = Command::WakeStatus(WakeStatusQuery {
+        all: false,
+        seats: vec![SeatId::new("s1")],
+        message: Some(MessageId::new("m1")),
+        observer: Some(SeatId::new("s2")),
     });
     assert!(command.validate().is_ok());
     assert_eq!(

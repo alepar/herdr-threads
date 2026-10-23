@@ -56,6 +56,7 @@ pub enum CommandResult {
     History(Page<MessageSummary>),
     Participants(Page<Participant>),
     ParticipantLocations(Vec<ParticipantLocation>),
+    WakeStatus(Vec<SeatWakeStatus>),
     Recipients(Page<Recipient>),
     /// Warning recipients have no receipt or ACK obligation.
     WarningRecipients(Page<WarningRecipient>),
@@ -1657,6 +1658,42 @@ pub struct StructuredEvent {
 pub struct ConditionStatus {
     pub active: bool,
     pub state: String,
+}
+/// Why an idle session cannot be woken, rendered `wake=<reason>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeBlock {
+    /// The bound harness declares no idle-wake path: no channel and no composer policy.
+    NoWake,
+    /// The last wake attempt, in the last ten minutes, could not read the composer.
+    Unreadable,
+    /// The last wake attempt met a focused pane whose composer was not yet seen empty for a
+    /// minute (a hold that ends by itself).
+    Focused,
+    /// A reason this build does not know (a newer daemon).
+    #[serde(other)]
+    Unknown,
+}
+impl WakeBlock {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoWake => "no_wake",
+            Self::Unreadable => "unreadable",
+            Self::Focused => "focused",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+/// One local seat's wake status. `wake: None`: no known block.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatWakeStatus {
+    pub seat: SeatId,
+    /// The harness of the seat's representative open binding.
+    pub harness: Option<String>,
+    pub wake: Option<WakeBlock>,
+    /// First report of this seat's `no_wake` to the query's observer.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub first: bool,
 }
 /// Canonical seat mapping; topology labels are deliberately client-local.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

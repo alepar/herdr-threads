@@ -151,6 +151,8 @@ Linked machines (nodes) share threads, seats and messages. A seat whose home is 
 
 An overdue warning names the recipient's latest native wake or poke attempt since the send, for any item (`wake=`; text `last wake OUTCOME` or `no native wake recorded`). `submitted`: a prompt was typed (not proof it was read); `outcome_unknown`: typed, not verified; `unsafe`: refused before typing (composer not safe or target ambiguous); `unavailable`: nothing typed (already shown in its turn, or no safe target); `none`: no native wake (a mod-channel seat wakes without one). The recipient still gets the item on its next turn. If that cannot wait, tell your user; do not type into another agent's pane yourself.
 
+After a p0 send or invitation, stderr may add `warning: SEAT wake=no_wake` once per recipient: its harness has no idle wake, so the item waits for its next turn. Act as for an overdue warning.
+
 ## Errors and recovery
 
 For service connection recovery, `herdr-threads service inspect` is a read-only observation of the current connection, daemon boot and generation; it does not attest agent liveness. Only on an explicit operator request, use `herdr-threads human service disconnect --expected-boot BOOT --expected-generation GENERATION` with values returned by inspect. The daemon refuses stale values, and disconnect does not stop the daemon. Subagents must not disconnect.

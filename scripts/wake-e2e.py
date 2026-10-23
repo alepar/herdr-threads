@@ -128,6 +128,14 @@ EOT_PROMPT = ("End-of-turn test {tag}: run the shell command `{hold}` and no oth
               "instructions say without running any command, and print EOT-DONE again.")
 EOT_DONE_LINE = re.compile(r"^[^\w\n]*EOT-DONE[^\w\n]*$", re.M)
 SIDE_FORKS = 2
+# Opt-in, Codex at T=0 only (ht-wake-outcome): with Codex's `/model` picker open, p0 sends neither wake the recipient
+# nor type into the picker (its highlighted `› ` row reads as a draft, a hold that ends by itself), and the sender gets
+# no `wake=` warning (only lasting blocks warn); once the picker is closed the recipient wakes and gets every item.
+# (`wake=unreadable` cannot be staged this way on Codex: no captured Codex screen lacks a `› ` row.)
+WAKE_BLOCK_CASES = ("modal-hold/group",)
+WAKE_BLOCK_HOLD_S = 30
+PICKER_ROW = re.compile(r"^\u203a 1\. ")
+WAKE_BLOCK_WAIT_S = 90
 SIDE_DEADLINE_S = 45
 SIDE_DRAFT = "draft-kept-by-wake-e2e"
 # The sibling-displayed side turn: long enough that the p0 is sent while it is busy (a wake then is refused), then the
@@ -627,6 +635,20 @@ class Run:
         if check and rc != 0:
             raise RuntimeError(f"herdr-threads {' '.join(argv[:3])}: rc={rc} {clip((err or out).strip(), 300, getattr(self, 'secrets', None))}")
         return out
+
+    def ht_err(self, *argv, pane=None, human=False):
+        """`ht` returning (stdout, stderr): stderr carries the sender-side wake warning."""
+        prefix = ["--state-dir", str(self.state), "--host-endpoint", self.endpoint, "--json"]
+        e = dict(os.environ)
+        for var in ("HERDR_PANE_ID", *CALLER_SESSION_ENV):
+            e.pop(var, None)
+        if pane:
+            e["HERDR_PANE_ID"] = pane
+        full = [self.bin] + (["human"] if human else []) + prefix + list(argv)
+        rc, out, err = self.run(full, env=e, tag="ht:" + " ".join(argv[:2]))
+        if rc != 0:
+            raise RuntimeError(f"herdr-threads {' '.join(argv[:3])}: rc={rc} {clip((err or out).strip(), 300, getattr(self, 'secrets', None))}")
+        return out, err
 
     def herdr(self, *argv, tag=None, timeout=30, check=True):
         rc, out, err = self.run(["herdr", *argv], tag=tag or "herdr:" + " ".join(argv[:2]), timeout=timeout)
@@ -1803,8 +1825,76 @@ class Recipient:
         checks["warning_detail"] = (event or {}).get("detail")
         return woke, t_wake, mid
 
+    def doctor_wake(self):
+        """This seat's wake block as `doctor` reports it, or None."""
+        report = json.loads(self.run.ht("doctor", check=False) or "{}")
+        for row in (report.get("doctor") or {}).get("wake", {}).get("seats") or []:
+            if row.get("seat") == self.seat:
+                return row.get("wake")
+        return None
+
+    def wake_block_case(self, case):
+        """modal-hold: an open picker holds the p0 wake without a sender warning; closing it wakes."""
+        tag = f"{case} {self.run.run_id}"
+        checks = {}
+        gap = SPACING_S - (time.time() - self.last_wake)
+        if gap > 0:
+            self.run.stopping.wait(gap)
+        self.wait_idle()
+        def detection():
+            return self.run.herdr("pane", "read", self.pane, "--source", "detection", check=False).get("raw", "")
+        def footer():
+            return [l.strip() for l in detection().splitlines() if " \u00b7 ~/" in l][-1:]
+        checks["footer_before"] = footer()
+        wakes_before = wake_count(self.screen(1000))
+        self.run.herdr("pane", "send-text", self.pane, "/model")
+        time.sleep(1)
+        self.run.herdr("agent", "send-keys", self.pane, "enter", check=False)
+        opened = False
+        for _ in range(20):  # the picker is open once its first numbered row is drawn
+            if any(PICKER_ROW.match(l) for l in detection().splitlines()):
+                opened = True
+                break
+            time.sleep(0.5)
+        checks["picker_open"] = opened
+        pane = self.run.coords["main"]["pane"]
+        sends, mids = [], []
+        try:
+            if opened:
+                for n in range(2):
+                    out, err = self.run.ht_err("send", self.group, "--body", f"{tag} #{n}", "--nudge", pane=pane,
+                                               human=True)
+                    mids.append((json.loads(out).get("result") or {}).get("data"))
+                    sends.append([l for l in err.splitlines() if "wake=" in l])
+                self.run.stopping.wait(WAKE_BLOCK_HOLD_S)
+                checks["wakes_while_open"] = wake_count(self.screen(1000)) - wakes_before
+                checks["doctor_wake_open"] = self.doctor_wake()
+        finally:  # never leave the picker open for a later case
+            self.run.herdr("agent", "send-keys", self.pane, "esc", check=False)
+        checks["send_warnings"] = sends
+        t0, t_wake = time.time(), None
+        while opened and time.time() - t0 < WAKE_BLOCK_WAIT_S:  # the wake is a typed wake line
+            if wake_count(self.screen(1000)) > wakes_before:
+                t_wake = round(time.time() - t0, 2)
+                break
+            time.sleep(0.5)
+        woke = t_wake is not None
+        if woke:
+            self.last_wake = time.time()
+            self.wait_idle()
+        checks["delivered"] = bool(mids) and all(self.on_screen(m) for m in mids if m)
+        checks["footer_after"] = footer()
+        passed = (opened and checks["wakes_while_open"] == 0 and sends == [[], []] and woke
+                  and checks["delivered"] and checks["footer_after"] == checks["footer_before"])
+        self.settled()
+        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
+                         "expect_wake": True, "woke": woke, "t_wake_s": t_wake, "checks": checks,
+                         "ref": {"messages": mids}, "result": "PASS" if passed else "FAIL", "utc": utc()})
+
     # ---------- one case ----------
     def case(self, case):
+        if case in WAKE_BLOCK_CASES:
+            return self.wake_block_case(case)
         if case.startswith("side-"):
             return self.side_case(case)
         if case.startswith("hooks-"):
@@ -2105,6 +2195,8 @@ def applies(recipient, case):
         return getattr(recipient, "hooks_only", False) and case in HOOKS_CASES
     if case in EOT_CASES:
         return recipient.harness == "codex" and not getattr(recipient, "plain", False)
+    if case in WAKE_BLOCK_CASES:
+        return recipient.harness == "codex" and recipient.threshold == 0 and not getattr(recipient, "plain", False)
     return not getattr(recipient, "plain", False)
 
 
@@ -2167,7 +2259,7 @@ def main(argv=None):
     ap.add_argument("--harness", default=DEFAULT_HARNESSES,
                     help="comma-separated: claude,codex; opt-in: agy (credential from %s)" % AGY_CREDENTIAL_ENV)
     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
-                    + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES)
+                    + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES)
                     + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES))
     ap.add_argument("--evidence-dir", help="default: sibling ht-wake-evidence.<run id>")
     ap.add_argument("--keep", action="store_true", help="leave the workspace and daemon running for inspection")
@@ -2202,7 +2294,7 @@ def main(argv=None):
                   "(--approve-for-me); pass --codex-args to choose explicitly", file=sys.stderr)
     args.harness = [h for h in args.harness.split(",") if h]
     cases = [c for c in args.cases.split(",") if c]
-    unknown = ([c for c in cases if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES]
+    unknown = ([c for c in cases if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES + WAKE_BLOCK_CASES]
                + [h for h in args.harness if h not in HARNESSES])
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")
