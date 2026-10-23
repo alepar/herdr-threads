@@ -13,8 +13,10 @@
 //! The daemon decides "no turn delivery" from the binding's harness and canonical provenance
 //! (`HarnessAdapter::binding_turn_delivery`, text only like the wake text) in the same
 //! read-only attention digest a hook reads: one round trip, nothing displayed, ACKed or
-//! advanced. The count is read before the command runs. Any failure, an older daemon, a
-//! subagent, a person, machine output or a zero count prints nothing.
+//! advanced. A harness whose adapter delivers in turns without any evidence (Claude, agy,
+//! Hermes) is skipped before any call. The count is unread mail plus lazy rows, what `inbox`
+//! shows and ACKs, read before the command runs. Any failure, an older daemon, a subagent, a
+//! person, machine output or a zero count prints nothing.
 use crate::{
     ports::LocalClient,
     protocol::{
@@ -29,6 +31,17 @@ use crate::{
 use std::io::Write;
 
 use super::output::Presentation;
+
+/// Whether a caller of `harness` may lack turn delivery: its adapter's answer without binding
+/// evidence. `false` (hooks always deliver) skips the line with no daemon call.
+pub fn may_apply(harness: Harness) -> bool {
+    match harness {
+        Harness::Human => false,
+        Harness::Agent(id) => {
+            !crate::harness::registry::builtins().binding_turn_delivery(id.as_str(), None)
+        }
+    }
+}
 
 /// Writes the line when `claim`'s caller qualifies; never fails the command it precedes.
 pub fn write<C: LocalClient + ?Sized, W: Write>(
@@ -52,7 +65,7 @@ fn line<C: LocalClient + ?Sized>(
     budget: &dyn Fn() -> CallBudget,
 ) -> Option<String> {
     if claim.role != CallerRole::TopLevel
-        || claim.harness == Harness::Human
+        || !may_apply(claim.harness)
         || output.format != OutputFormat::Text
         || presentation == Presentation::Machine
     {
@@ -82,16 +95,19 @@ fn line<C: LocalClient + ?Sized>(
     if !digest.no_turn_delivery {
         return None;
     }
-    let classes = [&digest.invitations, &digest.receipts, &digest.warnings]
-        .into_iter()
-        .chain(&digest.lazy)
-        .chain(&digest.mail);
-    let (count, more) = classes.fold((0u64, false), |(count, more), class| {
-        (
-            count.saturating_add(class.count),
-            more || class.count_has_more,
-        )
-    });
+    // Only what `inbox` displays and ACKs: unread mail (ACK requests included) and lazy rows.
+    // Invitations and warnings stay pending past an `inbox` and wake the caller at p0 anyway.
+    let (count, more) =
+        digest
+            .lazy
+            .iter()
+            .chain(&digest.mail)
+            .fold((0u64, false), |(count, more), class| {
+                (
+                    count.saturating_add(class.count),
+                    more || class.count_has_more,
+                )
+            });
     if count == 0 {
         return None;
     }

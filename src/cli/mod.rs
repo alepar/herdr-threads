@@ -1344,9 +1344,17 @@ where
     match parsed.action {
         CliAction::Wire(command) => {
             let (_, client) = connection.get()?;
-            // An agent's text read: its claim serves the pending-count line (ht-piggyback) and
-            // a full body read's cursor advance.
-            let reader = if text_read {
+            // An agent's text read: its claim serves a full body read's cursor advance and, for a
+            // harness that may lack turn delivery, the pending-count line (ht-piggyback). Other
+            // reads resolve no claim.
+            let hinted = !matches!(
+                &command,
+                Command::Inbox(_) | Command::InboxBatch(_) | Command::InboxBatchV2(_)
+            ) && matches!(
+                caller::active(),
+                Some(caller::CallerOrigin::Agent(env)) if pending_hint::may_apply(env.harness)
+            );
+            let reader = if text_read && (hinted || matches!(&command, Command::Message(_))) {
                 body_reader_claim(
                     &parsed.output,
                     caller_pane,
@@ -1358,12 +1366,7 @@ where
             } else {
                 None
             };
-            if let Some(claim) = &reader
-                && !matches!(
-                    &command,
-                    Command::Inbox(_) | Command::InboxBatch(_) | Command::InboxBatchV2(_)
-                )
-            {
+            if hinted && let Some(claim) = &reader {
                 pending_hint::write(
                     &parsed.output,
                     parsed.presentation,
@@ -3883,7 +3886,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                     | MutationSpec::AcceptRequired { .. }
             )
     ) && contexts.is_agent_caller()
-        && let Ok(Some(context)) = contexts.current()
+        && let Ok(Some(context)) = contexts.current_snapshot()
         && let Ok(claim) = role_claim(contexts, &context, role)
     {
         pending_hint::write(

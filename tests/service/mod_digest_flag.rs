@@ -96,11 +96,16 @@ fn service(channels: Arc<dyn ModChannels>) -> (DomainService, Directory) {
         [],
     )
     .unwrap();
-    // Two open Claude bindings of seat `s`: sessions `sess-a` and `sess-b`.
-    for (binding, session) in [("bind-a", "sess-a"), ("bind-b", "sess-b")] {
+    // Two open Claude bindings of seat `s` (sessions `sess-a`, `sess-b`) and one Codex binding
+    // enrolled by a plain call (`sess-c`, no hooks).
+    for (binding, harness, session, provenance) in [
+        ("bind-a", "claude", "sess-a", "cooperative_top_level"),
+        ("bind-b", "claude", "sess-b", "cooperative_top_level"),
+        ("bind-c", "codex", "sess-c", "cooperative_env_session"),
+    ] {
         db.execute(
-            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,binding_id) VALUES ('s',0,0,'s-target','b',1,'claude',?1,?2,'cooperative_top_level',0,'term','inc',?3)",
-            rusqlite::params![session, uuid::Uuid::new_v4().to_string(), binding],
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation,binding_id) VALUES ('s',0,0,'s-target','b',1,?4,?1,?2,?5,0,'term','inc',?3)",
+            rusqlite::params![session, uuid::Uuid::new_v4().to_string(), binding, harness, provenance],
         )
         .unwrap();
     }
@@ -250,4 +255,40 @@ fn domain_leaves_mod_channel_live_false_for_a_claim_without_a_binding() {
     subagent.role = CallerRole::Subagent;
     subagent.agent_id = Some(crate::protocol::ids::AgentId::new("agent-1"));
     assert_eq!(claimed_flags(&service, subagent), (false, false));
+}
+
+/// `no_turn_delivery` for `claim` asked with `cli_hint`, and without it.
+fn hint_flags(service: &DomainService, claim: CallerClaim) -> (bool, bool) {
+    let read = |cli_hint| match service
+        .handle(
+            Command::AttentionDigest(AttentionDigestQuery {
+                seat: SeatId::new("s"),
+                lazy: false,
+                claim: Some(claim.clone()),
+                cli_hint,
+            }),
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    {
+        CommandResult::AttentionDigest(digest) => digest.no_turn_delivery,
+        other => panic!("unexpected {other:?}"),
+    };
+    (read(true), read(false))
+}
+
+/// ht-piggyback. Kills: a hint for a hook-registered binding, none for a plain-CLI Codex one,
+/// a flag reported without `cli_hint`, and a live mod channel that does not clear it.
+#[test]
+fn no_turn_delivery_follows_the_claimed_binding_and_its_channel() {
+    let codex = CallerClaim {
+        harness: Harness::Codex,
+        ..claim("sess-c")
+    };
+    let (quiet, _dir) = service(Arc::new(ByBinding(vec![])));
+    assert_eq!(hint_flags(&quiet, codex.clone()), (true, false));
+    assert_eq!(hint_flags(&quiet, claim("sess-a")), (false, false));
+    let (live, _dir2) = service(Arc::new(ByBinding(vec![("s", "bind-c")])));
+    assert_eq!(hint_flags(&live, codex), (false, false));
 }

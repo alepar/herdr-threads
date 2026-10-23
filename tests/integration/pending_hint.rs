@@ -35,6 +35,11 @@ fn hookless_caller_sees_pending_count_on_top_of_text_commands() {
     let plain_seat = smoke.seat(&plain_pane);
     let plain = Agent::codex("codex-plain", &plain_pane).thread("codex-plain");
 
+    let thread = joined_thread(&smoke, &sender, &plain, &plain_seat);
+    // The accept enrolled it by a plain call.
+    let binding = smoke.binding(&plain_seat, "codex", "codex-plain", "");
+    assert_eq!(binding.provenance, "cooperative_env_session", "{binding:?}");
+    // Bound, nothing pending: no line.
     let quiet = smoke.text(&plain, &["thread", "list"]);
     assert_eq!(quiet.code, 0, "{}", quiet.text());
     assert_eq!(
@@ -43,11 +48,6 @@ fn hookless_caller_sees_pending_count_on_top_of_text_commands() {
         "nothing pending: {}",
         quiet.text()
     );
-
-    let thread = joined_thread(&smoke, &sender, &plain, &plain_seat);
-    // The accept enrolled it by a plain call.
-    let binding = smoke.binding(&plain_seat, "codex", "codex-plain", "");
-    assert_eq!(binding.provenance, "cooperative_env_session", "{binding:?}");
     smoke
         .cli(&sender, &["invite", &thread, "--seat", &hooked_seat])
         .data();
@@ -89,6 +89,7 @@ fn hookless_caller_sees_pending_count_on_top_of_text_commands() {
         "{}",
         sent.text()
     );
+    assert_eq!(sent.stdout.matches(HINT).count(), 1, "{}", sent.text());
 
     // Never on machine output.
     let machine = smoke.cli(&plain, &["thread", "list"]);
@@ -100,6 +101,8 @@ fn hookless_caller_sees_pending_count_on_top_of_text_commands() {
     assert_eq!(read.code, 0, "{}", read.text());
     assert_eq!(hint(&read.stdout), None, "{}", read.text());
     // Never for a binding with turn hooks, though its mail is pending too.
+    let binding = smoke.binding(&hooked_seat, "codex", "codex-hooked", "");
+    assert_eq!(binding.provenance, "cooperative_top_level", "{binding:?}");
     let served = smoke.text(&hooked, &["thread", "list"]);
     assert_eq!(served.code, 0, "{}", served.text());
     assert_eq!(hint(&served.stdout), None, "{}", served.text());
