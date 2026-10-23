@@ -508,7 +508,12 @@ model open work, and summary closure never changes receipt state or installs glo
   unset (`session_claim_required`), whose harness process cannot be fingerprinted
   (`liveness_fingerprint_required`), or that runs under `codex app-server --managed-daemon`
   (`managed_daemon_refused`, client-local). A process with no harness ancestor and no harness marker is a
-  person and keeps the pane-context path; a person's shell cannot act through an agent seat.
+  person and keeps the pane-context path; a person's shell cannot act through an agent seat. The markers
+  include those of agent harnesses that have no adapter (`harness::unsupported`: `PI_CODING_AGENT` for Pi,
+  `OPENCODE` for OpenCode; not `AI_AGENT`, which Claude Code sets too): such a caller is refused (`session_claim_required`,
+  client-local, naming the marker), never attributed to the person of its pane. Accepted limit: a person's
+  shell that inherits one of these markers (for example a terminal opened from inside such a harness) is
+  refused too; it acts from a clean shell, or with `human me init --operator` and then `human` commands.
 - *Subagent read-only* (ht-54r.20, ht-54r.58): the daemon decides read-only from the role on the binding
   row it resolves (A2), at every accountable entry point: check-in, handoff, create thread, invite, join,
   accept, reject, send, ACK, display ACK, mod-delivery ACK, completion of an inbox delivery, leave, topic
@@ -571,7 +576,8 @@ model open work, and summary closure never changes receipt state or installs glo
   `ht human me init` ends the seat's disconnected agent bindings (`ended_at`), and with `--operator` also the
   connected ones (disconnect `replaced` first) (implemented, ht-54r.4). `ht human me init` additionally refuses
   when agent evidence is present: one of the person-guard environment markers registered adapters declare (today `CLAUDECODE`,
-  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`, `ANTIGRAVITY_AGENT`), or Herdr reporting a registered adapter's recognized native host kind in the
+  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`, `ANTIGRAVITY_AGENT`) or the registry lists for agent harnesses with no
+  adapter (`PI_CODING_AGENT`, `OPENCODE`), or Herdr reporting a registered adapter's recognized native host kind in the
   pane. Registry metadata alone never establishes native recognition, continuity or caller authority.
   Unregistered agent kinds are not evidence, and a failed Herdr read counts as no evidence. `--operator`
   overrides the refusal through a local per-execution mark set only after the daemon accepts the request

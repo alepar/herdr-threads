@@ -45,7 +45,7 @@ class WorldError(RuntimeError):
 
 
 AGENT_ENV_PREFIXES = ("CLAUDE", "CODEX", "HERMES", "GEMINI", "ANTIGRAVITY", "AGY_", "AISW", "ANTHROPIC",
-                      "OPENAI", "OPENROUTER")
+                      "OPENAI", "OPENROUTER", "PI_CODING_AGENT", "OPENCODE")
 
 
 def scrub_agent_env(env):

@@ -160,7 +160,7 @@ fn inbox_continuation(result: &CommandResult) -> CommandResult {
 }
 
 /// Whether `env` carries a non-empty agent-harness marker: any environment variable a
-/// registered adapter declares, so a harness that runs commands in a PTY is still recognized
+/// registered adapter or an unsupported agent harness declares (`Registry::env_markers`), so a harness that runs commands in a PTY is still recognized
 /// as an agent, not a person.
 pub fn harness_marked(env: impl Fn(&str) -> Option<OsString>) -> bool {
     harness_marked_in(crate::harness::registry::builtins(), env)

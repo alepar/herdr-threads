@@ -361,6 +361,80 @@ fn agent_call_without_session_id_is_refused_reads_included() {
     );
 }
 
+// Kills: an agent of a harness with no adapter (Pi, OpenCode) read as a person: its plain calls
+// attributed through the pane context, or its `human me init` accepted, so it would send and ACK
+// as `operator_human`. The marker alone, with no harness ancestor, refuses both.
+#[test]
+fn unsupported_harness_agent_is_refused_never_a_person() {
+    let world = World::new(true);
+    let marked = |marker: (&str, &str), args: &[&str]| {
+        let mut command = crate::scrubbed_command(BIN);
+        command
+            .args(world.person_argv(args))
+            .env("HERDR_PANE_ID", "w1:p1")
+            .env(marker.0, marker.1);
+        for (key, value) in world.env() {
+            command.env(key, value);
+        }
+        run(command)
+    };
+    for marker in [("PI_CODING_AGENT", "true"), ("OPENCODE", "1")] {
+        for args in [&["inbox"][..], &["thread", "create", "--topic", "x"][..]] {
+            let out = marked(marker, args);
+            assert_eq!(
+                out.status.code(),
+                Some(REFUSED),
+                "{marker:?} {args:?}: {out:?}"
+            );
+            let text = stderr(&out);
+            assert!(
+                text.contains(&format!(
+                    "environment variable {} marks an agent harness herdr-threads does not support",
+                    marker.0
+                )),
+                "{marker:?} {args:?}: {text}"
+            );
+            assert!(text.contains("session_claim_required"), "{text}");
+        }
+        let out = marked(marker, &["human", "me", "init"]);
+        assert!(!out.status.success(), "{marker:?}: {out:?}");
+        let text = stderr(&out);
+        assert!(
+            text.contains(&format!("environment variable {} is set", marker.0))
+                && text.contains("never act as an agent"),
+            "{marker:?}: {text}"
+        );
+    }
+    // A registered harness's marker beside one (its ancestor not visible) keeps the registered
+    // harness wording: the caller is not told it runs an unsupported harness.
+    let mut command = crate::scrubbed_command(BIN);
+    command
+        .args(world.person_argv(&["inbox"]))
+        .env("HERDR_PANE_ID", "w1:p1")
+        .env("CLAUDECODE", "1")
+        .env("OPENCODE", "1");
+    for (key, value) in world.env() {
+        command.env(key, value);
+    }
+    let out = run(command);
+    assert_eq!(out.status.code(), Some(REFUSED), "{out:?}");
+    let text = stderr(&out);
+    assert!(
+        text.contains("an agent harness environment marker is set") && !text.contains("OPENCODE"),
+        "{text}"
+    );
+    // Nothing reached the seat: no binding of any kind, so no person seat either.
+    let seat = world.seat("w1:p1");
+    assert!(
+        world.bindings(&seat).is_empty(),
+        "{:?}",
+        world.bindings(&seat)
+    );
+    // The same pane without a marker is still a person.
+    let out = world.human_in("w1:p1", &["human", "me", "init"]);
+    assert!(out.status.success(), "{out:?} {}", stderr(&out));
+}
+
 // Kills: a refusal that only says the variable is missing - the pre-upgrade agent must be told
 // the fix (restart the agent / re-run setup), and must never be silently attributed to the pane.
 #[test]

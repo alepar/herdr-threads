@@ -93,5 +93,41 @@
     "exit": 3,
     "stderr": "herdr-threads: daemon is not running for this state/host context; run `herdr-threads daemon ensure` (host_unavailable)\n",
     "stdout": ""
+  },
+  {
+    "case": "PI_CODING_AGENT",
+    "env": [
+      [
+        "PI_CODING_AGENT",
+        "true"
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable PI_CODING_AGENT is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stdout": ""
+  },
+  {
+    "case": "OPENCODE",
+    "env": [
+      [
+        "OPENCODE",
+        "1"
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable OPENCODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stdout": ""
+  },
+  {
+    "case": "AI_AGENT-only",
+    "env": [
+      [
+        "AI_AGENT",
+        "pi"
+      ]
+    ],
+    "exit": 3,
+    "stderr": "herdr-threads: daemon is not running for this state/host context; run `herdr-threads daemon ensure` (host_unavailable)\n",
+    "stdout": ""
   }
 ]

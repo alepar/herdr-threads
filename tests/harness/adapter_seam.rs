@@ -181,6 +181,46 @@ fn adapter_seam_registry_rejects_duplicate_env_markers() {
     );
 }
 
+#[test]
+fn adapter_seam_registry_validates_unsupported_harness_markers() {
+    let with = |registrations: Vec<Registration>, unsupported: Vec<AgentEnvMarker>| {
+        Registry::with_unsupported_markers(
+            Box::leak(registrations.into_boxed_slice()),
+            Box::leak(unsupported.into_boxed_slice()),
+        )
+    };
+    let probe_one = || {
+        probe(
+            "one",
+            vec![marker("SHARED_MARK", false)],
+            AdapterText::NONE,
+            None,
+        )
+    };
+    assert_eq!(
+        with(vec![probe_one()], vec![marker("SHARED_MARK", true)]).err(),
+        Some(RegistryError::DuplicateEnvMarker("SHARED_MARK".into()))
+    );
+    assert_eq!(
+        with(vec![], vec![marker("TWICE", true), marker("TWICE", true)]).err(),
+        Some(RegistryError::DuplicateEnvMarker("TWICE".into()))
+    );
+    assert_eq!(
+        with(vec![], vec![marker("lower", true)]).err(),
+        Some(RegistryError::InvalidEnvMarker("lower".into()))
+    );
+    let registry = with(vec![probe_one()], vec![marker("OTHER_AGENT", true)]).unwrap();
+    assert_eq!(
+        names(registry.env_markers()),
+        ["SHARED_MARK", "OTHER_AGENT"]
+    );
+    assert_eq!(names(registry.person_guard_markers()), ["OTHER_AGENT"]);
+    assert_eq!(
+        names(registry.unsupported_markers().iter()),
+        ["OTHER_AGENT"]
+    );
+}
+
 fn no_groups(_: &str) -> Vec<(&'static str, Value)> {
     Vec::new()
 }
@@ -301,7 +341,9 @@ fn adapter_seam_registry_lists_markers_in_registry_order_and_splits_guards() {
             "CODEX_THREAD_ID",
             "CODEX_SANDBOX",
             "CODEX_SANDBOX_NETWORK_DISABLED",
-            "ANTIGRAVITY_AGENT"
+            "ANTIGRAVITY_AGENT",
+            "PI_CODING_AGENT",
+            "OPENCODE"
         ]
     );
     let guards: Vec<_> = names(registry.person_guard_markers());
@@ -311,9 +353,17 @@ fn adapter_seam_registry_lists_markers_in_registry_order_and_splits_guards() {
             "CLAUDECODE",
             "CODEX_SANDBOX",
             "CODEX_SANDBOX_NETWORK_DISABLED",
-            "ANTIGRAVITY_AGENT"
+            "ANTIGRAVITY_AGENT",
+            "PI_CODING_AGENT",
+            "OPENCODE"
         ]
     );
+    assert_eq!(
+        names(registry.unsupported_markers().iter()),
+        ["PI_CODING_AGENT", "OPENCODE"]
+    );
+    // AI_AGENT is set by Claude Code too: never a marker of a harness without an adapter.
+    assert!(!names(registry.env_markers()).contains(&"AI_AGENT"));
     // CODEX_THREAD_ID is output evidence only; widening A4 to it would change behaviour.
     assert!(!guards.contains(&"CODEX_THREAD_ID"));
 }
@@ -493,7 +543,7 @@ fn adapter_seam_builtin_me_init_help_names_the_guard_markers_only() {
     let me = crate::cli::help::me_init_help();
     assert!(
         me.contains(
-            "agent markers (CLAUDECODE, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED, ANTIGRAVITY_AGENT) or a registered agent harness reported by Herdr are present"
+            "agent markers (CLAUDECODE, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED, ANTIGRAVITY_AGENT, PI_CODING_AGENT, OPENCODE) or a registered agent harness reported by Herdr are present"
         ),
         "{me}"
     );

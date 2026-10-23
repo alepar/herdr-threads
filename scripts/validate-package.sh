@@ -103,17 +103,19 @@ node.mkdir(mode=0o700)
 socket = root / "h.sock"
 foreign_target = root / "foreign-cargo-target"
 # The script is the local operator of this private instance. A launching shell inside an agent
-# (Claude Code, Codex, Hermes, agy) leaves that harness's attribution markers in the environment;
+# (Claude Code, Codex, Hermes, agy, or Pi/OpenCode, which have no adapter) leaves that harness's attribution markers in the environment;
 # they describe the launching agent, never the private seat pane, so none reaches the private
 # server, its panes or the CLI calls (otherwise `human me init` refuses the pane, TRUST-POLICY A4).
 # The names are the ones registered adapters declare: person-guard markers (AgentEnvMarker with
-# person_guard: CLAUDECODE, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED, ANTIGRAVITY_AGENT), the
+# person_guard: CLAUDECODE, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED, ANTIGRAVITY_AGENT, and the
+# unsupported harnesses' PI_CODING_AGENT, OPENCODE), the
 # output-form marker CODEX_THREAD_ID, and the caller-session variables (CallerEnvShape session_var:
 # CLAUDE_CODE_SESSION_ID, CODEX_SESSION_ID, HERMES_SESSION_ID, ANTIGRAVITY_CONVERSATION_ID), plus
 # the rest of Claude Code's CLAUDE_CODE_* session environment and CLAUDE_PID.
 HARNESS_ATTRIBUTION_ENV = {
     "CLAUDECODE", "CLAUDE_PID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_THREAD_ID",
     "CODEX_SESSION_ID", "HERMES_SESSION_ID", "ANTIGRAVITY_AGENT", "ANTIGRAVITY_CONVERSATION_ID",
+    "PI_CODING_AGENT", "OPENCODE",
 }
 
 

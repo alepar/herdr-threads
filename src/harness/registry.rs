@@ -1249,6 +1249,8 @@ impl Registration {
 }
 pub struct Registry {
     registrations: &'static [Registration],
+    /// Markers of agent harnesses with no adapter (`harness::unsupported`).
+    unsupported_markers: &'static [AgentEnvMarker],
 }
 /// `[A-Z][A-Z0-9_]{0,63}`.
 fn env_marker_name(name: &str) -> bool {
@@ -1286,6 +1288,14 @@ fn delivery_pairing_allowed(policy: &dyn DeliveryPolicy) -> bool {
 }
 impl Registry {
     pub fn new(registrations: &'static [Registration]) -> Result<Self, RegistryError> {
+        Self::with_unsupported_markers(registrations, &[])
+    }
+    /// [`Registry::new`] plus the environment markers of agent harnesses that have no adapter,
+    /// validated like adapter markers and unique across both.
+    pub fn with_unsupported_markers(
+        registrations: &'static [Registration],
+        unsupported_markers: &'static [AgentEnvMarker],
+    ) -> Result<Self, RegistryError> {
         let mut ids = std::collections::HashSet::new();
         let mut contexts = std::collections::HashSet::new();
         let mut kinds = std::collections::HashSet::new();
@@ -1377,6 +1387,14 @@ impl Registry {
                 }
             }
         }
+        for marker in unsupported_markers {
+            if !env_marker_name(marker.name) {
+                return Err(RegistryError::InvalidEnvMarker(marker.name.into()));
+            }
+            if !markers.insert(marker.name) {
+                return Err(RegistryError::DuplicateEnvMarker(marker.name.into()));
+            }
+        }
         // No registration receives an identity until the entire set passes validation.
         for r in registrations {
             let m = r.metadata();
@@ -1385,16 +1403,25 @@ impl Registry {
                 context_spelling: m.context_spelling,
             });
         }
-        Ok(Self { registrations })
+        Ok(Self {
+            registrations,
+            unsupported_markers,
+        })
     }
     pub fn registrations(&self) -> &'static [Registration] {
         self.registrations
     }
-    /// Every registered environment marker, in registry order.
+    /// Every registered environment marker, in registry order, then the unsupported harnesses'.
     pub fn env_markers(&self) -> impl Iterator<Item = &'static AgentEnvMarker> {
         self.registrations
             .iter()
             .flat_map(|r| r.metadata().agent_env_markers.iter())
+            .chain(self.unsupported_markers)
+    }
+    /// The markers of agent harnesses with no adapter: a caller carrying one is an agent the
+    /// registry cannot attribute.
+    pub fn unsupported_markers(&self) -> &'static [AgentEnvMarker] {
+        self.unsupported_markers
     }
     /// The markers whose presence is TRUST-POLICY A4 person-pane refusal evidence.
     pub fn person_guard_markers(&self) -> impl Iterator<Item = &'static AgentEnvMarker> {
@@ -1525,8 +1552,11 @@ pub fn builtins() -> &'static Registry {
             registrations
         };
         let registrations = Box::leak(registrations.into_boxed_slice());
-        let registry =
-            Registry::new(registrations).expect("built-in adapter registry validation failed");
+        let registry = Registry::with_unsupported_markers(
+            registrations,
+            crate::harness::unsupported::AGENT_ENV_MARKERS,
+        )
+        .expect("built-in adapter registry validation failed");
         assert_eq!(
             registry.agent("claude").expect("built-in Claude missing"),
             CLAUDE

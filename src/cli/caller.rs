@@ -22,7 +22,8 @@ use std::cell::RefCell;
 /// How this invocation identifies itself.
 #[derive(Debug, Clone)]
 pub enum CallerOrigin {
-    /// No harness ancestor and no harness marker: a person. Pane-context attribution.
+    /// No harness ancestor and no harness marker (registered or unsupported harness): a person.
+    /// Pane-context attribution.
     Human,
     /// A harness session, from its environment.
     Agent(EnvClaim),
@@ -102,12 +103,23 @@ impl Drop for ActiveGuard {
 /// The stable error for a refused origin (decision 15; exit statuses in `exit.rs`).
 pub(super) fn refusal_error(refusal: &EnvRefusal) -> RunError {
     let api = match refusal {
-        EnvRefusal::NoHarness => ApiError::session_claim_required(format!(
-            "an agent harness environment marker is set, but no {} or other registered agent \
-             harness process is among this process's ancestors, so the call cannot be \
-             attributed to a harness session; run herdr-threads from the agent's own shell tool",
-            crate::harness::caller_env::caller_harness_names()
-        )),
+        EnvRefusal::NoHarness => ApiError::session_claim_required(
+            match unsupported_marker(|name| std::env::var_os(name)) {
+                Some(marker) => format!(
+                    "environment variable {marker} marks an agent harness herdr-threads does not \
+                     support (supported: {}); the call is refused, never run as a person (a person's \
+                     shell: unset {marker}, or use `herdr-threads human`)",
+                    crate::harness::caller_env::caller_harness_names()
+                ),
+                None => format!(
+                    "an agent harness environment marker is set, but no {} or other registered \
+                     agent harness process is among this process's ancestors, so the call cannot \
+                     be attributed to a harness session; run herdr-threads from the agent's own \
+                     shell tool",
+                    crate::harness::caller_env::caller_harness_names()
+                ),
+            },
+        ),
         EnvRefusal::MissingSession { .. }
         | EnvRefusal::MalformedSubagentMarker { .. }
         | EnvRefusal::UnattributedSession { .. } => {
@@ -119,6 +131,24 @@ pub(super) fn refusal_error(refusal: &EnvRefusal) -> RunError {
         EnvRefusal::ManagedDaemon { .. } => ApiError::managed_daemon_refused(refusal.message()),
     };
     RunError::Api(api)
+}
+
+/// The first set (non-empty) marker of an agent harness with no adapter, unless an adapter's
+/// marker is set too (a registered harness whose ancestor is not visible).
+fn unsupported_marker(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<&'static str> {
+    let registry = crate::harness::registry::builtins();
+    let set = |name: &str| env(name).is_some_and(|value| !value.is_empty());
+    let unsupported = registry.unsupported_markers();
+    if registry
+        .env_markers()
+        .any(|marker| !unsupported.contains(marker) && set(marker.name))
+    {
+        return None;
+    }
+    unsupported
+        .iter()
+        .map(|marker| marker.name)
+        .find(|name| set(name))
 }
 
 pub(super) fn role_of(role: CallerRole) -> Role {

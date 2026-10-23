@@ -73,6 +73,7 @@ pub mod state;
 #[cfg(test)]
 #[path = "../../tests/harness/stub_binaries.rs"]
 pub(crate) mod stub_binaries;
+pub mod unsupported;
 #[cfg(test)]
 #[path = "../../tests/harness/versions_json_guard.rs"]
 mod versions_json_guard;

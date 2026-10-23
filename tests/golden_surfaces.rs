@@ -717,7 +717,7 @@ fn contract_id_output() {
 #[test]
 fn env_marker_detection() {
     let s = Scratch::new(false);
-    let cases: [(&str, Vec<(&str, &str)>); 8] = [
+    let cases: [(&str, Vec<(&str, &str)>); 11] = [
         ("none", vec![]),
         ("CLAUDECODE", vec![("CLAUDECODE", "1")]),
         ("CLAUDECODE-empty", vec![("CLAUDECODE", "")]),
@@ -732,6 +732,11 @@ fn env_marker_detection() {
             vec![("CLAUDECODE", "1"), ("CODEX_SANDBOX", "seatbelt")],
         ),
         ("CODEX_HOME-only", vec![("CODEX_HOME", "/nowhere")]),
+        // Agent harnesses with no adapter (Pi, OpenCode); AI_AGENT, which Claude Code also
+        // sets, is no marker.
+        ("PI_CODING_AGENT", vec![("PI_CODING_AGENT", "true")]),
+        ("OPENCODE", vec![("OPENCODE", "1")]),
+        ("AI_AGENT-only", vec![("AI_AGENT", "pi")]),
     ];
     let mut results = Vec::new();
     for (label, vars) in cases {

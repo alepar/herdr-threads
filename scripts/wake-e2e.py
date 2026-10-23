@@ -223,7 +223,8 @@ def received_in_wake_turn(screen, mid):
 # checks this list against src/harness) of whatever runs this script: never inherited by the commands it runs.
 CALLER_SESSION_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SESSION_ID",
                       "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "HERMES_SESSION_ID",
-                      "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_AGENT")
+                      "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_AGENT",
+                      "PI_CODING_AGENT", "OPENCODE")
 DIALOG = re.compile(r"Trust this folder\?|trust (the files in )?this folder|Do you trust|Allow .* to run|"
                     r"Do you want to proceed\?|Would you like to run", re.I)
 # The linux mode's startup screens, matched on the whole visible screen (macOS keeps DIALOG on the last 400
