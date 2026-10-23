@@ -20,6 +20,9 @@ p5 and p1 sent first cannot wake the recipient; at T=-1 and T=3 the row checks d
 records the order as unjudged.
 The busy-* cases repeat invite/p1/p0/ack while the recipient is mid-turn: a recipient is nudged only when idle,
 so no wake prompt may be typed during or after that turn, and the item must arrive inside the turn instead.
+A woken recipient with hooks must also make no `inbox` call for a single-item send (no_extra_inbox): the hook or
+channel already delivered it, so the skill's bare-wake rule must not fire (Delivery contract rule 3). This check
+depends on model behaviour; the row records the count (inbox_calls) and calls-<recipient>.txt the logged calls.
 
 Isolation: an isolated daemon and state dir (driven by --bin, default the repo's bin/herdr-threads), owned hooks
 installed by the public `setup` CLI into scratch HOME / CLAUDE_CONFIG_DIR / CODEX_HOME copies, one owned Herdr
@@ -625,9 +628,11 @@ class Run:
         q = shlex.quote
         shim = self.bindir / "herdr-threads"
         # Pins the run's --state-dir/--host-endpoint unless a rendered ready command already names them.
-        # Each call is logged (pane, argv, 0x1f-separated) for the extra-inbox check (calls_by).
+        # Each call is logged (pane, argv, 0x1f-separated) for the extra-inbox check (inbox_calls), as one append per
+        # record so concurrent recipients never interleave a line.
         shim.write_text("#!/bin/sh\n"
-                        f"printf '%s\\037' \"${{HERDR_PANE_ID:-}}\" \"$@\" >> {q(str(self.calls_log))}; echo >> {q(str(self.calls_log))}\n"
+                        "rec=$(printf '%s\\037' \"${HERDR_PANE_ID:-}\" \"$@\")\n"
+                        f"printf '%s\\n' \"$rec\" >> {q(str(self.calls_log))}\n"
                         "pin_state=1 pin_host=1\nfor word in \"$@\"; do\n  case \"$word\" in\n"
                         "    --state-dir|--state-dir=*) pin_state=0 ;;\n    --host-endpoint|--host-endpoint=*) pin_host=0 ;;\n"
                         "  esac\ndone\n"
@@ -1103,10 +1108,15 @@ def is_inbox_call(argv):
     return False
 
 
-def inbox_calls(log_text, pane):
-    """`inbox` calls the shim logged from `pane` (lines of 0x1f-terminated fields: pane, then argv)."""
+def pane_calls(log_text, pane):
+    """argv of each call the shim logged from `pane` (lines of 0x1f-terminated fields: pane, then argv)."""
     rows = (line.split("\x1f")[:-1] for line in log_text.splitlines())
-    return sum(1 for row in rows if row and row[0] == pane and is_inbox_call(row[1:]))
+    return [row[1:] for row in rows if row and row[0] == pane]
+
+
+def inbox_calls(log_text, pane):
+    """`inbox` calls the shim logged from `pane`."""
+    return sum(1 for argv in pane_calls(log_text, pane) if is_inbox_call(argv))
 
 
 class Recipient:
@@ -1119,12 +1129,26 @@ class Recipient:
         self.pair = None
 
     # ---------- observation ----------
-    def inbox_calls(self):
-        log = getattr(self.run, "calls_log", None)  # self-test fakes have no shim
+    def calls(self):
+        """argv of each herdr-threads call this pane made through the shim ([] before any, or in self-test fakes)."""
         try:
-            return inbox_calls(log.read_text(errors="replace"), self.pane) if log else 0
+            log = self.run.calls_log
+        except AttributeError:  # self-test fakes have no shim
+            return []
+        try:
+            return pane_calls(log.read_text(errors="replace"), self.pane)
         except FileNotFoundError:
-            return 0
+            return []
+
+    def inbox_calls(self):
+        return sum(1 for argv in self.calls() if is_inbox_call(argv))
+
+    def save_calls(self):
+        """This pane's logged calls, kept with the evidence so an inbox_calls count is traceable."""
+        mine = [" ".join(argv) for argv in self.calls()]
+        if mine:
+            (self.run.ev / f"calls-{self.name}.txt").write_text(
+                redact("\n".join(mine) + "\n", getattr(self.run, "secrets", ())))
 
     def status(self):
         return self.run.herdr("agent", "get", self.pane)["result"]["agent"]["agent_status"]
@@ -1965,6 +1989,7 @@ class Recipient:
             try:
                 (self.run.ev / f"pane-{self.name}.txt").write_text(
                     capture_evidence(self.screen(1000), 1000, getattr(self.run, "secrets", ())))
+                self.save_calls()
             except Stopped:
                 pass  # interrupted: no pane capture, the summary marks unfinished cases missing
 

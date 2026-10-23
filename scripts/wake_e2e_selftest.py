@@ -1314,6 +1314,34 @@ class CaseSpacing(unittest.TestCase):
         self.assertEqual([rows[c]["result"] for c in ("pair-open/1:1", "send-p1/group")], ["PASS", "PASS"], rows)
         self.assertIsNone(rows["pair-open/1:1"]["checks"].get("trailing_wake_s"))
 
+    def run_woken_send(self, extra_inbox):
+        """A woken p0 send; with extra_inbox the recipient's pane also logs one `inbox` call during its turn."""
+        log = Path(tempfile.mkdtemp(prefix="wake-e2e-selftest.")) / "calls.log"
+        self.addCleanup(shutil.rmtree, log.parent, True)
+        log.write_text("w9:p1\x1fhook\x1fcodex\x1f\nw9:p2\x1finbox\x1f\n")  # earlier and other-pane calls
+        r = self.recipient(FakeAgent(guard=5.0, opener_in_accept_turn=False))
+        r.run.calls_log = log
+        send = r.send
+
+        def send_and_maybe_read(*a, **kw):
+            mid = send(*a, **kw)
+            if extra_inbox:
+                with log.open("a") as f:
+                    f.write("w9:p1\x1finbox\x1f\n")
+            return mid
+        r.send = send_and_maybe_read
+        r.case("send-p0/group")
+        return self.rows[-1]
+
+    def test_a_woken_send_with_no_inbox_call_passes(self):
+        row = self.run_woken_send(extra_inbox=False)
+        self.assertEqual((row["result"], row["checks"]["inbox_calls"]), ("PASS", 0), row)
+
+    def test_an_extra_inbox_call_after_a_delivered_wake_fails_the_row(self):
+        row = self.run_woken_send(extra_inbox=True)
+        self.assertEqual((row["result"], row["checks"]["inbox_calls"]), ("FAIL", 1), row)
+        self.assertFalse(row["checks"]["no_extra_inbox"])
+
 
 class RunRoot(TempDir):
     """The run root lives under a short, existing temp dir on every platform (Linux has no /private/tmp)."""
