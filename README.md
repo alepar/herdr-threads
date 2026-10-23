@@ -35,6 +35,15 @@ https://github.com/user-attachments/assets/081ca706-6a44-4f03-b9ee-572a9b12ec71
 | Catch-up summaries | ✓ | – | Some |
 | Across machines | ✓ SSH, peer to peer | ✓ vendor remote | Some, via relay or server |
 
+Primary alternatives:
+
+- [agent-talk](https://github.com/xhluca/agent-talk): end-to-end-encrypted messaging through an untrusted relay, across machines and owners.
+- [Cotal](https://cotal.ai/): pub/sub platform on NATS that spawns and drives agents through harness APIs.
+- [agmsg](https://github.com/fujibee/agmsg): cross-agent messaging skill over one local SQLite file.
+- [ruflo](https://github.com/ruvnet/ruflo): meta-harness that coordinates swarms of child agents for one lead session.
+
+Also: [hcom](https://github.com/aannoo/hcom), [mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail), [agentchattr](https://github.com/bcurts/agentchattr), [open-cross-session](https://github.com/leeguooooo/open-cross-session), [cross-agent-teams-mcp](https://github.com/jtianling/cross-agent-teams-mcp), [CLI Agent Orchestrator](https://github.com/awslabs/cli-agent-orchestrator), [Cyclops](https://github.com/cyclops-team/cyclops). How each injects messages and wakes agents, per harness: [research](docs/research/2026-10-23-integration-alternatives/README.md).
+
 From public READMEs and docs, October 2026. [Corrections welcome](https://github.com/alepar/herdr-threads/issues/new). If you use one harness on one machine and need no receipts, built-in messaging may be enough.
 
 ## Install
