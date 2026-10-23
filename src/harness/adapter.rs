@@ -669,6 +669,9 @@ pub struct EventMetadata {
     pub shape_fields: Vec<String>,
     /// The subagent id a native event carried (see `LifecycleEvent::agent_id`).
     pub agent_id: Option<String>,
+    /// A turn-end check-in (end-of-turn delivery): it checks in like a tool boundary only when
+    /// the daemon says the seat holds an item that would wake it idle, else renders nothing.
+    pub turn_end: bool,
 }
 #[derive(Clone)]
 pub enum DeliveryEligibility {
@@ -1693,6 +1696,7 @@ mod tests {
             event_id: "event".into(),
             intent: EventIntent::Current,
             metadata: EventMetadata {
+                turn_end: false,
                 enrollment_witness: None,
                 context_source: "PreToolUse".into(),
                 callback_deadline: None,
@@ -1732,6 +1736,7 @@ mod tests {
             event_id: "event".into(),
             intent: EventIntent::Current,
             metadata: EventMetadata {
+                turn_end: false,
                 enrollment_witness: None,
                 context_source: "SessionStart".into(),
                 callback_deadline: None,
@@ -2003,6 +2008,7 @@ impl DecodedEvent {
                 EventIntent::Lifecycle(event.kind)
             },
             metadata: EventMetadata {
+                turn_end: false,
                 enrollment_witness: None,
                 context_source: event.source,
                 callback_deadline: None,

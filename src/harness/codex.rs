@@ -24,7 +24,7 @@ use super::codex_schema::{self, Unextractable};
 use super::context::{ContextError, EventKind, Harness, Role};
 use super::contract::{
     EventClass, EventContract, HarnessContract,
-    JsonType::{String as Str, StringOrNull as StrOrNull},
+    JsonType::{Bool, String as Str, StringOrNull as StrOrNull},
     field as f,
 };
 use super::process::{VERSION_OUTPUT_LIMIT, VERSION_TIMEOUT, version_output_by};
@@ -105,6 +105,17 @@ pub const CONTRACT: HarnessContract = HarnessContract {
                 f("turn_id", Str, true),
                 f("agent_id", Str, false),
                 f("agent_type", Str, false),
+            ],
+        },
+        // The turn end: a continuation delivers an item that would wake the seat idle.
+        EventContract {
+            event: "Stop",
+            class: EventClass::Tool,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("turn_id", Str, true),
+                f("stop_hook_active", Bool, false),
             ],
         },
         // A subagent's end (ht-54r.11): disconnects the binding keyed by (session_id, agent_id).
@@ -244,6 +255,11 @@ pub enum HookPurpose {
     /// `hookSpecificOutput.{hookEventName, additionalContext}` (0.158.0 embedded schema). A
     /// Codex that never fires it leaves delivery to the tool boundary.
     TurnStartContext,
+    /// `Stop` end-of-turn continuation: only when the daemon says the seat holds an item that
+    /// would wake it idle, `{decision:"block", reason}` with the bounded page as `reason` (Codex
+    /// records it as a user-role hook prompt and samples again without running
+    /// `UserPromptSubmit`); at most once per turn (`stop_hook_active`). Quiet stops print nothing.
+    TurnEndContinuation,
     /// `SubagentStop` / `SessionEnd`: a bookkeeping event that disconnects the binding it names
     /// (spec §3). It renders no context.
     EndEvent,
@@ -291,6 +307,11 @@ pub const DECLARATION: Declaration = Declaration {
             event: "UserPromptSubmit",
             matcher: None,
             purpose: HookPurpose::TurnStartContext,
+        },
+        OwnedHook {
+            event: "Stop",
+            matcher: None,
+            purpose: HookPurpose::TurnEndContinuation,
         },
         OwnedHook {
             event: "SubagentStop",
@@ -1046,6 +1067,13 @@ fn check_hooks_v1(value: &Value) -> Result<(), ContextError> {
                 return Err(ContextError::Invalid);
             }
         }
+        "Stop" => {
+            // A root turn's end; a subagent's is `SubagentStop`.
+            required(value, "turn_id")?;
+            if field(value, "agent_id")?.is_some() || field(value, "agent_type")?.is_some() {
+                return Err(ContextError::Invalid);
+            }
+        }
         "SubagentStop" => {
             // The end of a spawned thread: the binding it disconnects is keyed by (session, agent).
             required(value, "agent_id")?;
@@ -1144,6 +1172,31 @@ fn encode_native_context(event: &str, context: &str) -> Result<Vec<u8>, ContextE
     Ok(bytes)
 }
 
+/// A due turn end's output: the page becomes Codex's continuation prompt. Empty context (a quiet
+/// stop) prints nothing, so the turn ends.
+fn encode_continuation(
+    event: &DecodedEvent,
+    offer: &NeutralOffer,
+) -> Result<EncodedOutput, EncodeFailure> {
+    let context = &offer.fixed_guidance;
+    if context.len() > 4096 {
+        return Err(EncodeFailure::Invalid("context exceeds budget".into()));
+    }
+    let bytes = if context.is_empty() {
+        vec![]
+    } else {
+        serde_json::to_vec(&json!({"decision": "block", "reason": context}))
+            .map_err(|error| EncodeFailure::Invalid(error.to_string()))?
+    };
+    if matches!(event.delivery, DeliveryEligibility::Context)
+        && matches!(event.role, EventRole::TopLevel)
+    {
+        Ok(EncodedOutput::ContextBearing { bytes })
+    } else {
+        Ok(EncodedOutput::ObserverOnly { bytes })
+    }
+}
+
 /// Scoped command construction, reachable only through the gated
 /// `ToolInvocation::scoped_command`. It is not a native hook decision.
 fn scoped_bash_command(command: &str, tool_use_id: &str) -> Result<String, ContextError> {
@@ -1161,6 +1214,15 @@ fn scoped_bash_command(command: &str, tool_use_id: &str) -> Result<String, Conte
     Ok(format!(
         "export HERDR_HOOK_INVOCATION='{tool_use_id}'\n{command}"
     ))
+}
+
+/// `Stop.stop_hook_active`: this turn already continued once from a Stop hook. A payload without
+/// the flag reads as continued, so the turn ends quietly (only the continuation degrades).
+fn stop_hook_active(value: &Value) -> bool {
+    value
+        .get("stop_hook_active")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
 }
 
 fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextError> {
@@ -1185,8 +1247,9 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
             required(value, "tool_use_id")?;
             (name, EventKind::Tool, role)
         }
-        // A turn start checks in like a tool boundary (Current mode).
-        "UserPromptSubmit" => (name, EventKind::Tool, role),
+        // A turn start checks in like a tool boundary (Current mode), and so does a turn end
+        // (gated on a due continuation).
+        "UserPromptSubmit" | "Stop" => (name, EventKind::Tool, role),
         _ => return Err(ContextError::Invalid),
     };
     Ok(LifecycleEvent {
@@ -1202,7 +1265,7 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
 }
 
 /// Codex's declared hook groups (SessionStart, SubagentStart, Bash PreToolUse, UserPromptSubmit,
-/// SubagentStop, SessionEnd) in the `hooks.json` form. The 10 s timeout bounds Codex's wait (its default is 600 s); the hook's own
+/// Stop, SubagentStop, SessionEnd) in the `hooks.json` form. The 10 s timeout bounds Codex's wait (its default is 600 s); the hook's own
 /// watchdog ends it far earlier. SessionEnd declares 3 s: Codex clamps a SessionEnd timeout to 3 s
 /// and warns about a longer one at every start.
 pub fn declared_hook_groups(command: &str) -> Vec<(&'static str, Value)> {
@@ -1245,7 +1308,7 @@ pub const fn settings_kind() -> super::setup::SettingsKind {
 /// Help and report fragments of the Codex adapter (verbatim from the core text they replace).
 static TEXT: AdapterText = AdapterText {
     setup_scope: "  codex   $CODEX_HOME/hooks.json (default ~/.codex/hooks.json) for the hook groups
-          (SessionStart, SubagentStart, Bash PreToolUse, UserPromptSubmit). With consent,
+          (SessionStart, SubagentStart, Bash PreToolUse, UserPromptSubmit, Stop). With consent,
           agent permissions go in their own file, $CODEX_HOME/rules/herdr-threads.rules:
           an allow rule for `herdr-threads` and `ht` and prompt rules for the same human
           and setup commands.
@@ -1559,6 +1622,11 @@ impl HarnessAdapter for CodexAdapter {
                     always_send: false,
                 },
                 super::evidence::EvidenceEvent {
+                    native_event: "Stop",
+                    milestone: None,
+                    always_send: false,
+                },
+                super::evidence::EvidenceEvent {
                     native_event: "SubagentStop",
                     milestone: None,
                     always_send: false,
@@ -1644,11 +1712,23 @@ impl HarnessAdapter for CodexAdapter {
         parse_event_for_contract(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
             .map(|event| {
                 let turn_start = event.source == "UserPromptSubmit";
+                let turn_end = event.source == "Stop";
                 let mut decoded = DecodedEvent::from_native_payload(event, &input.bytes);
                 // A Current check-in decodes as a tool boundary; Codex validates the output's
                 // hookEventName against the event that ran.
                 if turn_start {
                     decoded.metadata.native_event = "UserPromptSubmit".into();
+                }
+                if turn_end {
+                    decoded.metadata.native_event = "Stop".into();
+                    decoded.metadata.turn_end = true;
+                    // One continuation per turn: a turn that already continued ends quietly.
+                    let continued = serde_json::from_slice::<Value>(&input.bytes)
+                        .map_or(true, |value| stop_hook_active(&value));
+                    if continued {
+                        decoded.intent = EventIntent::Observer;
+                        decoded.delivery = DeliveryEligibility::Ineligible;
+                    }
                 }
                 decoded
             })
@@ -1660,6 +1740,9 @@ impl HarnessAdapter for CodexAdapter {
         event: &DecodedEvent,
         offer: &NeutralOffer,
     ) -> Result<EncodedOutput, EncodeFailure> {
+        if event.metadata.native_event == "Stop" {
+            return encode_continuation(event, offer);
+        }
         super::adapter::encode_context(event, offer)
     }
     fn attribute_runtime(&self, input: &HookInput, _: &CallBudget) -> RuntimeAttribution {

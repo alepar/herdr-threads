@@ -59,6 +59,19 @@ fn subagent_stop(session: &str, turn: &str, agent: &str, agent_type: &str) -> Va
         "last_assistant_message": "done",
     })
 }
+fn stop(session: &str, continued: bool) -> Value {
+    json!({
+        "session_id": session,
+        "turn_id": "turn-1",
+        "transcript_path": null,
+        "cwd": "/private/tmp/work",
+        "hook_event_name": "Stop",
+        "model": "gpt-test",
+        "permission_mode": "default",
+        "stop_hook_active": continued,
+        "last_assistant_message": "done",
+    })
+}
 fn session_end(session: &str) -> Value {
     json!({
         "session_id": session,
@@ -383,6 +396,7 @@ fn declaration_reports_native_transport_and_receipt_unsupported() {
                 HookPurpose::ToolBoundaryContext
             ),
             ("UserPromptSubmit", None, HookPurpose::TurnStartContext),
+            ("Stop", None, HookPurpose::TurnEndContinuation),
             ("SubagentStop", None, HookPurpose::EndEvent),
             ("SessionEnd", None, HookPurpose::EndEvent),
         ]
@@ -852,6 +866,20 @@ fn every_declared_hook_is_installed_by_setup_and_encodes_context_only() {
                     other => panic!("undeclared end event {other}"),
                 };
                 let event = codex::parse_event_for_version(&bytes(&v), "event", &pinned()).unwrap();
+                assert!(codex::encode_event_context(&event, "context", true).is_err());
+                continue;
+            }
+            // The turn end is not context-only: its output is a continuation decision (see
+            // `codex_stop_continues_once_for_a_waking_item_and_stays_quiet_otherwise`), so the
+            // context encoder refuses it.
+            HookPurpose::TurnEndContinuation => {
+                assert_eq!(hook.matcher, None);
+                let event = codex::parse_event_for_version(
+                    &bytes(&stop("session-1", false)),
+                    "event",
+                    &pinned(),
+                )
+                .unwrap();
                 assert!(codex::encode_event_context(&event, "context", true).is_err());
                 continue;
             }

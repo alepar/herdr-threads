@@ -2969,6 +2969,118 @@ fn lazy_mail_reaches_the_next_claude_user_prompt_hook() {
     );
 }
 
+// End-of-turn delivery (ht-end-of-turn): a Codex Stop continues the turn only for an item that
+// would wake the seat idle (here a p0 at T = 0), with the bounded page (every pending item, any
+// priority) as the continuation reason; a default p1 at T = 0 never continues a turn, a turn that
+// already continued (`stop_hook_active`) ends quietly, and a quiet stop prints nothing. Kills: an
+// ungated Stop (the p1 would continue), a missing bound (the second stop would continue again),
+// and a Stop with no continuation (the p0 would wait for an idle wake).
+#[test]
+fn codex_stop_continues_once_for_a_waking_item_and_stays_quiet_otherwise() {
+    let fx = Fixture::start();
+    fx.register("w9:p2", "peer-sess");
+    let started = fx.codex_hook(
+        "w9:p3",
+        &Payload::session_start("cx-sess", "startup")
+            .codex("t0")
+            .bytes(),
+    );
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "codex-stop"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
+    text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", &["accept", &thread]);
+    let codex_stop = |n: u32, continued: bool| {
+        let hook = fx.codex_hook(
+            "w9:p3",
+            &Payload::bare("Stop")
+                .with("session_id", "cx-sess".into())
+                .with("turn_id", format!("t{n}").into())
+                .with("transcript_path", serde_json::Value::Null)
+                .with("cwd", "/tmp".into())
+                .with("model", "gpt-5".into())
+                .with("permission_mode", "default".into())
+                .with("stop_hook_active", continued.into())
+                .with("last_assistant_message", "done".into())
+                .bytes(),
+        );
+        assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+        assert!(hook.stderr.is_empty(), "{}", hook.stderr);
+        hook
+    };
+    let displayed = || {
+        fx.count("SELECT count(*) FROM lazy_recipients WHERE seat_id='cx' AND state='displayed'")
+    };
+    let quiet = codex_stop(1, false);
+    assert!(
+        quiet.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&quiet.stdout)
+    );
+    let silent = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--body", "codex stop p1 body"],
+    ));
+    let p1 = codex_stop(2, false);
+    assert!(
+        p1.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&p1.stdout)
+    );
+    assert_eq!(displayed(), 0);
+    let urgent = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "-p", "0", "--body", "codex stop p0 body"],
+    ));
+    let continued = codex_stop(3, false);
+    let decision: serde_json::Value = serde_json::from_slice(&continued.stdout).unwrap();
+    assert_eq!(decision["decision"], "block", "{decision}");
+    let reason = decision["reason"].as_str().unwrap();
+    assert!(reason.contains(INBOX_HEADER), "{reason}");
+    assert!(
+        reason.contains(&urgent) && reason.contains("codex stop p0 body"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains(&silent) && reason.contains("codex stop p1 body"),
+        "{reason}"
+    );
+    assert_eq!(displayed(), 2);
+    let later = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &[
+            "send",
+            &thread,
+            "-p",
+            "0",
+            "--body",
+            "codex stop later body",
+        ],
+    ));
+    let bounded = codex_stop(3, true);
+    assert!(
+        bounded.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&bounded.stdout)
+    );
+    assert_eq!(displayed(), 2);
+    let next: serde_json::Value = serde_json::from_slice(&codex_stop(4, false).stdout).unwrap();
+    assert!(next["reason"].as_str().unwrap().contains(&later), "{next}");
+    assert_eq!(displayed(), 3);
+    let after = codex_stop(5, false);
+    assert!(
+        after.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&after.stdout)
+    );
+}
+
 // Retained from fix2 (root adoption, wave-1 fix1 item a): more than 100
 // instance threads, so the check-in inbox page (100 scanned threads) is
 // truncated; a new invitation, then a new require-ack message, in thread 106

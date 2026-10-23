@@ -1010,6 +1010,7 @@ impl HarnessAdapter for HermesAdapter {
             event_id: e.event_id,
             intent,
             metadata: EventMetadata {
+                turn_end: false,
                 enrollment_witness,
                 context_source: e.callback.clone(),
                 native_event: e.callback,

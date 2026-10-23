@@ -289,6 +289,7 @@ fn capability_constants_are_stable() {
     assert_eq!(INBOX_THREAD_SCOPE, "inbox.thread_scope_v1");
     assert_eq!(INBOX_PUSHED_HOLD, "inbox.pushed_hold_v1");
     assert_eq!(CLI_PENDING_HINT, "attention.cli_pending_hint_v1");
+    assert_eq!(TURN_END_DUE, "turn_end.due_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -330,6 +331,7 @@ fn capability_constants_are_stable() {
             "direct.auto_join_v1",
             "inbox.pushed_hold_v1",
             "attention.cli_pending_hint_v1",
+            "turn_end.due_v1"
         ]
     );
 }
@@ -524,6 +526,21 @@ fn every_advertised_capability_has_a_handler() {
                 // `service::delivery_pull`, tested there); this daemon has none.
                 let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
                 let command: Command = serde_json::from_value(serde_json::json!({"kind":"delivery_pull","args":{"claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","host":"/host.sock","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
+            TURN_END_DUE => {
+                // The command decodes and routes to the domain service (its store decision is
+                // `WakeCandidate::owes_turn_end`, the turn-end continuation the hook e2e pins);
+                // this daemon has none.
+                let handler = daemon_handler(crate::node::NodeUuid::new_v4(), Uuid::new_v4());
+                let command: Command = serde_json::from_value(serde_json::json!({"kind":"turn_end_due","args":{"claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","host":"/host.sock","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
                 assert_eq!(
                     handler
@@ -1061,6 +1078,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "direct.auto_join_v1",
             "inbox.pushed_hold_v1",
             "attention.cli_pending_hint_v1",
+            "turn_end.due_v1",
             "invitation.confirmation_v1"
         ]
     );

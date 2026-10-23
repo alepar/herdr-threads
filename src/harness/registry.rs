@@ -2679,6 +2679,7 @@ mod tests {
             event_id: "event".into(),
             intent: EventIntent::Current,
             metadata: EventMetadata {
+                turn_end: false,
                 enrollment_witness: None,
                 context_source: "PreToolUse".into(),
                 callback_deadline: None,

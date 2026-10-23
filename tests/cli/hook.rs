@@ -3219,6 +3219,7 @@ mod continuity_gate {
                 },
                 clock: clock(),
                 retry,
+                turn_end: false,
             }
         }
         fn saved_context(&self, seat: &str) -> Option<OccupantContext> {
@@ -5894,6 +5895,7 @@ mod mod_channel_live {
                 },
                 clock: clock(),
                 retry: Arc::new(Window),
+                turn_end: false,
             }
         }
     }
@@ -7629,6 +7631,7 @@ mod registered_resume {
                 event_id: p.event_id,
                 intent,
                 metadata: EventMetadata {
+                    turn_end: false,
                     enrollment_witness: None,
                     skill_pointer: false,
                     callback_deadline: None,
@@ -9232,6 +9235,7 @@ mod registered_resume {
             },
             clock: clock(),
             retry: Arc::new(HookDeadline(Instant::now() + TOOL_BUDGET)),
+            turn_end: false,
         };
         let ev = LifecycleEvent {
             harness: Harness::Human,

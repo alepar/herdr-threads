@@ -1319,14 +1319,14 @@ mod tests {
     #[test]
     fn toml_scan_finds_owned_hook_events_in_every_spelling() {
         let text = "# [[hooks.PreToolUse]]\n[[hooks.SessionStart]]\nhooks = []\n\
-                    [hooks]\n\"SubagentStart\" = []\nStop = []\n\
+                    [hooks]\n\"SubagentStart\" = []\nInterrupt = []\n\
                     [other]\nPreToolUse = 1\n";
         assert_eq!(toml_hook_events(text), ["SessionStart", "SubagentStart"]);
         assert_eq!(
             toml_hook_events("hooks . PreToolUse = []\n[hooks.SessionStart.x]\n"),
             ["PreToolUse", "SessionStart"]
         );
-        assert!(toml_hook_events("hooks.Stop = []\n").is_empty());
+        assert!(toml_hook_events("hooks.Interrupt = []\n").is_empty());
     }
 
     /// Kills: matching only the raw command, so a command whose path needs

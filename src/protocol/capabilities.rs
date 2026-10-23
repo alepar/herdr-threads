@@ -77,6 +77,10 @@ pub const CLI_PENDING_HINT: &str = "attention.cli_pending_hint_v1";
 /// (ht-705). Nothing is settled or accepted.
 pub const IN_TURN_OFFER: &str = "inbox.in_turn_offer_v1";
 
+/// End-of-turn delivery: `Command::TurnEndDue` answers whether an ending turn owes the caller's
+/// seat a continuation (an item that would wake it idle). Without it a turn end never continues.
+pub const TURN_END_DUE: &str = "turn_end.due_v1";
+
 /// Thread-scoped lazy page: `InboxQuery.thread` on an `InboxBatchV2` first page selects only the
 /// reader's unread lazy rows of that thread (ht-br0: a text `accept` shows the joined thread's
 /// opening lazy mail in its own output).
@@ -162,6 +166,7 @@ pub const ADVERTISED: &[&str] = &[
     DIRECT_AUTO_JOIN_V1,
     INBOX_PUSHED_HOLD,
     CLI_PENDING_HINT,
+    TURN_END_DUE,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

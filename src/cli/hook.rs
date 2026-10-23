@@ -1876,6 +1876,7 @@ fn check_in(
     event: &LifecycleEvent,
     turn: Option<&crate::harness::context::QualifiedTurn>,
     enroll: Enroll,
+    turn_end: bool,
     env: &HookEnv,
     deadline: Instant,
     current_deadline: CurrentDeadline,
@@ -1937,6 +1938,7 @@ fn check_in(
         current_deadline,
         clock: Arc::clone(&clock),
         retry: Arc::new(HookDeadline(deadline)),
+        turn_end,
     };
     // Daemon check order for a lifecycle check-in (TRUST-POLICY A4, C1):
     // (1) A4 agent-to-human refusal, (2) C1 reattachment on a held or
@@ -2090,6 +2092,8 @@ struct PaneCall<'a> {
     clock: Arc<dyn Clock>,
     /// Paces retries of a continuity submission (the hook deadline in production).
     retry: Arc<dyn RetryWindow>,
+    /// A turn-end event: it checks in only when the daemon says a continuation is due.
+    turn_end: bool,
 }
 
 /// How a continuity intent's submission ended.
@@ -2591,6 +2595,24 @@ impl PaneCall<'_> {
             format: OutputFormat::Text,
             context: selectors,
         };
+        if !lifecycle && self.turn_end && !self.turn_end_due(&contexts, event) {
+            // A quiet turn end renders nothing and commits nothing.
+            return Ok(CheckedIn {
+                coverage: super::hook_inbox::DeliveryCoverage::Delegated,
+                prepared_kind: None,
+                command_routing: None,
+                text: Vec::new(),
+                fallback,
+                summary: None,
+                actions: None,
+                overview: None,
+                recovery: None,
+                attention: None,
+                lazy: None,
+                page_failure: None,
+                link: None,
+            });
+        }
         if !lifecycle {
             // Tool-boundary class: one read-only digest query compared with the
             // execution's mark, and a non-durable Current CheckIn only when the
@@ -2825,6 +2847,45 @@ impl PaneCall<'_> {
     /// within the hook deadline (`Ok(None)`: no page is due for this context);
     /// a failure shows none and names itself (the `Err` is the hook's stderr
     /// diagnostic, with the read's budget and elapsed time).
+    /// Whether the daemon owes this turn end a continuation (`Command::TurnEndDue`), asked with
+    /// the claim of the session this event presented for. Any failure, and a daemon without
+    /// `turn_end.due_v1`, owes none.
+    fn turn_end_due(
+        &self,
+        contexts: &crate::harness::context::ContextJournal,
+        event: &LifecycleEvent,
+    ) -> bool {
+        let Ok(Some(saved)) = contexts.current() else {
+            return false;
+        };
+        if saved.harness != event.harness
+            || event
+                .native_session
+                .as_ref()
+                .is_some_and(|native| saved.session != SessionReference::Native(native.clone()))
+        {
+            return false;
+        }
+        let Ok(claim) = contexts.claim(&saved) else {
+            return false;
+        };
+        let capped = self.deadline.min(
+            self.clock.instant_now() + crate::protocol::time::external_bound(INBOX_READ_BUDGET),
+        );
+        let budget = budget(capped, self.clock.as_ref());
+        self.client
+            .supports_capability(crate::protocol::capabilities::TURN_END_DUE, &budget)
+            && matches!(
+                self.client.call(
+                    crate::protocol::commands::Command::TurnEndDue(
+                        crate::protocol::commands::TurnEndDue { claim }
+                    ),
+                    &budget,
+                ),
+                Ok(crate::protocol::results::CommandResult::TurnEndDue { due: true })
+            )
+    }
+
     fn inbox_offer(
         &self,
         contexts: &crate::harness::context::ContextJournal,
@@ -3986,6 +4047,7 @@ fn run_admitted_hook_since(
         &event,
         turn,
         enroll,
+        decoded.metadata.turn_end,
         env,
         deadline,
         CurrentDeadline {

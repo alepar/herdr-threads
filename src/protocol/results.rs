@@ -105,6 +105,10 @@ pub enum CommandResult {
         crate::protocol::delivery::DeliveryPresentationConfirmationReplyV2,
     ),
     DeliveryConfirmed(crate::protocol::delivery::DeliveryConfirmReport),
+    /// `Command::TurnEndDue`: the seat holds an item that would wake it idle.
+    TurnEndDue {
+        due: bool,
+    },
     Left(ThreadId),
     TopicChanged(ThreadId),
     ThreadNameChanged(ThreadId),

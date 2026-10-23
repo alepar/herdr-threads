@@ -196,7 +196,7 @@ fn canonical_json_sorts_keys_events_and_fields() {
 #[test]
 fn contract_ids_are_pinned() {
     assert_eq!(contract_id(&claude::CONTRACT), "3fe315da64a17fe6");
-    assert_eq!(contract_id(&codex::CONTRACT), "aa060178f462d0db");
+    assert_eq!(contract_id(&codex::CONTRACT), "fe43bd0318d7c1c7");
 }
 
 #[test]
@@ -594,7 +594,7 @@ fn adapters_local_dispatch_keeps_legacy_contract_id_bytes() {
     .unwrap();
     assert_eq!(
         String::from_utf8(legacy).unwrap(),
-        "{\"claude\":\"3fe315da64a17fe6\",\"codex\":\"aa060178f462d0db\",\"normalize\":{\"claude\":{\"2.1.286 (Claude Code)\":\"2.1.286\"},\"codex\":{\"codex-cli 0.158.0\":\"0.158.0\"}}}\n"
+        "{\"claude\":\"3fe315da64a17fe6\",\"codex\":\"fe43bd0318d7c1c7\",\"normalize\":{\"claude\":{\"2.1.286 (Claude Code)\":\"2.1.286\"},\"codex\":{\"codex-cli 0.158.0\":\"0.158.0\"}}}\n"
     );
     let mut output = Vec::new();
     crate::cli::run_in_pane(["herdr-threads", "adapters", "--json"], None, &mut output).unwrap();
@@ -617,7 +617,7 @@ fn adapters_local_dispatch_keeps_legacy_contract_id_bytes() {
     let row = |id: &str| discovery.adapters.iter().find(|row| row.id == id).unwrap();
     for (id, pinned) in [
         ("claude", "3fe315da64a17fe6"),
-        ("codex", "aa060178f462d0db"),
+        ("codex", "fe43bd0318d7c1c7"),
     ] {
         assert_eq!(row(id).legacy_contract_id.as_deref(), Some(pinned));
         assert!(row(id).contracts.iter().all(|domain| domain.id != pinned));

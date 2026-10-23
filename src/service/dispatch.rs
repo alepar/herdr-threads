@@ -887,6 +887,38 @@ impl DomainService {
         self.store.advance_cursors(request, budget)
     }
 
+    /// An ending turn's continuation question: authorised like a cooperative call, top-level
+    /// claims only, decided read-only by the store (A2).
+    fn turn_end_due(
+        &self,
+        request: &crate::protocol::commands::TurnEndDue,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let (owner_uid, _) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if request.claim.instance != self.instance {
+            return Err(error(
+                ErrorCode::CallerUnverified,
+                "caller instance does not match service",
+            ));
+        }
+        let due = request.claim.role == crate::protocol::authority::CallerRole::TopLevel
+            && !request.claim.is_subagent()
+            && self.store.turn_end_due(&request.claim, budget)?;
+        Ok(CommandResult::TurnEndDue { due })
+    }
+
     /// The hook pull's plain touch-or-reconnect of the claim's binding (spec §3), authorised like
     /// a cooperative call and decided by the store in one write transaction that also reads the
     /// resulting mod view.
@@ -1514,6 +1546,7 @@ impl LocalService for DomainService {
             Command::BindingEvent(request) => self.binding_event(&request, peer, budget),
             Command::DeliveryPull(pull) => self.delivery_pull(pull, peer, budget, &read),
             Command::DeliveryConfirm(confirm) => self.delivery_confirm(confirm, peer, budget, read),
+            Command::TurnEndDue(request) => self.turn_end_due(&request, peer, budget),
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)

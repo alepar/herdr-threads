@@ -2556,6 +2556,18 @@ impl WakeCandidate {
                 || (self.actionable_warning_seq.is_some()
                     && !self.warning_offered_for_current_occupant()))
     }
+    /// Whether an ending turn should continue to deliver: the seat holds an item that would wake
+    /// it idle (an unoffered invitation or receipt, an admitted delivery row, an unoffered
+    /// actionable warning). Unlike [`Self::has_actionable_work`], an admitted row counts even
+    /// when an earlier wake reservation covered its frontier: the turn serves it in place.
+    pub fn owes_turn_end(&self) -> bool {
+        !self.effectively_retired
+            && (self.has_unoffered_invitation()
+                || self.has_unoffered_receipt()
+                || self.pending_lazy().is_some()
+                || (self.actionable_warning_seq.is_some()
+                    && !self.warning_offered_for_current_occupant()))
+    }
     /// The delivery-row frontier the seat's nudge threshold admits (p <= T; every priority
     /// when T < 0) has pending (None when no pending row can wake it).
     pub fn pending_lazy(&self) -> Option<i64> {
@@ -3150,6 +3162,12 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         request: &crate::protocol::commands::AdvanceCursors,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
+    /// Whether `claim`'s seat holds an item that would wake it idle
+    /// ([`WakeCandidate::owes_turn_end`]), decided read-only against the canonical view (A2).
+    /// The default owes nothing.
+    fn turn_end_due(&self, _claim: &CallerClaim, _budget: &CallBudget) -> Result<bool, ApiError> {
+        Ok(false)
+    }
     /// Whether a plain call by `claim` would reconnect (or re-adopt) the open binding its key
     /// names (read-only; `store::bindings::claim_reconnects_on_plain_call`). The default never
     /// reconnects.

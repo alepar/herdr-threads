@@ -68,7 +68,7 @@ Scope (user level, like Herdr's own agent hooks):
           older installation's owned `Bash(herdr-threads *)` rule is kept and gains the ask
           rules. A rule you already have is left as yours.
   codex   $CODEX_HOME/hooks.json (default ~/.codex/hooks.json) for the hook groups
-          (SessionStart, SubagentStart, Bash PreToolUse, UserPromptSubmit). With consent,
+          (SessionStart, SubagentStart, Bash PreToolUse, UserPromptSubmit, Stop). With consent,
           agent permissions go in their own file, $CODEX_HOME/rules/herdr-threads.rules:
           an allow rule for `herdr-threads` and `ht` and prompt rules for the same human
           and setup commands.

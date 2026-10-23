@@ -93,6 +93,16 @@ Enforcement:
   falls back to the skill's one `inbox` call. Pinned by `tests/hook_entrypoint.rs`
   `lazy_mail_reaches_the_next_claude_user_prompt_hook`, `tests/scheduler/wake_text.rs`
   `hook_evidence_keeps_recovery_and_parked_inbox_hints` and the opt-in wake e2e case `hooks-wake/group`.
+- Codex turn end (ht-end-of-turn, 2026-10-23): an item at p <= T (or a receipt, invitation or actionable warning)
+  that arrived after the turn's last tool boundary waited for idle plus the native wake (30 s spacing, 60 s more on a
+  focused pane). The Codex adapter now owns `Stop`: the hook asks the daemon `TurnEndDue` (`WakeCandidate::owes_turn_end`,
+  the idle-wake predicate without the reservation frontier) and, only when due, checks in like a tool boundary and
+  answers `{decision:"block", reason: <page>}`; Codex records the reason as a user-role hook prompt and samples again
+  in the same turn, without running `UserPromptSubmit`. Rules: 1-2 (a p > T item never continues a turn; the page then
+  carries every pending item, rule 3), 4 (in-turn, no nudge; the delivered items are then offered, so no idle wake
+  follows), bounded (no continuation when `stop_hook_active`, so at most one per turn; a payload without the flag is
+  treated as continued), quiet stops print nothing. Pinned by `tests/hook_entrypoint.rs`
+  `codex_stop_continues_once_for_a_waking_item_and_stays_quiet_otherwise`.
 - Hook-pull seats (agy) carry bodies only through `DeliveryPull` (`src/service/delivery_pull.rs`), completed by
   `DeliveryConfirm`. The decision is `src/delivery/routing.rs:35` `hook_inbox_page`: a hook-pull seat's standard hook
   reads no page at either boundary, and the daemon enforces it

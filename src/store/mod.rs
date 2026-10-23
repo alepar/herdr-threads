@@ -1991,6 +1991,31 @@ impl StorePort for SqliteStore {
             .map_err(|e| db.map_error(e))?;
         bindings::claim_reconnects_on_plain_call(&db, claim)
     }
+    fn turn_end_due(
+        &self,
+        claim: &crate::protocol::authority::CallerClaim,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        if claim.instance != self.instance {
+            return Ok(false);
+        }
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        let seat = claim.seat.as_str();
+        if !attention::seat_has_pending_rows(&db, seat)? {
+            return Ok(false);
+        }
+        let wake_attention = attention::wake_seat_attention(&db, seat)?;
+        Ok(wake::load_candidate(
+            &db,
+            &self.instance,
+            &claim.seat,
+            &wake_attention.attention,
+            wake_attention.decision_seq,
+        )?
+        .owes_turn_end())
+    }
     fn hook_plain_reconnect(
         &self,
         claim: &crate::protocol::authority::CallerClaim,

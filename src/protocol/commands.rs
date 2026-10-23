@@ -113,6 +113,9 @@ pub enum Command {
     DeliveryPresentationConfirmV2(crate::protocol::delivery::DeliveryPresentationConfirmV2),
     /// Hook-pull settlement (DP4); gated by `delivery.pull_v1`.
     DeliveryConfirm(crate::protocol::delivery::DeliveryConfirm),
+    /// Whether an ending turn owes the caller's seat a continuation; gated by
+    /// `turn_end.due_v1`. Read-only.
+    TurnEndDue(TurnEndDue),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
     /// Advance the caller binding's own read cursors over messages it fully displayed. Allowed
@@ -978,6 +981,13 @@ pub struct CompleteInboxDelivery {
     pub via: Option<LazyCompletionVia>,
 }
 
+/// An ending turn's question (end-of-turn delivery): does the caller's seat hold an item that
+/// would wake it idle (`WakeCandidate::owes_turn_end`)? Top-level claims only; nothing changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnEndDue {
+    pub claim: CallerClaim,
+}
+
 /// Advance the caller binding's cursors over messages it fully displayed (spec §2). Allowed for
 /// subagent bindings: it changes only the caller's own read position, never seat state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1250,6 +1260,7 @@ impl Command {
             Self::DeliveryPullV2(v) => Some(&v.claim),
             Self::DeliveryPresentationConfirmV2(v) => Some(&v.claim),
             Self::DeliveryConfirm(v) => Some(&v.claim),
+            Self::TurnEndDue(v) => Some(&v.claim),
             Self::AdvanceCursors(v) => Some(&v.claim),
             Self::BindingEvent(v) => Some(&v.claim),
             Self::Summary(v) => Some(&v.claim),
@@ -1395,6 +1406,7 @@ impl Command {
             Self::DeliveryPullV2(v) => Some(&v.claim),
             Self::DeliveryPresentationConfirmV2(v) => Some(&v.claim),
             Self::DeliveryConfirm(v) => Some(&v.claim),
+            Self::TurnEndDue(v) => Some(&v.claim),
             _ => None,
         });
         if let Some(claim) = claim {

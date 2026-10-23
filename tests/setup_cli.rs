@@ -488,12 +488,13 @@ fn installed_command_is_the_hook_entrypoint_argv() {
 
 const SUBAGENT_EVENTS: [&str; 2] = ["SubagentStart", "SubagentStop"];
 /// Every hook group `setup codex` owns (spec §4): the session and subagent starts, the Bash
-/// tool boundary, and the two end events that disconnect a binding.
-const CODEX_OWNED_EVENTS: [&str; 6] = [
+/// tool boundary, the turn start and end, and the two end events that disconnect a binding.
+const CODEX_OWNED_EVENTS: [&str; 7] = [
     "SessionStart",
     "SubagentStart",
     "PreToolUse",
     "UserPromptSubmit",
+    "Stop",
     "SubagentStop",
     "SessionEnd",
 ];
@@ -887,6 +888,7 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
             format!("{file}:subagent_start:0:0"),
             format!("{file}:pre_tool_use:0:0"),
             format!("{file}:user_prompt_submit:0:0"),
+            format!("{file}:stop:0:0"),
             format!("{file}:subagent_stop:0:0"),
             format!("{file}:session_end:0:0"),
         ]
@@ -1064,7 +1066,7 @@ fn codex_setup_keeps_existing_user_hooks_in_their_own_layers() {
     fs::create_dir(&codex_home).unwrap();
     let config_toml = "model = \"m\"\n\n[[hooks.SessionStart]]\nhooks = [{ type = \"command\", command = \"hcom start\" }]\n\n[hooks]\nPreToolUse = [{ matcher = \"^Bash$\", hooks = [{ type = \"command\", command = \"hcom pre\" }] }]\n";
     fs::write(codex_home.join("config.toml"), config_toml).unwrap();
-    let hooks_json = r#"{"hooks":{"SubagentStart":[{"hooks":[{"type":"command","command":"hcom child"}]}],"Stop":[{"hooks":[{"type":"command","command":"x"}]}]}}"#;
+    let hooks_json = r#"{"hooks":{"SubagentStart":[{"hooks":[{"type":"command","command":"hcom child"}]}],"Interrupt":[{"hooks":[{"type":"command","command":"x"}]}]}}"#;
     fs::write(codex_home.join("hooks.json"), hooks_json).unwrap();
     let repo = s.root.join("repo");
     let sub = repo.join("sub");
@@ -1116,7 +1118,7 @@ fn codex_setup_keeps_existing_user_hooks_in_their_own_layers() {
     let child = hooks["hooks"]["SubagentStart"].as_array().unwrap();
     assert_eq!(child.len(), 2);
     assert_eq!(child[0]["hooks"][0]["command"], "hcom child");
-    assert_eq!(hooks["hooks"]["Stop"][0]["hooks"][0]["command"], "x");
+    assert_eq!(hooks["hooks"]["Interrupt"][0]["hooks"][0]["command"], "x");
     let command = owned_codex_command(&s);
     for event in CODEX_OWNED_EVENTS {
         let groups = hooks["hooks"][event].as_array().unwrap();
@@ -2065,8 +2067,8 @@ fn stale_record_beside_unattributable_hooks_is_preserved() {
         (
             "undeclared event",
             Box::new(|s, hooks| {
-                hooks["hooks"]["Stop"] =
-                    serde_json::json!([CODEX_STALE.group(s, "Stop", STALE_COPIED_OWNER)]);
+                hooks["hooks"]["Interrupt"] =
+                    serde_json::json!([CODEX_STALE.group(s, "Interrupt", STALE_COPIED_OWNER)]);
             }),
         ),
         (
