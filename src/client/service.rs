@@ -654,6 +654,7 @@ impl PersistentServiceClient {
     }
 
     /// Persist the exact envelope, key and payload before its first submission.
+    #[allow(clippy::result_large_err)]
     pub async fn submit(
         &self,
         operation: ServiceOperation,
@@ -714,6 +715,7 @@ impl PersistentServiceClient {
         self.send_saved(&mut held, &key, &request, budget).await
     }
     /// Journaled send into a managed thread; the key is the request's operation.
+    #[allow(clippy::result_large_err)]
     pub async fn send(
         &self,
         request: ServiceSend,
@@ -760,6 +762,7 @@ impl PersistentServiceClient {
         }
     }
     /// Explicit exact-envelope replay after the caller has assessed uncertainty.
+    #[allow(clippy::result_large_err)]
     pub async fn replay(
         &self,
         key: &OperationId,
@@ -815,6 +818,7 @@ impl PersistentServiceClient {
             .await
             .map(|(_, result)| result)
     }
+    #[allow(clippy::result_large_err)]
     async fn send_saved(
         &self,
         held: &mut Option<Session>,

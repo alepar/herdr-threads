@@ -202,7 +202,9 @@ impl Deps {
             return Err(malformed("deps"));
         }
         let entries = rest
-            .chunks_exact(DEP_LEN)
+            .as_chunks::<DEP_LEN>()
+            .0
+            .iter()
             .map(|chunk| {
                 let mut node = [0u8; 16];
                 node.copy_from_slice(&chunk[..16]);
@@ -1031,7 +1033,9 @@ pub(super) fn hex_decode_vec(text: &str) -> Option<Vec<u8>> {
         return None;
     }
     bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| Some(nibble(pair[0])? << 4 | nibble(pair[1])?))
         .collect()
 }

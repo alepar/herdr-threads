@@ -266,7 +266,7 @@ fn ingest_logs(dst: &Node, hub: &Node, reverse: bool) {
         .0
         .into_iter()
         .collect();
-    logs.sort_by(|a, b| a.0.cmp(&b.0));
+    logs.sort_by_key(|a| a.0);
     if reverse {
         logs.reverse();
     }

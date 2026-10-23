@@ -1547,7 +1547,7 @@ impl Mailbox {
         use crate::protocol::attention::*;
         let pending = self.pending.lock().unwrap().clone();
         let mut newest = pending.clone();
-        newest.sort_by(|a, b| b.1.cmp(&a.1));
+        newest.sort_by_key(|item| std::cmp::Reverse(item.1));
         newest.truncate(MAX_DIGEST_IDS);
         AttentionDigest {
             lazy: None,

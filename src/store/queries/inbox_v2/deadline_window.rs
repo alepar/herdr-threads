@@ -285,7 +285,7 @@ impl DeadlineWindow {
         *visits += spent;
         // Keys are total (ordinals are unique per source and each source has its own rank), so
         // the sort is exact.
-        items.sort_by(|a, b| a.key.cmp(&b.key));
+        items.sort_by_key(|a| a.key);
         // Only a re-collected window skips, and only what it emitted itself.
         let last = stop.and(cursor.window_last);
         if let Some(last) = &last {

@@ -1265,12 +1265,10 @@ pub(crate) fn execute_steps<C: LocalClient + ?Sized>(
             }
             .map_err(|e| ApiError::new(ErrorCode::StoreCorrupt, e.to_string()))
         });
-        match launched {
-            Ok(report) => {
-                progress.launch = Some(report.report);
-                save(progress)?;
-            }
-            Err(error) => return Err(error),
+        {
+            let report = launched?;
+            progress.launch = Some(report.report);
+            save(progress)?;
         }
         Ok(())
     })();

@@ -1255,9 +1255,8 @@ fn note_failure(tx: &Transaction<'_>, branch_ix: i64, error: &str) -> Result<(),
 /// Checks one reply against the branch: signatures, contiguity from
 /// `next_from`, bounds by the tip. `Err(reason)` is a `Corrupt` verdict.
 fn verify_reply(branch: &BranchRow, entries: &[StoredEntry]) -> Result<(), String> {
-    let mut expected = branch.next_from;
     let mut previous: Option<&StoredEntry> = None;
-    for entry in entries {
+    for (expected, entry) in (branch.next_from..).zip(entries) {
         if entry.log() != branch.log {
             return Err("entry names another log".into());
         }
@@ -1281,7 +1280,6 @@ fn verify_reply(branch: &BranchRow, entries: &[StoredEntry]) -> Result<(), Strin
         if entry.counter() == branch.tip_counter && entry.hash() != branch.tip_hash {
             return Err("branch does not end at the advertised tip".into());
         }
-        expected += 1;
         previous = Some(entry);
     }
     Ok(())

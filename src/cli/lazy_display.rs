@@ -97,23 +97,23 @@ pub fn write_page<W: Write>(
                 body_len,
                 ack_candidate,
                 ..
-            } if claim.harness != crate::protocol::authority::Harness::Human => {
-                if journal.record_displayed_chunk(
+            } if claim.harness != crate::protocol::authority::Harness::Human
+                && journal.record_displayed_chunk(
                     claim,
                     message,
                     *body_start,
                     *body_end,
                     *body_len,
-                )? {
-                    if !candidates.displayed.contains(message) {
-                        candidates.displayed.push(message.clone());
-                    }
-                    if top_level
-                        && ack_candidate.as_ref() == Some(message)
-                        && !candidates.ordinary.contains(message)
-                    {
-                        candidates.ordinary.push(message.clone());
-                    }
+                )? =>
+            {
+                if !candidates.displayed.contains(message) {
+                    candidates.displayed.push(message.clone());
+                }
+                if top_level
+                    && ack_candidate.as_ref() == Some(message)
+                    && !candidates.ordinary.contains(message)
+                {
+                    candidates.ordinary.push(message.clone());
                 }
             }
             _ => {}

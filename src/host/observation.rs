@@ -312,7 +312,7 @@ pub fn normalize_seat_labels(raw: &str) -> Result<Vec<SeatHostLabels>, ApiError>
                     .iter()
                     .find(|item| item.get(key).and_then(Value::as_str) == Some(id))
             })
-            .and_then(&label)
+            .and_then(label)
     };
     Ok(snapshot
         .panes

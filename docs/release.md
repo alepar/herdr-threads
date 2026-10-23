@@ -75,7 +75,7 @@ Nothing in this repository establishes an inference-interruption guarantee, exac
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push and pull request with Rust 1.94.0 and Python 3.11.9. The test jobs run on `ubuntu-24.04` (Linux x86_64); macOS arm64 runs the same suite locally before a merge (`scripts/full-suite-gate`). Both jobs download the [official Herdr v0.9.1 Linux x86_64 asset](https://github.com/herdrdev/herdr/releases/tag/v0.9.1) and check its architecture, `herdr --version` and SHA-256 `2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7` (GitHub's asset digest), so the real-parser package tests run in the ordinary suite.
+`.github/workflows/ci.yml` runs on every push and pull request with Rust 1.99.1 and Python 3.11.9. The test jobs run on `ubuntu-24.04` (Linux x86_64); macOS arm64 runs the same suite locally before a merge (`scripts/full-suite-gate`). Both jobs download the [official Herdr v0.9.1 Linux x86_64 asset](https://github.com/herdrdev/herdr/releases/tag/v0.9.1) and check its architecture, `herdr --version` and SHA-256 `2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7` (GitHub's asset digest), so the real-parser package tests run in the ordinary suite.
 
 The `tests` job runs in three parallel shards. Each shard:
 
@@ -104,7 +104,7 @@ Native model tests are not in CI. They need an isolated, authenticated Herdr env
 
 ## Release workflow
 
-`.github/workflows/release.yml` publishes **only from a `v*` tag push**; a manual dispatch builds and uploads workflow artifacts and never creates a release. It checks that the tag equals `v` plus the `Cargo.toml` version and that `herdr-plugin.toml` has the same version, then builds with Rust 1.94.0 and `--locked`:
+`.github/workflows/release.yml` publishes **only from a `v*` tag push**; a manual dispatch builds and uploads workflow artifacts and never creates a release. It checks that the tag equals `v` plus the `Cargo.toml` version and that `herdr-plugin.toml` has the same version, then builds with Rust 1.99.1 and `--locked`:
 
 | Archive | Runner and target | Checked |
 | --- | --- | --- |

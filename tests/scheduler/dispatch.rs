@@ -1355,7 +1355,7 @@ impl WakePort for FailingCompletionStore<'_> {
             .push((attempt.clone(), outcome));
         if self
             .failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
         {
             if self.exhaust_budget.load(Ordering::SeqCst) {

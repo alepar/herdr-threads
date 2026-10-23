@@ -77,7 +77,7 @@ pub(super) struct DupKey {
 /// The place to change which duplicate link carries traffic.
 pub(super) fn duplicate_order(links: &[DupKey]) -> Vec<u64> {
     let mut sorted: Vec<&DupKey> = links.iter().collect();
-    sorted.sort_by(|a, b| (a.dialer, a.nonce, a.link).cmp(&(b.dialer, b.nonce, b.link)));
+    sorted.sort_by_key(|a| (a.dialer, a.nonce, a.link));
     sorted.into_iter().map(|key| key.link).collect()
 }
 

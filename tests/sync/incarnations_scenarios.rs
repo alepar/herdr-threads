@@ -781,7 +781,8 @@ async fn s3_wiped_store_key_intact() {
     // its old log is already known to suppress it.
     let mut violated = false;
     let done = wait_for(Duration::from_secs(20), || {
-        for m in [&settled_msg] {
+        {
+            let m = &settled_msg;
             if has_message(&wiped, m) && wiped.suppressed_seats(m).is_none() {
                 violated = true;
                 return true;

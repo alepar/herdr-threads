@@ -524,7 +524,7 @@ impl Shared {
     fn release(&self, bytes: u64) {
         let _ = self
             .outstanding
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |out| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |out| {
                 Some(out.saturating_sub(bytes))
             });
         self.credit_freed.notify_one();

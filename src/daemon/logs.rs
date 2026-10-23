@@ -365,7 +365,7 @@ pub fn prune_startup_logs(dir: &Path, current: &Path, now: SystemTime) {
         let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         others.push((modified, path));
     }
-    others.sort_by(|a, b| b.0.cmp(&a.0));
+    others.sort_by_key(|other| std::cmp::Reverse(other.0));
     for (index, (modified, path)) in others.iter().enumerate() {
         let too_old = now
             .duration_since(*modified)

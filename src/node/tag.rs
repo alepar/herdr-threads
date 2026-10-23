@@ -101,8 +101,8 @@ impl FromStr for NodeUuid {
         }
         let nibble = |b: u8| if b <= b'9' { b - b'0' } else { b - b'a' + 10 };
         let mut bytes = [0u8; 16];
-        for (slot, pair) in bytes.iter_mut().zip(raw.chunks_exact(2)) {
-            *slot = (nibble(pair[0]) << 4) | nibble(pair[1]);
+        for (slot, [high, low]) in bytes.iter_mut().zip(raw.as_chunks::<2>().0) {
+            *slot = (nibble(*high) << 4) | nibble(*low);
         }
         Ok(Self(bytes))
     }

@@ -151,7 +151,7 @@ impl HostPort for ResolutionHost {
         db.execute_batch("ROLLBACK").unwrap();
         if self
             .supersede_reads
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
         {
             db.execute_batch("UPDATE herdr_hosts SET lifecycle_revision=lifecycle_revision+1")

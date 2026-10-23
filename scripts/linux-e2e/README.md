@@ -25,7 +25,7 @@ Common options: `--evidence-dir DIR` (default: a new directory under the system 
    scripts/linux-e2e tests/herdr-releases.tsv` as its context. Every `RUN` is `bash -euo pipefail`, and each
    download goes through [image-fetch.sh](image-fetch.sh) (download, SHA-256, version check, each fatal, then the
    artifact is moved into place). Contents: ubuntu 24.04 (pinned by its multi-arch index
-   digest), Rust `1.94.0` (CI's `RUST_TOOLCHAIN`) plus the musl target, Herdr from `tests/herdr-releases.tsv`
+   digest), Rust `1.99.1` (CI's `RUST_TOOLCHAIN`) plus the musl target, Herdr from `tests/herdr-releases.tsv`
    (newest listed release, SHA-256 checked for the container's architecture), Node 22 (official tarball, SHA-256
    pinned), Claude Code and the Codex CLI via `npm ci` from [npm/package-lock.json](npm/package-lock.json), which
    pins the sha512 integrity of every tarball including the per-platform native packages (installed, never logged
