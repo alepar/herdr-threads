@@ -88,6 +88,20 @@ class BusyPublicationBarrier(TempDir):
             with self.assertRaisesRegex(RuntimeError, "expired"):
                 hold.assert_held()
 
+    def test_exited_tool_is_setup_failure_without_reading_its_pid(self):
+        # The pid the tool records is meaningless outside a PID namespace (Codex's sandbox); its heartbeat is not.
+        with W.BusyBarrier(self.tmp, stale=0.2) as hold:
+            child = subprocess.Popen(shlex.split(hold.command()))
+            self.addCleanup(self.stop_child, child)
+            hold.wait_entered(timeout=2)
+            (hold.path / "entered").write_text("2")
+            hold.assert_held()
+            child.kill()
+            child.wait(timeout=2)
+            time.sleep(0.3)
+            with self.assertRaisesRegex(RuntimeError, "exited before publication"):
+                hold.assert_held()
+
     def test_busy_status_without_tool_entry_is_insufficient(self):
         with W.BusyBarrier(self.tmp) as hold:
             with self.assertRaisesRegex(RuntimeError, "tool did not enter"):

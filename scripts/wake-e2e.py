@@ -927,10 +927,12 @@ def walk(x):
 
 
 class BusyBarrier:
-    """A tool-entry witness and explicit release spanning the coordinator's publication."""
-    def __init__(self, root, watchdog=TURN_TIMEOUT_MS / 1000):
+    """A tool-entry witness and explicit release spanning the coordinator's publication. The held tool proves it is
+    alive by keeping a heartbeat file fresh, not by its pid: Codex's sandbox runs it in its own PID namespace."""
+    def __init__(self, root, watchdog=TURN_TIMEOUT_MS / 1000, stale=2.0):
         self.path = Path(tempfile.mkdtemp(prefix="busy-hold.", dir=root))
         self.watchdog = watchdog
+        self.stale = stale
 
     def __enter__(self):
         return self
@@ -943,6 +945,7 @@ class BusyBarrier:
         helper = self.path / "hold.py"
         helper.write_text("import os, time\nfrom pathlib import Path\n"
                           "p = Path(__file__).parent\n"
+                          "(p / 'alive').touch()\n"
                           "(p / 'entered.tmp').write_text(str(os.getpid()))\n"
                           "(p / 'entered.tmp').replace(p / 'entered')\n"
                           f"end = time.monotonic() + {self.watchdog!r}\n"
@@ -950,6 +953,7 @@ class BusyBarrier:
                           "    if time.monotonic() >= end:\n"
                           "        (p / 'expired').touch()\n"
                           "        raise SystemExit(1)\n"
+                          "    (p / 'alive').touch()\n"
                           "    time.sleep(.02)\n")
         return shlex.join([sys.executable, str(helper)])
 
@@ -967,9 +971,11 @@ class BusyBarrier:
         if (self.path / "release").exists():
             raise RuntimeError("busy tool barrier released before publication completed")
         try:
-            os.kill(int((self.path / "entered").read_text()), 0)
-        except (OSError, ValueError) as exc:
+            age = time.time() - (self.path / "alive").stat().st_mtime
+        except OSError as exc:
             raise RuntimeError("busy tool exited before publication completed") from exc
+        if age > self.stale:
+            raise RuntimeError("busy tool exited before publication completed")
 
 
 def busy_turn_split(text, anchor):
