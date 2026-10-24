@@ -3720,6 +3720,17 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         refused_restore: Option<&PriorLadder>,
         budget: &CallBudget,
     ) -> Result<bool, ApiError>;
+    /// Marks the seat's settled `submitted` wake `attempt` as never received
+    /// (`last_outcome = 'unreceived'`). Returns whether the row changed.
+    fn mark_wake_unreceived(
+        &self,
+        _host: HostId,
+        _seat: &SeatId,
+        _attempt: &WakeAttemptId,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
     /// Seats with receipts past their soft point (spec §10), at most `limit`
     /// seats, evaluated lazily from each receipt's effective deadline.
     fn poke_candidates(
@@ -3912,6 +3923,17 @@ pub trait HostPort: Send + Sync {
         target: &SafeWakeTarget,
         context: &HostCallContext,
     ) -> Result<(), ApiError>;
+    /// After a wake was seen still held in the composer: clears it only when the bound harness's
+    /// composer policy opts in and a fresh composer read holds exactly `text` and nothing else.
+    /// Returns whether it cleared. The default never touches the composer.
+    fn clear_own_wake_text(
+        &self,
+        _target: &SafeWakeTarget,
+        _text: &str,
+        _context: &HostCallContext,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
     /// Herdr's agent record for one pane. `Ok(None)`: Herdr answered and
     /// reports no agent; `Err`: the read failed. Adapters without the route
     /// report "no agent".
@@ -4232,6 +4254,12 @@ pub trait HookPullOutlook: Send + Sync {
         _binding_generation: u64,
     ) -> bool {
         false
+    }
+    /// Whether a daemon call claiming `seat` arrived at or after `since` (any hook check-in,
+    /// delivery pull or claim-bearing CLI call), as this process observed it. `None`: not known,
+    /// so no receipt verdict is drawn (ht-wake-loop). A hint, never authority (TRUST-POLICY A2).
+    fn contacted_since(&self, _seat: &SeatId, _since: UtcMillis) -> Option<bool> {
+        None
     }
 }
 

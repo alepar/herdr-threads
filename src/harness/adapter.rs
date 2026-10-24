@@ -1373,6 +1373,11 @@ pub trait ComposerPolicy: Send + Sync {
     fn clear_key(&self) -> &'static str;
     /// Retyped text only: restoring a draft must never submit it.
     fn restore_text(&self, saved: &str) -> String;
+    /// Whether one `clear_key` press may remove a wake prompt left unsubmitted in the composer,
+    /// when a fresh read holds exactly that prompt. Default: never.
+    fn clears_unsubmitted_wake(&self) -> bool {
+        false
+    }
 }
 /// Pure local metadata. Providers must not observe installations or invoke native code.
 pub trait CanaryStrategy: Send + Sync {

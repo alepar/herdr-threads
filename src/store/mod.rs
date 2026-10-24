@@ -3290,6 +3290,16 @@ impl StorePort for SqliteStore {
             .map_err(|e| db.map_error(e))?;
         wake::wake_owed_to_reached(&db, reservation, reached)
     }
+    fn mark_wake_unreceived(
+        &self,
+        host: HostId,
+        seat: &SeatId,
+        attempt: &WakeAttemptId,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let mut writer = self.writer(budget)?;
+        wake::mark_unreceived(&self.context, &mut writer, host, seat, attempt, budget)
+    }
     fn complete_wake(
         &self,
         host: HostId,

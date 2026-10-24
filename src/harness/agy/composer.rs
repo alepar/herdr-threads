@@ -125,6 +125,11 @@ impl ComposerPolicy for AgyComposer {
     fn restore_text(&self, saved: &str) -> String {
         saved.into()
     }
+    /// A swallowed Enter leaves the one-line wake in the composer, where it blocks every later
+    /// wake (the composer reads `Text`); one `ctrl+u` clears a single row.
+    fn clears_unsubmitted_wake(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

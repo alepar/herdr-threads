@@ -1496,6 +1496,12 @@ impl LocalService for DomainService {
             output: output.clone(),
             operation_scope: None,
         };
+        // Any call claiming a seat shows its session ran after a wake (ht-wake-loop); a hint for
+        // the wake lane's receipt check, never authority.
+        if let Some(claim) = contact_claim(&command) {
+            self.delivery_pull
+                .record_contact(&claim.seat, self.clock.utc_now());
+        }
         // Subagent bindings are read-only (ht-54r.20). This claim-shape check is only the cheap
         // early refusal (stable code before `validate()`); the authority is the role on the
         // binding row the store resolves (`control::require_top_level_binding`, TRUST-POLICY A2).
@@ -1817,6 +1823,20 @@ impl LocalService for DomainService {
 }
 
 /// The frozen namespace of a bootstrap command's identity.
+/// The claim of a call made from inside a session: claim-bearing mutations and delivery calls,
+/// plus the inbox and digest reads a hook or the model issues.
+fn contact_claim(command: &Command) -> Option<&crate::protocol::authority::CallerClaim> {
+    match command {
+        Command::Inbox(query) | Command::InboxBatch(query) | Command::InboxBatchV2(query) => {
+            query.claim.as_ref()
+        }
+        Command::AttentionDigest(query) | Command::AttentionDigestDelivery(query) => {
+            query.claim.as_ref()
+        }
+        other => other.host_claim(),
+    }
+}
+
 fn bootstrap_namespace(command: &Command) -> Option<&HandoffNamespace> {
     let identity = match command {
         Command::BeginBootstrap(v) => &v.identity,
@@ -1850,6 +1870,74 @@ mod operator_tests {
         },
         store::{SqliteStore, StoreSettings, connection::StoreContext},
     };
+    // ht-wake-loop: every call a woken session makes (hook check-ins and pulls, the hook and
+    // model inbox and digest reads) counts as contact; a claim-free read does not.
+    #[test]
+    fn contact_claims_cover_the_calls_a_woken_session_makes() {
+        use crate::protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            commands::{AttentionDigestQuery, CheckIn, CheckInMode, InboxQuery},
+            delivery::DeliveryPull,
+            ids::{ExecutionId, NativeSessionId, SeatId},
+            pagination::PageRequest,
+        };
+        let claim = CallerClaim {
+            instance: "i".into(),
+            host: crate::test_support::test_host_locator(),
+            seat: SeatId::new("seat"),
+            binding_generation: 1,
+            role: CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("s"),
+            execution: ExecutionId::new("e"),
+            target: HostTargetId::new("t"),
+            agent_id: None,
+            liveness: None,
+        };
+        let inbox = |claim: Option<CallerClaim>| InboxQuery {
+            pushed: false,
+            seat: None,
+            page: PageRequest {
+                cursor: None,
+                limit: 1,
+                max_bytes: 1,
+            },
+            claim,
+            thread: None,
+        };
+        let digest = AttentionDigestQuery {
+            seat: SeatId::new("seat"),
+            lazy: false,
+            claim: Some(claim.clone()),
+            cli_hint: false,
+        };
+        for command in [
+            Command::CheckIn(CheckIn {
+                lineage_parent: None,
+                mode: CheckInMode::Current,
+                claim: claim.clone(),
+                operation: OperationId::new("op"),
+            }),
+            Command::DeliveryPull(DeliveryPull {
+                claim: claim.clone(),
+                seen_attention_version: None,
+                marker_prefix: Vec::new(),
+            }),
+            Command::Inbox(inbox(Some(claim.clone()))),
+            Command::InboxBatch(inbox(Some(claim.clone()))),
+            Command::InboxBatchV2(inbox(Some(claim.clone()))),
+            Command::AttentionDigest(digest.clone()),
+            Command::AttentionDigestDelivery(digest),
+        ] {
+            assert_eq!(
+                contact_claim(&command).map(|c| c.seat.as_str()),
+                Some("seat"),
+                "{command:?}"
+            );
+        }
+        assert!(contact_claim(&Command::Inbox(inbox(None))).is_none());
+    }
+
     #[test]
     fn mismatched_kernel_peer_is_rejected_before_target_preparation() {
         let path = crate::test_support::scratch::temp_path(format!(

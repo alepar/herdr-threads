@@ -1024,6 +1024,49 @@ pub fn complete(
     )
 }
 
+/// Records that the seat's last submitted wake `attempt` was never received: the
+/// session showed no daemon contact before its next retry came due (ht-wake-loop).
+/// Only the `last_outcome` of that settled `submitted` (or typed-but-held `outcome_unknown`)
+/// attempt changes, so the
+/// overdue warning names `wake=unreceived`; the ladder and frontier columns stay.
+/// Returns whether the row changed.
+pub fn mark_unreceived(
+    context: &StoreContext,
+    db: &mut Connection,
+    scope: HostId,
+    seat: &SeatId,
+    attempt: &WakeAttemptId,
+    budget: &CallBudget,
+) -> Result<bool, ApiError> {
+    context.execute_budgeted_decision(
+        db,
+        budget,
+        |tx| {
+            let host: Option<Option<i64>> = tx
+                .query_row(
+                    "SELECT host_id FROM seats WHERE id=?1",
+                    [seat.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(store_error)?;
+            match host {
+                Some(host) => require_host(scope, HostId::from_row(host.ok_or_else(wrong_host)?)),
+                None => Ok(()),
+            }
+        },
+        |tx, _, ()| {
+            Ok(tx
+                .execute(
+                    "UPDATE wake_work SET last_outcome='unreceived' WHERE seat_id=?1 AND reservation_id IS NULL AND last_reservation_id=?2 AND last_outcome IN ('submitted','outcome_unknown')",
+                    params![seat.as_str(), attempt.as_str()],
+                )
+                .map_err(store_error)?
+                == 1)
+        },
+    )
+}
+
 /// [`complete`] for a poke (or a wake that carried the poke text): when the
 /// reservation settles `submitted` in this transaction, `soft_poked_at` is set
 /// on exactly `receipts`. A stale, foreign-boot or non-submitted completion

@@ -132,6 +132,13 @@ EOT_PROMPT = ("End-of-turn test {tag}: run the shell command `{hold}` and no oth
               "your turn. If herdr-threads items reach you after that, handle them exactly as your standing "
               "instructions say without running any command, and print EOT-DONE again.")
 EOT_DONE_LINE = re.compile(r"^[^\w\n]*EOT-DONE[^\w\n]*$", re.M)
+# Opt-in Codex case (ht-wake-loop), T=0 recipient only: our hooks stop running, as after an upgrade that breaks them.
+# Right after an ACK request the candidate binary is made non-executable (the coordinator keeps a private copy), so the
+# woken turn's hooks and any herdr-threads call the model makes fail and the session never reaches the daemon. When
+# the first ladder retry comes due (30 s) the daemon must record the wake `unreceived` and type nothing more while the
+# session stays silent; with the binary restored, the next prompt delivers the item.
+UNRECEIVED_CASES = ("wake-unreceived/group",)
+UNRECEIVED_VERDICT_S = 60  # the verdict lands at the first retry, 30 s after the reservation
 SIDE_FORKS = 2
 # Opt-in, Codex at T=0 only (ht-wake-outcome): with Codex's `/model` picker open, p0 sends neither wake the recipient
 # nor type into the picker (its highlighted `› ` row reads as a draft, a hold that ends by itself), and the sender gets
@@ -1729,6 +1736,59 @@ class Recipient:
         self.wait_idle()
         checks["sibling_delivered"] = self.on_screen(mid)
 
+    def unreceived_case(self, case):
+        """wake-unreceived: a wake whose session never reaches the daemon is recorded unreceived, not retyped."""
+        tag = f"{case} {self.run.run_id}"
+        gap = SPACING_S - (time.time() - self.last_wake)
+        if gap > 0:
+            self.run.stopping.wait(gap)
+        self.wait_idle()
+        checks, ref, hello = {}, {}, False
+        reservation = lambda: (self.store_rows("SELECT last_reservation_id FROM wake_work WHERE seat_id=?",
+                                               (self.seat,)) or [[None]])[0][0]
+        before = reservation()
+        original = Path(self.run.bin)
+        private = self.run.bindir / "herdr-threads-coordinator"
+        shutil.copy2(original, private)
+        mode = original.stat().st_mode
+        self.run.bin = str(private)
+        try:
+            # An ACK request: its receipt keeps the wake owed, so the ladder would retype it (a bare p0 row is
+            # reserved once and never retried).
+            ref["message"] = self.send("ack", tag, direct=False)
+            original.chmod(0o600)  # before the wake is typed: the dispatcher's reads take longer than this
+            end = time.time() + UNRECEIVED_VERDICT_S
+            state = None
+            while time.time() < end and not self.run.stopping.is_set():
+                state = self.wake_state()
+                if (state or {}).get("last_outcome") == "unreceived":
+                    break
+                time.sleep(1)
+            checks["verdict_state"] = state
+            woken = reservation()
+            checks["wake_typed"] = woken is not None and woken != before
+            # Past the second ladder step (60 s): a retype would have reserved again.
+            self.run.stopping.wait(SPACING_S + 30)
+            checks["after_state"] = self.wake_state()
+            checks["retyped"] = reservation() != woken
+        finally:
+            original.chmod(mode)
+            self.run.bin = str(original)
+            private.unlink(missing_ok=True)
+        self.wait_idle()
+        hello = True
+        self.prompt(self.follow_up())
+        woke, t_wake = checks["wake_typed"], None
+        self.wait_idle()
+        checks["delivered"] = self.on_screen(ref["message"])
+        self.settled()
+        # The verdict lands when the lane next examines the seat after the retry is due (a safety tick later).
+        unreceived = any((checks[k] or {}).get("last_outcome") == "unreceived" for k in ("verdict_state", "after_state"))
+        passed = checks["wake_typed"] and unreceived and not checks["retyped"] and checks["delivered"]
+        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
+                         "expect_wake": True, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
+                         "checks": checks, "ref": ref, "result": "PASS" if passed else "FAIL", "utc": utc()})
+
     def wake_state(self):
         rows = self.store_rows("SELECT last_outcome,completed_at_utc,retry_step FROM wake_work WHERE seat_id=?",
                                (self.seat,))
@@ -1937,6 +1997,8 @@ class Recipient:
             return self.hooks_case(case)
         if case.startswith("eot-"):
             return self.eot_case(case)
+        if case in UNRECEIVED_CASES:
+            return self.unreceived_case(case)
         if case.startswith("busy-"):
             return self.busy_case(case)
         action, channel = case.split("/")
@@ -2181,6 +2243,8 @@ class Recipient:
 
     def run_cases(self, cases):
         cases = [c for c in cases if applies(self, c)]
+        if not cases:  # nothing to run: never start a harness (wake-unreceived disables the binary meanwhile)
+            return
         try:
             self.start()
             for case in cases:
@@ -2232,7 +2296,7 @@ def applies(recipient, case):
         return getattr(recipient, "hooks_only", False) and case in HOOKS_CASES
     if case in EOT_CASES:
         return recipient.harness == "codex" and not getattr(recipient, "plain", False)
-    if case in WAKE_BLOCK_CASES:
+    if case in WAKE_BLOCK_CASES or case in UNRECEIVED_CASES:
         return recipient.harness == "codex" and recipient.threshold == 0 and not getattr(recipient, "plain", False)
     if case in CLAUDE_CASES:
         return recipient.harness == "claude"
@@ -2334,7 +2398,7 @@ def main(argv=None):
     ap.add_argument("--harness", default=DEFAULT_HARNESSES,
                     help="comma-separated: claude,codex; opt-in: agy (credential from %s)" % AGY_CREDENTIAL_ENV)
     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
-                    + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES)
+                    + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES)
                     + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES))
     ap.add_argument("--evidence-dir", help="default: sibling ht-wake-evidence.<run id>")
     ap.add_argument("--keep", action="store_true", help="leave the workspace and daemon running for inspection")
@@ -2369,7 +2433,8 @@ def main(argv=None):
                   "(--approve-for-me); pass --codex-args to choose explicitly", file=sys.stderr)
     args.harness = [h for h in args.harness.split(",") if h]
     cases = [c for c in args.cases.split(",") if c]
-    unknown = ([c for c in cases if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES + WAKE_BLOCK_CASES]
+    unknown = ([c for c in cases
+                if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES]
                + [h for h in args.harness if h not in HARNESSES])
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")

@@ -1535,6 +1535,134 @@ fn codex_reattachment_without_herdr_hint_then_wake() {
     );
 }
 
+/// The wake receipt (ht-wake-loop) through the installed hook and the detached daemon: two
+/// hook-registered Codex seats are woken for an ACK request each. One session makes a daemon
+/// call after the wake; the other never does, as when Codex no longer runs our hooks. When the
+/// first ladder retry comes due (30 s) the silent seat's wake is recorded `unreceived` and not
+/// typed again, while the seat that was heard from keeps its ladder and is woken again.
+#[test]
+fn a_wake_with_no_session_contact_before_its_retry_is_unreceived_and_not_retyped() {
+    let codex = |id: &str, terminal: &str, session: &str| {
+        let mut agent = agent_pane(id, terminal, "codex", None);
+        agent["foreground_pid"] = json!(
+            herdr_threads::test_support::isolation::stand_in_fingerprint("codex", session).pid
+        );
+        agent
+    };
+    let world = World::start_with_wake_batch_delay(
+        "htwr",
+        vec![
+            codex("w1:p1", "term-a", "SX"),
+            codex("w1:p2", "term-b", "SY"),
+            pane("w1:p3", "term-c"),
+        ],
+        Some(0),
+    );
+    let (x, y) = (world.resolve("w1:p1"), world.resolve("w1:p2"));
+    for (pane, session, seat) in [("w1:p1", "SX", &x), ("w1:p2", "SY", &y)] {
+        let (code, _, stderr) =
+            world.hook("codex", pane, &session_start("codex", session, "startup"));
+        assert_eq!(code, 0, "{stderr}");
+        world
+            .sessions
+            .borrow_mut()
+            .insert(seat.clone(), session.to_owned());
+    }
+    let b = world.resolve("w1:p3");
+    let b_pane = Caller {
+        seat: &b,
+        pane: "w1:p3",
+        harness: "claude",
+    };
+    world
+        .run(
+            None,
+            Some(b_pane),
+            &["check-in", "--lifecycle-event", "b-start"],
+        )
+        .data("check-in");
+    // Each woken seat creates its own thread and invites the sender: no invitation (a p0 that
+    // wakes) ever reaches the seats under test, so the only wakes are the ACK requests'.
+    let mut threads = Vec::new();
+    for (seat, pane) in [(&x, "w1:p1"), (&y, "w1:p2")] {
+        let codex = Caller {
+            seat,
+            pane,
+            harness: "codex",
+        };
+        let thread = world
+            .run(None, Some(codex), &["thread", "create", "--topic", "wake"])
+            .text("thread create");
+        world
+            .run(None, Some(codex), &["invite", &thread, "--seat", &b])
+            .data("invite");
+        world
+            .run(None, Some(b_pane), &["accept", &thread])
+            .data("accept");
+        threads.push(thread);
+    }
+    let thread = threads[0].clone();
+    for (seat, thread) in [(&x, &threads[0]), (&y, &threads[1])] {
+        world
+            .run(
+                None,
+                Some(b_pane),
+                &["send", thread, "--body", "ping", "--require-ack", seat],
+            )
+            .data("send");
+    }
+    let outcome = |seat: &str| -> Option<String> {
+        world
+            .database()
+            .query_row(
+                "SELECT last_outcome FROM wake_work WHERE seat_id=?1 AND completed_at_utc IS NOT NULL",
+                [seat],
+                |r| r.get(0),
+            )
+            .ok()
+    };
+    world.wait_for("both wakes submitted", |world| {
+        outcome(&x).as_deref() == Some("submitted")
+            && outcome(&y).as_deref() == Some("submitted")
+            && world.herdr.prompts().len() == 2
+    });
+    // Seat X's session ran after the wake: a claim-bearing read reaches the daemon and leaves
+    // the ACK request owed (a turn-start hook would also serve it in-turn).
+    let x_codex = Caller {
+        seat: &x,
+        pane: "w1:p1",
+        harness: "codex",
+    };
+    world
+        .run(None, Some(x_codex), &["summary", &thread])
+        .data("summary");
+
+    let prompts_to = |pane: &str| {
+        world
+            .herdr
+            .prompts()
+            .iter()
+            .filter(|prompt| prompt["target"] == pane)
+            .count()
+    };
+    let until = Instant::now() + Duration::from_secs(60);
+    while outcome(&y).as_deref() != Some("unreceived") || prompts_to("w1:p1") < 2 {
+        assert!(
+            Instant::now() < until,
+            "retry verdicts: X {:?} ({} prompts), Y {:?}",
+            outcome(&x),
+            prompts_to("w1:p1"),
+            outcome(&y)
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // A few more lane passes: the silent seat is not typed to again.
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(prompts_to("w1:p2"), 1, "{:?}", world.herdr.prompts());
+    assert_eq!(outcome(&y).as_deref(), Some("unreceived"));
+    assert_eq!(outcome(&x).as_deref(), Some("submitted"));
+}
+
 /// Seam of the pane-agent observation port (ht-rzi.9) across `me init`
 /// (ht-rzi.3), `launch` (ht-rzi.4) and the continuity diagnostic (ht-rzi.2):
 /// one scripted Herdr answer per pane -- an agent with a session, no agent

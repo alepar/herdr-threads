@@ -1651,6 +1651,16 @@ impl WakePort for ScheduledStore {
         self.store
             .complete_wake(self.wake_host()?, attempt, outcome, refused_restore, budget)
     }
+    fn mark_wake_unreceived(
+        &self,
+        seat: &SeatId,
+        attempt: &crate::protocol::ids::WakeAttemptId,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let _turn = self.writer.enter_background(budget, self.store.clock())?;
+        self.store
+            .mark_wake_unreceived(self.wake_host()?, seat, attempt, budget)
+    }
     fn wake_recovery_candidates(
         &self,
         page: PageRequest,
@@ -1875,6 +1885,18 @@ impl<P: WakePort + ?Sized> WakePort for ObservedWakePort<'_, P> {
             Some(attempt.as_str().into()),
             self.port
                 .complete_wake(attempt, outcome, refused_restore, budget),
+        )
+    }
+    fn mark_wake_unreceived(
+        &self,
+        seat: &SeatId,
+        attempt: &crate::protocol::ids::WakeAttemptId,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        self.observed(
+            WakePhase::Completion,
+            Some(attempt.as_str().into()),
+            self.port.mark_wake_unreceived(seat, attempt, budget),
         )
     }
     fn wake_recovery_candidates(

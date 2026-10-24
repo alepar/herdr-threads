@@ -1,7 +1,7 @@
 //! Bounded scheduler composition. Host attempts run outside the store writer.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{Mutex, mpsc},
     time::Duration,
 };
@@ -92,6 +92,16 @@ pub trait WakePort: Send + Sync {
         refused_restore: Option<&PriorLadder>,
         budget: &CallBudget,
     ) -> Result<bool, ApiError>;
+    /// Marks the seat's settled `submitted` wake `attempt` unreceived. The
+    /// default records nothing.
+    fn mark_wake_unreceived(
+        &self,
+        _seat: &SeatId,
+        _attempt: &WakeAttemptId,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
     fn wake_recovery_candidates(
         &self,
         page: PageRequest,
@@ -435,6 +445,9 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
             // entry a failed completion left behind can never be reported
             // against a later attempt.
             let verification = self.wakes.notifier.take_verification(&candidate.seat);
+            if verification == Some(SubmissionVerification::Unsubmitted) {
+                self.wakes.arm_unsubmitted(&candidate.seat)?;
+            }
             match attempt {
                 Ok(Some(_)) => {
                     outcome.attempted += 1;
@@ -747,6 +760,32 @@ struct WakeRunnerState {
     dispatch: DispatchState,
     // Joined attempts retain a bounded ownership slot until durable settlement.
     pending: VecDeque<PendingCompletion>,
+    /// Seats whose last wake this process submitted, until the session shows it ran.
+    awaiting: HashMap<SeatId, AwaitingReceipt>,
+}
+
+/// A submitted wake whose receipt is not yet shown (ht-wake-loop). The session shows it by any
+/// daemon call claiming the seat at or after `since` (the reservation instant, which precedes the
+/// typing), or by reading the item, which ends the wake work. With neither by the time the
+/// ladder's next retry is due, the wake was not received: it is recorded `unreceived` once and
+/// not retyped while the seat stays silent, its targets are unchanged and no newer item arrived
+/// (a new item gets its own wake, delivery contract rule 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AwaitingReceipt {
+    attempt: WakeAttemptId,
+    since: UtcMillis,
+    targets: Vec<BindingId>,
+    frontier: crate::ports::LogicalAttentionFrontier,
+    /// A `Submitted` attempt is judged; an `OutcomeUnknown` one only once the dispatcher reports
+    /// the prompt was typed and seen held in the composer (`arm_unsubmitted`), else it is dropped.
+    armed: bool,
+    marked: bool,
+}
+
+fn target_bindings(targets: &[WakeTarget]) -> Vec<BindingId> {
+    let mut bindings: Vec<BindingId> = targets.iter().map(|t| t.binding.clone()).collect();
+    bindings.sort();
+    bindings
 }
 
 impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N> {
@@ -766,6 +805,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             state: Mutex::new(WakeRunnerState {
                 dispatch: DispatchState::new(config, boot_mono, daemon_boot),
                 pending: VecDeque::new(),
+                awaiting: HashMap::new(),
             }),
         }
     }
@@ -793,6 +833,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             // No actionable work: a refusal backoff has nothing left to retry.
             if let Ok(mut state) = self.state.lock() {
                 state.dispatch.clear_refusal(&candidate.seat);
+                state.awaiting.remove(&candidate.seat);
             }
             return Ok(None);
         }
@@ -905,6 +946,34 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         {
             return Ok(None);
         }
+        // The retry is due: was the last submitted wake received?
+        if let Some(awaiting) = state.awaiting.get(&seat).cloned() {
+            let frontier = candidate
+                .attention_witness
+                .as_ref()
+                .expect("checked")
+                .frontier();
+            let silent = awaiting.armed
+                && awaiting.targets == target_bindings(&candidate.targets)
+                && !frontier.advanced_beyond(&awaiting.frontier)
+                && self.hook_pull.contacted_since(&seat, awaiting.since) == Some(false);
+            if !silent {
+                state.awaiting.remove(&seat);
+            } else {
+                if !awaiting.marked
+                    && skip_if_rebound(self.store.mark_wake_unreceived(
+                        &seat,
+                        &awaiting.attempt,
+                        budget,
+                    ))?
+                    .is_some()
+                    && let Some(entry) = state.awaiting.get_mut(&seat)
+                {
+                    entry.marked = true;
+                }
+                return Ok(None);
+            }
+        }
         self.store.before_wake_decision(&seat, budget)?;
         let Some(Some(reservation)) = skip_if_rebound(self.store.reserve_wake(candidate, budget))?
         else {
@@ -974,6 +1043,22 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             .map_err(dispatch_error)?;
         if current {
             state.dispatch.record_outcome(&seat, outcome, completed_at);
+            if matches!(
+                outcome,
+                WakeOutcome::Submitted | WakeOutcome::OutcomeUnknown
+            ) {
+                state.awaiting.insert(
+                    seat.clone(),
+                    AwaitingReceipt {
+                        attempt: reservation.attempt.clone(),
+                        since: reservation.reserved_at_utc,
+                        targets: target_bindings(&candidate.targets),
+                        frontier: reservation.attention_witness.frontier(),
+                        armed: outcome == WakeOutcome::Submitted,
+                        marked: false,
+                    },
+                );
+            }
             let completion = PendingCompletion {
                 seat,
                 attempt: reservation.attempt.clone(),
@@ -1282,6 +1367,22 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
     }
 
     /// Drops the refusal backoff of every seat in `listed`'s complement.
+    /// The seat's last wake was typed but seen held in the composer (an agy Enter taken as a
+    /// newline, then cleared): it awaits a receipt like a submitted one, so it is not retyped in a
+    /// loop.
+    fn arm_unsubmitted(&self, seat: &SeatId) -> Result<(), ApiError> {
+        if let Some(entry) = self
+            .state
+            .lock()
+            .map_err(|_| error(ErrorCode::StoreCorrupt, "wake state lock poisoned"))?
+            .awaiting
+            .get_mut(seat)
+        {
+            entry.armed = true;
+        }
+        Ok(())
+    }
+
     fn clear_refusals_not_in(
         &self,
         listed: &std::collections::HashSet<SeatId>,
@@ -1295,6 +1396,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
                 state.dispatch.clear_refusal(&seat);
             }
         }
+        state.awaiting.retain(|seat, _| listed.contains(seat));
         Ok(())
     }
 

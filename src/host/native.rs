@@ -61,6 +61,9 @@ const MIN_PROMPT_MILLIS: u64 = 250;
 const COMPOSER_CALL_MILLIS: u64 = 750;
 /// Clears beyond one per composer line before a stash gives up.
 const COMPOSER_CLEAR_SLACK: usize = 2;
+/// `clear_key` presses that may remove an unsubmitted wake (its row, and an empty row an
+/// Enter taken as a newline left below it).
+const WAKE_CLEAR_PRESSES: usize = 2;
 /// Settle time before the composer is read back after a send, so the harness
 /// has cleared its composer when the prompt was accepted.
 const COMPOSER_SETTLE_MILLIS: u64 = 250;
@@ -1481,6 +1484,51 @@ impl HostPort for NativeCli {
             }
         };
         self.clear_composer(target, harness, text, context)
+    }
+
+    /// One `clear_key` press, under the composer fence, only when the bound harness opts in
+    /// (`clears_unsubmitted_wake`) and a fresh structured read is `Text` equal to `text`: any
+    /// other content (a draft, the wake plus typed input, an unreadable screen) is left alone.
+    fn clear_own_wake_text(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+    ) -> Result<bool, ApiError> {
+        let Some(harness) = target
+            .bound_harness
+            .as_deref()
+            .and_then(|id| self.registry.agent(id).ok())
+            .map(Harness::Agent)
+        else {
+            return Ok(false);
+        };
+        let Some(policy) = self
+            .composer_policy(harness)
+            .filter(|policy| policy.clears_unsubmitted_wake())
+        else {
+            return Ok(false);
+        };
+        let clear_key = policy.clear_key();
+        if clear_key != "ctrl+u" {
+            return Ok(false);
+        }
+        self.composer_fence(target, context, "wake clear")?;
+        // An Enter taken as a newline leaves an empty second row; a press there joins it to the
+        // wake row first, so each further press is gated on a fresh read holding just the wake.
+        for press in 0..=WAKE_CLEAR_PRESSES {
+            match self.read_composer(&target.target, harness, context)? {
+                ComposerRead::Empty => return Ok(press > 0),
+                ComposerRead::Text(held) if held == text && press < WAKE_CLEAR_PRESSES => {
+                    self.composer_call(
+                        &["pane", "send-keys", target.target.as_str(), clear_key],
+                        context,
+                    )?;
+                }
+                _ => return Ok(false),
+            }
+        }
+        Ok(false)
     }
 
     /// Retypes the stashed text with `pane send-text` (real newlines) and
@@ -4877,6 +4925,100 @@ pub(crate) mod tests {
                 "pane.send_text"
             ]
         );
+    }
+
+    const AGY_DRAFT: &str =
+        include_str!("../../tests/fixtures/agy/composer/draft.read-detection.txt");
+    const AGY_EMPTY: &str =
+        include_str!("../../tests/fixtures/agy/composer/empty.read-detection.txt");
+
+    fn agy_holding(text: &str) -> String {
+        AGY_DRAFT.replace("hello draft", text)
+    }
+
+    fn clear_wake_as(
+        harness: &'static str,
+        rest: Vec<Exchange>,
+    ) -> (Result<bool, ApiError>, Vec<String>) {
+        poke_session_in(
+            crate::harness::registry::builtins(),
+            rest,
+            |cli, target, context| {
+                let mut target = target.clone();
+                target.bound_harness = Some(harness.into());
+                cli.clear_own_wake_text(&target, crate::notification::policy::WAKE_UP, context)
+            },
+        )
+    }
+
+    // ht-wake-loop: an agy wake left unsubmitted is cleared with ctrl+u, only while the composer
+    // holds exactly that wake, and an Enter taken as a newline costs one more gated press.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn an_unsubmitted_agy_wake_is_cleared_only_while_the_composer_holds_exactly_it() {
+        let wake = agy_holding(crate::notification::policy::WAKE_UP);
+        let (cleared, methods) = clear_wake_as(
+            "agy",
+            vec![
+                detection_exchange(wake.clone()),
+                clear_exchange(),
+                detection_exchange(AGY_EMPTY),
+            ],
+        );
+        assert!(cleared.unwrap());
+        assert_eq!(
+            methods,
+            ["pane.get", "agent.read", "pane.send_keys", "agent.read"]
+        );
+
+        let (cleared, methods) = clear_wake_as(
+            "agy",
+            vec![
+                detection_exchange(wake.clone()),
+                clear_exchange(),
+                detection_exchange(wake.clone()),
+                clear_exchange(),
+                detection_exchange(AGY_EMPTY),
+            ],
+        );
+        assert!(cleared.unwrap());
+        assert_eq!(methods.iter().filter(|m| *m == "pane.send_keys").count(), 2);
+
+        // Typed input after the wake, or a person's draft: no key is sent.
+        for held in [
+            format!("{}x", crate::notification::policy::WAKE_UP),
+            "hello draft".to_owned(),
+        ] {
+            let (cleared, methods) =
+                clear_wake_as("agy", vec![detection_exchange(agy_holding(&held))]);
+            assert!(!cleared.unwrap(), "{held}");
+            assert_eq!(methods, ["pane.get", "agent.read"], "{held}");
+        }
+
+        // Still the wake after every allowed press: give up without a further key.
+        let (cleared, methods) = clear_wake_as(
+            "agy",
+            vec![
+                detection_exchange(wake.clone()),
+                clear_exchange(),
+                detection_exchange(wake.clone()),
+                clear_exchange(),
+                detection_exchange(wake),
+            ],
+        );
+        assert!(!cleared.unwrap());
+        assert_eq!(methods.iter().filter(|m| *m == "pane.send_keys").count(), 2);
+    }
+
+    // A harness whose composer policy does not opt in is never read or keyed.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn an_unsubmitted_wake_is_left_alone_without_the_composer_opt_in() {
+        for harness in ["claude", "codex"] {
+            let (cleared, methods) = clear_wake_as(harness, vec![]);
+            assert!(!cleared.unwrap(), "{harness}");
+            assert_eq!(methods, ["pane.get"], "{harness}");
+        }
     }
 
     // Catches a hard-coded host-kind list: a registered fourth adapter's

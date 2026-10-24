@@ -15,6 +15,8 @@ struct SeamHost {
     observes: AtomicU64,
     prompts: AtomicU64,
     submit_keys: AtomicU64,
+    /// Texts the dispatcher asked to clear after an unsubmitted verification.
+    clears: Mutex<Vec<String>>,
     pane_states: Mutex<VecDeque<AgentComposerState>>,
 }
 impl SeamHost {
@@ -107,6 +109,15 @@ impl HostPort for SeamHost {
         self.submit_keys.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
+    fn clear_own_wake_text(
+        &self,
+        _: &SafeWakeTarget,
+        text: &str,
+        _: &HostCallContext,
+    ) -> Result<bool, ApiError> {
+        self.clears.lock().unwrap().push(text.to_owned());
+        Ok(true)
+    }
 }
 
 const START_MS: u64 = 1_000_000;
@@ -152,6 +163,7 @@ impl Seam {
             observes: AtomicU64::new(0),
             prompts: AtomicU64::new(0),
             submit_keys: AtomicU64::new(0),
+            clears: Mutex::new(Vec::new()),
             pane_states: Mutex::new(states.into()),
         });
         Self {
@@ -290,6 +302,7 @@ fn sent_and_verified_advances_one_step() {
         );
         assert_eq!(seam.host.prompts.load(Ordering::SeqCst), 1);
         assert_eq!(seam.host.submit_keys.load(Ordering::SeqCst), 0);
+        assert!(seam.host.clears.lock().unwrap().is_empty(), "nothing held");
         let after = seam.ladder();
         assert_eq!(after.0, before.0 + 1, "exactly one ladder step");
         assert_eq!(after.2.as_deref(), Some("submitted"));
@@ -321,6 +334,12 @@ fn held_prompt_reports_unsubmitted_and_advances_exactly_one_step() {
             seam.host.submit_keys.load(Ordering::SeqCst),
             0,
             "verification never submits a user draft"
+        );
+        // ht-wake-loop: the held wake's own text is offered to the host's guarded clear, once.
+        assert_eq!(seam.host.clears.lock().unwrap().len(), 1);
+        assert!(
+            crate::notification::policy::WAKE_TEXTS
+                .contains(&seam.host.clears.lock().unwrap()[0].as_str())
         );
 
         // Within the ladder delay nothing is sent again.

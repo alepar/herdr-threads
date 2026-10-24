@@ -713,6 +713,24 @@ model open work, and summary closure never changes receipt state or installs glo
   existing native wake applies, and its turn's `PreInvocation` pull delivers. Tool-boundary check-ins of such a
   seat omit the attention digest and ready commands; its lifecycle check-in keeps them. Pending attention stays
   pending, and deadlines and hard-deadline warnings keep running.
+- *Wake receipt* (ht-wake-loop): a submitted wake expects the session to reach the daemon. Evidence is
+  `seat_contact`: the daemon's own process-local record of the latest call claiming the seat (any claim-bearing
+  mutation, delivery pull or confirm, cursor advance, and the inbox and attention-digest reads a hook or the model
+  issues), compared with the wake's reservation instant, which precedes the typing; reading the item ends the wake
+  work by itself. A wake typed but seen still held in the composer (an unsubmitted verification) is judged the
+  same way. When the ladder's next retry is due and neither happened, the daemon records that attempt's
+  outcome `unreceived` (an overdue warning then names `wake=unreceived`) and retypes nothing for that
+  attention while the seat stays silent and its wake targets are unchanged; a newer item (an advanced
+  attention frontier: a new invitation, receipt, warning or admitted row) gets its own wake (delivery contract
+  rule 5), and any later contact, a changed target set, an end of the wake work, a Herdr reconnection (the wake
+  lane's outage recovery) or a daemon restart resumes the ordinary ladder. The record is a hint (A2): it is keyed by the claim's
+  cooperative seat, never proves which session ran, grants nothing and changes no receipt, binding or
+  authority; it only withholds a retyped wake. Soft-deadline pokes are unaffected.
+- *Unsubmitted wake clear*: after a wake is seen still held in the composer, a harness whose composer policy opts
+  in (`clears_unsubmitted_wake`, today agy) gets at most two presses of its declared clear key, each only after
+  a fresh composer read holds exactly the typed wake text and nothing else (an Enter taken as a newline leaves an
+  empty row below it). Any other content, including a draft typed after the wake, is left untouched. The
+  outcome stays unsubmitted.
 
 **A5. Who may do what.**
 
@@ -1893,6 +1911,16 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   absence of keystrokes, cursor moves, or type/delete activity between samples. Focus is Herdr's pane
   selection, not every attached client's physical attention. Restart/outage gaps can delay focused
   wakes; nonempty/unreadable composers can defer indefinitely. No atomic host/client buffer claim is made.
+- **A received wake can be judged unreceived.** The receipt check sees only calls that claim the seat: a session
+  that took the woken turn without any herdr-threads call before the ladder's next retry (at least 30 s) is
+  recorded `unreceived` and not woken again for that attention until it next calls the daemon, a newer item
+  arrives, the targets change, Herdr reconnects or the daemon restarts; the item stays pending, soft-deadline
+  pokes and deadline warnings keep running. Read-only commands that carry no seat claim (`body`, `thread list`)
+  do not count as contact. Conversely a call made by any
+  process claiming the seat (a sibling `/side` session, a stale claim) counts as receipt, so the check can only
+  ever withhold a retype, never add one.
+- **The unsubmitted-wake clear races typing.** A key typed between the exact-text read and the clear key is
+  cleared with the wake, as with a composer stash; nothing typed before that read is touched.
 - **Composer reads see the screen, not the buffer.** Herdr's detection read shows composer rows without
   trailing whitespace, so whitespace typed at the end of a draft row is invisible, and a draft of only
   spaces can read as empty and be nudged over. A draft typed to match a captured

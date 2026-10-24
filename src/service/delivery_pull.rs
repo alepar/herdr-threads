@@ -102,6 +102,8 @@ fn content_version(fingerprint: &ModFingerprint, notice: Option<i64>, invitation
 #[derive(Default)]
 pub struct DeliveryPullState {
     ledger: Mutex<OfferedLedger>,
+    /// The last daemon call claiming each seat, for the wake receipt check (ht-wake-loop).
+    contacts: Mutex<HashMap<crate::protocol::ids::SeatId, crate::protocol::time::UtcMillis>>,
     #[cfg(any(test, feature = "test-support"))]
     probe: PullProbe,
 }
@@ -125,6 +127,20 @@ impl DeliveryPullState {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
+
+    /// Records a daemon call claiming `seat` at `now`.
+    pub fn record_contact(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        now: crate::protocol::time::UtcMillis,
+    ) {
+        let mut contacts = self
+            .contacts
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let last = contacts.entry(seat.clone()).or_insert(now);
+        last.0 = last.0.max(now.0);
+    }
 }
 
 impl crate::ports::HookPullOutlook for DeliveryPullState {
@@ -147,6 +163,18 @@ impl crate::ports::HookPullOutlook for DeliveryPullState {
         binding_generation: u64,
     ) -> bool {
         self.lock().holds_parked(seat, targets, binding_generation)
+    }
+
+    fn contacted_since(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        since: crate::protocol::time::UtcMillis,
+    ) -> Option<bool> {
+        let contacts = self
+            .contacts
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        Some(contacts.get(seat).is_some_and(|last| last.0 >= since.0))
     }
 }
 

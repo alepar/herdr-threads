@@ -815,6 +815,68 @@ fn matching_completion_records_submitted_and_retains_zero_reason_history() {
     let _ = std::fs::remove_file(path);
 }
 
+// ht-wake-loop: only the settled attempt it names, with a typed outcome, becomes `unreceived`.
+// Kills: a guard that drops the reservation, attempt id or outcome condition.
+#[test]
+fn mark_unreceived_changes_only_the_named_settled_typed_attempt() {
+    let path =
+        crate::test_support::scratch::temp_path(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let context = StoreContext::new(path.clone(), Arc::new(WakeClock)).with_test_host();
+    let db = context.open_writer().unwrap();
+    for (seat, reservation, outcome) in [
+        ("settled", None, "submitted"),
+        ("held", None, "outcome_unknown"),
+        ("refused", None, "unsafe"),
+        ("in_flight", Some("a"), "submitted"),
+    ] {
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES (?1,'34750f98bd59fcfc946da45aaabe933b','resolved','native',1,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts))",[seat]).unwrap();
+        db.execute("INSERT INTO wake_work(seat_id,reason_bits,binding_generation,reservation_id,reservation_boot,retry_step,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_outcome) VALUES (?1,1,1,?2,?3,0,30000,30000,'a',?4,?5)",
+            rusqlite::params![seat, reservation, reservation.map(|_| DAEMON_BOOT), DAEMON_BOOT, outcome]).unwrap();
+    }
+    drop(db);
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings {
+            daemon_boot: Some(uuid::Uuid::parse_str(DAEMON_BOOT).unwrap()),
+            ..StoreSettings::default()
+        },
+    )
+    .unwrap();
+    let mark = |seat: &str, attempt: &str| {
+        StorePort::mark_wake_unreceived(
+            &store,
+            crate::test_support::test_host_id(),
+            &SeatId::new(seat),
+            &WakeAttemptId::new(attempt),
+            &budget(),
+        )
+        .unwrap()
+    };
+    assert!(!mark("settled", "other"), "another attempt");
+    assert!(!mark("refused", "a"), "nothing was typed");
+    assert!(!mark("in_flight", "a"), "a reservation is in flight");
+    assert!(mark("settled", "a"));
+    assert!(mark("held", "a"));
+    assert!(!mark("settled", "a"), "already marked");
+    let db = store.context.open_writer().unwrap();
+    let outcome = |seat: &str| -> String {
+        db.query_row(
+            "SELECT last_outcome FROM wake_work WHERE seat_id=?1",
+            [seat],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        ["settled", "held", "refused", "in_flight"].map(outcome),
+        ["unreceived", "unreceived", "unsafe", "submitted"]
+    );
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn unresolved_recovery_hold_blocks_candidate_continuity_even_with_fresh_target() {
     let path =

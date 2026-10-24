@@ -37,6 +37,8 @@ mod mod_routing;
 mod wake_outcome_contract;
 #[path = "wake_outcome_seam.rs"]
 mod wake_outcome_seam;
+#[path = "wake_receipt.rs"]
+mod wake_receipt;
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},

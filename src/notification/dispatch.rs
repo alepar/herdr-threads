@@ -517,6 +517,11 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         match submitted {
             PromptOutcome::Submitted => {
                 let verification = self.verify_submission(&target, context);
+                // A held wake blocks every later one; the host removes only its own text, and the
+                // outcome stays unsubmitted either way.
+                if verification == SubmissionVerification::Unsubmitted && !using_poke {
+                    let _ = self.host.clear_own_wake_text(&target, text, context);
+                }
                 if let Ok(mut verifications) = self.verifications.lock() {
                     verifications.insert(reservation.seat.clone(), verification);
                 }
