@@ -3,6 +3,7 @@ use crate::harness::{
     adapter::ComposerPolicy,
     composer::{self, ComposerRead},
     recipe::PokeCapabilities,
+    sgr,
 };
 use std::ops::Range;
 /// The shortest run of `─` taken for Claude's composer rule.
@@ -59,8 +60,99 @@ fn claude_empty(rows: &[String]) -> Option<bool> {
     }
 }
 
+/// Why styled Claude composer text is neither empty nor a draft.
+const CLAUDE_MIXED_STYLE: &str = "Claude composer text mixes dim and other styles";
+
+/// How the composer's non-blank characters are drawn.
+enum RowStyle {
+    /// No character: an empty composer.
+    Blank,
+    /// Every character dim and nothing else: a placeholder or prompt suggestion.
+    Dim,
+    /// Every character in the default rendition: typed text.
+    Plain,
+    Mixed,
+}
+
+/// The style of `rows`, each read from its screen line past the two-column
+/// lead (`❯ ` or the continuation indent). `None` when the prompt glyph is
+/// dim: a dimmed composer may hold typed text drawn dim.
+fn claude_row_style(
+    screen: &[sgr::StyledLine],
+    rows: &[String],
+    body: &Range<usize>,
+) -> Option<RowStyle> {
+    if screen[body.start].styles.first()?.is_dim() {
+        return None;
+    }
+    let mut style = RowStyle::Blank;
+    for (row, line) in rows.iter().zip(&screen[body.clone()]) {
+        let cells = line.text.chars().zip(&line.styles).skip(2);
+        for (_, cell) in cells
+            .take(row.chars().count())
+            .filter(|(c, _)| !c.is_whitespace())
+        {
+            style = match (style, cell.is_dim_only(), cell.is_plain()) {
+                (RowStyle::Blank | RowStyle::Dim, true, _) => RowStyle::Dim,
+                (RowStyle::Blank | RowStyle::Plain, _, true) => RowStyle::Plain,
+                _ => return Some(RowStyle::Mixed),
+            };
+        }
+    }
+    Some(style)
+}
+
 pub(super) struct NativeComposer;
 impl ComposerPolicy for NativeComposer {
+    /// Detection text cannot tell a suggestion or an uncaptured placeholder
+    /// from a draft; the styled screen can.
+    fn wants_styled(&self, detection: &ComposerRead) -> bool {
+        matches!(
+            detection,
+            ComposerRead::Unreadable
+                | ComposerRead::Unsafe {
+                    reason: CLAUDE_NOT_KNOWN_EMPTY,
+                    ..
+                }
+        )
+    }
+    /// Dim-only text is a placeholder or prompt suggestion (empty), unstyled
+    /// text a draft, anything else unsafe.
+    fn read_styled(
+        &self,
+        screen: &[sgr::StyledLine],
+        pane_width: Option<u16>,
+    ) -> Option<ComposerRead> {
+        let screen: Vec<sgr::StyledLine> = screen
+            .iter()
+            .map(|line| sgr::StyledLine {
+                text: line.text.replace('\u{a0}', " "),
+                styles: line.styles.clone(),
+            })
+            .collect();
+        let raw: Vec<&str> = screen.iter().map(|line| line.text.as_str()).collect();
+        let lines: Vec<&str> = raw.iter().map(|line| line.trim_end()).collect();
+        let (rows, body, rule) = claude_rows(&lines)?;
+        let empty = match claude_row_style(&screen, &rows, &body)? {
+            RowStyle::Blank | RowStyle::Dim => true,
+            RowStyle::Plain => false,
+            RowStyle::Mixed => {
+                return Some(ComposerRead::Unsafe {
+                    text: rows.join("\n"),
+                    reason: CLAUDE_MIXED_STYLE,
+                });
+            }
+        };
+        Some(composer::validate_rows(
+            &raw,
+            &lines,
+            rows,
+            body,
+            pane_width.map(usize::from).or(Some(rule)),
+            empty,
+            CLAUDE_PROMPT,
+        ))
+    }
     fn read(&self, detection: &str, pane_width: Option<u16>) -> ComposerRead {
         let detection = detection.replace('\u{a0}', " ");
         let raw: Vec<&str> = detection.lines().collect();
@@ -105,5 +197,123 @@ impl ComposerPolicy for NativeComposer {
     }
     fn restore_text(&self, saved: &str) -> String {
         saved.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{harness::sgr, protocol::authority::Harness};
+
+    macro_rules! capture {
+        ($name:literal) => {
+            include_str!(concat!(
+                "../../../docs/evidence/ansi-composer/captures/claude-2.1.309-",
+                $name
+            ))
+        };
+    }
+
+    fn detection(text: &str) -> ComposerRead {
+        composer::read_composer(Harness::Claude, text, None)
+    }
+    fn styled(screen: &str) -> Option<ComposerRead> {
+        NativeComposer.read_styled(&sgr::parse(screen).expect("a styled capture"), None)
+    }
+
+    // Catches a dim prompt suggestion still refusing the fallback wake.
+    #[test]
+    fn captured_suggestion_and_placeholders_read_empty_when_styled() {
+        for (plain, ansi) in [
+            (
+                capture!("suggestion.read-detection.txt"),
+                capture!("suggestion.recent-ansi.txt"),
+            ),
+            (
+                capture!("placeholder-uncaptured.read-detection.txt"),
+                capture!("placeholder-uncaptured.visible-ansi.txt"),
+            ),
+        ] {
+            let read = detection(plain);
+            assert!(NativeComposer.wants_styled(&read), "{read:?}");
+            assert_eq!(styled(ansi), Some(ComposerRead::Empty));
+        }
+        assert_eq!(
+            detection(capture!("suggestion.read-detection.txt")),
+            ComposerRead::Unsafe {
+                text: "run the tests".into(),
+                reason: CLAUDE_NOT_KNOWN_EMPTY
+            }
+        );
+        // The captured placeholder is empty without a styled read.
+        let read = detection(capture!("placeholder.read-detection.txt"));
+        assert_eq!(read, ComposerRead::Empty);
+        assert!(!NativeComposer.wants_styled(&read));
+        assert_eq!(
+            styled(capture!("placeholder.recent-ansi.txt")),
+            Some(ComposerRead::Empty)
+        );
+    }
+
+    // Catches a typed draft read as a suggestion.
+    #[test]
+    fn captured_unstyled_text_is_a_draft() {
+        for (ansi, text) in [
+            (capture!("draft.recent-ansi.txt"), "hello draft"),
+            (capture!("typed-prefix.recent-ansi.txt"), "run"),
+            (
+                capture!("multiline-draft.recent-ansi.txt"),
+                "line one\nline two",
+            ),
+        ] {
+            assert_eq!(styled(ansi), Some(ComposerRead::Text(text.into())));
+        }
+    }
+
+    fn screen(composer: &str) -> String {
+        let rule = format!("\x1b[38;2;136;136;136m{}\x1b[0m", "─".repeat(80));
+        format!("{rule}\r\n{composer}\r\n{rule}\r\n  footer\r\n")
+    }
+
+    #[test]
+    fn mixed_or_dimmed_composers_are_never_empty() {
+        let mixed = screen("❯\u{a0}typed \x1b[2mghost\x1b[0m");
+        assert!(matches!(
+            styled(&mixed),
+            Some(ComposerRead::Unsafe { text, reason: CLAUDE_MIXED_STYLE }) if text == "typed ghost"
+        ));
+        let coloured = screen("❯\u{a0}\x1b[2;38;5;1mred dim\x1b[0m");
+        assert!(matches!(
+            styled(&coloured),
+            Some(ComposerRead::Unsafe {
+                reason: CLAUDE_MIXED_STYLE,
+                ..
+            })
+        ));
+        // A dim prompt glyph: the whole composer may be drawn dim, a draft too.
+        assert_eq!(
+            styled(&screen("\x1b[2m❯\u{a0}draft drawn dim\x1b[0m")),
+            None
+        );
+        // No composer on the styled screen: the detection read stands.
+        assert_eq!(styled("\x1b[1mWelcome\x1b[0m\r\n"), None);
+        // Blank composer and a dim multi-row placeholder are empty.
+        assert_eq!(styled(&screen("❯")), Some(ComposerRead::Empty));
+        let rows = "❯\u{a0}\x1b[2mfirst\r\n  second\x1b[0m";
+        assert_eq!(styled(&screen(rows)), Some(ComposerRead::Empty));
+    }
+
+    #[test]
+    fn only_undecidable_detection_reads_ask_for_styles() {
+        for read in [
+            ComposerRead::Empty,
+            ComposerRead::Text("x".into()),
+            ComposerRead::Unsafe {
+                text: "x".into(),
+                reason: "image placeholder in the composer",
+            },
+        ] {
+            assert!(!NativeComposer.wants_styled(&read), "{read:?}");
+        }
     }
 }

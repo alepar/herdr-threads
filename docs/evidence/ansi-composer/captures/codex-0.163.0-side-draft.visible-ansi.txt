@@ -1,0 +1,5 @@
+ 
+ 
+[0m[1m›[0m side draft
+ 
+  [0m[38;2;246;226;183mGPT-6.1-Sol default[0m · [0m[38;2;171;223;167m/tmp/ih.8rrNK0/work[0m · [0m[38;2;137;220;235mReply with ok[0m · Age… [0m[1m[38;5;5mSide[0m [0m[38;5;5mfrom main thread[0m · [0m[1m^/[0m to switch · [0m[1m^c[0m to close

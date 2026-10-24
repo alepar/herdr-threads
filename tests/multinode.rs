@@ -199,6 +199,9 @@ mod config_dial_each_other;
 #[path = "multinode/config_mixed_versions.rs"]
 mod config_mixed_versions;
 
+#[path = "multinode/styled_composer.rs"]
+mod styled_composer;
+
 #[path = "multinode/config_two_hosts.rs"]
 mod config_two_hosts;
 

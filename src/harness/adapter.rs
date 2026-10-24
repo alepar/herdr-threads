@@ -1370,6 +1370,18 @@ pub trait ComposerPolicy: Send + Sync {
     /// Recipe declarations for the observed installed version; evidence never adds support.
     fn capabilities(&self, installed: Option<&str>) -> super::recipe::PokeCapabilities;
     fn read(&self, detection: &str, pane_width: Option<u16>) -> super::composer::ComposerRead;
+    /// Whether a styled screen may refine this detection read (one more host read).
+    fn wants_styled(&self, _detection: &super::composer::ComposerRead) -> bool {
+        false
+    }
+    /// The composer of a styled `recent` screen; `None` keeps the detection read.
+    fn read_styled(
+        &self,
+        _screen: &[super::sgr::StyledLine],
+        _pane_width: Option<u16>,
+    ) -> Option<super::composer::ComposerRead> {
+        None
+    }
     fn clear_key(&self) -> &'static str;
     /// Retyped text only: restoring a draft must never submit it.
     fn restore_text(&self, saved: &str) -> String;

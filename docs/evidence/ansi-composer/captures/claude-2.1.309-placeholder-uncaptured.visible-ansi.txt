@@ -1,0 +1,17 @@
+bash-5.3$ printf "\033[2mdimtext\033[0m plain \033[1mbold\033[0m\n"
+[0m[2mdimtext[0m plain [0m[1mbold[0m
+bash-5.3$ cd /tmp/ih.8rrNK0/work && CLAUDE_CONFIG_DIR=/tmp/ih.8rrNK0/claudecfg ANTHROPIC_API_KEY=dummy-apikey-fakefakef
+akefakefakefakefake ANTHROPIC_BASE_URL=http://127.0.0.1:18917 DISABLE_AUTOUPDATER=1 claude
+[0m[38;2;215;119;87m ▐[0m[38;2;215;119;87m[48;2;0;0;0m▛███▛█   [0m[1mClaude Code [0m[38;2;153;153;153mv2.1.309[0m
+[0m[38;2;215;119;87m▝▜[0m[38;2;215;119;87m[48;2;0;0;0m█████[0m[38;2;215;119;87m█▀  [0m[38;2;153;153;153mOpus 5.5 · API Usage Billing[0m
+[0m[38;2;215;119;87m ▝▝   ▝▝   [0m[38;2;153;153;153m/tmp/ih.8rrNK0/work[0m
+
+[0m[38;2;215;119;87m▎ [0m[1mAuto mode is now Claude Code's default permission mode.[0m
+[0m[38;2;215;119;87m▎ [0m[38;2;153;153;153mAuto mode lets Claude handle permission prompts automatically. Claude checks each tool call for risky actions and[0m
+[0m[38;2;215;119;87m▎ [0m[38;2;153;153;153mprompt injection before executing, runs the ones it assesses as lower-risk, and blocks the rest.[0m
+[0m[38;2;215;119;87m▎ [0m[38;2;153;153;153mhttps://code.claude.com/docs/en/permission-modes[0m
+
+[0m[38;2;136;136;136m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+❯ [0m[2mTry "fix lint errors"[0m
+[0m[38;2;136;136;136m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [0m[38;2;255;193;7m⏵⏵ auto mode on[0m[38;2;153;153;153m (shift+tab to cycle)[0m

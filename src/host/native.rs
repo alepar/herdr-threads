@@ -1067,6 +1067,18 @@ impl NativeCli {
                 "agent.read",
                 serde_json::json!({"target":target,"source":source}),
             ),
+            [
+                "agent",
+                "read",
+                target,
+                "--source",
+                source,
+                "--format",
+                format,
+            ] => (
+                "agent.read",
+                serde_json::json!({"target":target,"source":source,"format":format}),
+            ),
             ["pane", "send-keys", target, keys @ ..] if !keys.is_empty() => (
                 "pane.send_keys",
                 serde_json::json!({"pane_id":target,"keys":keys}),
@@ -2173,8 +2185,9 @@ impl NativeCli {
         self.registry.by_id(id).ok()?.composer_policy()
     }
 
-    /// One bounded `agent read --source detection`, composer-parsed. The pane
-    /// width is not in Herdr's pane record; Claude's rule length stands in.
+    /// One bounded `agent read --source detection`, composer-parsed, and one
+    /// styled read when the policy asks for it. The pane width is not in
+    /// Herdr's pane record; Claude's rule length stands in.
     fn read_composer(
         &self,
         target: &HostTargetId,
@@ -2200,9 +2213,9 @@ impl NativeCli {
         harness: Harness,
         context: &HostCallContext,
     ) -> Result<ComposerRead, ApiError> {
-        if self.composer_policy(harness).is_none() {
+        let Some(policy) = self.composer_policy(harness) else {
             return Ok(ComposerRead::Unreadable);
-        }
+        };
         let limit = composer_limit(self, context)?;
         let started = Instant::now();
         let raw = self.run_unfenced(
@@ -2225,12 +2238,56 @@ impl NativeCli {
         let text = text("text")
             .ok_or_else(|| error(ErrorCode::InvalidRequest, "composer read has no text"))?;
         self.check_after_parse_unfenced(&context.budget, started, limit)?;
-        Ok(composer::read_composer_in(
-            self.registry,
-            harness,
-            text,
-            None,
-        ))
+        let read = composer::read_composer_in(self.registry, harness, text, None);
+        if !policy.wants_styled(&read) {
+            return Ok(read);
+        }
+        // Any failure of the styled read keeps the detection read.
+        Ok(self
+            .read_styled_composer(target, policy, context)
+            .unwrap_or(read))
+    }
+
+    /// One bounded `agent read --source recent --format ansi` (detection
+    /// text carries no styles), composer-parsed by the policy. `None` when the
+    /// read fails, answers another pane, source or format, or carries no
+    /// parsable styles: a Herdr that ignores `format` returns plain text.
+    fn read_styled_composer(
+        &self,
+        target: &HostTargetId,
+        policy: &dyn ComposerPolicy,
+        context: &HostCallContext,
+    ) -> Option<ComposerRead> {
+        let limit = composer_limit(self, context).ok()?;
+        let started = Instant::now();
+        let raw = self
+            .run_unfenced(
+                &[
+                    "agent",
+                    "read",
+                    target.as_str(),
+                    "--source",
+                    "recent",
+                    "--format",
+                    "ansi",
+                ],
+                &context.budget,
+                limit,
+            )
+            .ok()?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let read = parsed.pointer("/result/read")?;
+        let text = |name: &str| read.get(name).and_then(serde_json::Value::as_str);
+        if text("pane_id") != Some(target.as_str())
+            || text("source") != Some("recent")
+            || text("format") != Some("ansi")
+        {
+            return None;
+        }
+        let screen = crate::harness::sgr::parse(text("text")?)?;
+        self.check_after_parse_unfenced(&context.budget, started, limit)
+            .ok()?;
+        policy.read_styled(&screen, None)
     }
 
     /// Clears the composer with a bounded `ctrl+u` loop until a read shows it
@@ -4453,14 +4510,113 @@ pub(crate) mod tests {
                     "pane_id":"w4:p1","source":"detection","text":text}}),
                 );
             });
+            // Neither is decidable from detection text: a styled read is asked
+            // for, and its refusal keeps the detection read.
             let (result, methods) = cooperative_wake(vec![
                 recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
                 screen,
+                styled_exchange(None),
             ]);
             assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
             assert_eq!(
                 *methods.lock().unwrap(),
-                ["pane.get", "agent.get", "agent.read"]
+                ["pane.get", "agent.get", "agent.read", "agent.read"]
+            );
+        }
+    }
+
+    fn styled_exchange(reply: Option<Value>) -> Exchange {
+        Box::new(move |stream: &mut UnixStream, request: Value| {
+            assert_eq!(request["method"], "agent.read");
+            assert_eq!(
+                request["params"],
+                json!({"target":"w4:p1","source":"recent","format":"ansi"})
+            );
+            match &reply {
+                Some(read) => answer(stream, &request, json!({"type":"pane_read","read":read})),
+                None => refuse(stream, &request, "invalid_params"),
+            }
+        })
+    }
+
+    fn styled_read(text: &str) -> Value {
+        json!({"pane_id":"w4:p1","source":"recent","format":"ansi","text":text,
+               "revision":0,"truncated":false})
+    }
+
+    const SUGGESTION_DETECTION: &str = include_str!(
+        "../../docs/evidence/ansi-composer/captures/claude-2.1.309-suggestion.read-detection.txt"
+    );
+    const SUGGESTION_ANSI: &str = include_str!(
+        "../../docs/evidence/ansi-composer/captures/claude-2.1.309-suggestion.recent-ansi.txt"
+    );
+
+    /// Catches a dim prompt suggestion refusing the fallback wake: the styled
+    /// read finds the composer empty and the wake is typed.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn nudge_safety_wakes_over_a_dim_prompt_suggestion() {
+        let prompt: Exchange = Box::new(|stream: &mut UnixStream, request: Value| {
+            assert_eq!(request["method"], "agent.prompt");
+            answer(
+                stream,
+                &request,
+                json!({"type":"agent_prompted","agent":wake_agent("idle", Some("claude"), "term_1")}),
+            );
+        });
+        let (result, methods) = cooperative_wake(vec![
+            recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
+            detection_exchange(SUGGESTION_DETECTION),
+            styled_exchange(Some(styled_read(SUGGESTION_ANSI))),
+            prompt,
+        ]);
+        assert_eq!(result.unwrap(), ports::PromptOutcome::Submitted);
+        assert_eq!(
+            *methods.lock().unwrap(),
+            [
+                "pane.get",
+                "agent.get",
+                "agent.read",
+                "agent.read",
+                "agent.prompt"
+            ]
+        );
+    }
+
+    /// Fail safe: a styled read that is refused, answers in plain text (a
+    /// Herdr that ignores `format`), shows typed text or answers another
+    /// source keeps the detection read's refusal.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn nudge_safety_keeps_refusing_without_a_trustworthy_styled_read() {
+        let draft = include_str!(
+            "../../docs/evidence/ansi-composer/captures/claude-2.1.309-draft.recent-ansi.txt"
+        );
+        let mut plain = styled_read(SUGGESTION_DETECTION);
+        plain.as_object_mut().unwrap().remove("format");
+        let mut detection_source = styled_read(SUGGESTION_ANSI);
+        detection_source["source"] = json!("detection");
+        for reply in [
+            None,
+            Some(plain),
+            Some(styled_read(draft)),
+            Some(detection_source),
+            Some(styled_read("\x1b[2mno composer here\x1b[0m\r\n")),
+        ] {
+            let (result, methods) = cooperative_wake(vec![
+                recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
+                detection_exchange(SUGGESTION_DETECTION),
+                styled_exchange(reply.clone()),
+            ]);
+            assert_eq!(
+                result.unwrap_err().code,
+                ErrorCode::TargetUnsafe,
+                "{reply:?}"
+            );
+            assert_eq!(
+                *methods.lock().unwrap(),
+                ["pane.get", "agent.get", "agent.read", "agent.read"],
+                "{reply:?}"
             );
         }
     }
@@ -4601,6 +4757,7 @@ pub(crate) mod tests {
             pane_exchange(),
             recheck_exchange(agent.clone()),
             detection_exchange("unknown layout"),
+            styled_exchange(None),
             recheck_exchange(agent),
             detection_exchange(claude_screen(&[""])),
             prompt_exchange("wake marker"),
@@ -5855,6 +6012,7 @@ pub(crate) mod tests {
             vec![
                 clear_exchange(),
                 detection_exchange(claude_screen(&["line one"])),
+                styled_exchange(None),
                 clear_exchange(),
                 detection_exchange(CLAUDE_EMPTY),
             ],
@@ -5896,6 +6054,7 @@ pub(crate) mod tests {
         for _ in 0..(1 + COMPOSER_CLEAR_SLACK) {
             exchanges.push(clear_exchange());
             exchanges.push(detection_exchange(CLAUDE_DRAFT));
+            exchanges.push(styled_exchange(None));
         }
         let (stash, methods) = poke_session(exchanges, |cli, target, context| {
             cli.clear_composer(target, Harness::Claude, "hello world one".into(), context)

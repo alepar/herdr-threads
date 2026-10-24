@@ -69,6 +69,7 @@ pub mod required_hooks;
 mod role_witness;
 pub mod runtime;
 pub mod setup;
+pub mod sgr;
 pub mod state;
 #[cfg(test)]
 #[path = "../../tests/harness/stub_binaries.rs"]

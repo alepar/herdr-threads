@@ -6,7 +6,10 @@
 //! - Owns: [`FakeHerdr`], which listens on a socket path, serves `ping`,
 //!   `session.snapshot`, `pane.get`, `pane.process_info`, `agent.get`,
 //!   `agent.read` and `agent.prompt` for a set of idle Claude panes, and
-//!   records every accepted `agent.prompt` as a wake marker.
+//!   records every accepted `agent.prompt` as a wake marker. A pane's screen
+//!   is the captured empty composer unless a test sets another
+//!   ([`FakeHerdr::set_screen`]), optionally with a styled form for
+//!   `--source recent --format ansi`.
 //! - Hides: the wire shapes, the per-pane stand-in session naming and the
 //!   foreground-process fingerprint the composer wake matches.
 //! - Must not: know a fact kind or a delivery rule; it only answers the host
@@ -17,6 +20,7 @@
 
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     io::{BufRead, BufReader, Write},
     os::unix::net::UnixListener,
     path::{Path, PathBuf},
@@ -38,6 +42,10 @@ struct World {
     label: String,
     panes: Mutex<Vec<Value>>,
     prompts: Mutex<Vec<(String, String)>>,
+    /// A pane's detection text and optional styled (`recent`, ANSI) text.
+    screens: Mutex<HashMap<String, (String, Option<String>)>>,
+    /// Every `(pane, source)` an `agent.read` asked for, in order.
+    reads: Mutex<Vec<(String, String)>>,
 }
 
 impl World {
@@ -106,11 +114,36 @@ impl World {
             },
             "agent.read" => match self.pane(&params["target"]) {
                 Some(pane) => {
-                    let text = include_str!(
-                        "../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt"
-                    );
-                    json!({"id":id,"result":{"type":"pane_read","read":{
-                        "pane_id":pane["pane_id"],"source":"detection","text":text}}})
+                    let pane_id = pane["pane_id"].as_str().unwrap_or("").to_owned();
+                    let source = params["source"].as_str().unwrap_or("").to_owned();
+                    self.reads
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((pane_id.clone(), source.clone()));
+                    let (detection, styled) = self
+                        .screens
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(&pane_id)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            (
+                                include_str!(
+                                    "../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt"
+                                )
+                                .to_owned(),
+                                None,
+                            )
+                        });
+                    match styled {
+                        Some(text) if source == "recent" && params["format"] == "ansi" => {
+                            json!({"id":id,"result":{"type":"pane_read","read":{
+                                "pane_id":pane_id,"source":"recent","format":"ansi","text":text}}})
+                        }
+                        // A Herdr without styled reads answers with its plain text.
+                        _ => json!({"id":id,"result":{"type":"pane_read","read":{
+                            "pane_id":pane_id,"source":source,"text":detection}}}),
+                    }
                 }
                 None => missing("agent_not_found"),
             },
@@ -148,6 +181,8 @@ impl FakeHerdr {
             label: label.to_owned(),
             panes: Mutex::new(panes),
             prompts: Mutex::new(Vec::new()),
+            screens: Mutex::new(HashMap::new()),
+            reads: Mutex::new(Vec::new()),
         });
         let stop = Arc::new(AtomicBool::new(false));
         let (serving, stopped) = (Arc::clone(&world), Arc::clone(&stop));
@@ -214,6 +249,30 @@ impl FakeHerdr {
     /// The wake markers typed into `pane`.
     pub fn prompts_for(&self, pane: &str) -> usize {
         self.prompts().iter().filter(|(p, _)| p == pane).count()
+    }
+
+    /// Sets what `pane` shows: its detection text and, when this server
+    /// answers styled reads for it, its `recent` ANSI text.
+    pub fn set_screen(&self, pane: &str, detection: &str, styled: Option<&str>) {
+        self.world
+            .screens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                pane.to_owned(),
+                (detection.to_owned(), styled.map(str::to_owned)),
+            );
+    }
+
+    /// How many `agent.read` calls asked for `pane` with `source`.
+    pub fn reads_for(&self, pane: &str, source: &str) -> usize {
+        self.world
+            .reads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(p, s)| p == pane && s == source)
+            .count()
     }
 
     /// Sets the Herdr agent status (`idle`, `working`, ...) of `pane`.

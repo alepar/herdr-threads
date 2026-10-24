@@ -1,0 +1,21 @@
+bash-5.3$ CODEX_HOME=/tmp/ih.8rrNK0/codexhome codex --no-alt-screen
+WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary d
+ir "/tmp" (codex_home: AbsolutePathBuf("/tmp/ih.8rrNK0/codexhome"))
+[0m[2m╭───────────────────────────────────────────────────────────────╮[0m
+[0m[2m│ [0m[1m[38;2;99;168;248m✨ Update available![0m [0m[1m0.163.0 -> 0.164.0[0m[2m                       │[0m
+[0m[2m│ [0mSee [0m[4m[38;2;99;168;248mhttps://github.com/openai/codex[0m for installation options.[0m[2m │[0m
+[0m[2m│                                                               │[0m
+[0m[2m│ [0mSee full release notes:[0m[2m                                       │[0m
+[0m[2m│ [0m[4m[38;2;99;168;248mhttps://github.com/openai/codex/releases/latest[0m[2m               │[0m
+[0m[2m╰───────────────────────────────────────────────────────────────╯[0m
+
+
+  [0m[38;2;99;168;248m>_ [0m[1mOpenAI Codex[0m[2m (v0.163.0)[0m
+     [0m[2m/tmp/ih.8rrNK0/work[0m
+
+  [0m[1mTip:[0m Maximize usage with GPT-6.1 Sol. Try it on complex work for near-Astra performance at a lower cost.
+ 
+ 
+[0m[1m›[0m hello draft
+ 
+  [0m[38;2;246;226;183mGPT-6.1-Sol default[0m · [0m[38;2;171;223;167m/tmp/ih.8rrNK0/work[0m                                                   ⚠ [0m[38;2;196;167;103m1 warning[0m · [0m[1mf2[0m to view

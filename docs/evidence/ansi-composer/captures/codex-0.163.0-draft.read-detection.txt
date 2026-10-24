@@ -1,0 +1,21 @@
+bash-5.3$ CODEX_HOME=/tmp/ih.8rrNK0/codexhome codex --no-alt-screen
+WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary d
+ir "/tmp" (codex_home: AbsolutePathBuf("/tmp/ih.8rrNK0/codexhome"))
+╭───────────────────────────────────────────────────────────────╮
+│ ✨ Update available! 0.163.0 -> 0.164.0                       │
+│ See https://github.com/openai/codex for installation options. │
+│                                                               │
+│ See full release notes:                                       │
+│ https://github.com/openai/codex/releases/latest               │
+╰───────────────────────────────────────────────────────────────╯
+
+
+  >_ OpenAI Codex (v0.163.0)
+     /tmp/ih.8rrNK0/work
+
+  Tip: Maximize usage with GPT-6.1 Sol. Try it on complex work for near-Astra performance at a lower cost.
+
+
+› hello draft
+
+  GPT-6.1-Sol default · /tmp/ih.8rrNK0/work                                                   ⚠ 1 warning · f2 to view

@@ -6,7 +6,12 @@ use crate::harness::{
 };
 use std::ops::Range;
 const CODEX_PROMPT: &str = "›";
-const CODEX_EMPTY: &str = "Ask Codex to do anything";
+/// Codex's empty-composer placeholders, exact text: the main conversation's
+/// and a `/side` conversation's (Codex 0.163 `chatwidget/constructor.rs`
+/// `PLACEHOLDER`, `SIDE_PLACEHOLDER`; captured in
+/// `docs/evidence/ansi-composer/`). The sub-agent view's placeholder is
+/// deliberately absent: Codex blocks a typed submit there.
+const CODEX_PLACEHOLDERS: &[&str] = &["Ask Codex to do anything", "Ask a follow-up question"];
 /// The rows of the last `› ` composer: its first row and two-space rows until
 /// a blank row.
 fn codex_rows(lines: &[&str]) -> Option<(Vec<String>, Range<usize>)> {
@@ -41,7 +46,7 @@ impl ComposerPolicy for NativeComposer {
         let Some((rows, body)) = codex_rows(&lines) else {
             return ComposerRead::Unreadable;
         };
-        let empty = rows.len() == 1 && rows[0] == CODEX_EMPTY;
+        let empty = rows.len() == 1 && CODEX_PLACEHOLDERS.contains(&rows[0].as_str());
         composer::validate_rows(
             &raw,
             &lines,
@@ -67,5 +72,43 @@ impl ComposerPolicy for NativeComposer {
     }
     fn restore_text(&self, saved: &str) -> String {
         saved.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        harness::composer::{ComposerRead, read_composer},
+        protocol::authority::Harness,
+    };
+
+    macro_rules! capture {
+        ($name:literal) => {
+            include_str!(concat!(
+                "../../../docs/evidence/ansi-composer/captures/codex-0.163.0-",
+                $name,
+                ".read-detection.txt"
+            ))
+        };
+    }
+
+    // Catches a `/side` conversation's placeholder refusing every wake as typed text.
+    #[test]
+    fn captured_side_placeholder_is_empty_and_a_side_draft_is_text() {
+        let read = |text| read_composer(Harness::Codex, text, Some(120));
+        assert_eq!(read(capture!("empty")), ComposerRead::Empty);
+        assert_eq!(read(capture!("side")), ComposerRead::Empty);
+        assert_eq!(
+            read(capture!("draft")),
+            ComposerRead::Text("hello draft".into())
+        );
+        assert_eq!(
+            read(capture!("side-draft")),
+            ComposerRead::Text("side draft".into())
+        );
+        assert_eq!(
+            read("› Viewing sub-agent — direct input is disabled\n\n  footer\n"),
+            ComposerRead::Text("Viewing sub-agent — direct input is disabled".into())
+        );
     }
 }

@@ -676,8 +676,16 @@ model open work, and summary closure never changes receipt state or installs glo
     draft); `blocked` is an approval or question. Claude's placeholder counts as empty only when it is exactly
     a captured placeholder (`docs/evidence/poke-spike/findings.md`); any other placeholder-shaped row is
     unknown and skipped. Claude Code draws a prompt suggestion in the composer after a turn, and the
-    detection text cannot tell it from typed input; until its styling is captured, any Claude composer text
-    other than a captured empty marker is not known empty and is never stashed. An unreadable composer, a failed read or any other status is
+    detection text cannot tell it from typed input, so a Claude detection read that is not known empty
+    (composer text, or an uncaptured placeholder) is refined by one styled read (`agent read --source recent
+    --format ansi`; styling captured in `docs/evidence/ansi-composer/`): with an undimmed prompt glyph,
+    composer text drawn only dim (SGR 2 and no other attribute or colour) is a placeholder or suggestion and
+    reads empty, wholly unstyled text is typed input, and any other mix is unsafe typed input. A failed,
+    plain-text, other-source or unparsable styled read, a dim glyph or no composer on the styled screen keeps
+    the detection read. Accepted limit: a Claude release that drew typed text dim behind an undimmed glyph
+    would read as empty, and a wake would be typed after that draft. Codex's empty placeholders are
+    exactly its main and `/side` ones; its sub-agent view's placeholder, under which Codex blocks a typed
+    submit, is typed input. An unreadable composer, a failed read or any other status is
     unknown and skipped. The same reader classifies observations and final native delivery admission.
     Ordinary native wakes also require an empty composer, checked after their final
     identity/status recheck. A missing registered composer provider, nonempty composer or unreadable composer refuses delivery before input is sent;
@@ -693,8 +701,9 @@ model open work, and summary closure never changes receipt state or installs glo
   - *Drafts are deferred.* Attention never stashes, clears, retypes or submits a known draft, including
     soft-deadline pokes even if an old recipe declares composer stash. Existing adapter stash helpers
     are retained but the notification dispatcher never invokes them. A parked draft or unreadable
-    screen can defer attention indefinitely. Claude suggestions may also defer delivery unless
-    disabled through the existing user-approved setup option; this change never edits configuration.
+    screen can defer attention indefinitely. Claude suggestions may also defer delivery where no styled
+    read is served, unless disabled through the existing user-approved setup option; this change never
+    edits configuration.
   - *Verification is read-only.* A held marker yields an unsubmitted diagnostic/uncertain delivery;
     verification never sends an additional Enter, which could submit newly typed user text.
   - *During a turn.* Unsolicited attention never queues into a reported active turn. The dispatcher

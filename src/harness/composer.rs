@@ -10,9 +10,12 @@
 //!   captured `Try "…"` placeholder; another placeholder-shaped row is
 //!   unreadable. Any other Claude text is `Unsafe` (`CLAUDE_NOT_KNOWN_EMPTY` in the Claude adapter),
 //!   never `Text`: Claude draws a prompt suggestion in the composer after a turn
-//!   and the detection text cannot tell it from a typed draft.
+//!   and the detection text cannot tell it from a typed draft. Such a read
+//!   asks for a styled one (`ComposerPolicy::wants_styled`), where dim-only
+//!   text is empty and unstyled text typed (`docs/evidence/ansi-composer/`).
 //! - Codex: a `› ` row, then two-space rows until a blank row (the footer
-//!   follows it). Empty is `› Ask Codex to do anything`.
+//!   follows it). Empty is `› Ask Codex to do anything` or the `/side`
+//!   placeholder `› Ask a follow-up question`.
 //!
 //! A soft wrap cannot be told from a hard newline (rows are measured in display
 //! columns, not characters), an image placeholder does
