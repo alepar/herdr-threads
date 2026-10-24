@@ -649,6 +649,42 @@ test('a session end forgets errored-result context; a later step settles nothing
   expect(h.core.snapshot().rec.delivered.m1).toBeUndefined()
 })
 
+test('a step of another turn releases errored-result context instead of settling it', async () => {
+  const h = await harness({ state: busyState('t1') }).boot()
+  h.line(msg('m1'))
+  await h.core.onToolCall({ tool: 'Bash' }, FAILED)
+  // a late result of an interrupted turn: the step that follows is not the request that carried it
+  h.core.onTurnStep({ turnId: 't9', index: 0 })
+  await flush()
+  expect(h.ackRuns()).toEqual([])
+  expect(h.core.snapshot().queue).toEqual(['m1'])
+  expect(h.entries.some((e: Any) => e.kind === 'refused' && e.reason === 'no_step')).toBe(true)
+})
+
+test('an abandoned dispatch or another plugin\'s own tool call carries nothing', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(msg('m1'))
+  expect(await h.core.onToolCall({ tool: 'Bash' }, FAILED, { aborted: true })).toBe(FAILED)
+  expect(await h.core.onToolCall({ tool: 'Bash' }, answered, { foreign: true })).toBe(answered)
+  expect(await h.core.onToolCall({ tool: 'Bash' }, FAILED, { foreign: true })).toBe(FAILED)
+  h.core.onTurnStep({ turnId: 't1', index: 1 })
+  await flush()
+  expect(h.ackRuns()).toEqual([])
+  expect(h.core.snapshot().queue).toEqual(['m1'])
+})
+
+test('errored-result context from a run that ended is discarded, not requeued, at the turn boundary', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(msg('m1'))
+  await h.core.onToolCall({ tool: 'Bash' }, FAILED)
+  h.line(status('closing', 'stalled', 0))
+  h.core.onTurnComplete({ turnId: 't1' })
+  await flush()
+  expect(h.core.snapshot().queue).toEqual([])
+  expect(h.entries.some((e: Any) => e.kind === 'refused' && e.reason === 'channel_lost:no_step' && e.ids.includes('m1'))).toBe(true)
+  expect(h.ackRuns()).toEqual([])
+})
+
 test('a draft in the prompt box delays an idle submit up to 120 s, then it submits', async () => {
   const h = await harness({ state: IDLE, box: 'my draft' }).boot()
   h.line(msg('m1'))
@@ -2089,6 +2125,44 @@ const reload = async (h: Any) => {
   await flush()
   await h.connect()
 }
+
+test('a reload before the step: the successor settles the predecessor\'s errored-result context once', async () => {
+  const h = await harness({ state: busyState('t1') }).boot()
+  h.line(msg('m1'))
+  expect((await h.core.onToolCall({ tool: 'Bash' }, FAILED)).context.length).toBe(1)
+  await flush()
+  await reload(h)
+  h.line(msg('m1')) // the watch replays the unacked item to the successor
+  await flush()
+  expect(await h.core.onToolCall({ tool: 'Bash' }, answered)).toBe(answered)
+  h.core.onTurnStep({ turnId: 't1', index: 1 })
+  await flush()
+  expect(h.core.snapshot().rec.delivered.m1).toBe('context')
+  expect(h.ackRuns().map((r: string[]) => r.slice(5))).toEqual([['--via', 'context', 'm1']])
+  expect(h.core.snapshot().queue).toEqual([])
+  expect(h.core.snapshot().turns.provisional).toEqual([])
+  h.core.onTurnComplete({ turnId: 't1' })
+  await flush()
+  expect(h.appends).toEqual([])
+  expect(h.submits).toEqual([])
+})
+
+test('a reload before a turn end with no step: the successor delivers the item once', async () => {
+  const h = await harness({ state: busyState('t1') }).boot()
+  h.line(msg('m1'))
+  await h.core.onToolCall({ tool: 'Bash' }, FAILED)
+  await flush()
+  await reload(h)
+  h.line(msg('m1'))
+  h.core.onTurnComplete({ turnId: 't1', isAborted: true })
+  await flush()
+  expect(h.submits).toEqual([])
+  await h.advance(120_000)
+  expect(h.appends.length).toBe(1)
+  expect(h.appends[0]).toContain('body of m1')
+  expect(h.submits).toEqual([WAKE])
+  expect(h.ackRuns().map((r: string[]) => r.slice(5))).toEqual([['--via', 'append', 'm1']])
+})
 
 // the record an older instance wrote before its frame submit
 const oldRec = (ids: string[], extra: Any = {}) => ({ sid: 's1', ids, ackable: ids, at: 1, turnId: null, issued: true, ...extra })

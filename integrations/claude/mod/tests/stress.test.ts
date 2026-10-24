@@ -412,7 +412,7 @@ function runSchedule(seed: number) {
         }
         totals.reloads++
         m.rejected = false // the in-memory rejection flag does not survive a reload
-        m.provisional = []
+        // provisional ids survive in $.state: the successor settles them on the turn's next step
         core.dispose()
         for (const release of world.pendingStates.splice(0)) release()
         await flush()
@@ -425,7 +425,6 @@ function runSchedule(seed: number) {
       const inflight = world.pendingSubmits.splice(0)
       totals.reloads++
       m.rejected = false // the in-memory rejection flag does not survive a reload
-      m.provisional = []
       core.dispose()
       // a dispose during the pre-submit write: the write lands afterwards
       for (const release of world.pendingStates.splice(0)) release()

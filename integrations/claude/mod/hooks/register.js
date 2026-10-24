@@ -139,14 +139,17 @@ export function createCore(io) {
     disposed: false,
     sid: null,
     rec: emptyRec(),
-    turns: { open: [], assumedBusy: false, abortHoldSince: null, submitting: null, wake: null },
+    turns: { open: [], assumedBusy: false, abortHoldSince: null, submitting: null, wake: null, provisional: [] },
     loadedAt: 0,
     sawStart: false,
     turnRejected: false,
     queue: [],
-    // Batches attached to an isError main result: settled by the next main turn.step, released
-    // by a main turn boundary first (a user reject ends the turn and its context is never read).
+    // Batches attached to an isError main result ({ batch, turn }): settled by the next main turn.step of
+    // that turn, released by a main turn boundary first (a user reject ends the turn and its context is never
+    // read). Their ids are also kept in turns.provisional, so a reload's successor settles or releases them.
     provisional: [],
+    // A predecessor's turns.provisional records ({ sid, turn, ids, ackable }), adopted at load.
+    heldProv: [],
     submitInflight: false,
     appendInflight: false,
     submitBackoffUntil: 0,
@@ -179,7 +182,7 @@ export function createCore(io) {
   const cmd = (...rest) => [...(io.argv || [io.bin || 'herdr-threads']), ...rest]
   const key = (sid) => `delivered:${sid}`
   const busy = () => S.turns.open.length > 0 || S.turns.assumedBusy || S.pred != null
-  const predHas = (id) => S.pred != null && S.pred.ids.includes(id)
+  const predHas = (id) => (S.pred != null && S.pred.ids.includes(id)) || S.heldProv.some((h) => h.ids.includes(id))
 
   function ledger(kind, fields = {}) {
     const turn = S.turns.open.length ? S.turns.open[S.turns.open.length - 1] : null
@@ -768,14 +771,18 @@ export function createCore(io) {
         abortHoldSince: recorded.abortHoldSince ?? null,
         submitting: null,
         wake: recorded.wake && typeof recorded.wake === 'object' && recorded.wake.sid ? recorded.wake : null,
+        provisional: [],
       }
     } else {
-      S.turns = { open: [], assumedBusy: true, abortHoldSince: null, submitting: null, wake: null }
+      S.turns = { open: [], assumedBusy: true, abortHoldSince: null, submitting: null, wake: null, provisional: [] }
       persistTurns()
     }
+    const priorProv = recorded && Array.isArray(recorded.provisional) ? recorded.provisional : []
     const prior = recorded && recorded.submitting
     const hasPrior = prior && typeof prior === 'object' && prior.sid && Array.isArray(prior.ids) && prior.ids.length > 0
     await loadSession()
+    S.heldProv = priorProv.filter((h) => h && h.sid === S.sid && Array.isArray(h.ids))
+    if (priorProv.length) persistTurns()
     if (hasPrior) {
       if (prior.sid === S.sid) S.pred = { ...prior, ackable: Array.isArray(prior.ackable) ? prior.ackable : [], issued: prior.issued !== false, since: io.now(), sawStart: false }
       // the record now belongs to this core as S.pred
@@ -818,27 +825,73 @@ export function createCore(io) {
     return true
   }
 
-  /** A main step began: any context attached to an errored result rides its request. */
+  // A batch with no turn id (attached while assumed busy) belongs to whichever main turn steps next.
+  const sameTurn = (turn, e) => turn == null || turn === e.turnId
+
+  function recordProvisional() {
+    S.turns.provisional = S.provisional.map(({ batch, turn }) => ({
+      sid: S.sid,
+      turn,
+      ids: batch.filter((i) => i.kind === 'message' || i.kind === 'lazy').map((i) => i.id),
+      ackable: batch.filter((i) => i.ackable).map((i) => i.id),
+    })).filter((h) => h.ids.length)
+    persistTurns()
+  }
+
+  /** A main step began: context attached to an errored result of this turn rides its request. */
   function onTurnStep(e) {
     if (S.inert || !e || e.agentId) return
     S.turnRejected = false
-    const batches = S.provisional
+    const entries = S.provisional
+    const held = S.heldProv
+    if (!entries.length && !held.length) return
     S.provisional = []
-    for (const batch of batches) {
-      for (const it of batch) it.inflight = false
-      void completeBatch(batch, 'context')
+    S.heldProv = []
+    for (const { batch, turn } of entries) {
+      if (!sameTurn(turn, e)) releaseOne(batch)
+      else {
+        for (const it of batch) it.inflight = false
+        void completeBatch(batch, 'context')
+      }
     }
+    // A predecessor attached these: record them as its delivery, as settlePred does for a submit.
+    const fresh = []
+    const ackable = []
+    for (const h of held) {
+      if (!sameTurn(h.turn, e)) continue
+      for (const id of h.ids) {
+        if (S.rec.delivered[id] !== undefined || fresh.includes(id)) continue
+        fresh.push(id)
+        S.rec.delivered[id] = 'context'
+        if (h.ackable.includes(id)) {
+          S.rec.unacked[id] = 'context'
+          ackable.push(id)
+        }
+      }
+    }
+    if (fresh.length) {
+      S.queue = S.queue.filter((q) => !fresh.includes(q.id))
+      saveRec()
+      ledger('delivered', { ids: fresh, via: 'context', reason: 'predecessor_context' })
+      void ackIds(ackable)
+    }
+    recordProvisional()
   }
 
-  /** No main step followed an errored result's context: it was never read, so its items are pending again. */
+  /** No main step of its turn followed an errored result's context: it was never read, so its items are pending again. */
+  function releaseOne(batch) {
+    releaseBatch(batch)
+    const left = discardStale(batch, 'no_step')
+    if (left.length) ledger('refused', { ids: left.map((i) => i.id), via: 'context', reason: 'no_step' })
+  }
+
   function releaseProvisional() {
-    const batches = S.provisional
+    if (!S.provisional.length && !S.heldProv.length) return
+    const entries = S.provisional
     S.provisional = []
-    for (const batch of batches) {
-      releaseBatch(batch)
-      const left = discardStale(batch, 'no_step')
-      if (left.length) ledger('refused', { ids: left.map((i) => i.id), via: 'context', reason: 'no_step' })
-    }
+    S.heldProv = []
+    for (const { batch } of entries) releaseOne(batch)
+    recordProvisional()
   }
 
   function onTurnStart(e) {
@@ -881,15 +934,17 @@ export function createCore(io) {
     void pump()
   }
 
-  async function onToolCall(e, result) {
-    if (S.inert || !e || e.agentId) return result
+  // ctx.foreign: another plugin's own $.tool.call, whose result the engine gives no context;
+  // ctx.aborted: the dispatch was abandoned (an interrupt), so no request will read this result.
+  async function onToolCall(e, result, ctx = {}) {
+    if (S.inert || !e || e.agentId || ctx.foreign) return result
     S.turnRejected = userRejected(result)
     if (!busy()) return result
     const answered =
       result && result.result !== undefined && result.deny === undefined && result.isError !== true
     // An errored result carries context too (a deny cannot), but it is settled only by the next main step.
     const errored = !!result && result.isError === true && result.deny === undefined
-    if (!(answered || errored) || !S.live) return result
+    if (!(answered || (errored && !ctx.aborted)) || !S.live) return result
     const batch = appendBatch(batchOrder(S.queue.filter((q) => !passive(q) && !q.inflight && !q.recoveryOffered && q.run === S.run && !predHas(q.id))), cmd())
     if (!batch.text) return result
     const output = { ...result, context: [...(result.context ?? []), batch.text] }
@@ -897,7 +952,8 @@ export function createCore(io) {
       void completeBatch(batch, 'context')
     } else {
       for (const it of batch) it.inflight = true
-      S.provisional.push(batch)
+      S.provisional.push({ batch, turn: S.turns.open.length ? S.turns.open[S.turns.open.length - 1] : null })
+      recordProvisional()
     }
     return output
   }
@@ -909,6 +965,8 @@ export function createCore(io) {
     S.submitInflight = false
     S.appendInflight = false
     S.provisional = []
+    S.heldProv = []
+    S.turns.provisional = []
     for (const it of S.queue) it.inflight = false
     dropQueued(`session_end:${reason}`)
     S.stopped = false
@@ -1167,7 +1225,8 @@ export const register = (on) => {
   on('tool.call', async ($, e, next) => {
     const r = await next(e)
     try {
-      return core ? await core.onToolCall(e, r) : r
+      const ctx = { foreign: next.origin?.plugin !== undefined && next.origin.plugin !== 'engine', aborted: next.signal?.aborted === true }
+      return core ? await core.onToolCall(e, r, ctx) : r
     } catch {
       return r
     }

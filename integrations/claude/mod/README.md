@@ -106,9 +106,13 @@ builds `io` from `$`. Rules (spec D5, D6):
   `context` (a deny or a subagent call leaves them queued). On an answered result they are settled
   at once. An errored result (`isError`: a failing tool, a hook deny, and also a user reject at a
   permission dialog, which Claude Code reports the same way) carries them too, but they are settled
-  only when the next main `turn.step` (model request) begins. If the main turn completes or a new
-  one starts first, the context was never read: the items are pending again (ledger `refused` via
-  `context`, reason `no_step`) and go out once by the paths below. While idle (R18) they are appended as one batched `$.session.append` (hidden
+  only when the next main `turn.step` (model request) of the same turn begins. If the main turn
+  completes, a new one starts, or a step of another turn comes first, the context was never read:
+  the items are pending again (ledger `refused` via `context`, reason `no_step`) and go out once by
+  the paths below. Their ids are kept in `$.state` (`turns.provisional`), so after a reload the
+  successor settles them on that step (ledger `delivered`, reason `predecessor_context`) or releases
+  them. No context rides an abandoned dispatch (`next.signal` aborted) or another plugin's own
+  `$.tool.call` (`next.origin` not the engine), whose result the engine gives no context. While idle (R18) they are appended as one batched `$.session.append` (hidden
   rows, no turn), settled by that append (`watch ack --via append`), and then the content-free wake prompt
   `wake up` is submitted (Claude Code labels it as a message from the herdr-threads plugin) with `$.prompt.submit`; the turn it starts sees the rows. The
   append is awaited before the submit, so the order is append, then submit. A denied append submits no wake
