@@ -38,7 +38,8 @@ TIMEOUT_S = 3600
 CALLER_ENV_PREFIXES = ("HERDR_", "CLAUDE", "CODEX_SESSION", "CODEX_THREAD", "CODEX_SANDBOX")
 CALLER_ENV = ("AI_AGENT", "HERMES_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_AGENT",
               "PI_CODING_AGENT", "OPENCODE")
-KEEP_ENV = ("CLAUDE_CONFIG_DIR",)  # the harness's real config (credentials), as in the default run
+# The harness's real config (credentials), as in the default run, and the linux mode's environment credentials.
+KEEP_ENV = ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 
 
 def smoke_module():
