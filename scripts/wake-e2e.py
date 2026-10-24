@@ -123,7 +123,12 @@ SIDE_CASES = ("side-nudge/group", "side-draft/group")
 # delivery mod), gets an ACK request while idle at T=0. Herdr must type the content-free `herdr-threads: wake up`, the
 # UserPromptSubmit hook must put the message into the woken turn, and its ACK must come from that hook's display
 # (`via: hook_context`), not from an `inbox` round trip. cl-hooks runs nothing else.
-HOOKS_CASES = ("hooks-wake/group",)
+# `hooks-suggestion` (ht-ansi-composer): the same p0 ACK request, sent only once cl-hooks shows a dim prompt suggestion
+# after two finished turns (cl-hooks runs with CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=1, as the default-on setting would
+# be). The styled composer read must take the suggestion for empty, so the idle Claude is still woken.
+HOOKS_CASES = ("hooks-wake/group", "hooks-suggestion/group")
+# A composer row whose text is drawn dim after an undimmed prompt glyph, in a `--format ansi` read.
+SUGGESTION_ROW = re.compile(r"^❯[\xa0 ](?:\x1b\[0m)?\x1b\[2m[^\x1b\s]")
 # Opt-in Codex case (ht-end-of-turn), never in the default matrix: the p0 is sent while the turn's only tool is held, so
 # it arrives after the last tool boundary. The turn's Stop hook must continue it with the page as the continuation
 # prompt (a `<hook_prompt>` in the rollout naming the message), with no wake typed during or after the turn.
@@ -846,6 +851,7 @@ class Run:
             unset = "CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_PID"
             if hooks_only:
                 unset += " CLAUDE_CODE_PLUGIN_DIRS"
+                cfg += "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=1 "
             else:
                 cfg += f"CLAUDE_CODE_PLUGIN_DIRS={q(str(self.state / 'claude-mod' / 'herdr-threads'))} "
             line = f"unset {unset}; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
@@ -2090,10 +2096,25 @@ class Recipient:
                "checks": checks, "ref": ref, "result": "PASS" if passed else "FAIL", "utc": utc()}
         self.run.record(row)
 
+    def suggestion_shown(self):
+        """True when the composer shows dim text after the prompt glyph (a prompt suggestion or placeholder)."""
+        text = self.run.herdr("agent", "read", self.pane, "--source", "recent", "--format", "ansi", "--lines", "60",
+                              check=False).get("raw", "")
+        return any(SUGGESTION_ROW.match(line) for line in text.splitlines())
+
     def hooks_case(self, case):
         """HOOKS_CASES: an idle hooks-only Claude at T=0 gets an ACK request (p0). It must wake within the window on
         the content-free native prompt, and the woken turn must show the message with its ACK settled by the
         UserPromptSubmit hook's display (`via: hook_context`): the turn made no `inbox` round trip."""
+        suggestion = None
+        if case.startswith("hooks-suggestion"):
+            # Claude suggests nothing before its second finished turn.
+            for _ in range(2):
+                self.prompt("Reply with just: ok")
+            end = time.time() + 60
+            while not self.suggestion_shown() and time.time() < end:
+                time.sleep(1)
+            suggestion = self.suggestion_shown()
         gap = SPACING_S - (time.time() - self.last_wake)
         if gap > 0:
             self.run.stopping.wait(gap)
@@ -2106,6 +2127,8 @@ class Recipient:
         self.wait_idle()
         self.settled()
         checks = {"delivered": self.on_screen(mid)}
+        if suggestion is not None:
+            checks["suggestion_shown"] = suggestion
         turn = wake_turn(self.screen(1000), mid)
         checks["content_free_wake"] = bool(turn) and turn[0] == "herdr-threads: wake up"
         checks["received_in_wake_turn"] = bool(turn)
@@ -2128,7 +2151,7 @@ class Recipient:
         if checks["trailing_wake_s"] is not None:
             self.wait_idle()
             self.settled()
-        passed = (woke and checks["delivered"] and checks["content_free_wake"]
+        passed = (woke and suggestion is not False and checks["delivered"] and checks["content_free_wake"]
                   and not checks["tool_call_before_received"] and checks["received_in_wake_turn"] and checks["ack"] == "acknowledged"
                   and via == "hook_context" and checks["trailing_wake_s"] is None)
         self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
