@@ -29,10 +29,13 @@ static TEXT: AdapterText = AdapterText {
           `hermes --profile NAME plugins enable herdr-threads` command and retain
           native consent. Installed, configured enabled and native activation are
           separate. A bare Hermes CLI session in a Herdr pane then joins through these
-          hooks. After upgrading, run setup again so the installed bridge is current;
-          setup-status reports each profile's enablement and whether its bridge is
-          current. Unsetup preserves foreign/modified assets and native YAML/enable
-          selection, reporting residue and manual disable guidance.",
+          hooks. From Hermes 0.22.1 (one shared gateway) the profile must also list
+          HERDR_PANE_ID and HERDR_ENV in terminal.client_env_passthrough, or no
+          session is seated. After upgrading, run setup again so the installed
+          bridge is current; setup-status reports each profile's enablement and
+          whether its bridge is current. Unsetup preserves foreign/modified assets
+          and native YAML/enable selection, reporting residue and manual disable
+          guidance.",
     launch_notes: "Hermes is experimental, natively
 measured on 0.21.5 with a private Herdr build; a bare Hermes CLI session also
 joins through its hooks; this launch adds the guarded process hint that makes the seat

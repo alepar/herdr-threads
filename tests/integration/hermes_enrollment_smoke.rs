@@ -229,6 +229,17 @@ impl Smoke {
 
     /// One driver process (one Hermes process) replaying `steps`.
     fn drive(&self, pane: &str, steps: &[Value], in_herdr: bool) -> Driven {
+        self.drive_script(pane, json!({ "steps": steps }), in_herdr)
+    }
+
+    /// One shared Hermes >= 0.22.1 gateway process, started from `pane`, replaying `steps`
+    /// (each in its own session's `client_env`).
+    fn drive_gateway(&self, pane: &str, steps: &[Value]) -> Driven {
+        self.drive_script(pane, json!({ "steps": steps, "gateway": true }), true)
+    }
+
+    fn drive_script(&self, pane: &str, script: Value, in_herdr: bool) -> Driven {
+        let steps = script["steps"].as_array().unwrap().len();
         let mut command = self.base(Command::new("python3"));
         // The driver is the Hermes process: the hooks it runs have it as their harness parent.
         command
@@ -252,7 +263,7 @@ impl Smoke {
             .stdin
             .take()
             .unwrap()
-            .write_all(json!({ "steps": steps }).to_string().as_bytes())
+            .write_all(script.to_string().as_bytes())
             .unwrap();
         let out = child.wait_with_output().unwrap();
         assert!(
@@ -273,7 +284,7 @@ impl Smoke {
             "the bridge surfaced stderr: {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        assert_eq!(parsed.len(), steps.len(), "driver answered every step");
+        assert_eq!(parsed.len(), steps, "driver answered every step");
         Driven {
             child_restriction: head["bridge"]["child_restriction"]
                 .as_str()
@@ -659,6 +670,60 @@ fn seated_pane(smoke: &mut Smoke, session: &str) -> (String, String) {
     );
     assert_seated_turn(&driven, 1, "startup");
     (pane.clone(), smoke.seat(&pane))
+}
+
+/// `step` run inside its session's client environment (the gateway's `client_env_scope`).
+fn in_session(mut step: Value, client_env: Value) -> Value {
+    step["client_env"] = client_env;
+    step
+}
+
+/// Hermes >= 0.22.1 runs every pane's session in one gateway whose own `HERDR_PANE_ID` is the
+/// pane that started it. Each session binds the pane its client sent (`terminal.
+/// client_env_passthrough`); a session whose client sent none, and an unbound gateway turn,
+/// are refused before any hook runs, never seated on the gateway's pane.
+#[test]
+fn hermes_gateway_sessions_bind_their_client_pane() {
+    let Some(mut smoke) = Smoke::new("hermes_gateway_sessions_bind_their_client_pane", true) else {
+        return;
+    };
+    let gateway_pane = smoke.pane();
+    let pane_b = smoke.pane();
+    let pane = |pane: &str| json!({ "HERDR_PANE_ID": pane, "HERDR_ENV": "1" });
+    let no_pane = json!({ "PATH": "/bin" });
+    let driven = smoke.drive_gateway(
+        &gateway_pane,
+        &[
+            in_session(session_start("GA", Some("cli")), pane(&gateway_pane)),
+            in_session(turn("GA", "T1"), pane(&gateway_pane)),
+            in_session(session_start("GB", Some("cli")), pane(&pane_b)),
+            in_session(turn("GB", "T1"), pane(&pane_b)),
+            in_session(session_start("GC", Some("cli")), no_pane.clone()),
+            in_session(turn("GC", "T1"), no_pane),
+            turn("GD", "T1"),
+        ],
+    );
+    assert_seated_turn(&driven, 1, "startup");
+    assert_seated_turn(&driven, 3, "startup");
+    for step in 4..7 {
+        assert!(driven.result(step).is_null(), "{}", driven.steps[step]);
+        assert_eq!(
+            driven.steps[step]["child"],
+            json!([]),
+            "step {step} ran a hook"
+        );
+    }
+    assert_eq!(smoke.total_seats(), 2);
+    assert_ne!(smoke.seat(&gateway_pane), smoke.seat(&pane_b));
+    let sessions = |pane: &str| -> Vec<String> {
+        smoke
+            .hermes_rows(pane)
+            .into_iter()
+            .map(|row| row.0)
+            .collect()
+    };
+    assert_eq!(sessions(&gateway_pane), ["GA"]);
+    assert_eq!(sessions(&pane_b), ["GB"]);
 }
 
 /// A legacy (pre-ht-4ne.1) envelope: no `enrollment_witness` anywhere, as an

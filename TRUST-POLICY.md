@@ -1733,6 +1733,17 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   (follow-on ht-e73). Operator retire: retiring the seat of a running bare Hermes leaves the pane
   `Unowned`, so its next CLI turn re-enrolls a fresh seat through the ordinary resolver, never the retired
   one.
+- **Hermes gateway pane claim (ht-hermes-identity).** From Hermes 0.22.1 every CLI/TUI session of a profile
+  runs in one gateway process whose `os.environ` is inherited from the pane that started it. The bridge
+  takes the hook child's `HERDR_PANE_ID`/`HERDR_ENV` from the session's client environment
+  (`agent.session_client_env.bound_client_env()`, bound for that session's turns), which the pane's own
+  `hermes` client sends at session creation when the profile lists both names in
+  `terminal.client_env_passthrough`. It is the same cooperative A1 pane claim with a new carrier, so it adds
+  no provenance value. A gateway process (`_HERMES_GATEWAY=1`) whose turn has no bound pane runs no hook:
+  refused, never attributed to the gateway's own pane. A process without the marker (classic Hermes) keeps
+  its inherited environment. Accepted limit: without the passthrough the session's tool subprocesses
+  inherit the gateway's pane, so a model-issued `herdr-threads` call names that pane with its own
+  `HERMES_SESSION_ID`; setup documents the setting but does not write native YAML.
 - **Foreground harness execution is user managed.** Hooks and tools must inherit the TUI
   pane's `HERDR_PANE_ID`. A shared harness server started in another pane can instead supply
   its own pane environment; herdr-threads does not recover the attaching TUI pane from

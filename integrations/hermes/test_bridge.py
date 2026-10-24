@@ -34,7 +34,8 @@ from pathlib import Path
 root=Path(sys.argv[sys.argv.index('--state-dir')+1])
 (root/'pid').write_text(str(os.getpid()))
 request=json.load(sys.stdin)
-with (root/'requests').open('a') as f: f.write(json.dumps({'argv':sys.argv[1:],'request':request})+'\n')
+pane={k:os.environ[k] for k in ('HERDR_PANE_ID','HERDR_ENV') if k in os.environ}
+with (root/'requests').open('a') as f: f.write(json.dumps({'argv':sys.argv[1:],'request':request,'pane':pane})+'\n')
 mode=(root/'mode').read_text()
 fixtures=json.loads((root/'results.json').read_text())
 if mode=='ignore_term': signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)
@@ -286,9 +287,12 @@ class BridgeTests(unittest.TestCase):
         class OwnedChild(subprocess.Popen):
             def __init__(self, *args, **kwargs):
                 kwargs["start_new_session"] = True
+                # The bridge's pane identity (inherited, or its explicit env) reaches the child.
+                source = os.environ if kwargs.get("env") is None else kwargs["env"]
                 kwargs["env"] = {key: os.environ[key] for key in (
                     "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PYTHONDONTWRITEBYTECODE",
                     "HT_LEAK_RUN_ID") if key in os.environ}
+                kwargs["env"].update({key: source[key] for key in ("HERDR_PANE_ID", "HERDR_ENV") if key in source})
                 kwargs["env"]["HT_TEST_OWNER"] = str(os.getpid())
                 self.fixture_live_pids = [child.pid for child in children if child.poll() is None]
                 super().__init__(*args, **kwargs)
@@ -442,6 +446,49 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(reset["callback"], "on_session_reset")
         self.assertIsNone(reset["role_association"])
         self.assertNotIn("PRIVATE", json.dumps(self.requests()))
+
+    def client_env(self):
+        """A synthetic agent.session_client_env: the session's bound client env, None when unbound."""
+        bound = contextvars.ContextVar("synthetic_client_env", default=None)
+        module = types.ModuleType("agent.session_client_env")
+        module.bound_client_env = bound.get
+        scope = patch.dict(sys.modules, {"agent.session_client_env": module})
+        scope.start()
+        self.addCleanup(scope.stop)
+        return bound
+
+    def test_classic_cli_child_inherits_the_process_pane(self):
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_ENV": "1"}):
+            self.load()
+            self.assertIsNotNone(self.request())
+        self.assertEqual(self.requests()[-1]["pane"], {"HERDR_PANE_ID": "w1:p1", "HERDR_ENV": "1"})
+
+    def test_gateway_child_takes_the_session_pane_not_the_gateway_pane(self):
+        bound = self.client_env()
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_ENV": "1", "_HERMES_GATEWAY": "1"}):
+            self.load()
+            token = bound.set({"HERDR_PANE_ID": "w1:p2", "HERDR_ENV": "1", "PATH": "/bin"})
+            try:
+                self.assertIsNotNone(self.request())
+            finally:
+                bound.reset(token)
+        self.assertEqual(self.requests()[-1]["pane"], {"HERDR_PANE_ID": "w1:p2", "HERDR_ENV": "1"})
+
+    def test_gateway_session_without_a_pane_refuses_before_any_child(self):
+        bound = self.client_env()
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_ENV": "1", "_HERMES_GATEWAY": "1"}):
+            self.load()
+            # A shell client's session that sent no pane (passthrough not configured), then an
+            # unbound gateway turn (Desktop, messaging): neither may claim the gateway's pane.
+            for client in ({"PATH": "/bin"}, {"HERDR_PANE_ID": ""}, None):
+                token = bound.set(client)
+                try:
+                    self.assertIsNone(self.request())
+                    self.assertIsNone(self.request("on_session_start", {**self.callbacks["qualified"], "turn_id": None}))
+                finally:
+                    bound.reset(token)
+        self.assertEqual(self.requests(), [])
+        self.assertEqual(self.children, [])
 
     def test_envelopes_match_rust_fixture(self):
         # The Rust strict parser is pinned to the same file

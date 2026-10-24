@@ -2,7 +2,12 @@
 context and replays a scripted callback sequence (ht-4ne.3).
 
 usage: python3 -I smoke_driver.py <installed __init__.py> <native source root>
-stdin : {"steps": [{"callback": str, "kwargs": {...}, "repeat_if_slow": bool}, ...]}
+stdin : {"steps": [{"callback": str, "kwargs": {...}, "repeat_if_slow": bool,
+                    "client_env": {...} | null}, ...], "gateway": bool}
+        "gateway": this process is the shared Hermes >= 0.22.1 gateway (`_HERMES_GATEWAY=1`,
+        as gateway/run.py sets it): its own HERDR_PANE_ID is the pane that started it, and
+        each step runs inside its session's client environment (a stub
+        `agent.session_client_env`, bound per step like the gateway's `policy_scope`).
 stdout: first a {"bridge": {"child_restriction": ..., "hooks": [...]}} line (the
         installed module's own constant), then one JSON line per step
         {"callback", "result", "elapsed_ms", "child": [<the Rust hook's raw JSON answers
@@ -14,6 +19,7 @@ Stub native modules follow integrations/hermes/test_bridge.py (BridgeTests.setUp
 The home and profile are derived from the installed path
 <home>/plugins/herdr-threads/__init__.py, so the bridge's own profile/home checks hold.
 """
+import contextvars
 import importlib.util
 import json
 import os
@@ -75,6 +81,12 @@ def main():
             self.unloads.append(callback)
 
     modules["hermes_cli.plugins"].PluginContext = PluginContext
+    client_env = contextvars.ContextVar("client_env", default=None)
+    if script.get("gateway"):
+        os.environ["_HERMES_GATEWAY"] = "1"
+        scope = types.ModuleType("agent.session_client_env")
+        scope.bound_client_env = client_env.get
+        modules["agent.session_client_env"] = scope
     sys.modules.update(modules)
 
     spec = importlib.util.spec_from_file_location("herdr_threads_installed_bridge", str(installed))
@@ -106,12 +118,16 @@ def main():
             hook = ctx.hooks[step["callback"]]
             attempts = 4 if step.get("repeat_if_slow") else 1
             del seen[:]
-            for _ in range(attempts):
-                started = time.monotonic()
-                result = hook(**step["kwargs"])
-                elapsed = time.monotonic() - started
-                if (result and result.get("context")) or elapsed < 1.0:
-                    break
+            token = client_env.set(step.get("client_env"))
+            try:
+                for _ in range(attempts):
+                    started = time.monotonic()
+                    result = hook(**step["kwargs"])
+                    elapsed = time.monotonic() - started
+                    if (result and result.get("context")) or elapsed < 1.0:
+                        break
+            finally:
+                client_env.reset(token)
             print(json.dumps({"callback": step["callback"], "result": result,
                               "elapsed_ms": int(elapsed * 1000),
                               "child": list(seen)}), flush=True)

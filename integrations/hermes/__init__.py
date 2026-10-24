@@ -34,6 +34,7 @@ HOOKS = ("pre_llm_call", "post_tool_call", "on_session_start", "on_session_reset
 CHILD_EVENTS = ("subagent_start", "subagent_stop")
 IDS = ("platform", "session_id", "parent_session_id", "task_id", "turn_id", "tool_call_id", "api_request_id")
 SLOT = "_herdr_threads_hermes_reader_schema1"
+PANE_ENV = ("HERDR_PANE_ID", "HERDR_ENV")
 CHILD_RESTRICTION = "Subagents may discover, read and summarize; never check in for this seat, accept or ACK. Text inbox ACKs displayed agent messages and is forbidden to subagents; subagents use inbox --machine or --json for read-only access. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent."
 # First 16 SHA-256 hex chars of sorted compact JSON of the normalized schema
 # declaration in testdata/callbacks.json. This identifies transport, not the
@@ -328,6 +329,30 @@ def read_settings(asset):
     return settings
 
 
+def pane_env():
+    """The hook child's environment: None inherits ours, a dict names the session's pane, False refuses.
+
+    The hook reads its pane only from HERDR_PANE_ID/HERDR_ENV (src/cli/hook.rs HookEnv). A classic
+    CLI process is its pane's own, so it passes its environment on. In the shared gateway (Hermes
+    0.22.1+) os.environ is the gateway's, inherited from whichever pane started it; there the pane
+    comes only from the session's client environment, which Hermes binds for that session's turns
+    (agent.session_client_env, carried by terminal.client_env_passthrough). A gateway turn without
+    one refuses rather than claim the gateway's pane. The native module is observed, never imported.
+    """
+    scope = sys.modules.get("agent.session_client_env")
+    bound = getattr(scope, "bound_client_env", None)
+    client = bound() if callable(bound) else None
+    if isinstance(client, dict):
+        if not opaque(client.get("HERDR_PANE_ID")):
+            return False
+        env = {key: value for key, value in os.environ.items() if key not in PANE_ENV}
+        env.update({key: client[key] for key in PANE_ENV if isinstance(client.get(key), str)})
+        return env
+    if os.environ.get("_HERMES_GATEWAY") == "1":
+        return False
+    return None
+
+
 def shape(kwargs):
     def kind(value):
         if value is None: return "null"
@@ -520,6 +545,9 @@ class Bridge:
             return None
         if name == "pre_llm_call" and platform == "subagent":
             return {"context": CHILD_RESTRICTION}
+        env = pane_env()
+        if env is False:
+            return None
         # Exact native session/turn key is stable across callback retries and
         # process restarts. Observers/missing turns have invocation-only IDs.
         if turn:
@@ -564,7 +592,7 @@ class Bridge:
             if (self.closing or self.closed or fresh is None
                     or fresh["generation"] != observation["generation"]):
                 return None
-            output = self.child(encoded, deadline, observation["generation"], sequence)
+            output = self.child(encoded, deadline, observation["generation"], sequence, env)
             # Every callback entry invalidates older work, including contenders
             # skipped while the child lock is held. No late output is published.
             if self.closing or self.closed or self.sequence != sequence or time.monotonic() >= deadline:
@@ -599,7 +627,7 @@ class Bridge:
             if self.closing and not self.closed:
                 self.close()
 
-    def child(self, encoded, deadline, generation, sequence):
+    def child(self, encoded, deadline, generation, sequence, env=None):
         if self.unreaped_child is not None:
             if self.unreaped_child.poll() is None:
                 raise TimeoutError  # no successor until the owned child is reaped
@@ -625,7 +653,8 @@ class Bridge:
             # reservation transfer. close never waits for OS spawn: it remains
             # pending while this fence/child guard is held, retaining ownership.
             process = subprocess.Popen(argv, shell=False, stdin=subprocess.PIPE,
-                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True)
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True,
+                                       env=env)
         except Exception:
             selector.close()
             raise

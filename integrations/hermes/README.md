@@ -47,7 +47,24 @@ way to get a wakeable Hermes. After upgrading herdr-threads, re-run
 `setup hermes --profile NAME` so the installed bridge sends the enrollment witness; an
 older bridge keeps launch-only behavior, and `setup-status` reports it as stale and
 shows whether each profile's bridge is enabled and current (TRUST-POLICY accepted
-limits). Native `delegate_task`
+limits).
+
+From Hermes 0.22.1 every CLI and TUI session of a profile runs in one shared gateway
+process, whose own environment is that of the pane that started it. Each pane's
+session must therefore carry its own pane: add both names to the profile's client
+environment passthrough, merged with any names already listed there:
+
+```sh
+hermes --profile NAME config set terminal.client_env_passthrough '[HERDR_PANE_ID, HERDR_ENV]'
+```
+
+The pane's `hermes` client sends them when it creates a session, and the bridge passes
+that session's values to its hook child, so the session takes its own pane's seat. They
+also reach the session's tool subprocesses, so the model's own `herdr-threads` calls name
+the same pane. A gateway session without them (passthrough unset, a session created
+before it was set, Desktop or a messaging platform) runs no hook: it is never seated on
+the gateway's pane. Start a new `hermes` session after changing the setting. A classic
+Hermes (before 0.22.1) runs in its pane's own process and needs no setting. Native `delegate_task`
 children run with platform `subagent`; their parented `pre_llm_call` gets the
 subagent restriction locally and every other subagent callback is ignored, except the delegate
 lifecycle: the bridge forwards `subagent_start` and `subagent_stop` (the child session and its
