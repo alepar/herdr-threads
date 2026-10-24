@@ -1238,11 +1238,12 @@ fn herdr_stopped_freezes_wake_lane() {
             submitted == SEATS as i64
         },
     );
-    // Each prompt's echo, then one full wake safety tick (and a fifth) more:
+    // Each prompt's echo (the stand-in's binding is a `check-in` Claude claim, `cooperative_top_level`,
+    // so it is woken with the content-free text), then one full wake safety tick (and a fifth) more:
     // a tick-driven re-prompt would land in it.
     let echoes = |caller: &Caller| {
         s.pane_text(&caller.pane)
-            .matches("HT-RECEIVED:herdr-threads: attention pending")
+            .matches("HT-RECEIVED:herdr-threads: wake up")
             .count()
     };
     wait_until(
@@ -1260,9 +1261,7 @@ fn herdr_stopped_freezes_wake_lane() {
         let text = s.pane_text(&caller.pane);
         // The stand-in echoes each submitted line; an empty echo is only the
         // dispatcher's single submit-key retry, not another prompt.
-        let received = text
-            .matches("HT-RECEIVED:herdr-threads: attention pending")
-            .count();
+        let received = text.matches("HT-RECEIVED:herdr-threads: wake up").count();
         assert_eq!(
             received, 1,
             "{} was prompted {received} times: {text}",

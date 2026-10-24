@@ -136,8 +136,13 @@ CODEX_INPUT_READY = re.compile(r"for shortcuts|context left|send\b.*newline", re
 CODEX_APPROVAL_POLICY = "on-request"
 # lostprompt / blockedui: how long to keep observing when health already reports the safe wake unsupported.
 LOSTPROMPT_UNSUPPORTED_WAIT_S = 60
-# The fixed coalesced wake marker (scheduler design: one bounded marker for all threads/reasons).
-WAKE_MARKER = "herdr-threads: attention pending"
+# The native wake texts (src/notification/policy.rs WAKE_TEXTS): the inbox marker, or the content-free prompt a
+# hook-registered binding gets because its turn-start hook delivers (ht-turnstart).
+WAKE_MARKERS = ("herdr-threads: attention pending", "herdr-threads: wake up")
+
+
+def wake_marker_count(text):
+    return sum(text.count(marker) for marker in WAKE_MARKERS)
 # tui D1 warning wake: poll interval, and how long a woken agent gets to show the marker before the pane capture.
 WARNING_POLL_S = 2
 WAKE_SETTLE_S = 15
@@ -3304,7 +3309,7 @@ class Driver:
         # ht-p03.20: the warning capture reads the pane's recent scrollback, which still shows any earlier wake (e.g. the
         # initial handoff's idle recovery wake). SW2 judges only the markers that appear after this baseline.
         baseline = self.capture_pane("warning-baseline")
-        self.facts["warning_marker_baseline"] = (baseline or "").count(WAKE_MARKER)
+        self.facts["warning_marker_baseline"] = wake_marker_count(baseline or "")
         status, detail, message = self.send_warning_message()
         if status != PASS:
             return FAIL, f"warning message send failed: {detail}", None
@@ -3361,7 +3366,7 @@ class Driver:
                            "LEFT JOIN warning_offer o ON o.binding_id=b.binding_id WHERE b.seat_id=? AND b.role='top_level' "
                            "ORDER BY (b.native_session=?) DESC, (b.ended_at IS NULL) DESC, b.ordinal DESC LIMIT 1",
                            (self.facts["agent_seat"], self.facts.get("sessions", {}).get("initial")))
-        markers = {p.name: p.read_text(errors="replace").count(WAKE_MARKER) for p in sorted(self.ev.glob("pane-*.txt"))}
+        markers = {p.name: wake_marker_count(p.read_text(errors="replace")) for p in sorted(self.ev.glob("pane-*.txt"))}
         baseline = self.facts.get("warning_marker_baseline")
         record = {"warning_seq": seq, "wake_work": rows, "warning_offer": offer, "marker_counts": markers,
                   "warning_marker_baseline": baseline}
@@ -3430,7 +3435,7 @@ class Driver:
 
     def pane_markers(self, name):
         try:
-            return (self.ev / f"pane-{name}.txt").read_text(errors="replace").count(WAKE_MARKER)
+            return wake_marker_count((self.ev / f"pane-{name}.txt").read_text(errors="replace"))
         except OSError:
             return 0
 

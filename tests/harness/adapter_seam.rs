@@ -798,6 +798,7 @@ fn adapter_seam_settings_kinds_name_their_adapter_and_declare_today_s_groups() {
         [
             "SessionStart",
             "PreToolUse",
+            "UserPromptSubmit",
             "SubagentStart",
             "SubagentStop"
         ]

@@ -3904,7 +3904,9 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
             .unwrap();
         assert_eq!(attempted, 1, "{status}: spacing admits one attempt");
         if expect_prompt {
-            assert_eq!(prompts, [crate::notification::policy::MARKER], "{status}");
+            // A hook-registered (`cooperative_top_level`) Claude binding's turn-start hook shows the
+            // warning, so its wake is content-free (ht-turnstart).
+            assert_eq!(prompts, [crate::notification::policy::WAKE_UP], "{status}");
             assert_eq!(
                 methods,
                 // The foreground read (`pane.process_info`) precedes the prompt: the
