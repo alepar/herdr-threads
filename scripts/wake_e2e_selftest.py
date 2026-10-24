@@ -1276,7 +1276,7 @@ class CaseSpacing(unittest.TestCase):
         r = object.__new__(W.Recipient)
         run = SimpleNamespace(run_id="000000-test", record=self.rows.append, stopping=threading.Event())
         r.run, r.name, r.harness, r.threshold, r.pane, r.seat = run, "co-t-1", "codex", -1, "w9:p1", "sREC"
-        r.last_wake, r.group, r.pair = 0.0, "tGROUP", None
+        r.last_wake, r.group, r.pair, r.plain = 0.0, "tGROUP", None, False
         r.status = agent.status
         r.on_screen = lambda mid, tries=15: agent.visible(mid)
         r.joined = lambda thread, role="main": (True, "joined")
@@ -1528,6 +1528,19 @@ class HarnessMode(TempDir):
         r.ht = fake_ht
         r.scratch()
         return r, calls
+
+    def test_shim_logs_each_call_for_the_extra_inbox_check(self):
+        with Env(ANTHROPIC_API_KEY=FAKE_API_KEY):
+            r, _ = self.scratch_run("macos")
+        shim = str(r.bindir / "herdr-threads")
+        for pane, argv in (("w1:p1", ["inbox"]), ("w1:p1", ["--state-dir", "/x", "inbox", "--seat", "s"]),
+                           ("w1:p1", ["--state-dir", "inbox", "thread", "list"]), ("w1:p1", ["send", "t", "--body", "inbox"]),
+                           ("w1:p2", ["inbox"]), ("w1:p1", ["hook", "codex"])):
+            subprocess.run([shim, *argv], env={**os.environ, "HERDR_PANE_ID": pane}, check=False)
+        log = r.calls_log.read_text()
+        self.assertEqual(W.inbox_calls(log, "w1:p1"), 2)
+        self.assertEqual(W.inbox_calls(log, "w1:p2"), 1)
+        self.assertEqual(W.inbox_calls(log, "w1:p3"), 0)
 
     def test_macos_scratch_is_unchanged(self):
         with Env(ANTHROPIC_API_KEY=FAKE_API_KEY):

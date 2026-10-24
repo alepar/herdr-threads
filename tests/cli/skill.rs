@@ -195,6 +195,29 @@ fn skill_describes_text_inbox_display_ack_and_read_only_subagent_path() {
     }
 }
 
+// Kills: a bare-wake rule that misses the opening of a harness's delivered
+// block (Codex, Hermes and the Claude hooks get `INBOX_HEADER`, the Claude mod
+// and agy the frame header), so a delivered wake triggers an extra `inbox`; or
+// agy's always-present guidance losing the rule it cannot read from the skill.
+#[test]
+fn bare_wake_rule_names_every_delivered_block_header() {
+    let rule = SKILL_MD
+        .lines()
+        .find(|line| line.contains("**A bare wake:**"))
+        .unwrap();
+    let inbox_opening = crate::cli::hook_inbox::INBOX_HEADER
+        .split_inclusive(". ")
+        .next()
+        .unwrap()
+        .trim_end();
+    for header in [crate::delivery::frame::HEADER, inbox_opening] {
+        assert!(rule.contains(&format!("`{header}`")), "{header}");
+    }
+    let agy = crate::harness::agy::AGY_COMMAND_GUIDANCE;
+    assert!(agy.contains(crate::notification::policy::WAKE_UP), "{agy}");
+    assert!(agy.contains(crate::delivery::frame::HEADER), "{agy}");
+}
+
 // Kills: a detector that accepts any mention of the title, or one that misses
 // the section header.
 #[test]

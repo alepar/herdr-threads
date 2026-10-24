@@ -612,6 +612,10 @@ class Run:
         for k, v in versions.items():
             print(f"  {k}: {v}", flush=True)
 
+    @property
+    def calls_log(self):
+        return self.bindir / "calls.log"
+
     def codex_auth_home(self):
         return Path(self.args.codex_auth_home or os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
 
@@ -621,7 +625,10 @@ class Run:
         q = shlex.quote
         shim = self.bindir / "herdr-threads"
         # Pins the run's --state-dir/--host-endpoint unless a rendered ready command already names them.
-        shim.write_text("#!/bin/sh\npin_state=1 pin_host=1\nfor word in \"$@\"; do\n  case \"$word\" in\n"
+        # Each call is logged (pane, argv, 0x1f-separated) for the extra-inbox check (calls_by).
+        shim.write_text("#!/bin/sh\n"
+                        f"printf '%s\\037' \"${{HERDR_PANE_ID:-}}\" \"$@\" >> {q(str(self.calls_log))}; echo >> {q(str(self.calls_log))}\n"
+                        "pin_state=1 pin_host=1\nfor word in \"$@\"; do\n  case \"$word\" in\n"
                         "    --state-dir|--state-dir=*) pin_state=0 ;;\n    --host-endpoint|--host-endpoint=*) pin_host=0 ;;\n"
                         "  esac\ndone\n"
                         f"if [ \"$pin_host\" = 1 ]; then set -- --host-endpoint {q(self.endpoint)} \"$@\"; fi\n"
@@ -1081,6 +1088,27 @@ def transcript_has_row(cfg, sessions, row):
     return f"row {row} not in the recipient's transcript"
 
 
+# Global options that take a value; the first other non-option word is the subcommand.
+VALUE_OPTIONS = ("--state-dir", "--host-endpoint", "--seat", "--pane")
+
+
+def is_inbox_call(argv):
+    """True when argv (a herdr-threads call without the program name) runs the `inbox` subcommand."""
+    words = iter(argv)
+    for word in words:
+        if word in VALUE_OPTIONS:
+            next(words, None)
+        elif not word.startswith("-"):
+            return word == "inbox"
+    return False
+
+
+def inbox_calls(log_text, pane):
+    """`inbox` calls the shim logged from `pane` (lines of 0x1f-terminated fields: pane, then argv)."""
+    rows = (line.split("\x1f")[:-1] for line in log_text.splitlines())
+    return sum(1 for row in rows if row and row[0] == pane and is_inbox_call(row[1:]))
+
+
 class Recipient:
     def __init__(self, run, name, harness, threshold, pane, seat, plain=False, hooks_only=False):
         self.run, self.name, self.harness, self.threshold, self.pane, self.seat = run, name, harness, threshold, pane, seat
@@ -1091,6 +1119,13 @@ class Recipient:
         self.pair = None
 
     # ---------- observation ----------
+    def inbox_calls(self):
+        log = getattr(self.run, "calls_log", None)  # self-test fakes have no shim
+        try:
+            return inbox_calls(log.read_text(errors="replace"), self.pane) if log else 0
+        except FileNotFoundError:
+            return 0
+
     def status(self):
         return self.run.herdr("agent", "get", self.pane)["result"]["agent"]["agent_status"]
 
@@ -1674,6 +1709,7 @@ class Recipient:
         self.wait_idle()
         body = f"{case} {self.run.run_id}"
         checks = {}
+        calls_before = self.inbox_calls()
         if action == "invite" and channel == "group":
             name = f"wake-e2e-{self.name}-{self.run.run_id}"
             data = self.coord("thread", "create", "--name", name, "--topic", f"wake-e2e test thread for {self.name}",
@@ -1723,6 +1759,10 @@ class Recipient:
             checks["opening_message_delivered"] = self.on_screen(ref["message"])
         else:
             checks["delivered"] = self.on_screen(ref["message"])
+            if woke and not self.plain:
+                # A delivered wake needs no `inbox` round trip (the skill's bare-wake rule; Delivery contract rule 3).
+                checks["inbox_calls"] = self.inbox_calls() - calls_before
+                checks["no_extra_inbox"] = checks["inbox_calls"] == 0
             if action == "send-ack":
                 status = None
                 for _ in range(20):
@@ -1741,7 +1781,7 @@ class Recipient:
             self.wait_idle()
             self.settled()
         verified = all(v is True or v == "acknowledged" for k, v in checks.items()
-                       if k not in ("late_wake_s", "trailing_wake_s"))
+                       if k not in ("late_wake_s", "trailing_wake_s", "inbox_calls"))
         passed = woke == expect and verified and checks["trailing_wake_s"] is None
         row = {"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
                "expect_wake": expect, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
