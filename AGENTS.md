@@ -111,7 +111,7 @@ python3 scripts/wake-e2e.py                   # both harnesses, all cases (~10 m
 #   --codex-auth-home DIR   Codex home whose auth.json is copied (default $CODEX_HOME or ~/.codex)
 #   --harness claude|codex  --cases CASE,...  --keep (leave the workspace up)  --evidence-dir DIR
 #   opt-in, not in the default matrix: --harness codex --cases side-nudge/group,side-draft/group,modal-hold/group,wake-unreceived/group
-#   opt-in, not in the default matrix: --harness claude --cases hooks-wake/group,hooks-suggestion/group (hooks-only Claude, no mod)
+#   opt-in, not in the default matrix: --harness claude --cases hooks-wake/group,hooks-suggestion/group,hooks-busy-tool/group (hooks-only Claude, no mod)
 #   opt-in end-of-turn delivery (Codex Stop continuation): --harness codex --cases eot-send-p0/group
 #   opt-in real-model agy: --harness agy (credential GEMINI_API_KEY, optionally GOOGLE_GEMINI_BASE_URL for the relay)
 scripts/wake-e2e-herdr 0.9.5 [ARGS...]        # the same run inside a private server of one listed Herdr release

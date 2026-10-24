@@ -125,11 +125,13 @@ SIDE_CASES = ("side-nudge/group", "side-draft/group")
 # Opt-in Claude case, never in the default matrix: `cl-hooks`, a Claude installed by `setup claude --hooks-only` (no
 # delivery mod), gets an ACK request while idle at T=0. Herdr must type the content-free `herdr-threads: wake up`, the
 # UserPromptSubmit hook must put the message into the woken turn, and its ACK must come from that hook's display
-# (`via: hook_context`), not from an `inbox` round trip. cl-hooks runs nothing else.
+# (`via: hook_context`), not from an `inbox` round trip. hooks-busy-tool/group is busy-tool-p1 on cl-hooks, whose turn
+# reads a file with Read after the send: with no mod, only that Read's PreToolUse can deliver it in the turn. cl-hooks
+# runs nothing else.
 # `hooks-suggestion` (ht-ansi-composer): the same p0 ACK request, sent only once cl-hooks shows a dim prompt suggestion
 # after two finished turns (cl-hooks runs with CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=1, as the default-on setting would
 # be). The styled composer read must take the suggestion for empty, so the idle Claude is still woken.
-HOOKS_CASES = ("hooks-wake/group", "hooks-suggestion/group")
+HOOKS_CASES = ("hooks-wake/group", "hooks-suggestion/group", "hooks-busy-tool/group")
 # A composer row whose text is drawn dim after an undimmed prompt glyph, in a `--format ansi` read.
 SUGGESTION_ROW = re.compile(r"^❯[\xa0 ](?:\x1b\[0m)?\x1b\[2m[^\x1b\s]")
 # Opt-in Codex case (ht-end-of-turn), never in the default matrix: the p0 is sent while the turn's only tool is held, so
@@ -180,7 +182,8 @@ BUSY_FAIL_PROMPT = ("Busy-turn test {tag}: run the shell command `{hold}; sleep 
 BUSY_TOOL_PROMPT = ("Busy-turn test {tag}: run the shell command `{hold}`, then {tool}; run no other shell command in "
                     "this turn. Then handle any herdr-threads items exactly as your standing instructions say, and "
                     "finally print BUSY-DONE.")
-BUSY_TOOL = "use your apply_patch tool (not the shell) to add the file `{dir}/patched.txt` containing `x`"
+BUSY_TOOL = {"codex": "use your apply_patch tool (not the shell) to add the file `{dir}/patched.txt` containing `x`",
+             "claude": "read the file `README.md` with your Read tool (not the shell)"}
 BUSY_AFTER_S = 40.0
 # The busy turn's native end: a line of the agent's output that is BUSY-DONE apart from bullets, markup or a final
 # period. It is searched only after the prompt's own "BUSY-DONE." so a wrapped prompt line never matches.
@@ -1511,7 +1514,7 @@ class Recipient:
         return None
 
     # ---------- busy cases ----------
-    def busy_case(self, case):
+    def busy_case(self, case, record=None):
         action, channel = case.split("/")
         fail = action.startswith("busy-fail-")
         if fail:
@@ -1524,7 +1527,7 @@ class Recipient:
         tag = f"{case} {self.run.run_id}"
         with BusyBarrier(self.run.root) as hold:
             if action.startswith("busy-tool-"):
-                prompt = BUSY_TOOL_PROMPT.format(tag=tag, hold=hold.command(), tool=BUSY_TOOL.format(dir=hold.path))
+                prompt = BUSY_TOOL_PROMPT.format(tag=tag, hold=hold.command(), tool=BUSY_TOOL[self.harness].format(dir=hold.path))
             else:
                 prompt = (BUSY_FAIL_PROMPT if fail else BUSY_PROMPT).format(tag=tag, hold=hold.command())
             self.run.herdr("agent", "prompt", self.pane, prompt)
@@ -1583,7 +1586,8 @@ class Recipient:
         else:
             checks["delivered_in_turn"] = ref["message"] in in_turn
             if action.startswith("busy-tool-"):
-                checks["tool_ran"] = (hold.path / "patched.txt").exists()
+                checks["tool_ran"] = ((hold.path / "patched.txt").exists() if self.harness == "codex"
+                                      else re.search(r"\bRead(\(| \d+ files?\b)", in_turn) is not None)
             if kind == "ack":
                 checks["ack"] = self.receipt(ref["message"])
         self.settled()
@@ -1593,7 +1597,7 @@ class Recipient:
                   and all(v is True or v == "acknowledged" for k, v in checks.items()
                           if k in ("joined", "opening_message_delivered_in_turn", "delivered_in_turn", "ack",
                                    "tool_ran")))
-        self.run.record({"case": case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
+        self.run.record({"case": record or case, "harness": self.harness, "threshold": self.threshold, "recipient": self.name,
                          "expect_wake": False,
                          "woke": checks["self_started_turn_after_s"] is not None
                          or checks["wake_prompts_in_busy_turn"] != 0 or checks["wake_prompts_after_busy_turn"] != 0,
@@ -2014,6 +2018,9 @@ class Recipient:
             return self.wake_block_case(case)
         if case.startswith("side-"):
             return self.side_case(case)
+        if case.startswith("hooks-busy-"):
+            # busy-tool-p1 on the hooks-only Claude, recorded under its own name.
+            return self.busy_case("busy-tool-p1/" + case.split("/")[1], record=case)
         if case.startswith("hooks-"):
             return self.hooks_case(case)
         if case.startswith("eot-"):
