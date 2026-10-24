@@ -17,8 +17,10 @@ hook-delivered page, so `mixed-order` is judged at T = 0):
   `scripts/agy-gate/live_smoke.py` `walk_onboarding` while the driver waits for Herdr to detect agy.
 - Preflight refuses (exit 2, before any process starts) without `agy` on PATH or without the credential.
 
-Driver checks: `python3 scripts/wake-e2e.py --self-test` (161 tests, OK), including `AgyOptIn`: opt-in only, the
-refusal, the launch line never carrying the key, private env and settings files, redaction, onboarding keys.
+Driver checks: `python3 scripts/wake-e2e.py --self-test` (164 tests, OK), including `AgyOptIn`: opt-in only, the
+refusal, the launch line never carrying the key, private env and settings files, redaction, onboarding keys, the
+`> ` wake-prompt echo, waiting for the composer, and removal of the env file on every cleanup path (also `--keep`).
+agy starts are serial, like Codex: the recipients share one scratch HOME.
 
 ## Run on this host: not possible, refused as designed
 

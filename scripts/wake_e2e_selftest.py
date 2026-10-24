@@ -2457,3 +2457,23 @@ class AgyOptIn(TempDir):
         self.assertEqual(W.agy_onboarding_keys("Choose your color scheme"), [("enter",)])
         self.assertEqual(W.agy_onboarding_keys("Accept the Terms of Service"), [("down", "right"), ("enter",)])
         self.assertIsNone(W.agy_onboarding_keys("> \n? for shortcuts"))
+
+    def test_agy_wake_prompt_counts_as_a_wake(self):
+        # agy echoes a submitted prompt after `> ` (docs/evidence/agy-live-smoke/*/pane-final.txt)
+        self.assertEqual(W.wake_count("> herdr-threads: wake up\n"), 1)
+        self.assertEqual(W.wake_count("> hello\n"), 0)
+
+    def test_agy_is_up_only_once_its_composer_is_drawn(self):
+        self.assertFalse(W.agy_composer_up("Accept the Terms of Service"))
+        self.assertTrue(W.agy_composer_up("> \n? for shortcuts"))
+
+    def test_cleanup_removes_the_credential_file_even_with_keep(self):
+        r = object.__new__(W.Run)
+        r.agy_env = self.tmp / "agy.env"
+        W.write_private(r.agy_env, "export GEMINI_API_KEY=x\n")
+        problems = []
+        r.remove_agy_env(problems)
+        self.assertFalse(r.agy_env.exists())
+        self.assertEqual(problems, [])
+        r.remove_agy_env(problems)  # idempotent
+        self.assertEqual(problems, [])

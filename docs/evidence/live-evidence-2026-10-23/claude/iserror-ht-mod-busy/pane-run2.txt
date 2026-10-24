@@ -1,7 +1,7 @@
 
  ▐▛███▛█   Claude Code v2.1.309
 ▝▜██████▀  Opus 5.5 · Claude Max
- ▝▝   ▝▝   /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/d7bc21cb-55d9-4c04-a433-2fabc3604236/scratchpad/probe/work
+ ▝▝   ▝▝   <scratch>
 
 
 ❯ Plugin test. Run exactly one Bash call: echo reject-me

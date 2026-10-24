@@ -503,6 +503,11 @@ def agy_onboarding_keys(screen):
     return None
 
 
+def agy_composer_up(screen):
+    """agy's composer is drawn (its footer hint), so no first-run screen is left."""
+    return "for shortcuts" in screen
+
+
 def linux_startup_refusal(screen, status):
     """The linux mode: why a freshly started agent must not be prompted, or None. Checked on the whole visible
     screen: the theme picker reports `idle` and its prompt sits far above the screen's last 400 characters."""
@@ -828,6 +833,7 @@ class Run:
         except BaseException as e:  # a drain error never skips the owned resources below
             problems = [f"drain raised: {e!r}"]
         steps = []
+        self.remove_agy_env(problems)  # a running agy already holds the key; the file never outlives the run
         if self.args.keep:
             self.cleanup_report = {"skipped": "--keep", "workspace": self.workspace,
                                    "daemon_attempted": self.daemon_attempted, "problems": problems}
@@ -950,6 +956,15 @@ class Run:
             if row.get("label") == self.workspace_label() and row.get("workspace_id"):
                 return row["workspace_id"]
         return None
+
+    def remove_agy_env(self, problems):
+        path = getattr(self, "agy_env", None)
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            problems.append(f"agy credential file not removed: {e!r}")
 
     def retire_auth_copy(self):
         """Delete the credential copy unless Codex refreshed it in the run: then it may hold the only current refresh
@@ -1119,7 +1134,7 @@ def busy_turn_split(text, anchor, done=BUSY_DONE_LINE, prompt_end_text=BUSY_PROM
 
 
 def is_wake_line(text):
-    text = text.strip().lstrip("›❯ ")
+    text = text.strip().lstrip("›❯> ")  # Codex, Claude, agy prompt glyphs
     return text in ("herdr-threads: wake up", CHANNEL_WAKE_UP) or text.startswith("herdr-threads: attention pending")
 
 
@@ -1301,8 +1316,9 @@ class Recipient:
         # mode the second start waits until the first Codex is up: the lock is released once this Codex is detected
         # (its TUI is drawn, so its state DB is migrated) or the detection failed (the error releases it too).
         # macOS hit it too with three Codex recipients (the opt-in side cases add co-plain): every Codex start is
-        # serial on both platforms.
-        serial = self.harness == "codex"
+        # serial on both platforms. The agy recipients share one scratch HOME (~/.gemini) and each walks its first-run
+        # screens, so their starts are serial too.
+        serial = self.harness in ("codex", "agy")
         with (self.run.codex_start if serial else contextlib.nullcontext()):
             if self.plain:
                 line = self.run.launch_line(self.harness, plain=True)
@@ -1320,6 +1336,10 @@ class Recipient:
                         if i:
                             time.sleep(0.5)
                         self.run.herdr("pane", "send-keys", self.pane, *k, check=False)
+                    if keys or not agy_composer_up(self.run.herdr("pane", "read", self.pane, "--source", "visible",
+                                                                  check=False).get("raw", "")):
+                        time.sleep(1)  # Herdr may report idle behind a first-run screen
+                        continue
                 data = self.run.herdr("agent", "get", self.pane, check=False)
                 agent = (data.get("result") or {}).get("agent") or {}
                 if agent.get("agent") == self.harness and agent.get("agent_status") in IDLE + ("blocked",):

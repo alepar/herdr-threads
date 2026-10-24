@@ -25,22 +25,23 @@ state; nothing was written to a real harness config.
    `hermes` panes, `wM:p2` (started first) and `wM:p3`. The gateway process (`hermes_cli.main --profile default
    gateway run`) inherited `HERDR_PANE_ID=wM:p2`, `HERDR_TAB_ID=wM:t2`. After one turn in each pane, seat
    `syHlbs78cWym` (target `wM:p2`) holds two Hermes bindings: native session `local-9a590d67…` (pane A, ordinal 2,
-   now disconnected) and `local-31787204…` (pane B, ordinal 3, connected); pane `wM:p3` has no seat. A p1 sent to
-   pane A's seat (`myHlHi4sYBhV`) was put into **pane B's** model context on its next turn (the model printed
+   now disconnected) and `local-31787204…` (pane B, ordinal 3, connected); pane `wM:p3` has no seat. A p1 (`myHlHi4sYBhV`) sent to
+   pane A's seat was put into **pane B's** model context on its next turn (the model printed
    `RECEIVED myHlHi4sYBhV …`). This is research flaw F2, now observed: `integrations/hermes/__init__.py` passes no
    `env=` to the hook child and `src/cli/hook.rs` reads `HERDR_PANE_ID` from the process env. It is a misdelivery
    and a seat binding taken on the wrong pane's evidence, so it touches TRUST-POLICY (A2, never bind on heuristic
    evidence).
 2. **Hermes idle wake never fires; the docs still call a Hermes seat wakeable** (high). `send --seat syHlbs78cWym
-   --nudge` to the idle seat: neither pane left `idle` in 40 s, `delivery inspect` shows `attempted: null`, and the
-   daemon's `wake_work` row for the seat ends `last_outcome = 'unsafe'` (no Hermes `ComposerPolicy`, so the composer
+   --nudge` to the idle seat: neither pane left `idle` in the 40 s polled, `delivery inspect` shows `attempted:
+   null`, and the daemon's `wake_work` row for the seat ends `last_outcome = 'unsafe'` (reserved 52.7 s after the
+   send, after the polling window: the 30 s retry spacing; `unsafe` is a refusal before typing) (no Hermes `ComposerPolicy`, so the composer
    read is never `Empty`). Research flaw F1; `integrations/hermes/README.md` ("the way to get a wakeable Hermes").
    Also relevant to any future composer policy: Hermes 0.22.5 draws a dim placeholder in the empty composer
    (`❯ What changed in this repo recently?`), and Herdr reports the pane `idle` while the first-run telemetry
    consent modal is up.
 3. **Claude mod: an ordinary failing tool arms the post-abort hold** (medium). Claude Code reports a failing Bash
    (`false`, `exit 3`), a failed Read and a PreToolUse deny as `{isError: true}` with no `deny` field, exactly like an
-   Esc at the permission dialog (ht-mod-busy's probe, 2.1.309). `userRejected()` (`register.js:121`) therefore treats
+   Esc at the permission dialog (ht-mod-busy's probe, 2.1.309). `userRejected()` (`register.js:120`) therefore treats
    a turn whose last tool failed as a user reject: live on 2.1.310, a require-ACK message sent right after such a
    turn was held `post_abort` and delivered 119.3 s later by the `HOLD_IDLE_MS` expiry. Research flaw F6. The probe
    shows a discriminator: a failing tool's result is followed by a main `turn.step` about 23 ms later; a user
@@ -82,7 +83,7 @@ Run, all against a private daemon (`--state-dir <scratch>/ht-state`, discovery o
 5. `send --seat syHlbs78cWym` (p1, `myHlHi4sYBhV`), then a turn in `wM:p3` asking whether its context held a
    herdr-threads message: `RECEIVED myHlHi4sYBhV HERMES-DELIVERY-1: …` (delivery works; wrong pane).
 6. `send --seat syHlbs78cWym --nudge` (p0, `myHlbvtmOs74`) to the idle seat; both panes polled each second for
-   40 s: no status change, no typed text (defect 2).
+   40 s: no status change, no typed text; the daemon's attempt came at +52.7 s and was refused `unsafe` (defect 2).
 
 Files: `versions.txt`, `setup-hermes.out`, `plugins-enable.out`, `gateway-env-herdr.txt`, `seat-list.txt`,
 `seat-inspect-syHlbs78cWym.txt`, `delivery-inspect-p1.txt`, `delivery-inspect-p0.txt`, `wake-work.txt`,
@@ -106,7 +107,7 @@ composer without Enter and sent a require-ACK message:
 
 | ms after send | Ledger / hook log |
 |---|---|
-| +46 | `received`, `held` reason `draft` (`$.prompt.read()` returned the typed text) |
+| +46, +47 | `received`, then `held` reason `draft` (`$.prompt.read()` returned the typed text) |
 | +120,610 | `delivered` via `append`, then `submit` `wake up` (`DRAFT_WAIT_MS` expired) |
 | +120,663 | `acked` `settled` |
 
@@ -116,6 +117,7 @@ composer without Enter and sent a require-ACK message:
   draft, unchanged and unsubmitted (`pane-…-typed.txt`, `-held.txt`, `-after.txt`). The research's INFERRED claim
   "the draft text survives" is now observed. A person still mid-sentence after 120 s sees a plugin turn run above
   their draft; nothing is lost.
+- The scenarios record what happened; they do not assert a hold, so their PASS only means the message settled.
 - Not covered: the person pressing Enter while the plugin turn runs (the earlier queued-prompt spike,
   `docs/evidence/claude-mod-delivery/submit-race-spike.md`, covers the reverse order), and prompt suggestions: setup
   ran with `--keep-prompt-suggestions`, but no suggestion was on screen when the draft was typed, so whether
@@ -138,7 +140,8 @@ draft_hold,failing_tool_hold --iterations 1 --bin bin/herdr-threads` (Claude Cod
 endpoint, private daemon; files in `claude/failing-tool-hold/`). `failing_tool_hold`: the model ran `false` once and
 replied `done` (`Stop` at …314861); a require-ACK message sent 1.5 s later was `held` `post_abort` at …316434 and
 delivered by append plus `wake up` at …435643, **119.3 s** after the send (defect 3). That run's `draft_hold`
-iteration raced the session's start-up invitation wake turn, so its draft was typed into a busy session; it is kept
+iteration raced the session's start-up invitation wake turn (that run used the earlier driver revision: an
+invited thread and an `accept`, not the pair channel; the failing-tool measurement does not depend on it), so its draft was typed into a busy session; it is kept
 as an observation (the message rode a tool-call result as `context` in 2.3 s; the typed text stayed in the composer
 and was not submitted) and the scenario now waits for no open turn before typing (re-run below).
 

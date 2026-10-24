@@ -1,4 +1,4 @@
-alepar@blacky:<scratch>/work$ PATH=<scratch>/bin:"$PATH" HOME=<scratch>/home hermes
+user@host:<scratch>/work$ PATH=<scratch>/bin:"$PATH" HOME=<scratch>/home hermes
 ✓ Shared metrics off. Change it any time with `hermes setup telemetry`.
 
 ██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗
@@ -27,7 +27,7 @@ alepar@blacky:<scratch>/work$ PATH=<scratch>/bin:"$PATH" HOME=<scratch>/home her
 │  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                                            devops: sdlc-review                                                          │
 │                                                                            email: email-inbox-triage, himalaya                                          │
 │  gpt-6.1-sol · Nous Research                                               media: gif-search, songsee, youtube-content                                  │
-│  /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/b50aa30a-332f-4…  note-taking: obsidian                                                        │
+│  <scratch>  note-taking: obsidian                                                        │
 │  Session: 9a590d67                                                         productivity: airtable, box, document-to-action-items, docx, +10 more        │
 │                                                                            research: arxiv, competitor-news-monitor, grounded-citations, llm-wiki       │
 │                                                                            social-media: xurl                                                           │

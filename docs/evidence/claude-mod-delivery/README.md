@@ -82,8 +82,8 @@ as defects D1-D3. The driver was not changed to hide any of them.
   `tests/integration/sweep.rs` `host_reply`, serves two fake panes: `w1:p1` for the sender and `w1:p2` for Claude.
   It records `agent.prompt` calls (native wakes) and never types them. The built binary comes first on the
   session's `PATH`, so any `herdr-threads` the model runs reaches the isolated instance.
-- **Bootstrap.** The seats, thread, invite and accept are set up like the `mod_delivery` Rig. The accept waits
-  for the first session's SessionStart check-in.
+- **Bootstrap.** Until 2026-10-23 the seats, thread, invite and accept were set up like the `mod_delivery` Rig (the
+  runs above); see "Sender" under re-running for the current setup.
 - **tmux.** A private server, `tmux -L ht-mod-<uuid>`. Each scenario gets one Claude process, or two for
   `resume_keeps_set`, all with the same pane id.
 
