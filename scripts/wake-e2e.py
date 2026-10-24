@@ -501,6 +501,11 @@ def agy_env(env):
     return [(k, env[k].strip()) for k in (AGY_CREDENTIAL_ENV, AGY_ENDPOINT_ENV) if (env.get(k) or "").strip()]
 
 
+def claude_env(env):
+    """The (name, value) pairs of the Claude credential variables set in the driver's environment."""
+    return [(k, env[k].strip()) for k in CLAUDE_CREDENTIAL_ENV if (env.get(k) or "").strip()]
+
+
 def write_private(path, text):
     """A new private 0600 regular file, never written through a link."""
     path = Path(path)
@@ -562,6 +567,7 @@ class Run:
         self.claude_hooks_cfg = self.root / "claude-hooks-config"  # cl-hooks: `setup claude --hooks-only`
         self.codex_home = self.root / "codex-home"
         self.agy_env = self.root / "agy.env"
+        self.claude_env = self.root / "claude.env"  # linux: the Claude credential, written only when one is set
         self.bindir = self.root / "bin"
         self.bin = str(Path(args.bin).resolve())
         self.endpoint = os.environ.get("HERDR_SOCKET_PATH", "")
@@ -756,6 +762,9 @@ class Run:
             self.ht("setup", h, "--with-permissions", env=setup_env, tag=f"setup:{h}", timeout=120)
         if self.linux and "claude" in self.args.harness:
             seed_claude_config(self.claude_cfg, self.cwd, os.environ)
+            # The panes' shells are the Herdr server's, not this process's: they get the credential only from
+            # this private file, so neither the typed command line nor the pane screen ever carries it.
+            write_private(self.claude_env, "".join(f"export {k}={shlex.quote(v)}\n" for k, v in claude_env(os.environ)))
         if "codex" in self.args.harness:
             self.auth_digest = provision_codex_auth(self.codex_auth_home() / "auth.json", self.codex_home / "auth.json")
             cfg = self.codex_home / "config.toml"
@@ -832,7 +841,11 @@ class Run:
                 unset += " CLAUDE_CODE_PLUGIN_DIRS"
             else:
                 cfg += f"CLAUDE_CODE_PLUGIN_DIRS={q(str(self.state / 'claude-mod' / 'herdr-threads'))} "
-            return f"unset {unset}; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
+            line = f"unset {unset}; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
+            env_file = getattr(self, "claude_env", None)
+            if env_file is not None and env_file.exists():
+                return f"( . {q(str(env_file))} && {line} )"
+            return line
         if harness == "agy":
             # The credential stays in the private env file; the pane's command line and screen never carry it.
             return (f"( . {q(str(self.agy_env))} && {path} HOME={q(str(self.home))} HERDR_AGENT=agy "
@@ -866,6 +879,7 @@ class Run:
             problems = [f"drain raised: {e!r}"]
         steps = []
         self.remove_agy_env(problems)  # a running agy already holds the key; the file never outlives the run
+        self.remove_claude_env(problems)
         if self.args.keep:
             self.cleanup_report = {"skipped": "--keep", "workspace": self.workspace,
                                    "daemon_attempted": self.daemon_attempted, "problems": problems}
@@ -997,6 +1011,15 @@ class Run:
             path.unlink(missing_ok=True)
         except OSError as e:
             problems.append(f"agy credential file not removed: {e!r}")
+
+    def remove_claude_env(self, problems):
+        path = getattr(self, "claude_env", None)
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            problems.append(f"claude credential file not removed: {e!r}")
 
     def retire_auth_copy(self):
         """Delete the credential copy unless Codex refreshed it in the run: then it may hold the only current refresh

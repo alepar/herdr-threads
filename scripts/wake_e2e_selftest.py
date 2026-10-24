@@ -1505,6 +1505,30 @@ class HarnessMode(TempDir):
         self.assertEqual(r.launch_line("codex"), MACOS_CODEX_LINE.replace(
             "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox"))
 
+    def test_linux_claude_gets_its_credential_from_the_private_env_file(self):
+        """A bare Linux host: the panes' shells are the Herdr server's, so the token reaches Claude only through
+        the scratch-root env file the launch line sources; the line itself never holds the token."""
+        with Env(CLAUDE_CONFIG_DIR=None):
+            args = parsed_args(["--harness-mode", "linux"])
+        r = launch_run(args)
+        r.claude_env = self.tmp / "claude.env"
+        plain = r.launch_line("claude")
+        token = "fake-oauth-token-value"
+        W.write_private(r.claude_env, "".join(f"export {k}={v}\n" for k, v in W.claude_env(
+            {"CLAUDE_CODE_OAUTH_TOKEN": token, "ANTHROPIC_API_KEY": " "})))
+        self.assertEqual(stat.S_IMODE(r.claude_env.stat().st_mode), 0o600)
+        self.assertEqual(r.claude_env.read_text(), f"export CLAUDE_CODE_OAUTH_TOKEN={token}\n")
+        line = r.launch_line("claude")
+        self.assertEqual(line, f"( . {r.claude_env} && {plain} )")
+        self.assertNotIn(token, line)
+        out = subprocess.run(["sh", "-c", f". {r.claude_env} && printenv CLAUDE_CODE_OAUTH_TOKEN"],
+                             capture_output=True, text=True).stdout.strip()
+        self.assertEqual(out, token)
+        problems = []
+        r.remove_claude_env(problems)
+        self.assertEqual(problems, [])
+        self.assertFalse(r.claude_env.exists())
+
     def test_codex_sandbox_is_bypassed_only_in_linux_mode_inside_the_runner_container(self):
         dockerenv, absent = self.tmp / "dockerenv", self.tmp / "absent"
         dockerenv.write_text("")
@@ -1544,6 +1568,7 @@ class HarnessMode(TempDir):
         r.state, r.home, r.claude_cfg = r.root / "state", r.root / "home", r.root / "claude-config"
         r.codex_home, r.bindir, r.bin, r.endpoint, r.cwd = r.root / "codex-home", r.root / "bin", "/fake/ht", "/s", "/repo"
         r.daemon_attempted = False
+        r.claude_env = r.root / "claude.env"
         (self.tmp / "src").mkdir()
         (self.tmp / "src" / "auth.json").write_bytes(FAKE_AUTH)
         def fake_ht(*argv, env=None, **kw):
@@ -1593,6 +1618,9 @@ class HarnessMode(TempDir):
                          {"hasCompletedOnboarding": True, "projects": {"/repo": {"hasTrustDialogAccepted": True}}})
         self.assertEqual(stat.S_IMODE(os.lstat(path).st_mode), 0o600)
         self.assertNotIn("fake-oauth-token", path.read_text())  # an OAuth token needs no approval: never written
+        # the token reaches the panes only through the private env file in the scratch root
+        self.assertEqual(r.claude_env.read_text(), "export CLAUDE_CODE_OAUTH_TOKEN=fake-oauth-token\n")
+        self.assertEqual(stat.S_IMODE(os.lstat(r.claude_env).st_mode), 0o600)
 
     def test_linux_api_key_is_approved_by_its_last_20_characters(self):
         state = W.claude_scratch_state("/repo", {"ANTHROPIC_API_KEY": FAKE_API_KEY})
