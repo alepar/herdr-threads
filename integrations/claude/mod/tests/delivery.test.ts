@@ -2085,7 +2085,9 @@ test('register acks a captured ordinary message appended while idle with the row
   const h = await capturedWatchEngine($, on, IDLE)
   try {
     await h.feed(lines.filter(({ item }) => item.kind === 'status' || item.id === activationCapture.ids.message).map(({ raw }) => raw).join(''))
-    await engineEventually(() => h.entries().some((entry) => entry.kind === 'acked' && entry.ids.includes(activationCapture.ids.message)))
+    // The ack chain and the wake submit run independently: wait for both.
+    await engineEventually(() => h.submits.length === 1
+      && h.entries().some((entry) => entry.kind === 'acked' && entry.ids.includes(activationCapture.ids.message)))
     expect(h.submits).toEqual([WAKE])
     expect(h.runs.map((argv) => [argv[6], ...argv.slice(7)])).toEqual([['append', activationCapture.ids.message]])
     expect(h.storedRows.length).toBe(1)

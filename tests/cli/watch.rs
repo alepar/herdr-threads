@@ -2144,10 +2144,12 @@ fn watch_ack_row_follows_the_daemon_capability() {
     let (exit, out) = run(&old);
     assert_eq!((exit, ack_lines(&out)), (0, vec![settled("m1")]));
     assert_eq!(sent_rows(&old), vec![None]);
-    let mut rejecting = settle_all();
-    rejecting.probe = Some(Ok(ApiError::new(ErrorCode::UnknownWireVersion, "old")));
-    run(&rejecting);
-    assert_eq!(sent_rows(&rejecting), vec![None]);
+    for code in [ErrorCode::UnknownWireVersion, ErrorCode::Unsupported] {
+        let mut rejecting = settle_all();
+        rejecting.probe = Some(Ok(ApiError::new(code, "old")));
+        run(&rejecting);
+        assert_eq!(sent_rows(&rejecting), vec![None]);
+    }
 
     for probe in [
         Err(ApiError::host_unavailable("lost")),
