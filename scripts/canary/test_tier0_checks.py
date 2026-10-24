@@ -157,19 +157,29 @@ build_env "$P"
         conf.mkdir(parents=True)
         settings = conf / "settings.json"
         manifest = self.p / "ownership.json"
-        groups = []
-        for event, matcher in [("SessionStart", None), ("PreToolUse", "Bash")]:
-            group = {"hooks": [{"type": "command", "command": f"'/x/herdr-threads' 'hook-event' 'claude' '{event}'"}]}
-            if matcher:
-                group["matcher"] = matcher
-            digest = hashlib.sha256(json.dumps(group, separators=(",", ":"), sort_keys=True).encode()).hexdigest()
-            groups.append({"event": event, "group": group, "fingerprint": "sha256:" + digest})
-        settings.write_text(json.dumps({"hooks": {e["event"]: [e["group"]] for e in groups}}))
-        manifest.write_text(json.dumps({"version": 3, "harness": "claude", "scope": "user", "path": str(settings),
-            "installation_id": "0b5e8f3c-1111-4222-8333-444455556666", "phase": "installed", "owned": groups}))
         report = self.p / "setup.json"
         report.write_text(json.dumps({"setup": {"action": "installed", "manifest": str(manifest),
             "harness_version": {"admission": "contract_declared", "version": None}}}))
+
+        def install(pre_matcher):
+            groups = []
+            for event, matcher in [("SessionStart", None), ("PreToolUse", pre_matcher)]:
+                group = {"hooks": [{"type": "command", "command": f"'/x/herdr-threads' 'hook-event' 'claude' '{event}'"}]}
+                if matcher:
+                    group["matcher"] = matcher
+                digest = hashlib.sha256(json.dumps(group, separators=(",", ":"), sort_keys=True).encode()).hexdigest()
+                groups.append({"event": event, "group": group, "fingerprint": "sha256:" + digest})
+            settings.write_text(json.dumps({"hooks": {e["event"]: [e["group"]] for e in groups}}))
+            manifest.write_text(json.dumps({"version": 3, "harness": "claude", "scope": "user", "path": str(settings),
+                "installation_id": "0b5e8f3c-1111-4222-8333-444455556666", "phase": "installed", "owned": groups}))
+            return groups
+
+        # A pre-every-tool install owns only a Bash PreToolUse group.
+        install("Bash")
+        result = self.bash(f't0_py setup-assert claude ignored "{report}" "{conf}"')
+        self.assertTrue(result.stdout.startswith("fail\t"), result.stdout)
+        self.assertIn("every-tool PreToolUse", result.stdout)
+        groups = install("*")
         result = self.bash(f't0_py setup-assert claude ignored "{report}" "{conf}"')
         self.assertTrue(result.stdout.startswith("pass\t"), result.stdout)
         value = json.loads(settings.read_text())
