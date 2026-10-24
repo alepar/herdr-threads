@@ -4,6 +4,7 @@ import importlib.machinery
 import io
 import importlib.util
 import json
+import subprocess
 import os
 import shutil
 import sys
@@ -50,6 +51,59 @@ exec /usr/bin/env -i PATH="/private/tmp/ih.Ab12Cd/bin:/usr/bin:/bin:/usr/sbin:/s
 '''
 
 
+PROBE_AGY = r"""#!/usr/bin/env python3
+import json, os, socket, sys
+root, home = sys.argv[1], sys.argv[2]
+out = {}
+try:
+    socket.create_connection(("1.1.1.1", 443), timeout=3).close()
+    out["outbound"] = "open"
+except OSError:
+    out["outbound"] = "blocked"
+out["hidden_listing"] = os.listdir(os.path.join(home, ".codex"))
+for name, path in (("outside", "/var/tmp/agyenv-sandbox-canary"), ("root", os.path.join(root, "canary")),
+                   ("shm", "/dev/shm/agyenv-sandbox-canary-%d" % os.getpid())):
+    try:
+        open(path, "w").write("x")
+        out[name] = "written"
+    except OSError:
+        out[name] = "refused"
+out["shm_path"] = "/dev/shm/agyenv-sandbox-canary-%d" % os.getpid()
+open(os.path.join(root, "probe.json"), "w").write(json.dumps(out))
+"""
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and agyenv.sandbox_refusal() is None,
+                     "needs Linux with bwrap and socat")
+class LinuxSandboxBehaviour(unittest.TestCase):
+    """The rendered bubblewrap wrapper, run around a stand-in agy: what the sandbox actually allows."""
+
+    def test_network_config_and_writes_are_confined(self):
+        root = Path(tempfile.mkdtemp(prefix="ih.sbx", dir="/tmp"))
+        home = Path(tempfile.mkdtemp(prefix="agyenv-home."))
+        self.addCleanup(shutil.rmtree, str(root), True)
+        self.addCleanup(shutil.rmtree, str(home), True)
+        (home / ".codex").mkdir()
+        (home / ".codex" / "secret").write_text("do not read")
+        clone = root / "agybin" / "1"
+        clone.mkdir(parents=True)
+        (clone / "agy").write_text(PROBE_AGY)
+        (clone / "agy").chmod(0o755)
+        wrapper = root / "agy-wrapper"
+        wrapper.write_text(agyenv.render_wrapper(str(root), str(clone), 1, "tok", os.getpid(), "run", "linux",
+                                                 agyenv.hidden_dirs(home)))
+        wrapper.chmod(0o755)
+        subprocess.run([str(wrapper), str(root), str(home)], timeout=60, check=True,
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        got = json.loads((root / "probe.json").read_text())
+        self.addCleanup(lambda: Path(got["shm_path"]).unlink(missing_ok=True))
+        self.assertEqual(got["outbound"], "blocked")
+        self.assertEqual(got["hidden_listing"], [])
+        self.assertEqual(got["outside"], "refused")
+        self.assertEqual(got["root"], "written")
+        self.assertFalse(Path(got["shm_path"]).exists(), "a /dev/shm write reached the host")
+
+
 class RenderTests(unittest.TestCase):
     def test_profile_matches_golden_with_both_substitutions(self):
         text = agyenv.render_profile("/private/tmp/ih.Ab12Cd", "/Users/real")
@@ -84,7 +138,9 @@ class RenderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             for d in (".codex", ".hermes"):
                 (Path(tmp) / d).mkdir()
-            self.assertEqual(agyenv.hidden_dirs(tmp), [tmp + "/.codex", tmp + "/.hermes"])
+            self.assertEqual(agyenv.hidden_dirs(tmp, dev_dirs=()), [tmp + "/.codex", tmp + "/.hermes"])
+            self.assertEqual(agyenv.hidden_dirs(tmp, dev_dirs=(tmp + "/.codex", tmp + "/absent"))[-1],
+                             tmp + "/.codex")
 
     def test_wrapper_carries_the_required_pieces(self):
         text = agyenv.render_wrapper("/r", "/r/agybin/1", 1, "TOKEN-X", 5, "RUN-Y")

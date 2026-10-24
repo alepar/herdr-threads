@@ -23,6 +23,21 @@ class Helpers(unittest.TestCase):
         self.assertEqual(cfg["Stop"][0]["command"], "/usr/bin/python3 /r/ctl/probe_hook.py Stop /r/ctl")
 
 
+class Verdicts(unittest.TestCase):
+    def test_verdict_names_the_cap_or_the_ceiling(self):
+        ended = lambda n: {"turn1": {"ended": True, "requests": n}}
+        self.assertEqual(probe.verdict("stop-continue", ended(11), {}), "capped at 10 extra model call(s) per turn")
+        self.assertEqual(probe.verdict("post-inject", ended(1), {}), "0 extra model call(s) for the injected step")
+        self.assertIn("no cap below 40", probe.verdict("post-force", ended(40), {"exhausted": True}))
+        self.assertEqual(probe.verdict("post-force", {"turn1": {"ended": False}}, {}), "turn 1 never ended")
+
+    def test_failed_on_error_or_an_unended_measured_turn(self):
+        ok = {"measured": True, "ended": True, "idle": True}
+        self.assertFalse(probe.failed({"turn1": ok, "turn2": {"measured": False}}))
+        self.assertTrue(probe.failed({"turn1": dict(ok, ended=False)}))
+        self.assertTrue(probe.failed({"error": "boom"}))
+
+
 class Hook(unittest.TestCase):
     def run_hook(self, ctl, event, mode):
         (ctl / "mode").write_text(mode)

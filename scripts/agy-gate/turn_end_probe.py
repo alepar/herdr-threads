@@ -13,8 +13,11 @@ hooks in the world's own ``~/.gemini/config/hooks.json`` (never the real one) an
 - ``post-force``: PostInvocation always answers ``injectSteps`` plus ``terminationBehavior: force_continue``.
   Records how many extra model calls agy makes before it stops (the cap).
 
-The relay's request ceiling (40) bounds a mode with no cap of its own; hitting it is recorded as "no cap below 40".
-Writes ``<mode>.json`` (hook log, request markers, verdict) and ``summary.json`` to DIR.
+A turn is closed by its own Stop entry (one more Stop than before the prompt) and Herdr idle, after its first model
+request was seen. The relay's request ceiling (40) bounds a mode with no cap of its own: a turn that exhausts it is
+recorded as "no cap below <requests>", and later turns of that mode as not measured. Writes ``<mode>.json`` (hook
+log, request markers, per-turn ``verdict``) and ``summary.json`` to DIR; exits 1 when a mode raised or a turn never
+ended, 3 on a leak.
 """
 from __future__ import annotations
 
@@ -22,7 +25,6 @@ import argparse
 import json
 import os
 import sys
-import time
 import uuid
 from pathlib import Path
 
@@ -81,6 +83,32 @@ def _find(text, prefix):
         i = text.find(prefix, j)
 
 
+def stop_count(log):
+    try:
+        return sum(1 for line in log.read_text().splitlines() if json.loads(line)["event"] == "Stop")
+    except OSError:
+        return 0
+
+
+def verdict(mode, record, budget):
+    """One line per mode, from turn 1: how many extra model calls the hook got, and whether a cap ended them."""
+    turn = record.get("turn1") or {}
+    if not turn.get("ended"):
+        return "turn 1 never ended"
+    extra = turn["requests"] - 1
+    if budget.get("exhausted"):
+        return "no cap below %d model requests (the relay ceiling ended the turn)" % turn["requests"]
+    if mode == "post-inject":
+        return "%d extra model call(s) for the injected step" % extra
+    return "capped at %d extra model call(s) per turn" % extra
+
+
+def failed(record):
+    turns = [record.get(k) or {} for k in ("turn1", "turn2")]
+    return bool(record.get("error")) or any(t.get("measured") and not (t.get("ended") and t.get("idle"))
+                                            for t in turns)
+
+
 def run_mode(mode, binary, evidence, owner, run_id):
     backend = relay_backend.RelayBackend(relay_backend.FAKE, script={
         "format": relay_backend.UPSTREAM_FORMAT, "replies": [], "default": {"text": "done", "cost": 0.0}})
@@ -95,15 +123,21 @@ def run_mode(mode, binary, evidence, owner, run_id):
         (cfg / "hooks.json").write_text(json.dumps(hooks_config(ctl), indent=1))
         record["agy_version"] = world.agy_version()
         pane = world.start_agy()
-        for turn, text in enumerate(("Reply with the single word ONE.", "Reply with the single word TWO.")):
-            before = len(backend.upstream_requests())
-            pane.prompt(text)
-            time.sleep(3)
-            idle = pane.wait("idle", TURN_TIMEOUT_S)
-            record["turn%d" % (turn + 1)] = {"idle": bool(idle), "requests": len(backend.upstream_requests()) - before}
-            time.sleep(2)
-        bodies = backend.upstream_requests()
         log = ctl / "hooks.jsonl"
+        for turn, text in enumerate(("Reply with the single word ONE.", "Reply with the single word TWO.")):
+            key = "turn%d" % (turn + 1)
+            if backend.budget().get("exhausted"):
+                record[key] = {"measured": False, "reason": "relay budget exhausted by an earlier turn"}
+                continue
+            before, stops = len(backend.upstream_requests()), stop_count(log)
+            pane.prompt(text)
+            started = agyenv.wait_until(lambda: len(backend.upstream_requests()) > before, 30)
+            ended = agyenv.wait_until(lambda: stop_count(log) > stops, TURN_TIMEOUT_S, step=0.5)
+            idle = pane.wait("idle", 30)
+            record[key] = {"measured": True, "started": bool(started), "ended": bool(ended), "idle": bool(idle),
+                           "requests": len(backend.upstream_requests()) - before}
+        record["verdict"] = verdict(mode, record, backend.budget())
+        bodies = backend.upstream_requests()
         record["hooks"] = [json.loads(l) for l in log.read_text().splitlines()] if log.exists() else []
         record["requests_total"] = len(bodies)
         record["request_markers"] = markers(bodies, "PROBE-")
@@ -135,14 +169,16 @@ def main(argv=None):
         except Exception as exc:  # recorded, never hidden
             record = {"mode": mode, "error": "%s: %s" % (type(exc).__name__, exc)}
         (out / ("%s.json" % mode)).write_text(json.dumps(record, indent=1, sort_keys=True))
-        summary[mode] = {k: record.get(k) for k in ("error", "turn1", "turn2", "requests_total")}
+        summary[mode] = {k: record.get(k) for k in ("error", "turn1", "turn2", "requests_total", "verdict")}
         summary[mode]["hook_fires"] = {ev: sum(1 for h in record.get("hooks", []) if h["event"] == ev) for ev in EVENTS}
         sys.stdout.write("%s: %s\n" % (mode, json.dumps(summary[mode])))
     leak_ok, leak_out = agyenv.check_leaks(run_id)
     summary["leak_check"] = {"ok": leak_ok, "output": leak_out[-500:]}
     (out / "summary.json").write_text(json.dumps(summary, indent=1, sort_keys=True))
     sys.stdout.write("leak check: %s\n" % ("clean" if leak_ok else "LEAKS"))
-    return 0 if leak_ok else 3
+    if not leak_ok:
+        return 3
+    return 1 if any(failed(json.loads((out / ("%s.json" % m)).read_text())) for m in args.mode or MODES) else 0
 
 
 if __name__ == "__main__":

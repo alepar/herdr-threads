@@ -549,20 +549,29 @@ AGY_TERMS_PAGE = "Terms of Service"
 AGY_CONSENT = "] Yes, I agree"
 
 
-def agy_onboarding_keys(screen):
-    """The keys that answer agy's current first-run page, or None (composer drawn, or no page recognised).
+AGY_ONBOARDING_KEYS = {"color": [("enter",)], "consent-ticked": [("enter",)],
+                       "terms": [("down", "right"), ("enter",)]}
+
+
+def agy_onboarding_page(screen):
+    """agy's current first-run page: `color`, `consent-ticked`, `terms` (consent unticked, ready for Done), or None
+    (composer drawn, or nothing recognised, including a consent box in an unknown state: Done is never pressed then).
     With altScreenMode never, earlier pages stay on screen above the current one, so the page that counts is the
-    one drawn lowest. On the Terms page the pre-ticked consent to Google collecting interaction data is unticked
-    (Enter toggles it) before Done: the e2e runs agy without the agy gate's no-network sandbox."""
+    one drawn lowest. The pre-ticked consent to Google collecting interaction data is unticked (Enter toggles it)
+    before Done: the e2e runs agy without the agy gate's no-network sandbox."""
     footer, color, terms = (screen.rfind(m) for m in (AGY_FOOTER, AGY_COLOR_PAGE, AGY_TERMS_PAGE))
     if footer > max(color, terms):
         return None
     if terms > color:
         box = screen.rfind(AGY_CONSENT)
-        if box > color and screen[box - 1] == "x":
-            return [("enter",)]
-        return [("down", "right"), ("enter",)]
-    return [("enter",)] if color >= 0 else None
+        state = screen[box - 1] if box > color else None
+        return {"x": "consent-ticked", " ": "terms"}.get(state)
+    return "color" if color >= 0 else None
+
+
+def agy_onboarding_keys(screen):
+    """The keys that answer agy's current first-run page (agy_onboarding_page), or None."""
+    return AGY_ONBOARDING_KEYS.get(agy_onboarding_page(screen))
 
 
 def agy_composer_up(screen):
@@ -1430,7 +1439,10 @@ class Recipient:
                 if self.harness == "agy":  # a fresh scratch HOME meets agy's first-run screens every run
                     screen = self.run.herdr("pane", "read", self.pane, "--source", "visible",
                                             check=False).get("raw", "")
-                    keys = agy_onboarding_keys(screen)
+                    page = agy_onboarding_page(screen)
+                    keys = AGY_ONBOARDING_KEYS.get(page)
+                    if page:  # results.json records which first-run pages were answered, the consent untick too
+                        self.run.facts.setdefault("agy_onboarding", {}).setdefault(self.name, []).append(page)
                     for i, k in enumerate(keys or ()):
                         if i:
                             time.sleep(0.5)

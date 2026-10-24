@@ -33,6 +33,9 @@ SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 BWRAP = "/usr/bin/bwrap"
 SOCAT = "/usr/bin/socat"
 HIDDEN_DIRS = (".gemini", ".claude", ".codex", ".aisw", ".hermes")
+# The host /dev is bound (agy's TUI keeps its pane's pty), so the user-writable shared mounts under it get private
+# tmpfs instead: nothing agy writes there reaches the host.
+PRIVATE_DEV_DIRS = ("/dev/shm", "/dev/mqueue")
 RELAY_SOCKET = "relay.sock"
 
 for _dir in (FAKE_GEMINI,):  # sibling directories are imported by path insertion
@@ -92,9 +95,11 @@ def sandbox_refusal(platform_name=None, exists=os.path.exists):
     return None
 
 
-def hidden_dirs(real_home_dir):
-    """The real config directories that exist (bwrap can mount over an existing directory only)."""
-    return [str(Path(real_home_dir) / d) for d in HIDDEN_DIRS if (Path(real_home_dir) / d).is_dir()]
+def hidden_dirs(real_home_dir, dev_dirs=PRIVATE_DEV_DIRS):
+    """The directories that get a private tmpfs: the real config directories, and the shared writable /dev
+    mounts, that exist (bwrap can mount over an existing directory only)."""
+    homes = [str(Path(real_home_dir) / d) for d in HIDDEN_DIRS if (Path(real_home_dir) / d).is_dir()]
+    return homes + [d for d in dev_dirs if os.path.isdir(d)]
 
 
 def sandbox_line(root, clone_dir, port, platform_name=None, hidden=()):

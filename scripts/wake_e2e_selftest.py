@@ -2494,6 +2494,11 @@ class AgyOptIn(TempDir):
         self.assertIsNone(W.agy_onboarding_keys(terms_unticked + ">\n? for shortcuts"))
         self.assertIsNone(W.agy_onboarding_keys("> \n? for shortcuts"))
         self.assertIsNone(W.agy_onboarding_keys("unrelated"))
+        # a consent box in no known state: Done is never pressed with it possibly ticked
+        self.assertIsNone(W.agy_onboarding_keys(terms_ticked.replace("[x] Yes", "[?] Yes")))
+        self.assertIsNone(W.agy_onboarding_keys(color + "Google Antigravity CLI Terms of Service\n    [Done]\n"))
+        self.assertEqual([W.agy_onboarding_page(s) for s in (color, terms_ticked, terms_unticked)],
+                         ["color", "consent-ticked", "terms"])
 
     def test_agy_wake_prompt_counts_as_a_wake(self):
         # agy echoes a submitted prompt after `> ` (docs/evidence/agy-live-smoke/*/pane-final.txt)
