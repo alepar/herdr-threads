@@ -434,6 +434,11 @@ class LostPromptTests(WakeFixture):
         self.pane("lostprompt", f"› {demo.WAKE_MARKER}; run herdr-threads inbox\n")
         self.assertEqual(self.driver.s_lostprompt_delivery()[0], demo.PASS)
 
+    def test_content_free_wake_once_passes_sl2(self):
+        self.observe(after={"last_outcome": "submitted"})
+        self.pane("lostprompt", f"› {demo.WAKE_MARKERS[1]}\n")
+        self.assertEqual(self.driver.s_lostprompt_delivery()[0], demo.PASS)
+
     def test_repeated_marker_fails_sl2(self):
         self.observe(after={"last_outcome": "submitted"})
         self.pane("lostprompt", f"{demo.WAKE_MARKER}\n{demo.WAKE_MARKER}\n")

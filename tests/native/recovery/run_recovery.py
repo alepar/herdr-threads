@@ -47,8 +47,11 @@ from private_host import (CommandLog, PrivateHerdr, SafetyError, TestDaemon, for
 from fixture import NativeFixture
 
 RECONCILE_TIMEOUT = 40
-# The daemon's fixed generic wake hint (src/notification/policy.rs MARKER).
+# The daemon's wake texts (src/notification/policy.rs MARKER, WAKE_UP). W checks in as a cooperative Claude top
+# level, so its wake is the content-free WAKE_UP (ht-turnstart).
 WAKE_MARKER = "herdr-threads: attention pending; run herdr-threads inbox"
+WAKE_UP = "herdr-threads: wake up"
+WAKE_TEXTS = (WAKE_MARKER, WAKE_UP)
 WAKE_RECEIVED = "HT-WAKE-RECEIVED: "
 WAKE_DEADLINE_S = 5
 # W9-5: the wake attempt made while the pane is still a shell is refused as unsafe; the durable row says so
@@ -386,7 +389,7 @@ class Suite:
         self.ids["M_wake"] = message
         time.sleep(3)  # the wake lane has attention for W while its pane is still a shell
         shell_text = s.save("pane-while-shell", {"text": self.host.pane_text(pane)})["text"]
-        s.check("the shell pane was never prompted", WAKE_MARKER not in shell_text, shell_text[-600:])
+        s.check("the shell pane was never prompted", not any(t in shell_text for t in WAKE_TEXTS), shell_text[-600:])
         self.check_shell_phase_wake(s, W)
         self.host.run_in_pane(pane, str(self.wake_stub))
         idle = wait_for(lambda: self.agent_status(pane) == ("claude", "idle"), timeout=30,
@@ -409,7 +412,7 @@ class Suite:
                f"({(prompted_at - warned_at) / 1000:.1f}s later); quiet window {WAKE_QUIET_S}s")
         s.check(f"exactly one prompt reached the idle stand-in (no second prompt within {WAKE_QUIET_S}s)",
                 len(received) == 1, received)
-        s.check("the prompt is the fixed generic wake hint", received[:1] == [WAKE_MARKER], received)
+        s.check("the prompt is the content-free wake of a cooperative top level", received[:1] == [WAKE_UP], received)
         s.check("the durable attempt is recorded submitted and covered the warning",
                 wake is not None and wake["last_outcome"] == "submitted" and wake["last_warning_seq"] is not None, wake)
         still = self.pending_for(W, message)
@@ -792,7 +795,7 @@ class Suite:
             ("R01", "private Herdr host and test daemon", "isolated server/state; shared server never contacted", self.r01, ()),
             ("R02", "rename and reorder keep the seat", "pane/tab rename, tab and workspace reorder keep seat, target, generation, binding", self.r02, ("R01",)),
             ("R03", "CLI exit retains the seat", "plain CLI exit keeps the seat; a fresh check-in registers it", self.r03, ("R01",)),
-            ("R13", "cooperative idle wake: one prompt for the overdue warning", "shell never prompted; idle stand-in agent receives exactly one generic hint after the durable warning; prompt settles nothing", self.r13, ("R01",)),
+            ("R13", "cooperative idle wake: one prompt for the overdue warning", "shell never prompted; idle stand-in agent receives exactly one content-free wake after the durable warning; prompt settles nothing", self.r13, ("R01",)),
             ("R06", "daemon SIGKILL: deadlines never reset, one warning", "kill only the test daemon; ensure; deadline identical; exactly one overdue warning across restarts", self.r06, ("R01",)),
             ("R07", "missed events across daemon downtime recover by snapshot", "move+rename while no daemon runs; reconnect follows by snapshot", self.r07, ("R01",)),
             ("R04", "socket denial preserves unresolved state, then structural reconfirmation", "EACCES: unresolved not retired, receipts/deadlines kept; restored: reconfirmed without repair (crash fix3 real-host acceptance)", self.r04, ("R01",)),

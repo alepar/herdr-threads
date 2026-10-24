@@ -2148,6 +2148,18 @@ class WarningScenarioTests(ScenarioBase):
         self.assertEqual(status, demo.PASS, detail)
         self.assertIn("together with the pending receipt", detail)
 
+    def test_content_free_wake_counts_as_the_wake(self):
+        # ht-turnstart: a hook-registered Claude binding is woken with `herdr-threads: wake up`.
+        self.receipt(acked_at=9000, warning="w-1")
+        self.warn("w-1", 10)
+        self.driver.s_warning_event()
+        self.wake(10, receipt_seq=5)
+        (self.driver.ev / "pane-initial.txt").write_text(f"{demo.WAKE_MARKERS[1]}\n")
+        status, detail, _ = self.driver.s_warning_wake()
+        self.assertEqual(status, demo.PASS, detail)
+        (self.driver.ev / "pane-initial.txt").write_text(f"{demo.WAKE_MARKERS[1]}\n{demo.WAKE_MARKER}\n")
+        self.assertEqual(self.driver.s_warning_wake()[0], demo.FAIL, "one of each text is two wakes")
+
     def test_no_wake_is_unverified_not_pass(self):
         self.receipt(acked_at=9000, warning="w-1")
         self.warn("w-1", 10)

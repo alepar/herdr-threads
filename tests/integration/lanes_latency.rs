@@ -1238,14 +1238,16 @@ fn herdr_stopped_freezes_wake_lane() {
             submitted == SEATS as i64
         },
     );
-    // Each prompt's echo (the stand-in's binding is a `check-in` Claude claim, `cooperative_top_level`,
-    // so it is woken with the content-free text), then one full wake safety tick (and a fifth) more:
-    // a tick-driven re-prompt would land in it.
-    let echoes = |caller: &Caller| {
-        s.pane_text(&caller.pane)
-            .matches("HT-RECEIVED:herdr-threads: wake up")
-            .count()
+    // Each prompt's echo, in any wake text (the stand-in's `check-in` Claude claim is woken with the
+    // content-free one), then one full wake safety tick (and a fifth) more: a tick-driven re-prompt
+    // would land in it.
+    let prompts_in = |text: &str| {
+        herdr_threads::notification::policy::WAKE_TEXTS
+            .iter()
+            .map(|wake| text.matches(&format!("HT-RECEIVED:{wake}")).count())
+            .sum::<usize>()
     };
+    let echoes = |caller: &Caller| prompts_in(&s.pane_text(&caller.pane));
     wait_until(
         "every recipient's prompt echo",
         Duration::from_secs(15),
@@ -1261,7 +1263,7 @@ fn herdr_stopped_freezes_wake_lane() {
         let text = s.pane_text(&caller.pane);
         // The stand-in echoes each submitted line; an empty echo is only the
         // dispatcher's single submit-key retry, not another prompt.
-        let received = text.matches("HT-RECEIVED:herdr-threads: wake up").count();
+        let received = prompts_in(&text);
         assert_eq!(
             received, 1,
             "{} was prompted {received} times: {text}",

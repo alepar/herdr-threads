@@ -139,6 +139,7 @@ LOSTPROMPT_UNSUPPORTED_WAIT_S = 60
 # The native wake texts (src/notification/policy.rs WAKE_TEXTS): the inbox marker, or the content-free prompt a
 # hook-registered binding gets because its turn-start hook delivers (ht-turnstart).
 WAKE_MARKERS = ("herdr-threads: attention pending", "herdr-threads: wake up")
+WAKE_MARKER = WAKE_MARKERS[0]  # the inbox marker, as fixtures spell it
 
 
 def wake_marker_count(text):
