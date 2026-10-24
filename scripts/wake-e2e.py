@@ -470,6 +470,7 @@ class Stopped(Exception):
 class Run:
     def __init__(self, args):
         self.args = args
+        self.started = time.time()
         self.run_id = time.strftime("%H%M%S") + "-" + uuid.uuid4().hex[:4]
         self.root = Path(tempfile.mkdtemp(prefix="ht-wake-e2e.", dir=short_tmp_root()))
         os.chmod(self.root, 0o700)
@@ -1407,6 +1408,32 @@ class Recipient:
                 con.close()
         return rows
 
+    def admission_row(self, mid):
+        """Claude mod idle ACK (ht-admission-ack): the receipt's ACK observation names, as `row`, the transcript row
+        the engine stored for the append that carried `mid`, and that row is in this session's transcript. True,
+        or what was missing."""
+        observations = [json.loads(text) for table in ("receipt_state", "receipts") for (text,) in self.store_rows(
+            f"SELECT ack_observation FROM {table} WHERE message_id=? AND seat_id=? AND ack_observation IS NOT NULL",
+            (mid, self.seat))]
+        if not observations:
+            return "no ack observation"
+        obs = observations[0]
+        if obs.get("via") != "append":
+            return f"via {obs.get('via')}"
+        row = obs.get("row")
+        if not row:
+            return "no row"
+        cfg = self.run.claude_cfg if self.run.linux else Path(
+            self.run.args.claude_config_dir or Path.home() / ".claude")
+        needle = f'"uuid":"{row}"'
+        for path in (cfg / "projects").glob("*/*.jsonl"):
+            try:
+                if path.stat().st_mtime >= self.run.started and needle in path.read_text(errors="replace"):
+                    return True
+            except OSError:
+                continue
+        return f"row {row} not in a transcript"
+
     def bindings(self):
         keys = ("session", "provenance", "liveness", "pid", "disconnect")
         return [dict(zip(keys, row)) for row in self.store_rows(
@@ -1679,6 +1706,8 @@ class Recipient:
                         break
                     time.sleep(1)
                 checks["ack"] = status
+                if self.harness == "claude" and status == "acknowledged":
+                    checks["admission_row"] = self.admission_row(ref["message"])
         # The case owns the rest of the spacing window: a turn the recipient starts on its own in here (a follow-up
         # wake for an item this case left pending) fails this case, and spacing restarts after it, so the next case
         # is never measured against the 30 s guard of a wake it did not cause.

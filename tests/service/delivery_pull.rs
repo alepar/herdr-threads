@@ -9057,6 +9057,7 @@ impl OfferWindowFixture {
             let operation = OperationId::new(format!("{operation}-{n}"));
             let command = if mod_ack {
                 Command::AckModDelivered(AckModDelivered {
+                    row: None,
                     via: if lazy {
                         ModDeliveryVia::Append
                     } else {
@@ -9402,6 +9403,7 @@ fn presentation_reclamation_preserves_pending_truncated_and_reoffer_history() {
         .service
         .handle(
             Command::AckModDelivered(AckModDelivered {
+                row: None,
                 via: ModDeliveryVia::Context,
                 messages: vec![sent[0].clone()],
                 operation: OperationId::new("offer-window-truncated-refusal"),

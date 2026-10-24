@@ -1231,6 +1231,9 @@ enum WatchSub {
         session: String,
         #[arg(long, value_parser = ["context", "submit", "append"])]
         via: String,
+        /// The transcript row id the host stored for an `append` (admission evidence).
+        #[arg(long)]
+        row: Option<String>,
         #[arg(required = true)]
         ids: Vec<String>,
     },
@@ -3550,14 +3553,30 @@ fn parse_cli_in_registry(
             })
         }
         Top::Watch(args) => match (args.command, args.mod_harness, args.session) {
-            (Some(WatchSub::Ack { session, via, ids }), _, _) => {
+            (
+                Some(WatchSub::Ack {
+                    session,
+                    via,
+                    row,
+                    ids,
+                }),
+                _,
+                _,
+            ) => {
+                let via = match via.as_str() {
+                    "context" => crate::protocol::watch::ModDeliveryVia::Context,
+                    "submit" => crate::protocol::watch::ModDeliveryVia::Submit,
+                    _ => crate::protocol::watch::ModDeliveryVia::Append,
+                };
+                if !crate::protocol::commands::mod_ack_row_valid(via, row.as_deref()) {
+                    return Err(invalid(
+                        "watch ack --row needs --via append and 1-128 ASCII letters, digits, '-' or '_'",
+                    ));
+                }
                 CliAction::WatchAck(super::watch::WatchAckRequest {
                     session,
-                    via: match via.as_str() {
-                        "context" => crate::protocol::watch::ModDeliveryVia::Context,
-                        "submit" => crate::protocol::watch::ModDeliveryVia::Submit,
-                        _ => crate::protocol::watch::ModDeliveryVia::Append,
-                    },
+                    via,
+                    row,
                     messages: ids
                         .into_iter()
                         .map(|value| id(value, MessageId::parse))

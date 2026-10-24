@@ -103,6 +103,10 @@ pub const MOD_WATCH: &str = "mod.watch_v1";
 /// Advertise only with the complete registration, registry and lease handlers.
 pub const MOD_WATCH_PRESENTATION_V2: &str = "mod.watch_presentation_v2";
 
+/// `AckModDelivered.row`: the mod reports the transcript row id the host stored for an `append`,
+/// and the receipt's ACK observation records it as `row` (admission evidence, ht-admission-ack).
+pub const MOD_ACK_ROW_V1: &str = "mod.ack_row_v1";
+
 /// Hook-pull delivery (`protocol::delivery`, delivery-policy DP4). Defined by the
 /// ht-poh.3.1 seam; its handlers (`service::delivery_pull`) landed with L4.
 pub const DELIVERY_PULL: &str = "delivery.pull_v1";
@@ -152,6 +156,7 @@ pub const ADVERTISED: &[&str] = &[
     INBOX_BATCH_V2,
     MOD_WATCH,
     MOD_WATCH_PRESENTATION_V2,
+    MOD_ACK_ROW_V1,
     SEAT_WAKE_ON_V1,
     DELIVERY_PULL,
     LAZY_HOOK_DELIVERY,

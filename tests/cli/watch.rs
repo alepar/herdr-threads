@@ -53,6 +53,7 @@ fn parses_watch_ack_argv() {
         ])
         .unwrap(),
         CliAction::WatchAck(WatchAckRequest {
+            row: None,
             session: "sess-1".into(),
             via: ModDeliveryVia::Append,
             messages: vec![MessageId::new("m1"), MessageId::new("m2")],
@@ -560,6 +561,7 @@ fn unlocated_caller_exits_2_no_binding() {
     ])
     .unwrap();
     let ack = WatchAckRequest {
+        row: None,
         session: "s1".into(),
         via: ModDeliveryVia::Submit,
         messages: vec![MessageId::new("m1")],
@@ -2065,6 +2067,7 @@ fn unreachable_socket_exits_1_daemon_unavailable() {
 
 fn ack_request(ids: &[&str]) -> WatchAckRequest {
     WatchAckRequest {
+        row: None,
         session: "sess-1".into(),
         via: ModDeliveryVia::Context,
         messages: ids.iter().map(|id| MessageId::new(*id)).collect(),
@@ -2239,6 +2242,7 @@ fn many_ids(count: usize) -> Vec<String> {
 
 fn ack_request_for(ids: &[String]) -> WatchAckRequest {
     WatchAckRequest {
+        row: None,
         session: "sess-1".into(),
         via: ModDeliveryVia::Context,
         messages: ids.iter().map(|id| MessageId::new(id.as_str())).collect(),

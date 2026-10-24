@@ -1093,6 +1093,24 @@ pub struct AckModDelivered {
     pub messages: Vec<MessageId>,
     pub operation: OperationId,
     pub claim: CallerClaim,
+    /// The id of the transcript row the host stored for an `append` (`mod.ack_row_v1`): the
+    /// admission evidence recorded in the receipt's ACK observation. Only with `via = append`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<String>,
+}
+/// Longest `AckModDelivered.row` the daemon records.
+pub const MAX_MOD_ACK_ROW_BYTES: usize = 128;
+/// A row is an id the host chose: 1..=128 bytes of ASCII letters, digits, `-` and `_`, and it
+/// names an appended row, so it rides only with `via = append`.
+pub fn mod_ack_row_valid(via: crate::protocol::watch::ModDeliveryVia, row: Option<&str>) -> bool {
+    row.is_none_or(|row| {
+        via == crate::protocol::watch::ModDeliveryVia::Append
+            && !row.is_empty()
+            && row.len() <= MAX_MOD_ACK_ROW_BYTES
+            && row
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
 }
 fn has_duplicate<T: Ord>(ids: &[T]) -> bool {
     let mut seen = std::collections::BTreeSet::new();
@@ -1586,6 +1604,9 @@ impl Command {
                     || has_duplicate(&ack.messages) =>
             {
                 Err("invalid mod delivery ack batch")
+            }
+            Self::AckModDelivered(ack) if !mod_ack_row_valid(ack.via, ack.row.as_deref()) => {
+                Err("invalid mod delivery ack row")
             }
             Self::DeliveryPull(pull) => pull.validate(),
             Self::DeliveryPullV2(pull) => pull.validate(),

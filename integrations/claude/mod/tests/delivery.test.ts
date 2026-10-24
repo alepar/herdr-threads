@@ -695,6 +695,66 @@ test('lazy rows are appended at once, busy or idle, and acked via append', async
   expect(idle.submits.length).toBe(0)
 })
 
+test('an append acks with the stored row the engine returned, as admission evidence', async () => {
+  const stored = (uuid: string) => () => ({ message: { type: 'user', content: [] }, uuid })
+  // idle: the waking item's append row rides on its ack
+  const idle = await harness({ state: IDLE }).boot()
+  idle.appendResult = stored('6f1c2d3e-0000-4000-8000-00000000a001')
+  idle.line(msg('m1'))
+  await flush()
+  expect(idle.submits).toEqual([WAKE])
+  expect(idle.ackRuns()[0].slice(5)).toEqual(['--row', '6f1c2d3e-0000-4000-8000-00000000a001', '--via', 'append', 'm1'])
+  const delivered = idle.entries.find((e: Any) => e.kind === 'delivered')
+  expect(delivered.row).toBe('6f1c2d3e-0000-4000-8000-00000000a001')
+  expect(idle.core.snapshot().rec.rows).toEqual({})
+  // busy: a passive row's append row rides the same way
+  const busy = await harness({ state: busyState() }).boot()
+  busy.appendResult = stored('row-2')
+  busy.line(lazy('l1'))
+  await flush()
+  expect(busy.ackRuns()[0].slice(5)).toEqual(['--row', 'row-2', '--via', 'append', 'l1'])
+  // no uuid, or one that is not an id: settled as before, with no row
+  for (const result of [() => ({}), stored('not an id'), stored('')]) {
+    const h = await harness({ state: IDLE }).boot()
+    h.appendResult = result
+    h.line(msg('m1'))
+    await flush()
+    expect(h.ackRuns()[0].slice(5)).toEqual(['--via', 'append', 'm1'])
+    expect(h.entries.find((e: Any) => e.kind === 'delivered').row).toBeUndefined()
+  }
+})
+
+test('a retried append ack keeps its row, and only ids of one row share a call', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.appendResult = () => ({ message: { type: 'user', content: [] }, uuid: 'row-a' })
+  h.ackResult = () => ({ code: 1, stdout: '' })
+  h.line(msg('m1'))
+  await flush()
+  expect(h.core.snapshot().rec.rows).toEqual({ m1: 'row-a' })
+  expect(h.storeMap.get('delivered:s1').rows).toEqual({ m1: 'row-a' })
+  h.core.onTurnStart({ turnId: 't1' })
+  h.appendResult = () => ({ message: { type: 'user', content: [] }, uuid: 'row-b' })
+  h.line(lazy('l2'))
+  await flush()
+  h.core.onTurnComplete({ turnId: 't1' })
+  await flush()
+  h.exit(1)
+  await flush()
+  const before = h.ackRuns().length
+  h.ackResult = (argv: string[]) => {
+    const ids = argv.slice(argv.indexOf('--via') + 2)
+    return { code: 0, stdout: ids.map((id) => JSON.stringify({ id, result: 'settled' })).join('\n') }
+  }
+  await h.advance(1000)
+  await h.connect()
+  const reack = h.ackRuns().slice(before).map((r: string[]) => r.slice(5))
+  expect(reack).toContainEqual(['--row', 'row-a', '--via', 'append', 'm1'])
+  expect(reack).toContainEqual(['--row', 'row-b', '--via', 'append', 'l2'])
+  expect(reack.length).toBe(2)
+  expect(h.core.snapshot().rec.unacked).toEqual({})
+  expect(h.core.snapshot().rec.rows).toEqual({})
+})
+
 test('a message another binding already settled (ack_required false) is appended like a lazy row and never wakes an idle session', async () => {
   const idle = await harness({ state: IDLE }).boot()
   idle.line(msg('m1', { ack_required: false }))
@@ -1698,6 +1758,9 @@ async function capturedWatchEngine($: Any, on: Any, state = busyState('capture-t
   const submits: string[] = []
   const runs: string[][] = []
   let entries: Any[] = []
+  // The uuid of each row the engine stored for an append, and the `--row` each ack carried.
+  const storedRows: string[] = []
+  const ackRows: (string | null)[] = []
   let closed = false
   let ended = false
   let release: ((text: string | null) => void) | null = null
@@ -1714,7 +1777,9 @@ async function capturedWatchEngine($: Any, on: Any, state = busyState('capture-t
     expect(e.message.type).toBe('user')
     expect(e.message.content.map((block: Any) => block.type)).toEqual(['text'])
     appends.push(e.message.content[0].text)
-    return next(e)
+    const stored = await next(e)
+    storedRows.push(stored.uuid)
+    return stored
   })
   on('prompt.read', async () => ({ text: '' }) as Any)
   on('prompt.submit', async (_$: Any, e: Any) => {
@@ -1723,8 +1788,10 @@ async function capturedWatchEngine($: Any, on: Any, state = busyState('capture-t
   })
   on('ui.log', async () => ({ value: undefined }) as Any)
   on('process.run', async (_$: Any, e: Any) => {
-    const argv = e.argv
+    const row = e.argv[5] === '--row' ? e.argv[6] : null
+    const argv = row === null ? e.argv : [...e.argv.slice(0, 5), ...e.argv.slice(7)]
     runs.push(argv)
+    ackRows.push(row)
     // Refuse unexpected commands rather than silently treating acceptance or
     // another mutation as a successful receipt.
     expect(argv.slice(0, 5)).toEqual(['ht-captured-watch', 'watch', 'ack', '--session', 'capture-session'])
@@ -1750,7 +1817,7 @@ async function capturedWatchEngine($: Any, on: Any, state = busyState('capture-t
   })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   return {
-    appends, submits, runs,
+    appends, submits, runs, storedRows, ackRows,
     entries: () => entries,
     async feed(raw: string) {
       // Deliberately split one JSON line across process chunks. No capture byte
@@ -1793,6 +1860,10 @@ test('register consumes captured active Watch order through passive append and t
     expect(h.runs.map((argv) => [argv[6], ...argv.slice(7)])).toEqual([
       ['append', activationCapture.ids.lazy], ['context', activationCapture.ids.message],
     ])
+    // The append ack carries the row the engine stored for that append; the context ack none.
+    expect(h.storedRows.length).toBeGreaterThan(0)
+    expect(h.storedRows).toContain(h.ackRows[0])
+    expect(h.ackRows[1]).toBeNull()
     expect(h.submits).toEqual([])
     // Replay of the same captured page cannot duplicate passive rows or context.
     await h.feed(lines.slice(0, firstClear).map(({ raw }) => raw).join(''))

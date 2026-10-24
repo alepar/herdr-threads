@@ -283,6 +283,7 @@ fn capability_constants_are_stable() {
     assert_eq!(HOOK_CONTEXT_RECEIPTS_V1, "hook.context_receipts_v1");
     assert_eq!(DELIVERY_PRESENTATION_V2, "delivery.presentation_v2");
     assert_eq!(MOD_WATCH_PRESENTATION_V2, "mod.watch_presentation_v2");
+    assert_eq!(MOD_ACK_ROW_V1, "mod.ack_row_v1");
     assert_eq!(BINDING_CURSORS, "inbox.binding_cursors_v1");
     assert_eq!(BINDING_DIGEST, "attention.binding_digest_v1");
     assert_eq!(IN_TURN_OFFER, "inbox.in_turn_offer_v1");
@@ -317,6 +318,7 @@ fn capability_constants_are_stable() {
             "inbox.batch_v2",
             "mod.watch_v1",
             "mod.watch_presentation_v2",
+            "mod.ack_row_v1",
             "seat.wake_on_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
@@ -520,6 +522,16 @@ fn every_advertised_capability_has_a_handler() {
             }
             MOD_WATCH => probe_mod_watch(false),
             MOD_WATCH_PRESENTATION_V2 => probe_mod_watch(true),
+            MOD_ACK_ROW_V1 => {
+                // The row decodes into `AckModDelivered` and is validated; the store records it
+                // in the ACK observation (`tests/store/mod_ack.rs`).
+                let ack = |via: &str, row: &str| -> Command {
+                    serde_json::from_value(serde_json::json!({"kind":"ack_mod_delivered","args":{"via":via,"messages":["m1"],"operation":"op","row":row,"claim":{"instance":"34750f98bd59fcfc946da45aaabe933b","host":"/host.sock","seat":"nobody","binding_generation":1,"role":"top_level","harness":"claude","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap()
+                };
+                assert!(ack("append", "3f2a-row_1").validate().is_ok());
+                assert!(ack("context", "3f2a-row_1").validate().is_err());
+                assert!(ack("append", "no spaces").validate().is_err());
+            }
             DELIVERY_PRESENTATION_V2 => presentation_capability_routes_use_configured_domain(),
             DELIVERY_PULL => {
                 // The command decodes and routes to the domain service (served by
@@ -1064,6 +1076,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "inbox.batch_v2",
             "mod.watch_v1",
             "mod.watch_presentation_v2",
+            "mod.ack_row_v1",
             "seat.wake_on_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",

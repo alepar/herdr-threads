@@ -465,6 +465,12 @@ pub enum IdleWake {
 }
 /// Delivery declaration of one adapter; `Registry::new` validates the
 /// `(mechanism, provenance, idle_wake)` triple against the allowed pairings.
+///
+/// Admission: a delivery claim settles a receipt only on host evidence that the frame entered
+/// the session (a stored row, a model request carrying it), never on emission alone (a call
+/// that returned, a 2xx, a queue acceptance). An id the host gives for that evidence travels
+/// with the ACK and lands in the receipt's ACK observation (`AckModDelivered.row`). Per-host
+/// mapping: delivery-policy design DP12.
 pub trait DeliveryPolicy: Send + Sync + 'static {
     fn mechanism(&self) -> DeliveryMechanism;
     /// An A3 provenance constant.

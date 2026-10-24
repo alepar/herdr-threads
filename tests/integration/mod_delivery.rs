@@ -1125,7 +1125,19 @@ impl Rig {
         ids: &[&str],
         env: &[(&str, &str)],
     ) -> (i32, Vec<Value>) {
-        let mut args = vec!["watch", "ack", "--session", session, "--via", via];
+        self.ack_args(session, &["--via", via], ids, env)
+    }
+
+    /// `watch ack` with the given flags between `--session` and the ids.
+    fn ack_args(
+        &self,
+        session: &str,
+        flags: &[&str],
+        ids: &[&str],
+        env: &[(&str, &str)],
+    ) -> (i32, Vec<Value>) {
+        let mut args = vec!["watch", "ack", "--session", session];
+        args.extend_from_slice(flags);
         args.extend_from_slice(ids);
         let mut command = self.command(Some(PANE_B), &args);
         command.envs(env.iter().copied());
@@ -3479,6 +3491,44 @@ fn send_attention_drain_ack_settles_with_mod_delivery_provenance() {
             && log.contains("provenance=cooperative_mod_channel"),
         "{log}"
     );
+}
+
+/// ht-admission-ack: an `append` ack carries the row id the engine stored for the append, and
+/// the receipt's ACK observation records it as admission evidence. A row is refused with any
+/// other `via` (nothing settles), and an append ack without one settles as before.
+#[test]
+fn append_ack_records_the_stored_row_on_the_receipt() {
+    let rig = Rig::new();
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    let row = "6f1c2d3e-0000-4000-8000-00000000a001";
+    let id = rig.send_ordinary("admitted through an append");
+    watch.wait_item(&id);
+    let (code, lines) = rig.ack_args(SESSION_B, &["--row", row, "--via", "append"], &[&id], &[]);
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!(lines[0]["result"], "settled", "{lines:?}");
+    let observation = rig.ack_observation(&id);
+    assert_eq!(observation["action_provenance"], "cooperative_mod_delivery");
+    assert_eq!(observation["via"], "append");
+    assert_eq!(observation["row"], row);
+
+    let misplaced = rig.send_ordinary("a row on a context ack");
+    watch.wait_item(&misplaced);
+    let (code, lines) = rig.ack_args(
+        SESSION_B,
+        &["--row", row, "--via", "context"],
+        &[&misplaced],
+        &[],
+    );
+    assert_ne!(code, 0, "{lines:?}");
+    assert!(lines.is_empty(), "{lines:?}");
+    assert_eq!(rig.receipt_state(&misplaced), "pending");
+
+    let rowless = rig.ack_result(SESSION_B, "append", &misplaced);
+    assert_eq!(rowless["result"], "settled", "{rowless}");
+    let observation = rig.ack_observation(&misplaced);
+    assert_eq!(observation["via"], "append");
+    assert!(observation.get("row").is_none(), "{observation}");
 }
 
 /// ht-j16.20: `setup claude` hands the mod the hooks' invocation. The argv the

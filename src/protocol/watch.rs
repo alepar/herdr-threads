@@ -672,6 +672,9 @@ pub struct ModLedgerEntry {
     pub turn: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The engine's stored row for an append (`delivered`, `acked`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<String>,
 }
 
 #[cfg(test)]

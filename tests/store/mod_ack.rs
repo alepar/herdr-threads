@@ -136,6 +136,7 @@ fn claim() -> CallerClaim {
 }
 fn request(ids: &[&str]) -> AckModDelivered {
     AckModDelivered {
+        row: None,
         via: ModDeliveryVia::Context,
         messages: ids.iter().map(|id| MessageId::new(*id)).collect(),
         operation: OperationId::new("mod-ack-op"),
@@ -316,6 +317,50 @@ fn settles_pending_ordinary_with_mod_delivery_provenance() {
         )
         .unwrap();
     assert_eq!(event, 1, "one compact ack event per thread");
+}
+
+#[test]
+fn append_ack_records_the_host_row_in_the_observation() {
+    let (context, mut conn, _) = setup();
+    pending(&conn, "m1", 1, "hello");
+    pending(&conn, "m2", 2, "world");
+    let observation = |conn: &Connection, id: &str| -> serde_json::Value {
+        let text: String = conn
+            .query_row(
+                "SELECT ack_observation FROM receipts WHERE message_id=?1 AND seat_id='b'",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&text).unwrap()
+    };
+    let mut with_row = request(&["m1"]);
+    with_row.via = ModDeliveryVia::Append;
+    with_row.row = Some("6f1c2d3e-0000-4000-8000-00000000a001".into());
+    run(&context, &mut conn, &with_row).unwrap();
+    let recorded = observation(&conn, "m1");
+    assert_eq!(recorded["via"], "append");
+    assert_eq!(recorded["row"], "6f1c2d3e-0000-4000-8000-00000000a001");
+    assert_eq!(recorded["action_provenance"], "cooperative_mod_delivery");
+    // An append the host reported no row for settles as before, with no row evidence.
+    let mut without = request(&["m2"]);
+    without.via = ModDeliveryVia::Append;
+    without.operation = OperationId::new("mod-ack-op-2");
+    run(&context, &mut conn, &without).unwrap();
+    assert!(observation(&conn, "m2").get("row").is_none());
+    // The row is part of the operation digest; a row-less request keeps its old digest.
+    assert!(
+        receipts::ack_mod_delivered_payload(&without)
+            .get("row")
+            .is_none()
+    );
+    assert_ne!(
+        receipts::ack_mod_delivered_payload(&with_row),
+        receipts::ack_mod_delivered_payload(&AckModDelivered {
+            row: None,
+            ..with_row.clone()
+        })
+    );
 }
 
 #[test]

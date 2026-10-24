@@ -20,7 +20,8 @@ use crate::{
     protocol::{
         authority::CallerClaim,
         capabilities::{
-            BINDING_CURSORS, DELIVERY_PRESENTATION_V2, MOD_WATCH, MOD_WATCH_PRESENTATION_V2,
+            BINDING_CURSORS, DELIVERY_PRESENTATION_V2, MOD_ACK_ROW_V1, MOD_WATCH,
+            MOD_WATCH_PRESENTATION_V2,
         },
         commands::{AckModDelivered, Command, InboxQuery},
         ids::{MessageId, NativeSessionId, OperationId, SeatId},
@@ -59,6 +60,9 @@ pub struct WatchRequest {
 pub struct WatchAckRequest {
     pub session: String,
     pub via: ModDeliveryVia,
+    /// The host's stored transcript row for an `append`; sent only to a daemon with
+    /// `mod.ack_row_v1`, else dropped (the ACK settles as before, without row evidence).
+    pub row: Option<String>,
     pub messages: Vec<MessageId>,
 }
 
@@ -955,6 +959,10 @@ fn run_ack_lines(
         .collect();
     let mut failed_chunks = 0usize;
     let mut chunk_count = 0usize;
+    // An older daemon refuses the unknown field: it gets the row-less ACK it always got.
+    let row = request.row.as_ref().filter(|_| {
+        !remote.is_empty() && client.supports_capability(MOD_ACK_ROW_V1, &cooperative_budget(clock))
+    });
     for chunk in remote.chunks(crate::protocol::commands::MAX_BATCH_ITEMS) {
         chunk_count += 1;
         let result = client.call(
@@ -963,6 +971,7 @@ fn run_ack_lines(
                 messages: chunk.to_vec(),
                 operation: OperationId::new(uuid::Uuid::new_v4().to_string()),
                 claim: claim.clone(),
+                row: row.cloned(),
             }),
             &cooperative_budget(clock),
         );

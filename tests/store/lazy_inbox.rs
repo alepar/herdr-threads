@@ -1713,6 +1713,7 @@ fn lazy_inbox_wakes_follows_wake_on_and_mod_ack_completes_it() {
     .unwrap();
     let mutation =
         PermitMutation::AckModDelivered(herdr_threads::protocol::commands::AckModDelivered {
+            row: None,
             via: herdr_threads::protocol::watch::ModDeliveryVia::Submit,
             messages: vec![lazy.clone()],
             operation: OperationId::new("promoted-ack"),

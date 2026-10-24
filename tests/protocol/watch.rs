@@ -443,6 +443,7 @@ fn ledger_entry_round_trips() {
         via: Some(ModDeliveryVia::Submit),
         turn: Some("t".into()),
         reason: None,
+        row: None,
     };
     let value = serde_json::to_value(&entry).unwrap();
     assert_eq!(
@@ -555,6 +556,7 @@ fn trust_policy_records_mod_provenances_and_decision() {
 fn ack_mod_delivered_command_shape_and_validation() {
     let ack = |ids: Vec<&str>, role: CallerRole| {
         Command::AckModDelivered(AckModDelivered {
+            row: None,
             via: ModDeliveryVia::Context,
             messages: ids.into_iter().map(MessageId::new).collect(),
             operation: OperationId::new("op1"),

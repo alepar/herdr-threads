@@ -171,7 +171,12 @@ pub fn ack_displayed(
 }
 
 pub fn ack_mod_delivered_payload(request: &AckModDelivered) -> Value {
-    json!({"kind":"ack_mod_delivered","via":request.via,"messages":request.messages,"claim":request.claim})
+    let mut payload = json!({"kind":"ack_mod_delivered","via":request.via,"messages":request.messages,"claim":request.claim});
+    // Absent from a row-less request, so its digest is the one older clients computed.
+    if let Some(row) = &request.row {
+        payload["row"] = json!(row);
+    }
+    payload
 }
 
 /// Reads the stored facts of one requested id (spec D6) and lets the pure
@@ -224,6 +229,8 @@ pub struct AckPolicyDelivered<'a> {
     pub mechanism: DeliveryMechanism,
     pub provenance: &'static str,
     pub via: &'static str,
+    /// The host's stored transcript row for the delivery, when the mechanism reported one.
+    pub row: Option<&'a str>,
     pub messages: &'a [MessageId],
     pub operation: &'a OperationId,
     pub claim: &'a CallerClaim,
@@ -256,6 +263,7 @@ pub fn ack_mod_delivered(
                     policy.provenance()
                 }),
             via: request.via.as_str(),
+            row: request.row.as_deref(),
             messages: &request.messages,
             operation: &request.operation,
             claim: &request.claim,
@@ -289,6 +297,7 @@ pub fn delivery_confirm(
             mechanism: DeliveryMechanism::HookPull,
             provenance: COOPERATIVE_HOOK_DELIVERY_PROVENANCE,
             via: "transcript",
+            row: None,
             messages: &request.ids,
             operation: &request.operation,
             claim: &request.claim,
@@ -422,6 +431,9 @@ pub fn ack_policy_delivered(
                     .map_err(|_| api_error(ErrorCode::StoreCorrupt, "ACK observation malformed"))?;
             observation["action_provenance"] = json!(request.provenance);
             observation["via"] = json!(request.via);
+            if let Some(row) = request.row {
+                observation["row"] = json!(row);
+            }
             let skipped = settle_pending(
                 context,
                 tx,

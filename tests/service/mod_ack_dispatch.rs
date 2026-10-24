@@ -214,6 +214,7 @@ fn ack(
     operation: &str,
 ) -> Result<ModAckReport, crate::protocol::results::ApiError> {
     let command = Command::AckModDelivered(AckModDelivered {
+        row: None,
         via: ModDeliveryVia::Context,
         messages: ids.iter().map(|id| MessageId::new(*id)).collect(),
         operation: OperationId::new(operation),

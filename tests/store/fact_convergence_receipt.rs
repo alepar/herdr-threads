@@ -97,6 +97,7 @@ impl CompletionPath {
                 claim,
             }),
             Self::Mod => PermitMutation::AckModDelivered(AckModDelivered {
+                row: None,
                 via: ModDeliveryVia::Context,
                 messages: vec![id.clone()],
                 operation,

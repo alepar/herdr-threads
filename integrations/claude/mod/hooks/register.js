@@ -111,7 +111,11 @@ function appendBatch(items, argv) {
   return batch
 }
 
-const emptyRec = () => ({ delivered: {}, unacked: {}, attentionVersions: [], invitationVersions: {} })
+const emptyRec = () => ({ delivered: {}, unacked: {}, rows: {}, attentionVersions: [], invitationVersions: {} })
+
+// The id of the row the engine stored for an append (`{ message, uuid }`): the admission evidence the
+// ACK carries (`watch ack --row`). A result without one still settles, as before, with no row evidence.
+const rowOf = (r) => typeof r.uuid === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(r.uuid) ? r.uuid : null
 
 // Esc at a permission dialog (ht-j16.30, live stress D3): the engine ends that turn with a
 // non-aborted turn.complete, so the hold cannot key on isAborted alone. The exact tool.call
@@ -175,6 +179,7 @@ export function createCore(io) {
         via: fields.via ?? null,
         turn: fields.turn ?? turn,
         reason: fields.reason ?? null,
+        ...(fields.row ? { row: fields.row } : {}),
       })
     } catch {}
   }
@@ -399,8 +404,8 @@ export function createCore(io) {
     S.queue = S.queue.filter((q) => q.kind !== 'invitation' || q.inflight || newest.get(q.id) === q)
   }
 
-  /** Marks `items` delivered through `via`, then acks the ackable ones. */
-  function complete(items, via) {
+  /** Marks `items` delivered through `via` (an append's stored `row`, if any), then acks the ackable ones. */
+  function complete(items, via, row = null) {
     const ids = items.map((i) => i.id)
     for (const it of items) {
       // A successful whole append also settles an identical pending replay from a
@@ -423,12 +428,15 @@ export function createCore(io) {
         }
       } else {
         S.rec.delivered[it.id] = via
-        if (it.ackable) S.rec.unacked[it.id] = via
+        if (it.ackable) {
+          S.rec.unacked[it.id] = via
+          if (row) S.rec.rows[it.id] = row
+        }
       }
     }
     saveRec()
     S.lastHeld = ''
-    ledger('delivered', { ids, via })
+    ledger('delivered', { ids, via, row })
     if (via !== 'submit') {
       // Claude Code already prefixes mod log lines with the plugin name.
       try {
@@ -441,10 +449,10 @@ export function createCore(io) {
     return ackIds(ackable)
   }
 
-  function completeBatch(batch, via) {
+  function completeBatch(batch, via, row = null) {
     for (const item of batch.deferred) item.recoveryOffered = true
     if (!batch.length) return Promise.resolve()
-    return complete(batch, via)
+    return complete(batch, via, row)
   }
 
   function ackIds(ids) {
@@ -453,15 +461,17 @@ export function createCore(io) {
       const via = S.rec.unacked[id]
       if (via === undefined || S.acking.has(id)) continue
       S.acking.add(id)
-      ;(groups[via] ||= []).push(id)
+      const row = S.rec.rows[id] ?? null
+      const group = (groups[`${via}\n${row ?? ''}`] ||= { via, row, ids: [] })
+      group.ids.push(id)
     }
     const sid = S.sid
     const rec = S.rec
     const jobs = []
-    for (const via of Object.keys(groups)) {
-      for (let at = 0; at < groups[via].length; at += ACK_BATCH_MAX) {
-        const chunk = groups[via].slice(at, at + ACK_BATCH_MAX)
-        const job = S.ackChain.then(() => doAck(via, chunk, sid, rec))
+    for (const { via, row, ids: all } of Object.values(groups)) {
+      for (let at = 0; at < all.length; at += ACK_BATCH_MAX) {
+        const chunk = all.slice(at, at + ACK_BATCH_MAX)
+        const job = S.ackChain.then(() => doAck(via, row, chunk, sid, rec))
         S.ackChain = job.catch(() => {})
         jobs.push(job)
       }
@@ -469,11 +479,11 @@ export function createCore(io) {
     return Promise.all(jobs).then(() => {})
   }
 
-  async function doAck(via, ids, sid, rec) {
+  async function doAck(via, row, ids, sid, rec) {
     let code = 1
     let stdout = ''
     try {
-      const r = await io.run(cmd('watch', 'ack', '--session', sid, '--via', via, ...ids))
+      const r = await io.run(cmd('watch', 'ack', '--session', sid, ...(row ? ['--row', row] : []), '--via', via, ...ids))
       code = r.code
       stdout = r.stdout || ''
     } catch {}
@@ -492,9 +502,11 @@ export function createCore(io) {
       const result = code === 0 ? (byId[id] ?? 'retryable') : 'retryable'
       if (result === 'settled' || result === 'already_settled') {
         delete rec.unacked[id]
-        ledger('acked', { ids: [id], via, reason: result })
+        delete rec.rows[id]
+        ledger('acked', { ids: [id], via, row, reason: result })
       } else if (result === 'refused_terminal' || result === 'stale_generation') {
         delete rec.unacked[id]
+        delete rec.rows[id]
         if (result === 'stale_generation') delete rec.delivered[id]
         ledger('refused', { ids: [id], via, reason: `ack:${result}` })
       }
@@ -589,7 +601,7 @@ export function createCore(io) {
         return
       }
       // The append is the delivery: the items are settled by it, and the wake below only gives them a turn.
-      void completeBatch(batch, 'append')
+      void completeBatch(batch, 'append', rowOf(r))
       S.turns.wake = { sid: S.sid, at: io.now() }
       persistTurns()
       await S.stateChain
@@ -663,7 +675,7 @@ export function createCore(io) {
           ledger('refused', { ids, via: 'append', reason: `deny:${r.deny}` })
           return
         }
-        return completeBatch(batch, 'append')
+        return completeBatch(batch, 'append', rowOf(r))
       })
       .then(() => pumpLazy())
   }
