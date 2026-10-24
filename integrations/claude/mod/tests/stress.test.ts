@@ -40,7 +40,7 @@ function prng(seed: number) {
   }
 }
 
-const totals = { submits: 0, contexts: 0, appends: 0, acks: 0, drops: 0, holdBlocks: 0, reloads: 0, channelLost: 0, schedules: 0 }
+const totals = { submits: 0, contexts: 0, provisional: 0, appends: 0, acks: 0, drops: 0, holdBlocks: 0, reloads: 0, channelLost: 0, schedules: 0 }
 
 function runSchedule(seed: number) {
   const r = prng(seed)
@@ -64,7 +64,8 @@ function runSchedule(seed: number) {
     denyRate: r.pick([0, 0.3]),
   }
   // model of what the engine told the mod
-  const m: Any = { mainOpen: null as string | null, lingering: [] as string[], hold: false, holdSince: 0, rejected: false }
+  // provisional: `${sid}|${id}` keys attached to an errored main result, confirmed by the next main step
+  const m: Any = { mainOpen: null as string | null, lingering: [] as string[], hold: false, holdSince: 0, rejected: false, provisional: [] as string[] }
   const items = new Map<string, Any>() // streamed items by id
   const deliveredVia = new Map<string, string>() // `${sid}|${id}` -> via
   const settled = new Set<string>()
@@ -200,6 +201,7 @@ function runSchedule(seed: number) {
           if (id.startsWith('attention:')) continue
           const k = key(sid, id)
           if (deliveredVia.has(k)) fail(`${id} delivered twice in session ${sid}`)
+          if (e.via === 'context' && m.provisional.includes(k)) fail(`${id} recorded delivered via context before a main step read it`)
           deliveredVia.set(k, e.via)
         }
       }
@@ -274,6 +276,7 @@ function runSchedule(seed: number) {
       if (m.mainOpen !== null) m.lingering.push(m.mainOpen)
       m.mainOpen = id
       m.rejected = false
+      m.provisional = []
       core.onTurnStart({ turnId: id })
     }],
     [9, 'turn.complete', async () => {
@@ -295,10 +298,12 @@ function runSchedule(seed: number) {
         m.holdSince = world.t
       } else m.hold = false
       m.rejected = false
+      m.provisional = []
       core.onTurnComplete({ turnId: id, isAborted: aborted })
     }],
     [3, 'subagent turn', async () => {
       core.onTurnStart({ turnId: `sub${r.int(5)}`, agentId: 'a1' })
+      if (r.chance(0.5)) core.onTurnStep({ turnId: `sub${r.int(5)}`, index: r.int(4), agentId: 'a1' })
       if (r.chance(0.5)) core.onTurnComplete({ turnId: `sub${r.int(5)}`, agentId: 'a1', isAborted: r.chance(0.5) })
     }],
     [18, 'tool.call', async () => {
@@ -310,11 +315,21 @@ function runSchedule(seed: number) {
       if (!sub) m.rejected = kind !== 'answered'
       const out = await core.onToolCall(e, input)
       if (out !== input) {
-        if (sub || kind !== 'answered') fail(`context attached to a ${sub ? 'subagent' : kind} result`)
+        if (sub || kind === 'denied') fail(`context attached to a ${sub ? 'subagent' : kind} result`)
         const ctx = out.context[out.context.length - 1]
         totals.contexts++
         checkRun(idsOf(ctx))
-        for (const id of idsOf(ctx)) okVia.context.add(key(core.snapshot().sid, id))
+        const keys = idsOf(ctx).map((id) => key(core.snapshot().sid, id))
+        if (kind === 'answered') for (const k of keys) okVia.context.add(k)
+        else m.provisional.push(...keys)
+      }
+      // the loop's next request, which a user reject or an interrupt never makes
+      if (!sub && m.mainOpen !== null && r.chance(0.5)) {
+        await flush()
+        m.rejected = false
+        if (m.provisional.length) totals.provisional++
+        for (const k of m.provisional.splice(0)) okVia.context.add(k)
+        core.onTurnStep({ turnId: m.mainOpen, index: r.int(4) })
       }
     }],
     [5, 'box', async () => {
@@ -397,6 +412,7 @@ function runSchedule(seed: number) {
         }
         totals.reloads++
         m.rejected = false // the in-memory rejection flag does not survive a reload
+        m.provisional = []
         core.dispose()
         for (const release of world.pendingStates.splice(0)) release()
         await flush()
@@ -409,6 +425,7 @@ function runSchedule(seed: number) {
       const inflight = world.pendingSubmits.splice(0)
       totals.reloads++
       m.rejected = false // the in-memory rejection flag does not survive a reload
+      m.provisional = []
       core.dispose()
       // a dispose during the pre-submit write: the write lands afterwards
       for (const release of world.pendingStates.splice(0)) release()
@@ -430,6 +447,7 @@ function runSchedule(seed: number) {
     }],
     [2, 'session end', async () => {
       const reason = r.pick(['clear', 'resume', 'branch'])
+      m.provisional = []
       core.onSessionEnd(reason === 'branch' ? 'resume' : reason)
       if (reason !== 'resume') world.sid = `s${++world.sidN}`
       await advance(0)
@@ -496,6 +514,7 @@ test('randomized stress: no submit during a turn or hold, ids delivered and acke
   // the schedules must have exercised every path, or the invariants were vacuous
   expect(totals.submits).toBeGreaterThan(300)
   expect(totals.contexts).toBeGreaterThan(300)
+  expect(totals.provisional).toBeGreaterThan(50)
   expect(totals.appends).toBeGreaterThan(100)
   expect(totals.acks).toBeGreaterThan(300)
   expect(totals.drops).toBeGreaterThan(50)

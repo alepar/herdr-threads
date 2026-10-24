@@ -127,10 +127,10 @@ const loadRec = (rec) => {
 }
 
 // Esc at a permission dialog (ht-j16.30, live stress D3): the engine ends that turn with a
-// non-aborted turn.complete, so the hold cannot key on isAborted alone. The exact tool.call
-// result shape for a user reject could not be read out of the 2.1.295 binary, so this is the
-// fallback heuristic: any main tool result that is not an answer (a deny, or isError) counts.
-// It is judged on the last main tool call of the turn only.
+// non-aborted turn.complete, so the hold cannot key on isAborted alone. On 2.1.309 a user
+// reject and an ordinary failing tool reach tool.call alike (isError, no deny); only what
+// follows differs: a failing tool is followed by a main turn.step, a reject by turn.complete
+// (ht-mod-busy probe). So an unanswered last main result counts only if no main step followed.
 const userRejected = (r) => !!r && (r.deny !== undefined || r.isError === true)
 
 export function createCore(io) {
@@ -144,6 +144,9 @@ export function createCore(io) {
     sawStart: false,
     turnRejected: false,
     queue: [],
+    // Batches attached to an isError main result: settled by the next main turn.step, released
+    // by a main turn boundary first (a user reject ends the turn and its context is never read).
+    provisional: [],
     submitInflight: false,
     appendInflight: false,
     submitBackoffUntil: 0,
@@ -815,8 +818,32 @@ export function createCore(io) {
     return true
   }
 
+  /** A main step began: any context attached to an errored result rides its request. */
+  function onTurnStep(e) {
+    if (S.inert || !e || e.agentId) return
+    S.turnRejected = false
+    const batches = S.provisional
+    S.provisional = []
+    for (const batch of batches) {
+      for (const it of batch) it.inflight = false
+      void completeBatch(batch, 'context')
+    }
+  }
+
+  /** No main step followed an errored result's context: it was never read, so its items are pending again. */
+  function releaseProvisional() {
+    const batches = S.provisional
+    S.provisional = []
+    for (const batch of batches) {
+      releaseBatch(batch)
+      const left = discardStale(batch, 'no_step')
+      if (left.length) ledger('refused', { ids: left.map((i) => i.id), via: 'context', reason: 'no_step' })
+    }
+  }
+
   function onTurnStart(e) {
     if (S.inert || !e || e.agentId) return
+    releaseProvisional()
     S.sawStart = true
     S.turnRejected = false
     S.turns.open = [e.turnId]
@@ -838,6 +865,7 @@ export function createCore(io) {
 
   function onTurnComplete(e) {
     if (S.inert || !e || e.agentId) return
+    releaseProvisional()
     if (S.pred && (!S.pred.sawStart || S.pred.turnId === e.turnId)) {
       // rule (b) claims a delivery only for a submit that was issued (ht-j16.31)
       if (S.pred.issued) settlePred('turn_complete')
@@ -859,11 +887,18 @@ export function createCore(io) {
     if (!busy()) return result
     const answered =
       result && result.result !== undefined && result.deny === undefined && result.isError !== true
-    if (!answered || !S.live) return result
+    // An errored result carries context too (a deny cannot), but it is settled only by the next main step.
+    const errored = !!result && result.isError === true && result.deny === undefined
+    if (!(answered || errored) || !S.live) return result
     const batch = appendBatch(batchOrder(S.queue.filter((q) => !passive(q) && !q.inflight && !q.recoveryOffered && q.run === S.run && !predHas(q.id))), cmd())
     if (!batch.text) return result
     const output = { ...result, context: [...(result.context ?? []), batch.text] }
-    void completeBatch(batch, 'context')
+    if (answered) {
+      void completeBatch(batch, 'context')
+    } else {
+      for (const it of batch) it.inflight = true
+      S.provisional.push(batch)
+    }
     return output
   }
 
@@ -873,6 +908,7 @@ export function createCore(io) {
     S.gen++
     S.submitInflight = false
     S.appendInflight = false
+    S.provisional = []
     for (const it of S.queue) it.inflight = false
     dropQueued(`session_end:${reason}`)
     S.stopped = false
@@ -953,6 +989,7 @@ export function createCore(io) {
   return {
     onLoad,
     onTurnStart,
+    onTurnStep,
     onTurnComplete,
     onToolCall,
     onLine,
@@ -1112,6 +1149,13 @@ export const register = (on) => {
   on('turn.start', async ($, e, next) => {
     if (core) core.onTurnStart(e)
     return next(e)
+  })
+
+  on('turn.step', async function* ($, e, next) {
+    try {
+      if (core) core.onTurnStep(e)
+    } catch {}
+    return yield* next(e)
   })
 
   on('turn.complete', async ($, e, next) => {

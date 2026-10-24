@@ -23,6 +23,8 @@ so no wake prompt may be typed during or after that turn, and the item must arri
 A woken recipient with hooks must also make no `inbox` call for a single-item send (no_extra_inbox): the hook or
 channel already delivered it, so the skill's bare-wake rule must not fire (Delivery contract rule 3). This check
 depends on model behaviour; the row records the count (inbox_calls) and calls-<recipient>.txt the logged calls.
+busy-fail-send-ack/group (Claude only) makes the busy turn's last tool fail: the ACK request must still arrive and be
+acknowledged inside that turn, with no wake after it.
 
 Isolation: an isolated daemon and state dir (driven by --bin, default the repo's bin/herdr-threads), owned hooks
 installed by the public `setup` CLI into scratch HOME / CLAUDE_CONFIG_DIR / CODEX_HOME copies, one owned Herdr
@@ -97,7 +99,10 @@ EXIT_OK, EXIT_FAIL, EXIT_REFUSED = 0, 1, 2
 CASES = ("invite/group", "pair-open/1:1", "send-p1/group", "send-p0/group", "send-p3/group", "send-ack/group",
          "send-p1/1:1", "send-p0/1:1", "send-p3/1:1", "send-ack/1:1", "mixed-order/group",
          "busy-invite/group", "busy-invite/1:1", "busy-send-p1/group", "busy-send-p0/group", "busy-send-ack/group",
-         "busy-send-p1/1:1", "busy-send-p0/1:1", "busy-send-ack/1:1")
+         "busy-send-p1/1:1", "busy-send-p0/1:1", "busy-send-ack/1:1", "busy-fail-send-ack/group")
+# Claude only: the busy turn's last tool fails, and the item must still arrive (and be ACKed) inside the turn. The
+# mod's context rides an errored tool result and is settled by the next model request (ht-mod-busy).
+CLAUDE_CASES = ("busy-fail-send-ack/group",)
 # Recipient nudge thresholds: 0 (the default), -1 (negative: every item wakes), 3.
 THRESHOLDS = (0, -1, 3)
 # Priority of each action's item. Invitations and ACK requests are always p0; pair-open is the first direct send of a
@@ -152,6 +157,9 @@ PLAIN_HINT = (" Your herdr-threads hooks are off: always run herdr-threads by th
 # the turn or after it, and the item must arrive in that turn at the next tool boundary (Delivery contract rules 3-4).
 BUSY_PROMPT = ("Busy-turn test {tag}: run the shell command `{hold}`, then run the shell command `sleep 1`, then "
                "handle any herdr-threads items exactly as your standing instructions say, and finally print BUSY-DONE.")
+# The `sleep 2` keeps the failing tool running until the item has reached the mod (as `sleep 1` does in BUSY_PROMPT).
+BUSY_FAIL_PROMPT = ("Busy-turn test {tag}: run the shell command `{hold}; sleep 2; exit 3` (it fails on purpose), then run no "
+                    "other tool: name the id of every herdr-threads item you received, and finally print BUSY-DONE.")
 BUSY_AFTER_S = 40.0
 # The busy turn's native end: a line of the agent's output that is BUSY-DONE apart from bullets, markup or a final
 # period. It is searched only after the prompt's own "BUSY-DONE." so a wrapped prompt line never matches.
@@ -1460,6 +1468,9 @@ class Recipient:
     # ---------- busy cases ----------
     def busy_case(self, case):
         action, channel = case.split("/")
+        fail = action.startswith("busy-fail-")
+        if fail:
+            action = "busy-" + action[len("busy-fail-"):]
         kind = "invite" if action == "busy-invite" else action.split("-", 2)[2]  # invite | p1 | p0 | ack
         gap = SPACING_S - (time.time() - self.last_wake)
         if gap > 0:
@@ -1467,7 +1478,8 @@ class Recipient:
         self.wait_idle()
         tag = f"{case} {self.run.run_id}"
         with BusyBarrier(self.run.root) as hold:
-            self.run.herdr("agent", "prompt", self.pane, BUSY_PROMPT.format(tag=tag, hold=hold.command()))
+            prompt = BUSY_FAIL_PROMPT if fail else BUSY_PROMPT
+            self.run.herdr("agent", "prompt", self.pane, prompt.format(tag=tag, hold=hold.command()))
             hold.wait_entered()
             busy_at_send = self.status()
             checks = {"busy_at_send": busy_at_send}
@@ -2189,7 +2201,8 @@ Run.record = record
 
 def applies(recipient, case):
     """Side cases run on Codex recipients only; the plain-hooks Codex runs nothing else. Hooks cases run only on the
-    hooks-only Claude, which runs nothing else. End-of-turn cases run on hooked Codex recipients."""
+    hooks-only Claude, which runs nothing else. End-of-turn cases run on hooked Codex recipients; Claude cases on the
+    mod Claude recipients."""
     if case in SIDE_CASES:
         return recipient.harness == "codex"
     if getattr(recipient, "hooks_only", False) or case in HOOKS_CASES:
@@ -2198,6 +2211,8 @@ def applies(recipient, case):
         return recipient.harness == "codex" and not getattr(recipient, "plain", False)
     if case in WAKE_BLOCK_CASES:
         return recipient.harness == "codex" and recipient.threshold == 0 and not getattr(recipient, "plain", False)
+    if case in CLAUDE_CASES:
+        return recipient.harness == "claude"
     return not getattr(recipient, "plain", False)
 
 

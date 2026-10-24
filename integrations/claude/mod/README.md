@@ -103,8 +103,12 @@ builds `io` from `$`. Rules (spec D5, D6):
 - **Busy.** The open main turn ids live in `$.state` (events with `agentId` are ignored). A
   `turn.start` replaces the open set; a `turn.complete` removes its id and any older one.
 - **Routing.** `message` and `attention` while busy ride the next main `tool.call` result as
-  `context`, only when that result is the answered variant (a deny, an error or a subagent call
-  leaves them queued). While idle (R18) they are appended as one batched `$.session.append` (hidden
+  `context` (a deny or a subagent call leaves them queued). On an answered result they are settled
+  at once. An errored result (`isError`: a failing tool, a hook deny, and also a user reject at a
+  permission dialog, which Claude Code reports the same way) carries them too, but they are settled
+  only when the next main `turn.step` (model request) begins. If the main turn completes or a new
+  one starts first, the context was never read: the items are pending again (ledger `refused` via
+  `context`, reason `no_step`) and go out once by the paths below. While idle (R18) they are appended as one batched `$.session.append` (hidden
   rows, no turn), settled by that append (`watch ack --via append`), and then the content-free wake prompt
   `wake up` is submitted (Claude Code labels it as a message from the herdr-threads plugin) with `$.prompt.submit`; the turn it starts sees the rows. The
   append is awaited before the submit, so the order is append, then submit. A denied append submits no wake
@@ -117,8 +121,8 @@ builds `io` from `$`. Rules (spec D5, D6):
   `watch` reports that nothing it pointed at is still pending: an accepted invitation, or notices a check-in
   offered. One already submitted or attached is not recalled.
 - **Idle-submit gates.** (1) After a main turn that was interrupted (an aborted `turn.complete`, `reason` `aborted`, or a
-  turn whose last main `tool.call` ended in a deny or an error, which is how Esc at a permission
-  dialog shows) submits are held until a later
+  turn whose last main `tool.call` ended in a deny or an error with no main `turn.step` after it,
+  which is how Esc at a permission dialog shows; a failing tool the model answered after holds nothing) submits are held until a later
   non-aborted main turn completes, or 120 s pass with no open turn and an empty prompt box
   (this overrides the draft rule). (2) A non-empty prompt box holds a submit up to 120 s. (3) One
   append-then-wake in flight. A wake `drop` keeps the pending wake only (the items are already settled), ledgers `refused` with reason `wake_drop:<why>` and backs off 30 s; the wake submit itself ledgers `submit` with no ids and reason `wake`.

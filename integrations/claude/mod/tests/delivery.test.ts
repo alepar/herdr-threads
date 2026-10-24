@@ -355,13 +355,11 @@ test('recorded state survives a reload: idle state is not assumed busy, an open 
   expect(r.context.length).toBe(1)
 })
 
-test('context attaches only to an answered main tool result', async () => {
+test('context never attaches to a denied or subagent tool result', async () => {
   const h = await harness({ state: busyState() }).boot()
   h.line(msg('m1'))
   const denied = { deny: 'no' }
   expect(await h.core.onToolCall({ tool: 'Bash' }, denied)).toBe(denied)
-  const errored = { isError: true, text: 'boom' }
-  expect(await h.core.onToolCall({ tool: 'Bash' }, errored)).toBe(errored)
   expect(await h.core.onToolCall({ tool: 'Bash', agentId: 'sub1' }, answered)).toBe(answered)
   expect(h.ackRuns().length).toBe(0)
   const r = await h.core.onToolCall({ tool: 'Bash' }, { ...answered, context: ['earlier'] })
@@ -506,18 +504,25 @@ test('Esc at a permission dialog holds the idle submit like an aborted turn', as
   h.core.onTurnStart({ turnId: 't1' })
   h.line(msg('m1'))
   await flush()
+  // the reject reaches tool.call like any errored result, so it carries the item for now
   const out = await h.core.onToolCall({ tool: 'Bash' }, REJECTED)
-  expect(out).toBe(REJECTED)
+  expect(out.context[0]).toContain('body of m1')
+  // no main step follows: the turn ended at the reject and its context is never read
   h.core.onTurnComplete({ turnId: 't1', isAborted: false, reason: 'answer', answer: '' })
   await flush()
   expect(h.submits.length).toBe(0)
   expect(h.entries.some((e: Any) => e.kind === 'held' && e.reason === 'post_abort')).toBe(true)
+  expect(h.entries.some((e: Any) => e.kind === 'refused' && e.via === 'context' && e.reason === 'no_step')).toBe(true)
+  expect(h.core.snapshot().queue).toEqual(['m1'])
+  expect(h.core.snapshot().rec.delivered.m1).toBeUndefined()
   await h.advance(60_000)
   expect(h.submits.length).toBe(0)
   h.core.onTurnStart({ turnId: 't2' })
   h.core.onTurnComplete({ turnId: 't2', isAborted: false })
   await flush()
   expect(h.submits.length).toBe(1)
+  expect(h.appends[0]).toContain('body of m1')
+  expect(h.ackRuns().map((r: string[]) => r.slice(5))).toEqual([['--via', 'append', 'm1']])
 })
 
 test('a rejected tool call followed by an answered one in the same turn sets no hold', async () => {
@@ -526,6 +531,7 @@ test('a rejected tool call followed by an answered one in the same turn sets no 
   h.line(msg('m1'))
   await flush()
   await h.core.onToolCall({ tool: 'Bash' }, REJECTED)
+  h.core.onTurnStep({ turnId: 't1', index: 1 })
   await h.core.onToolCall({ tool: 'Bash' }, answered)
   h.core.onTurnComplete({ turnId: 't1', isAborted: false, reason: 'answer' })
   await flush()
@@ -568,6 +574,79 @@ test('the rejected flag does not leak into the next turn', async () => {
   h.line(msg('m1'))
   await flush()
   expect(h.submits.length).toBe(1)
+})
+
+// An ordinary failing tool reaches tool.call as { isError: true } with no deny, as a user reject does
+// (live probe on Claude Code 2.1.309, ht-mod-busy); only a following main turn.step tells them apart.
+const FAILED = { isError: true, result: 'Error: Exit code 1', text: 'Error: Exit code 1' }
+
+test('an errored main result carries waking items, settled once by the next main step', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(msg('m1'))
+  h.line(attention(3))
+  const out = await h.core.onToolCall({ tool: 'Bash' }, { ...FAILED, context: ['earlier'] })
+  expect(out.isError).toBe(true)
+  expect(out.text).toBe(FAILED.text)
+  expect(out.context[0]).toBe('earlier')
+  expect(out.context[1]).toContain('message m1 in T1 "plans" from S1 "alice":')
+  expect(out.context[1]).toContain('attention marker 3')
+  await flush()
+  // attached, not yet read: no record, no ACK, and no second copy on the next result
+  expect(h.ackRuns()).toEqual([])
+  expect(h.core.snapshot().rec.delivered.m1).toBeUndefined()
+  expect(h.kinds()).not.toContain('delivered')
+  expect(await h.core.onToolCall({ tool: 'Bash' }, FAILED)).toBe(FAILED)
+  h.core.onTurnStep({ turnId: 't1', index: 1, agentId: 'sub1' })
+  await flush()
+  expect(h.ackRuns()).toEqual([])
+  h.core.onTurnStep({ turnId: 't1', index: 1 })
+  await flush()
+  expect(h.core.snapshot().rec.delivered.m1).toBe('context')
+  expect(h.ackRuns()).toEqual([['herdr-threads', 'watch', 'ack', '--session', 's1', '--via', 'context', 'm1']])
+  expect(h.core.snapshot().queue).toEqual([])
+  expect(await h.core.onToolCall({ tool: 'Bash' }, answered)).toBe(answered)
+  h.core.onTurnComplete({ turnId: 't1' })
+  await flush()
+  expect(h.appends).toEqual([])
+  expect(h.submits).toEqual([])
+})
+
+test('a failing last tool call followed by the final answer sets no hold', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.core.onTurnStart({ turnId: 't1' })
+  await h.core.onToolCall({ tool: 'Bash' }, FAILED)
+  h.core.onTurnStep({ turnId: 't1', index: 1 })
+  h.core.onTurnComplete({ turnId: 't1', isAborted: false, reason: 'answer' })
+  await flush()
+  expect(h.core.snapshot().turns.abortHoldSince).toBe(null)
+  h.line(msg('m1'))
+  await flush()
+  expect(h.submits).toEqual([WAKE])
+})
+
+test('errored-result context still unread at the next main turn.start is pending again', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(msg('m1'))
+  expect((await h.core.onToolCall({ tool: 'Bash' }, FAILED)).context.length).toBe(1)
+  // the turn.complete was lost; the new turn did not read the old turn's lost context
+  h.core.onTurnStart({ turnId: 't2' })
+  await flush()
+  expect(h.core.snapshot().queue).toEqual(['m1'])
+  const r = await h.core.onToolCall({ tool: 'Bash' }, answered)
+  expect(r.context[0]).toContain('body of m1')
+  await flush()
+  expect(h.ackRuns().map((x: string[]) => x.slice(5))).toEqual([['--via', 'context', 'm1']])
+})
+
+test('a session end forgets errored-result context; a later step settles nothing', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(msg('m1'))
+  await h.core.onToolCall({ tool: 'Bash' }, FAILED)
+  h.core.onSessionEnd('resume')
+  h.core.onTurnStep({ turnId: 't1', index: 1 })
+  await flush()
+  expect(h.ackRuns()).toEqual([])
+  expect(h.core.snapshot().rec.delivered.m1).toBeUndefined()
 })
 
 test('a draft in the prompt box delays an idle submit up to 120 s, then it submits', async () => {
@@ -1795,7 +1874,7 @@ function capturedWatchLines() {
   return parsed
 }
 
-async function capturedWatchEngine($: Any, on: Any, state = busyState('capture-turn')) {
+async function capturedWatchEngine($: Any, on: Any, state = busyState('capture-turn'), toolResult: Any = { ...answered, context: ['existing tool context'] }) {
   mock.clock(on, { now: 5_000 })
   mock.store(on)
   mock.env(on, { HERDR_THREADS_MOD_LEDGER: '/ledger/capture.jsonl', HERDR_THREADS_BIN: 'ht-captured-watch' })
@@ -1845,7 +1924,10 @@ async function capturedWatchEngine($: Any, on: Any, state = busyState('capture-t
     // ACK IDs/via and ledger handling, not an actual daemon receipt transition.
     return { value: { exitCode: 0, stdout: argv.slice(7).map((id: string) => JSON.stringify({ id, result: 'settled' })).join('\n'), stderr: '' } } as Any
   })
-  on('tool.call', async () => ({ ...answered, context: ['existing tool context'] }) as Any)
+  on('tool.call', async () => toolResult as Any)
+  on('turn.step', async function* (_$: Any, e: Any) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null } as Any
+  })
   on('process.spawn', async function* (_$: Any, e: Any) {
     expect(e.argv).toEqual(['ht-captured-watch', 'watch', '--harness', 'claude', '--session', 'capture-session'])
     try {
@@ -1916,6 +1998,30 @@ test('register consumes captured active Watch order through passive append and t
     expect(again.context).toEqual(['existing tool context'])
     expect(h.appends.flatMap(captureHeaders)).toEqual(activationCapture.passiveHeaders)
     expect(h.runs.length).toBe(2)
+  } finally {
+    await h.stop()
+  }
+})
+
+test('register settles captured tool context on an errored result only when the next main step starts', async ($, on) => {
+  const lines = capturedWatchLines()
+  const h = await capturedWatchEngine($, on, busyState('capture-turn'), { ...FAILED, context: ['existing tool context'] })
+  try {
+    const firstClear = lines.findIndex(({ item }) => item.kind === 'attention_cleared')
+    await h.feed(lines.slice(0, firstClear).map(({ raw }) => raw).join(''))
+    await engineEventually(() => h.entries().filter((entry) => entry.kind === 'delivered' && entry.via === 'append').flatMap((entry) => entry.ids).length === 3)
+    const result = await $.tool.call({ tool: 'Bash', command: 'false' })
+    expect(result.isError).toBe(true)
+    expect(result.context[0]).toBe('existing tool context')
+    expect(captureHeaders(result.context[1])).toEqual(activationCapture.activeHeaders)
+    await flush()
+    expect(h.runs.map((argv) => argv[6])).toEqual(['append'])
+    for await (const _chunk of $.turn.step({ turnId: 'capture-turn', index: 1, model: 'test', messageCount: 3 })) void _chunk
+    await engineEventually(() => h.entries().some((entry) => entry.kind === 'acked' && entry.ids.includes(activationCapture.ids.message)))
+    expect(h.runs.map((argv) => [argv[6], ...argv.slice(7)])).toEqual([
+      ['append', activationCapture.ids.lazy], ['context', activationCapture.ids.message],
+    ])
+    expect(h.submits).toEqual([])
   } finally {
     await h.stop()
   }
