@@ -470,7 +470,6 @@ class Stopped(Exception):
 class Run:
     def __init__(self, args):
         self.args = args
-        self.started = time.time()
         self.run_id = time.strftime("%H%M%S") + "-" + uuid.uuid4().hex[:4]
         self.root = Path(tempfile.mkdtemp(prefix="ht-wake-e2e.", dir=short_tmp_root()))
         os.chmod(self.root, 0o700)
@@ -1055,6 +1054,33 @@ def wake_count(text):
     return sum(is_wake_line(line) for line in text.splitlines())
 
 
+def admission_observation(observations):
+    """The ACK observation to judge: one that carries a `row` if any does, else the first, else None."""
+    return next((o for o in observations if o.get("row")), observations[0] if observations else None)
+
+
+def transcript_has_row(cfg, sessions, row):
+    """True when one of `sessions`' own transcripts (`<cfg>/projects/*/<session>.jsonl`) holds an entry whose
+    `uuid` is `row`; else what was missing. Reads only those files, one JSON line at a time."""
+    paths = [path for session in sessions for path in (Path(cfg) / "projects").glob(f"*/{session}.jsonl")]
+    if not paths:
+        return "no transcript for the recipient's session"
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as lines:
+                for line in lines:
+                    if row not in line:
+                        continue
+                    try:
+                        if json.loads(line).get("uuid") == row:
+                            return True
+                    except (ValueError, AttributeError):
+                        continue
+        except OSError:
+            continue
+    return f"row {row} not in the recipient's transcript"
+
+
 class Recipient:
     def __init__(self, run, name, harness, threshold, pane, seat, plain=False, hooks_only=False):
         self.run, self.name, self.harness, self.threshold, self.pane, self.seat = run, name, harness, threshold, pane, seat
@@ -1408,31 +1434,30 @@ class Recipient:
                 con.close()
         return rows
 
-    def admission_row(self, mid):
+    def admission_row(self, mid, timeout=5.0):
         """Claude mod idle ACK (ht-admission-ack): the receipt's ACK observation names, as `row`, the transcript row
-        the engine stored for the append that carried `mid`, and that row is in this session's transcript. True,
-        or what was missing."""
+        the engine stored for the append that carried `mid`, and that row is in this recipient's own session
+        transcript. Polls briefly: nothing orders the engine's transcript write before the ACK. True, or what was
+        missing."""
         observations = [json.loads(text) for table in ("receipt_state", "receipts") for (text,) in self.store_rows(
             f"SELECT ack_observation FROM {table} WHERE message_id=? AND seat_id=? AND ack_observation IS NOT NULL",
             (mid, self.seat))]
-        if not observations:
+        obs = admission_observation(observations)
+        if obs is None:
             return "no ack observation"
-        obs = observations[0]
         if obs.get("via") != "append":
             return f"via {obs.get('via')}"
-        row = obs.get("row")
-        if not row:
+        if not obs.get("row"):
             return "no row"
         cfg = self.run.claude_cfg if self.run.linux else Path(
             self.run.args.claude_config_dir or Path.home() / ".claude")
-        needle = f'"uuid":"{row}"'
-        for path in (cfg / "projects").glob("*/*.jsonl"):
-            try:
-                if path.stat().st_mtime >= self.run.started and needle in path.read_text(errors="replace"):
-                    return True
-            except OSError:
-                continue
-        return f"row {row} not in a transcript"
+        sessions = {b["session"] for b in self.bindings() if b["session"]}
+        deadline = time.time() + timeout
+        while True:
+            found = transcript_has_row(cfg, sessions, obs["row"])
+            if found is True or time.time() >= deadline:
+                return found
+            time.sleep(0.25)
 
     def bindings(self):
         keys = ("session", "provenance", "liveness", "pid", "disconnect")

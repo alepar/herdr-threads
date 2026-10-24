@@ -3569,9 +3569,10 @@ fn parse_cli_in_registry(
                     _ => crate::protocol::watch::ModDeliveryVia::Append,
                 };
                 if !crate::protocol::commands::mod_ack_row_valid(via, row.as_deref()) {
-                    return Err(invalid(
-                        "watch ack --row needs --via append and 1-128 ASCII letters, digits, '-' or '_'",
-                    ));
+                    return Err(invalid(format!(
+                        "watch ack --row needs --via append and 1-{} ASCII letters, digits, '-' or '_'",
+                        crate::protocol::commands::MAX_MOD_ACK_ROW_BYTES
+                    )));
                 }
                 CliAction::WatchAck(super::watch::WatchAckRequest {
                     session,

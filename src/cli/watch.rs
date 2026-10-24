@@ -357,6 +357,26 @@ enum Probe {
     Failed,
 }
 
+/// Whether the daemon advertises `name`; `None` when the call failed, which `supports_capability`
+/// would read as "no capabilities".
+fn probe_capability(client: &dyn LocalClient, name: &str, clock: &dyn Clock) -> Option<bool> {
+    match client.call_definitive(Command::Capabilities, &cooperative_budget(clock)) {
+        Ok(Ok(CommandResult::Capabilities(list))) => {
+            Some(list.capabilities.iter().any(|c| c == name))
+        }
+        Ok(Err(error))
+            if matches!(
+                error.code,
+                ErrorCode::UnknownWireVersion | ErrorCode::Unsupported
+            ) =>
+        {
+            Some(false)
+        }
+        Ok(Ok(_)) => Some(false),
+        Ok(Err(_)) | Err(_) => None,
+    }
+}
+
 /// A fresh, fallible capability call: unlike `LocalClient::supports_capability`, a failed
 /// call is not read as "no capabilities".
 fn probe_mod_watch(client: &dyn LocalClient, budget: &CallBudget) -> Probe {
@@ -959,10 +979,16 @@ fn run_ack_lines(
         .collect();
     let mut failed_chunks = 0usize;
     let mut chunk_count = 0usize;
-    // An older daemon refuses the unknown field: it gets the row-less ACK it always got.
-    let row = request.row.as_ref().filter(|_| {
-        !remote.is_empty() && client.supports_capability(MOD_ACK_ROW_V1, &cooperative_budget(clock))
-    });
+    // An older daemon refuses the unknown field: it gets the row-less ACK it always got. A probe
+    // that fails says nothing about the daemon, so nothing is sent and the mod retries with the row.
+    let row = match &request.row {
+        Some(row) if !remote.is_empty() => match probe_capability(client, MOD_ACK_ROW_V1, clock) {
+            Some(true) => Some(row),
+            Some(false) => None,
+            None => return 1,
+        },
+        _ => None,
+    };
     for chunk in remote.chunks(crate::protocol::commands::MAX_BATCH_ITEMS) {
         chunk_count += 1;
         let result = client.call(

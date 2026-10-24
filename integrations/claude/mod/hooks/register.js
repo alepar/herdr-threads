@@ -115,7 +115,16 @@ const emptyRec = () => ({ delivered: {}, unacked: {}, rows: {}, attentionVersion
 
 // The id of the row the engine stored for an append (`{ message, uuid }`): the admission evidence the
 // ACK carries (`watch ack --row`). A result without one still settles, as before, with no row evidence.
+// Mirrors `mod_ack_row_valid` (src/protocol/commands.rs); a CLI that refuses a row anyway gets a row-less retry.
 const rowOf = (r) => typeof r.uuid === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(r.uuid) ? r.uuid : null
+
+/** A loaded record, its rows kept only for ids still unacked. */
+const loadRec = (rec) => {
+  if (!rec || typeof rec !== 'object') return emptyRec()
+  const out = { ...emptyRec(), ...rec }
+  out.rows = Object.fromEntries(Object.entries(out.rows || {}).filter(([id]) => out.unacked[id] !== undefined))
+  return out
+}
 
 // Esc at a permission dialog (ht-j16.30, live stress D3): the engine ends that turn with a
 // non-aborted turn.complete, so the hold cannot key on isAborted alone. The exact tool.call
@@ -430,7 +439,9 @@ export function createCore(io) {
         S.rec.delivered[it.id] = via
         if (it.ackable) {
           S.rec.unacked[it.id] = via
-          if (row) S.rec.rows[it.id] = row
+          // Only an ordinary message's receipt records the row; a lazy completion keeps none.
+          if (row && it.kind === 'message') S.rec.rows[it.id] = row
+          else delete S.rec.rows[it.id]
         }
       }
     }
@@ -496,9 +507,13 @@ export function createCore(io) {
       } catch {}
     }
     const live = S.rec === rec && !S.disposed
+    // Exit 2 is the CLI refusing its arguments (an older binary without `--row`): the ids
+    // go again without the row, as before this evidence existed.
+    const rowRefused = row !== null && code === 2
     for (const id of ids) {
       S.acking.delete(id)
       if (!live) continue
+      if (rowRefused) delete rec.rows[id]
       const result = code === 0 ? (byId[id] ?? 'retryable') : 'retryable'
       if (result === 'settled' || result === 'already_settled') {
         delete rec.unacked[id]
@@ -512,6 +527,10 @@ export function createCore(io) {
       }
     }
     if (live) saveRec()
+    if (live && rowRefused) {
+      ledger('refused', { ids, via, row, reason: 'ack:row_refused' })
+      void ackIds(ids)
+    }
   }
 
   function retryAcks() {
@@ -771,7 +790,7 @@ export function createCore(io) {
         rec = await io.store.get(key(sid))
       } catch {}
     }
-    S.rec = rec && typeof rec === 'object' ? { ...emptyRec(), ...rec } : emptyRec()
+    S.rec = loadRec(rec)
   }
 
   /** Re-reads the engine's session id; adopts a changed one per the last session.end reason. */
@@ -790,7 +809,7 @@ export function createCore(io) {
     try {
       rec = reason === 'clear' ? null : await io.store.get(key(sid))
     } catch {}
-    S.rec = rec && typeof rec === 'object' ? { ...emptyRec(), ...rec } : emptyRec()
+    S.rec = loadRec(rec)
     S.acking = new Set()
     S.sidSuspect = false
     return true

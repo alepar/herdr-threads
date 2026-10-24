@@ -707,12 +707,23 @@ test('an append acks with the stored row the engine returned, as admission evide
   const delivered = idle.entries.find((e: Any) => e.kind === 'delivered')
   expect(delivered.row).toBe('6f1c2d3e-0000-4000-8000-00000000a001')
   expect(idle.core.snapshot().rec.rows).toEqual({})
-  // busy: a passive row's append row rides the same way
+  // busy: a passive message's append row rides the same way; ids of one append share one call
   const busy = await harness({ state: busyState() }).boot()
-  busy.appendResult = stored('row-2')
-  busy.line(lazy('l1'))
+  // the first append is denied, so both are still queued when the retry batches them into one append
+  busy.appendResult = () => ({ deny: 'busy' })
+  busy.line(msg('m2', { ack_required: false }))
+  busy.line(msg('m3', { ack_required: false }))
   await flush()
-  expect(busy.ackRuns()[0].slice(5)).toEqual(['--row', 'row-2', '--via', 'append', 'l1'])
+  busy.appendResult = stored('row-2')
+  await busy.advance(30_000)
+  expect(busy.ackRuns().map((r: string[]) => r.slice(5))).toEqual([['--row', 'row-2', '--via', 'append', 'm2', 'm3']])
+  // a lazy row's completion keeps no row, so its ack carries none
+  const lazyRow = await harness({ state: busyState() }).boot()
+  lazyRow.appendResult = stored('row-3')
+  lazyRow.line(lazy('l1'))
+  await flush()
+  expect(lazyRow.ackRuns()[0].slice(5)).toEqual(['--via', 'append', 'l1'])
+  expect(lazyRow.core.snapshot().rec.rows).toEqual({})
   // no uuid, or one that is not an id: settled as before, with no row
   for (const result of [() => ({}), stored('not an id'), stored('')]) {
     const h = await harness({ state: IDLE }).boot()
@@ -749,10 +760,44 @@ test('a retried append ack keeps its row, and only ids of one row share a call',
   await h.connect()
   const reack = h.ackRuns().slice(before).map((r: string[]) => r.slice(5))
   expect(reack).toContainEqual(['--row', 'row-a', '--via', 'append', 'm1'])
-  expect(reack).toContainEqual(['--row', 'row-b', '--via', 'append', 'l2'])
+  expect(reack).toContainEqual(['--via', 'append', 'l2'])
   expect(reack.length).toBe(2)
   expect(h.core.snapshot().rec.unacked).toEqual({})
   expect(h.core.snapshot().rec.rows).toEqual({})
+})
+
+test('a CLI that refuses --row (exit 2) gets the same ids again without the row', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.appendResult = () => ({ message: { type: 'user', content: [] }, uuid: 'row-a' })
+  const settle = h.ackResult
+  h.ackResult = (argv: string[]) => argv.includes('--row') ? { code: 2, stdout: '' } : settle(argv)
+  h.line(msg('m1'))
+  await flush()
+  expect(h.ackRuns().map((r: string[]) => r.slice(5))).toEqual([
+    ['--row', 'row-a', '--via', 'append', 'm1'], ['--via', 'append', 'm1'],
+  ])
+  expect(h.entries.some((e: Any) => e.kind === 'refused' && e.reason === 'ack:row_refused')).toBe(true)
+  expect(h.core.snapshot().rec.unacked).toEqual({})
+  expect(h.core.snapshot().rec.rows).toEqual({})
+})
+
+test('a terminal ack refusal drops the row, and a loaded record keeps rows only for unacked ids', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.appendResult = () => ({ message: { type: 'user', content: [] }, uuid: 'row-a' })
+  h.ackResult = (argv: string[]) => {
+    const ids = argv.slice(argv.indexOf('--via') + 2)
+    return { code: 0, stdout: ids.map((id) => JSON.stringify({ id, result: 'refused_terminal' })).join('\n') }
+  }
+  h.line(msg('m1'))
+  await flush()
+  expect(h.core.snapshot().rec.unacked).toEqual({})
+  expect(h.core.snapshot().rec.rows).toEqual({})
+  const seeded = await harness({
+    state: IDLE,
+    store: { 'delivered:s1': { delivered: { m1: 'append', m2: 'append' }, unacked: { m2: 'append' }, rows: { m1: 'gone', m2: 'kept' } } },
+    connect: false,
+  }).boot()
+  expect(seeded.core.snapshot().rec.rows).toEqual({ m2: 'kept' })
 })
 
 test('a message another binding already settled (ack_required false) is appended like a lazy row and never wakes an idle session', async () => {
@@ -1781,10 +1826,10 @@ async function capturedWatchEngine($: Any, on: Any, state = busyState('capture-t
     storedRows.push(stored.uuid)
     return stored
   })
-  on('prompt.read', async () => ({ text: '' }) as Any)
+  on('prompt.read', async () => ({ value: { text: '' } }) as Any)
   on('prompt.submit', async (_$: Any, e: Any) => {
     submits.push(e.text)
-    return {} as Any
+    return { text: e.text } as Any
   })
   on('ui.log', async () => ({ value: undefined }) as Any)
   on('process.run', async (_$: Any, e: Any) => {
@@ -1860,10 +1905,10 @@ test('register consumes captured active Watch order through passive append and t
     expect(h.runs.map((argv) => [argv[6], ...argv.slice(7)])).toEqual([
       ['append', activationCapture.ids.lazy], ['context', activationCapture.ids.message],
     ])
-    // The append ack carries the row the engine stored for that append; the context ack none.
+    // The engine stored a row for each append; a lazy row's ack and the context ack carry none.
     expect(h.storedRows.length).toBeGreaterThan(0)
-    expect(h.storedRows).toContain(h.ackRows[0])
-    expect(h.ackRows[1]).toBeNull()
+    expect(h.storedRows.every((row) => /^[A-Za-z0-9_-]{1,128}$/.test(row))).toBe(true)
+    expect(h.ackRows).toEqual([null, null])
     expect(h.submits).toEqual([])
     // Replay of the same captured page cannot duplicate passive rows or context.
     await h.feed(lines.slice(0, firstClear).map(({ raw }) => raw).join(''))
@@ -1888,6 +1933,21 @@ test('register appends captured invitation and notice while idle without waking 
     for (const body of activationCapture.passiveBodies.slice(1)) expect(h.appends.join('\n')).toContain(body)
     expect(h.submits).toEqual([])
     expect(h.runs).toEqual([])
+  } finally {
+    await h.stop()
+  }
+})
+
+test('register acks a captured ordinary message appended while idle with the row the engine stored', async ($, on) => {
+  const lines = capturedWatchLines()
+  const h = await capturedWatchEngine($, on, IDLE)
+  try {
+    await h.feed(lines.filter(({ item }) => item.kind === 'status' || item.id === activationCapture.ids.message).map(({ raw }) => raw).join(''))
+    await engineEventually(() => h.entries().some((entry) => entry.kind === 'acked' && entry.ids.includes(activationCapture.ids.message)))
+    expect(h.submits).toEqual([WAKE])
+    expect(h.runs.map((argv) => [argv[6], ...argv.slice(7)])).toEqual([['append', activationCapture.ids.message]])
+    expect(h.storedRows.length).toBe(1)
+    expect(h.ackRows).toEqual(h.storedRows)
   } finally {
     await h.stop()
   }

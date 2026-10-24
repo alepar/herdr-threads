@@ -126,6 +126,8 @@ struct FakeClient {
     cursors_capability: bool,
     /// Explicit Watch-mode agreement, independent of generic presentation support.
     watch_presentation_capability: bool,
+    /// The daemon records append rows (`mod.ack_row_v1`).
+    ack_row_capability: bool,
     /// Makes the capability probe fail: `Err` is an outer (transport) failure,
     /// `Ok` a definitive daemon rejection.
     probe: Option<Result<ApiError, ApiError>>,
@@ -142,6 +144,7 @@ impl FakeClient {
             presentation_capability: false,
             cursors_capability: false,
             watch_presentation_capability: false,
+            ack_row_capability: false,
             probe: None,
         }
     }
@@ -188,6 +191,9 @@ impl LocalClient for FakeClient {
                         }
                         if self.watch_presentation_capability {
                             list.push("mod.watch_presentation_v2".to_owned());
+                        }
+                        if self.ack_row_capability {
+                            list.push(crate::protocol::capabilities::MOD_ACK_ROW_V1.to_owned());
                         }
                         list
                     } else {
@@ -2088,6 +2094,76 @@ fn ack_lines(bytes: &[u8]) -> Vec<ModAckItem> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+fn settle_all() -> FakeClient {
+    FakeClient::new(|command| {
+        let Command::AckModDelivered(ack) = command else {
+            panic!("{command:?}");
+        };
+        Ok(CommandResult::ModDeliveryAcked(ModAckReport {
+            results: ack.messages.iter().map(|id| settled(id.as_str())).collect(),
+        }))
+    })
+}
+
+fn sent_rows(client: &FakeClient) -> Vec<Option<String>> {
+    client
+        .calls()
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::AckModDelivered(ack) => Some(ack.row),
+            _ => None,
+        })
+        .collect()
+}
+
+/// ht-admission-ack: the row goes only to a daemon that advertises `mod.ack_row_v1`; a daemon
+/// that answers without it gets the row-less ACK; a failed probe sends nothing and exits 1, so
+/// the mod retries with its row instead of settling without the evidence.
+#[test]
+fn watch_ack_row_follows_the_daemon_capability() {
+    let request = WatchAckRequest {
+        row: Some("row-1".into()),
+        via: ModDeliveryVia::Append,
+        ..ack_request(&["m1"])
+    };
+    let run = |client: &FakeClient| {
+        let mut out = Vec::new();
+        let exit = run_ack_lines(client, &clock(), &request, claim(), None, &mut out);
+        (exit, out)
+    };
+
+    let mut new = settle_all();
+    new.ack_row_capability = true;
+    let (exit, out) = run(&new);
+    assert_eq!((exit, ack_lines(&out)), (0, vec![settled("m1")]));
+    assert_eq!(sent_rows(&new), vec![Some("row-1".to_owned())]);
+
+    let old = settle_all();
+    let (exit, out) = run(&old);
+    assert_eq!((exit, ack_lines(&out)), (0, vec![settled("m1")]));
+    assert_eq!(sent_rows(&old), vec![None]);
+    let mut rejecting = settle_all();
+    rejecting.probe = Some(Ok(ApiError::new(ErrorCode::UnknownWireVersion, "old")));
+    run(&rejecting);
+    assert_eq!(sent_rows(&rejecting), vec![None]);
+
+    for probe in [
+        Err(ApiError::host_unavailable("lost")),
+        Ok(ApiError::store_busy("busy")),
+    ] {
+        let mut failed = settle_all();
+        failed.ack_row_capability = true;
+        failed.probe = Some(probe);
+        let (exit, out) = run(&failed);
+        assert_eq!(exit, 1);
+        assert!(out.is_empty());
+        assert!(
+            sent_rows(&failed).is_empty(),
+            "nothing is acked without the row"
+        );
+    }
 }
 
 #[test]

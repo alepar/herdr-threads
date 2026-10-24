@@ -32,6 +32,32 @@ class TempDir(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
 
+class AdmissionRow(TempDir):
+    """ht-admission-ack: the send-ack row check reads only the recipient's own transcript, matches the entry's
+    `uuid` field (not a substring), and prefers the observation that carries a row."""
+
+    def write(self, session, *entries):
+        path = self.tmp / "projects" / "-work" / f"{session}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(e, separators=(", ", ": ")) + "\n" for e in entries))
+
+    def test_finds_the_row_only_in_the_recipients_session(self):
+        self.write("mine", {"uuid": "other"}, {"type": "user", "uuid": "row-1"})
+        self.write("theirs", {"uuid": "row-2"})
+        self.assertIs(W.transcript_has_row(self.tmp, {"mine"}, "row-1"), True)
+        self.assertEqual(W.transcript_has_row(self.tmp, {"mine"}, "row-2"), "row row-2 not in the recipient's transcript")
+        self.assertEqual(W.transcript_has_row(self.tmp, {"absent"}, "row-1"), "no transcript for the recipient's session")
+
+    def test_a_row_named_in_another_field_does_not_count(self):
+        self.write("mine", {"uuid": "x", "parentUuid": "row-1", "text": "row-1"})
+        self.assertNotEqual(W.transcript_has_row(self.tmp, {"mine"}, "row-1"), True)
+
+    def test_prefers_the_observation_with_a_row(self):
+        self.assertEqual(W.admission_observation([{"via": "append"}, {"via": "append", "row": "r"}])["row"], "r")
+        self.assertEqual(W.admission_observation([{"via": "context"}]), {"via": "context"})
+        self.assertIsNone(W.admission_observation([]))
+
+
 class BusyPublicationBarrier(TempDir):
     def stop_child(self, child):
         if child.poll() is None:
