@@ -949,10 +949,20 @@ mod archival_actual_producer_base_fixture {
         methods: Arc<Mutex<Vec<String>>>,
     }
     impl OwnedPeer {
-        fn new(kind: &'static str, capture: &'static str) -> Self {
-            Self::configured(kind, capture, "idle")
+        fn new(kind: &'static str, capture: &'static str, styled: Option<&'static str>) -> Self {
+            Self::serving(kind, capture, styled, "idle")
         }
         fn configured(kind: &'static str, capture: &'static str, status: &'static str) -> Self {
+            Self::serving(kind, capture, None, status)
+        }
+        /// `styled` answers the composer's styled `recent`/`ansi` read; `None`
+        /// refuses it, as a Herdr without styled reads does.
+        fn serving(
+            kind: &'static str,
+            capture: &'static str,
+            styled: Option<&'static str>,
+            status: &'static str,
+        ) -> Self {
             let socket = PathBuf::from(format!(
                 "{}/ha-{}",
                 herdr_threads::test_support::SHORT_TMP,
@@ -988,9 +998,16 @@ mod archival_actual_producer_base_fixture {
                             break;
                         }
                     };
-                    if let Err(e) =
-                        Self::exchange(&mut stream, kind, capture, status, &stop, until, &methods)
-                    {
+                    if let Err(e) = Self::exchange(
+                        &mut stream,
+                        kind,
+                        capture,
+                        styled,
+                        status,
+                        &stop,
+                        until,
+                        &methods,
+                    ) {
                         if !stop.load(Ordering::Acquire) {
                             errors.lock().unwrap().push(e);
                         }
@@ -1006,10 +1023,12 @@ mod archival_actual_producer_base_fixture {
             }));
             owned
         }
+        #[allow(clippy::too_many_arguments)]
         fn exchange(
             stream: &mut UnixStream,
             kind: &str,
             capture: &str,
+            styled: Option<&str>,
             status: &str,
             stop: &AtomicBool,
             until: Instant,
@@ -1065,6 +1084,18 @@ mod archival_actual_producer_base_fixture {
                     "type":"pane_read","read":{"pane_id":if capture=="FIXTURE WRONG PANE" {"w4:p2"} else {"w4:p1"},"source":if capture=="FIXTURE WRONG SOURCE" {"recent"} else {"detection"},
                     "format":"text","text":capture,"revision":0,"truncated":false}})
                 }
+                "agent.read"
+                    if request["params"]
+                        == json!({"target":"w4:p1","source":"recent","format":"ansi"}) =>
+                {
+                    let Some(text) = styled else {
+                        let refusal = json!({"id":request["id"],
+                            "error":{"code":"invalid_params","message":"fixture refusal"}});
+                        return writeln!(stream, "{refusal}").map_err(|e| e.to_string());
+                    };
+                    json!({"type":"pane_read","read":{"pane_id":"w4:p1","source":"recent",
+                    "format":"ansi","text":text,"revision":0,"truncated":false}})
+                }
                 _ => return Err(format!("unexpected bounded fixture request: {request}")),
             };
             writeln!(stream, "{}", json!({"id":request["id"],"result":result}))
@@ -1081,7 +1112,7 @@ mod archival_actual_producer_base_fixture {
                     .push("owned worker panicked".into());
             }
         }
-        fn assert_protocol(&mut self) {
+        fn assert_protocol(&mut self, composer_reads: usize) {
             self.settle();
             std::fs::remove_file(&self.socket)
                 .expect("owned fixture socket removal after joined worker");
@@ -1091,10 +1122,14 @@ mod archival_actual_producer_base_fixture {
             );
             let errors = self.errors.lock().unwrap().clone();
             assert!(errors.is_empty(), "fixture errors: {errors:?}");
+            let mut want = vec!["ping", "pane.get", "ping", "pane.get"];
+            for _ in 0..composer_reads {
+                want.extend(["ping", "agent.read"]);
+            }
             assert_eq!(
                 *self.methods.lock().unwrap(),
-                ["ping", "pane.get", "ping", "pane.get", "ping", "agent.read"],
-                "one ordinary observation plus exactly one actual archival composer read"
+                want,
+                "one ordinary observation plus exactly the archival composer reads"
             );
         }
     }
@@ -1136,8 +1171,14 @@ mod archival_actual_producer_base_fixture {
         db.execute_batch("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('t','s','joined',1000)").unwrap();
     }
 
-    fn one_case(harness: &'static str, capture: &'static str) -> bool {
-        let mut peer = OwnedPeer::new(harness, capture);
+    /// `styled` is the styled screen the composer policy asks for after an
+    /// undecidable detection read; `None` when the detection read decides.
+    fn one_case(
+        harness: &'static str,
+        capture: &'static str,
+        styled: Option<&'static str>,
+    ) -> bool {
+        let mut peer = OwnedPeer::new(harness, capture, styled);
         let cli = NativeCli::new(peer.socket.clone(), Arc::new(FixedClock));
         let target = HostTargetId::new("w4:p1");
         let context = HostCallContext {
@@ -1184,7 +1225,8 @@ mod archival_actual_producer_base_fixture {
                 &ticket.host_context(context.budget.clone()),
             )
             .expect("prerequisite: real archival parser/wrapper completes");
-        peer.assert_protocol(); // Join before causal assertion; Drop also covers any prior panic.
+        // Join before causal assertion; Drop also covers any prior panic.
+        peer.assert_protocol(1 + usize::from(styled.is_some()));
         let observed = &sample.0; // Never mutate/copy substitute this envelope.
         assert_eq!(
             observed.ui,
@@ -1470,7 +1512,7 @@ mod archival_actual_producer_base_fixture {
                 injected::registry(),
             ),
         ] {
-            let mut peer = OwnedPeer::new(kind, capture);
+            let mut peer = OwnedPeer::new(kind, capture, None);
             let clock = Arc::new(MovingClock(std::sync::atomic::AtomicU64::new(1000)));
             let cli = NativeCli::with_registry(peer.socket.clone(), clock.clone(), r);
             let target = HostTargetId::new("w4:p1");
@@ -1599,31 +1641,27 @@ mod archival_actual_producer_base_fixture {
         let empty = include_str!(
             "../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt"
         );
-        for (binding, kind, capture, status, want_ui, want_read) in [
-            ("codex", "claude", empty, "idle", HostUiState::Idle, true),
+        // `reads`: composer reads the archival observation makes. Claude's draft is
+        // not decidable from detection text and asks for the styled read, which
+        // this peer refuses; Hermes has a reader, so its row is a kind mismatch.
+        for (binding, kind, capture, status, want_ui, reads) in [
+            ("codex", "claude", empty, "idle", HostUiState::Idle, 1),
             (
                 "codex",
                 "codex",
                 "unrecognizable capture",
                 "idle",
                 HostUiState::Unknown,
-                true,
+                1,
             ),
-            (
-                "codex",
-                "hermes",
-                "unused",
-                "idle",
-                HostUiState::Unknown,
-                false,
-            ),
+            ("codex", "hermes", "unused", "idle", HostUiState::Unknown, 1),
             (
                 "codex",
                 "unregistered",
                 "unused",
                 "idle",
                 HostUiState::Unknown,
-                false,
+                0,
             ),
             (
                 "codex",
@@ -1633,7 +1671,7 @@ mod archival_actual_producer_base_fixture {
                 ),
                 "idle",
                 HostUiState::HumanInput,
-                true,
+                1,
             ),
             (
                 "claude",
@@ -1643,7 +1681,7 @@ mod archival_actual_producer_base_fixture {
                 ),
                 "idle",
                 HostUiState::HumanInput,
-                true,
+                2,
             ),
             (
                 "codex",
@@ -1651,7 +1689,7 @@ mod archival_actual_producer_base_fixture {
                 "FIXTURE WRONG SOURCE",
                 "idle",
                 HostUiState::Unknown,
-                true,
+                1,
             ),
             (
                 "codex",
@@ -1659,7 +1697,7 @@ mod archival_actual_producer_base_fixture {
                 "FIXTURE WRONG PANE",
                 "idle",
                 HostUiState::Unknown,
-                true,
+                1,
             ),
             (
                 "codex",
@@ -1667,7 +1705,7 @@ mod archival_actual_producer_base_fixture {
                 "unused",
                 "blocked",
                 HostUiState::ApprovalOrQuestion,
-                false,
+                0,
             ),
             (
                 "codex",
@@ -1675,7 +1713,7 @@ mod archival_actual_producer_base_fixture {
                 "unused",
                 "unrecognized_status",
                 HostUiState::Unknown,
-                false,
+                0,
             ),
             (
                 "codex",
@@ -1685,7 +1723,7 @@ mod archival_actual_producer_base_fixture {
                 ),
                 "working",
                 HostUiState::ActiveTurn,
-                true,
+                1,
             ),
         ] {
             let mut peer = OwnedPeer::configured(kind, capture, status);
@@ -1738,14 +1776,14 @@ mod archival_actual_producer_base_fixture {
             assert!(!peer.socket.exists());
             assert_eq!(sample.0.ui, want_ui, "{kind}");
             assert!(sample.0.occupant.is_none());
+            let methods = peer.methods.lock().unwrap().clone();
             assert_eq!(
-                peer.methods
-                    .lock()
-                    .unwrap()
+                methods
                     .iter()
                     .filter(|m| m.as_str() == "agent.read")
                     .count(),
-                usize::from(want_read)
+                reads,
+                "{kind} {status} {methods:?}"
             );
             assert!(
                 !archival::record_sample(&mut db, &ticket, &rt, &sample).unwrap(),
@@ -1764,6 +1802,7 @@ mod archival_actual_producer_base_fixture {
                     include_str!(
                         "../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt"
                     ),
+                    None,
                 ),
             ),
             (
@@ -1773,11 +1812,26 @@ mod archival_actual_producer_base_fixture {
                     include_str!(
                         "../../docs/evidence/poke-spike/captures/codex-q6-workers.read-detection.txt"
                     ),
+                    None,
+                ),
+            ),
+            // Hermes' empty composer shows an italic example prompt: only the
+            // styled read tells it from a draft.
+            (
+                "hermes",
+                one_case(
+                    "hermes",
+                    include_str!(
+                        "../../docs/evidence/hermes-composer/captures/hermes-0.22.5-idle-empty.read-detection.txt"
+                    ),
+                    Some(include_str!(
+                        "../../docs/evidence/hermes-composer/captures/hermes-0.22.5-idle-empty.recent-ansi.txt"
+                    )),
                 ),
             ),
         ];
-        // Delayed assertion ensures BOTH captured grammars reach the deciding
-        // consumer on BASE, and both owned servers are joined before RED.
+        // Delayed assertion ensures every captured grammar reaches the deciding
+        // consumer on BASE, and every owned server is joined before RED.
         assert!(
             observations.iter().all(|(_, accepted)| *accepted),
             "actual unchanged None-occupant native envelopes must qualify first canonical samples: {observations:?}"
@@ -2021,24 +2075,35 @@ fn archival_registered_binding_and_composer_evidence_neighbors_refuse() {
             "canonical/evidence refusal {bad}"
         );
     }
-    for absent in ["human", "unknown_adapter", "hermes", "synthetic_fourth"] {
+    // Hermes has a composer reader, so its bindings are observed like the
+    // others even though no wake reaches them.
+    for (harness, observed) in [
+        ("human", false),
+        ("unknown_adapter", false),
+        ("synthetic_fourth", false),
+        ("hermes", true),
+    ] {
         let db = fixture();
         thread(&db);
         joined_agent(&db);
         ordinary(&db);
-        db.execute("UPDATE occupant_bindings SET harness=?1", [absent])
+        db.execute("UPDATE occupant_bindings SET harness=?1", [harness])
             .unwrap();
         let rt = runtime(0);
         archival::advance(&db, "34750f98bd59fcfc946da45aaabe933b", &rt).unwrap();
-        assert!(
+        assert_eq!(
             archival::observation_ticket(&db, "34750f98bd59fcfc946da45aaabe933b", "s", &rt)
                 .unwrap()
-                .is_none()
+                .is_some(),
+            observed,
+            "{harness}"
         );
-        assert!(
+        assert_eq!(
             archival::next_observation(&db, "34750f98bd59fcfc946da45aaabe933b", &rt)
                 .unwrap()
-                .is_none()
+                .is_some(),
+            observed,
+            "{harness}"
         );
     }
     // The same overlay identity is eligible only with its optional provider.
