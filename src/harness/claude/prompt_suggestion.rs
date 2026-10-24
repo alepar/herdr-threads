@@ -2,10 +2,11 @@
 //! owned, backed-up edit of the user `settings.json` (ht-6jt).
 //!
 //! Claude Code draws a grayed-out prompt suggestion in the composer after
-//! every turn (the default), and herdr-threads cannot tell it from typed text,
-//! so a soft-deadline poke skips any Claude pane that shows one
-//! (TRUST-POLICY A4). `setup claude` therefore offers to set the key `false`;
-//! it never changes it without a yes or an explicit flag.
+//! every turn (the default). Herdr's detection text cannot tell it from typed
+//! text; the styled composer read can, and where that read fails a wake or
+//! soft-deadline poke skips any Claude pane that shows one (TRUST-POLICY A4).
+//! `setup claude` therefore offers to set the key `false`; it never changes
+//! it without a yes or an explicit flag.
 //!
 //! The edit follows the hook installer's rules
 //! ([`crate::harness::setup`]): a private manifest under `<state>/setup/` records the

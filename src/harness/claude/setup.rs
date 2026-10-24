@@ -27,11 +27,12 @@ use std::{
     time::Duration,
 };
 pub const PROMPT_SUGGESTION_EXPLANATION: &str = "Claude Code shows a dim prompt suggestion in \
-its input box after every turn (on by default). herdr-threads cannot tell that suggestion from \
-text you typed, so it never sends a soft-deadline reminder (poke) into a Claude pane that shows \
-one; only the hard-deadline warning reaches it. With prompt suggestions off \
-(`promptSuggestionEnabled: false` in Claude's user settings), an idle Claude pane reads empty and \
-pokes reach it. unsetup reverts the setting if setup set it.";
+its input box after every turn (on by default). herdr-threads tells it from text you typed by its \
+dim style, so wakes and soft-deadline reminders (pokes) still reach an idle Claude pane that shows \
+one. Where Herdr's styled screen read fails, the suggestion counts as typed text and only the \
+hard-deadline warning reaches the pane; with prompt suggestions off \
+(`promptSuggestionEnabled: false` in Claude's user settings), an idle Claude pane reads empty either \
+way. unsetup reverts the setting if setup set it.";
 
 /// The non-interactive advice (nothing was changed).
 pub(crate) fn prompt_suggestion_advice(settings: &Path) -> String {

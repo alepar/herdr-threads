@@ -57,7 +57,7 @@ The public `plan_claude` proposal (private `--settings` JSON) composes hook grou
 
 ## Prompt suggestions
 
-Claude Code draws a dim prompt suggestion in its input box after every turn (`promptSuggestionEnabled`, default `true`; [settings reference](https://code.claude.com/docs/en/settings-reference#promptsuggestionenabled)). herdr-threads reads the composer through Herdr's detection text, which cannot tell that suggestion from text a person typed, so a soft-deadline poke is never sent into a Claude pane that shows one (TRUST-POLICY A4): only the hard-deadline warning reaches it. With suggestions off, an idle Claude composer reads empty and pokes work.
+Claude Code draws a dim prompt suggestion in its input box after every turn (`promptSuggestionEnabled`, default `true`; [settings reference](https://code.claude.com/docs/en/settings-reference#promptsuggestionenabled)). Herdr's detection text cannot tell that suggestion from text a person typed, so when it shows composer text herdr-threads reads the composer once more with styles (`agent read --source recent --format ansi`): dim-only text is a suggestion or placeholder and reads empty, so wakes and soft-deadline pokes reach the pane, while unstyled text is a draft (TRUST-POLICY A4, captures in [`docs/evidence/ansi-composer/`](../../docs/evidence/ansi-composer/README.md)). Where the styled read fails, the suggestion counts as typed text and only the hard-deadline warning reaches the pane. With suggestions off, an idle Claude composer reads empty either way.
 
 `herdr-threads setup claude` (and bare `setup` when `claude` is on `PATH`) therefore checks the key in the same user `settings.json`, after installing the hooks:
 

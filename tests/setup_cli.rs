@@ -3006,7 +3006,7 @@ fn non_interactive_setup_advises_and_leaves_prompt_suggestions() {
         "{report}"
     );
     assert!(
-        report.contains("cannot tell that suggestion from text you typed"),
+        report.contains("tells it from text you typed by its dim style"),
         "{report}"
     );
     assert!(report.contains("--disable-prompt-suggestions"), "{report}");
