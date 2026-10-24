@@ -33,7 +33,7 @@ The 1.0.1 column is the single smoke test that version shipped. The 1.0.2 column
 | Overdue required ACK | `--deadline`, `overdue`; an oversized body remains pending until full display | no | wake |
 | Reading never ACKs | `read`, `body`, `search` | no | core |
 | Nudge threshold | `nudge-threshold`, `wake-on` alias | no | core, wake |
-| Wake (Herdr types into the idle composer) | p0 at T = 0, p3 at T = 3; no wake for p1 at T = 0 or p5 at T = 3 | no | wake |
+| Wake (Herdr types into the idle composer) | p0 at T = 0, p3 at T = 3, p0 under Codex's `/side` placeholder; no wake for p1 at T = 0 or p5 at T = 3 | no | wake |
 | In-turn delivery | turn-start hook (UserPromptSubmit) and tool-boundary hook (PreToolUse) contexts | no | wake, busy |
 | Busy agent never nudged | p0 sent while Herdr reports the agent working | no | busy |
 | Launch | `launch --kind codex`, `launch --kind claude` (existing pane) | codex | handoff |

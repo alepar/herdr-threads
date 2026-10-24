@@ -1198,6 +1198,30 @@ fn herdr_release_wake() {
             Err(format!("{:?}", m.log_of(&agent_pane)))
         }
     });
+
+    // Codex's `/side` placeholder reads empty: a p0 wakes the idle agent
+    // under it (after the per-seat wake spacing), it is not typed text.
+    m.submit(&agent_pane, "/side");
+    wait_for("/side placeholder", Duration::from_secs(10), || {
+        if m.log_of(&agent_pane).iter().any(|e| e["kind"] == "side") {
+            Ok(())
+        } else {
+            Err(format!("{:?}", m.log_of(&agent_pane)))
+        }
+    });
+    thread::sleep(Duration::from_secs(32));
+    let before = wakes();
+    m.person(
+        &sender_pane,
+        &["send", "--seat", &agent, "--nudge", "--body", "wake-side"],
+    );
+    wait_for("p0 wake under /side", Duration::from_secs(30), || {
+        if wakes() > before {
+            Ok(())
+        } else {
+            Err(diagnose())
+        }
+    });
     println!("herdr {}: wake matrix passed", m.version);
 }
 

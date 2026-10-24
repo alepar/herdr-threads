@@ -14,7 +14,8 @@ though the content is Python). It behaves like the parts of Codex that Herdr and
   Codex integration too, whichever events a release's integration hooks. Each hook's `hookSpecificOutput.additionalContext` is the context the model
   would get.
 
-A submitted line is a turn. `run: CMD` runs CMD as a Bash tool call (PreToolUse first, then CMD as
+A submitted line is a turn, except `/side`, which only switches the empty composer's placeholder to Codex's `/side`
+one (`Ask a follow-up question`; the stand-in models no forked session). `run: CMD` runs CMD as a Bash tool call (PreToolUse first, then CMD as
 a child with CODEX_SESSION_ID set), and `run: A ;; B` runs two calls in the same turn; `exit` ends the session; anything else is just a prompt.
 Every event is appended to `$FAKE_CODEX_LOG_DIR/<session>.jsonl` (default `.fake-codex` in the
 working directory), so a test reads exactly what the agent saw.
@@ -36,6 +37,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 LOG = os.path.join(LOG_DIR, f"{SESSION}.jsonl")
 transcript = [">_ OpenAI Codex (fake)", f"   session {SESSION}"]
 buffer = ""
+placeholder = "Ask Codex to do anything"
 turn_started = None  # monotonic start of the running turn, for Codex's live working timer
 queued = ""  # terminal input that arrived during a turn, processed after it (Codex queues it)
 TTY = None
@@ -53,7 +55,7 @@ def draw(working=False):
         # Codex's live timer ticks every second while a turn runs; Herdr's working rule needs it.
         elapsed = int(time.monotonic() - turn_started) if turn_started else 0
         rows += [f"• Working ({elapsed}s • esc to interrupt)", ""]
-    rows.append("› " + (buffer if buffer else "Ask Codex to do anything"))
+    rows.append("› " + (buffer if buffer else placeholder))
     # Codex's footer under the composer: Herdr's screen detection reads it.
     rows += ["", "  fake-model default · " + os.getcwd(), "  ? for shortcuts"]
     # Codex sets the terminal title (OSC 0) to its working directory's name.
@@ -147,7 +149,7 @@ def turn(line):
 
 
 def main():
-    global buffer
+    global buffer, placeholder
     if len(sys.argv) > 1 and sys.argv[1] == "--version":
         print("codex-cli 0.0.0-fake")
         return
@@ -189,7 +191,10 @@ def main():
                         run_hooks("SessionEnd", reason="exit")
                         log("exit")
                         return
-                    if line:
+                    if line == "/side":
+                        placeholder = "Ask a follow-up question"
+                        log("side")
+                    elif line:
                         turn(line)
                 elif ch == "\x15":  # ctrl+u
                     buffer = ""
