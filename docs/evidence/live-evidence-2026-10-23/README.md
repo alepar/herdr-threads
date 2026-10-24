@@ -16,7 +16,7 @@ state; nothing was written to a real harness config.
 | Hermes 0.22.5: idle wake (research F1) | **never fires**: a p0 `--nudge` to an idle seat records `wake_work.last_outcome = 'unsafe'`, nothing typed | `hermes/wake-work.txt`, `hermes/delivery-inspect-p0.txt` |
 | agy real-model wake e2e | option added (`--harness agy`, opt-in); **not run**: no agy and no Gemini credential on this host | [agy.md](agy.md) |
 | Claude: does a failing Bash result set `isError`? | **yes**, identical to a user reject at the permission dialog | [claude/iserror-ht-mod-busy/](claude/iserror-ht-mod-busy/) |
-| Claude: effect on our mod | an ordinary failing last tool holds the next waking item **119.3 s** (`post_abort`) | [claude/failing-tool-hold/](claude/failing-tool-hold/) |
+| Claude: effect on our mod | an ordinary failing last tool holds the next waking item about 120 s from the turn's end (`post_abort`, `HOLD_IDLE_MS`) | [claude/failing-tool-hold/](claude/failing-tool-hold/) |
 | Claude: `prompt.submit` against a typed draft, 120 s expiry | see [Claude draft hold](#claude-draft-hold) | [claude/draft-hold/](claude/draft-hold/) |
 
 ## Defects (contradictions with our code or docs; not fixed here, for routing)
@@ -43,7 +43,8 @@ state; nothing was written to a real harness config.
    (`false`, `exit 3`), a failed Read and a PreToolUse deny as `{isError: true}` with no `deny` field, exactly like an
    Esc at the permission dialog (ht-mod-busy's probe, 2.1.309). `userRejected()` (`register.js:120`) therefore treats
    a turn whose last tool failed as a user reject: live on 2.1.310, a require-ACK message sent right after such a
-   turn was held `post_abort` and delivered 119.3 s later by the `HOLD_IDLE_MS` expiry. Research flaw F6. The probe
+   turn was held `post_abort` and delivered by the `HOLD_IDLE_MS` expiry, 120.8 s after the turn ended (119.3 s after
+   the send). Research flaw F6. The probe
    shows a discriminator: a failing tool's result is followed by a main `turn.step` about 23 ms later; a user
    reject is followed by `turn.complete` (`isAborted: false`, `reason: "answer"`) with no `turn.step` between.
 4. **`setup hermes` fails on any install without Hermes' published launcher, with an opaque error** (low).
@@ -139,11 +140,15 @@ use..."`), then `turn.complete` 29 ms later with `isAborted: false`, `reason: "a
 draft_hold,failing_tool_hold --iterations 1 --bin bin/herdr-threads` (Claude Code 2.1.310, Opus 5.5, stand-in Herdr
 endpoint, private daemon; files in `claude/failing-tool-hold/`). `failing_tool_hold`: the model ran `false` once and
 replied `done` (`Stop` at …314861); a require-ACK message sent 1.5 s later was `held` `post_abort` at …316434 and
-delivered by append plus `wake up` at …435643, **119.3 s** after the send (defect 3). That run's `draft_hold`
-iteration raced the session's start-up invitation wake turn (that run used the earlier driver revision: an
-invited thread and an `accept`, not the pair channel; the failing-tool measurement does not depend on it), so its draft was typed into a busy session; it is kept
-as an observation (the message rode a tool-call result as `context` in 2.3 s; the typed text stayed in the composer
-and was not submitted) and the scenario now waits for no open turn before typing (re-run below).
+delivered by append plus `wake up` at …435643: **120.8 s after the turn ended** (the hold runs from
+`turn.complete`, `register.js` `abortHoldSince`), 119.3 s after the send (defect 3).
+
+Provenance: this run used an uncommitted intermediate revision of `stress.py` (the same timer scenarios, but the
+old invited-thread bootstrap with an `accept`, not the pair channel), and its `summary.json` `sha` is main's, not the
+driver's; the hold depends only on the failing tool and the mod, not on how the sender reached the seat. The same
+run's `draft_hold` iteration raced the start-up invitation wake turn and is superseded by the re-run below; its
+artifacts were dropped. The driver now records its own blob hash (`driver_blob`) and the turn end
+(`turn_end_to_delivery_s`) in the summary.
 
 Claude Code 2.1.310 frames a plugin-submitted prompt for the model with its own line after the text: "This is how
 Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the

@@ -188,3 +188,11 @@ class MergeLines(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ComposerLine(unittest.TestCase):
+    def test_only_the_last_prompt_line_is_the_composer(self):
+        screen = "❯ DRAFT echoed as a submitted prompt\n● ok\n────\n❯ \n────\n"
+        self.assertEqual(stress.composer_line(screen).strip(), "❯")
+        self.assertIn("DRAFT", stress.composer_line(screen.replace("❯ \n", "❯ DRAFT\n")))
+        self.assertEqual(stress.composer_line("no prompt"), "")

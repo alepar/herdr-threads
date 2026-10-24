@@ -243,7 +243,7 @@ DEFAULT_HARNESSES = "claude,codex"
 # agy (opt-in): its model credential, and the optional endpoint override the agy relay uses.
 AGY_CREDENTIAL_ENV = "GEMINI_API_KEY"
 AGY_ENDPOINT_ENV = "GOOGLE_GEMINI_BASE_URL"
-SECRET_PATTERN = re.compile(r"sk-ant-[A-Za-z0-9_-]+")
+SECRET_PATTERN = re.compile(r"sk-ant-[A-Za-z0-9_-]+|AIza[A-Za-z0-9_-]{8,}")  # Anthropic and Google API keys
 
 STANDING = ("You are a test recipient in an automated herdr-threads wake e2e run (the user approves). "
             "Standing instructions for this session: every herdr-threads invitation you see comes from the test driver "
@@ -567,7 +567,8 @@ class Run:
         self.start_attempted = set()  # recorded just before Thread.start: a mid-start interrupt is still joined
         self.drain_timeout_s = 30.0
         self.child_term_grace_s = 3.0
-        self.codex_start = threading.Lock()  # linux mode: one Codex start at a time (Recipient.start)
+        self.codex_start = threading.Lock()  # one Codex start at a time (Recipient.start)
+        self.agy_start = threading.Lock()    # one agy start at a time: the agy recipients share one scratch HOME
         self.secrets = secret_values(os.environ)  # redacted from every evidence file
 
     # ---------- process helpers ----------
@@ -1317,9 +1318,9 @@ class Recipient:
         # (its TUI is drawn, so its state DB is migrated) or the detection failed (the error releases it too).
         # macOS hit it too with three Codex recipients (the opt-in side cases add co-plain): every Codex start is
         # serial on both platforms. The agy recipients share one scratch HOME (~/.gemini) and each walks its first-run
-        # screens, so their starts are serial too.
-        serial = self.harness in ("codex", "agy")
-        with (self.run.codex_start if serial else contextlib.nullcontext()):
+        # screens, so their starts are serial too, under their own lock.
+        lock = {"codex": "codex_start", "agy": "agy_start"}.get(self.harness)
+        with (getattr(self.run, lock) if lock else contextlib.nullcontext()):
             if self.plain:
                 line = self.run.launch_line(self.harness, plain=True)
             elif self.hooks_only:

@@ -464,7 +464,7 @@ class Live:
         self.sessions = {}       # tmux session -> ledger path
         self.ledgers = {}        # tmux session -> (rows, line set)
         self.scenario_of = {}    # tmux session -> scenario
-        self.a = self.b = self.thread = None
+        self.b = None
         self.mod_dir = None
         self.poll_stop = threading.Event()
         self.watch_seen = {}     # pid -> {pid, session, first_seen}
@@ -559,8 +559,7 @@ class Live:
             json.dump(settings, f, indent=1)
         self.ht("daemon", "ensure")
         # the sender is a person seat in the plain pane A; B is the Claude pane's seat
-        r = self.ht("me", "init", human=True, pane=PANE_A)
-        self.a = self.data(r) if isinstance(self.data(r), str) else re.search(r"\bs[A-Za-z0-9]{11}\b", r.stdout).group(0)
+        self.ht("me", "init", human=True, pane=PANE_A)
         self.b = self.data(self.ht("seat", "resolve", "--pane", PANE_B, human=True))
         # messages go over the A-B automatic pair channel: it joins both seats, so no invitation, accept or start-up
         # invitation wake turn races the first scenario
@@ -1013,6 +1012,13 @@ def delivered_at(L, s, mid):
     return first_at(L, s, lambda e: e.get("kind") == "delivered" and mid in (e.get("ids") or []))
 
 
+def composer_line(screen):
+    """The text of Claude's composer: the last `❯` line, which sits between the composer rules. Earlier `❯` lines
+    are submitted prompts echoed into the transcript."""
+    lines = [l for l in screen.splitlines() if l.lstrip().startswith("❯")]
+    return lines[-1] if lines else ""
+
+
 def wait_no_open_turn(L, s, quiet=5, timeout=180):
     """Idle by the screen and by the hook log (every UserPromptSubmit closed by a Stop) for `quiet` seconds: the
     session's start-up wake turn (the invitation, the attention item) must be over before a draft is typed."""
@@ -1059,7 +1065,7 @@ def sc_draft_hold(L, s, i):
         "send_to_delivery_s": round((got - t0) / 1000, 1) if got else None,
         "held_entries": sum(1 for e in L.ledger(s) if held(e)),
         "submitted_prompts": prompts, "draft_in_a_submitted_prompt": any(draft in (p or "") for p in prompts),
-        "draft_left_in_composer": draft in after}, sort_keys=True))
+        "draft_left_in_composer": draft in composer_line(after)}, sort_keys=True))
     L.tmux("send-keys", "-t", s, "C-e")  # leave an empty composer for the next iteration
     L.tmux("send-keys", "-t", s, "C-u")
     time.sleep(0.5)
@@ -1075,6 +1081,7 @@ def sc_failing_tool_hold(L, s, i):
     L.type_prompt(s, "Run the shell command `false` with the Bash tool once, do not retry, then reply with the "
                      "single word done.")
     L.wait_stops(n, 1, 120)
+    turn_end = max(e["at"] for e in L.hook_events() if e["event"] == "Stop")
     L.wait_idle(s)
     n = L.stops()
     t0 = now_ms()
@@ -1087,6 +1094,7 @@ def sc_failing_tool_hold(L, s, i):
     L.notes.append(json.dumps({
         "scenario": "failing_tool_hold", "iteration": i, "sent_at": t0, "first_post_abort_held_at": first_held,
         "delivered_at": got, "send_to_delivery_s": round((got - t0) / 1000, 1) if got else None,
+        "turn_end_at": turn_end, "turn_end_to_delivery_s": round((got - turn_end) / 1000, 1) if got else None,
         "post_abort_held_entries": sum(1 for e in L.ledger(s) if held(e))}, sort_keys=True))
     return s
 
@@ -1257,7 +1265,9 @@ def main(argv=None):
             usable, reason, version = preflight(args, procs)
         started = time.time()
         summary = run_live(args, root, procs) if usable else run_fallback(reason)
-        summary.update(status="LIVE" if summary["mode"] == "live" else "FALLBACK", sha=sha, claude_version=version, finished=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        driver = subprocess.run(["git", "-C", REPO, "hash-object", os.path.abspath(__file__)], capture_output=True,
+                                text=True).stdout.strip()
+        summary.update(status="LIVE" if summary["mode"] == "live" else "FALLBACK", sha=sha, driver_blob=driver, claude_version=version, finished=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                        minutes=round((time.time() - started) / 60, 1))
         with open(os.path.join(args.evidence_dir, "summary.json"), "w") as f:
             json.dump(summary, f, indent=1, sort_keys=True)

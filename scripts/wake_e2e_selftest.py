@@ -2477,3 +2477,11 @@ class AgyOptIn(TempDir):
         self.assertEqual(problems, [])
         r.remove_agy_env(problems)  # idempotent
         self.assertEqual(problems, [])
+
+    def test_a_google_api_key_fragment_is_redacted(self):
+        # a key wrapped across pane lines leaves fragments that are neither the whole value nor its tail
+        key = "AIza" + "SyB0123456789abcdefghijklmnopqrstu"
+        secrets = W.secret_values({"GEMINI_API_KEY": key})
+        first = key[:30]
+        self.assertNotIn(first, W.redact(f"| {first}\n", secrets))
+        self.assertNotIn(key, W.redact(key, ()))
