@@ -59,8 +59,32 @@ class RenderTests(unittest.TestCase):
 
     def test_wrapper_matches_golden(self):
         text = agyenv.render_wrapper("/private/tmp/ih.Ab12Cd", "/private/tmp/ih.Ab12Cd/agybin/2", 4242,
-                                     "tok-123", 777, "run-1")
+                                     "tok-123", 777, "run-1", "darwin")
         self.assertEqual(text, GOLDEN_WRAPPER)
+
+    def test_linux_wrapper_sandboxes_agy_with_bwrap(self):
+        text = agyenv.render_wrapper("/tmp/ih.Ab12Cd", "/tmp/ih.Ab12Cd/agybin/2", 4242, "tok-123", 777, "run-1",
+                                     "linux", ["/home/real/.codex", "/home/real/.hermes"])
+        self.assertEqual(text.splitlines()[:-2], GOLDEN_WRAPPER.replace("/private/tmp", "/tmp").splitlines()[:-1])
+        self.assertIn("/usr/bin/bwrap --die-with-parent --unshare-net --ro-bind / / --dev-bind /dev "
+                      '/dev --proc /proc --bind "/tmp/ih.Ab12Cd" "/tmp/ih.Ab12Cd" --tmpfs "/home/real/.codex" '
+                      '--tmpfs "/home/real/.hermes"', text)
+        self.assertIn("socat TCP-LISTEN:4242,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/tmp/ih.Ab12Cd/relay.sock",
+                      text)
+        self.assertTrue(text.rstrip().endswith('"/tmp/ih.Ab12Cd/agybin/2/agy" "$@"'))
+        self.assertNotIn("sandbox-exec", text)
+
+    def test_sandbox_refusal(self):
+        self.assertIsNone(agyenv.sandbox_refusal("darwin"))
+        self.assertIsNone(agyenv.sandbox_refusal("linux", exists=lambda p: True))
+        self.assertIn("/usr/bin/socat", agyenv.sandbox_refusal("linux", exists=lambda p: "bwrap" in p))
+        self.assertIn("found win32", agyenv.sandbox_refusal("win32"))
+
+    def test_hidden_dirs_lists_existing_config_dirs_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for d in (".codex", ".hermes"):
+                (Path(tmp) / d).mkdir()
+            self.assertEqual(agyenv.hidden_dirs(tmp), [tmp + "/.codex", tmp + "/.hermes"])
 
     def test_wrapper_carries_the_required_pieces(self):
         text = agyenv.render_wrapper("/r", "/r/agybin/1", 1, "TOKEN-X", 5, "RUN-Y")
@@ -276,8 +300,11 @@ class FetchTests(unittest.TestCase):
     def test_platform_keys(self):
         self.assertEqual(fetch.platform_key("Darwin", "arm64"), "darwin_arm64")
         self.assertEqual(fetch.platform_key("Darwin", "x86_64"), "darwin_amd64")
-        with self.assertRaises(fetch.FetchError):
-            fetch.platform_key("Linux", "x86_64")
+        self.assertEqual(fetch.platform_key("Linux", "x86_64"), "linux_amd64")
+        self.assertEqual(fetch.platform_key("Linux", "aarch64"), "linux_arm64")
+        for system, machine in (("Windows", "AMD64"), ("Linux", "riscv64")):
+            with self.assertRaises(fetch.FetchError):
+                fetch.platform_key(system, machine)
 
     def test_manifest_url_shape(self):
         self.assertEqual(

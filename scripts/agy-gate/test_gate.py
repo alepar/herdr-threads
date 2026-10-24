@@ -114,11 +114,11 @@ class GateTests(unittest.TestCase):
             self.assertEqual(rc, 2, var)
             self.assertIn("never runs in CI", out)
 
-    def test_refuses_non_darwin(self):
+    def test_refuses_a_platform_with_no_sandbox(self):
         write_flows(self.flows, boot=())
-        rc, out = run_main([], self.env, self.flows, platform_name="linux")
+        rc, out = run_main([], self.env, self.flows, platform_name="win32")
         self.assertEqual(rc, 2)
-        self.assertIn("needs macOS", out)
+        self.assertIn("needs macOS (sandbox-exec) or Linux (bubblewrap)", out)
 
     def test_refuses_herdr_older_than_0_9_1(self):
         write_flows(self.flows, boot=())

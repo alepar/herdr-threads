@@ -28,6 +28,12 @@ LEAK_CHECK = REPO / "scripts" / "check-no-leaked-processes"
 FAKE_GEMINI = REPO / "scripts" / "agy-fake-gemini"
 PROFILE_TEMPLATE = HERE / "loopback.sb.in"
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+# Linux: bubblewrap gives agy its own network namespace (loopback only), a read-only system, writes only under the
+# root and the real config directories hidden; socat carries its loopback port to the relay outside (spec D4).
+BWRAP = "/usr/bin/bwrap"
+SOCAT = "/usr/bin/socat"
+HIDDEN_DIRS = (".gemini", ".claude", ".codex", ".aisw", ".hermes")
+RELAY_SOCKET = "relay.sock"
 
 for _dir in (FAKE_GEMINI,):  # sibling directories are imported by path insertion
     if str(_dir) not in sys.path:
@@ -68,7 +74,43 @@ def render_profile(root, real_home_dir, template=None):
     return text.replace("<REAL_HOME>", str(real_home_dir)).replace("<ROOT>", str(root))
 
 
-def render_wrapper(root, clone_dir, port, token, owner, run_id):
+def sandbox_kind(platform_name=None):
+    """``sandbox-exec`` on macOS, ``bwrap`` on Linux, else None (no sandbox: refused)."""
+    name = platform_name or sys.platform
+    return "sandbox-exec" if name == "darwin" else "bwrap" if name.startswith("linux") else None
+
+
+def sandbox_refusal(platform_name=None, exists=os.path.exists):
+    """Why agy cannot be sandboxed on this host (a message), or None."""
+    kind = sandbox_kind(platform_name)
+    if kind is None:
+        return "needs macOS (sandbox-exec) or Linux (bubblewrap); found %s" % (platform_name or sys.platform)
+    if kind == "bwrap":
+        missing = [tool for tool in (BWRAP, SOCAT) if not exists(tool)]
+        if missing:
+            return "Linux needs %s for the agy sandbox" % " and ".join(missing)
+    return None
+
+
+def hidden_dirs(real_home_dir):
+    """The real config directories that exist (bwrap can mount over an existing directory only)."""
+    return [str(Path(real_home_dir) / d) for d in HIDDEN_DIRS if (Path(real_home_dir) / d).is_dir()]
+
+
+def sandbox_line(root, clone_dir, port, platform_name=None, hidden=()):
+    if sandbox_kind(platform_name) == "sandbox-exec":
+        return '%s -f "%s/loopback.sb" "%s/agy" "$@"' % (SANDBOX_EXEC, root, clone_dir)
+    tmpfs = "".join(' --tmpfs "%s"' % d for d in hidden)
+    # No pid namespace: the hooks report agy's pid as its liveness, which must be the host's pid. So agy is not
+    # exec'd: the shell stops the in-namespace socat when agy ends.
+    inner = ("%s TCP-LISTEN:%s,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:%s/%s & s=$!; "
+             "trap \"kill $s\" EXIT HUP INT TERM; \"$0\" \"$@\"" % (SOCAT, port, root, RELAY_SOCKET))
+    return ('%s --die-with-parent --unshare-net --ro-bind / / --dev-bind /dev /dev --proc /proc'
+            ' --bind "%s" "%s"%s \\\n  -- /bin/sh -c \'%s\' "%s/agy" "$@"'
+            % (BWRAP, root, root, tmpfs, inner, clone_dir))
+
+
+def render_wrapper(root, clone_dir, port, token, owner, run_id, platform_name=None, hidden=()):
     """The ``/bin/sh`` wrapper the pane runs as ``agy`` (spec D4).
 
     ``HERDR_PLUGIN_STATE_DIR`` is an addition to the D4 text: it is the documented way (instance
@@ -85,9 +127,9 @@ def render_wrapper(root, clone_dir, port, token, owner, run_id):
         '  HERDR_ENV="$HERDR_ENV" HERDR_PANE_ID="$HERDR_PANE_ID" HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" \\\n'
         '  HT_TEST_OWNER="%(owner)s" HT_LEAK_RUN_ID="%(run)s" '
         '${HERDR_THREADS_AGY_OPTS+HERDR_THREADS_AGY_OPTS="$HERDR_THREADS_AGY_OPTS"} \\\n'
-        '  %(sandbox)s -f "%(r)s/loopback.sb" "%(clone)s/agy" "$@"\n'
+        '  %(sandbox)s\n'
     ) % {"r": root, "token": token, "port": port, "owner": owner, "run": run_id,
-         "sandbox": SANDBOX_EXEC, "clone": str(clone_dir)}
+         "sandbox": sandbox_line(root, str(clone_dir), port, platform_name, hidden)}
 
 
 def settings_dict(root):
@@ -452,6 +494,7 @@ class World(object):
         self.base_url = None
         self.token = None
         self.agy_info = {}
+        self.bridge = None
 
     # -- paths
     @property
@@ -571,11 +614,14 @@ class World(object):
         seed_settings(self.root)
         # Every pane shell (a launch or handoff target types `agy` by name) finds the wrapper first.
         (self.root / "home" / ".zshenv").write_text('export PATH=%s:"$PATH"\n' % shlex.quote(str(self.root / "bin")))
-        (self.root / "loopback.sb").write_text(render_profile(self.root, real_home()))
+        if sandbox_kind() == "sandbox-exec":
+            (self.root / "loopback.sb").write_text(render_profile(self.root, real_home()))
         ih("ih_start", self.root, "agy-gate", owner=self.owner_pid, run_id=self.run_id, timeout=60)
         link = self.root / "bin" / "herdr-threads"
         link.symlink_to(os.path.realpath(self.herdr_threads_bin))
         self.base_url, self.token = self.backend.start(self)
+        if sandbox_kind() == "bwrap":
+            self._start_bridge()
         self._stage()
         self.ht(["daemon", "ensure"], timeout=90)
         data = self.herdr_json("workspace", "create", "--cwd", str(self.ws), "--label", "agy-gate",
@@ -583,6 +629,15 @@ class World(object):
         self.workspace = find_key(data, ("workspace_id",))
         if not self.workspace:
             raise WorldError("workspace create returned no workspace id: %r" % (data,))
+
+    def _start_bridge(self):
+        """Linux: the host end of agy's loopback port, a unix socket in the root forwarded to the backend."""
+        sock = self.root / RELAY_SOCKET
+        argv = [SOCAT, "UNIX-LISTEN:%s,fork,unlink-early" % sock, "TCP:127.0.0.1:%s" % self.base_url.rsplit(":", 1)[1]]
+        self.bridge = spawn_owned(argv, self.base_env(), self.owner_pid, stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if not wait_until(sock.exists, 10 * self.timeout_scale):
+            raise WorldError("relay bridge socket %s never appeared" % sock)
 
     def setup_agy(self, permissions=True):
         """Run ``herdr-threads setup agy`` inside the isolated HOME (never the real one).
@@ -612,7 +667,7 @@ class World(object):
             shutil.copyfile(self.agy_bin, str(target))
         os.chmod(str(target), 0o755)
         wrapper = render_wrapper(self.root, clone_dir, self.base_url.rsplit(":", 1)[1], self.token,
-                                 self.owner_pid, self.run_id)
+                                 self.owner_pid, self.run_id, hidden=hidden_dirs(real_home()))
         tmp = self.root / "bin" / (".agy.%d.tmp" % self.stage_count)
         tmp.write_text(wrapper)
         os.chmod(str(tmp), 0o755)
@@ -677,7 +732,8 @@ class World(object):
         out = subprocess.run(["ps", "axeww", "-o", "pid=,command="], stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL, universal_newlines=True).stdout
         needle = str(self.root) + "/agybin/"
-        return any(needle in line and "sandbox-exec" not in line for line in out.splitlines())
+        return any(needle in line and "sandbox-exec" not in line and "bwrap" not in line
+                   and "/bin/sh -c" not in line for line in out.splitlines())
 
     def sender(self):
         pane = self._new_tab("sender")
@@ -714,6 +770,11 @@ class World(object):
             for pane in reversed(self.panes):
                 try:
                     pane.exit()
+                except Exception:
+                    pass
+            if self.bridge is not None:
+                try:
+                    stop_group(self.bridge)
                 except Exception:
                     pass
             try:

@@ -874,9 +874,9 @@ class CliGuards(Base):
                                     env_extra={var: value}, drop=("CI", "GITHUB_ACTIONS"))
                 self.assert_refused(proc, "CI")
 
-    def test_live_refuses_off_darwin(self):
+    def test_live_refuses_off_darwin_and_linux(self):
         env = {k: v for k, v in os.environ.items() if k not in ("CI", "GITHUB_ACTIONS")}
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(relay, "platform", lambda: "linux"):
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(relay, "platform", lambda: "win32"):
             with mock.patch.object(budget_mod, "read_key", side_effect=AssertionError("must not read key")):
                 with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stderr(io.StringIO()):
                     relay.main(["--run-dir", self.run_dir, "--live"])

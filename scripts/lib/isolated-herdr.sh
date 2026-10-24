@@ -131,10 +131,10 @@ ih_reaper_ensure() { # [OWNER] -> start one detached reaper per owner (mkdir loc
     o=${1:-$HT_TEST_OWNER}
     mkdir "/tmp/ih-reaper.$o" 2>/dev/null || return 0
     [ -n "$IH_LIB" ] || { echo "isolated-herdr: no IH_LIB; reaper not started" >&2; rmdir "/tmp/ih-reaper.$o"; return 0; }
-    # exec'd with the tag removed, so the reaper never matches its own scan
+    # exec'd with the tags removed, so the reaper never matches its own scan (Linux ps reads its environment)
     ( trap '' HUP INT TERM
       # shellcheck disable=SC2016
-      exec env -u HT_TEST_OWNER -u HERDR_THREADS_TEST_OWNER_PID HT_SKIP_HERDR_TESTS=1 \
+      exec env -u HT_TEST_OWNER -u HT_LEAK_RUN_ID -u HERDR_THREADS_TEST_OWNER_PID HT_SKIP_HERDR_TESTS=1 \
         /bin/sh -c '. "$1"; ih_reaper_loop "$2"' sh "$IH_LIB" "$o" ) </dev/null >/dev/null 2>&1 &
     return 0
 }

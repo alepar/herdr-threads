@@ -78,8 +78,10 @@ def refusals(env, platform_name, herdr_version_text):
         return "refusing to run under CI/GITHUB_ACTIONS: the native gate never runs in CI"
     if not env.get("HT_AGY_BIN"):
         return "set HT_AGY_BIN to a genuine agy binary (scripts/agy-sandbox/fetch-agy can download one)"
-    if platform_name != "darwin":
-        return "the native gate needs macOS (sandbox-exec and Herdr agy detection); found %s" % platform_name
+    import agyenv
+    why = agyenv.sandbox_refusal(platform_name)
+    if why:
+        return "the native gate %s" % why
     if not os.path.isfile(env["HT_AGY_BIN"]) or not os.access(env["HT_AGY_BIN"], os.X_OK):
         return "HT_AGY_BIN is not an executable file: %s" % env["HT_AGY_BIN"]
     version = parse_herdr_version(herdr_version_text)

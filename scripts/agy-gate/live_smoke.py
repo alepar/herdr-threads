@@ -86,8 +86,10 @@ def refusal(args, env, platform_name, dirty, herdr_version_text):
     """The first environment refusal (a message), or None. Pure: every input is a parameter."""
     if env.get("CI") or env.get("GITHUB_ACTIONS"):
         return "refusing to run under CI/GITHUB_ACTIONS: the live smoke never runs in CI"
-    if platform_name != "darwin":
-        return "the live smoke needs macOS (sandbox-exec and Herdr agy detection); found %s" % platform_name
+    import agyenv
+    why = agyenv.sandbox_refusal(platform_name)
+    if why:
+        return "the live smoke %s" % why
     if args.live and dirty and not args.allow_dirty:
         return "--live needs a clean worktree (the record names the SHA); commit, or pass --allow-dirty"
     return gate.refusals(dict(env), platform_name, herdr_version_text)
@@ -110,17 +112,22 @@ def dry_run_script(message_id=None, thread_id=None, cwd="/tmp"):
 
     Without ids the commands use the ``{frame.id}`` / ``{frame.thread}`` templates. Every reply costs
     ``0.0`` so the relay records zero spend instead of its worst-case estimate."""
-    def call(command):
-        # agy's run_command schema requires all five properties (tool validation rejects fewer).
-        args = {"CommandLine": command, "Cwd": str(cwd), "WaitMsBeforeAsync": 2000,
-                "toolSummary": "Run " + command, "toolAction": "Running"}
+    def call(command, full):
+        # agy 1.3.2's run_command schema requires all five properties; 1.4.6 rejects Cwd and toolAction. Each
+        # command is scripted in both shapes, so whichever one this agy refuses, the other runs (a repeated ack or
+        # reply is harmless to the checks).
+        args = {"CommandLine": command, "WaitMsBeforeAsync": 2000, "toolSummary": "Run " + command}
+        if full:
+            args.update(Cwd=str(cwd), toolAction="Running")
         return {"cost": 0.0, "tool_calls": [{"name": "run_command", "arguments": args}]}
+    ack = "herdr-threads ack %s" % (message_id or "{frame.id}")
+    reply = "herdr-threads send %s --body %s" % (thread_id or "{frame.thread}", REPLY_TEXT)
     return {
         "format": relay_backend.UPSTREAM_FORMAT,
         "replies": [
             {"text": "READY", "cost": 0.0},
-            call("herdr-threads ack %s" % (message_id or "{frame.id}")),
-            call("herdr-threads send %s --body %s" % (thread_id or "{frame.thread}", REPLY_TEXT)),
+            call(ack, True), call(ack, False),
+            call(reply, True), call(reply, False),
             {"text": "done", "cost": 0.0},
         ],
         "default": {"text": "done", "cost": 0.0},
@@ -281,18 +288,6 @@ def db_rows(world, sql, params=()):
         return []
 
 
-def human_json(world, argv, pane):
-    """``herdr-threads human --json <argv>`` from a person's pane: the decoded ``result.data`` or a ``_rc`` stub."""
-    result = world.ht(["--json"] + list(argv), pane=pane, check=False, human=True)
-    try:
-        doc = json.loads(result.stdout)
-    except ValueError:
-        return {"_rc": result.returncode, "_stdout": result.stdout, "_stderr": result.stderr}
-    if isinstance(doc, dict) and isinstance(doc.get("result"), dict) and "data" in doc["result"]:
-        return doc["result"]["data"]
-    return doc
-
-
 def agy_seat(world):
     import _l5
     binding = _l5.live_binding(world)
@@ -408,35 +403,27 @@ def smoke(world, backend, clock, state):
     idle = clock.wait(lambda: pane.wait("idle", 5), IDLE_TIMEOUT, step=0)
     world.check("agy reached idle after the READY prompt", idle)
     sender = world.sender()
-    # The topic has no spaces on purpose; the thread is joined by the agy seat below so the message
-    # is delivered to a member (an explicit ACK recipient must already be invited or joined).
-    thread_doc = human_json(world, ["thread", "create", "--topic", "agy-live-smoke"], sender.pane_id)
-    thread_id = data_id(thread_doc, "thread_id", "id")
-    world.check("the sender created a thread", bool(thread_id), "result=%s" % (thread_doc,))
-    invite = world.ht(["invite", str(thread_id), "--seat", str(seat)], pane=sender.pane_id, check=False,
-                      human=True)
-    world.check("the sender invited the agy seat", invite.returncode == 0,
-                (invite.stderr or invite.stdout).strip()[:300])
-    # Scaffolding, not the model: the runner accepts in the agy pane's own identity (the model is
-    # asked only to ACK and reply).
-    accept = world.ht(["accept", str(thread_id)], pane=pane.pane_id, check=False)
-    world.check("the agy seat joined the thread (runner scaffolding)", accept.returncode == 0,
-                (accept.stderr or accept.stdout).strip()[:300])
+    # The message goes over the sender-agy automatic pair channel: it joins both seats, so the ACK recipient is a
+    # member with no invitation or runner-side accept in the agy pane's identity (which, run from inside another
+    # agent, would be attributed to that agent).
     before = len([r for r in backend.requests() if r.get("kind") == "main"])
-    sent = world.ht(["--json", "send", str(thread_id), "--body", ACK_BODY, "--require-ack", str(seat)],
+    sent = world.ht(["--json", "send", "--seat", str(seat), "--body", ACK_BODY, "--require-ack", str(seat)],
                     pane=sender.pane_id, check=False, human=True)
-    world.check("the ACK-required message was sent", sent.returncode == 0,
+    world.check("the ACK-required message was sent on the pair channel", sent.returncode == 0,
                 (sent.stderr or sent.stdout).strip()[:300])
     try:
         sent_doc = json.loads(sent.stdout)
         sent_data = sent_doc.get("result", {}).get("data", sent_doc) if isinstance(sent_doc, dict) else sent_doc
     except ValueError:
         sent_data = None
-    message_id = data_id(sent_data, "message_id", "id")
-    if not message_id:
-        rows = db_rows(world, "SELECT id FROM messages WHERE thread_id=? AND kind='ordinary' ORDER BY ordinal "
-                              "LIMIT 1", (thread_id,))
+    message_id = data_id(sent_data, "message_id", "message")
+    if message_id:
+        rows = db_rows(world, "SELECT thread_id FROM messages WHERE id=?", (message_id,))
+    else:
+        rows = db_rows(world, "SELECT id, thread_id FROM messages WHERE kind='ordinary' AND body = ? "
+                              "ORDER BY ordinal DESC LIMIT 1", (ACK_BODY,))
         message_id = rows[0]["id"] if rows else None
+    thread_id = rows[0]["thread_id"] if rows else None
     world.check("the message is stored", bool(message_id))
     state.update(thread_id=thread_id, message_id=message_id, seat=seat, sender=sender)
     phase("send", t0, idle and sent.returncode == 0 and bool(message_id))

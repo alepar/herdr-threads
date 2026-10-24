@@ -67,10 +67,10 @@ class ArgumentGuardTests(unittest.TestCase):
     def test_empty_ci_variable_does_not_refuse(self):
         self.assertIsNone(live_smoke.refusal(parse("--dry-run"), dict(OK_ENV, CI=""), "darwin", False, HERDR))
 
-    def test_refuses_on_non_darwin(self):
-        rc, out = run_main(["--dry-run"], platform_name="linux", world_factory=ExplodingWorld)
+    def test_refuses_on_a_platform_with_no_sandbox(self):
+        rc, out = run_main(["--dry-run"], platform_name="win32", world_factory=ExplodingWorld)
         self.assertEqual(rc, live_smoke.EXIT_REFUSED)
-        self.assertIn("macOS", out)
+        self.assertIn("macOS (sandbox-exec) or Linux (bubblewrap)", out)
 
     def test_live_refuses_a_dirty_worktree_unless_allowed(self):
         rc, out = run_main(["--live"], git=DIRTY, world_factory=ExplodingWorld)
@@ -177,15 +177,21 @@ class DryRunScriptTests(unittest.TestCase):
         self.assertEqual(script["format"], fake_upstream.FORMAT)
         replies = script["replies"]
         self.assertEqual(replies[0]["text"], "READY")
-        commands = [r["tool_calls"][0]["arguments"]["CommandLine"] for r in replies[1:3]]
-        self.assertEqual(commands, ["herdr-threads ack {frame.id}",
-                                    "herdr-threads send {frame.thread} --body SMOKE-OK"])
-        self.assertEqual(replies[3], {"text": "done", "cost": 0.0})
-        self.assertEqual(len(replies), 4)
+        commands = [r["tool_calls"][0]["arguments"]["CommandLine"] for r in replies[1:5]]
+        self.assertEqual(commands, ["herdr-threads ack {frame.id}"] * 2
+                         + ["herdr-threads send {frame.thread} --body SMOKE-OK"] * 2)
+        self.assertEqual(replies[5], {"text": "done", "cost": 0.0})
+        self.assertEqual(len(replies), 6)
+
+    def test_each_command_comes_in_both_run_command_shapes(self):
+        replies = live_smoke.dry_run_script("m", "t", "/ws")["replies"]
+        full, short = (replies[i]["tool_calls"][0]["arguments"] for i in (1, 2))
+        self.assertEqual(set(full), {"CommandLine", "Cwd", "WaitMsBeforeAsync", "toolSummary", "toolAction"})
+        self.assertEqual(set(short), {"CommandLine", "WaitMsBeforeAsync", "toolSummary"})
 
     def test_templates_render_against_a_frame_header_the_fake_upstream_understands(self):
         body = {"messages": [{"role": "user", "content": "[herdr-threads] message m123 in t456 from sABC:\n  x"}]}
-        rendered = fake_upstream.render(live_smoke.dry_run_script()["replies"][1:3], fake_upstream.last_frame(body))
+        rendered = fake_upstream.render(live_smoke.dry_run_script()["replies"][1:4:2], fake_upstream.last_frame(body))
         self.assertEqual(rendered[0]["tool_calls"][0]["arguments"]["CommandLine"], "herdr-threads ack m123")
         self.assertIn("send t456 --body", rendered[1]["tool_calls"][0]["arguments"]["CommandLine"])
 

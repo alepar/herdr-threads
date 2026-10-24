@@ -382,8 +382,8 @@ def main(argv=None):
     if args.live:
         if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
             _die("--live refuses to run under CI")
-        if platform() != "darwin":
-            _die("--live is only supported on darwin")
+        if platform() != "darwin" and not platform().startswith("linux"):
+            _die("--live is only supported on darwin and linux")
     elif not _loopback_url(args.fake_upstream):
         _die("--fake-upstream must be an http://127.0.0.1:PORT or http://localhost:PORT URL")
     if not (0 <= args.max_requests <= budget_mod.MAX_REQUESTS):
