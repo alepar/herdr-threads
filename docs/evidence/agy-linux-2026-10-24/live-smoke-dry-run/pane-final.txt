@@ -14,7 +14,7 @@ bash-5.3$ PATH=<root>/bin:"$PATH" <root>/bin/agy
 ────────────────────────────────────────────────────────────
 > herdr-threads: wake up
 
-● Ran 4 commands (+1 · herdr-threads send dHOF6Yc2cVs --body SMOKE-OK ×2) (ctrl+o to expand)
+● Ran 4 commands (+1 · herdr-threads send dsGD0WXM2Yd --body SMOKE-OK ×2) (ctrl+o to expand)
 
   done
 

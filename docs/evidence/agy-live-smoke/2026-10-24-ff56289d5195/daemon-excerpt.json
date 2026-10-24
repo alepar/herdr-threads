@@ -1,0 +1,159 @@
+{
+  "bindings": [
+    {
+      "agent_id": "",
+      "binding_id": "74764d2c937e9b0fe2b777b9bead192e",
+      "concurrent_session": 0,
+      "disconnect_reason": null,
+      "disconnected_at": null,
+      "ended_at": null,
+      "execution_id": "2270c7b9-19fc-5fe6-af1c-45063287a213",
+      "generation": 1,
+      "harness": "agy",
+      "host_boot": "herdr-server:pid=2095729:start=1792808905.730000:uid=1001",
+      "host_epoch": 1,
+      "incarnation": "herdr-server:pid=2095729:start=1792808905.730000:uid=1001",
+      "lineage_from": null,
+      "liveness": "connected",
+      "liveness_pid": 2095973,
+      "liveness_start": 190421778,
+      "migrated": 0,
+      "migrated_session": null,
+      "native_session": "fb69b5a5-d37d-4d3c-944b-d18266e89639",
+      "observation_provenance": "cooperative_top_level",
+      "observed_at": 1792808916938,
+      "ordinal": 1,
+      "parent_binding": null,
+      "registered_at": 1792808916938,
+      "role": "top_level",
+      "seat_id": "sDnWGUXWP9CN",
+      "target_generation": 1,
+      "target_id": "w1:p2",
+      "terminal_id": "term_65e8cda12b74f2"
+    }
+  ],
+  "invitations": [],
+  "memberships": [
+    {
+      "episode": 1,
+      "home_transition": 1,
+      "joined_at": 1792808918470,
+      "last_joined_n": 1,
+      "left_at": null,
+      "ordinal": 1,
+      "retired_at": null,
+      "seat_id": "sDnW0B7o4NBY",
+      "state": "joined",
+      "thread_id": "d5jvJNKA3wA",
+      "voluntary_state": "joined"
+    },
+    {
+      "episode": 1,
+      "home_transition": 1,
+      "joined_at": 1792808918470,
+      "last_joined_n": 1,
+      "left_at": null,
+      "ordinal": 2,
+      "retired_at": null,
+      "seat_id": "sDnWGUXWP9CN",
+      "state": "joined",
+      "thread_id": "d5jvJNKA3wA",
+      "voluntary_state": "joined"
+    }
+  ],
+  "messages": [
+    {
+      "actor_seat_id": null,
+      "body": "",
+      "event_json": "{\"action\":\"create_thread\",\"actor_seat\":\"sDnW0B7o4NBY\",\"goal\":\"1:1 sDnW0B7o4NBY sDnWGUXWP9CN\"}",
+      "id": "eDnW3CkUu7l5",
+      "kind": "info",
+      "sequence": 1
+    },
+    {
+      "actor_seat_id": "sDnWGUXWP9CN",
+      "body": "",
+      "event_json": "{\"action\":\"join\",\"actor_seat\":\"sDnW0B7o4NBY\",\"generation\":0,\"observation\":\"direct_auto_join\",\"seat\":\"sDnWGUXWP9CN\"}",
+      "id": "eDnW4InyeCid",
+      "kind": "info",
+      "sequence": 2
+    },
+    {
+      "actor_seat_id": "sDnW0B7o4NBY",
+      "body": "Smoke check: please acknowledge this message, then reply in this thread with the text SMOKE-OK.",
+      "event_json": null,
+      "id": "mDnW8iTNVf1c",
+      "kind": "ordinary",
+      "sequence": 3
+    },
+    {
+      "actor_seat_id": null,
+      "body": "",
+      "event_json": "{\"decided_at\":1792808926081,\"event\":\"ack\",\"messages\":[\"mDnW8iTNVf1c\"],\"seat\":\"sDnWGUXWP9CN\"}",
+      "id": "eDnWcazFgTkk",
+      "kind": "info",
+      "sequence": 4
+    },
+    {
+      "actor_seat_id": "sDnWGUXWP9CN",
+      "body": "SMOKE-OK",
+      "event_json": null,
+      "id": "mDnWdmFI8EGp",
+      "kind": "ordinary",
+      "sequence": 5
+    }
+  ],
+  "receipts": [
+    {
+      "ack_actor_seat_id": "sDnWGUXWP9CN",
+      "ack_binding_id": "74764d2c937e9b0fe2b777b9bead192e",
+      "ack_generation": 1,
+      "ack_observation": "{\"action_provenance\":\"cooperative_hook_delivery\",\"binding_generation\":1,\"decided_at\":1792808926081,\"execution\":\"2270c7b9-19fc-5fe6-af1c-45063287a213\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=2095729:start=1792808905.730000:uid=1001\",\"observed_at\":1792808926081,\"provenance\":\"cooperative_top_level\",\"session\":\"fb69b5a5-d37d-4d3c-944b-d18266e89639\",\"target_generation\":1,\"via\":\"transcript\"}",
+      "ack_required": 1,
+      "acked_at": 1792808926081,
+      "available_at": 1792808918488,
+      "deadline_at": 1792809218488,
+      "message_id": "mDnW8iTNVf1c",
+      "retired_at": null,
+      "seat_id": "sDnWGUXWP9CN",
+      "settle_batch": "9103bac6-72a2-44e7-81ad-36eb6e7fb87c",
+      "soft_poked_at": null,
+      "state": "acked",
+      "warning_message_id": null
+    }
+  ],
+  "seat": [
+    {
+      "created_at": 1792808916926,
+      "generation": 1,
+      "home_node": "5179209c1dbb5ae7ccff794bda7895c6",
+      "host_id": 1,
+      "id": "sDnWGUXWP9CN",
+      "instance_id": "5179209c1dbb5ae7ccff794bda7895c6",
+      "is_local": 1,
+      "nudge_threshold": 0,
+      "ordinal": 1,
+      "published": 1,
+      "remote_kind": null,
+      "retired_at": null,
+      "retired_seq": null,
+      "role": "native",
+      "state": "resolved",
+      "structural_connection_epoch": 1,
+      "structural_host_boot": "herdr-server:pid=2095729:start=1792808905.730000:uid=1001",
+      "structural_host_epoch": 1,
+      "structural_incarnation": "herdr-server:pid=2095729:start=1792808905.730000:uid=1001",
+      "structural_incarnation_kind": "native_current_target",
+      "structural_observation_sequence": 5,
+      "structural_terminal_id": "term_65e8cda12b74f2",
+      "target_generation": 1,
+      "target_id": "w1:p2",
+      "unavailability_episode": 1,
+      "unavailability_open": 0,
+      "unresolved_from_generation_id": null,
+      "unresolved_prior_binding_generation": null,
+      "unresolved_reason": null,
+      "wake_on": "nudge"
+    }
+  ]
+}

@@ -83,3 +83,5 @@ leak check failed.
   Wake, injection, SMOKE-OK reply and an acked receipt; FAIL on the explicit-`ack` check only (the receipt was
   settled by `cooperative_hook_delivery`, the model ran `inbox`). 6 requests, 0.01434975 USD, leak check clean.
   Details: `docs/evidence/agy-linux-2026-10-24/`.
+- `2026-10-24-ff56289d5195/`: live on Linux at a clean tree, genuine agy 1.4.6, `google/gemini-2.5-flash`. PASS,
+  ack_phase `wake`, 8 requests, 0.01423731 USD, leak check clean.

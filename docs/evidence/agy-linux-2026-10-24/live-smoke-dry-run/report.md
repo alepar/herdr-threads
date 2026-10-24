@@ -1,6 +1,6 @@
 # agy live smoke (dry-run)
 
-- SHA: `120060fae813238e3a885ed5f42a97f91ead23bd` (dirty)
+- SHA: `ff56289d5195c5c3b3fbed4aaa46bbd725087d8d`
 - agy: 1.4.6, sha512 `f1982f560c40dbd7`
 - herdr: herdr 0.9.5
 - model: fake-upstream (scripted, no model); main requests: 6; cost: $0.0
@@ -9,10 +9,10 @@
 
 ## Phases
 
-- enroll: ok in 10.1s
+- enroll: ok in 9.6s
 - send: ok in 0.3s
 - wake: ok in 6.0s
-- act: ok in 0.0s
+- act: ok in 0.5s
 
 ## Checks
 

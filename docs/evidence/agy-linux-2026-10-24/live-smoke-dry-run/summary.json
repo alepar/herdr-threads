@@ -15,7 +15,7 @@
       "ok": true
     },
     {
-      "detail": "binding={'binding_id': '7f2d2076d4e82921ba57e2be89d955cd', 'seat_id': 'sCuKm63Ijriz', 'ordinal': 1, 'generation': 1, 'harness': 'agy', 'native_session': '3f97f33a-4bc5-47de-80e7-50ab420e0f24', 'observation_provenance': 'cooperative_top_level', 'role': 'top_level', 'liveness': 'connected', 'lineage_from': None, 'ended_at': None}",
+      "detail": "binding={'binding_id': 'b9e57171164cf42fcc94cfa29fbad19e', 'seat_id': 'szSbv2AeEVd0', 'ordinal': 1, 'generation': 1, 'harness': 'agy', 'native_session': 'e443097e-d33e-4f34-b385-024a9d703a36', 'observation_provenance': 'cooperative_top_level', 'role': 'top_level', 'liveness': 'connected', 'lineage_from': None, 'ended_at': None}",
       "name": "the agy seat is enrolled",
       "ok": true
     },
@@ -25,7 +25,7 @@
       "ok": true
     },
     {
-      "detail": "{\"result\":{\"data\":\"mCuKzK3y9zhA\",\"kind\":\"message_sent\",\"selection\":{\"invitation\":null,\"outcome\":\"already_joined\"},\"thread\":\"dHOF6Yc2cVs\"},\"version\":9}",
+      "detail": "{\"result\":{\"data\":\"mzSbDu7yPAxD\",\"kind\":\"message_sent\",\"selection\":{\"invitation\":null,\"outcome\":\"already_joined\"},\"thread\":\"dsGD0WXM2Yd\"},\"version\":9}",
       "name": "the ACK-required message was sent on the pair channel",
       "ok": true
     },
@@ -50,12 +50,12 @@
       "ok": true
     },
     {
-      "detail": "tool calls=[{'name': 'run_command', 'args_trimmed': '{\"CommandLine\": \"herdr-threads ack mCuKzK3y9zhA\", \"WaitMsBeforeAsync\": 2000, \"toolSummary\": \"Run herdr-threads ack mCuKzK3y9zhA\", \"Cwd\": \"<root>/ws\", \"toolAction\": \"Running\"}', 'seq': 3}, {'name': 'run_command', 'args_trimmed': '{\"CommandLine\": \"herdr-threads ack mCuKzK3y9zhA\", \"WaitMsBeforeAsync\": 2000, \"toolSummary\": \"Run herdr-threads ack mCuKzK3y9zhA\"}', 'seq': 4}, {'name': 'run_command', 'args_trimmed': '{\"CommandLine\": \"herdr-threads send dHOF6Yc2cVs --body SMOKE-OK\", \"WaitMsBeforeAsync\": 2000, \"toolSummary\": \"Run herdr-threads send dHOF6Yc2cVs --body SMOKE-OK\", \"Cwd\": \"<root>/ws\", \"toolAction\": \"Running\"}', 'seq': 5}, {'name': 'run_command', 'args_trimmed': '{\"CommandLine\": \"herdr-threads send dHOF6Yc2cVs --body SMOKE-OK\", \"WaitMsBeforeAsync\": 2000, \"toolSummary\": \"Run herdr-threads send dHOF6Yc2cVs --body SMOKE-OK\"}', 'seq': 6}]",
+      "detail": "tool calls=[{'name': 'run_command', 'args_trimmed': '{\"CommandLine\": \"herdr-threads ack mzSbDu7yPAxD\", \"WaitMsBeforeAsync\": 2000, \"toolSummary\": \"Run herdr-threads ack mzSbDu7yPAxD\", \"Cwd\": \"<root>/ws\", \"toolAction\": \"Running\"}', 'seq': 3}, {'name': 'run_command', 'args_trimmed': '{\"CommandLine\": \"herdr-threads ack mzSbDu7yPAxD\", \"WaitMsBeforeAsync\": 2000, \"toolSummary\": \"Run herdr-threads ack mzSbDu7yPAxD\"}', 'seq': 4}, {'name': 'run_command', 'args_trimmed': '{\"CommandLine\": \"herdr-threads send dsGD0WXM2Yd --body SMOKE-OK\", \"WaitMsBeforeAsync\": 2000, \"toolSummary\": \"Run herdr-threads send dsGD0WXM2Yd --body SMOKE-OK\", \"Cwd\": \"<root>/ws\", \"toolAction\": \"Running\"}', 'seq': 5}, {'name': 'run_command', 'args_trimmed': '{\"CommandLine\": \"herdr-threads send dsGD0WXM2Yd --body SMOKE-OK\", \"WaitMsBeforeAsync\": 2000, \"toolSummary\": \"Run herdr-threads send dsGD0WXM2Yd --body SMOKE-OK\"}', 'seq': 6}]",
       "name": "the agy seat ACKed through run_command",
       "ok": true
     },
     {
-      "detail": "receipts=[('acked', '{\"action_provenance\":\"cooperative_hook_delivery\",\"binding_generation\":1,\"decided_at\":1792805017909,\"execution\":\"cd4b4f61-4c0a-519e-a994-ab58ef6c3c27\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=1412350:start=1792805000.000000:uid=1001\",\"observed_at\":1792805017909,\"provenance\":\"cooperative_top_level\",\"session\":\"3f97f33a-4bc5-47de-80e7-50ab420e0f24\",\"target_generation\":1,\"via\":\"transcript\"}')]",
+      "detail": "receipts=[('acked', '{\"action_provenance\":\"cooperative_hook_delivery\",\"binding_generation\":1,\"decided_at\":1792808704605,\"execution\":\"b01072a6-453a-599c-ae55-4b7bf2b9ca80\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=2075476:start=1792808687.010000:uid=1001\",\"observed_at\":1792808704605,\"provenance\":\"cooperative_top_level\",\"session\":\"e443097e-d33e-4f34-b385-024a9d703a36\",\"target_generation\":1,\"via\":\"transcript\"}')]",
       "name": "the receipt is acked",
       "ok": true
     },
@@ -65,12 +65,12 @@
       "ok": true
     },
     {
-      "detail": "messages=[(None, ''), ('sCuKm63Ijriz', ''), ('sCuKgMGL9QN1', 'Smoke check: please acknowledge this mes'), (None, ''), ('sCuKm63Ijriz', 'SMOKE-OK')]",
+      "detail": "messages=[(None, ''), ('szSbv2AeEVd0', ''), ('szSbC2v4UV00', 'Smoke check: please acknowledge this mes'), (None, ''), ('szSbv2AeEVd0', 'SMOKE-OK')]",
       "name": "the agy seat replied SMOKE-OK in the thread",
       "ok": true
     },
     {
-      "detail": "ack_observation=['{\"action_provenance\":\"cooperative_hook_delivery\",\"binding_generation\":1,\"decided_at\":1792805017909,\"execution\":\"cd4b4f61-4c0a-519e-a994-ab58ef6c3c27\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=1412350:start=1792805000.000000:uid=1001\",\"observed_at\":1792805017909,\"provenance\":\"cooperative_top_level\",\"session\":\"3f97f33a-4bc5-47de-80e7-50ab420e0f24\",\"target_generation\":1,\"via\":\"transcript\"}']",
+      "detail": "ack_observation=['{\"action_provenance\":\"cooperative_hook_delivery\",\"binding_generation\":1,\"decided_at\":1792808704605,\"execution\":\"b01072a6-453a-599c-ae55-4b7bf2b9ca80\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=2075476:start=1792808687.010000:uid=1001\",\"observed_at\":1792808704605,\"provenance\":\"cooperative_top_level\",\"session\":\"e443097e-d33e-4f34-b385-024a9d703a36\",\"target_generation\":1,\"via\":\"transcript\"}']",
       "name": "the delivery receipt is settled (cooperative_hook_delivery, or superseded by the ACK)",
       "ok": true
     },
@@ -82,8 +82,8 @@
   ],
   "cost_estimated": false,
   "cost_usd": 0.0,
-  "dirty": true,
-  "duration_s": 19.8,
+  "dirty": false,
+  "duration_s": 19.5,
   "herdr_version": "herdr 0.9.5",
   "leak_check": {
     "ok": true,
@@ -96,7 +96,7 @@
     {
       "name": "enroll",
       "ok": true,
-      "seconds": 10.1
+      "seconds": 9.6
     },
     {
       "name": "send",
@@ -111,10 +111,10 @@
     {
       "name": "act",
       "ok": true,
-      "seconds": 0.0
+      "seconds": 0.5
     }
   ],
   "refusals": 0,
   "requests": 6,
-  "sha": "120060fae813238e3a885ed5f42a97f91ead23bd"
+  "sha": "ff56289d5195c5c3b3fbed4aaa46bbd725087d8d"
 }

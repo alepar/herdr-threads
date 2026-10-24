@@ -1,0 +1,38 @@
+{
+  "injected_system_messages": [
+    "The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\nThe following system message was injected by a PreInvocation hook:\n[herdr-threads] new messages:\n\n[herdr-threads] message mDnW8iTNVf1c in d5jvJNKA3wA \"1:1 sDnW0B7o4NBY sDnWGUXWP9CN\" from sDnW0B7o4NBY [p0] [human]:\n  Smoke check: please acknowledge this message, then reply in this thread with the text SMOKE-OK.\n</SYSTEM_MESSAGE>"
+  ],
+  "tool_calls": [
+    {
+      "args_trimmed": "{\"CommandLine\": \"herdr-threads ack mDnW8iTNVf1c --thread d5jvJNKA3wA\", \"toolSummary\": \"Acknowledge herdr-threads message\"}",
+      "name": "run_command",
+      "seq": 3
+    },
+    {
+      "args_trimmed": "{\"CommandLine\": \"herdr-threads ack mDnW8iTNVf1c --thread d5jvJNKA3wA\", \"toolSummary\": \"Acknowledge herdr-threads message\", \"WaitMsBeforeAsync\": 5000}",
+      "name": "run_command",
+      "seq": 4
+    },
+    {
+      "args_trimmed": "{\"toolSummary\": \"Acknowledge herdr-threads message\", \"WaitMsBeforeAsync\": 5000, \"CommandLine\": \"herdr-threads ack mDnW8iTNVf1c\"}",
+      "name": "run_command",
+      "seq": 5
+    },
+    {
+      "args_trimmed": "{\"WaitMsBeforeAsync\": 5000, \"toolSummary\": \"Reply to herdr-threads message\", \"CommandLine\": \"herdr-threads reply SMOKE-OK --thread d5jvJNKA3wA\"}",
+      "name": "run_command",
+      "seq": 6
+    },
+    {
+      "args_trimmed": "{\"Path\": \"<root>/home/.gemini/config/plugins/herdr-threads/skills/herdr-threads/SKILL.md\"}",
+      "name": "read_file",
+      "seq": 7
+    },
+    {
+      "args_trimmed": "{\"toolSummary\": \"Reply to herdr-threads message\", \"WaitMsBeforeAsync\": 5000, \"CommandLine\": \"herdr-threads send d5jvJNKA3wA --body \\\"SMOKE-OK\\\"\"}",
+      "name": "run_command",
+      "seq": 8
+    }
+  ],
+  "tool_results": []
+}

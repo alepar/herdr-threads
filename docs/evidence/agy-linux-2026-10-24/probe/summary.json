@@ -7,17 +7,21 @@
   "error": null,
   "hook_fires": {
    "PostInvocation": 40,
-   "Stop": 2
+   "Stop": 1
   },
   "requests_total": 40,
   "turn1": {
+   "ended": true,
    "idle": true,
-   "requests": 40
+   "measured": true,
+   "requests": 40,
+   "started": true
   },
   "turn2": {
-   "idle": true,
-   "requests": 0
-  }
+   "measured": false,
+   "reason": "relay budget exhausted by an earlier turn"
+  },
+  "verdict": "no cap below 40 model requests (the relay ceiling ended the turn)"
  },
  "post-inject": {
   "error": null,
@@ -27,13 +31,20 @@
   },
   "requests_total": 2,
   "turn1": {
+   "ended": true,
    "idle": true,
-   "requests": 1
+   "measured": true,
+   "requests": 1,
+   "started": true
   },
   "turn2": {
+   "ended": true,
    "idle": true,
-   "requests": 1
-  }
+   "measured": true,
+   "requests": 1,
+   "started": true
+  },
+  "verdict": "0 extra model call(s) for the injected step"
  },
  "stop-continue": {
   "error": null,
@@ -43,12 +54,19 @@
   },
   "requests_total": 22,
   "turn1": {
+   "ended": true,
    "idle": true,
-   "requests": 11
+   "measured": true,
+   "requests": 11,
+   "started": true
   },
   "turn2": {
+   "ended": true,
    "idle": true,
-   "requests": 11
-  }
+   "measured": true,
+   "requests": 11,
+   "started": true
+  },
+  "verdict": "capped at 10 extra model call(s) per turn"
  }
 }
