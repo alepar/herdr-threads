@@ -1088,6 +1088,19 @@ fn herdr_release_wake() {
     });
     let pending = m.person(&sender_pane, &["pending-receipts", "--seat", &agent]);
     assert!(!pending.to_string().contains(&ack), "{pending}");
+    // The ACK lands before the wake turn ends; a send racing its Stop hook is
+    // reported by that Stop continuation instead of the next turn's hook.
+    wait_for("wake turn end", Duration::from_secs(15), || {
+        let log = m.log_of(&agent_pane);
+        if log
+            .iter()
+            .any(|e| e["kind"] == "turn_end" && WAKE_TEXTS.iter().any(|t| e["text"] == *t))
+        {
+            Ok(())
+        } else {
+            Err(format!("{log:?}"))
+        }
+    });
 
     // A separate body exceeds the bounded hook page/context, so in-turn
     // attempts cannot complete its display. Unlike the small wake request,
