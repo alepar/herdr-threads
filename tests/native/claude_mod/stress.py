@@ -47,6 +47,10 @@ SCENARIO_NAMES = [
     "reload_mid_turn", "kill_watch_fallback_and_restream", "user_prompt_submit_block_drop",
     "denied_tool_with_pending_context",
 ]
+# Opt-in timer scenarios (ht-live-evidence): each waits out a 120 s mod hold, so they are not in the default run.
+TIMER_SCENARIOS = ["draft_hold", "failing_tool_hold"]
+DRAFT_WAIT_S = 120  # register.js DRAFT_WAIT_MS
+HOLD_IDLE_S = 120   # register.js HOLD_IDLE_MS
 DEFAULT_PROFILE = (
     "/private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/"
     "scratchpad/modspike/profile"
@@ -226,7 +230,8 @@ def auth_output_usable(text):
 def parse_args(argv):
     p = argparse.ArgumentParser(prog="stress.py", description=__doc__.split("\n")[0])
     p.add_argument("--iterations", type=int, default=20)
-    p.add_argument("--scenarios", default=",".join(SCENARIO_NAMES))
+    p.add_argument("--scenarios", default=",".join(SCENARIO_NAMES),
+                   help="comma-separated; opt-in, each waits out a 120 s hold: " + ",".join(TIMER_SCENARIOS))
     p.add_argument("--profile", default=DEFAULT_PROFILE,
                    help="signed-in CLAUDE_CONFIG_DIR, used in place (never copied, settings never written)")
     p.add_argument("--evidence-dir", default=os.path.join(REPO, "docs", "evidence", "claude-mod-delivery"))
@@ -242,7 +247,7 @@ def parse_args(argv):
     if a.iterations < 1:
         p.error("--iterations must be >= 1")
     names = [s for s in a.scenarios.split(",") if s]
-    bad = [s for s in names if s not in SCENARIO_NAMES]
+    bad = [s for s in names if s not in SCENARIO_NAMES + TIMER_SCENARIOS]
     if bad:
         p.error("unknown scenario(s): %s" % ",".join(bad))
     a.scenarios = names
@@ -494,13 +499,18 @@ class Live:
                  HT_TEST_OWNER=str(os.getpid()))
         return e
 
-    def ht(self, *argv, caller=None, check=True):
-        full = [self.args.bin, "--json", "--state-dir", self.state, "--host-endpoint", self.host_sock]
-        if caller:
-            seat, pane = caller
-            full += ["--cooperative-seat", seat, "--cooperative-target", pane,
-                     "--cooperative-harness", "claude", "--cooperative-role", "top-level"]
-        r = self.procs.run(full + list(argv), env=self.cli_env())
+    def ht(self, *argv, check=True, human=False, pane=None):
+        """human: a person or operator call (the sender is a person seat in `pane`, as in scripts/wake-e2e.py), so a
+        driver started from inside an agent is never taken for that agent."""
+        # an escalating command (setup) must come first, before every option (570af5e4d)
+        setup = argv[:1] == ("setup",)
+        lead = ["setup"] if setup else ["human"] if human else []
+        argv = argv[1:] if setup else argv
+        full = [self.args.bin, *lead, "--json", "--state-dir", self.state, "--host-endpoint", self.host_sock]
+        env = self.cli_env()
+        if pane:
+            env["HERDR_PANE_ID"] = pane
+        r = self.procs.run(full + list(argv), env=env)
         if check and r.returncode != 0:
             raise RuntimeError("herdr-threads %s failed (%s): %s" % (" ".join(argv), r.returncode,
                                                                     (r.stdout + r.stderr)[:600]))
@@ -548,12 +558,12 @@ class Live:
         with open(self.settings, "w") as f:
             json.dump(settings, f, indent=1)
         self.ht("daemon", "ensure")
-        self.a = self.data(self.ht("seat", "resolve", "--pane", PANE_A))
-        self.b = self.data(self.ht("seat", "resolve", "--pane", PANE_B))
-        self.ht("check-in", "--lifecycle-event", "stress-a-start", caller=(self.a, PANE_A))
-        self.thread = self.data(self.ht("thread", "create", "--topic", "mod stress", caller=(self.a, PANE_A)))
-        self.ht("invite", self.thread, "--seat", self.b, caller=(self.a, PANE_A))
-        self.accepted = False
+        # the sender is a person seat in the plain pane A; B is the Claude pane's seat
+        r = self.ht("me", "init", human=True, pane=PANE_A)
+        self.a = self.data(r) if isinstance(self.data(r), str) else re.search(r"\bs[A-Za-z0-9]{11}\b", r.stdout).group(0)
+        self.b = self.data(self.ht("seat", "resolve", "--pane", PANE_B, human=True))
+        # messages go over the A-B automatic pair channel: it joins both seats, so no invitation, accept or start-up
+        # invitation wake turn races the first scenario
         self.tenv = self.claude_env()
         self.procs.tmux.append((self.sock, self.tenv))
         threading.Thread(target=self.poll_ledgers, daemon=True).start()
@@ -592,15 +602,6 @@ class Live:
             raise RuntimeError("claude did not reach the prompt in %s:\n%s" % (name, self.pane_text(name)[-1500:]))
         # the mod connects once SessionStart's check-in has committed
         self.wait_ledger(name, lambda e: e.get("kind") in ("received", "restart", "refused", "held"), 1, 20)
-        if not self.accepted:
-            # B's lifecycle check-in is the first session's SessionStart hook
-            end = time.time() + 30
-            while True:
-                r = self.ht("accept", self.thread, caller=(self.b, PANE_B), check=time.time() > end)
-                if r.returncode == 0:
-                    break
-                time.sleep(1)
-            self.accepted = True
         # a pending attention item is submitted once per watch run: let that turn finish first
         time.sleep(3)
         self.wait_idle(name)
@@ -721,10 +722,10 @@ class Live:
     def send(self, tag, lazy=False):
         body = ("stress %s: an automated delivery test message. No action is needed; do not run any "
                 "commands, just reply with the single word ok." % tag)
-        argv = ["send", self.thread, "--body", body]
+        argv = ["send", "--seat", self.b, "--body", body]
         if not lazy:
             argv += ["--require-ack", self.b]
-        mid = self.data(self.ht(*argv, caller=(self.a, PANE_A)))
+        mid = self.data(self.ht(*argv, human=True, pane=PANE_A))
         (self.lazy if lazy else self.sent).append(mid)
         return mid
 
@@ -1004,6 +1005,92 @@ def sc_denied_tool(L, s, i):
     return s
 
 
+def first_at(L, s, pred):
+    return min([e.get("at", 0) for e in L.ledger(s) if pred(e)] or [None])
+
+
+def delivered_at(L, s, mid):
+    return first_at(L, s, lambda e: e.get("kind") == "delivered" and mid in (e.get("ids") or []))
+
+
+def wait_no_open_turn(L, s, quiet=5, timeout=180):
+    """Idle by the screen and by the hook log (every UserPromptSubmit closed by a Stop) for `quiet` seconds: the
+    session's start-up wake turn (the invitation, the attention item) must be over before a draft is typed."""
+    end = time.time() + timeout
+    while time.time() < end:
+        turns = turn_intervals(L.hook_events())
+        open_turn = bool(turns) and turns[-1][1] == float("inf")
+        if not open_turn and L.wait_idle(s, 30):
+            n = len(L.hook_events())
+            time.sleep(quiet)
+            if len(L.hook_events()) == n and not L.busy(s):
+                return
+        time.sleep(1)
+    raise RuntimeError("session %s never settled with no open turn" % s)
+
+
+def sc_draft_hold(L, s, i):
+    """A typed, unsent draft in the composer while a waking (require-ACK) message arrives at an idle session:
+    the mod holds the wake (`held` reason `draft`) for DRAFT_WAIT_MS, then submits anyway. Records the hold, its
+    expiry, the prompt Claude Code submitted and what is left in the composer after the plugin turn."""
+    wait_no_open_turn(L, s)
+    draft = "DRAFTKEEP-%d-%s please do not send" % (i, uuid.uuid4().hex[:6])
+    L.tmux("send-keys", "-t", s, "-l", draft)
+    time.sleep(1.5)
+    L.capture(s, "draft_hold-%d-typed" % i)
+    n = L.stops()
+    t0 = now_ms()
+    mid = L.send("draft-%d" % i)
+    held = lambda e: e.get("kind") == "held" and e.get("reason") == "draft" and mid in (e.get("ids") or [])
+    L.wait_ledger(s, held, 1, 30)
+    time.sleep(10)
+    L.capture(s, "draft_hold-%d-held" % i)
+    L.wait_ledger(s, lambda e: e.get("kind") == "delivered" and mid in (e.get("ids") or []), 1, DRAFT_WAIT_S + 90)
+    L.wait_stops(n, 1, 120)
+    L.wait_idle(s)
+    time.sleep(2)
+    after = L.pane_text(s)
+    L.capture(s, "draft_hold-%d-after" % i)
+    prompts = [e.get("prompt") for e in L.hook_events() if e["event"] == "UserPromptSubmit" and e.get("at", 0) >= t0]
+    first_held, got = first_at(L, s, held), delivered_at(L, s, mid)
+    L.notes.append(json.dumps({
+        "scenario": "draft_hold", "iteration": i, "sent_at": t0, "first_held_at": first_held, "delivered_at": got,
+        "hold_s": round((got - first_held) / 1000, 1) if got and first_held else None,
+        "send_to_delivery_s": round((got - t0) / 1000, 1) if got else None,
+        "held_entries": sum(1 for e in L.ledger(s) if held(e)),
+        "submitted_prompts": prompts, "draft_in_a_submitted_prompt": any(draft in (p or "") for p in prompts),
+        "draft_left_in_composer": draft in after}, sort_keys=True))
+    L.tmux("send-keys", "-t", s, "C-e")  # leave an empty composer for the next iteration
+    L.tmux("send-keys", "-t", s, "C-u")
+    time.sleep(0.5)
+    return s
+
+
+def sc_failing_tool_hold(L, s, i):
+    """A turn whose last main tool call is an ordinary failing Bash command (no Esc, no deny), then a waking
+    message at idle. Records whether the mod held it as `post_abort` and how long until delivery: Claude Code
+    reports a failing tool result with isError:true, which register.js userRejected() counts as a user reject."""
+    L.wait_idle(s)
+    n = L.stops()
+    L.type_prompt(s, "Run the shell command `false` with the Bash tool once, do not retry, then reply with the "
+                     "single word done.")
+    L.wait_stops(n, 1, 120)
+    L.wait_idle(s)
+    n = L.stops()
+    t0 = now_ms()
+    mid = L.send("failtool-%d" % i)
+    held = lambda e: e.get("kind") == "held" and e.get("reason") == "post_abort" and mid in (e.get("ids") or [])
+    L.wait_ledger(s, lambda e: e.get("kind") == "delivered" and mid in (e.get("ids") or []), 1, HOLD_IDLE_S + 90)
+    L.wait_stops(n, 1, 120)
+    L.wait_idle(s)
+    got, first_held = delivered_at(L, s, mid), first_at(L, s, held)
+    L.notes.append(json.dumps({
+        "scenario": "failing_tool_hold", "iteration": i, "sent_at": t0, "first_post_abort_held_at": first_held,
+        "delivered_at": got, "send_to_delivery_s": round((got - t0) / 1000, 1) if got else None,
+        "post_abort_held_entries": sum(1 for e in L.ledger(s) if held(e))}, sort_keys=True))
+    return s
+
+
 SCENARIOS = {
     "busy_context": sc_busy_context, "idle_submit": sc_idle_submit, "lazy_append": sc_lazy_append,
     "queued_user_prompt": sc_queued_user_prompt, "stop_hook_continuation": sc_stop_hook_continuation,
@@ -1011,8 +1098,9 @@ SCENARIOS = {
     "clear_rebind": sc_clear_rebind, "resume_keeps_set": sc_resume_keeps_set, "reload": sc_reload,
     "reload_mid_turn": sc_reload_mid_turn, "kill_watch_fallback_and_restream": sc_kill_watch,
     "user_prompt_submit_block_drop": sc_ups_block_drop, "denied_tool_with_pending_context": sc_denied_tool,
+    "draft_hold": sc_draft_hold, "failing_tool_hold": sc_failing_tool_hold,
 }
-assert sorted(SCENARIOS) == sorted(SCENARIO_NAMES)
+assert sorted(SCENARIOS) == sorted(SCENARIO_NAMES + TIMER_SCENARIOS)
 
 
 def paths_of(entries, ids):

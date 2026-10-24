@@ -1,0 +1,49 @@
+
+ ▐▛███▛█   Claude Code v2.1.310
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/ht-ms-ld_z66in/work
+
+
+● herdr-threads: delivered 1 message(s)
+
+› Prompt from the herdr-threads plugin
+❯ The herdr-threads plugin sent a message:                                                                                                                      
+  wake up                                                                                                                                                       
+                                                                                                                                                                
+  This is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above.                
+
+● Skill(herdr-threads)
+  ⎿  Successfully loaded skill
+
+● herdr-threads: delivered 1 message(s)
+
+● ok
+
+✻ Sautéed for 12s · done 4:47 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                                                              
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ DRAFTKEEP-0-21d977 please do not send
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  █░░░░░░░░░░░░░░░░░░░ 1m | Opus 5.5 | CL:5%/5%/?/$0 | aisw:claude-1
+  ⏸ manual mode on               

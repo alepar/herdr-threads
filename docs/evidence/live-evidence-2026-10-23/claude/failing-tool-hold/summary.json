@@ -1,0 +1,73 @@
+{
+ "claude_version": "2.1.310",
+ "finished": "2026-10-23T16:50:42-0700",
+ "herdr": "stand-in endpoint (fake panes w1:p1 sender, w1:p2 claude)",
+ "iterations": 1,
+ "minutes": 3.7,
+ "mode": "live",
+ "native_prompts_total": 0,
+ "profile": "signed-in profile in place (CLAUDE_CONFIG_DIR), real HOME",
+ "scenarios": {
+  "draft_hold": {
+   "fail": 0,
+   "iterations": [
+    {
+     "ids": [
+      "m6SzRVT27l0i"
+     ],
+     "iteration": 0,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [
+      "{\"delivered_at\": 1792799238920, \"draft_in_a_submitted_prompt\": false, \"draft_left_in_composer\": true, \"first_held_at\": null, \"held_entries\": 0, \"hold_s\": null, \"iteration\": 0, \"scenario\": \"draft_hold\", \"send_to_delivery_s\": 2.3, \"sent_at\": 1792799236654, \"submitted_prompts\": []}"
+     ],
+     "paths": {
+      "m6SzRVT27l0i": [
+       "context"
+      ]
+     },
+     "receipts": {
+      "m6SzRVT27l0i": "acked"
+     },
+     "seconds": 48.1,
+     "settled": true
+    }
+   ],
+   "pass": 1
+  },
+  "failing_tool_hold": {
+   "fail": 0,
+   "iterations": [
+    {
+     "ids": [
+      "m6Sz0UVmHGUU"
+     ],
+     "iteration": 0,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [
+      "{\"delivered_at\": 1792799435643, \"first_post_abort_held_at\": 1792799316434, \"iteration\": 0, \"post_abort_held_entries\": 1, \"scenario\": \"failing_tool_hold\", \"send_to_delivery_s\": 119.3, \"sent_at\": 1792799316392}"
+     ],
+     "paths": {
+      "m6Sz0UVmHGUU": [
+       "append"
+      ]
+     },
+     "receipts": {
+      "m6Sz0UVmHGUU": "acked"
+     },
+     "seconds": 129.8,
+     "settled": true
+    }
+   ],
+   "pass": 1
+  }
+ },
+ "seed": null,
+ "sent": 2,
+ "sent_lazy": 0,
+ "sha": "afdb1a605695e818a2ac29308bd7039dd37ddda3",
+ "status": "LIVE"
+}

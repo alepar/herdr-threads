@@ -1,0 +1,6 @@
+bridge_current: true
+configured_enabled: none
+installed: true
+manual_argv: hermes --profile default plugins enable herdr-threads
+native_acceptance: unmet
+repairable: false

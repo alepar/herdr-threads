@@ -1,0 +1,9 @@
+{"at": 1792799228809, "ids": ["invitation:i6Sz8fSKSWiW"], "kind": "received", "reason": null, "turn": null, "via": null}
+{"at": 1792799228809, "ids": ["attention:1"], "kind": "received", "reason": null, "turn": null, "via": null}
+{"at": 1792799229135, "ids": ["attention:1"], "kind": "refused", "reason": "attention_cleared", "turn": null, "via": null}
+{"at": 1792799233774, "ids": ["invitation:i6Sz8fSKSWiW"], "kind": "delivered", "reason": null, "turn": null, "via": "append"}
+{"at": 1792799233785, "ids": [], "kind": "submit", "reason": "wake", "turn": null, "via": "submit"}
+{"at": 1792799236701, "ids": ["m6SzRVT27l0i"], "kind": "received", "reason": null, "turn": "21e4a49e-3fc0-482b-95f4-9816047e945b", "via": null}
+{"at": 1792799238920, "ids": ["m6SzRVT27l0i"], "kind": "delivered", "reason": null, "turn": "21e4a49e-3fc0-482b-95f4-9816047e945b", "via": "context"}
+{"at": 1792799238998, "ids": ["m6SzRVT27l0i"], "kind": "acked", "reason": "settled", "turn": "21e4a49e-3fc0-482b-95f4-9816047e945b", "via": "context"}
+{"at": 1792799283709, "ids": [], "kind": "restart", "reason": "exit:1", "turn": null, "via": null}

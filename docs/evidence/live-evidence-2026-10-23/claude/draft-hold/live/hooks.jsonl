@@ -1,0 +1,3 @@
+{"at": 1792800215595, "event": "SessionStart", "session": "271d87fe-aee7-46f8-938a-5f401542b9bb", "source": "startup", "blocked": false}
+{"at": 1792800383012, "event": "UserPromptSubmit", "session": "271d87fe-aee7-46f8-938a-5f401542b9bb", "prompt": "wake up", "blocked": false}
+{"at": 1792800386036, "event": "Stop", "session": "271d87fe-aee7-46f8-938a-5f401542b9bb", "stop_hook_active": false, "blocked": false}

@@ -9,7 +9,7 @@ The matrix is every combination of
               | the first direct send of a 1:1 pair (pair-open: p1, the pair auto-joins, no invitation)
   channel     ordinary thread | automatic 1:1 pair
   threshold   the recipient's nudge threshold T: 0 (default) | -1 (every item) | 3
-  harness     claude | codex
+  harness     claude | codex (agy: opt-in, see below)
 Expected (expect_wake): an idle recipient wakes iff the item's priority <= T (T < 0: always); invitations and ACK
 requests are p0, so they wake at every T. A silent item (for example a p1 send at T=0) leaves the recipient idle and
 arrives on its next turn (a neutral `hello` prompt). ACK requests must come back acknowledged, invitations must be
@@ -49,6 +49,14 @@ harnesses get their credentials:
   default seccomp profile, so the container is the sandbox. Evidence files are redacted of `sk-ant-` tokens and of
   the Claude credential values and their tails; with --keep the scratch `.claude.json` (mode 0600) keeps an
   ANTHROPIC_API_KEY's 20-character approval suffix.
+- agy (opt-in only, `--harness agy`, never in the default matrix; any harness mode): agy runs with HOME at the
+  scratch home setup installed its plugin into, its settings.json seeded the way the agy gate seeds it (Gemini
+  provider, the agents' working directory trusted, no alternate screen), and its model credential only from
+  GEMINI_API_KEY (plus GOOGLE_GEMINI_BASE_URL when set, e.g. scripts/agy-relay) in the driver's environment, passed
+  to the pane through a private mode-0600 env file in the scratch root, never on a command line. No Google sign-in
+  is read or used. The first-run screens (colour scheme, Terms of Service) are walked with keys. Like Codex, agy
+  wakes natively (`herdr-threads: wake up` typed into an empty composer) and its hook delivers a page, so its
+  mixed-order presentation order is judged.
 Agents work in the repository checkout (already trusted by Claude, so no folder-trust dialog is answered).
 The senders are two owned coordinator shell panes recorded as person seats (`human me init`, which keeps its agent
 guard: the driver strips every registered agent marker from their commands and the panes run only a shell), not
@@ -230,6 +238,11 @@ CODEX_BYPASS_ARGS = "--dangerously-bypass-approvals-and-sandbox"
 CONTAINER_MARKER = "HT_LINUX_E2E_CONTAINER"
 DOCKERENV = Path("/.dockerenv")
 CLAUDE_CREDENTIAL_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+HARNESSES = ("claude", "codex", "agy")
+DEFAULT_HARNESSES = "claude,codex"
+# agy (opt-in): its model credential, and the optional endpoint override the agy relay uses.
+AGY_CREDENTIAL_ENV = "GEMINI_API_KEY"
+AGY_ENDPOINT_ENV = "GOOGLE_GEMINI_BASE_URL"
 SECRET_PATTERN = re.compile(r"sk-ant-[A-Za-z0-9_-]+")
 
 STANDING = ("You are a test recipient in an automated herdr-threads wake e2e run (the user approves). "
@@ -378,10 +391,10 @@ def default_codex_args(harness_mode, env, dockerenv=None):
 
 
 def secret_values(env):
-    """What redact() hides: each Claude credential value from the environment, and its 20- and 12-character tails
-    (the approval suffix the linux mode seeds, and what Claude's API-key screen shows of a key)."""
+    """What redact() hides: each Claude or agy credential value from the environment, and its 20- and 12-character
+    tails (the approval suffix the linux mode seeds, and what Claude's API-key screen shows of a key)."""
     out = []
-    for var in CLAUDE_CREDENTIAL_ENV:
+    for var in (*CLAUDE_CREDENTIAL_ENV, AGY_CREDENTIAL_ENV):
         value = (env.get(var) or "").strip()
         if value:
             out += [value] + [value[-n:] for n in (20, 12) if len(value) > n]
@@ -452,6 +465,44 @@ def seed_claude_config(cfg_dir, cwd, env):
     return path
 
 
+def agy_settings(cwd):
+    """The agy gate's seed settings.json (scripts/agy-sandbox/agyenv.py settings_dict), for the agents' cwd."""
+    return {"altScreenMode": "never", "modelProvider": "gemini", "trustedWorkspaces": [cwd]}
+
+
+def seed_agy_home(home, cwd):
+    """Write agy's settings.json under the scratch HOME before setup merges its owned permission member into it."""
+    path = Path(home) / ".gemini" / "antigravity-cli" / "settings.json"
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    write_private(path, json.dumps(agy_settings(cwd)) + "\n")
+    return path
+
+
+def agy_env(env):
+    """The (name, value) pairs the agy pane gets from the driver's environment: the credential and, when set, the
+    endpoint override."""
+    return [(k, env[k].strip()) for k in (AGY_CREDENTIAL_ENV, AGY_ENDPOINT_ENV) if (env.get(k) or "").strip()]
+
+
+def write_private(path, text):
+    """A new private 0600 regular file, never written through a link."""
+    path = Path(path)
+    if path.is_symlink() or path.exists():
+        path.unlink()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+
+
+def agy_onboarding_keys(screen):
+    """The keys that answer one agy first-run screen (scripts/agy-gate/live_smoke.py walk_onboarding), or None."""
+    if "Choose your color scheme" in screen:
+        return [("enter",)]
+    if "Terms of Service" in screen:
+        return [("down", "right"), ("enter",)]
+    return None
+
+
 def linux_startup_refusal(screen, status):
     """The linux mode: why a freshly started agent must not be prompted, or None. Checked on the whole visible
     screen: the theme picker reports `idle` and its prompt sits far above the screen's last 400 characters."""
@@ -488,6 +539,7 @@ class Run:
         self.claude_cfg = self.root / "claude-config"
         self.claude_hooks_cfg = self.root / "claude-hooks-config"  # cl-hooks: `setup claude --hooks-only`
         self.codex_home = self.root / "codex-home"
+        self.agy_env = self.root / "agy.env"
         self.bindir = self.root / "bin"
         self.bin = str(Path(args.bin).resolve())
         self.endpoint = os.environ.get("HERDR_SOCKET_PATH", "")
@@ -599,6 +651,9 @@ class Run:
             problems.append("no Claude credential in the environment: the linux harness mode needs "
                             "CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY (no keychain; the real Claude config is "
                             "never read)")
+        if "agy" in self.args.harness and not (os.environ.get(AGY_CREDENTIAL_ENV) or "").strip():
+            problems.append(f"no agy credential in the environment: --harness agy needs {AGY_CREDENTIAL_ENV} "
+                            "(no Google sign-in is used)")
         if problems:
             raise Refused("; ".join(problems))
         versions = {}
@@ -657,6 +712,9 @@ class Run:
                     env=dict(setup_env, CLAUDE_CONFIG_DIR=str(self.claude_hooks_cfg)), timeout=120)
             if self.linux:
                 seed_claude_config(self.claude_hooks_cfg, self.cwd, os.environ)
+        if "agy" in self.args.harness:
+            seed_agy_home(self.home, self.cwd)
+            write_private(self.agy_env, "".join(f"export {k}={shlex.quote(v)}\n" for k, v in agy_env(os.environ)))
         for h in self.args.harness:
             self.ht("setup", h, "--with-permissions", env=setup_env, tag=f"setup:{h}", timeout=120)
         if self.linux and "claude" in self.args.harness:
@@ -738,6 +796,10 @@ class Run:
             else:
                 cfg += f"CLAUDE_CODE_PLUGIN_DIRS={q(str(self.state / 'claude-mod' / 'herdr-threads'))} "
             return f"unset {unset}; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
+        if harness == "agy":
+            # The credential stays in the private env file; the pane's command line and screen never carry it.
+            return (f"( . {q(str(self.agy_env))} && {path} HOME={q(str(self.home))} HERDR_AGENT=agy "
+                    f"exec agy )")
         # shell_snapshot off: the snapshot replays the interactive ~/.zshrc PATH, which can put an installed
         # herdr-threads ahead of the candidate's bin dir (ht-l16); a non-interactive login shell keeps it first.
         argv = ["command", "codex", "--no-daemon", "-C", self.cwd, "--dangerously-bypass-hook-trust",
@@ -1251,6 +1313,13 @@ class Recipient:
             self.run.herdr("pane", "run", self.pane, line)
             end = time.time() + 180
             while time.time() < end:
+                if self.harness == "agy":  # a fresh scratch HOME meets agy's first-run screens every run
+                    keys = agy_onboarding_keys(self.run.herdr("pane", "read", self.pane, "--source", "visible",
+                                                              check=False).get("raw", ""))
+                    for i, k in enumerate(keys or ()):
+                        if i:
+                            time.sleep(0.5)
+                        self.run.herdr("pane", "send-keys", self.pane, *k, check=False)
                 data = self.run.herdr("agent", "get", self.pane, check=False)
                 agent = (data.get("result") or {}).get("agent") or {}
                 if agent.get("agent") == self.harness and agent.get("agent_status") in IDLE + ("blocked",):
@@ -2074,7 +2143,8 @@ def write_evidence(run, rc):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="wake-e2e", description=__doc__.splitlines()[0])
     ap.add_argument("--bin", default=str(REPO / "bin" / "herdr-threads"), help="herdr-threads binary under test")
-    ap.add_argument("--harness", default="claude,codex", help="comma-separated: claude,codex")
+    ap.add_argument("--harness", default=DEFAULT_HARNESSES,
+                    help="comma-separated: claude,codex; opt-in: agy (credential from %s)" % AGY_CREDENTIAL_ENV)
     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
                     + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES)
                     + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES))
@@ -2112,7 +2182,7 @@ def main(argv=None):
     args.harness = [h for h in args.harness.split(",") if h]
     cases = [c for c in args.cases.split(",") if c]
     unknown = ([c for c in cases if c not in CASES + SIDE_CASES + HOOKS_CASES + EOT_CASES]
-               + [h for h in args.harness if h not in ("claude", "codex")])
+               + [h for h in args.harness if h not in HARNESSES])
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")
     def terminate(signum, _frame):

@@ -1,0 +1,9 @@
+Hermes Agent v0.22.5 (2026.9.24) · stable · local bf0203a794a0
+Install directory: <scratch>/src/hermes-agent
+Install method: git
+Python: 3.14.9
+OpenAI SDK: 2.24.0
+Up to date
+herdr 0.9.5
+herdr-threads 2.3.1
+Linux 7.0.12-201.fc44.x86_64 x86_64

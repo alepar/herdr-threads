@@ -1,0 +1,8 @@
+{"at": 1792799226243, "event": "SessionStart", "session": "496e683c-b5ac-43d1-be58-193cc31e9ec6", "source": "startup", "blocked": false}
+{"at": 1792799233896, "event": "UserPromptSubmit", "session": "496e683c-b5ac-43d1-be58-193cc31e9ec6", "prompt": "wake up", "blocked": false}
+{"at": 1792799246310, "event": "Stop", "session": "496e683c-b5ac-43d1-be58-193cc31e9ec6", "stop_hook_active": false, "blocked": false}
+{"at": 1792799285030, "event": "SessionStart", "session": "21cbd1a3-eeae-4636-ad97-06059eebe974", "source": "startup", "blocked": false}
+{"at": 1792799311973, "event": "UserPromptSubmit", "session": "21cbd1a3-eeae-4636-ad97-06059eebe974", "prompt": "Run the shell command `false` with the Bash tool once, do not retry, then reply with the single word done.", "blocked": false}
+{"at": 1792799314861, "event": "Stop", "session": "21cbd1a3-eeae-4636-ad97-06059eebe974", "stop_hook_active": false, "blocked": false}
+{"at": 1792799435782, "event": "UserPromptSubmit", "session": "21cbd1a3-eeae-4636-ad97-06059eebe974", "prompt": "wake up", "blocked": false}
+{"at": 1792799437140, "event": "Stop", "session": "21cbd1a3-eeae-4636-ad97-06059eebe974", "stop_hook_active": false, "blocked": false}

@@ -1,0 +1,12 @@
+{"at":1792798356509,"ev":"session.start"}
+{"at":1792798360527,"ev":"turn.step","index":0,"turnId":"a5190e99-3359-4a61-806c-5ed01bacc931","messageCount":11}
+{"at":1792798363512,"ev":"tool.call","nonce":"PROBE-1-xylukt","tool":"Bash","ekeys":["command","description","tool","tool_use_id"],"rkeys":["ref","result","text","isError","isReadOnly"],"isError":true,"hasResult":true,"result":"\"Error: Exit code 1\""}
+{"at":1792798363536,"ev":"turn.step","index":1,"turnId":"a5190e99-3359-4a61-806c-5ed01bacc931","messageCount":16}
+{"at":1792798367011,"ev":"turn.complete","keys":["answer","durationMs","isAborted","turnId","reason","usage"],"isAborted":false,"reason":"answer"}
+{"at":1792798368424,"ev":"turn.step","index":0,"turnId":"05135682-4f3f-4bbe-a5fc-fbae76befcd5","messageCount":20}
+{"at":1792798371479,"ev":"tool.call","nonce":"PROBE-2-oey5wb","tool":"Bash","ekeys":["command","description","tool","tool_use_id"],"rkeys":["ref","result","text","isError"],"isError":true,"hasResult":true,"result":"\"Error: The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.\\n\\nNote: The user's next message may contain a correction or preference. Pay close attention — if they explain what went wrong or how they'd prefer you to work, consi…"}
+{"at":1792798371508,"ev":"turn.complete","keys":["answer","durationMs","isAborted","turnId","reason","usage"],"isAborted":false,"reason":"answer"}
+{"at":1792798373448,"ev":"turn.step","index":0,"turnId":"990f7b50-c080-450d-bebe-ebc3e2ea02aa","messageCount":26}
+{"at":1792798376649,"ev":"tool.call","nonce":"PROBE-3-xpzkyy","tool":"Bash","ekeys":["command","description","run_in_background","tool","tool_use_id"],"rkeys":["ref","result","text","isReadOnly"],"hasResult":true,"result":"{\"stdout\":\"\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false,\"backgroundTaskId\":\"bf9m9qef1\"}"}
+{"at":1792798376702,"ev":"turn.step","index":1,"turnId":"990f7b50-c080-450d-bebe-ebc3e2ea02aa","messageCount":31}
+{"at":1792798379528,"ev":"turn.complete","keys":["answer","durationMs","isAborted","turnId","reason","usage"],"isAborted":true,"reason":"aborted"}

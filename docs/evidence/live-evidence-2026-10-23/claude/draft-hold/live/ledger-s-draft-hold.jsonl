@@ -1,0 +1,6 @@
+{"at": 1792800262348, "ids": ["mGt1SvnNjKhM"], "kind": "received", "reason": null, "turn": null, "via": null}
+{"at": 1792800262349, "ids": ["mGt1SvnNjKhM"], "kind": "held", "reason": "draft", "turn": null, "via": null}
+{"at": 1792800382912, "ids": ["mGt1SvnNjKhM"], "kind": "delivered", "reason": null, "turn": null, "via": "append"}
+{"at": 1792800382925, "ids": [], "kind": "submit", "reason": "wake", "turn": null, "via": "submit"}
+{"at": 1792800382965, "ids": ["mGt1SvnNjKhM"], "kind": "acked", "reason": "settled", "turn": null, "via": "append"}
+{"at": 1792800393291, "ids": [], "kind": "restart", "reason": "exit:1", "turn": null, "via": null}

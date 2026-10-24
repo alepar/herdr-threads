@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.309
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/d7bc21cb-55d9-4c04-a433-2fabc3604236/scratchpad/probe/work
+
+
+❯ This is a test of a plugin. Make exactly these tool calls, one per message, in order, and no others: (1) Bash: false  (2) Bash: echo hi; exit 3  (3) Read the file /nonexistent/probe.txt  (4) Bash:
+  echo DENYME  (5) Bash: echo ok. After each tool result, look for a line starting with [probe] nonce. When done, list every nonce you saw verbatim, saying which call it followed, and for any call
+  that showed none say so.
+
+  Read 1 file, ran 4 shell commands
+
+● All five calls ran, and every one was followed by a [probe] nonce line:
+
+  1. false (exit 1): [probe] nonce PROBE-1-td27az
+  2. echo hi; exit 3 (printed "hi", exit 3): [probe] nonce PROBE-2-zti02p
+  3. Read /nonexistent/probe.txt (error: file does not exist): [probe] nonce PROBE-3-booumd
+  4. echo DENYME (blocked by the hook with "PreToolUse:Bash hook error: probe deny"): [probe] nonce PROBE-4-ya4z7r
+  5. echo ok (printed "ok"): [probe] nonce PROBE-5-mdaa5f
+
+  The nonce showed up after failed calls, a blocked call and a successful one alike.
+
+✻ Baked for 22s · done 4:29 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

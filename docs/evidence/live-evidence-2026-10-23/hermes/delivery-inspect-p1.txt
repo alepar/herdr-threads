@@ -1,0 +1,5 @@
+delivery_inspect
+delivery: {"acknowledged":0,"attempted":null,"committed":0,"read":null,"submitted":null}
+message: {"actor_label":null,"author":"syHlRWyqs0wp","author_role":"human","created_at":1792799905538,"event_author":{"id":"syHlRWyqs0wp","kind":"native"},"kind":"ordinary","message":"myHlHi4sYBhV","preview_data":"HERMES-DELIVERY-1: live evidence probe, no action needed.","preview_omitted":false,"sequence":3,"thread":"dYrKR74CBWz"}
+recipients: {"has_more":false,"items":[]}
+message.preview_detail: herdr-threads human --state-dir <scratch>/ht-state --host-endpoint <home>/.config/herdr/herdr.sock body myHlHi4sYBhV

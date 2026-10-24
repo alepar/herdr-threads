@@ -1,0 +1,3 @@
+seats
+item: {"active":true,"availability":"available","bindings":[{"connected":false,"harness":"hermes","role":"top_level"},{"connected":true,"harness":"hermes","role":"top_level"}],"continuity":"resolved","created_at":1792799870790,"generation":1,"retired_at":null,"seat":"syHlbs78cWym","target":"wM:p2"}
+item: {"active":true,"availability":"available","bindings":[{"connected":true,"harness":"human","role":"top_level"}],"continuity":"resolved","created_at":1792799799818,"generation":1,"retired_at":null,"seat":"syHlRWyqs0wp","target":"wM:p1"}

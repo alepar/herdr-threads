@@ -220,7 +220,11 @@ scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID"
 ```
 
 - **Defaults.** `--profile` defaults to the spike profile, `--iterations` to 20 (about 2.5 hours; 3 iterations
-  take about 23 minutes). `--scenarios a,b` limits the run.
+  take about 23 minutes). `--scenarios a,b` limits the run. The timer scenarios `draft_hold` and
+  `failing_tool_hold` each wait out a 120 s mod hold and run only when named (results:
+  `docs/evidence/live-evidence-2026-10-23/`).
+- **Sender.** Since 2026-10-23 the sender is a person seat (`human me init`) on the A-B automatic pair channel, so
+  no invitation or `accept` runs at start-up, and the driver works when started from inside an agent session.
 - **Debugging.** `--debug-file` writes `claude --debug-file` logs, and `--keep-root` keeps the private run dir.
 - **Concurrency.** Run one live driver at a time per profile.
 - **Driver checks.** `python3 -m unittest tests/native/claude_mod/test_stress.py`.

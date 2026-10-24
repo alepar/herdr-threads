@@ -1,0 +1,45 @@
+{
+ "claude_version": "2.1.310",
+ "finished": "2026-10-23T17:06:33-0700",
+ "herdr": "stand-in endpoint (fake panes w1:p1 sender, w1:p2 claude)",
+ "iterations": 1,
+ "minutes": 3.1,
+ "mode": "live",
+ "native_prompts_total": 0,
+ "profile": "signed-in profile in place (CLAUDE_CONFIG_DIR), real HOME",
+ "scenarios": {
+  "draft_hold": {
+   "fail": 0,
+   "iterations": [
+    {
+     "ids": [
+      "mGt1SvnNjKhM"
+     ],
+     "iteration": 0,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [
+      "{\"delivered_at\": 1792800382912, \"draft_in_a_submitted_prompt\": false, \"draft_left_in_composer\": true, \"first_held_at\": 1792800262349, \"held_entries\": 1, \"hold_s\": 120.6, \"iteration\": 0, \"scenario\": \"draft_hold\", \"send_to_delivery_s\": 120.6, \"sent_at\": 1792800262302, \"submitted_prompts\": [\"wake up\"]}"
+     ],
+     "paths": {
+      "mGt1SvnNjKhM": [
+       "append"
+      ]
+     },
+     "receipts": {
+      "mGt1SvnNjKhM": "acked"
+     },
+     "seconds": 137.1,
+     "settled": true
+    }
+   ],
+   "pass": 1
+  }
+ },
+ "seed": null,
+ "sent": 1,
+ "sent_lazy": 0,
+ "sha": "afdb1a605695e818a2ac29308bd7039dd37ddda3",
+ "status": "LIVE"
+}

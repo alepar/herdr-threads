@@ -132,6 +132,11 @@ class Args(unittest.TestCase):
         with self.assertRaises(SystemExit):
             stress.parse_args(["--scenarios", "nope"])
 
+    def test_timer_scenarios_are_opt_in(self):
+        self.assertFalse(set(stress.TIMER_SCENARIOS) & set(stress.parse_args([]).scenarios))
+        self.assertEqual(stress.parse_args(["--scenarios", "draft_hold,failing_tool_hold"]).scenarios,
+                         ["draft_hold", "failing_tool_hold"])
+
     def test_iterations_must_be_positive(self):
         with self.assertRaises(SystemExit):
             stress.parse_args(["--iterations", "0"])

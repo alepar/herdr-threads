@@ -2378,3 +2378,82 @@ class SideCases(unittest.TestCase):
         run.args = SimpleNamespace(codex_args="--approve-for-me", codex_model=None, harness_mode="macos")
         self.assertIn("features.codex_hooks=false", run.launch_line("codex", plain=True))
         self.assertNotIn("codex_hooks", run.launch_line("codex"))
+
+
+class AgyOptIn(TempDir):
+    """--harness agy: opt-in only, credential from the environment through a private env file, scratch HOME."""
+
+    FAKE_KEY = "fake-gemini-key-0123456789abcdefghij"
+
+    def test_agy_is_accepted_but_not_in_the_default_matrix(self):
+        self.assertEqual(parsed_args([]).harness, ["claude", "codex"])
+        self.assertEqual(parsed_args(["--harness", "agy"]).harness, ["agy"])
+
+    def preflight(self, **env):
+        r = object.__new__(W.Run)
+        r.args = SimpleNamespace(harness=["agy"], harness_mode="linux", codex_auth_home=None,
+                                 codex_args="--approve-for-me")
+        r.endpoint, r.bin, r.run_id, r.root = "/fake/sock", "/bin/sh", "000000-test", self.tmp
+        started = []
+        r.run = lambda argv, **kw: started.append(argv) or (0, "x 1.0", "")
+        path = self.tmp / "path"
+        path.mkdir(exist_ok=True)
+        for tool in ("herdr", "agy"):
+            (path / tool).write_text("#!/bin/sh\nexit 0\n")
+            (path / tool).chmod(0o700)
+        values = {"HERDR_ENV": "1", "GEMINI_API_KEY": None, "PATH": str(path)}
+        values.update(env)
+        import contextlib
+        import io
+        with Env(**values), contextlib.redirect_stdout(io.StringIO()):
+            try:
+                r.preflight()
+                return None, started
+            except W.Refused as e:
+                return str(e), started
+
+    def test_no_credential_refuses_before_any_process(self):
+        why, started = self.preflight()
+        self.assertIn("GEMINI_API_KEY", why)
+        self.assertEqual(started, [])
+        why, _ = self.preflight(GEMINI_API_KEY=" ")
+        self.assertIn("no agy credential", why)
+
+    def test_with_a_credential_preflight_passes(self):
+        why, started = self.preflight(GEMINI_API_KEY=self.FAKE_KEY)
+        self.assertIsNone(why)
+        self.assertTrue(started)
+
+    def test_launch_line_never_carries_the_credential(self):
+        r = launch_run(SimpleNamespace(harness_mode="linux"))
+        r.home, r.agy_env = Path("/private/tmp/ht-wake-e2e.X/home"), Path("/private/tmp/ht-wake-e2e.X/agy.env")
+        with Env(GEMINI_API_KEY=self.FAKE_KEY):
+            line = r.launch_line("agy")
+        self.assertNotIn(self.FAKE_KEY, line)
+        self.assertIn(". /private/tmp/ht-wake-e2e.X/agy.env &&", line)
+        self.assertIn(" HOME=/private/tmp/ht-wake-e2e.X/home HERDR_AGENT=agy exec agy", line)
+
+    def test_env_file_and_settings_are_private_scratch_files(self):
+        env = dict(W.agy_env({"GEMINI_API_KEY": f" {self.FAKE_KEY}\n", "GOOGLE_GEMINI_BASE_URL": ""}))
+        self.assertEqual(env, {"GEMINI_API_KEY": self.FAKE_KEY})
+        self.assertEqual(dict(W.agy_env({"GEMINI_API_KEY": "k", "GOOGLE_GEMINI_BASE_URL": "http://127.0.0.1:9"})),
+                         {"GEMINI_API_KEY": "k", "GOOGLE_GEMINI_BASE_URL": "http://127.0.0.1:9"})
+        path = W.seed_agy_home(self.tmp / "home", "/repo")
+        self.assertEqual(json.loads(path.read_text()),
+                         {"altScreenMode": "never", "modelProvider": "gemini", "trustedWorkspaces": ["/repo"]})
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        link = self.tmp / "link"
+        link.symlink_to(self.tmp / "elsewhere")
+        W.write_private(link, "x")
+        self.assertFalse(link.is_symlink())
+        self.assertFalse((self.tmp / "elsewhere").exists())
+
+    def test_credential_is_redacted_from_evidence(self):
+        secrets = W.secret_values({"GEMINI_API_KEY": self.FAKE_KEY})
+        self.assertNotIn(self.FAKE_KEY, W.redact(f"key={self.FAKE_KEY}", secrets))
+        self.assertNotIn(self.FAKE_KEY[-12:], W.redact(f"...{self.FAKE_KEY[-12:]}", secrets))
+
+    def test_onboarding_keys(self):
+        self.assertEqual(W.agy_onboarding_keys("Choose your color scheme"), [("enter",)])
+        self.assertEqual(W.agy_onboarding_keys("Accept the Terms of Service"), [("down", "right"), ("enter",)])
+        self.assertIsNone(W.agy_onboarding_keys("> \n? for shortcuts"))

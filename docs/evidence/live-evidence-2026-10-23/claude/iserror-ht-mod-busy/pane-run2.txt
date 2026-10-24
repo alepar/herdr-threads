@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.309
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/claude-1001/-var-home-alepar-AleCode-herdr-threads/d7bc21cb-55d9-4c04-a433-2fabc3604236/scratchpad/probe/work
+
+
+❯ Plugin test. Run exactly one Bash call: echo reject-me
+
+  Ran 1 shell command
+
+● I ran echo reject-me once and it printed reject-me. Despite the name, nothing rejected the call. A tool-call hook attached this context to it: [probe] nonce PROBE-1-bp22rc.
+
+✻ Crunched for 6s · done 4:29 PM
+
+❯ Run exactly one Bash call: mkdir rejected-dir
+
+  Ran 1 shell command
+  ⎿  Interrupted · What should Claude do instead?
+
+✻ Churned for 3s · done 4:31 PM
+
+❯ No tools now. Quote verbatim every line starting with [probe] nonce that you can see anywhere in this conversation, and say after which tool result each appeared.
+
+● There's only one such line in this conversation:
+
+  - [probe] nonce PROBE-1-bp22rc, which a tool-call hook attached to the result of the first Bash call (echo reject-me).
+
+  The second call (mkdir rejected-dir) was rejected, so rejected-dir was not created, and that result had no [probe] nonce line.
+
+✻ Churned for 4s · done 4:31 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts
