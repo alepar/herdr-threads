@@ -1,0 +1,1 @@
+20 requests; models: ['gemini-3.1-flash-lite-preview', 'gemini-3.1-pro-preview'] cost: 0.03005

@@ -507,8 +507,11 @@ def seed_claude_config(cfg_dir, cwd, env):
 
 
 def agy_settings(cwd):
-    """The agy gate's seed settings.json (scripts/agy-sandbox/agyenv.py settings_dict), for the agents' cwd."""
-    return {"altScreenMode": "never", "modelProvider": "gemini", "trustedWorkspaces": [cwd]}
+    """The agy gate's seed settings.json (scripts/agy-sandbox/agyenv.py settings_dict), for the agents' cwd, plus
+    `command(echo)`: a Gemini recipient prints its RECEIVED/SETUP-DONE lines through run_command echo, and agy
+    would hold that turn at a permission prompt (seen on 1.4.6). setup adds its own `command(herdr-threads)`."""
+    return {"altScreenMode": "never", "modelProvider": "gemini", "trustedWorkspaces": [cwd],
+            "permissions": {"allow": ["command(echo)"]}}
 
 
 def seed_agy_home(home, cwd):
@@ -540,18 +543,31 @@ def write_private(path, text):
         f.write(text)
 
 
+AGY_FOOTER = "? for shortcuts"
+AGY_COLOR_PAGE = "Choose your color scheme"
+AGY_TERMS_PAGE = "Terms of Service"
+AGY_CONSENT = "] Yes, I agree"
+
+
 def agy_onboarding_keys(screen):
-    """The keys that answer one agy first-run screen (scripts/agy-gate/live_smoke.py walk_onboarding), or None."""
-    if "Choose your color scheme" in screen:
-        return [("enter",)]
-    if "Terms of Service" in screen:
+    """The keys that answer agy's current first-run page, or None (composer drawn, or no page recognised).
+    With altScreenMode never, earlier pages stay on screen above the current one, so the page that counts is the
+    one drawn lowest. On the Terms page the pre-ticked consent to Google collecting interaction data is unticked
+    (Enter toggles it) before Done: the e2e runs agy without the agy gate's no-network sandbox."""
+    footer, color, terms = (screen.rfind(m) for m in (AGY_FOOTER, AGY_COLOR_PAGE, AGY_TERMS_PAGE))
+    if footer > max(color, terms):
+        return None
+    if terms > color:
+        box = screen.rfind(AGY_CONSENT)
+        if box > color and screen[box - 1] == "x":
+            return [("enter",)]
         return [("down", "right"), ("enter",)]
-    return None
+    return [("enter",)] if color >= 0 else None
 
 
 def agy_composer_up(screen):
-    """agy's composer is drawn (its footer hint), so no first-run screen is left."""
-    return "for shortcuts" in screen
+    """agy's composer is drawn after any first-run page (its footer hint is the lowest of them)."""
+    return screen.rfind(AGY_FOOTER) > max(screen.rfind(AGY_COLOR_PAGE), screen.rfind(AGY_TERMS_PAGE))
 
 
 def linux_startup_refusal(screen, status):
@@ -873,8 +889,10 @@ class Run:
             return line
         if harness == "agy":
             # The credential stays in the private env file; the pane's command line and screen never carry it.
+            # By absolute path: the pane's shell has the Herdr server's PATH, not this driver's.
+            agy = shutil.which("agy") or "agy"
             return (f"( . {q(str(self.agy_env))} && {path} HOME={q(str(self.home))} HERDR_AGENT=agy "
-                    f"exec agy )")
+                    f"exec {q(agy)} )")
         # shell_snapshot off: the snapshot replays the interactive ~/.zshrc PATH, which can put an installed
         # herdr-threads ahead of the candidate's bin dir (ht-l16); a non-interactive login shell keeps it first.
         argv = ["command", "codex", "--no-daemon", "-C", self.cwd, "--dangerously-bypass-hook-trust",
@@ -1410,15 +1428,15 @@ class Recipient:
             end = time.time() + 180
             while time.time() < end:
                 if self.harness == "agy":  # a fresh scratch HOME meets agy's first-run screens every run
-                    keys = agy_onboarding_keys(self.run.herdr("pane", "read", self.pane, "--source", "visible",
-                                                              check=False).get("raw", ""))
+                    screen = self.run.herdr("pane", "read", self.pane, "--source", "visible",
+                                            check=False).get("raw", "")
+                    keys = agy_onboarding_keys(screen)
                     for i, k in enumerate(keys or ()):
                         if i:
                             time.sleep(0.5)
                         self.run.herdr("pane", "send-keys", self.pane, *k, check=False)
-                    if keys or not agy_composer_up(self.run.herdr("pane", "read", self.pane, "--source", "visible",
-                                                                  check=False).get("raw", "")):
-                        time.sleep(1)  # Herdr may report idle behind a first-run screen
+                    if keys or not agy_composer_up(screen):
+                        time.sleep(1.5)  # Herdr may report idle behind a first-run screen
                         continue
                 data = self.run.herdr("agent", "get", self.pane, check=False)
                 agent = (data.get("result") or {}).get("agent") or {}

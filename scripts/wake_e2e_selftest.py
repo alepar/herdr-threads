@@ -2459,7 +2459,8 @@ class AgyOptIn(TempDir):
             line = r.launch_line("agy")
         self.assertNotIn(self.FAKE_KEY, line)
         self.assertIn(". /private/tmp/ht-wake-e2e.X/agy.env &&", line)
-        self.assertIn(" HOME=/private/tmp/ht-wake-e2e.X/home HERDR_AGENT=agy exec agy", line)
+        self.assertIn(" HOME=/private/tmp/ht-wake-e2e.X/home HERDR_AGENT=agy exec ", line)
+        self.assertTrue(line.rstrip(" )").endswith(shutil.which("agy") or "agy"))
 
     def test_env_file_and_settings_are_private_scratch_files(self):
         env = dict(W.agy_env({"GEMINI_API_KEY": f" {self.FAKE_KEY}\n", "GOOGLE_GEMINI_BASE_URL": ""}))
@@ -2468,7 +2469,8 @@ class AgyOptIn(TempDir):
                          {"GEMINI_API_KEY": "k", "GOOGLE_GEMINI_BASE_URL": "http://127.0.0.1:9"})
         path = W.seed_agy_home(self.tmp / "home", "/repo")
         self.assertEqual(json.loads(path.read_text()),
-                         {"altScreenMode": "never", "modelProvider": "gemini", "trustedWorkspaces": ["/repo"]})
+                         {"altScreenMode": "never", "modelProvider": "gemini", "trustedWorkspaces": ["/repo"],
+                          "permissions": {"allow": ["command(echo)"]}})
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         link = self.tmp / "link"
         link.symlink_to(self.tmp / "elsewhere")
@@ -2482,9 +2484,16 @@ class AgyOptIn(TempDir):
         self.assertNotIn(self.FAKE_KEY[-12:], W.redact(f"...{self.FAKE_KEY[-12:]}", secrets))
 
     def test_onboarding_keys(self):
-        self.assertEqual(W.agy_onboarding_keys("Choose your color scheme"), [("enter",)])
-        self.assertEqual(W.agy_onboarding_keys("Accept the Terms of Service"), [("down", "right"), ("enter",)])
+        # captured on agy 1.4.6 (altScreenMode never): earlier pages stay on screen above the current one
+        color = "Choose your color scheme:\n    [Next]\n"
+        terms_ticked = color + "Google Antigravity CLI Terms of Service\n  > [x] Yes, I agree to help improve\n    [Done]\n"
+        terms_unticked = terms_ticked.replace("[x] Yes", "[ ] Yes")
+        self.assertEqual(W.agy_onboarding_keys(color), [("enter",)])
+        self.assertEqual(W.agy_onboarding_keys(terms_ticked), [("enter",)])  # untick the data-collection consent
+        self.assertEqual(W.agy_onboarding_keys(terms_unticked), [("down", "right"), ("enter",)])
+        self.assertIsNone(W.agy_onboarding_keys(terms_unticked + ">\n? for shortcuts"))
         self.assertIsNone(W.agy_onboarding_keys("> \n? for shortcuts"))
+        self.assertIsNone(W.agy_onboarding_keys("unrelated"))
 
     def test_agy_wake_prompt_counts_as_a_wake(self):
         # agy echoes a submitted prompt after `> ` (docs/evidence/agy-live-smoke/*/pane-final.txt)
@@ -2493,6 +2502,7 @@ class AgyOptIn(TempDir):
 
     def test_agy_is_up_only_once_its_composer_is_drawn(self):
         self.assertFalse(W.agy_composer_up("Accept the Terms of Service"))
+        self.assertFalse(W.agy_composer_up("? for shortcuts\nChoose your color scheme"))
         self.assertTrue(W.agy_composer_up("> \n? for shortcuts"))
 
     def test_cleanup_removes_the_credential_file_even_with_keep(self):

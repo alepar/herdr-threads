@@ -11,7 +11,7 @@ test infrastructure (R12), not production code.
   under this folder as `<UTC date>-<sha12>/`. Implementation leaves, reviewers and CI never run it.
 - `--dry-run` runs the identical flow against a scripted fake upstream: genuine agy, zero spend. Anyone
   with a genuine agy may run it.
-- Both refuse (exit 2) under `CI` / `GITHUB_ACTIONS`, on a non-darwin host, without `HT_AGY_BIN`, and with
+- Both refuse (exit 2) under `CI` / `GITHUB_ACTIONS`, on a host with no agy sandbox (macOS `sandbox-exec`, or Linux with `/usr/bin/bwrap` and `/usr/bin/socat`), without `HT_AGY_BIN`, and with
   a Herdr older than 0.9.1. `--live` also refuses a dirty worktree unless `--allow-dirty` is given; the
   record names the SHA.
 
@@ -26,7 +26,8 @@ scripts/agy-live-smoke (--live | --dry-run) [--evidence-dir DIR] [--allow-dirty]
 
 `--live` reads the OpenRouter key only from `<pw_dir>/.hermes/.env` (`OPENROUTER_API_KEY`, `sk-or-`
 prefix); an environment variable is ignored by design. The key lives only in the relay process and is
-never written. agy runs inside the loopback sandbox of the native gate and reaches only the relay.
+never written. agy runs inside the loopback sandbox of the native gate and reaches only the relay (on Linux a
+bubblewrap network namespace whose loopback port socat forwards to the relay; `scripts/agy-sandbox/agyenv.py`).
 
 ## Flow
 
@@ -34,9 +35,9 @@ One `World` with `RelayBackend` (the relay runs outside the sandbox, agy inside 
 
 1. `setup agy --with-permissions`, start agy, walk its first-run screens, prompt `This is an automated
    herdr-threads smoke test. Reply with the single word READY.` Check: the agy seat is enrolled.
-2. Wait for `idle`. A human sender creates a thread, invites the agy seat, and the runner joins the seat
-   in the agy pane's own identity (scaffolding: an explicit ACK recipient must be a member). The sender
-   then sends an ACK-required message asking the model to acknowledge it and reply `SMOKE-OK`.
+2. Wait for `idle`. A human sender sends an ACK-required message on the sender-agy automatic pair channel
+   (it joins both seats, so no invitation or runner-side accept), asking the model to acknowledge it and reply
+   `SMOKE-OK`. Records before 2026-10-24 used an invited thread and a runner accept in the agy pane's identity.
 3. **Wake**: within 90 s a new main model request carries the hook-injected `<SYSTEM_MESSAGE>` holding
    the frame header with the message id, and no `<USER_REQUEST>` is a prompt the runner typed.
 4. **Act**: within 180 s the model ACKs through `run_command` (`herdr-threads ack <id>`), without the agent
@@ -78,3 +79,7 @@ leak check failed.
 - `2026-10-10-4d2ec663dbfa/`: live, genuine agy 1.3.2, `google/gemini-2.5-flash` through `scripts/agy-relay`.
   PASS, ack_phase `wake`, 7 requests (cap 40), cost 0.02208829 USD (cap 0.50), leak check clean, no
   relay refusal. R17 compact framing and R18 wake ran together on genuine agy; every check passed.
+- `2026-10-24-096e18a36f69/`: live on Linux (blacky, x86_64), genuine agy 1.4.6, `google/gemini-2.5-flash`.
+  Wake, injection, SMOKE-OK reply and an acked receipt; FAIL on the explicit-`ack` check only (the receipt was
+  settled by `cooperative_hook_delivery`, the model ran `inbox`). 6 requests, 0.01434975 USD, leak check clean.
+  Details: `docs/evidence/agy-linux-2026-10-24/`.

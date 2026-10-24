@@ -1,0 +1,167 @@
+{
+  "facts": {
+    "run_id": "185319-6edd",
+    "sha": "096e18a36f690bd8880c004728fb5535b71866cb",
+    "dirty": true,
+    "versions": {
+      "herdr": "herdr 0.9.5",
+      "herdr-threads": "herdr-threads 2.3.1",
+      "agy": "1.4.6"
+    },
+    "harness_mode": "linux",
+    "codex_args": "--approve-for-me",
+    "bin": "<home>/AleCode/herdr-threads/.worktrees/ht-agy-linux/bin/herdr-threads",
+    "bin_sha256": "176b08637245b0cd7b6777c6539c6c9d8004c5671d477ade9beac08d1cc87160",
+    "root": "/tmp/ht-wake-e2e.pwr42hse",
+    "started_utc": "2026-10-24T01:53:19Z",
+    "finished_utc": "2026-10-24T01:55:47Z",
+    "exit_code": 1
+  },
+  "completeness": {
+    "expected": 6,
+    "collected": 6,
+    "missing": [],
+    "extra": []
+  },
+  "cleanup": {
+    "steps": [
+      {
+        "workspace_close_rc": 0
+      },
+      {
+        "daemon_stop_rc": 0
+      },
+      {
+        "root_removed": "/tmp/ht-wake-e2e.pwr42hse"
+      }
+    ],
+    "problems": []
+  },
+  "results": [
+    {
+      "case": "send-p0/group",
+      "harness": "agy",
+      "threshold": -1,
+      "recipient": "ag-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.76,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mloNug3pdVKM"
+      },
+      "result": "PASS",
+      "utc": "2026-10-24T01:54:54Z"
+    },
+    {
+      "case": "send-p0/group",
+      "harness": "agy",
+      "threshold": 0,
+      "recipient": "ag-t0",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 1.04,
+      "hello_sent": false,
+      "checks": {
+        "delivered": false,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mloNre8l61TM"
+      },
+      "result": "FAIL",
+      "utc": "2026-10-24T01:54:59Z"
+    },
+    {
+      "case": "send-p0/group",
+      "harness": "agy",
+      "threshold": 3,
+      "recipient": "ag-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.51,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mloNHjsJ1u5w"
+      },
+      "result": "PASS",
+      "utc": "2026-10-24T01:55:03Z"
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "agy",
+      "threshold": -1,
+      "recipient": "ag-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 1.01,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mloN7MOt8fUn"
+      },
+      "result": "PASS",
+      "utc": "2026-10-24T01:55:35Z"
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "agy",
+      "threshold": 3,
+      "recipient": "ag-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.76,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mloNM8MI7yUq"
+      },
+      "result": "PASS",
+      "utc": "2026-10-24T01:55:43Z"
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "agy",
+      "threshold": 0,
+      "recipient": "ag-t0",
+      "expect_wake": false,
+      "woke": false,
+      "t_wake_s": null,
+      "hello_sent": true,
+      "checks": {
+        "late_wake_s": null,
+        "delivered": false,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "mloNYKEBB4wG"
+      },
+      "result": "FAIL",
+      "utc": "2026-10-24T01:55:46Z"
+    }
+  ]
+}

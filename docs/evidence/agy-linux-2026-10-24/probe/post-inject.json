@@ -1,0 +1,81 @@
+{
+ "agy_version": "1.4.6",
+ "budget": {
+  "cost_estimated": false,
+  "cost_usd": 0.0,
+  "exhausted": false,
+  "max_cost_usd": 0.5,
+  "max_requests": 40,
+  "refusals": 0,
+  "requests": 2,
+  "reserved_usd": 0.0
+ },
+ "hooks": [
+  {
+   "event": "PostInvocation",
+   "n": 1,
+   "out": {
+    "injectSteps": [
+     {
+      "systemMessage": {
+       "systemMessage": "PROBE-POST-INJECT-1"
+      }
+     }
+    ]
+   },
+   "payload": {
+    "initialNumSteps": 1,
+    "invocationNum": 0
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 1,
+   "out": {},
+   "payload": {
+    "error": "",
+    "executionNum": 0,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 2,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 4,
+    "invocationNum": 0
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 2,
+   "out": {},
+   "payload": {
+    "error": "",
+    "executionNum": 0,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  }
+ ],
+ "mode": "post-inject",
+ "pane_tail": "bash-5.3$ PATH=/tmp/ih.CBbviJ/bin:\"$PATH\" /tmp/ih.CBbviJ/bin/agy\n\n      \u2584\u2580\u2580\u2584        Antigravity CLI 1.4.6\n     \u2580\u2580\u2580\u2580\u2580\u2580       Gemini API key\n    \u2580\u2580\u2580\u2580\u2580\u2580\u2580\u2580      Gemini 3.1 Pro (Low)\n   \u2584\u2580\u2580    \u2580\u2580\u2584     /tmp/ih.CBbviJ/ws\n  \u2584\u2580\u2580      \u2580\u2580\u2584\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n> Reply with the single word ONE.\n\n  done\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n> Reply with the single word TWO.\n\n  done\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n>\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n? for shortcuts                                                                                    Gemini 3.1 Pro \u00b7 low",
+ "relay_refusals": [],
+ "request_markers": [
+  [],
+  [
+   "PROBE-POST-INJECT-1"
+  ]
+ ],
+ "requests_total": 2,
+ "turn1": {
+  "idle": true,
+  "requests": 1
+ },
+ "turn2": {
+  "idle": true,
+  "requests": 1
+ }
+}

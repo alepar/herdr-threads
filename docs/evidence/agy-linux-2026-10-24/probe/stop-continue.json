@@ -1,0 +1,798 @@
+{
+ "agy_version": "1.4.6",
+ "budget": {
+  "cost_estimated": false,
+  "cost_usd": 0.0,
+  "exhausted": false,
+  "max_cost_usd": 0.5,
+  "max_requests": 40,
+  "refusals": 0,
+  "requests": 22,
+  "reserved_usd": 0.0
+ },
+ "hooks": [
+  {
+   "event": "PostInvocation",
+   "n": 1,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 1,
+    "invocationNum": 0
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 1,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-1"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 0,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 2,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 3,
+    "invocationNum": 1
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 2,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-2"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 1,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 3,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 5,
+    "invocationNum": 2
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 3,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-3"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 2,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 4,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 7,
+    "invocationNum": 3
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 4,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-4"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 3,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 5,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 9,
+    "invocationNum": 4
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 5,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-5"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 4,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 6,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 11,
+    "invocationNum": 5
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 6,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-6"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 5,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 7,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 13,
+    "invocationNum": 6
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 7,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-7"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 6,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 8,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 15,
+    "invocationNum": 7
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 8,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-8"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 7,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 9,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 17,
+    "invocationNum": 8
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 9,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-9"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 8,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 10,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 19,
+    "invocationNum": 9
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 10,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-10"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 9,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 11,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 21,
+    "invocationNum": 10
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 11,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-11"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 10,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 12,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 23,
+    "invocationNum": 0
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 12,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-12"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 0,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 13,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 25,
+    "invocationNum": 1
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 13,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-13"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 1,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 14,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 27,
+    "invocationNum": 2
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 14,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-14"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 2,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 15,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 29,
+    "invocationNum": 3
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 15,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-15"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 3,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 16,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 31,
+    "invocationNum": 4
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 16,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-16"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 4,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 17,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 33,
+    "invocationNum": 5
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 17,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-17"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 5,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 18,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 35,
+    "invocationNum": 6
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 18,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-18"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 6,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 19,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 37,
+    "invocationNum": 7
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 19,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-19"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 7,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 20,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 39,
+    "invocationNum": 8
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 20,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-20"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 8,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 21,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 41,
+    "invocationNum": 9
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 21,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-21"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 9,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  },
+  {
+   "event": "PostInvocation",
+   "n": 22,
+   "out": {},
+   "payload": {
+    "initialNumSteps": 43,
+    "invocationNum": 10
+   }
+  },
+  {
+   "event": "Stop",
+   "n": 22,
+   "out": {
+    "decision": "continue",
+    "reason": "PROBE-STOP-REASON-22"
+   },
+   "payload": {
+    "error": "",
+    "executionNum": 10,
+    "fullyIdle": true,
+    "terminationReason": "NO_TOOL_CALL"
+   }
+  }
+ ],
+ "mode": "stop-continue",
+ "pane_tail": "  done\n  done\n\n  done\n\n  done\n\n  done\n\n  done\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n> Reply with the single word TWO.\n\n  done\n\n  done\n\n  done\n\n  done\n\n  done\n\n  done\n\n  done\n\n  done\n\n  done\n\n  done\n\n  done\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n>\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n? for shortcuts                                                                                    Gemini 3.1 Pro \u00b7 low",
+ "relay_refusals": [],
+ "request_markers": [
+  [],
+  [
+   "PROBE-STOP-REASON-1"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-2"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8",
+   "PROBE-STOP-REASON-9"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-10",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8",
+   "PROBE-STOP-REASON-9"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-10",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8",
+   "PROBE-STOP-REASON-9"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-10",
+   "PROBE-STOP-REASON-12",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8",
+   "PROBE-STOP-REASON-9"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-10",
+   "PROBE-STOP-REASON-12",
+   "PROBE-STOP-REASON-13",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8",
+   "PROBE-STOP-REASON-9"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-10",
+   "PROBE-STOP-REASON-12",
+   "PROBE-STOP-REASON-13",
+   "PROBE-STOP-REASON-14",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8",
+   "PROBE-STOP-REASON-9"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-10",
+   "PROBE-STOP-REASON-12",
+   "PROBE-STOP-REASON-13",
+   "PROBE-STOP-REASON-14",
+   "PROBE-STOP-REASON-15",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8",
+   "PROBE-STOP-REASON-9"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-10",
+   "PROBE-STOP-REASON-12",
+   "PROBE-STOP-REASON-13",
+   "PROBE-STOP-REASON-14",
+   "PROBE-STOP-REASON-15",
+   "PROBE-STOP-REASON-16",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8",
+   "PROBE-STOP-REASON-9"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-10",
+   "PROBE-STOP-REASON-12",
+   "PROBE-STOP-REASON-13",
+   "PROBE-STOP-REASON-14",
+   "PROBE-STOP-REASON-15",
+   "PROBE-STOP-REASON-16",
+   "PROBE-STOP-REASON-17",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8",
+   "PROBE-STOP-REASON-9"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-10",
+   "PROBE-STOP-REASON-12",
+   "PROBE-STOP-REASON-13",
+   "PROBE-STOP-REASON-14",
+   "PROBE-STOP-REASON-15",
+   "PROBE-STOP-REASON-16",
+   "PROBE-STOP-REASON-17",
+   "PROBE-STOP-REASON-18",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8",
+   "PROBE-STOP-REASON-9"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-10",
+   "PROBE-STOP-REASON-12",
+   "PROBE-STOP-REASON-13",
+   "PROBE-STOP-REASON-14",
+   "PROBE-STOP-REASON-15",
+   "PROBE-STOP-REASON-16",
+   "PROBE-STOP-REASON-17",
+   "PROBE-STOP-REASON-18",
+   "PROBE-STOP-REASON-19",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8",
+   "PROBE-STOP-REASON-9"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-10",
+   "PROBE-STOP-REASON-12",
+   "PROBE-STOP-REASON-13",
+   "PROBE-STOP-REASON-14",
+   "PROBE-STOP-REASON-15",
+   "PROBE-STOP-REASON-16",
+   "PROBE-STOP-REASON-17",
+   "PROBE-STOP-REASON-18",
+   "PROBE-STOP-REASON-19",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-20",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8",
+   "PROBE-STOP-REASON-9"
+  ],
+  [
+   "PROBE-STOP-REASON-1",
+   "PROBE-STOP-REASON-10",
+   "PROBE-STOP-REASON-12",
+   "PROBE-STOP-REASON-13",
+   "PROBE-STOP-REASON-14",
+   "PROBE-STOP-REASON-15",
+   "PROBE-STOP-REASON-16",
+   "PROBE-STOP-REASON-17",
+   "PROBE-STOP-REASON-18",
+   "PROBE-STOP-REASON-19",
+   "PROBE-STOP-REASON-2",
+   "PROBE-STOP-REASON-20",
+   "PROBE-STOP-REASON-21",
+   "PROBE-STOP-REASON-3",
+   "PROBE-STOP-REASON-4",
+   "PROBE-STOP-REASON-5",
+   "PROBE-STOP-REASON-6",
+   "PROBE-STOP-REASON-7",
+   "PROBE-STOP-REASON-8",
+   "PROBE-STOP-REASON-9"
+  ]
+ ],
+ "requests_total": 22,
+ "turn1": {
+  "idle": true,
+  "requests": 11
+ },
+ "turn2": {
+  "idle": true,
+  "requests": 11
+ }
+}

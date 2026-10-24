@@ -1,0 +1,146 @@
+{
+  "facts": {
+    "run_id": "184835-502c",
+    "sha": "096e18a36f690bd8880c004728fb5535b71866cb",
+    "dirty": true,
+    "versions": {
+      "herdr": "herdr 0.9.5",
+      "herdr-threads": "herdr-threads 2.3.1",
+      "agy": "1.4.6"
+    },
+    "harness_mode": "linux",
+    "codex_args": "--approve-for-me",
+    "bin": "<home>/AleCode/herdr-threads/.worktrees/ht-agy-linux/bin/herdr-threads",
+    "bin_sha256": "176b08637245b0cd7b6777c6539c6c9d8004c5671d477ade9beac08d1cc87160",
+    "root": "/tmp/ht-wake-e2e.svzj7fkj",
+    "started_utc": "2026-10-24T01:48:35Z",
+    "finished_utc": "2026-10-24T01:50:59Z",
+    "exit_code": 1
+  },
+  "completeness": {
+    "expected": 6,
+    "collected": 6,
+    "missing": [],
+    "extra": []
+  },
+  "cleanup": {
+    "steps": [
+      {
+        "workspace_close_rc": 0
+      },
+      {
+        "daemon_stop_rc": 0
+      },
+      {
+        "root_removed": "/tmp/ht-wake-e2e.svzj7fkj"
+      }
+    ],
+    "problems": []
+  },
+  "results": [
+    {
+      "case": "send-p0/group",
+      "harness": "agy",
+      "threshold": 0,
+      "recipient": "ag-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "ag-t0 is blocked at a dialog: . Yes, and always allow in this conversation for commands that start with 'echo' | 3. Yes, and always allow for commands that start with 'echo' (Persist to settings.json) | 4. No, cancel | \u2191/\u2193 Navigate \u00b7 tab Amend \u00b7 ctrl+g edit/expand command | esc to cancel                                                                                                                "
+      }
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "agy",
+      "threshold": 0,
+      "recipient": "ag-t0",
+      "result": "FAIL",
+      "checks": {
+        "error": "ag-t0 is blocked at a dialog: . Yes, and always allow in this conversation for commands that start with 'echo' | 3. Yes, and always allow for commands that start with 'echo' (Persist to settings.json) | 4. No, cancel | \u2191/\u2193 Navigate \u00b7 tab Amend \u00b7 ctrl+g edit/expand command | esc to cancel                                                                                                                "
+      }
+    },
+    {
+      "case": "send-p0/group",
+      "harness": "agy",
+      "threshold": -1,
+      "recipient": "ag-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.76,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "m6LIU6wRIw0s"
+      },
+      "result": "PASS",
+      "utc": "2026-10-24T01:50:16Z"
+    },
+    {
+      "case": "send-p0/group",
+      "harness": "agy",
+      "threshold": 3,
+      "recipient": "ag-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 1.02,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "m6LI0Ps1lKz9"
+      },
+      "result": "PASS",
+      "utc": "2026-10-24T01:50:18Z"
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "agy",
+      "threshold": -1,
+      "recipient": "ag-t-1",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.76,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "m6LIhum4OYzE"
+      },
+      "result": "PASS",
+      "utc": "2026-10-24T01:50:56Z"
+    },
+    {
+      "case": "send-p1/group",
+      "harness": "agy",
+      "threshold": 3,
+      "recipient": "ag-t3",
+      "expect_wake": true,
+      "woke": true,
+      "t_wake_s": 0.76,
+      "hello_sent": false,
+      "checks": {
+        "delivered": true,
+        "inbox_calls": 0,
+        "no_extra_inbox": true,
+        "trailing_wake_s": null
+      },
+      "ref": {
+        "message": "m6LI5MRBEA29"
+      },
+      "result": "PASS",
+      "utc": "2026-10-24T01:50:58Z"
+    }
+  ]
+}

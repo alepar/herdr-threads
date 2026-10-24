@@ -50,3 +50,9 @@ python3 scripts/wake-e2e.py --harness agy --cases send-p0/group,send-p1/group,se
 
 Unverified until that run: whether agy 1.4.x accepts `GEMINI_API_KEY` against Google's own endpoint without a
 sign-in screen (the relay path is the one measured before), and its first-run screens on Linux.
+
+## Update 2026-10-24: run on Linux
+
+agy now runs on blacky (genuine 1.4.6 `linux_amd64`, bubblewrap sandbox, OpenRouter relay): the wake e2e cases
+and the live smoke ran, and the turn-end hooks were probed. Results and the driver fixes they needed:
+`docs/evidence/agy-linux-2026-10-24/`.

@@ -1,0 +1,54 @@
+{
+ "leak_check": {
+  "ok": true,
+  "output": "no leaked test temp files (no ledger for this run)\nno leaked test processes\n"
+ },
+ "post-force": {
+  "error": null,
+  "hook_fires": {
+   "PostInvocation": 40,
+   "Stop": 2
+  },
+  "requests_total": 40,
+  "turn1": {
+   "idle": true,
+   "requests": 40
+  },
+  "turn2": {
+   "idle": true,
+   "requests": 0
+  }
+ },
+ "post-inject": {
+  "error": null,
+  "hook_fires": {
+   "PostInvocation": 2,
+   "Stop": 2
+  },
+  "requests_total": 2,
+  "turn1": {
+   "idle": true,
+   "requests": 1
+  },
+  "turn2": {
+   "idle": true,
+   "requests": 1
+  }
+ },
+ "stop-continue": {
+  "error": null,
+  "hook_fires": {
+   "PostInvocation": 22,
+   "Stop": 22
+  },
+  "requests_total": 22,
+  "turn1": {
+   "idle": true,
+   "requests": 11
+  },
+  "turn2": {
+   "idle": true,
+   "requests": 11
+  }
+ }
+}

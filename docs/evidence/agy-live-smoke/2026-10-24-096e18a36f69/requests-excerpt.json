@@ -1,0 +1,23 @@
+{
+  "injected_system_messages": [
+    "The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\nThe following system message was injected by a PreInvocation hook:\n[herdr-threads] new messages:\n\n[herdr-threads] message mTmWeqKhCldz in dPC4UBJsrsZ \"1:1 sTmWJILqIwOs sTmWqLwy1kM9\" from sTmWJILqIwOs [p0] [human]:\n  Smoke check: please acknowledge this message, then reply in this thread with the text SMOKE-OK.\n</SYSTEM_MESSAGE>"
+  ],
+  "tool_calls": [
+    {
+      "args_trimmed": "{\"Path\": \"<root>/home/.gemini/config/plugins/herdr-threads/skills/herdr-threads/SKILL.md\"}",
+      "name": "read_file",
+      "seq": 3
+    },
+    {
+      "args_trimmed": "{\"toolSummary\": \"Reply to herdr-threads message\", \"WaitMsBeforeAsync\": 5000, \"CommandLine\": \"herdr-threads send dPC4UBJsrsZ --body \\\"SMOKE-OK\\\"\"}",
+      "name": "run_command",
+      "seq": 4
+    },
+    {
+      "args_trimmed": "{\"WaitMsBeforeAsync\": 5000, \"toolSummary\": \"Check herdr-threads inbox\", \"CommandLine\": \"herdr-threads inbox\"}",
+      "name": "run_command",
+      "seq": 6
+    }
+  ],
+  "tool_results": []
+}
