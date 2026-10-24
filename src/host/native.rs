@@ -2242,52 +2242,56 @@ impl NativeCli {
         if !policy.wants_styled(&read) {
             return Ok(read);
         }
-        // Any failure of the styled read keeps the detection read.
+        // A failed styled read keeps the detection read; an abort still aborts.
         Ok(self
-            .read_styled_composer(target, policy, context)
+            .read_styled_composer(target, policy, context)?
             .unwrap_or(read))
     }
 
     /// One bounded `agent read --source recent --format ansi` (detection
-    /// text carries no styles), composer-parsed by the policy. `None` when the
-    /// read fails, answers another pane, source or format, or carries no
+    /// text carries no styles), composer-parsed by the policy. `Ok(None)` when
+    /// the read fails, answers another pane, source or format, or carries no
     /// parsable styles: a Herdr that ignores `format` returns plain text.
+    /// Cancellation, an exhausted budget or a stale observation is an error.
     fn read_styled_composer(
         &self,
         target: &HostTargetId,
         policy: &dyn ComposerPolicy,
         context: &HostCallContext,
-    ) -> Option<ComposerRead> {
-        let limit = composer_limit(self, context).ok()?;
+    ) -> Result<Option<ComposerRead>, ApiError> {
+        let limit = composer_limit(self, context)?;
         let started = Instant::now();
-        let raw = self
-            .run_unfenced(
-                &[
-                    "agent",
-                    "read",
-                    target.as_str(),
-                    "--source",
-                    "recent",
-                    "--format",
-                    "ansi",
-                ],
-                &context.budget,
-                limit,
-            )
-            .ok()?;
-        let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
-        let read = parsed.pointer("/result/read")?;
-        let text = |name: &str| read.get(name).and_then(serde_json::Value::as_str);
-        if text("pane_id") != Some(target.as_str())
-            || text("source") != Some("recent")
-            || text("format") != Some("ansi")
-        {
-            return None;
-        }
-        let screen = crate::harness::sgr::parse(text("text")?)?;
-        self.check_after_parse_unfenced(&context.budget, started, limit)
-            .ok()?;
-        policy.read_styled(&screen, None)
+        let raw = match self.run_unfenced(
+            &[
+                "agent",
+                "read",
+                target.as_str(),
+                "--source",
+                "recent",
+                "--format",
+                "ansi",
+            ],
+            &context.budget,
+            limit,
+        ) {
+            Ok(raw) => raw,
+            Err(failure) if composer_call_aborts(&failure) => return Err(failure),
+            Err(_) => return Ok(None),
+        };
+        let screen = (|| {
+            let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+            let read = parsed.pointer("/result/read")?;
+            let text = |name: &str| read.get(name).and_then(serde_json::Value::as_str);
+            if text("pane_id") != Some(target.as_str())
+                || text("source") != Some("recent")
+                || text("format") != Some("ansi")
+            {
+                return None;
+            }
+            crate::harness::sgr::parse(text("text")?)
+        })();
+        self.check_after_parse_unfenced(&context.budget, started, limit)?;
+        Ok(screen.and_then(|screen| policy.read_styled(&screen, None)))
     }
 
     /// Clears the composer with a bounded `ctrl+u` loop until a read shows it
@@ -4596,11 +4600,17 @@ pub(crate) mod tests {
         plain.as_object_mut().unwrap().remove("format");
         let mut detection_source = styled_read(SUGGESTION_ANSI);
         detection_source["source"] = json!("detection");
+        let mut other_pane = styled_read(SUGGESTION_ANSI);
+        other_pane["pane_id"] = json!("w4:p2");
+        // Herdr's detection source answers `format: "ansi"` with plain text.
+        let plain_claiming_ansi = styled_read(SUGGESTION_DETECTION);
         for reply in [
             None,
             Some(plain),
             Some(styled_read(draft)),
             Some(detection_source),
+            Some(other_pane),
+            Some(plain_claiming_ansi),
             Some(styled_read("\x1b[2mno composer here\x1b[0m\r\n")),
         ] {
             let (result, methods) = cooperative_wake(vec![
@@ -6088,8 +6098,8 @@ pub(crate) mod tests {
         assert_eq!(methods, ["pane.get", "pane.send_keys"]);
     }
 
-    /// Claude text may be a prompt suggestion, so the stash refuses before
-    /// any key (the poke is skipped for that poke only).
+    /// Without a styled read, Claude text may be a prompt suggestion, so the
+    /// stash refuses before any key (the poke is skipped for that poke only).
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn claude_text_fails_stash_before_any_key() {
@@ -6097,17 +6107,23 @@ pub(crate) mod tests {
             CLAUDE_DRAFT.to_owned(),
             claude_screen(&["herdr-threads pending-receipts"]),
         ] {
-            let (stash, methods) =
-                poke_session(vec![detection_exchange(screen)], |cli, target, context| {
-                    cli.stash_composer(target, context)
-                });
+            // No styled read is served (a Herdr without one): detection text
+            // alone cannot tell the draft from a suggestion.
+            let (stash, methods) = poke_session(
+                vec![detection_exchange(screen), styled_exchange(None)],
+                |cli, target, context| cli.stash_composer(target, context),
+            );
             assert_eq!(
                 stash.unwrap(),
                 ComposerStash::Failed(
                     crate::harness::claude::composer::CLAUDE_NOT_KNOWN_EMPTY.into()
                 )
             );
-            assert_eq!(methods, ["pane.get", "agent.read"], "no pane.send_keys");
+            assert_eq!(
+                methods,
+                ["pane.get", "agent.read", "agent.read"],
+                "no pane.send_keys"
+            );
         }
     }
 

@@ -172,8 +172,9 @@ impl ComposerPolicy for NativeComposer {
             empty,
             CLAUDE_PROMPT,
         );
-        // Detection text cannot distinguish suggestions from drafts (ht-jf3).
-        // Only captured empty markers may admit a poke; text is never stashed.
+        // Detection text cannot distinguish suggestions from drafts (ht-jf3):
+        // from it, only captured empty markers may admit a poke and text is
+        // never stashed; `read_styled` can tell them apart.
         match read {
             ComposerRead::Text(text) => ComposerRead::Unsafe {
                 text,

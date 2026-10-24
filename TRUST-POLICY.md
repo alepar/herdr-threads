@@ -1905,16 +1905,20 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   failure; success cannot clear it. Empty or missing session identity records a bounded parse diagnostic
   without inventing a session. Codex rollout creator metadata never identifies the current runtime,
   including startup and known resume. Exact attributed historical evidence remains unchanged.
-- **Pokes skip Claude panes that show composer text.** A Claude pane whose composer shows a prompt
-  suggestion (or any typed text) is not poked: the suggestion cannot be told from a draft without captured
-  styling. The skip is for that poke only and is retried after the wake retry spacing; only the
-  hard-deadline warning reaches a pane that keeps showing a suggestion (ht-1ip.46). Claude shows one after
-  every turn by default, so this skips most idle Claude panes unless suggestions are off: with
-  `promptSuggestionEnabled: false` an idle Claude composer reads empty (a bare prompt or a captured
-  placeholder) and the poke is sent. `setup claude` explains this and offers to turn suggestions off; it
-  writes the setting only on an interactive yes or `--disable-prompt-suggestions`, never silently, and
-  `unsetup` reverts what it set (ht-6jt). A project or managed setting, or the session's
-  `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION`, can turn them back on; the poke then skips as above.
+- **Pokes skip Claude panes that show typed composer text.** A Claude pane whose composer shows typed
+  text is not poked or woken. A prompt suggestion (or an uncaptured placeholder) is told from a draft by
+  the styled composer read (A4): dim-only text reads empty and the poke or wake is sent. Only where that
+  read fails (a Herdr that serves no styled read, an unparsable screen) does a suggestion count as typed
+  text; the skip is then for that poke only and is retried after the wake retry spacing, and only the
+  hard-deadline warning reaches a pane that keeps showing a suggestion (ht-1ip.46). With
+  `promptSuggestionEnabled: false` an idle Claude composer reads empty either way. `setup claude` explains
+  this and offers to turn suggestions off; it writes the setting only on an interactive yes or
+  `--disable-prompt-suggestions`, never silently, and `unsetup` reverts what it set (ht-6jt). A project or
+  managed setting, or the session's `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION`, can turn them back on.
+- **Dim composer text reads empty.** The styled read (A4) takes Claude composer text drawn only dim,
+  behind an undimmed prompt glyph, for a suggestion or placeholder. A Claude release or input mode that
+  drew typed text that way would read as empty, and a wake or poke would be typed after that draft
+  (captured: Claude Code 2.1.309 draws typed text unstyled, `docs/evidence/ansi-composer/`).
 - **Native attention uses sampled composer/focus guards.** Check-to-send focus or input races are
   accepted: a user may type or change focus after the final read. Empty samples do not establish an
   absence of keystrokes, cursor moves, or type/delete activity between samples. Focus is Herdr's pane
