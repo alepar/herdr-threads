@@ -1101,9 +1101,9 @@ fn smoke_skip_without_herdr_is_reported_by_test_name() {
     assert!(all.contains("'herdr'"), "{all}");
 }
 
-/// Sender-visible wake outcome: Hermes declares no idle-wake path (no channel, no composer
-/// policy), so a priority-0 item to a seated Hermes pane cannot wake it. Each person sender is
-/// told once per Hermes seat, by whichever p0 path reaches the seat first: an invitation, an ACK
+/// Sender-visible wake outcome: Hermes declares no idle-wake path (no channel; its composer
+/// reader cannot reach a gateway-hosted binding), so a priority-0 item to a seated Hermes pane
+/// cannot wake it. Each person sender is told once per Hermes seat, by whichever p0 path reaches the seat first: an invitation, an ACK
 /// request (repeat: silent), a `--nudge` thread send (the daemon finds its p0 recipients) and a
 /// `--nudge` direct send. `doctor` lists the seats' blocks.
 #[test]

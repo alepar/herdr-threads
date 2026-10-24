@@ -1442,7 +1442,8 @@ impl Registry {
             .and_then(|r| r.adapter.delivery_policy())
     }
     /// Whether an idle session of this harness id has any wake path: the harness wakes itself
-    /// (`IdleWake::Channel`) or Herdr can type into its composer (a composer policy). `None` for
+    /// (`IdleWake::Channel`) or Herdr can type into its composer (a composer policy whose wake
+    /// reaches the binding's process). `None` for
     /// an id this build does not register (`human` included).
     pub fn has_idle_wake(&self, harness_id: &str) -> Option<bool> {
         let adapter = &self
@@ -1451,7 +1452,9 @@ impl Registry {
             .find(|r| r.metadata().id == harness_id)?
             .adapter;
         Some(
-            adapter.composer_policy().is_some()
+            adapter
+                .composer_policy()
+                .is_some_and(|policy| policy.wake_reaches_binding())
                 || adapter
                     .delivery_policy()
                     .is_some_and(|p| p.idle_wake() == IdleWake::Channel),
@@ -1598,7 +1601,8 @@ mod tests {
     use super::*;
 
     /// The send warning's `no_wake` rests on this classification: Claude (channel), Codex and agy
-    /// (composer) wake; Hermes has neither; an unregistered id is unknown, never `no_wake`.
+    /// (composer) wake; Hermes' composer reader cannot reach its gateway-hosted bindings; an
+    /// unregistered id is unknown, never `no_wake`.
     #[test]
     fn idle_wake_classification_of_the_builtins() {
         let registry = builtins();

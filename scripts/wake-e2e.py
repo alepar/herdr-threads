@@ -61,6 +61,17 @@ harnesses get their credentials:
   is read or used. The first-run screens (colour scheme, Terms of Service) are walked with keys. Like Codex, agy
   wakes natively (`herdr-threads: wake up` typed into an empty composer) and its hook delivers a page, so its
   mixed-order presentation order is judged.
+- hermes (opt-in only, `--harness hermes --hermes-home DIR`, never in the default matrix): DIR is a scratch HOME that
+  Hermes' own installer (`HOME=DIR bash setup-hermes.sh`) installed into, with its model credential and the telemetry
+  answer already in DIR/.hermes (docs/evidence/hermes-composer/README.md). The driver runs `setup hermes` and
+  `hermes plugins enable herdr-threads` with HOME=DIR (writing only there) and starts one recipient, `he-t0` (T=0):
+  every Hermes pane shares one gateway that keeps the first pane's HERDR_PANE_ID (live evidence 2026-10-23, defect
+  1), so a second Hermes recipient would bind to the first one's seat. No Hermes from DIR may be running at start;
+  cleanup stops the gateway the recipient spawned. Herdr reports a Hermes pane `idle` throughout a turn, so the
+  driver reads a Hermes recipient's state from its screen (hermes_idle): idle only while the composer's top rule
+  carries no live status. Its wake rows fail today (live run 2026-10-23): Hermes 0.22 hosts its hooks in
+  the gateway, so no binding is the pane's foreground process and no native wake reaches the seat
+  (TRUST-POLICY, Hermes composer reader); the option is the evidence path for that fix.
 Agents work in the repository checkout (already trusted by Claude, so no folder-trust dialog is answered).
 The senders are two owned coordinator shell panes recorded as person seats (`human me init`, which keeps its agent
 guard: the driver strips every registered agent marker from their commands and the panes run only a shell), not
@@ -279,11 +290,23 @@ CODEX_BYPASS_ARGS = "--dangerously-bypass-approvals-and-sandbox"
 CONTAINER_MARKER = "HT_LINUX_E2E_CONTAINER"
 DOCKERENV = Path("/.dockerenv")
 CLAUDE_CREDENTIAL_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
-HARNESSES = ("claude", "codex", "agy")
+HARNESSES = ("claude", "codex", "agy", "hermes")
 DEFAULT_HARNESSES = "claude,codex"
 # agy (opt-in): its model credential, and the optional endpoint override the agy relay uses.
 AGY_CREDENTIAL_ENV = "GEMINI_API_KEY"
 AGY_ENDPOINT_ENV = "GOOGLE_GEMINI_BASE_URL"
+def hermes_idle(screen):
+    """A Hermes recipient's state from its `detection` screen: idle when the composer's top rule (the first
+    `─`-led line above the last full rule) carries no live status (a busy one starts `── <spinner>`). Hermes'
+    footer key hints decide nothing: it drops them whenever they do not fit."""
+    lines = [line.rstrip() for line in screen.splitlines()]
+    bottom = max((i for i, l in enumerate(lines) if len(l) >= 10 and set(l) == {"─"}), default=None)
+    if bottom is None:
+        return False
+    top = max((i for i in range(bottom) if lines[i].startswith("─")), default=None)
+    return top is not None and lines[top].startswith("───") and lines[top + 1].startswith("❯")
+
+
 SECRET_PATTERN = re.compile(r"sk-ant-[A-Za-z0-9_-]+|AIza[A-Za-z0-9_-]{8,}")  # Anthropic and Google API keys
 
 STANDING = ("You are a test recipient in an automated herdr-threads wake e2e run (the user approves). "
@@ -617,6 +640,7 @@ class Run:
         self.codex_home = self.root / "codex-home"
         self.agy_env = self.root / "agy.env"
         self.claude_env = self.root / "claude.env"  # linux: the Claude credential, written only when one is set
+        self.hermes_home = Path(args.hermes_home).resolve() if getattr(args, "hermes_home", None) else None
         self.bindir = self.root / "bin"
         self.bin = str(Path(args.bin).resolve())
         self.endpoint = os.environ.get("HERDR_SOCKET_PATH", "")
@@ -732,7 +756,12 @@ class Run:
             problems.append("HERDR_SOCKET_PATH is unset")
         if not os.access(self.bin, os.X_OK):
             problems.append(f"herdr-threads binary not executable: {self.bin} (run scripts/build.sh)")
-        for tool in ("herdr", *self.args.harness):
+        if "hermes" in self.args.harness and not (self.hermes_home and os.access(self.hermes_bin(), os.X_OK)):
+            problems.append("--harness hermes needs --hermes-home DIR with Hermes installed (DIR/.local/bin/hermes)")
+        elif "hermes" in self.args.harness and self.hermes_gateways():
+            problems.append(f"a Hermes gateway from {self.hermes_home} is already running (pids "
+                            f"{self.hermes_gateways()}): stop it first (`hermes gateway stop` with HOME={self.hermes_home})")
+        for tool in ("herdr", *(h for h in self.args.harness if h != "hermes")):
             if not shutil.which(tool):
                 problems.append(f"{tool} not on PATH")
         auth = self.codex_auth_home() / "auth.json"
@@ -750,8 +779,11 @@ class Run:
             raise Refused("; ".join(problems))
         versions = {}
         for name, argv in (("herdr", ["herdr", "--version"]), ("herdr-threads", [self.bin, "--version"]),
-                           *((h, [h, "--version"]) for h in self.args.harness)):
+                           *((h, [h, "--version"]) for h in self.args.harness if h != "hermes")):
             versions[name] = clip(self.run(argv, tag="version")[1].strip(), 120, getattr(self, 'secrets', None))
+        if "hermes" in self.args.harness:
+            out = self.run([str(self.hermes_bin()), "--version"], env=self.hermes_env(), tag="version")[1]
+            versions["hermes"] = clip(out.strip().splitlines()[0] if out.strip() else "", 120, self.secrets)
         sha = self.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], tag="git")[1].strip()
         dirty = bool(self.run(["git", "-C", str(REPO), "status", "--porcelain"], tag="git")[1].strip())
         self.facts = {"run_id": self.run_id, "sha": sha, "dirty": dirty, "versions": versions,
@@ -765,6 +797,33 @@ class Run:
     @property
     def calls_log(self):
         return self.bindir / "calls.log"
+
+    def hermes_bin(self):
+        return self.hermes_home / ".local" / "bin" / "hermes"
+
+    def hermes_gateways(self):
+        """Pids of running Hermes gateways (`... gateway run ...`) whose HOME is the scratch Hermes home: the
+        recipients' hooks run there, and the gateway keeps the HERDR_PANE_ID of the pane that spawned it."""
+        found = []
+        for proc in Path("/proc").iterdir() if Path("/proc").is_dir() else ():
+            if not proc.name.isdigit():
+                continue
+            try:
+                argv = (proc / "cmdline").read_bytes().split(b"\0")
+                env = (proc / "environ").read_bytes().split(b"\0")
+            except OSError:
+                continue
+            if b"gateway" in argv and b"run" in argv and f"HOME={self.hermes_home}".encode() in env:
+                found.append(int(proc.name))
+        return found
+
+    def hermes_env(self):
+        """The environment of a Hermes command run by the driver: HOME at the scratch Hermes home, so its
+        ~/.hermes and ~/.codex are the scratch ones."""
+        env = {k: v for k, v in os.environ.items()
+               if k not in CALLER_SESSION_ENV and k not in ("CODEX_HOME", "HERDR_PANE_ID")}
+        env.update(HOME=str(self.hermes_home), PATH=f"{self.hermes_bin().parent}:{env.get('PATH', '')}")
+        return env
 
     def codex_auth_home(self):
         return Path(self.args.codex_auth_home or os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
@@ -808,6 +867,15 @@ class Run:
             seed_agy_home(self.home, self.cwd)
             write_private(self.agy_env, "".join(f"export {k}={shlex.quote(v)}\n" for k, v in agy_env(os.environ)))
         for h in self.args.harness:
+            if h == "hermes":
+                env = {"HOME": str(self.hermes_home), "PATH": self.hermes_env()["PATH"]}
+                self.ht("setup", h, "--profile", "default", env=env, tag="setup:hermes", timeout=120)
+                rc, out, err = self.run([str(self.hermes_bin()), "--profile", "default", "plugins", "enable",
+                                         "herdr-threads"], env=self.hermes_env(), tag="hermes:plugins-enable",
+                                        timeout=120)
+                if rc != 0:
+                    raise RuntimeError(f"hermes plugins enable: rc={rc} {clip((err or out).strip(), 300, self.secrets)}")
+                continue
             self.ht("setup", h, "--with-permissions", env=setup_env, tag=f"setup:{h}", timeout=120)
         if self.linux and "claude" in self.args.harness:
             seed_claude_config(self.claude_cfg, self.cwd, os.environ)
@@ -858,7 +926,7 @@ class Run:
             self.coords[role] = {"pane": pane, "seat": seat}
         self.recipients = []
         for h in self.args.harness:
-            for threshold in THRESHOLDS:
+            for threshold in (0,) if h == "hermes" else THRESHOLDS:  # one Hermes: its gateway binds one pane
                 name = f"{h[:2]}-t{threshold}"
                 pane = self.tab(name)
                 self.recipients.append(Recipient(self, name, h, threshold, pane, self.seat(pane)))
@@ -896,6 +964,10 @@ class Run:
             if env_file is not None and env_file.exists():
                 return f"( . {q(str(env_file))} && {line} )"
             return line
+        if harness == "hermes":
+            hh = self.hermes_home
+            return (f"unset CODEX_HOME; PATH={q(str(self.bindir))}:{q(str(self.hermes_bin().parent))}:\"$PATH\" "
+                    f"HOME={q(str(hh))} HERDR_AGENT=hermes exec hermes")
         if harness == "agy":
             # The credential stays in the private env file; the pane's command line and screen never carry it.
             # By absolute path: the pane's shell has the Herdr server's PATH, not this driver's.
@@ -954,6 +1026,30 @@ class Run:
                     problems.append(f"workspace {self.workspace} still open after close")
             except Exception as e:
                 problems.append(f"workspace {self.workspace}: closure not verified: {clip(e, 200, getattr(self, 'secrets', None))}")
+        if getattr(self, "hermes_home", None):
+            # The recipient's pane spawned Hermes' gateway (`gateway run --idle-exit`), which outlives the pane.
+            try:
+                rc = self.run([str(self.hermes_bin()), "--profile", "default", "gateway", "stop"],
+                              env=self.hermes_env(), tag="cleanup:hermes-gateway", timeout=60, cleanup=True)[0]
+                steps.append({"hermes_gateway_stop_rc": rc})
+                end = time.time() + self.process_grace_s
+                while self.hermes_gateways() and time.time() < end:
+                    time.sleep(0.5)
+                left = self.hermes_gateways()
+                if left:
+                    problems.append(f"hermes gateway still running after stop (rc={rc}): pids {left}")
+            except Exception as e:
+                problems.append(f"hermes gateway stop: {clip(e, 200, getattr(self, 'secrets', None))}")
+            # The bridge names this run's state dir: the next run's setup would refuse it as a conflict.
+            try:
+                rc = self.run([self.bin, "unsetup", "hermes", "--profile", "default", "--state-dir", str(self.state)],
+                              env={"HOME": str(self.hermes_home), "PATH": self.hermes_env()["PATH"]},
+                              tag="cleanup:unsetup-hermes", timeout=60, cleanup=True)[0]
+                steps.append({"hermes_unsetup_rc": rc})
+                if rc != 0:
+                    problems.append(f"unsetup hermes: rc={rc}")
+            except Exception as e:
+                problems.append(f"unsetup hermes: {clip(e, 200, getattr(self, 'secrets', None))}")
         if self.daemon_attempted:
             try:
                 rc = self.run_rc("daemon", "stop", timeout=30)
@@ -1335,6 +1431,11 @@ class Recipient:
                 redact("\n".join(mine) + "\n", getattr(self.run, "secrets", ())))
 
     def status(self):
+        if self.harness == "hermes":  # Herdr reports Hermes idle mid-turn
+            screen = self.run.herdr("agent", "read", self.pane, "--source", "detection", check=False).get("raw", "")
+            if not screen.strip():
+                raise RuntimeError(f"{self.name}: unreadable Hermes screen")
+            return "idle" if hermes_idle(screen) else "working"
         return self.run.herdr("agent", "get", self.pane)["result"]["agent"]["agent_status"]
 
     def screen(self, lines=400):
@@ -2471,7 +2572,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="wake-e2e", description=__doc__.splitlines()[0])
     ap.add_argument("--bin", default=str(REPO / "bin" / "herdr-threads"), help="herdr-threads binary under test")
     ap.add_argument("--harness", default=DEFAULT_HARNESSES,
-                    help="comma-separated: claude,codex; opt-in: agy (credential from %s)" % AGY_CREDENTIAL_ENV)
+                    help="comma-separated: claude,codex; opt-in: agy (credential from %s), hermes "
+                         "(--hermes-home)" % AGY_CREDENTIAL_ENV)
     ap.add_argument("--cases", default=",".join(CASES), help="comma-separated subset of: " + ", ".join(CASES)
                     + "; opt-in, Codex only: " + ", ".join(SIDE_CASES + EOT_CASES + WAKE_BLOCK_CASES + UNRECEIVED_CASES)
                     + "; opt-in, hooks-only Claude: " + ", ".join(HOOKS_CASES))
@@ -2492,6 +2594,8 @@ def main(argv=None):
     ap.add_argument("--codex-auth-home", help="Codex home whose auth.json is copied (private, mode 0600) into "
                                               "the scratch CODEX_HOME "
                                               "(default $CODEX_HOME or ~/.codex)")
+    ap.add_argument("--hermes-home", help="--harness hermes: a scratch HOME Hermes is installed and logged in to "
+                                          "(setup and the plugin enable write there)")
     ap.add_argument("--self-test", action="store_true",
                     help="check the driver's credential, cleanup and completeness paths (no harnesses) and exit")
     args = ap.parse_args(argv)

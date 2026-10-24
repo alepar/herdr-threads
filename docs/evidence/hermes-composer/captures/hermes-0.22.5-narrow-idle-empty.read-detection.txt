@@ -1,0 +1,19 @@
+
+╔═════════════════════════════════════════════════════════════════════════╗
+║ ☤ NOUS HERMES - AI Agent Framework                                    ║
+║ Hermes Agent v0.22.5 (2026.9.24) · upstream bf0203a7                  ║
+╚═════════════════════════════════════════════════════════════════════════╝
+
+  ● gpt-6.1-sol · 21 tools · toolsets: browser, clarify, code_execution,
+computer_use, connections, cronjob, delegation, file, image_gen, memory,
+session_search, skills, terminal, todo, tts, vision, web · provider:
+openai-codex
+
+Welcome to Hermes Agent! Type your message or /help for commands.
+✦ Tip: tts.provider: piper runs 44-language local TTS on CPU — voices
+auto-download to ~/.hermes/cache/piper-voices/.
+
+───────────────────────────────────────────────────────────────────────────
+❯ Type / to browse commands, or Ctrl+P for the palette
+───────────────────────────────────────────────────────────────────────────
+ ☤ gpt-6.1-sol · -- · 3m · …0c8-a0d7-dadf21783c43/scratchpad/hermes/work

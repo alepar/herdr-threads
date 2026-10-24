@@ -1,5 +1,6 @@
 # Preserve exact imported forensic snapshots; source and product docs stay checked.
 docs/evidence/ansi-composer/captures/** -text -whitespace
+docs/evidence/hermes-composer/captures/** -text -whitespace
 docs/superpowers/runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions-roast-design-1.md -whitespace
 docs/superpowers/runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions-roast-design-2.md -whitespace
 docs/superpowers/runs/2026-10-07-installer-human-permissions/graph-pass-input.md -whitespace

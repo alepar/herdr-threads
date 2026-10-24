@@ -84,12 +84,12 @@ impl World {
             "pane.process_info" => match self.pane(&params["pane_id"]) {
                 Some(pane) => {
                     let session = session_of(&self.label, pane["pane_id"].as_str().unwrap_or(""));
+                    let agent = pane["agent"].as_str().unwrap_or("claude");
                     let pid =
-                        crate::test_support::isolation::stand_in_fingerprint("claude", &session)
-                            .pid;
+                        crate::test_support::isolation::stand_in_fingerprint(agent, &session).pid;
                     json!({"id":id,"result":{"type":"pane_process_info","process_info":{
                         "pane_id":pane["pane_id"],"shell_pid":1,
-                        "foreground_processes":[{"pid":pid,"name":"claude","argv0":"claude"}]}}})
+                        "foreground_processes":[{"pid":pid,"name":agent,"argv0":agent}]}}})
                 }
                 None => missing("pane_not_found"),
             },
@@ -273,6 +273,21 @@ impl FakeHerdr {
             .iter()
             .filter(|(p, s)| p == pane && s == source)
             .count()
+    }
+
+    /// Sets the Herdr agent kind (`claude`, `hermes`, ...) of `pane`.
+    pub fn set_agent(&self, pane: &str, agent: &str) {
+        for entry in self
+            .world
+            .panes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter_mut()
+        {
+            if entry["pane_id"] == pane {
+                entry["agent"] = json!(agent);
+            }
+        }
     }
 
     /// Sets the Herdr agent status (`idle`, `working`, ...) of `pane`.

@@ -199,6 +199,8 @@ mod config_dial_each_other;
 #[path = "multinode/config_mixed_versions.rs"]
 mod config_mixed_versions;
 
+#[path = "multinode/hermes_composer.rs"]
+mod hermes_composer;
 #[path = "multinode/styled_composer.rs"]
 mod styled_composer;
 

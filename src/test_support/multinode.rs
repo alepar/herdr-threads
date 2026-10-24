@@ -121,6 +121,8 @@ pub struct Seat {
     /// Index of the seat's server among the node's hosts.
     pub host: usize,
     session: String,
+    /// The stand-in agent's harness id.
+    harness: &'static str,
 }
 
 /// The relay a gated cluster's dials run through: `relay.py ROOT FROM TO --
@@ -658,14 +660,14 @@ impl Cluster {
             .arg("--host-endpoint")
             .arg(&endpoint);
         if let Some(seat) = seat {
-            crate::test_support::isolation::as_agent(&mut command, "claude", &seat.session);
+            crate::test_support::isolation::as_agent(&mut command, seat.harness, &seat.session);
             command.args([
                 "--cooperative-seat",
                 &seat.id,
                 "--cooperative-target",
                 &seat.pane,
                 "--cooperative-harness",
-                "claude",
+                seat.harness,
                 "--cooperative-role",
                 "top-level",
             ]);
@@ -715,12 +717,23 @@ impl Cluster {
 
     /// [`Cluster::seat`] on the node's `host`th server.
     pub fn seat_on(&self, node: usize, host: usize, pane: &str) -> Seat {
+        self.seat_with(node, host, pane, "claude")
+    }
+
+    /// [`Cluster::seat`] with a stand-in agent of `harness`; the pane's Herdr agent kind
+    /// must match it ([`FakeHerdr::set_agent`](crate::test_support::fake_herdr::FakeHerdr::set_agent)).
+    pub fn seat_as(&self, node: usize, pane: &str, harness: &'static str) -> Seat {
+        self.seat_with(node, 0, pane, harness)
+    }
+
+    fn seat_with(&self, node: usize, host: usize, pane: &str, harness: &'static str) -> Seat {
         let probe = Seat {
             id: String::new(),
             node,
             pane: pane.to_owned(),
             host,
             session: String::new(),
+            harness,
         };
         let (code, value, stderr) =
             self.run_on(None, host, node, &["seat", "resolve", "--pane", pane]);
@@ -831,6 +844,7 @@ impl Cluster {
             pane: pane.to_owned(),
             host: 0,
             session: String::new(),
+            harness: "claude",
         }
     }
 

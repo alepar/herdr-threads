@@ -685,7 +685,19 @@ model open work, and summary closure never changes receipt state or installs glo
     the detection read. Accepted limit: a Claude release that drew typed text dim behind an undimmed glyph
     would read as empty, and a wake would be typed after that draft. Codex's empty placeholders are
     exactly its main and `/side` ones; its sub-agent view's placeholder, under which Codex blocks a typed
-    submit, is typed input. An unreadable composer, a failed read or any other status is
+    submit, is typed input. The Hermes reader (`docs/evidence/hermes-composer/`) decides no wake today:
+    Hermes 0.22 runs its agent loop and hooks in an auto-spawned gateway (a child of the first pane's TUI),
+    so a Hermes binding's process is never the pane's foreground process and the one-process composer
+    choice refuses the wake first (the adapter says so, and senders are told `wake=no_wake`); it classifies
+    Hermes screens for observations. Herdr reports a Hermes pane `idle` throughout a turn, so the reader is
+    the busy guard: it reads a composer only on the idle screen shape
+    (a top rule with no live status, exactly one footer line, no overlay panel right above the top rule); a
+    busy turn (with any in-turn approval, clarify, sudo or secret prompt), the model picker, the command
+    palette and the first-run consent screen are unreadable. Hermes draws a random example prompt in its empty composer, so composer text there is refined
+    by the same styled read: italic text on the first row is the placeholder and reads empty, wholly unstyled
+    text is typed input, any other mix is unsafe. Accepted limits: a Hermes release that drew typed text
+    italic, or showed a busy turn or an overlay in that exact idle shape, would read as empty; Hermes'
+    classic layout and a hidden status bar are unreadable, so such a Hermes is never woken. An unreadable composer, a failed read or any other status is
     unknown and skipped. The same reader classifies observations and final native delivery admission.
     Ordinary native wakes also require an empty composer, checked after their final
     identity/status recheck. A missing registered composer provider, nonempty composer or unreadable composer refuses delivery before input is sent;
@@ -1753,8 +1765,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   is no native resume lifecycle shape: a resumed session checks in as `Startup` in a seated pane.
   A qualified top-level turn with the same native session can recover an unresolved seat through C1;
   a confirmed no-match on an unowned pane may use the guarded Unowned-turn enrollment fallback. Wake: a
-  bare macOS Hermes is not process-detected by Herdr, so its seat is not woken while idle; `launch --kind
-  hermes` stays the way to get a wakeable Hermes. CLI side agents (`/background`: platform `cli`, own
+  bare macOS Hermes is not process-detected by Herdr (`launch --kind hermes` adds the process hint that
+  makes it recognized); on Linux Herdr recognizes a bare Hermes. Either way its idle seat is not woken: its
+  bindings live in the gateway process, not the pane's foreground process (the Hermes composer reader above). CLI side agents (`/background`: platform `cli`, own
   session, no parent, no native side-agent flag) are indistinguishable from the foreground session: they
   enroll no new seat, but their turns check in as their own binding of the seat, as on a launch-created seat
   (follow-on ht-e73). Operator retire: retiring the seat of a running bare Hermes leaves the pane

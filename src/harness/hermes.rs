@@ -1,5 +1,6 @@
 //! Concrete Hermes bridge adapter. Cooperative startup observations are not native/model proof.
 pub mod assets;
+mod composer;
 pub mod launch;
 pub mod runtime;
 use super::{
@@ -38,8 +39,8 @@ static TEXT: AdapterText = AdapterText {
           guidance.",
     launch_notes: "Hermes is experimental, natively
 measured on 0.21.5 with a private Herdr build; a bare Hermes CLI session also
-joins through its hooks; this launch adds the guarded process hint that makes the seat
-wakeable. Its separate startup/profile/API prelaunch observation
+joins through its hooks; this launch adds the guarded process hint that lets Herdr
+recognize it. Its separate startup/profile/API prelaunch observation
 must match the selected executable, owned generation and configured enabled profile.
 Native Hermes -p/--profile NAME after `--` is emitted once (default when omitted);
 --cli and one policy-owned chat token compose the captured interactive grammar.
@@ -47,8 +48,8 @@ Known-arity model/provider options and chat -q/--query are supported in their na
 positions. Resume, TUI/native/oneshot, arbitrary subcommands, plugin suppression and
 approval bypass forms refuse. Launch never enables a plugin or grants native consent.
 The private host must support guarded process hints; a hint or observed launch is
-neither callback activation nor model consumption. Missing Hermes composer support
-permits no in-turn poke or composer stash/restore.",
+neither callback activation nor model consumption. Hermes hooks run in its gateway, so
+no idle wake reaches the seat yet; no composer stash/restore.",
     ..AdapterText::NONE
 };
 static METADATA: AdapterMetadata = AdapterMetadata {
@@ -828,6 +829,9 @@ impl HarnessAdapter for HermesAdapter {
     }
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         Some(&HermesCanary)
+    }
+    fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
+        Some(&composer::HermesComposer)
     }
     fn caller_env(&self) -> Option<CallerEnvShape> {
         Some(CallerEnvShape {

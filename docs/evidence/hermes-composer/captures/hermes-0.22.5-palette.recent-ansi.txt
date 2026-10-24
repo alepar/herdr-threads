@@ -1,0 +1,80 @@
+[0m[1m[38;2;205;127;50m║[0m [0m[38;2;255;215;0m☤ NOUS HERMES - AI Agent Framework                                   [0m [0m[1m[38;2;205;127;50m║[0m
+[0m[1m[38;2;205;127;50m║[0m [0m[2m[38;2;184;134;11mHermes Agent v0.[0m[1m[2m[38;2;184;134;11m22.5[0m[2m[38;2;184;134;11m [0m[1m[2m[38;2;184;134;11m(2026.9[0m[2m[38;2;184;134;11m.[0m[1m[2m[38;2;184;134;11m24)[0m[2m[38;2;184;134;11m · upstream bf0203a7                 [0m [0m[1m[38;2;205;127;50m║[0m
+[0m[1m[38;2;205;127;50m╚═════════════════════════════════════════════════════════════════════════╝[0m
+
+  [0m[1m[38;5;1m●[0m [0m[38;2;255;191;0mgpt-[0m[1m[38;2;255;191;0m6.1[0m[38;2;255;191;0m-sol[0m [0m[2m[38;2;184;134;11m·[0m [0m[1m[38;2;218;165;32m21 tools[0m [0m[2m[38;2;184;134;11m·[0m [0m[38;2;218;165;32mtoolsets: browser, clarify, code_execution, [0m
+[0m[38;2;218;165;32mcomputer_use, connections, cronjob, delegation, file, image_gen, memory, [0m
+[0m[38;2;218;165;32msession_search, skills, terminal, todo, tts, vision, web[0m [0m[2m[38;2;184;134;11m·[0m [0m[2mprovider: [0m
+[0m[2mopenai-codex[0m
+
+[0m[38;2;255;248;220mWelcome to Hermes Agent! Type your message or /help for commands.[0m
+[0m[2m[38;2;184;134;11m✦ Tip: tts.provider: piper runs [0m[1m[2m[38;2;184;134;11m44[0m[2m[38;2;184;134;11m-language local TTS on CPU — voices [0m
+[0m[2m[38;2;184;134;11mauto-download to ~/.hermes/cache/piper-voices/.[0m
+
+
+
+[0m[38;5;214m────────────────────────────────────────[0m
+[0m[1m[38;5;214m❯[0m [0m[1mRun the shell command: sleep 30 && echo SLEPT. Then reply OK.[0m
+[0m[38;5;214m────────────────────────────────────────[0m
+
+💻 [0m[1m$[0m sleep 30 + 1 command  [0m[2m30.5s[0m
+
+[0m[38;5;214m────────────────────────────────────────[0m
+[0m[1m[38;5;214m☤ Hermes[0m
+[0m[38;5;230mOK[0m
+[0m[38;5;214m────────────────────────────────────────[0m
+
+[0m[2m─ 35.7s · ran 1 command · 6:08 PM[0m
+[0m[38;5;173m╭─ [0m[1m[38;5;220m⚙ Command Palette[0m[38;5;173m ──────────────────────────────────────────────────────────────────────╮[0m
+[0m[38;5;173m│                                                                                          │[0m
+[0m[38;5;173m│ [0mType to filter 172 commands — ↑/↓ then Enter inserts, Esc cancels                       [0m[38;5;173m │[0m
+[0m[38;5;173m│                                                                                          │[0m
+[0m[38;5;173m│ [0m[1m[38;5;220m❯ /new  —  Start a new session (fresh session ID + history) (usage: /new [name])        [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /reset  —  Start a new session (fresh session ID + history) (alias for /new)          [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /clear  —  Clear screen and start a new session                                       [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /redraw  —  Force a full UI repaint (recovers from terminal drift)                    [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /history  —  Show conversation history                                                [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /save  —  Export the current conversation (bare /save shows usage) (usage: /save      [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    <json|md|html> [filename] [redact])                                                 [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /retry  —  Retry the last message (resend to agent)                                   [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /prompt  —  Compose your next prompt in $EDITOR (markdown), then send it (usage:      [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    /prompt [initial text])                                                             [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /compose  —  Compose your next prompt in $EDITOR (markdown), then send it (alias for  [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    /prompt)                                                                            [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /undo  —  Back up N user turns and re-prompt (default 1) (usage: /undo [N])           [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /title  —  Set a title for the current session (usage: /title [name])                 [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /handoff  —  Hand off this session to a messaging platform (Telegram, Discord, etc.)  [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    (usage: /handoff <platform>)                                                        [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /branch  —  Branch the current session (new thread on Discord/Telegram/Slack/Matrix;  [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    --here stays here) (usage: /branch [--here] [name])                                 [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /fork  —  Branch the current session (new thread on Discord/Telegram/Slack/Matrix;    [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    --here stays here) (alias for /branch)                                              [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /worktree  —  Show, list, create, or prune isolated git worktrees (usage: /worktree   [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    [new [name]|list|prune [--dry-run]])                                                [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /compress  —  Compress conversation context (add 'here [N]' to keep recent N turns;   [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    --preview shows what would happen) (usage: /compress [here [N] | focus topic |      [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    --preview|--dry-run])                                                               [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /compact  —  Compress conversation context (add 'here [N]' to keep recent N turns;    [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    --preview shows what would happen) (alias for /compress)                            [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /rollback  —  List or restore filesystem checkpoints (restores keep your hand-edits;  [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    --all overrides) (usage: /rollback [number] [--all])                                [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /snapshot  —  Create or restore state snapshots of Hermes config/state (usage:        [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    /snapshot [create|restore <id>|prune])                                              [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /snap  —  Create or restore state snapshots of Hermes config/state (alias for         [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    /snapshot)                                                                          [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /stop  —  Kill all running background processes                                       [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /bg  —  Run a prompt in a separate background session (usage: /bg <prompt>)           [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /btw  —  Ask a side question about the current conversation without interrupting it   [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    (usage: /btw <question>)                                                            [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /agents  —  Show active agents and running tasks                                      [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /tasks  —  Show active agents and running tasks (alias for /agents)                   [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /journey  —  Open the learning journey timeline (usage: /journey [list|delete         [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    <id>|edit <id>])                                                                    [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /learning  —  Open the learning journey timeline (alias for /journey)                 [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /memory-graph  —  Open the learning journey timeline (alias for /journey)             [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /queue  —  Queue a prompt for the next turn, or list/edit/rm/move/clear queued        [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m    prompts (usage: /queue [<prompt>|list|edit N <prompt>|rm N|move A B|clear])         [0m[38;5;173m │[0m
+[0m[38;5;173m│ [0m[38;5;136m  /q  —  Queue a prompt for the next turn, or list/edit/rm/move/clear queued prompts    [0m[38;5;173m │[0m
+[0m[38;5;102m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── [0m[38;5;178mRun sleep 30 && echo SLEPT[0m[38;5;102m ─[0m
+[0m[38;5;230m❯ [0m[3m[38;5;136mType / to browse commands, or Ctrl+P for the palette[0m
+[0m[38;5;102m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m

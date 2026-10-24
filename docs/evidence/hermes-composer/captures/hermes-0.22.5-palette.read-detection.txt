@@ -1,0 +1,54 @@
+─ 35.7s · ran 1 command · 6:08 PM
+╭─ ⚙ Command Palette ──────────────────────────────────────────────────────────────────────╮
+│                                                                                          │
+│ Type to filter 172 commands — ↑/↓ then Enter inserts, Esc cancels                        │
+│                                                                                          │
+│ ❯ /new  —  Start a new session (fresh session ID + history) (usage: /new [name])         │
+│   /reset  —  Start a new session (fresh session ID + history) (alias for /new)           │
+│   /clear  —  Clear screen and start a new session                                        │
+│   /redraw  —  Force a full UI repaint (recovers from terminal drift)                     │
+│   /history  —  Show conversation history                                                 │
+│   /save  —  Export the current conversation (bare /save shows usage) (usage: /save       │
+│     <json|md|html> [filename] [redact])                                                  │
+│   /retry  —  Retry the last message (resend to agent)                                    │
+│   /prompt  —  Compose your next prompt in $EDITOR (markdown), then send it (usage:       │
+│     /prompt [initial text])                                                              │
+│   /compose  —  Compose your next prompt in $EDITOR (markdown), then send it (alias for   │
+│     /prompt)                                                                             │
+│   /undo  —  Back up N user turns and re-prompt (default 1) (usage: /undo [N])            │
+│   /title  —  Set a title for the current session (usage: /title [name])                  │
+│   /handoff  —  Hand off this session to a messaging platform (Telegram, Discord, etc.)   │
+│     (usage: /handoff <platform>)                                                         │
+│   /branch  —  Branch the current session (new thread on Discord/Telegram/Slack/Matrix;   │
+│     --here stays here) (usage: /branch [--here] [name])                                  │
+│   /fork  —  Branch the current session (new thread on Discord/Telegram/Slack/Matrix;     │
+│     --here stays here) (alias for /branch)                                               │
+│   /worktree  —  Show, list, create, or prune isolated git worktrees (usage: /worktree    │
+│     [new [name]|list|prune [--dry-run]])                                                 │
+│   /compress  —  Compress conversation context (add 'here [N]' to keep recent N turns;    │
+│     --preview shows what would happen) (usage: /compress [here [N] | focus topic |       │
+│     --preview|--dry-run])                                                                │
+│   /compact  —  Compress conversation context (add 'here [N]' to keep recent N turns;     │
+│     --preview shows what would happen) (alias for /compress)                             │
+│   /rollback  —  List or restore filesystem checkpoints (restores keep your hand-edits;   │
+│     --all overrides) (usage: /rollback [number] [--all])                                 │
+│   /snapshot  —  Create or restore state snapshots of Hermes config/state (usage:         │
+│     /snapshot [create|restore <id>|prune])                                               │
+│   /snap  —  Create or restore state snapshots of Hermes config/state (alias for          │
+│     /snapshot)                                                                           │
+│   /stop  —  Kill all running background processes                                        │
+│   /bg  —  Run a prompt in a separate background session (usage: /bg <prompt>)            │
+│   /btw  —  Ask a side question about the current conversation without interrupting it    │
+│     (usage: /btw <question>)                                                             │
+│   /agents  —  Show active agents and running tasks                                       │
+│   /tasks  —  Show active agents and running tasks (alias for /agents)                    │
+│   /journey  —  Open the learning journey timeline (usage: /journey [list|delete          │
+│     <id>|edit <id>])                                                                     │
+│   /learning  —  Open the learning journey timeline (alias for /journey)                  │
+│   /memory-graph  —  Open the learning journey timeline (alias for /journey)              │
+│   /queue  —  Queue a prompt for the next turn, or list/edit/rm/move/clear queued         │
+│     prompts (usage: /queue [<prompt>|list|edit N <prompt>|rm N|move A B|clear])          │
+│   /q  —  Queue a prompt for the next turn, or list/edit/rm/move/clear queued prompts     │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Run sleep 30 && echo SLEPT ─
+❯ Type / to browse commands, or Ctrl+P for the palette
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

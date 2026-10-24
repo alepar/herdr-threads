@@ -45,6 +45,10 @@ impl Style {
         self.dim
     }
 
+    pub fn is_italic(&self) -> bool {
+        self.italic
+    }
+
     /// Applies one SGR parameter list; `None` on a code this reader does not know.
     fn apply(&mut self, params: &str) -> Option<()> {
         // `38:2:r:g:b` (colon sub-parameters) is one parameter.

@@ -1387,6 +1387,12 @@ pub trait ComposerPolicy: Send + Sync {
     ) -> Option<super::composer::ComposerRead> {
         None
     }
+    /// Whether a native wake can reach this harness's bindings: the bound process is the pane's
+    /// foreground process, as the one-process composer choice requires. `false` keeps the reader
+    /// for observations while `Registry::has_idle_wake` reports no idle wake.
+    fn wake_reaches_binding(&self) -> bool {
+        true
+    }
     fn clear_key(&self) -> &'static str;
     /// Retyped text only: restoring a draft must never submit it.
     fn restore_text(&self, saved: &str) -> String;
@@ -1944,7 +1950,12 @@ mod tests {
                     assert!(registration.canary_strategy().is_some());
                 }
                 "hermes" => {
-                    assert!(registration.composer_policy().is_none());
+                    let composer = registration.composer_policy().unwrap();
+                    assert_eq!(
+                        composer.capabilities(None),
+                        crate::harness::recipe::PokeCapabilities::NONE
+                    );
+                    assert!(!composer.wake_reaches_binding());
                     assert!(registration.canary_strategy().is_some());
                 }
                 "agy" => {
