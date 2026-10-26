@@ -333,6 +333,10 @@ pub struct BindingPolicy {
     /// `(seat, harness, child, agent_id = child)`; a top-level-shaped claim naming the child
     /// session resolves to that binding.
     pub registered_child_sessions: bool,
+    /// One harness process may host the top-level sessions of several panes (a shared server
+    /// process). The same-process rule (supersede, plain-reconnect hold) then holds only between
+    /// bindings of one seat: a process shared across seats is no evidence of replacement.
+    pub process_spans_seats: bool,
 }
 
 /// `CallerEnvShape::role`: the session id and the caller's environment lookup.

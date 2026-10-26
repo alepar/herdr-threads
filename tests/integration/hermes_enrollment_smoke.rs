@@ -14,7 +14,7 @@ use herdr_threads::test_support::{
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::Write,
+    io::{BufRead, BufReader, Write},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -229,16 +229,27 @@ impl Smoke {
 
     /// One driver process (one Hermes process) replaying `steps`.
     fn drive(&self, pane: &str, steps: &[Value], in_herdr: bool) -> Driven {
-        self.drive_script(pane, json!({ "steps": steps }), in_herdr)
+        self.drive_script(pane, json!({ "steps": steps }), in_herdr, &mut || {})
     }
 
     /// One shared Hermes >= 0.22.1 gateway process, started from `pane`, replaying `steps`
-    /// (each in its own session's `client_env`).
-    fn drive_gateway(&self, pane: &str, steps: &[Value]) -> Driven {
-        self.drive_script(pane, json!({ "steps": steps, "gateway": true }), true)
+    /// (each in its own session's `client_env`); `on_pause` runs at each [`PAUSE`] step.
+    fn drive_gateway(&self, pane: &str, steps: &[Value], on_pause: &mut dyn FnMut()) -> Driven {
+        self.drive_script(
+            pane,
+            json!({ "steps": steps, "gateway": true }),
+            true,
+            on_pause,
+        )
     }
 
-    fn drive_script(&self, pane: &str, script: Value, in_herdr: bool) -> Driven {
+    fn drive_script(
+        &self,
+        pane: &str,
+        script: Value,
+        in_herdr: bool,
+        on_pause: &mut dyn FnMut(),
+    ) -> Driven {
         let steps = script["steps"].as_array().unwrap().len();
         let mut command = self.base(Command::new("python3"));
         // The driver is the Hermes process: the hooks it runs have it as their harness parent.
@@ -259,25 +270,33 @@ impl Smoke {
             command.env_remove("HERDR_SOCKET_PATH");
         }
         let mut child = command.spawn_owned().unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(script.to_string().as_bytes())
-            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        writeln!(stdin, "{script}").unwrap();
+        stdin.flush().unwrap();
+        // Read line by line: a `{"paused": true}` line waits for `on_pause` and one stdin line.
+        let mut lines = Vec::new();
+        for line in BufReader::new(child.stdout.take().unwrap()).lines() {
+            let line = line.unwrap();
+            if line.trim().is_empty() {
+                continue;
+            }
+            let value: Value =
+                serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line}"));
+            if value["paused"] == true {
+                on_pause();
+                writeln!(stdin, "go").unwrap();
+                stdin.flush().unwrap();
+            }
+            lines.push(value);
+        }
+        drop(stdin);
         let out = child.wait_with_output().unwrap();
         assert!(
             out.status.success(),
-            "driver failed: {}{}",
-            String::from_utf8_lossy(&out.stdout),
+            "driver failed: {lines:?}{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        let lines = String::from_utf8(out.stdout).unwrap();
-        let mut parsed: Vec<Value> = lines
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}")))
-            .collect();
+        let mut parsed = lines;
         let head = parsed.remove(0);
         assert!(
             out.stderr.is_empty(),
@@ -702,6 +721,7 @@ fn hermes_gateway_sessions_bind_their_client_pane() {
             in_session(turn("GC", "T1"), no_pane),
             turn("GD", "T1"),
         ],
+        &mut || {},
     );
     assert_seated_turn(&driven, 1, "startup");
     assert_seated_turn(&driven, 3, "startup");
@@ -725,6 +745,94 @@ fn hermes_gateway_sessions_bind_their_client_pane() {
     assert_eq!(sessions(&gateway_pane), ["GA"]);
     assert_eq!(sessions(&pane_b), ["GB"]);
 }
+
+/// The gateway is one process for every pane's session (ht-gagu): a session in another pane is
+/// no replacement, so binding pane B's session leaves pane A's connected and A's next turn gets
+/// A's mail (B's does not). A new session in the same pane still supersedes its predecessor.
+#[test]
+fn hermes_gateway_sessions_of_two_panes_both_stay_connected() {
+    let Some(mut smoke) = Smoke::new(
+        "hermes_gateway_sessions_of_two_panes_both_stay_connected",
+        true,
+    ) else {
+        return;
+    };
+    let pane_a = smoke.pane();
+    let pane_b = smoke.pane();
+    let person_pane = smoke.pane();
+    let person = |args: &[&str]| {
+        let mut command = smoke.base(spawn::command(BIN));
+        spawn::tag(&mut command);
+        let out = command
+            .args(["human", "--json", "--state-dir"])
+            .arg(&smoke.state)
+            .arg("--host-endpoint")
+            .arg(smoke.herdr.socket_path())
+            .env("HERDR_PANE_ID", &person_pane)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    };
+    person(&["me", "init"]);
+    let pane = |pane: &str| json!({ "HERDR_PANE_ID": pane, "HERDR_ENV": "1" });
+    let rows = |pane: &str| -> Vec<(String, String, Option<String>)> {
+        smoke
+            .hermes_rows(pane)
+            .into_iter()
+            .map(|row| (row.0, row.1, row.2))
+            .collect()
+    };
+    let connected = |session: &str| (session.to_owned(), "connected".to_owned(), None);
+    let mut pauses = 0;
+    let driven = smoke.drive_gateway(
+        &pane_a,
+        &[
+            in_session(session_start("GA", Some("cli")), pane(&pane_a)),
+            in_session(turn("GA", "T1"), pane(&pane_a)),
+            in_session(session_start("GB", Some("cli")), pane(&pane_b)),
+            in_session(turn("GB", "T1"), pane(&pane_b)),
+            PAUSE.clone(),
+            in_session(turn("GB", "T2"), pane(&pane_b)),
+            in_session(turn("GA", "T2"), pane(&pane_a)),
+            in_session(session_start("GA2", Some("cli")), pane(&pane_a)),
+            in_session(turn("GA2", "T1"), pane(&pane_a)),
+            PAUSE.clone(),
+        ],
+        &mut || {
+            pauses += 1;
+            // Asserted while the gateway (the driver) is alive: its exit disconnects every row.
+            if pauses == 1 {
+                assert_eq!(rows(&pane_a), [connected("GA")]);
+                assert_eq!(rows(&pane_b), [connected("GB")]);
+                person(&["send", "--seat", &smoke.seat(&pane_a), "--body", "for-GA"]);
+            } else {
+                let a = rows(&pane_a);
+                assert_eq!(a.len(), 2, "{a:?}");
+                assert_eq!(a[0].0, "GA", "{a:?}");
+                assert_eq!(a[0].2.as_deref(), Some("superseded"), "{a:?}");
+                assert_eq!(a[1], connected("GA2"));
+                assert_eq!(rows(&pane_b), [connected("GB")]);
+            }
+        },
+    );
+    assert_eq!(pauses, 2);
+    assert_seated_turn(&driven, 1, "startup");
+    assert_seated_turn(&driven, 3, "startup");
+    assert!(
+        !driven.context(5).unwrap_or("").contains("for-GA"),
+        "pane B got pane A's mail: {}",
+        driven.steps[5]
+    );
+    assert!(
+        driven.context(6).is_some_and(|c| c.contains("for-GA")),
+        "pane A's session got no mail: {}",
+        driven.steps[6]
+    );
+}
+
+/// A smoke-driver step that stops the Hermes process until the test has acted.
+static PAUSE: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| json!({ "pause": true }));
 
 /// A legacy (pre-ht-4ne.1) envelope: no `enrollment_witness` anywhere, as an
 /// older installed bridge sends it; fresh timestamps like `config_smoke.rs`.

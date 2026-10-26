@@ -374,7 +374,8 @@ model open work, and summary closure never changes receipt state or installs glo
   a plain call touches its binding and refreshes its fingerprint, and reconnects it only when that binding is
   open, on a resolved seat, disconnected for `liveness_process_exit` or `migrated`, the call carries a liveness
   fingerprint and no connected lifecycle-claimed top-level binding (a `managed_launch` placeholder does not
-  count) of the same instance and harness already holds that fingerprint (spec §3). A binding disconnected `superseded`, `liveness_end_event`, `seat_retired`,
+  count) of the same instance and harness (and seat, for a process that spans seats; see same-process
+  supersede below) already holds that fingerprint (spec §3). A binding disconnected `superseded`, `liveness_end_event`, `seat_retired`,
   `seat_unresolved` or `replaced` never reconnects on a plain call: the call is served as that binding
   (attribution and cursor) and its liveness is unchanged, so a stale caller never flaps it. A plain reconnect records the call's fingerprint and keeps the binding's lifecycle claim
   time, placement, provenance and cursors; it runs no enroll hook, so it never supersedes, never replaces a
@@ -415,7 +416,9 @@ model open work, and summary closure never changes receipt state or installs glo
   plain call: the call is served as that binding (attribution and cursor), and its liveness is unchanged,
   so a stale caller never flaps. Same-process supersede: an enrollment by a lifecycle check-in, or a lifecycle check-in, of a
   non-concurrent top-level binding disconnects every other connected non-concurrent top-level binding of the same instance and harness with the same
-  process fingerprint (pid and start time). This is structural evidence, not a heuristic (a reused pid
+  process fingerprint (pid and start time), and of the same seat when the harness's adapter declares that
+  one process hosts the sessions of several seats (`BindingPolicy::process_spans_seats`, today Hermes'
+  shared gateway): there a shared process across seats is no evidence of replacement. This is structural evidence, not a heuristic (a reused pid
   has a different start time and never matches); the most recent claimer wins, so switching back to an
   older session in the same process disconnects the one just left. A plain call never supersedes: a
   binding enrolled by a plain call (provenance `cooperative_env_session`, recorded honestly and never
@@ -1784,6 +1787,12 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   its inherited environment. Accepted limit: without the passthrough the session's tool subprocesses
   inherit the gateway's pane, so a model-issued `herdr-threads` call names that pane with its own
   `HERMES_SESSION_ID`; setup documents the setting but does not write native YAML.
+  The gateway's sessions share its process fingerprint, so Hermes declares `process_spans_seats`
+  (ht-gagu): the same-process rule (supersede, plain-reconnect hold, the liveness worker) holds only
+  within one seat, and a session in another pane no longer disconnects the first pane's session. A new
+  session in the same pane still supersedes its predecessor. Accepted limit: a gateway session's liveness
+  is the gateway process, so a pane whose `hermes` client exited without a session end stays connected
+  until the gateway exits, its pane closes, or a newer session of that pane supersedes it.
 - **Foreground harness execution is user managed.** Hooks and tools must inherit the TUI
   pane's `HERDR_PANE_ID`. A shared harness server started in another pane can instead supply
   its own pane environment; herdr-threads does not recover the attaching TUI pane from

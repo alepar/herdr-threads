@@ -3228,14 +3228,16 @@ mod tests {
             registry.binding_policy("claude"),
             BindingPolicy {
                 hook_agent_id: true,
-                registered_child_sessions: false
+                registered_child_sessions: false,
+                process_spans_seats: false
             }
         );
         assert_eq!(
             registry.binding_policy("hermes"),
             BindingPolicy {
                 hook_agent_id: false,
-                registered_child_sessions: true
+                registered_child_sessions: true,
+                process_spans_seats: true
             }
         );
         for id in ["codex", "agy", "human", "no-such-harness"] {

@@ -50,9 +50,10 @@ pub fn classify(
     processes: &dyn ProcessInfo,
 ) -> Vec<LivenessDecision> {
     let mut decisions = Vec::new();
-    // (instance, harness, pid, start) -> alive top-level claimants.
-    let mut sharing: BTreeMap<(String, String, u32, u64), Vec<&LivenessCandidate>> =
-        BTreeMap::new();
+    // (instance, harness, pid, start, seat when the process spans seats) -> alive top-level
+    // claimants.
+    type Group = (String, String, u32, u64, Option<String>);
+    let mut sharing: BTreeMap<Group, Vec<&LivenessCandidate>> = BTreeMap::new();
     for candidate in candidates {
         let binding = &candidate.binding;
         match binding.fingerprint {
@@ -68,6 +69,8 @@ pub fn classify(
                             binding.harness.clone(),
                             fingerprint.pid,
                             fingerprint.start,
+                            crate::store::bindings::process_spans_seats(&binding.harness)
+                                .then(|| binding.seat.as_str().to_owned()),
                         ))
                         .or_default()
                         .push(candidate);

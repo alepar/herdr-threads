@@ -844,9 +844,11 @@ impl HarnessAdapter for HermesAdapter {
         })
     }
     /// The parent registers a Hermes child session as a subagent binding keyed by the child.
+    /// From 0.22.1 one gateway process runs the sessions of every pane of a profile.
     fn binding_policy(&self) -> BindingPolicy {
         BindingPolicy {
             registered_child_sessions: true,
+            process_spans_seats: true,
             ..BindingPolicy::default()
         }
     }

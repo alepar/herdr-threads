@@ -2,8 +2,8 @@
 context and replays a scripted callback sequence (ht-4ne.3).
 
 usage: python3 -I smoke_driver.py <installed __init__.py> <native source root>
-stdin : {"steps": [{"callback": str, "kwargs": {...}, "repeat_if_slow": bool,
-                    "client_env": {...} | null}, ...], "gateway": bool}
+stdin : one line {"steps": [{"callback": str, "kwargs": {...}, "repeat_if_slow": bool,
+                    "client_env": {...} | null} | {"pause": true}, ...], "gateway": bool}
         "gateway": this process is the shared Hermes >= 0.22.1 gateway (`_HERMES_GATEWAY=1`,
         as gateway/run.py sets it): its own HERDR_PANE_ID is the pane that started it, and
         each step runs inside its session's client environment (a stub
@@ -14,6 +14,8 @@ stdout: first a {"bridge": {"child_restriction": ..., "hooks": [...]}} line (the
         the bridge received during this step, e.g. {"context", "lifecycle_ack"}>]}.
         The bridge itself returns only {"context"}; the spy on Bridge.child exposes the
         lifecycle_ack the bridge validated, without changing what the bridge does.
+        A {"pause": true} step answers {"paused": true} and waits for one more stdin line,
+        so the test can act (send mail) between two steps of the same Hermes process.
 
 Stub native modules follow integrations/hermes/test_bridge.py (BridgeTests.setUp).
 The home and profile are derived from the installed path
@@ -39,7 +41,7 @@ def main():
     native = Path(sys.argv[2]).resolve()
     home = installed.parent.parent.parent
     profile = home.name if home.parent.name == "profiles" else "default"
-    script = json.load(sys.stdin)
+    script = json.loads(sys.stdin.readline())
 
     modules = {}
     for name in ("hermes_bootstrap", "hermes_constants", "hermes_cli", "hermes_cli.config",
@@ -115,6 +117,10 @@ def main():
         print(json.dumps({"bridge": {"child_restriction": bridge.CHILD_RESTRICTION,
                                      "hooks": sorted(ctx.hooks)}}), flush=True)
         for step in script["steps"]:
+            if step.get("pause"):
+                print(json.dumps({"paused": True}), flush=True)
+                sys.stdin.readline()
+                continue
             hook = ctx.hooks[step["callback"]]
             attempts = 4 if step.get("repeat_if_slow") else 1
             del seen[:]

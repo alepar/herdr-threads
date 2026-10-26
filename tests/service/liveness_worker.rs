@@ -722,3 +722,44 @@ fn independent_fork_is_not_a_same_process_competitor_but_still_dies_with_process
         ("disconnected".into(), Some("liveness_process_exit".into()))
     );
 }
+
+/// A process that spans seats (Hermes' shared gateway, ht-gagu) is one process for every pane:
+/// only a session of the same seat supersedes; a harness without the policy keeps the
+/// process-wide rule.
+#[test]
+fn a_process_spanning_seats_supersedes_only_within_one_seat() {
+    let fx = Fx::new("liveness-spans-seats");
+    fx.seat("t");
+    fx.table.set(100, 5);
+    fx.table.set(200, 5);
+    let pane_a = fx.bind("s", "hermes", "A", Some((100, 5)), 10);
+    let pane_b = fx.bind("t", "hermes", "B", Some((100, 5)), 20);
+    let claude_s = fx.bind("s", "claude", "C", Some((200, 5)), 10);
+    let claude_t = fx.bind("t", "claude", "D", Some((200, 5)), 20);
+    assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 1);
+    assert!(fx.connected(&pane_a));
+    assert!(fx.connected(&pane_b));
+    assert_eq!(fx.state(&claude_s), superseded());
+    assert!(fx.connected(&claude_t));
+    // A stale cross-seat verdict is dropped on apply as well.
+    let candidate = fx
+        .store
+        .liveness_candidates(None, &budget())
+        .unwrap()
+        .into_iter()
+        .find(|c| c.binding.binding_id.as_str() == pane_a)
+        .unwrap();
+    let stale = crate::store::bindings::LivenessDecision {
+        binding: candidate.binding.binding_id,
+        fingerprint: candidate.binding.fingerprint,
+        reason: crate::store::bindings::DisconnectReason::Superseded,
+    };
+    assert_eq!(fx.store.apply_liveness(&[stale], &budget()).unwrap(), 0);
+    assert!(fx.connected(&pane_a));
+    // A new session in pane A's seat replaces A; pane B's session is untouched.
+    let pane_a2 = fx.bind("s", "hermes", "A2", Some((100, 5)), 30);
+    assert_eq!(fx.worker.pass(&budget()).unwrap().disconnected, 1);
+    assert_eq!(fx.state(&pane_a), superseded());
+    assert!(fx.connected(&pane_a2));
+    assert!(fx.connected(&pane_b));
+}

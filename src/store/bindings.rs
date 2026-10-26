@@ -764,6 +764,14 @@ pub fn apply_liveness(
     Ok(changed)
 }
 
+/// Whether the same-process rule of `harness` is scoped to one seat: its adapter declares that one
+/// process may host the sessions of several seats (`BindingPolicy::process_spans_seats`).
+pub fn process_spans_seats(harness: &str) -> bool {
+    crate::harness::registry::builtins()
+        .binding_policy(harness)
+        .process_spans_seats
+}
+
 /// The winner key of a same-process group: a binding that may win (lifecycle-claimed, not a
 /// `managed_launch` placeholder) beats plain-call-only bindings and placeholders
 /// (`false < true`), then the latest lifecycle claim, ties by ordinal. The liveness worker's
@@ -780,7 +788,7 @@ fn supersede_rank(candidate: &LivenessCandidate) -> (bool, i64, i64) {
 /// Re-runs the winner selection against the candidates read inside the write transaction: a
 /// `Superseded` verdict was judged on an unlocked read, and the judged loser may have checked in
 /// since (spec §3: "the most recent lifecycle claimer wins"). True only while `candidate` shares
-/// its process with another top-level candidate that out-ranks it and the group's top-ranked
+/// its process (and seat, when the process spans seats) with another top-level candidate that out-ranks it and the group's top-ranked
 /// member may win: a plain-call-only binding or a `managed_launch` placeholder never wins, and a
 /// group with no lifecycle-claimed session is left as it is.
 fn is_superseded_now(current: &[LivenessCandidate], candidate: &LivenessCandidate) -> bool {
@@ -798,6 +806,8 @@ fn is_superseded_now(current: &[LivenessCandidate], candidate: &LivenessCandidat
                 && c.instance == candidate.instance
                 && c.binding.harness == candidate.binding.harness
                 && c.binding.fingerprint == candidate.binding.fingerprint
+                && (c.binding.seat == candidate.binding.seat
+                    || !process_spans_seats(&c.binding.harness))
         })
         .max_by_key(|c| supersede_rank(c))
     else {
@@ -810,7 +820,8 @@ fn is_superseded_now(current: &[LivenessCandidate], candidate: &LivenessCandidat
 /// Enroll hook: an enrollment *by a lifecycle check-in*, or a lifecycle check-in, of a top-level binding disconnects
 /// (`Superseded`) every other open connected top-level binding of the same instance and harness
 /// with the same liveness fingerprint (pid AND start: structural evidence of one process, so pid
-/// reuse never matches). Most recent claimer wins. Subagents neither supersede nor are
+/// reuse never matches), and of the same seat when the harness's process spans seats
+/// ([`process_spans_seats`]). Most recent claimer wins. Subagents neither supersede nor are
 /// superseded; a plain-call enrollment or a plain touch is not an event. Hooks run after cursor
 /// seeding, so a lineage successor has copied its cursors before its predecessor is superseded.
 pub fn same_pid_supersede(
@@ -837,6 +848,7 @@ pub fn same_pid_supersede(
         &format!(
             "SELECT {COLUMNS} FROM occupant_bindings WHERE ended_at IS NULL AND liveness='connected' AND role='top_level' \
              AND concurrent_session=0 AND harness=?1 AND liveness_pid=?2 AND liveness_start=?3 AND binding_id<>?4 \
+             AND (?6=0 OR seat_id=?5) \
              AND seat_id IN (SELECT id FROM seats WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?5)) ORDER BY ordinal"
         ),
         &[
@@ -845,6 +857,7 @@ pub fn same_pid_supersede(
             &to_i64(fp.start, "liveness start")?,
             &binding.binding_id.as_str(),
             &binding.seat.as_str(),
+            &process_spans_seats(&binding.harness),
         ],
     )?;
     for other in &others {
@@ -1424,8 +1437,8 @@ pub(crate) fn resolve_claim_with_hooks(
 /// a liveness fingerprint (derived at call time from the caller's running harness ancestor, so
 /// it is the "live fingerprint"; the store has no process table), the seat must be resolved, and
 /// for a top-level row no other connected lifecycle-claimed top-level binding (a `managed_launch`
-/// placeholder does not count) of the same instance and harness may already hold that fingerprint (it would win the worker's
-/// same-process rule anyway). A subagent shares its parent's process and never supersedes or is
+/// placeholder does not count) of the same instance and harness (and seat, when the process spans
+/// seats) may already hold that fingerprint (it would win the worker's same-process rule anyway). A subagent shares its parent's process and never supersedes or is
 /// superseded, so it skips the last check.
 fn plain_reconnect_allowed(
     tx: &Connection,
@@ -1452,7 +1465,7 @@ fn plain_reconnect_allowed(
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE ended_at IS NULL AND liveness='connected' \
              AND role='top_level' AND concurrent_session=0 AND binding_id<>?1 AND harness=?2 AND liveness_pid=?3 AND liveness_start=?4 \
-             AND observation_provenance NOT IN (?5,?7) \
+             AND observation_provenance NOT IN (?5,?7) AND (?8=0 OR seat_id=?6) \
              AND seat_id IN (SELECT id FROM seats WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?6)))",
             params![
                 row.binding_id.as_str(),
@@ -1462,6 +1475,7 @@ fn plain_reconnect_allowed(
                 crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE,
                 row.seat.as_str(),
                 crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE,
+                process_spans_seats(&row.harness),
             ],
             |r| r.get(0),
         )
