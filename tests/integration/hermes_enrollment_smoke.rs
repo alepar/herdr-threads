@@ -14,7 +14,7 @@ use herdr_threads::test_support::{
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -271,6 +271,13 @@ impl Smoke {
         }
         let mut child = command.spawn_owned().unwrap();
         let mut stdin = child.stdin.take().unwrap();
+        // Drained beside the stdout loop, so a chatty driver never blocks on a full pipe.
+        let mut stderr = child.stderr.take().unwrap();
+        let stderr = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).unwrap();
+            bytes
+        });
         writeln!(stdin, "{script}").unwrap();
         stdin.flush().unwrap();
         // Read line by line: a `{"paused": true}` line waits for `on_pause` and one stdin line.
@@ -290,18 +297,19 @@ impl Smoke {
             lines.push(value);
         }
         drop(stdin);
-        let out = child.wait_with_output().unwrap();
+        let status = child.wait().unwrap();
+        let stderr = stderr.join().unwrap();
         assert!(
-            out.status.success(),
+            status.success(),
             "driver failed: {lines:?}{}",
-            String::from_utf8_lossy(&out.stderr)
+            String::from_utf8_lossy(&stderr)
         );
         let mut parsed = lines;
         let head = parsed.remove(0);
         assert!(
-            out.stderr.is_empty(),
+            stderr.is_empty(),
             "the bridge surfaced stderr: {}",
-            String::from_utf8_lossy(&out.stderr)
+            String::from_utf8_lossy(&stderr)
         );
         assert_eq!(parsed.len(), steps, "driver answered every step");
         Driven {

@@ -4,7 +4,8 @@
 //! A binding disconnects `ProcessExit` when its fingerprinted process is gone (or the pid now
 //! belongs to a process with another start stamp), or when it is connected with no
 //! fingerprint (decision 9: no zombie bindings).
-//! Among connected top-level bindings sharing one process (same instance, harness, pid and start)
+//! Among connected top-level bindings sharing one process (same instance, harness, pid and start,
+//! and seat when the harness's process spans seats)
 //! the latest lifecycle claim stays connected; the rest, plain-call-only bindings included,
 //! disconnect `Superseded`. A plain-call-only binding or a `managed_launch` placeholder ranks
 //! below every lifecycle-claimed session (it can lose, never win), and a group with no

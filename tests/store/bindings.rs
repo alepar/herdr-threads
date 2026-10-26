@@ -15,6 +15,10 @@ pub(crate) fn db() -> Connection {
         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('34750f98bd59fcfc946da45aaabe933b','m1','t',1,'ordinary','b',1,1),('34750f98bd59fcfc946da45aaabe933b','m2','t',2,'ordinary','b',2,2);").unwrap();
     db
 }
+/// A second resolved seat, `s2`, of the same instance.
+fn second_seat(db: &Connection) {
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,host_id) VALUES ('s2','34750f98bd59fcfc946da45aaabe933b','resolved','native',4,0,(SELECT id FROM local_node),1,(SELECT min(host_id) FROM herdr_hosts));").unwrap();
+}
 pub(crate) fn placement() -> BindingPlacement {
     BindingPlacement {
         generation: 4,
@@ -874,6 +878,46 @@ mod resolution {
             Some("liveness_process_exit")
         );
         assert_eq!(get(&db, &b).unwrap().unwrap().liveness, Liveness::Connected);
+    }
+
+    /// A process that spans seats (ht-gagu): another seat's lifecycle binding on the same process
+    /// does not hold the plain reconnect; a harness without the policy keeps the process-wide hold.
+    #[test]
+    fn plain_reconnect_hold_is_seat_scoped_only_for_a_process_spanning_seats() {
+        let hermes = Harness::Agent(
+            crate::harness::registry::builtins()
+                .agent("hermes")
+                .unwrap(),
+        );
+        for (harness, reconnects) in [(hermes, true), (Harness::Claude, false)] {
+            let db = db();
+            second_seat(&db);
+            let on = |seat: &str, session: &str| {
+                let mut c = claim(session, None);
+                c.harness = harness;
+                c.seat = SeatId::new(seat);
+                c
+            };
+            let a = resolve(&db, &on("s", "sess-A"), true)
+                .unwrap()
+                .binding()
+                .binding_id
+                .clone();
+            disconnect(&db, &a, DisconnectReason::ProcessExit, UtcMillis(20)).unwrap();
+            let b = resolve(&db, &on("s2", "sess-B"), true)
+                .unwrap()
+                .binding()
+                .binding_id
+                .clone();
+            resolve(&db, &on("s", "sess-A"), false).unwrap();
+            assert_eq!(
+                get(&db, &a).unwrap().unwrap().liveness == Liveness::Connected,
+                reconnects,
+                "{}",
+                harness.as_str()
+            );
+            assert_eq!(get(&db, &b).unwrap().unwrap().liveness, Liveness::Connected);
+        }
     }
 
     #[test]
@@ -1868,6 +1912,32 @@ mod liveness {
         assert_eq!(row(&db, &b).liveness, Liveness::Connected);
         // Superseding disconnects; it never ends the binding.
         assert_eq!(row(&db, &a).ended_at, None);
+    }
+
+    /// A process that spans seats (ht-gagu) supersedes at enrollment only within one seat; a
+    /// harness without the policy supersedes across seats.
+    #[test]
+    fn same_pid_supersede_at_enrollment_is_seat_scoped_for_a_process_spanning_seats() {
+        let db = db();
+        second_seat(&db);
+        let enroll_on = |seat: &str, harness: &str, session: &str, now: i64| {
+            let (mut k, p) = (key(session, None), placement());
+            k.seat = SeatId::new(seat);
+            k.harness = harness.into();
+            let mut req = request(&k, &p);
+            req.fingerprint = Some(FP);
+            enrolled(enroll(&db, &req, UtcMillis(now)).unwrap()).0
+        };
+        let pane_a = enroll_on("s", "hermes", "A", 10);
+        let pane_b = enroll_on("s2", "hermes", "B", 11);
+        assert_eq!(row(&db, &pane_a).liveness, Liveness::Connected);
+        let pane_a2 = enroll_on("s", "hermes", "A2", 12);
+        assert_eq!(reason(&db, &pane_a).as_deref(), Some("superseded"));
+        assert_eq!(row(&db, &pane_a2).liveness, Liveness::Connected);
+        assert_eq!(row(&db, &pane_b).liveness, Liveness::Connected);
+        let claude_s = enroll_on("s", "claude", "C", 13);
+        enroll_on("s2", "claude", "D", 14);
+        assert_eq!(reason(&db, &claude_s).as_deref(), Some("superseded"));
     }
 
     #[test]

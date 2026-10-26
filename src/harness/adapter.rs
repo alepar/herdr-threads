@@ -334,7 +334,8 @@ pub struct BindingPolicy {
     /// session resolves to that binding.
     pub registered_child_sessions: bool,
     /// One harness process may host the top-level sessions of several panes (a shared server
-    /// process). The same-process rule (supersede, plain-reconnect hold) then holds only between
+    /// process). The same-process rule (supersede, plain-reconnect hold, the liveness worker's
+    /// grouping) then holds only between
     /// bindings of one seat: a process shared across seats is no evidence of replacement.
     pub process_spans_seats: bool,
 }
