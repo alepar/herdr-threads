@@ -1290,6 +1290,26 @@ impl Rig {
         );
     }
 
+    /// No wake of B is reserved: every attempt the scheduler took has completed.
+    fn wait_no_wake_in_flight(&self) {
+        let until = Instant::now() + STEP;
+        loop {
+            let open: i64 = self
+                .db()
+                .query_row(
+                    "SELECT count(*) FROM wake_work WHERE seat_id=?1 AND reservation_id IS NOT NULL",
+                    [self.b.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if open == 0 {
+                return;
+            }
+            assert!(Instant::now() < until, "a wake of B stayed reserved");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
     /// Herdr now reports `session` for B's pane (what `/clear` does).
     fn set_session_b(&self, session: &str) {
         // A `/clear` starts a new session inside the same harness process.
@@ -5009,9 +5029,12 @@ fn clear_new_binding_hook_display_acks_unread_mail_without_a_later_wake() {
         "{}",
         started.stdout
     );
+    // A wake reserved before the ACK committed must meet B still working, as a real turn
+    // outlasts it; only then does B go idle, with nothing left to wake it for.
+    assert_eq!(rig.receipt_state(&id), "acked");
+    rig.wait_no_wake_in_flight();
     rig.set_session_b("SB2");
     rig.assert_no_prompt(mark, QUIET);
-    assert_eq!(rig.receipt_state(&id), "acked");
     assert_eq!(
         rig.ack_observation(&id)["action_provenance"],
         "cooperative_hook_context"
