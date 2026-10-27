@@ -35,10 +35,11 @@ suppressed plugins and approval bypass flags refuse. No yolo, accept-hooks,
 HERMES_ACCEPT_HOOKS or hooks_auto_accept is inserted. A private modified Herdr must
 advertise the actual guarded process-hint capability; a hint remains cooperative
 recognition input. A successful managed launch is wake-only, unregistered, and is
-not a hook check-in or receipt. Hermes has a composer reader (default layout) but no
-working idle wake yet: Hermes 0.22 runs its hooks in an auto-spawned gateway, so the
-seat's binding is not the pane's foreground process and the native wake refuses
-(senders see `wake=no_wake`). No composer stash or restore.
+not a hook check-in or receipt. An idle Hermes seat is woken natively: Herdr types
+`herdr-threads: wake up` into the pane's empty composer (default layout reader). Hermes
+0.22 runs its sessions in one shared gateway, so the wake goes to the binding's own pane
+whenever Herdr reports a Hermes agent there, not to the gateway's process. No composer
+stash or restore.
 A bare Hermes CLI session (`hermes`) in a Herdr pane joins on its own when the selected
 profile has herdr-threads installed (`herdr-threads setup hermes --profile NAME`) and
 enabled (`hermes --profile NAME plugins enable herdr-threads`): its session start takes

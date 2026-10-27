@@ -619,7 +619,18 @@ model open work, and summary closure never changes receipt state or installs glo
   composer wake as `pending_receipt` does (orchestrator decision at the ht-327 merge; the item is shown
   to whichever binding of the process takes the turn, as before). Unlike a receipt, a delivery row is each
   binding's own stream, so its owedness is decided per binding (below). A wake whose reasons name no such item still
-  needs a unique match, and a threshold-silent row (priority above T) never reserves a wake at all. Only a reservation that names no targets
+  needs a unique match, and a threshold-silent row (priority above T) never reserves a wake at all.
+  Second exception (ht-f0xn, user decision 2026-10-26): a target whose harness declares
+  `BindingPolicy::process_spans_seats` (one server process hosts the sessions of several panes, each pane
+  running its own client: the Hermes 0.22.1+ gateway) is never a pane's foreground process, so its match is
+  pane-scoped: it matches when Herdr reports any non-shell foreground process in the pane. The pane is
+  still the binding's own (targets are the bindings placed on the observed terminal, by their cooperative
+  A1 pane claim); the native recheck still requires Herdr's agent kind there to be the bound harness, and
+  the adapter's composer read still requires an empty, idle composer. Several matches follow the rules
+  above (one pid and harness is one process; otherwise no match). Accepted limit: the pane's client is not
+  tied to the binding by pid, so the wake reaches whichever session of that harness the pane's client runs;
+  that session holds the same seat (its pane claim places it) and its turn hook delivers the seat's items.
+  Only a reservation that names no targets
   (a legacy source) keeps the single-harness rule. A soft poke follows the same targets and rule.
   *Served in-turn* (ht-705, A8): a target that was shown every pending receipt (or invitation) the wake is
   reserved for inside its own turn is owed no wake for it; the seat-level candidate drops those items only
@@ -688,11 +699,11 @@ model open work, and summary closure never changes receipt state or installs glo
     the detection read. Accepted limit: a Claude release that drew typed text dim behind an undimmed glyph
     would read as empty, and a wake would be typed after that draft. Codex's empty placeholders are
     exactly its main and `/side` ones; its sub-agent view's placeholder, under which Codex blocks a typed
-    submit, is typed input. The Hermes reader (`docs/evidence/hermes-composer/`) decides no wake today:
-    Hermes 0.22 runs its agent loop and hooks in an auto-spawned gateway (a child of the first pane's TUI),
-    so a Hermes binding's process is never the pane's foreground process and the one-process composer
-    choice refuses the wake first (the adapter says so, and senders are told `wake=no_wake`); it classifies
-    Hermes screens for observations. Herdr reports a Hermes pane `idle` throughout a turn, so the reader is
+    submit, is typed input. The Hermes reader (`docs/evidence/hermes-composer/`): Hermes 0.22 runs its
+    agent loop and hooks in an auto-spawned gateway (a child of the first pane's TUI), so a Hermes
+    binding's process is never the pane's foreground process; Hermes declares `process_spans_seats`, so
+    the composer choice matches the binding's own pane instead (the second exception above, ht-f0xn).
+    Herdr reports a Hermes pane `idle` throughout a turn, so the reader is
     the busy guard: it reads a composer only on the idle screen shape
     (a top rule with no live status, exactly one footer line, no overlay panel right above the top rule); a
     busy turn (with any in-turn approval, clarify, sudo or secret prompt), the model picker, the command
@@ -1769,8 +1780,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   A qualified top-level turn with the same native session can recover an unresolved seat through C1;
   a confirmed no-match on an unowned pane may use the guarded Unowned-turn enrollment fallback. Wake: a
   bare macOS Hermes is not process-detected by Herdr (`launch --kind hermes` adds the process hint that
-  makes it recognized); on Linux Herdr recognizes a bare Hermes. Either way its idle seat is not woken: its
-  bindings live in the gateway process, not the pane's foreground process (the Hermes composer reader above). CLI side agents (`/background`: platform `cli`, own
+  makes it recognized); on Linux Herdr recognizes a bare Hermes. Its idle seat is woken natively through
+  the pane's own composer although its bindings live in the gateway process (the A4 second exception,
+  ht-f0xn); an unrecognized pane is not woken. CLI side agents (`/background`: platform `cli`, own
   session, no parent, no native side-agent flag) are indistinguishable from the foreground session: they
   enroll no new seat, but their turns check in as their own binding of the seat, as on a launch-created seat
   (follow-on ht-e73). Operator retire: retiring the seat of a running bare Hermes leaves the pane
@@ -1792,7 +1804,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   within one seat, and a session in another pane no longer disconnects the first pane's session. A new
   session in the same pane still supersedes its predecessor. Accepted limit: a gateway session's liveness
   is the gateway process, so a pane whose `hermes` client exited without a session end stays connected
-  until the gateway exits, its pane closes, or a newer session of that pane supersedes it.
+  until the gateway exits, its pane closes, or a newer session of that pane supersedes it. The same flag
+  makes the composer wake pane-scoped (A4 second exception, ht-f0xn), so the idle wake types into the
+  pane's own `hermes` client, never the gateway's pane.
 - **Foreground harness execution is user managed.** Hooks and tools must inherit the TUI
   pane's `HERDR_PANE_ID`. A shared harness server started in another pane can instead supply
   its own pane environment; herdr-threads does not recover the attaching TUI pane from

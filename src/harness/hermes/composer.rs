@@ -203,12 +203,6 @@ impl ComposerPolicy for HermesComposer {
             PROMPT,
         ))
     }
-    /// Hermes 0.22 runs its agent loop and hooks in an auto-spawned gateway (a child of the
-    /// first pane's TUI), so a binding's process is never the pane's foreground process and the
-    /// one-process composer choice refuses every wake before this reader is consulted.
-    fn wake_reaches_binding(&self) -> bool {
-        false
-    }
     /// Unused while stashing is unsupported.
     fn clear_key(&self) -> &'static str {
         "ctrl+u"

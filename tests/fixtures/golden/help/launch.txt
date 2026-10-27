@@ -104,8 +104,7 @@ Known-arity model/provider options and chat -q/--query are supported in their na
 positions. Resume, TUI/native/oneshot, arbitrary subcommands, plugin suppression and
 approval bypass forms refuse. Launch never enables a plugin or grants native consent.
 The private host must support guarded process hints; a hint or observed launch is
-neither callback activation nor model consumption. Hermes hooks run in its gateway, so
-no idle wake reaches the seat yet; no composer stash/restore.
+neither callback activation nor model consumption. No composer stash/restore.
 
 agy launch accepts --add-dir, --agent, --conversation, --effort, --mode, --model, --project, --log-file, -i/--prompt-interactive, -c/--continue and --new-project (Go flag grammar: --name value or --name=value). It refuses -p/--print/--prompt, --dangerously-skip-permissions, --sandbox, --remote-control, the print-only flags, single-dash long forms, unknown flags, positionals, subcommands, `--`, and -c together with --conversation. -c continues the most recent conversation; it is not an alias of --conversation. Extra arguments come from HERDR_THREADS_AGY_OPTS in the same grammar.
 

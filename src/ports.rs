@@ -2203,7 +2203,11 @@ impl ReservedWakeAuthority {
     /// foreground pids (one target or several; a launcher and its native child are both
     /// foreground, ht-54r.89). Several matching targets of one pid and harness are that one
     /// process ([`ComposerChoice::Process`]); any other several, or none, are no match; no
-    /// heuristic fallback.
+    /// heuristic fallback. A target of a process that spans seats
+    /// (`BindingPolicy::process_spans_seats`, a shared server behind each pane's own client)
+    /// is never the pane's foreground process: it matches any foreground process of its own
+    /// pane (targets are the bindings placed on the observed terminal), and the native recheck
+    /// still requires Herdr's agent kind there to be its harness (ht-f0xn).
     pub fn composer_choice(&self, foreground: &[u32]) -> ComposerChoice<'_> {
         match self.targets() {
             [] => ComposerChoice::Unspecified,
@@ -2211,8 +2215,15 @@ impl ReservedWakeAuthority {
                 let matching: Vec<&WakeTarget> = many
                     .iter()
                     .filter(|t| {
-                        t.fingerprint_pid
-                            .is_some_and(|pid| foreground.contains(&pid))
+                        if crate::harness::registry::builtins()
+                            .binding_policy(&t.harness)
+                            .process_spans_seats
+                        {
+                            !foreground.is_empty()
+                        } else {
+                            t.fingerprint_pid
+                                .is_some_and(|pid| foreground.contains(&pid))
+                        }
                     })
                     .collect();
                 match matching.as_slice() {

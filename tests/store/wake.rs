@@ -2895,6 +2895,53 @@ fn human_seat_is_never_woken() {
     let _ = std::fs::remove_file(path);
 }
 
+/// ht-f0xn. Kills: a composer choice that holds a process spanning seats (a Hermes gateway,
+/// `BindingPolicy::process_spans_seats`) to the exact-pid rule, so its pane's own client is
+/// never matched, or that lets the pane scope match an empty foreground or another harness.
+#[test]
+fn composer_choice_is_pane_scoped_for_a_process_spanning_seats() {
+    let target = |binding: &str, harness: &str, pid: u32| crate::ports::WakeTarget {
+        provenance: String::new(),
+        binding: crate::protocol::ids::BindingId::new(binding),
+        harness: harness.into(),
+        fingerprint_pid: Some(pid),
+    };
+    let authority = |targets| crate::ports::ReservedWakeAuthority::Cooperative {
+        terminal: crate::protocol::ids::TerminalId::new("t"),
+        incarnation: "34750f98bd59fcfc946da45aaabe933b".into(),
+        binding_generation: None,
+        harness: None,
+        targets,
+    };
+    let gateway = authority(vec![target("g", "hermes", 7)]);
+    match gateway.composer_choice(&[99]) {
+        crate::ports::ComposerChoice::Binding(t) => assert_eq!(t.binding.as_str(), "g"),
+        other => panic!("the pane's client is the gateway session's composer, got {other:?}"),
+    }
+    assert_eq!(
+        gateway.composer_choice(&[]),
+        crate::ports::ComposerChoice::NoMatch,
+        "no foreground process, no composer wake"
+    );
+    match authority(vec![target("g1", "hermes", 7), target("g2", "hermes", 7)])
+        .composer_choice(&[99])
+    {
+        crate::ports::ComposerChoice::Process(group) => assert_eq!(group.len(), 2),
+        other => panic!("two sessions of one gateway are one process, got {other:?}"),
+    }
+    let mixed = authority(vec![target("g", "hermes", 7), target("c", "claude", 10)]);
+    assert_eq!(
+        mixed.composer_choice(&[10]),
+        crate::ports::ComposerChoice::NoMatch,
+        "a gateway session beside another harness's foreground binding: ambiguous"
+    );
+    assert_eq!(
+        authority(vec![target("c", "claude", 10)]).composer_choice(&[99]),
+        crate::ports::ComposerChoice::NoMatch,
+        "the exact-pid rule still holds for every other harness"
+    );
+}
+
 /// Kills: a composer predicate that guesses (latest touch, first row) instead of requiring
 /// exactly one connected top-level binding whose fingerprint pid is the foreground pid. This is
 /// the production pair: `wake_targets` filters, `ReservedWakeAuthority::composer_choice` decides.
@@ -2982,7 +3029,7 @@ fn composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match() {
     let _ = std::fs::remove_file(path);
 
     // One target is the list of length one: the same unique-match rule, no special arm.
-    let (store, path) = multi_store(&[row("only", "hermes", 30)]);
+    let (store, path) = multi_store(&[row("only", "codex", 30)]);
     let db = store.context.open_writer().unwrap();
     let targets = crate::store::wake::wake_targets(&db, &seat, true).unwrap();
     let single = crate::ports::ReservedWakeAuthority::Cooperative {

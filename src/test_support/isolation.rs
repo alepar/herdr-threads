@@ -132,6 +132,17 @@ pub fn scrub_env(command: &mut Command) -> &mut Command {
 /// process stands in for the harness process (fingerprint included) and the harness's own session
 /// variable carries `session`. Real process ancestry is `harness_shim`'s job.
 pub fn as_agent<'a>(command: &'a mut Command, harness: &str, session: &str) -> &'a mut Command {
+    as_agent_in(command, harness, session, session)
+}
+
+/// [`as_agent`] whose harness process is the stand-in named `process`, so several sessions can
+/// share one process (a server hosting the sessions of several panes, such as a Hermes gateway).
+pub fn as_agent_in<'a>(
+    command: &'a mut Command,
+    harness: &str,
+    session: &str,
+    process: &str,
+) -> &'a mut Command {
     let variable = match harness {
         "claude" => "CLAUDE_CODE_SESSION_ID",
         "codex" => "CODEX_SESSION_ID",
@@ -144,7 +155,7 @@ pub fn as_agent<'a>(command: &'a mut Command, harness: &str, session: &str) -> &
             .and_then(|registration| registration.caller_env())
             .map_or("HERMES_SESSION_ID", |shape| shape.session_var),
     };
-    let stand_in = stand_in_process(harness, session).to_string();
+    let stand_in = stand_in_process(harness, process).to_string();
     // Claude exports its own pid, and a claim prefers it: it names the stand-in too, never the
     // developer's real Claude session the test runner may sit under.
     command

@@ -1442,8 +1442,7 @@ impl Registry {
             .and_then(|r| r.adapter.delivery_policy())
     }
     /// Whether an idle session of this harness id has any wake path: the harness wakes itself
-    /// (`IdleWake::Channel`) or Herdr can type into its composer (a composer policy whose wake
-    /// reaches the binding's process). `None` for
+    /// (`IdleWake::Channel`) or Herdr can type into its composer (a composer policy). `None` for
     /// an id this build does not register (`human` included).
     pub fn has_idle_wake(&self, harness_id: &str) -> Option<bool> {
         let adapter = &self
@@ -1452,9 +1451,7 @@ impl Registry {
             .find(|r| r.metadata().id == harness_id)?
             .adapter;
         Some(
-            adapter
-                .composer_policy()
-                .is_some_and(|policy| policy.wake_reaches_binding())
+            adapter.composer_policy().is_some()
                 || adapter
                     .delivery_policy()
                     .is_some_and(|p| p.idle_wake() == IdleWake::Channel),
@@ -1600,16 +1597,14 @@ mod tests {
     }
     use super::*;
 
-    /// The send warning's `no_wake` rests on this classification: Claude (channel), Codex and agy
-    /// (composer) wake; Hermes' composer reader cannot reach its gateway-hosted bindings; an
-    /// unregistered id is unknown, never `no_wake`.
+    /// The send warning's `no_wake` rests on this classification: Claude (channel), Codex, agy
+    /// and Hermes (composer) wake; an unregistered id is unknown, never `no_wake`.
     #[test]
     fn idle_wake_classification_of_the_builtins() {
         let registry = builtins();
-        for id in ["claude", "codex", "agy"] {
+        for id in ["claude", "codex", "agy", "hermes"] {
             assert_eq!(registry.has_idle_wake(id), Some(true), "{id}");
         }
-        assert_eq!(registry.has_idle_wake("hermes"), Some(false));
         assert_eq!(registry.has_idle_wake("human"), None);
         assert_eq!(registry.has_idle_wake("pi"), None);
     }

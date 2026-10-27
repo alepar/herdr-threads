@@ -123,6 +123,8 @@ pub struct Seat {
     session: String,
     /// The stand-in agent's harness id.
     harness: &'static str,
+    /// The stand-in process key the seat's agent runs in; its own session unless shared.
+    process: String,
 }
 
 /// The relay a gated cluster's dials run through: `relay.py ROOT FROM TO --
@@ -660,7 +662,12 @@ impl Cluster {
             .arg("--host-endpoint")
             .arg(&endpoint);
         if let Some(seat) = seat {
-            crate::test_support::isolation::as_agent(&mut command, seat.harness, &seat.session);
+            crate::test_support::isolation::as_agent_in(
+                &mut command,
+                seat.harness,
+                &seat.session,
+                &seat.process,
+            );
             command.args([
                 "--cooperative-seat",
                 &seat.id,
@@ -726,7 +733,31 @@ impl Cluster {
         self.seat_with(node, 0, pane, harness)
     }
 
+    /// [`Cluster::seat_as`] whose agent runs in the shared stand-in process `process`: the
+    /// pane's foreground process is still its own stand-in, so the binding's process is not it
+    /// (a Hermes gateway session behind its pane's TUI).
+    pub fn seat_in_process(
+        &self,
+        node: usize,
+        pane: &str,
+        harness: &'static str,
+        process: &str,
+    ) -> Seat {
+        self.seat_with_process(node, 0, pane, harness, Some(process))
+    }
+
     fn seat_with(&self, node: usize, host: usize, pane: &str, harness: &'static str) -> Seat {
+        self.seat_with_process(node, host, pane, harness, None)
+    }
+
+    fn seat_with_process(
+        &self,
+        node: usize,
+        host: usize,
+        pane: &str,
+        harness: &'static str,
+        process: Option<&str>,
+    ) -> Seat {
         let probe = Seat {
             id: String::new(),
             node,
@@ -734,6 +765,7 @@ impl Cluster {
             host,
             session: String::new(),
             harness,
+            process: String::new(),
         };
         let (code, value, stderr) =
             self.run_on(None, host, node, &["seat", "resolve", "--pane", pane]);
@@ -742,12 +774,12 @@ impl Cluster {
             "seat resolve {pane} on node {node}: {stderr}{value}"
         );
         let id = value["result"]["data"].clone();
+        let session =
+            crate::test_support::fake_herdr::session_of(self.host_at(node, host).label(), pane);
         let seat = Seat {
             id: id.as_str().expect("a seat id").to_owned(),
-            session: crate::test_support::fake_herdr::session_of(
-                self.host_at(node, host).label(),
-                pane,
-            ),
+            process: process.map_or_else(|| session.clone(), str::to_owned),
+            session,
             ..probe
         };
         let (code, _, stderr) = self.run_as(
@@ -845,6 +877,7 @@ impl Cluster {
             host: 0,
             session: String::new(),
             harness: "claude",
+            process: String::new(),
         }
     }
 

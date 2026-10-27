@@ -5691,8 +5691,8 @@ fn single_target_composer_wake_requires_the_foreground_match() {
     assert_eq!(prompted[0].bound_harness.as_deref(), Some("claude"));
     for (label, targets, foreground) in [
         (
-            "hermes one-shot target, Claude in the foreground",
-            vec![binding_target("h", "hermes", Some(30))],
+            "codex target, Claude in the foreground",
+            vec![binding_target("x", "codex", Some(30))],
             Some(10),
         ),
         (

@@ -69,9 +69,8 @@ harnesses get their credentials:
   1), so a second Hermes recipient would bind to the first one's seat. No Hermes from DIR may be running at start;
   cleanup stops the gateway the recipient spawned. Herdr reports a Hermes pane `idle` throughout a turn, so the
   driver reads a Hermes recipient's state from its screen (hermes_idle): idle only while the composer's top rule
-  carries no live status. Its wake rows fail today (live run 2026-10-23): Hermes 0.22 hosts its hooks in
-  the gateway, so no binding is the pane's foreground process and no native wake reaches the seat
-  (TRUST-POLICY, Hermes composer reader); the option is the evidence path for that fix.
+  carries no live status. Hermes 0.22 hosts its sessions in the gateway, so the native wake matches the
+  binding's own pane rather than its process (ht-f0xn; TRUST-POLICY, Hermes composer reader).
 Agents work in the repository checkout (already trusted by Claude, so no folder-trust dialog is answered).
 The senders are two owned coordinator shell panes recorded as person seats (`human me init`, which keeps its agent
 guard: the driver strips every registered agent marker from their commands and the panes run only a shell), not

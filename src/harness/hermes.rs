@@ -48,8 +48,7 @@ Known-arity model/provider options and chat -q/--query are supported in their na
 positions. Resume, TUI/native/oneshot, arbitrary subcommands, plugin suppression and
 approval bypass forms refuse. Launch never enables a plugin or grants native consent.
 The private host must support guarded process hints; a hint or observed launch is
-neither callback activation nor model consumption. Hermes hooks run in its gateway, so
-no idle wake reaches the seat yet; no composer stash/restore.",
+neither callback activation nor model consumption. No composer stash/restore.",
     ..AdapterText::NONE
 };
 static METADATA: AdapterMetadata = AdapterMetadata {

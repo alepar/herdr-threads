@@ -1217,15 +1217,14 @@ fn smoke_skip_without_herdr_is_reported_by_test_name() {
     assert!(all.contains("'herdr'"), "{all}");
 }
 
-/// Sender-visible wake outcome: Hermes declares no idle-wake path (no channel; its composer
-/// reader cannot reach a gateway-hosted binding), so a priority-0 item to a seated Hermes pane
-/// cannot wake it. Each person sender is told once per Hermes seat, by whichever p0 path reaches the seat first: an invitation, an ACK
-/// request (repeat: silent), a `--nudge` thread send (the daemon finds its p0 recipients) and a
-/// `--nudge` direct send. `doctor` lists the seats' blocks.
+/// Sender-visible wake outcome (ht-f0xn): Hermes has an idle wake (its composer, matched on the
+/// pane for a gateway session), so no p0 path to a seated Hermes pane warns `wake=no_wake`: an
+/// invitation, an ACK request, a `--nudge` thread send and a `--nudge` direct send, from either
+/// person sender; `doctor` lists no `no_wake` block for the seats.
 #[test]
-fn p0_to_hermes_seat_warns_sender_once_and_doctor_lists_the_block() {
+fn p0_to_hermes_seat_warns_no_sender_and_doctor_lists_no_block() {
     let Some(mut smoke) = Smoke::new(
-        "p0_to_hermes_seat_warns_sender_once_and_doctor_lists_the_block",
+        "p0_to_hermes_seat_warns_no_sender_and_doctor_lists_no_block",
         true,
     ) else {
         return;
@@ -1263,9 +1262,8 @@ fn p0_to_hermes_seat_warns_sender_once_and_doctor_lists_the_block() {
         .or_else(|| created["data"].as_str())
         .unwrap()
         .to_owned();
-    let warning = |seat: &str| format!("warning: {seat} wake=no_wake\n");
     let (_, invited) = person(0, &["invite", &thread, "--seat", &hermes]);
-    assert_eq!(invited, warning(&hermes), "the invitee is p0");
+    assert_eq!(invited, "", "the invitee is p0 and wakeable");
     let (_, asked) = person(
         0,
         &[
@@ -1277,10 +1275,9 @@ fn p0_to_hermes_seat_warns_sender_once_and_doctor_lists_the_block() {
             &hermes,
         ],
     );
-    assert_eq!(asked, "", "one warning per sender and seat");
-    // A p1 direct send pairs the sender with another Hermes seat (both joined) and warns about
-    // nothing; a `--nudge` send into that pair warns, the daemon resolving the message's p0
-    // delivery recipients.
+    assert_eq!(asked, "", "an ACK request is p0 and the seat wakeable");
+    // A p1 direct send pairs the sender with another Hermes seat (both joined); a `--nudge` send
+    // into that pair has p0 delivery recipients the daemon resolves, all wakeable.
     let (pair, quiet) = person(0, &["send", "--seat", &direct, "--body", "hi"]);
     assert_eq!(quiet, "", "a p1 send carries no p0 item");
     let pair = pair["result"]["thread"]
@@ -1288,24 +1285,22 @@ fn p0_to_hermes_seat_warns_sender_once_and_doctor_lists_the_block() {
         .unwrap_or_else(|| panic!("{pair}"))
         .to_owned();
     let (_, nudged) = person(0, &["send", &pair, "--body", "now", "--nudge"]);
-    assert_eq!(nudged, warning(&direct), "{nudged}");
-    let (_, again) = person(0, &["send", &pair, "--body", "again", "--nudge"]);
-    assert_eq!(again, "", "one warning per sender and seat");
-    // Another sender is told on its own first p0: a `--nudge` direct send names its target.
+    assert_eq!(nudged, "", "{nudged}");
+    // Another sender's first p0: a `--nudge` direct send names its target.
     let (_, direct_p0) = person(1, &["send", "--seat", &direct, "--body", "hi", "--nudge"]);
-    assert_eq!(direct_p0, warning(&direct), "the direct target is p0");
+    assert_eq!(direct_p0, "", "the direct target is p0 and wakeable");
 
     let doctor = smoke.ok(&["doctor"]);
     let rows = doctor["doctor"]["wake"]["seats"]
         .as_array()
         .unwrap_or_else(|| panic!("{doctor}"));
     for seat in [&hermes, &direct] {
-        let row = rows
-            .iter()
-            .find(|row| row["seat"] == seat.as_str())
-            .unwrap_or_else(|| panic!("{doctor}"));
-        assert_eq!(row["harness"], "hermes", "{row}");
-        assert_eq!(row["wake"], "no_wake", "{row}");
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row["seat"] == seat.as_str() && row["wake"] == "no_wake"),
+            "{doctor}"
+        );
     }
     let mut text = smoke.base(spawn::command(BIN));
     spawn::tag(&mut text);
@@ -1317,8 +1312,5 @@ fn p0_to_hermes_seat_warns_sender_once_and_doctor_lists_the_block() {
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&text.stdout);
-    assert!(
-        text.contains(&format!("wake: {hermes} hermes wake=no_wake\n")),
-        "{text}"
-    );
+    assert!(!text.contains("wake=no_wake"), "{text}");
 }

@@ -5336,6 +5336,14 @@ pub(crate) mod tests {
         bound_harness_wake_refused("codex", Some("claude"));
     }
 
+    /// ht-f0xn: a Hermes target matches its pane, not its gateway pid, so this recheck is what
+    /// refuses a pane whose agent is another harness.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn cooperative_wake_refuses_hermes_bound_seat_with_claude_agent() {
+        bound_harness_wake_refused("hermes", Some("claude"));
+    }
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn cooperative_wake_refuses_codex_bound_seat_without_detected_agent() {
