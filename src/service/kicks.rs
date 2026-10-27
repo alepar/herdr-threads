@@ -245,6 +245,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     // Kept continuity claims (ht-dtx0) are read by the observation lane after each
     // reconciliation pass, which runs on its own cadence.
     "kept_continuity_claims",
+    // Restored-pane watches (ht-wpq4) are read and written only by the
+    // observation lane's own reconciliation pass.
+    "restored_pane_watch",
     "thread_registers",
     // Passive inbox progress never schedules attention or deadlines.
     "lazy_recipients",
