@@ -682,8 +682,9 @@ impl Default for CoordinatorOptions {
 
 impl CoordinatorOptions {
     /// The daemon's options. Test-support builds read shortened stall
-    /// thresholds from `HT_TEST_STALL_AFTER_MS` and
-    /// `HT_TEST_APP_SILENT_AFTER_MS` (multinode tests).
+    /// thresholds and `seen` period from `HT_TEST_STALL_AFTER_MS`,
+    /// `HT_TEST_APP_SILENT_AFTER_MS` and `HT_TEST_SEEN_EVERY_MS` (multinode
+    /// tests).
     pub fn for_daemon() -> Self {
         #[allow(unused_mut)]
         let mut options = Self::default();
@@ -696,16 +697,21 @@ impl CoordinatorOptions {
             if let Some(v) = ms("HT_TEST_APP_SILENT_AFTER_MS") {
                 options.timings.app_silent_after_ms = v;
             }
+            if let Some(v) = ms("HT_TEST_SEEN_EVERY_MS") {
+                options.timings.seen_every_ms = v;
+            }
         }
         options
     }
 }
 
-/// When a link counts as stalled (see [`Stall`]), in ms.
+/// When a link counts as stalled (see [`Stall`]), and the `seen` period the
+/// app threshold is measured against, in ms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StallTimings {
     pub stall_after_ms: u64,
     pub app_silent_after_ms: u64,
+    pub seen_every_ms: u64,
 }
 
 impl Default for StallTimings {
@@ -713,6 +719,7 @@ impl Default for StallTimings {
         Self {
             stall_after_ms: peer_status::STALL_AFTER_MS,
             app_silent_after_ms: peer_status::APP_SILENT_AFTER_MS,
+            seen_every_ms: SEEN_EVERY_MS,
         }
     }
 }
@@ -2278,7 +2285,7 @@ impl Actor {
     }
 
     /// `seen` on an active, announced link: right after its first `have` and
-    /// then every [`SEEN_EVERY_MS`].
+    /// then every `timings.seen_every_ms` ([`SEEN_EVERY_MS`] in production).
     fn send_seen_if_due(&mut self, link_id: u64, now: MonoInstant) {
         let wall = self.wall();
         let Some(entry) = self.links.get_mut(&link_id) else {
@@ -2289,7 +2296,7 @@ impl Actor {
         }
         if entry
             .seen_at
-            .is_some_and(|at| now.0.saturating_sub(at.0) < SEEN_EVERY_MS)
+            .is_some_and(|at| now.0.saturating_sub(at.0) < self.timings.seen_every_ms)
         {
             return;
         }
@@ -7555,6 +7562,7 @@ mod tests {
                 timings: StallTimings {
                     stall_after_ms: 6_000,
                     app_silent_after_ms: 3_000,
+                    ..StallTimings::default()
                 },
                 ..CoordinatorOptions::default()
             },
