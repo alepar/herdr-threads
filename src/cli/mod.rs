@@ -726,6 +726,12 @@ fn run_parsed_in_pane<W: Write>(
                 .map(crate::protocol::ids::HostTargetId::new)
         });
     if let CliAction::Watch(request) = parsed.action.clone() {
+        // ht-dtx0 (D1b): the mod's watch is the only process an idle session
+        // runs, so with no daemon reachable it ensures one (bounded), as a
+        // lifecycle hook does; a live owner is never displaced.
+        if connection.get().is_err() {
+            watch::ensure_daemon(&context, &clock);
+        }
         return watch::run_watch(
             &mut parsed,
             &request,

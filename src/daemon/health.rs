@@ -487,9 +487,9 @@ pub fn binding_evidence_health_line(report: crate::ports::BindingEvidenceStartup
 pub fn unresolved_seats_line(summary: &crate::ports::UnresolvedSeatSummary) -> String {
     bounded(
         &format!(
-            "unresolved seats: {}; their lifecycle check-ins are refused until resolved; a \
-             host-invalidated seat reconfirms when a coherent snapshot shows its pane again; \
-             repair one that stays unresolved: `seat rebind SEAT --pane PANE --operator`",
+            "unresolved seats: {}; their check-ins are refused; host_invalidation seats \
+             reconfirm when a coherent snapshot shows their pane; other seats reattach when \
+             their session claims them (C1); else `seat rebind SEAT --pane PANE --operator`",
             summary.count
         ),
         256,

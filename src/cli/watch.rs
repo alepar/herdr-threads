@@ -24,7 +24,7 @@ use crate::{
             MOD_WATCH_PRESENTATION_V2,
         },
         commands::{AckModDelivered, Command, InboxQuery},
-        ids::{MessageId, NativeSessionId, OperationId, SeatId},
+        ids::{HostTargetId, MessageId, NativeSessionId, OperationId, SeatId},
         pagination::{Page, PageRequest},
         results::{ApiError, CommandResult, ErrorCode, InboxBatchV2Item},
         time::{CallBudget, Clock},
@@ -1205,6 +1205,75 @@ fn own_session_claim(
     Ok(claim)
 }
 
+/// The watch's own-session C1 claim (ht-dtx0): only for a push-channel harness
+/// session (the env claim `watch_origin` builds, never a saved context) on the
+/// caller's pane. True when the daemon reattached a seat.
+fn claim_own_seat<C, F>(
+    parsed: &super::commands::ParsedCli,
+    session: &str,
+    caller_pane: Option<&str>,
+    context: &crate::daemon::paths::RuntimeContext,
+    paths: &crate::daemon::paths::NodePaths,
+    connection: &LazyConnection<C, F>,
+    clock: &Arc<dyn Clock>,
+) -> bool
+where
+    C: LocalClient,
+    F: Fn() -> Result<(crate::node::NodeUuid, C), RunError>,
+{
+    let Some(super::caller::CallerOrigin::Agent(env)) = watch_origin(parsed, session) else {
+        return false;
+    };
+    if !crate::delivery::declares(
+        env.harness.as_str(),
+        crate::harness::adapter::DeliveryMechanism::PushChannel,
+    ) {
+        return false;
+    }
+    let Some(Ok(target)) = caller_pane.map(|pane| HostTargetId::parse(pane.to_owned())) else {
+        return false;
+    };
+    let Ok((instance, client)) = connection.get() else {
+        return false;
+    };
+    super::hook::watch_continuity(
+        context,
+        paths,
+        client,
+        *instance,
+        &target,
+        env.harness,
+        session,
+        Arc::clone(clock),
+    )
+}
+
+/// Ensure a daemon for the watch (ht-dtx0 D1b), bounded like a lifecycle
+/// hook's; the outcome is advisory (registration reports what it finds).
+pub(super) fn ensure_daemon(
+    context: &crate::daemon::paths::RuntimeContext,
+    clock: &Arc<dyn Clock>,
+) {
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        let _ = runtime.block_on(async {
+            tokio::time::timeout(
+                WATCH_ENSURE_BUDGET,
+                crate::daemon::lifecycle::ensure_running(context, &executable, Arc::clone(clock)),
+            )
+            .await
+        });
+    }
+}
+
+/// How long a watch waits for the daemon it ensures (ht-dtx0 D1b).
+const WATCH_ENSURE_BUDGET: Duration = Duration::from_secs(2);
+
 #[allow(clippy::too_many_arguments)]
 /// `watch` after the pre-checks: locate the caller, register, stream.
 pub(super) fn run_watch<C, F, W>(
@@ -1223,7 +1292,7 @@ where
     W: Write,
 {
     let mut state = EmitState::default();
-    let (claim, seat, instance) = match locate_claim(
+    let mut located = locate_claim(
         parsed,
         &request.session,
         caller_pane,
@@ -1231,7 +1300,32 @@ where
         paths,
         connection,
         clock,
-    ) {
+    );
+    // ht-dtx0 (TRUST-POLICY C1): a pane with no seat this session can register
+    // on may be its own seat left unresolved by a Herdr restart while the
+    // session sat idle. The session claims it once, then registers.
+    if matches!(located, Err(CallerFailure::NoBinding))
+        && claim_own_seat(
+            parsed,
+            &request.session,
+            caller_pane,
+            context,
+            paths,
+            connection,
+            clock,
+        )
+    {
+        located = locate_claim(
+            parsed,
+            &request.session,
+            caller_pane,
+            context,
+            paths,
+            connection,
+            clock,
+        );
+    }
+    let (claim, seat, instance) = match located {
         Ok(found) => found,
         Err(failure) => return exit_result(refuse(&mut state, writer, failure.reason())),
     };

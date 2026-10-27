@@ -242,6 +242,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     // Seat status (ht-xg88) is display data read by seat listings only.
     "remote_seat_origin",
     "remote_seat_status",
+    // Kept continuity claims (ht-dtx0) are read by the observation lane after each
+    // reconciliation pass, which runs on its own cadence.
+    "kept_continuity_claims",
     "thread_registers",
     // Passive inbox progress never schedules attention or deadlines.
     "lazy_recipients",

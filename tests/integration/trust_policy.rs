@@ -433,6 +433,21 @@ impl World {
     /// The installed hook, exactly as setup installs it: `sh -c` with the
     /// native JSON on stdin and the pane identity from `HERDR_*`.
     fn hook(&self, harness: &str, pane: &str, stdin: &[u8]) -> (i32, String, String) {
+        self.hook_with_env(harness, pane, stdin, &[])
+    }
+    /// A hook whose continuity claim cannot be decided (Herdr is down): it runs with the
+    /// production bounds, so its retry window is the real 5 s, not the loaded-suite tenfold.
+    fn hook_unanswered(&self, harness: &str, pane: &str, stdin: &[u8]) {
+        let scale = herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV;
+        let _ = self.hook_with_env(harness, pane, stdin, &[(scale, "1")]);
+    }
+    fn hook_with_env(
+        &self,
+        harness: &str,
+        pane: &str,
+        stdin: &[u8],
+        env: &[(&str, &str)],
+    ) -> (i32, String, String) {
         let command = if harness == "codex" {
             self.codex_hook.as_str()
         } else {
@@ -460,6 +475,7 @@ impl World {
             .env("PATH", self.path())
             .env_remove("HERDR_PLUGIN_STATE_DIR")
             .env_remove("HERDR_BIN_PATH")
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1765,4 +1781,307 @@ fn pane_agent_observation_reads_the_same_in_me_init_launch_and_diagnostics() {
         })
         .collect();
     assert_eq!(diagnostics, ["match", "absent", "read_error"]);
+}
+
+/// The mod's `watch` child for `session` in `pane`, as the Claude mod runs it inside that
+/// session's process: its stdout lines arrive on the returned channel.
+struct WatchChild {
+    child: herdr_threads::test_support::spawn::OwnedChild,
+    lines: std::sync::mpsc::Receiver<Value>,
+}
+impl WatchChild {
+    /// The next JSON line within `within`.
+    fn next(&self, within: Duration) -> Option<Value> {
+        self.lines.recv_timeout(within).ok()
+    }
+}
+impl Drop for WatchChild {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+impl World {
+    fn watch(&self, pane: &str, session: &str) -> WatchChild {
+        let mut command = Command::new(BIN);
+        herdr_threads::test_support::isolation::as_agent(&mut command, "claude", session);
+        let mut child = command
+            .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
+            .args(["--state-dir"])
+            .arg(&self.state)
+            .arg("--host-endpoint")
+            .arg(&self.herdr.socket)
+            .args(["watch", "--harness", "claude", "--session", session])
+            .env("HERDR_ENV", "1")
+            .env("HERDR_PANE_ID", pane)
+            .env("HERDR_SOCKET_PATH", &self.herdr.socket)
+            .env("PATH", self.path())
+            .env("CLAUDE_CONFIG_DIR", self.root.join("claude-config"))
+            .env_remove("HERDR_PLUGIN_STATE_DIR")
+            .env_remove("HERDR_BIN_PATH")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn_owned()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (sender, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Ok(value) = serde_json::from_str::<Value>(&line)
+                    && sender.send(value).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        WatchChild { child, lines }
+    }
+    /// Run `watch` the way the mod does until it connects: a refusal is retried after a
+    /// short pause (the mod's backoff), at most `attempts` times.
+    fn watch_until_connected(&self, pane: &str, session: &str, attempts: usize) -> WatchChild {
+        for _ in 0..attempts {
+            let watch = self.watch(pane, session);
+            if let Some(first) = watch.next(Duration::from_secs(20))
+                && first["kind"] == "status"
+                && first["state"] == "connected"
+            {
+                return watch;
+            }
+            drop(watch);
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        panic!("watch for {session} in {pane} never connected");
+    }
+    fn kept_claims(&self) -> i64 {
+        self.count("SELECT count(*) FROM kept_continuity_claims")
+    }
+    fn continuity_decisions(&self) -> i64 {
+        self.count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'")
+    }
+}
+
+/// ht-dtx0 acceptance 1 and D1b: a Herdr restart leaves the seat of an idle Claude mod
+/// session unresolved and the daemon gone; the session makes no hook call. The mod's own
+/// `watch` ensures a daemon, claims the session's seat (C1, `same_session`) and registers its
+/// channel; a p0 send then reaches that channel.
+#[test]
+fn idle_mod_session_reattaches_through_its_watch_and_is_woken() {
+    let mut world = World::start(
+        "htdw",
+        vec![claude("w1:p1", "term-a", "SA"), pane("w1:p2", "term-b")],
+    );
+    let (a, b) = (world.resolve("w1:p1"), world.resolve("w1:p2"));
+    let (a_pane, b_pane) = (
+        Caller {
+            seat: &a,
+            pane: "w1:p1",
+            harness: "claude",
+        },
+        Caller {
+            seat: &b,
+            pane: "w1:p2",
+            harness: "claude",
+        },
+    );
+    let (code, _, stderr) =
+        world.hook("claude", "w1:p1", &session_start("claude", "SA", "startup"));
+    assert_eq!(code, 0, "{stderr}");
+    world
+        .run(
+            None,
+            Some(b_pane),
+            &["check-in", "--lifecycle-event", "b-start"],
+        )
+        .data("check-in");
+    let thread = world
+        .run(None, Some(b_pane), &["thread", "create", "--topic", "dtx0"])
+        .text("thread create");
+    world
+        .run(None, Some(b_pane), &["invite", &thread, "--seat", &a])
+        .data("invite");
+    world
+        .run(None, Some(a_pane), &["accept", &thread])
+        .data("accept");
+
+    world.restart_herdr(vec![
+        claude("w1:p1", "term-a2", "SA"),
+        pane("w1:p2", "term-b2"),
+    ]);
+    world.wait_reconciled();
+    assert_eq!(world.seat_state(&a), "unresolved");
+    // The daemon is gone (as it was when pane teardown killed it): nothing else runs.
+    world.stop();
+
+    let watch = world.watch_until_connected("w1:p1", "SA", 20);
+    assert_eq!(world.seat_state(&a), "resolved");
+    assert_eq!(
+        world.open_binding(&a),
+        vec![("claude".into(), "cooperative_top_level".into(), "SA".into())]
+    );
+    assert_eq!(world.continuity_decisions(), 1);
+    assert_eq!(
+        world.count(&format!(
+            "SELECT count(*) FROM seats WHERE id='{a}' AND target_id='w1:p1'"
+        )),
+        1
+    );
+
+    // B gets its seat back from the operator and sends A an ACK request (p0).
+    world
+        .run(
+            None,
+            None,
+            &[
+                "human",
+                "seat",
+                "rebind",
+                &b,
+                "--pane",
+                "w1:p2",
+                "--operator",
+            ],
+        )
+        .data("rebind B");
+    world
+        .run(
+            None,
+            Some(b_pane),
+            &["check-in", "--lifecycle-event", "b-again"],
+        )
+        .data("check-in");
+    world
+        .run(
+            None,
+            Some(b_pane),
+            &["send", &thread, "--body", "wake", "--require-ack", &a],
+        )
+        .data("send");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let line = watch
+            .next(deadline.saturating_duration_since(Instant::now()))
+            .expect("the p0 item reached the reattached session's channel");
+        if line["kind"] != "status" {
+            break;
+        }
+    }
+}
+
+/// ht-dtx0 acceptance 2: Herdr is down while a resumed session's SessionStart reaches the
+/// daemon, so the claim is refused as not ready and the hook gives up. The daemon keeps the
+/// claim and, once Herdr is back and the new incarnation reconciled, reattaches the seat with
+/// no further call from the session.
+fn resume_claim_while_herdr_is_down(harness: &str, prefix: &str) {
+    let mut world = World::start(
+        prefix,
+        vec![
+            agent_pane("w1:p1", "term-a", harness, Some("SA")),
+            pane("w1:p2", "term-b"),
+        ],
+    );
+    let a = world.resolve("w1:p1");
+    let (code, _, stderr) = world.hook(harness, "w1:p1", &session_start(harness, "SA", "startup"));
+    assert_eq!(code, 0, "{stderr}");
+    world.herdr.kill();
+    world.hook_unanswered(harness, "w1:p1", &session_start(harness, "SA", "resume"));
+    assert_eq!(world.kept_claims(), 1, "the claim is kept");
+    assert_eq!(world.continuity_decisions(), 0);
+    world.herdr.set_panes(vec![
+        agent_pane("w1:p1", "term-a2", harness, Some("SA")),
+        pane("w1:p2", "term-b2"),
+    ]);
+    world.herdr.spawn(); // leak-guard: fixture method, spawns via spawn_owned
+    world.wait_for("the kept claim to reattach the seat", |world| {
+        world.seat_state(&a) == "resolved" && world.kept_claims() == 0
+    });
+    assert_eq!(world.continuity_decisions(), 1);
+    assert_eq!(
+        world.open_binding(&a),
+        vec![(harness.into(), "cooperative_top_level".into(), "SA".into())]
+    );
+    // The session's own later resubmission replays the decision.
+    let (code, _, stderr) = world.hook(harness, "w1:p1", &session_start(harness, "SA", "resume"));
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(world.continuity_decisions(), 1);
+}
+
+#[test]
+fn claude_resume_claim_while_herdr_is_down_is_kept_and_decided() {
+    resume_claim_while_herdr_is_down("claude", "htkc");
+}
+
+#[test]
+fn codex_resume_claim_while_herdr_is_down_is_kept_and_decided() {
+    resume_claim_while_herdr_is_down("codex", "htkx");
+}
+
+/// ht-dtx0 acceptance 3: the claim kept by a daemon that then stops is decided by its
+/// replacement.
+#[test]
+fn kept_claim_survives_a_daemon_restart() {
+    let mut world = World::start(
+        "htkr",
+        vec![claude("w1:p1", "term-a", "SA"), pane("w1:p2", "term-b")],
+    );
+    let a = world.resolve("w1:p1");
+    let (code, _, stderr) =
+        world.hook("claude", "w1:p1", &session_start("claude", "SA", "startup"));
+    assert_eq!(code, 0, "{stderr}");
+    world.herdr.kill();
+    world.hook_unanswered("claude", "w1:p1", &session_start("claude", "SA", "resume"));
+    assert_eq!(world.kept_claims(), 1);
+    world.restart_herdr(vec![
+        claude("w1:p1", "term-a2", "SA"),
+        pane("w1:p2", "term-b2"),
+    ]);
+    world.wait_for("the replacement to decide the kept claim", |world| {
+        world.seat_state(&a) == "resolved" && world.kept_claims() == 0
+    });
+    assert_eq!(world.continuity_decisions(), 1);
+}
+
+/// ht-dtx0 acceptance 4: a different session's kept claim never takes the seat, a kept claim
+/// of the seat's own session whose process has exited is dropped undecided, and Herdr's agent
+/// field naming the seat's own session moves nothing without a live claim.
+#[test]
+fn kept_claim_of_another_session_takes_nothing() {
+    let mut world = World::start(
+        "htkn",
+        vec![claude("w1:p1", "term-a", "SA"), pane("w1:p2", "term-b")],
+    );
+    let a = world.resolve("w1:p1");
+    let (code, _, stderr) =
+        world.hook("claude", "w1:p1", &session_start("claude", "SA", "startup"));
+    assert_eq!(code, 0, "{stderr}");
+    world.herdr.kill();
+    world.hook_unanswered("claude", "w1:p1", &session_start("claude", "S2", "resume"));
+    assert_eq!(world.kept_claims(), 1);
+    // A kept claim of the seat's own session SA whose process has exited: it is dropped
+    // undecided (a gone process cannot be the session that claimed).
+    {
+        let path = world.find("herdr-threads.db").expect("daemon database");
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.busy_timeout(Duration::from_secs(5)).unwrap();
+        db.execute(
+            "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) \
+             SELECT host_id,target_id,harness,'SA',json_set(command_json,'$.native_session','SA','$.operation','op-dead','$.liveness',json('{\"pid\":1,\"start\":1}')),received_at \
+             FROM kept_continuity_claims",
+            [],
+        )
+        .unwrap();
+    }
+    assert_eq!(world.kept_claims(), 2);
+    // Herdr's agent field shows SA, the seat's own session: a hint only.
+    world.herdr.set_panes(vec![
+        claude("w1:p1", "term-a2", "SA"),
+        pane("w1:p2", "term-b2"),
+    ]);
+    world.herdr.spawn(); // leak-guard: fixture method, spawns via spawn_owned
+    world.wait_for("the kept claim to be refused", |world| {
+        world.kept_claims() == 0 && world.seat_state(&a) == "unresolved"
+    });
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(world.seat_state(&a), "unresolved");
+    assert_eq!(world.continuity_decisions(), 0);
 }

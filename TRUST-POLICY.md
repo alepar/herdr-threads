@@ -46,6 +46,10 @@ coherent publication; nonempty reconciliation and C1 pending/retry/enrollment gu
 Amended 2026-10-27 for node status and seat status (ht-xg88): advisory peer and remote-seat status (N13 and the
 cross-node accepted limit "Remote presence is advisory and lags"); no new provenance value.
 
+Amended 2026-10-27 for seat recovery after a Herdr restart (ht-dtx0): a push-channel harness's in-process watch makes
+its own session's `same_session` C1 claim, and the daemon keeps a C1 claim refused only for host evidence that is not
+ready and decides it after the epoch's reconciliation (C1); no new provenance or wire value.
+
 ## Abstract
 
 herdr-threads gives coding agents in Herdr panes a durable mailbox: threads, invitations, messages that an
@@ -126,7 +130,7 @@ added identity fields; the opt-in read changes no binding, receipt, membership o
 | Path | Trigger | Recorded as |
 |---|---|---|
 | Structural reconfirm | Same terminal, same Herdr boot and incarnation | automatic, no new provenance |
-| Cooperative continuity | A top-level lifecycle or turn event carrying the same native harness session id, uniquely matching a top-level binding (any of its bindings, not only the latest) of an unresolved seat; when several unresolved seats match, only those on which that session's binding was still open when the seat became unresolved (disconnect reason `seat_unresolved`) count, if there are any. The target must have no resolved owner. A resumed start claims wire source `resume`; an existing session's non-resume event on a pane without a resolved seat claims `same_session` | `cooperative_continuity` |
+| Cooperative continuity | A top-level lifecycle or turn event, or a push-channel harness's in-process watch for its own session (ht-dtx0), carrying the same native harness session id, uniquely matching a top-level binding (any of its bindings, not only the latest) of an unresolved seat; when several unresolved seats match, only those on which that session's binding was still open when the seat became unresolved (disconnect reason `seat_unresolved`) count, if there are any. The target must have no resolved owner. A resumed start claims wire source `resume`; an existing session's non-resume event on a pane without a resolved seat claims `same_session` | `cooperative_continuity` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`) | `operator:local-user:<uid>` |
 
 A herdr-threads daemon upgrade can leave a still-running native session needing recovery;
@@ -146,6 +150,25 @@ the next eligible event, reports pending recovery and never ordinary-enrolls.
 It does not spend the remaining callback in a retry loop; explicit resume keeps
 its bounded retry window. This leaves fast failed probes time to report advisory
 harness evidence after check-in, under the existing shared callback deadline.
+
+**Watch claims (ht-dtx0).** A push-channel harness (today the Claude mod) runs `watch` inside the harness process
+for the session the mod serves. When the watch's pane maps to no seat it can register on, the watch submits that
+session's `same_session` claim once per run, through the same pane continuity journal as the hooks (a pending
+intent of the same session, such as a resume the daemon kept, is replayed under its operation key), and only when
+the daemon advertises `seat.continuity_same_session_v1`. The claim carries the harness process's fingerprint and
+the session id the harness engine reports; every C1 guard above applies unchanged. A watch with no daemon reachable
+ensures one, as a lifecycle hook does (a live owner is never displaced).
+
+**Kept claims (ht-dtx0).** A C1 claim refused only because the host evidence is not ready, that is the fresh target
+read failed before any decision (other than the target not existing) or the deciding transaction refused for
+reconciliation lag, is kept by the daemon verbatim: one row per (Herdr server, target, harness, native session), at
+most 256 in all, for at most one hour. Every other refusal, a guard or structural-proof mismatch included, is
+definitive and keeps nothing. The reply to the session is unchanged. After each completed reconciliation pass of the
+current recovery boot and epoch, the observation worker decides each kept claim through the ordinary C1 transaction
+against the canonical view (A2), under its own operation key, so the session's later resubmission replays the same
+result. A kept claim whose fingerprinted process has exited is dropped undecided; a decided one, either way, is
+dropped. The claim and its evidence are the session's own; the daemon only defers the decision. Client-local intent
+files are never read by the daemon.
 
 Seats are never merged. Pane labels, saved addresses, terminal-id hints and Herdr's agent field may *suggest*
 candidates in diagnostics; they never move a seat, allocate one, or end a binding.
@@ -1904,6 +1927,21 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   design). Forged client files cannot satisfy A2's binding match, but they can disrupt that seat's local
   state. Sandbox-writable files are opened without following symlinks (implemented for `allocator.lock`).
 - **Unseen exits.** An agent that exits to its shell stays bound until the next check-in or retirement (C5).
+- **An idle hooks-only session with no recovery claim waits for its next turn (ht-dtx0).** Claude Code without the
+  mod, Codex and Hermes run code only on session, prompt, tool and model events; none has a timer or a process
+  that outlives a callback. After a Herdr restart, such a session whose resume or lifecycle callback reached no
+  daemon (none ran, or every attempt failed before a daemon could keep the claim) stays unresolved, and so is not
+  woken, until its next turn makes the `same_session` claim or an operator rebinds it. Herdr's agent field naming
+  the session never moves or wakes the seat.
+- **A reattachment for a session that `/clear` replaced names the old session (ht-dtx0).** A watch spawned
+  before the mod adopted the new session id, or a kept resume claim decided after `/clear`, reattaches the seat
+  for the claimed (old) session in the same process and pane. The pane's role is the right one; the open binding
+  names the old session until the new session's next check-in on the now-resolved pane replaces it (one watch
+  restart, or the next hook). Wakes typed into the pane reach the live session. The new session never takes a
+  seat through C1: only a binding of the claimed session matches.
+- **A kept claim is decided at most one backoff step after Herdr returns (ht-dtx0).** The observation lane
+  retries a frozen capture with capped backoff (up to 30 s); the kept claims are decided after the first
+  reconciliation pass that follows.
 - **Launch is not check-in.** A successful `launch` means Herdr started the agent, not that it registered.
   Its only record is a wake-eligible placeholder binding (`managed_launch`, A3) carrying the started process's
   fingerprint: not

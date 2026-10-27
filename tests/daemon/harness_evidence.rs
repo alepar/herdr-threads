@@ -2137,6 +2137,29 @@ mod publication_order {
         ) -> Result<Option<CommandResult>, ApiError> {
             self.inner.replay_continuity(command, budget)
         }
+        fn keep_continuity_claim(
+            &self,
+            host: crate::ports::HostId,
+            command: &ContinuityCheckIn,
+            budget: &CallBudget,
+        ) -> Result<bool, ApiError> {
+            self.inner.keep_continuity_claim(host, command, budget)
+        }
+        fn kept_continuity_claims(
+            &self,
+            host: crate::ports::HostId,
+            budget: &CallBudget,
+        ) -> Result<Vec<crate::store::kept_continuity::KeptClaim>, ApiError> {
+            self.inner.kept_continuity_claims(host, budget)
+        }
+        fn forget_continuity_claim(
+            &self,
+            host: crate::ports::HostId,
+            command: &ContinuityCheckIn,
+            budget: &CallBudget,
+        ) -> Result<(), ApiError> {
+            self.inner.forget_continuity_claim(host, command, budget)
+        }
         fn decide_continuity(
             &self,
             request: ContinuityRequest,

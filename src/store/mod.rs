@@ -17,6 +17,7 @@ pub mod incarnations;
 pub mod invitation_content;
 pub mod invitation_due;
 pub mod journal;
+pub mod kept_continuity;
 pub mod lazy_delivery;
 pub mod local_seat_status;
 pub mod materialization;
@@ -2191,6 +2192,44 @@ impl StorePort for SqliteStore {
         let result = seats::replay_continuity(&self.context, &self.instance, &command, budget)?;
         self.live_budget(budget)?;
         Ok(result)
+    }
+    fn keep_continuity_claim(
+        &self,
+        host: crate::ports::HostId,
+        command: &crate::protocol::commands::ContinuityCheckIn,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let now = self.context.clock().utc_now().0;
+        let mut writer = self.writer(budget)?;
+        let tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        let kept = kept_continuity::keep(&tx, host, command, now)?;
+        tx.commit().map_err(store_error)?;
+        Ok(kept)
+    }
+    fn kept_continuity_claims(
+        &self,
+        host: crate::ports::HostId,
+        budget: &CallBudget,
+    ) -> Result<Vec<kept_continuity::KeptClaim>, ApiError> {
+        let now = self.context.clock().utc_now().0;
+        let mut writer = self.writer(budget)?;
+        let tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        let due = kept_continuity::due(&tx, host, now)?;
+        tx.commit().map_err(store_error)?;
+        Ok(due)
+    }
+    fn forget_continuity_claim(
+        &self,
+        host: crate::ports::HostId,
+        command: &crate::protocol::commands::ContinuityCheckIn,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let writer = self.writer(budget)?;
+        kept_continuity::forget(&writer, host, command)
     }
     fn decide_continuity(
         &self,

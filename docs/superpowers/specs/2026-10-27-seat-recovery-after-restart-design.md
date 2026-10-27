@@ -31,9 +31,11 @@ Unresolving the seat is correct (C2) and stays. What changes is how the seat com
 
 ### D1. The push-channel watch makes the session's own C1 claim (closes G2 for the Claude mod)
 
-When `watch` cannot register, it makes one C1 attempt for its own session before exiting 2. That covers two
-cases: caller derivation finds no seat for the pane (`no_binding`), and the daemon refuses with `unresolved`,
-`held` or `no_binding`. The claim is the existing `ContinuityCheckIn`, with:
+When caller derivation finds no seat for the watch's pane (`no_binding`: the pane is unresolved, held or
+unowned), the watch makes one C1 attempt for its own session; on success it derives again and registers, else it
+exits 2 as today. A registration refusal from the daemon on a resolved pane does not trigger it, because the
+target is owned and C1 would refuse it; a seat that becomes unresolved after derivation is claimed by the next
+watch run. The claim is the existing `ContinuityCheckIn`, with:
 
 - target: the caller pane;
 - harness: the watch's env claim (a push-channel harness only);

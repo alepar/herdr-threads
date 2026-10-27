@@ -378,7 +378,19 @@ fn spawn_detached(
     } else {
         command.env_remove("HERDR_BIN_PATH");
     }
-    command.process_group(0);
+    // Its own session, process group and no controlling terminal: a daemon
+    // ensured from inside a Herdr pane must outlive that pane's teardown (a
+    // Herdr restart hangs up or kills the pane's session, ht-mp72).
+    // SAFETY: setsid is async-signal-safe, and the forked child is not a
+    // process-group leader, so it cannot fail with EPERM.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let mut child = command.spawn()?;
     let stderr = match fallback_reason {
         Ok(path) => StartupStderr::File(path),

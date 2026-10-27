@@ -3258,6 +3258,29 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         command: ContinuityCheckIn,
         budget: &CallBudget,
     ) -> Result<Option<CommandResult>, ApiError>;
+    /// TRUST-POLICY C1 (ht-dtx0): keep a claim refused only because the host
+    /// evidence is not ready, for the observation worker to decide later.
+    /// `false` when the kept-claim cap is reached.
+    fn keep_continuity_claim(
+        &self,
+        host: HostId,
+        command: &ContinuityCheckIn,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError>;
+    /// The host's kept claims due for another decision, oldest first and
+    /// bounded per pass; expired rows are dropped first.
+    fn kept_continuity_claims(
+        &self,
+        host: HostId,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::store::kept_continuity::KeptClaim>, ApiError>;
+    /// Drop the kept claim of `command`'s session on its target.
+    fn forget_continuity_claim(
+        &self,
+        host: HostId,
+        command: &ContinuityCheckIn,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError>;
     /// TRUST-POLICY C1: reattach the unique unresolved seat whose last binding
     /// carries the resumed session id.
     fn decide_continuity(

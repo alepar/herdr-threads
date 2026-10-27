@@ -2486,7 +2486,13 @@ where
                             // only a pass with no refused transition records
                             // it. An Err leaves the marker behind; the next
                             // pass retries.
-                            let _ = identity.record_reconciliation_pass(&port, published, &budget);
+                            if let Ok(true) =
+                                identity.record_reconciliation_pass(&port, published, &budget)
+                            {
+                                // ht-dtx0: claims kept while this epoch lagged
+                                // are decided now; a failure retries next pass.
+                                let _ = identity.decide_kept_continuity();
+                            }
                         }
                     }
                 } else {

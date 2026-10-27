@@ -2140,6 +2140,65 @@ enum Reattach {
     /// Carries the failure detail.
     InstallFailed(String),
 }
+/// ht-dtx0 (TRUST-POLICY C1): the claim a push-channel `watch` makes for its own
+/// session when its pane has no seat it can register on. The watch runs inside
+/// the harness process, so the claim is that session's own (its id, the harness
+/// process's fingerprint), submitted as `same_session` under the pane's
+/// continuity journal exactly as a turn hook would: a pending intent of the same
+/// session (a resume the daemon kept) is replayed under its operation key. One
+/// submission, no retry loop (the mod's restart backoff paces it) and no
+/// presentation (the channel delivers). True when the seat was reattached.
+// Allowed: a PaneCall's dependencies plus the claim's own three values.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn watch_continuity(
+    context: &RuntimeContext,
+    paths: &NodePaths,
+    client: &dyn LocalClient,
+    instance: crate::node::NodeUuid,
+    target: &HostTargetId,
+    harness: crate::protocol::authority::Harness,
+    session: &str,
+    clock: Arc<dyn Clock>,
+) -> bool {
+    let deadline = Instant::now() + WATCH_CONTINUITY_BUDGET;
+    let call = PaneCall {
+        context,
+        paths,
+        client,
+        instance,
+        target,
+        deadline,
+        current_deadline: CurrentDeadline {
+            at: deadline,
+            watchdog: None,
+        },
+        clock,
+        retry: Arc::new(HookDeadline(deadline)),
+        turn_end: false,
+    };
+    let event = LifecycleEvent {
+        harness: harness.into(),
+        source: crate::protocol::commands::ContinuityCheckIn::SAME_SESSION_SOURCE.into(),
+        kind: EventKind::Tool,
+        native_session: Some(session.to_owned()),
+        role: Role::TopLevel,
+        event_id: format!("watch-{}", uuid::Uuid::new_v4()),
+        capability: crate::harness::Capability::ObservedInput,
+        agent_id: None,
+    };
+    call.reattach_and_install(&event, false).is_ok()
+}
+
+/// Request budget of one watch continuity claim (ht-dtx0).
+const WATCH_CONTINUITY_BUDGET: Duration = Duration::from_secs(3);
+
+/// A C1 reattachment the daemon committed and this pane installed locally.
+struct Installed {
+    seat: SeatId,
+    binding_generation: u64,
+    fast_forward: Option<crate::protocol::results::FastForward>,
+}
+
 #[cfg(test)]
 impl Reattach {
     fn done(self) -> Option<CheckedIn> {
@@ -2359,108 +2418,12 @@ impl PaneCall<'_> {
     /// runs for resume and for a lifecycle/turn event without a resolved pane.
     /// Steady resolved turns never read or replay a continuity intent.
     fn reattach_by_continuity(&self, event: &LifecycleEvent, pane_resolved: bool) -> Reattach {
-        if event.role != Role::TopLevel
-            || event.agent_id.is_some()
-            || (pane_resolved && event.kind != EventKind::Resume)
-        {
-            return Reattach::Declined;
-        }
-        let Some(harness) = wire_harness(event.harness) else {
-            return Reattach::Declined;
+        let installed = match self.reattach_and_install(event, pane_resolved) {
+            Ok(installed) => installed,
+            Err(outcome) => return outcome,
         };
-        let Some(Ok(session)) = event
-            .native_session
-            .clone()
-            .map(crate::protocol::ids::NativeSessionId::parse)
-        else {
-            return Reattach::Declined;
-        };
-        if session.as_str().starts_with("plugin_context:") {
-            return Reattach::Declined;
-        }
-        if event.kind != EventKind::Resume
-            && !self.client.supports_capability(
-                crate::protocol::capabilities::SAME_SESSION_CONTINUITY_V1,
-                &budget(self.deadline, self.clock.as_ref()),
-            )
-        {
-            // An older daemon still serves resume and ordinary guarded startup.
-            // Missing capability is never evidence that a held target is free.
-            return Reattach::Declined;
-        }
-        // C1 reattachment is a lifecycle check-in: the successor binding records this
-        // process's fingerprint. A failure declines, so ordinary enrollment surfaces it.
-        let Ok(liveness) = hook_fingerprint(event.harness) else {
-            return Reattach::Declined;
-        };
-        let Some(journal) = self.journal() else {
-            return Reattach::Pending;
-        };
-        let Some((mut reference, _, reused)) =
-            self.continuity_intent(&journal, event, harness, &session, liveness, !pane_resolved)
-        else {
-            return Reattach::Pending;
-        };
-        let retry_transient = event.kind == EventKind::Resume;
-        let mut reattached =
-            match self.submit_continuity(&journal, &reference, liveness, retry_transient) {
-                ContinuityOutcome::Reattached(reattached) => reattached,
-                ContinuityOutcome::Refused(code) => return Reattach::Refused(code),
-                ContinuityOutcome::Kept => return Reattach::Pending,
-            };
-        if reused {
-            match self.replay_is_current(&reattached.seat) {
-                Some(true) => {}
-                None => return Reattach::Pending,
-                Some(false) => {
-                    // A stale replay: drop it and ask once more under a fresh
-                    // key, which the daemon cannot answer from a replay.
-                    let _ = journal.complete(&reference);
-                    let Some((fresh, _, _)) =
-                        self.continuity_intent(&journal, event, harness, &session, liveness, false)
-                    else {
-                        return Reattach::Pending;
-                    };
-                    reference = fresh;
-                    reattached = match self.submit_continuity(
-                        &journal,
-                        &reference,
-                        liveness,
-                        retry_transient,
-                    ) {
-                        ContinuityOutcome::Reattached(reattached) => reattached,
-                        ContinuityOutcome::Refused(code) => return Reattach::Refused(code),
-                        ContinuityOutcome::Kept => return Reattach::Pending,
-                    };
-                }
-            }
-        }
-        let fast_forward = reattached.fast_forward;
-        let seat = reattached.seat;
-        let contexts = match self
-            .context
-            .claim_host()
-            .map_err(|e| e.to_string())
-            .and_then(|host| {
-                super::seat_contexts(self.paths, self.instance, &host, &seat)
-                    .map_err(|error| format!("{error:?}"))
-            }) {
-            Ok(contexts) => contexts,
-            Err(error) => return Reattach::InstallFailed(format!("{}: {error}", seat.as_str())),
-        };
-        // The reattached session's identity is its environment, not a saved context: only a
-        // request still pending for the replaced context is dead.
-        // On a failed install the intent stays: the daemon replays the same
-        // result on the next resume and the install is tried again.
-        let abandoned = match contexts.abandon_any_pending() {
-            Ok(abandoned) => abandoned,
-            Err(error) => return Reattach::InstallFailed(format!("{}: {error:?}", seat.as_str())),
-        };
-        if let Some(pending) = abandoned {
-            // The replaced context's request is dead: its intent is spent.
-            let _ = journal.complete_operation(&OperationId::new(pending.operation_id.to_string()));
-        }
-        let _ = journal.complete(&reference);
+        let (seat, fast_forward) = (installed.seat, installed.fast_forward);
+        let reattached_generation = installed.binding_generation;
         // A presentation, not a lifecycle check-in: one non-durable Current
         // check-in (a compaction-class copy of the event, which never
         // coalesces) shows the seat's pending attention and rotates nothing.
@@ -2470,7 +2433,7 @@ impl PaneCall<'_> {
             ..event.clone()
         };
         let mut done = self
-            .check_in_seat(&presented, &seat, reattached.binding_generation)
+            .check_in_seat(&presented, &seat, reattached_generation)
             .unwrap_or_else(|_| CheckedIn {
                 coverage: super::hook_inbox::DeliveryCoverage::Unavailable,
                 prepared_kind: None,
@@ -2503,6 +2466,134 @@ impl PaneCall<'_> {
             done.text = text;
         }
         Reattach::Done(Box::new(done))
+    }
+
+    /// The C1 claim and its local install, without the presentation: what
+    /// `reattach_by_continuity` presents, and all a push-channel watch needs
+    /// (its channel delivers). `Err` carries every outcome other than an
+    /// installed reattachment.
+    fn reattach_and_install(
+        &self,
+        event: &LifecycleEvent,
+        pane_resolved: bool,
+    ) -> Result<Installed, Reattach> {
+        if event.role != Role::TopLevel
+            || event.agent_id.is_some()
+            || (pane_resolved && event.kind != EventKind::Resume)
+        {
+            return Err(Reattach::Declined);
+        }
+        let Some(harness) = wire_harness(event.harness) else {
+            return Err(Reattach::Declined);
+        };
+        let Some(Ok(session)) = event
+            .native_session
+            .clone()
+            .map(crate::protocol::ids::NativeSessionId::parse)
+        else {
+            return Err(Reattach::Declined);
+        };
+        if session.as_str().starts_with("plugin_context:") {
+            return Err(Reattach::Declined);
+        }
+        if event.kind != EventKind::Resume
+            && !self.client.supports_capability(
+                crate::protocol::capabilities::SAME_SESSION_CONTINUITY_V1,
+                &budget(self.deadline, self.clock.as_ref()),
+            )
+        {
+            // An older daemon still serves resume and ordinary guarded startup.
+            // Missing capability is never evidence that a held target is free.
+            return Err(Reattach::Declined);
+        }
+        // C1 reattachment is a lifecycle check-in: the successor binding records this
+        // process's fingerprint. A failure declines, so ordinary enrollment surfaces it.
+        let Ok(liveness) = hook_fingerprint(event.harness) else {
+            return Err(Reattach::Declined);
+        };
+        let Some(journal) = self.journal() else {
+            return Err(Reattach::Pending);
+        };
+        let Some((mut reference, _, reused)) =
+            self.continuity_intent(&journal, event, harness, &session, liveness, !pane_resolved)
+        else {
+            return Err(Reattach::Pending);
+        };
+        let retry_transient = event.kind == EventKind::Resume;
+        let mut reattached =
+            match self.submit_continuity(&journal, &reference, liveness, retry_transient) {
+                ContinuityOutcome::Reattached(reattached) => reattached,
+                ContinuityOutcome::Refused(code) => return Err(Reattach::Refused(code)),
+                ContinuityOutcome::Kept => return Err(Reattach::Pending),
+            };
+        if reused {
+            match self.replay_is_current(&reattached.seat) {
+                Some(true) => {}
+                None => return Err(Reattach::Pending),
+                Some(false) => {
+                    // A stale replay: drop it and ask once more under a fresh
+                    // key, which the daemon cannot answer from a replay.
+                    let _ = journal.complete(&reference);
+                    let Some((fresh, _, _)) =
+                        self.continuity_intent(&journal, event, harness, &session, liveness, false)
+                    else {
+                        return Err(Reattach::Pending);
+                    };
+                    reference = fresh;
+                    reattached = match self.submit_continuity(
+                        &journal,
+                        &reference,
+                        liveness,
+                        retry_transient,
+                    ) {
+                        ContinuityOutcome::Reattached(reattached) => reattached,
+                        ContinuityOutcome::Refused(code) => return Err(Reattach::Refused(code)),
+                        ContinuityOutcome::Kept => return Err(Reattach::Pending),
+                    };
+                }
+            }
+        }
+        let fast_forward = reattached.fast_forward;
+        let seat = reattached.seat;
+        let contexts = match self
+            .context
+            .claim_host()
+            .map_err(|e| e.to_string())
+            .and_then(|host| {
+                super::seat_contexts(self.paths, self.instance, &host, &seat)
+                    .map_err(|error| format!("{error:?}"))
+            }) {
+            Ok(contexts) => contexts,
+            Err(error) => {
+                return Err(Reattach::InstallFailed(format!(
+                    "{}: {error}",
+                    seat.as_str()
+                )));
+            }
+        };
+        // The reattached session's identity is its environment, not a saved context: only a
+        // request still pending for the replaced context is dead.
+        // On a failed install the intent stays: the daemon replays the same
+        // result on the next resume and the install is tried again.
+        let abandoned = match contexts.abandon_any_pending() {
+            Ok(abandoned) => abandoned,
+            Err(error) => {
+                return Err(Reattach::InstallFailed(format!(
+                    "{}: {error:?}",
+                    seat.as_str()
+                )));
+            }
+        };
+        if let Some(pending) = abandoned {
+            // The replaced context's request is dead: its intent is spent.
+            let _ = journal.complete_operation(&OperationId::new(pending.operation_id.to_string()));
+        }
+        let _ = journal.complete(&reference);
+        Ok(Installed {
+            seat,
+            binding_generation: reattached.binding_generation,
+            fast_forward,
+        })
     }
 
     fn fallback_for(&self, seat: &SeatId) -> Vec<String> {

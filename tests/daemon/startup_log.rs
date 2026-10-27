@@ -226,3 +226,34 @@ fn tail_is_bounded_and_defanged() {
     let escaped = crate::daemon::logs::startup_tail_text(b"\x1b[31mred\x07\n");
     assert_eq!(escaped, "?[31mred?");
 }
+
+/// ht-mp72: the detached daemon leads its own session (no controlling
+/// terminal), so tearing down the Herdr pane that ensured it cannot hang it
+/// up or kill it with the pane's session. Kills: spawning it in the caller's
+/// session or process group only.
+#[tokio::test]
+async fn detached_daemon_leads_its_own_session() {
+    let (root, context, _) = scratch();
+    let path = root.join("daemon-sid");
+    std::fs::write(
+        &path,
+        "#!/bin/sh\nsid=$(ps -o sid= -p $$ 2>/dev/null || ps -o sess= -p $$)\n\
+         echo \"pid=$$ sid=$(echo $sid)\" >&2\nexit 2\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let error = ensure_with(&context, &path).await;
+    let line = error
+        .detail
+        .lines()
+        .find(|line| line.contains("pid="))
+        .unwrap_or_else(|| panic!("{}", error.detail));
+    let field = |name: &str| {
+        line.split_whitespace()
+            .find_map(|word| word.strip_prefix(name))
+            .unwrap_or_else(|| panic!("{line}"))
+            .to_owned()
+    };
+    assert_eq!(field("pid="), field("sid="), "{line}");
+    std::fs::remove_dir_all(root).unwrap();
+}

@@ -55,6 +55,9 @@ enum ReadAttempt<R> {
 
 /// Own time budget of the C1 `agent.get` diagnostic read.
 const DIAGNOSTIC_READ_MILLIS: u64 = 750;
+/// Own time budget of kept-claim bookkeeping and of one pass deciding kept
+/// claims (ht-dtx0). The pass runs on the observation lane, so it stays short.
+const KEPT_CONTINUITY_BUDGET_MILLIS: u64 = 3_000;
 
 /// OrdinaryIdentity: structural seat resolution and observation for ONE Herdr
 /// server.
@@ -349,22 +352,126 @@ impl OrdinaryIdentity {
         if let Some(result) = replay {
             return Ok(result);
         }
+        let (result, not_ready) = self.decide_continuity_now(command.clone(), budget);
+        // ht-dtx0: a claim refused only because the host evidence is not ready
+        // (reconciliation lag, a failed host read) is kept for the observation
+        // worker to decide once the epoch has reconciled; a decided claim
+        // retires any kept copy. Best effort on the daemon's own short budget:
+        // the caller's may be spent, and the reply is the same either way.
+        let budget = self.maintenance_budget();
+        let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref());
+        let _ = if result.is_err() && not_ready {
+            self.store
+                .keep_continuity_claim(self.host_id, &command, &budget)
+                .map(|_| ())
+        } else {
+            self.store
+                .forget_continuity_claim(self.host_id, &command, &budget)
+        };
+        result
+    }
+
+    /// ht-dtx0: decide this host's kept continuity claims, after a completed
+    /// reconciliation pass. Each is the ordinary C1 decision under its own
+    /// operation key (a session's later resubmission replays the result). A
+    /// claim whose process is gone, or that was decided either way, is dropped;
+    /// one whose host evidence is still not ready is kept, unrefreshed, until
+    /// it expires.
+    pub fn decide_kept_continuity(&self) -> Result<(), ApiError> {
+        let budget = self.maintenance_budget();
+        let claims = {
+            let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
+            self.store.kept_continuity_claims(self.host_id, &budget)?
+        };
+        let processes = crate::host::process_table::HostProcessTable;
+        for claim in claims {
+            if budget.is_exhausted(self.clock.as_ref()) {
+                break;
+            }
+            let command = claim.command;
+            let alive = command
+                .liveness
+                .is_some_and(|fingerprint| fingerprint.is_alive(&processes));
+            let settled = !alive || {
+                let replayed = {
+                    let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
+                    self.store.replay_continuity(command.clone(), &budget)
+                };
+                match replayed {
+                    Ok(Some(_)) | Err(_) => true,
+                    Ok(None) => {
+                        let (result, not_ready) =
+                            self.decide_continuity_now(command.clone(), &budget);
+                        result.is_ok() || !not_ready
+                    }
+                }
+            };
+            if settled {
+                let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
+                self.store
+                    .forget_continuity_claim(self.host_id, &command, &budget)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The daemon's own short budget for kept-claim bookkeeping and decisions,
+    /// bounded by the service's lifetime rather than a request's.
+    fn maintenance_budget(&self) -> CallBudget {
+        CallBudget {
+            deadline: MonoInstant(
+                self.clock
+                    .monotonic_now()
+                    .0
+                    .saturating_add(KEPT_CONTINUITY_BUDGET_MILLIS),
+            ),
+            cancellation: self.service.clone(),
+        }
+    }
+
+    /// One C1 decision against a fresh target read, and whether a refusal
+    /// only says the host evidence is not ready yet: the read failed before
+    /// any decision (other than the target not existing), or the deciding
+    /// transaction refused for reconciliation lag (`ServiceBusy`). Every other
+    /// refusal, a guard mismatch included, is definitive. The rule is the
+    /// refusal's site, not its code: the same code covers both kinds.
+    fn decide_continuity_now(
+        &self,
+        command: ContinuityCheckIn,
+        budget: &CallBudget,
+    ) -> (Result<CommandResult, ApiError>, bool) {
         let target = command.target.clone();
         let diagnostic = self.agent_session_diagnostic(&target, &command, budget);
-        self.with_observation(&target, budget, |_, observation| {
+        let decided = std::cell::Cell::new(false);
+        let lagged = std::cell::Cell::new(false);
+        let result = self.with_observation(&target, budget, |_, observation| {
+            decided.set(true);
             let guard =
                 ContinuityTargetGuard::try_new(&self.instance, self.host_id, &command, observation)
                     .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
             let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
-            self.store.decide_continuity(
+            let decision = self.store.decide_continuity(
                 ContinuityRequest {
                     command,
                     guard,
                     diagnostic,
                 },
                 budget,
-            )
-        })
+            );
+            if matches!(&decision, Err(refusal) if refusal.code == ErrorCode::ServiceBusy) {
+                lagged.set(true);
+            }
+            decision
+        });
+        let not_ready = match &result {
+            Ok(_) => false,
+            Err(_) if decided.get() => lagged.get(),
+            Err(refusal) => !matches!(
+                refusal.code,
+                ErrorCode::NotFound | ErrorCode::InvalidRequest
+            ),
+        };
+        (result, not_ready)
     }
 
     /// Compare Herdr's reported agent session for the pane with the claimed native
