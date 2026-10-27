@@ -1861,6 +1861,12 @@ impl World {
         }
         panic!("watch for {session} in {pane} never connected");
     }
+    /// One target read of the other pane, so the daemon's observation lane captures the
+    /// restarted Herdr now instead of after its capped backoff. Its own outcome (refused as
+    /// held, or a seat for that pane) is not what the caller checks.
+    fn kick_observation(&self) {
+        let _ = self.run(None, None, &["seat", "resolve", "--pane", "w1:p2"]);
+    }
     fn kept_claims(&self) -> i64 {
         self.count("SELECT count(*) FROM kept_continuity_claims")
     }
@@ -2014,6 +2020,7 @@ fn resume_claim_while_herdr_is_down(harness: &str, prefix: &str) {
         pane("w1:p2", "term-b2"),
     ]);
     world.herdr.spawn(); // leak-guard: fixture method, spawns via spawn_owned
+    world.kick_observation();
     world.wait_for_recovery("the kept claim to reattach the seat", |world| {
         world.seat_state(&a) == "resolved" && world.kept_claims() == 0
     });
@@ -2100,6 +2107,7 @@ fn kept_claim_of_another_session_takes_nothing() {
         pane("w1:p2", "term-b2"),
     ]);
     world.herdr.spawn(); // leak-guard: fixture method, spawns via spawn_owned
+    world.kick_observation();
     world.wait_for_recovery("the kept claim to be refused", |world| {
         world.kept_claims() == 0 && world.seat_state(&a) == "unresolved"
     });

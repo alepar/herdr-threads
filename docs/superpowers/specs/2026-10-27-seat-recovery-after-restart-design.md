@@ -218,10 +218,14 @@ or wake on heuristic evidence. A doctor suggestion is allowed, but it is not add
    S on P, then a new-incarnation coherent snapshot where P has a new terminal and S is idle. A
    `watch --session S` run reattaches the seat on P with a `cooperative_continuity` decision. A p0 send then
    wakes it (channel registered, attention delivered).
-2. **D2, frozen or lagging.** A resume claim submitted while the host is frozen (and, separately, while
-   reconciliation lags) gets the retryable refusal. Once the host answers and reconciliation completes, the seat
-   is resolved with no further client call. A later resubmission of the same operation replays the
-   reattachment. Run once for Claude and once for Codex.
+2. **D2, frozen or lagging.** A resume claim submitted while the host is frozen gets the retryable refusal.
+   Once the host answers and reconciliation completes, the seat is resolved with no further client call. A later
+   resubmission of the same operation replays the reattachment. Run once for Claude and once for Codex.
+   - The lagging variant has no integration trigger: a reconciliation lag longer than the hook's window cannot be
+     produced in the rig.
+   - It is covered piecewise instead: the existing resume-before-reconciliation tests (the store refuses
+     `ServiceBusy` while the epoch lags), the unit test of `continuity_not_ready` (`ServiceBusy` is kept), and
+     the frozen test (kept rows are decided after the pass).
 3. **D2, daemon replaced.** A kept claim survives a daemon restart and is decided by the replacement.
 4. **Negative cases:**
    - S2, a different session, never takes the seat, through D1 or through D2;
@@ -236,7 +240,9 @@ or wake on heuristic evidence. A doctor suggestion is allowed, but it is not add
 6. **D1, older daemon.** Against a daemon that does not advertise `seat.continuity_same_session_v1`, the watch
    sends no claim.
 7. **D3.** Doctor text as specified, bounded at 256 bytes.
-8. **D4 and D1b.** A daemon ensured by a child that is a session leader with a pty survives a hangup and kill of
-   that session. With no daemon running, `watch` ensures one and then registers or claims.
+8. **D4 and D1b.** The detached daemon leads its own session (`sid == pid`), so no terminal hangup of, or
+   `killpg` on, the ensuring pane's session or process group reaches it. Kernel signal delivery is scoped to a
+   session and process group, so this needs no pty harness. With no daemon running, `watch` ensures one and then
+   registers or claims.
 9. **Checks:** clippy -D warnings, fmt, harness-neutral, wire-compat, default features, the focused tests, and
    one full suite with the leak check.

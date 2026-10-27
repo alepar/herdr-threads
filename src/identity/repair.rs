@@ -402,11 +402,9 @@ impl OrdinaryIdentity {
                     let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
                     self.store.replay_continuity(command.clone(), &budget)
                 };
-                match replayed {
-                    Ok(Some(_)) => true,
-                    Err(refusal) => crate::cli::retry::is_continuity_refusal(&refusal.code),
-                    Ok(None) => !self.decide_continuity_now(command.clone(), &budget, true).1,
-                }
+                replay_settles(&replayed).unwrap_or_else(|| {
+                    !self.decide_continuity_now(command.clone(), &budget, true).1
+                })
             };
             if settled {
                 let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
@@ -472,10 +470,7 @@ impl OrdinaryIdentity {
             },
             quiet,
         );
-        let not_ready = result
-            .as_ref()
-            .err()
-            .is_some_and(|refusal| !crate::cli::retry::is_continuity_refusal(&refusal.code));
+        let not_ready = continuity_not_ready(&result);
         (result, not_ready)
     }
 
@@ -869,3 +864,29 @@ impl OrdinaryIdentity {
 fn error(code: ErrorCode, detail: &str) -> ApiError {
     ApiError::new(code, detail)
 }
+
+/// ht-dtx0: whether a C1 decision's refusal only says the evidence is not
+/// ready, so the claim is kept: a refusal the hook would retry
+/// (`cli::retry::is_continuity_refusal` is false). A decision is never.
+fn continuity_not_ready(result: &Result<CommandResult, ApiError>) -> bool {
+    result
+        .as_ref()
+        .err()
+        .is_some_and(|refusal| !crate::cli::retry::is_continuity_refusal(&refusal.code))
+}
+
+/// ht-dtx0: what a kept claim's replay says. `Some(true)`: settled (a recorded
+/// decision, or a definitive refusal such as a payload mismatch); `Some(false)`:
+/// a transient read error, keep it for the next pass; `None`: nothing recorded,
+/// decide it now.
+fn replay_settles(replayed: &Result<Option<CommandResult>, ApiError>) -> Option<bool> {
+    match replayed {
+        Ok(Some(_)) => Some(true),
+        Ok(None) => None,
+        Err(refusal) => Some(crate::cli::retry::is_continuity_refusal(&refusal.code)),
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/identity/kept_continuity_rules.rs"]
+mod kept_continuity_rules;

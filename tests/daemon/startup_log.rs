@@ -230,14 +230,17 @@ fn tail_is_bounded_and_defanged() {
 /// ht-mp72: the detached daemon leads its own session (no controlling
 /// terminal), so tearing down the Herdr pane that ensured it cannot hang it
 /// up or kill it with the pane's session. Kills: spawning it in the caller's
-/// session or process group only.
+/// session or process group only. Linux only: there `ps -o sid=` is the
+/// session id, while macOS's `sess` column is not reliably one (the `setsid`
+/// call under test is the same on both).
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn detached_daemon_leads_its_own_session() {
     let (root, context, _) = scratch();
     let path = root.join("daemon-sid");
     std::fs::write(
         &path,
-        "#!/bin/sh\nsid=$(ps -o sid= -p $$ 2>/dev/null || ps -o sess= -p $$)\n\
+        "#!/bin/sh\nsid=$(ps -o sid= -p $$)\n\
          echo \"pid=$$ sid=$(echo $sid)\" >&2\nexit 2\n",
     )
     .unwrap();
