@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.4.1
+
+One-way store upgrade to node schema 8 (migration 0008, table `kept_continuity_claims`). Older binaries, 2.4.0 included, then refuse the store, so back up the state directory first. No peer wire change, and no setup re-run is needed.
+
+- **Seats survive Herdr restarts.** After a Herdr server restart, each seat became unresolved, and an idle resumed session never got it back: recovery needed a turn hook, and a seat with no binding cannot be woken. Now:
+  - An idle Claude session with the mod reclaims its seat through its own watch (a same-session C1 claim) within one watch backoff, about 30 s.
+  - The daemon keeps a resume claim that arrived while Herdr or reconciliation was not ready, up to 256 claims for at most 1 h, and decides it after the next reconciliation pass.
+  - If a process later resumes another seat's session, its newer claim supersedes the older one.
+  - The daemon now starts in its own session, so it no longer dies with the Herdr pane that started it.
+  - TRUST-POLICY C1 is amended to cover watch claims and kept claims, plus three accepted limits. One of them: an idle hooks-only session whose resume reached no daemon still waits for its next turn or an operator rebind.
+- **Doctor names the right repair for unresolved seats.** A seat unresolved by a new Herdr incarnation is told it reattaches on its session's next turn or by `seat rebind`, instead of "reconfirms when a coherent snapshot shows its pane again", which holds only for host invalidation (231 bytes for a 1-digit count, 250 at most).
+- **Fork convergence.** A node whose own log forked could miss the tail of its lost branch past the fork proof until the link was re-established. It now probes the peer heads it remembered as branch tips (signed `TipProof` path, no wire change).
+
 ## v2.4.0
 
 One-way store upgrade to node schema 7 (two new tables: `sync_peer_status`, migration 0006; `remote_seat_origin` and `remote_seat_status`, migration 0007). Older binaries then refuse the store, so back up the state directory first. The peer wire gains two capability-gated frames; peers of earlier releases see unchanged traffic apart from the new capability strings in our hello.
