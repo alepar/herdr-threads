@@ -337,7 +337,10 @@ impl Core {
         for key in self.d.sink.sweep() {
             self.probes.remove(&key);
         }
-        let r = self.poll_own_genesis().and_then(|()| self.schedule_pulls());
+        let r = self
+            .poll_own_genesis()
+            .and_then(|()| self.schedule_pulls())
+            .and_then(|()| self.retry_remembered_heads());
         self.soft(r);
         if self.reissue_waiting > 0 && self.now().0 >= self.reissue_next_at {
             self.reissue_due = true;
@@ -1015,20 +1018,21 @@ impl Core {
     /// A peer's head of a frozen own log may be a branch tip. A `Have` is
     /// unsigned, so the tip is recorded (and the own-history hold it starts)
     /// only on a signed entry: one this store already holds, else the
-    /// peer's, probed for alone.
+    /// peer's, probed for alone. Returns whether the tip was recorded or its
+    /// probe went out (false: the request was refused, see `send_probe`).
     fn consider_own_tip(
         &mut self,
         source: NodeUuid,
         log: LogKey,
         counter: u64,
         head: [u8; 32],
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         let hash = hex_encode(&head);
         self.d.sink.note_tip_source(log, &hash, source);
         if self.local_entry(&log, counter, head)?.is_some() {
             self.record_tip(log, counter, head)?;
             self.d.sink.set_have_memo(source, log, counter, hash);
-            return Ok(());
+            return Ok(true);
         }
         let want = BranchWant {
             node: log.node,
@@ -1039,16 +1043,18 @@ impl Core {
             },
             from: counter,
         };
-        if self.send_probe(source, want, Probe::TipProof) {
+        let sent = self.send_probe(source, want, Probe::TipProof);
+        if sent {
             self.d.sink.set_have_memo(source, log, counter, hash);
         }
-        Ok(())
+        Ok(sent)
     }
 
     /// Peer heads of `log` remembered while it was the active own log, now
     /// that a fork froze it: each may be a branch tip past the proof. A
-    /// peer's `Have` deltas never repeat an unchanged head, so this is the
-    /// only time they are seen again.
+    /// peer's `Have` deltas never repeat an unchanged head, so a head whose
+    /// probe was refused (a request for the same tip outstanding, or the
+    /// source penalized) stays remembered for the timer's retry.
     fn probe_remembered_heads(&mut self, log: LogKey) -> Result<(), ApiError> {
         let heads: Vec<(NodeUuid, u64, [u8; 32])> = self
             .active_heads
@@ -1058,10 +1064,26 @@ impl Core {
             .collect();
         let budget = self.read_budget();
         for (source, counter, head) in heads {
-            if self.d.journal.stored_hash(&log, counter, &budget)? != Some(head) {
-                self.consider_own_tip(source, log, counter, head)?;
+            let handled = self.d.journal.stored_hash(&log, counter, &budget)? == Some(head)
+                || self.consider_own_tip(source, log, counter, head)?;
+            if handled {
+                self.active_heads.remove(&(source, log));
             }
-            self.active_heads.remove(&(source, log));
+        }
+        Ok(())
+    }
+
+    /// Retries the remembered heads of own logs that are frozen now (their
+    /// probes were refused at rotation).
+    fn retry_remembered_heads(&mut self) -> Result<(), ApiError> {
+        let logs: BTreeSet<LogKey> = self.active_heads.keys().map(|(_, log)| *log).collect();
+        for log in logs {
+            if self
+                .meta(&log)?
+                .is_some_and(|meta| meta.own && meta.state == LogState::Frozen)
+            {
+                self.probe_remembered_heads(log)?;
+            }
         }
         Ok(())
     }

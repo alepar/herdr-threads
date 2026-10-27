@@ -942,6 +942,50 @@ fn active_head_past_the_proof_is_probed_as_a_tip_after_rotation() {
     );
 }
 
+// Kills: a remembered head dropped when its probe is refused (a request for
+// the same tip outstanding), and a probe sent only to the proof's source.
+#[test]
+fn refused_remembered_head_probe_is_retried_by_the_timer() {
+    let w = world();
+    let mut core = w.a.core();
+    let (s, t) = (peer(11), peer(12));
+    // t, not the proof's source, advertises b4 while I is active.
+    w.a.sink.on_have(t, true, &w.have(4, &w.b4.hash), &[]);
+    core.work();
+    let b4_probe = BranchWant {
+        node: w.log.node,
+        inc: w.log.incarnation,
+        tip: TipRef {
+            counter: 4,
+            hash: hex(&w.b4.hash),
+        },
+        from: 4,
+    };
+    // A request for the same tip is already outstanding at rotation.
+    w.a.sink.note_tip_source(w.log, &b4_probe.tip.hash, t);
+    assert_eq!(w.a.sink.request_branch(b4_probe.clone()), Some(t));
+    w.a.sink.outbox();
+
+    w.a.sink.enqueue(w.owner_fork(s));
+    core.work();
+    assert!(
+        !w.a.sink.outbox().sends.contains(&(t, b4_probe.clone())),
+        "refused while the other request is outstanding"
+    );
+
+    assert!(w.a.sink.clear_request(&BranchKey::of(&b4_probe)));
+    core.tick();
+    assert!(
+        w.a.sink.outbox().sends.contains(&(t, b4_probe)),
+        "the timer retries the remembered head with its advertiser"
+    );
+    prove_b4_tip(&w, &mut core, t);
+    assert_eq!(
+        w.a.count("SELECT COUNT(*) FROM sync_branches WHERE tip_counter=4"),
+        1
+    );
+}
+
 // Kills: a re-issue that does not run after a pull commit, one that re-issues
 // the other branch twice, and a branch left pulling.
 #[test]
