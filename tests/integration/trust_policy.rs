@@ -520,8 +520,16 @@ impl World {
     fn count(&self, sql: &str) -> i64 {
         self.database().query_row(sql, [], |r| r.get(0)).unwrap()
     }
-    fn wait_for(&self, what: &str, mut done: impl FnMut(&Self) -> bool) {
-        let until = Instant::now() + Duration::from_secs(30);
+    fn wait_for(&self, what: &str, done: impl FnMut(&Self) -> bool) {
+        self.wait_within(what, Duration::from_secs(30), done);
+    }
+    /// After Herdr comes back under a daemon that kept running, the observation lane's
+    /// capped backoff (30 s) comes first: kept claims are decided after its next capture.
+    fn wait_for_recovery(&self, what: &str, done: impl FnMut(&Self) -> bool) {
+        self.wait_within(what, Duration::from_secs(90), done);
+    }
+    fn wait_within(&self, what: &str, within: Duration, mut done: impl FnMut(&Self) -> bool) {
+        let until = Instant::now() + within;
         while !done(self) {
             assert!(Instant::now() < until, "timed out waiting for {what}");
             std::thread::sleep(Duration::from_millis(100));
@@ -1913,6 +1921,19 @@ fn idle_mod_session_reattaches_through_its_watch_and_is_woken() {
     // The daemon is gone (as it was when pane teardown killed it): nothing else runs.
     world.stop();
 
+    // Another session in the pane claims nothing: its watch stays refused and the seat
+    // unresolved (it starts the daemon, D1b).
+    let other = world.watch("w1:p1", "S2");
+    let first = other
+        .next(Duration::from_secs(20))
+        .expect("the S2 watch reports");
+    assert_eq!(
+        (first["state"].as_str(), first["reason"].as_str()),
+        (Some("refused"), Some("no_binding")),
+        "{first}"
+    );
+    drop(other);
+    assert_eq!(world.seat_state(&a), "unresolved");
     let watch = world.watch_until_connected("w1:p1", "SA", 20);
     assert_eq!(world.seat_state(&a), "resolved");
     assert_eq!(
@@ -1961,8 +1982,9 @@ fn idle_mod_session_reattaches_through_its_watch_and_is_woken() {
     loop {
         let line = watch
             .next(deadline.saturating_duration_since(Instant::now()))
-            .expect("the p0 item reached the reattached session's channel");
-        if line["kind"] != "status" {
+            .expect("the ACK request reached the reattached session's channel");
+        if line["kind"] == "message" && line["body"] == "wake" {
+            assert_eq!(line["ack_required"], true, "{line}");
             break;
         }
     }
@@ -1992,7 +2014,7 @@ fn resume_claim_while_herdr_is_down(harness: &str, prefix: &str) {
         pane("w1:p2", "term-b2"),
     ]);
     world.herdr.spawn(); // leak-guard: fixture method, spawns via spawn_owned
-    world.wait_for("the kept claim to reattach the seat", |world| {
+    world.wait_for_recovery("the kept claim to reattach the seat", |world| {
         world.seat_state(&a) == "resolved" && world.kept_claims() == 0
     });
     assert_eq!(world.continuity_decisions(), 1);
@@ -2035,7 +2057,7 @@ fn kept_claim_survives_a_daemon_restart() {
         claude("w1:p1", "term-a2", "SA"),
         pane("w1:p2", "term-b2"),
     ]);
-    world.wait_for("the replacement to decide the kept claim", |world| {
+    world.wait_for_recovery("the replacement to decide the kept claim", |world| {
         world.seat_state(&a) == "resolved" && world.kept_claims() == 0
     });
     assert_eq!(world.continuity_decisions(), 1);
@@ -2078,10 +2100,16 @@ fn kept_claim_of_another_session_takes_nothing() {
         pane("w1:p2", "term-b2"),
     ]);
     world.herdr.spawn(); // leak-guard: fixture method, spawns via spawn_owned
-    world.wait_for("the kept claim to be refused", |world| {
+    world.wait_for_recovery("the kept claim to be refused", |world| {
         world.kept_claims() == 0 && world.seat_state(&a) == "unresolved"
     });
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(world.seat_state(&a), "unresolved");
     assert_eq!(world.continuity_decisions(), 0);
+    // With the epoch reconciled, a session no seat knows is refused definitively at intake
+    // and nothing is kept.
+    world.wait_reconciled();
+    world.hook_unanswered("claude", "w1:p1", &session_start("claude", "S3", "resume"));
+    assert_eq!(world.kept_claims(), 0);
+    assert_eq!(world.seat_state(&a), "unresolved");
 }

@@ -159,15 +159,17 @@ the daemon advertises `seat.continuity_same_session_v1`. The claim carries the h
 the session id the harness engine reports; every C1 guard above applies unchanged. A watch with no daemon reachable
 ensures one, as a lifecycle hook does (a live owner is never displaced).
 
-**Kept claims (ht-dtx0).** A C1 claim refused only because the host evidence is not ready, that is the fresh target
-read failed before any decision (other than the target not existing) or the deciding transaction refused for
-reconciliation lag, is kept by the daemon verbatim: one row per (Herdr server, target, harness, native session), at
-most 256 in all, for at most one hour. Every other refusal, a guard or structural-proof mismatch included, is
-definitive and keeps nothing. The reply to the session is unchanged. After each completed reconciliation pass of the
-current recovery boot and epoch, the observation worker decides each kept claim through the ordinary C1 transaction
-against the canonical view (A2), under its own operation key, so the session's later resubmission replays the same
-result. A kept claim whose fingerprinted process has exited is dropped undecided; a decided one, either way, is
-dropped. The claim and its evidence are the session's own; the daemon only defers the decision. Client-local intent
+**Kept claims (ht-dtx0).** A C1 claim refused only because the evidence is not ready, that is with a refusal the
+hook itself would retry (`cli::retry::is_continuity_refusal`: reconciliation lag, a failed, superseded or raced host
+read, writer admission, budget), is kept by the daemon verbatim: one row per (Herdr server, target, harness, native
+session), at most 256 in all, for at most one hour from the session's first such claim. A definitive refusal (no
+match, several matches, an owned or unusable target, an invalid claim) keeps nothing and drops any kept copy. The
+reply to the session is unchanged. After each completed reconciliation pass of the current recovery boot and epoch,
+the observation worker decides each kept claim through the ordinary C1 transaction against the canonical view (A2),
+under its own operation key, so the session's later resubmission replays the same result; its target reads are the
+lane's own (no extra capture), at most one per claim per pass. A kept claim whose fingerprinted process has exited
+is dropped undecided; a decided one, either way, is dropped, but never a newer claim that replaced the row
+meanwhile. The claim and its evidence are the session's own; the daemon only defers the decision. Client-local intent
 files are never read by the daemon.
 
 Seats are never merged. Pane labels, saved addresses, terminal-id hints and Herdr's agent field may *suggest*

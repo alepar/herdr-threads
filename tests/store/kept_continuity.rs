@@ -45,12 +45,14 @@ fn due_at(db: &mut rusqlite::Connection, host: HostId, at: i64) -> Vec<KeptClaim
 }
 
 /// Kills: keying by target alone (a `/clear` successor's claim on the same
-/// pane would overwrite the claim that can reattach the seat).
+/// pane would overwrite the claim that can reattach the seat); a repeat that
+/// restarts the age; a drop that removes a newer claim than the one loaded.
 #[test]
 fn claims_of_two_sessions_on_one_target_both_stay_and_a_repeat_replaces_its_own() {
     let (mut db, host) = store();
     assert!(keep_at(&mut db, host, &claim("w1:p1", "S"), 10));
     assert!(keep_at(&mut db, host, &claim("w1:p1", "S2"), 20));
+    let loaded = due_at(&mut db, host, 25);
     let mut repeat = claim("w1:p1", "S");
     repeat.operation = OperationId::new("op-again");
     assert!(keep_at(&mut db, host, &repeat, 30));
@@ -64,9 +66,12 @@ fn claims_of_two_sessions_on_one_target_both_stay_and_a_repeat_replaces_its_own(
             )
         })
         .collect();
-    assert_eq!(sessions, vec![("S2".into(), 20), ("S".into(), 30)]);
-    assert_eq!(due[1].command.operation.as_str(), "op-again");
-    forget(&db, host, &claim("w1:p1", "S2")).unwrap();
+    assert_eq!(sessions, vec![("S".into(), 10), ("S2".into(), 20)]);
+    assert_eq!(due[0].command.operation.as_str(), "op-again");
+    // The row loaded before the repeat is not the row now: dropping it keeps the repeat.
+    forget(&db, host, &loaded[0].command, Some(&loaded[0])).unwrap();
+    assert_eq!(due_at(&mut db, host, 40).len(), 2);
+    forget(&db, host, &claim("w1:p1", "S2"), None).unwrap();
     assert_eq!(due_at(&mut db, host, 40).len(), 1);
 }
 

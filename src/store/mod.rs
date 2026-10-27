@@ -2226,10 +2226,11 @@ impl StorePort for SqliteStore {
         &self,
         host: crate::ports::HostId,
         command: &crate::protocol::commands::ContinuityCheckIn,
+        loaded: Option<&kept_continuity::KeptClaim>,
         budget: &CallBudget,
     ) -> Result<(), ApiError> {
         let writer = self.writer(budget)?;
-        kept_continuity::forget(&writer, host, command)
+        kept_continuity::forget(&writer, host, command, loaded)
     }
     fn decide_continuity(
         &self,

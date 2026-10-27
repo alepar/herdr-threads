@@ -11215,3 +11215,49 @@ fn restore_hold_hook_context_keeps_the_daemons_operator_guidance() {
         "{reason}"
     );
 }
+
+/// ht-dtx0 (TRUST-POLICY C1): a push-channel watch never sends a `same_session` claim to a
+/// daemon that does not advertise `seat.continuity_same_session_v1`. Kills: a watch claim that
+/// skips the capability gate the hooks keep.
+#[test]
+fn watch_continuity_sends_nothing_to_an_older_daemon() {
+    struct Legacy(std::sync::Mutex<Vec<Command>>);
+    impl LocalClient for Legacy {
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            self.0.lock().unwrap().push(command);
+            Err(ApiError::new(ErrorCode::NotFound, "legacy test daemon"))
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+    let (dir, _) = scratch_pane();
+    let context =
+        RuntimeContext::explicit(dir.join("state"), dir.join("herdr.sock"), None).unwrap();
+    let paths = NodePaths::resolve(&context.state_dir).unwrap();
+    let client = Legacy(std::sync::Mutex::new(Vec::new()));
+    let clock = clock();
+    assert!(!watch_continuity(
+        &context,
+        &paths,
+        &client,
+        crate::node::NodeUuid::from_bytes([7; 16]),
+        &HostTargetId::new("w1:p1"),
+        crate::protocol::authority::Harness::Claude,
+        "sess-1",
+        clock,
+    ));
+    let sent = client.0.lock().unwrap();
+    assert!(
+        !sent
+            .iter()
+            .any(|command| matches!(command, Command::ContinuityCheckIn(_))),
+        "{sent:?}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

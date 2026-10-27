@@ -32,7 +32,9 @@ pub struct KeptClaim {
 }
 
 /// Keep `command` for `host`, replacing the same session's earlier claim on the
-/// same target. `false` when the cap is reached (the claim is not kept).
+/// same target (its age still runs from the first one: a session that keeps
+/// claiming does not outlive [`KEPT_CLAIM_TTL_MS`]). `false` when the cap is
+/// reached (the claim is not kept).
 pub fn keep(
     tx: &Transaction<'_>,
     host: HostId,
@@ -68,7 +70,7 @@ pub fn keep(
         "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) \
          VALUES (?1,?2,?3,?4,?5,?6) \
          ON CONFLICT(host_id,target_id,harness,native_session) DO UPDATE SET \
-           command_json=excluded.command_json, received_at=excluded.received_at",
+           command_json=excluded.command_json",
         params![
             host.get(),
             command.target.as_str(),
@@ -122,19 +124,28 @@ pub fn due(tx: &Transaction<'_>, host: HostId, now: i64) -> Result<Vec<KeptClaim
     Ok(claims)
 }
 
-/// Drop the kept claim of `command`'s session on its target, if any.
+/// Drop the kept claim of `command`'s session on its target, if any; with
+/// `loaded`, only while the row is still the one loaded (a newer claim of the
+/// session that replaced it meanwhile stays).
 pub fn forget(
     conn: &Connection,
     host: HostId,
     command: &ContinuityCheckIn,
+    loaded: Option<&KeptClaim>,
 ) -> Result<(), ApiError> {
+    let loaded_json = loaded
+        .map(|claim| serde_json::to_string(&claim.command))
+        .transpose()
+        .map_err(|e| api_error(ErrorCode::StoreCorrupt, format!("kept claim encode: {e}")))?;
     conn.execute(
-        "DELETE FROM kept_continuity_claims WHERE host_id=?1 AND target_id=?2 AND harness=?3 AND native_session=?4",
+        "DELETE FROM kept_continuity_claims WHERE host_id=?1 AND target_id=?2 AND harness=?3 AND native_session=?4 \
+         AND (?5 IS NULL OR command_json=?5)",
         params![
             host.get(),
             command.target.as_str(),
             command.harness.as_str(),
-            command.native_session.as_str()
+            command.native_session.as_str(),
+            loaded_json
         ],
     )
     .map_err(store_error)?;

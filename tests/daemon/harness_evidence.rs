@@ -2156,9 +2156,11 @@ mod publication_order {
             &self,
             host: crate::ports::HostId,
             command: &ContinuityCheckIn,
+            loaded: Option<&crate::store::kept_continuity::KeptClaim>,
             budget: &CallBudget,
         ) -> Result<(), ApiError> {
-            self.inner.forget_continuity_claim(host, command, budget)
+            self.inner
+                .forget_continuity_claim(host, command, loaded, budget)
         }
         fn decide_continuity(
             &self,

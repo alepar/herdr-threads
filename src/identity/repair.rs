@@ -352,31 +352,36 @@ impl OrdinaryIdentity {
         if let Some(result) = replay {
             return Ok(result);
         }
-        let (result, not_ready) = self.decide_continuity_now(command.clone(), budget);
+        let (result, not_ready) = self.decide_continuity_now(command.clone(), budget, false);
         // ht-dtx0: a claim refused only because the host evidence is not ready
         // (reconciliation lag, a failed host read) is kept for the observation
         // worker to decide once the epoch has reconciled; a decided claim
-        // retires any kept copy. Best effort on the daemon's own short budget:
-        // the caller's may be spent, and the reply is the same either way.
+        // retires any kept copy. Best effort on the daemon's own short budget
+        // (the caller's may be spent) and only with writer admission; the reply
+        // is the same either way.
         let budget = self.maintenance_budget();
-        let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref());
-        let _ = if result.is_err() && not_ready {
-            self.store
-                .keep_continuity_claim(self.host_id, &command, &budget)
-                .map(|_| ())
-        } else {
-            self.store
-                .forget_continuity_claim(self.host_id, &command, &budget)
-        };
+        if let Ok(_turn) = self.writer.enter_foreground(&budget, self.clock.as_ref()) {
+            let _ = if not_ready {
+                self.store
+                    .keep_continuity_claim(self.host_id, &command, &budget)
+                    .map(|_| ())
+            } else {
+                self.store
+                    .forget_continuity_claim(self.host_id, &command, None, &budget)
+            };
+        }
         result
     }
 
     /// ht-dtx0: decide this host's kept continuity claims, after a completed
-    /// reconciliation pass. Each is the ordinary C1 decision under its own
-    /// operation key (a session's later resubmission replays the result). A
-    /// claim whose process is gone, or that was decided either way, is dropped;
-    /// one whose host evidence is still not ready is kept, unrefreshed, until
-    /// it expires.
+    /// reconciliation pass, on the observation lane: each target read is quiet
+    /// (no explicit capture, no wait for one), so a claim that stays not ready
+    /// costs one read per pass at the lane's own cadence. Each is the ordinary
+    /// C1 decision under its own operation key (a session's later
+    /// resubmission replays the result). A claim whose process is gone, or that
+    /// was decided either way, is dropped; one whose evidence is still not
+    /// ready is kept, unrefreshed, until it expires. A drop removes only the
+    /// row as loaded, never a newer claim of the same session.
     pub fn decide_kept_continuity(&self) -> Result<(), ApiError> {
         let budget = self.maintenance_budget();
         let claims = {
@@ -388,7 +393,7 @@ impl OrdinaryIdentity {
             if budget.is_exhausted(self.clock.as_ref()) {
                 break;
             }
-            let command = claim.command;
+            let command = &claim.command;
             let alive = command
                 .liveness
                 .is_some_and(|fingerprint| fingerprint.is_alive(&processes));
@@ -398,18 +403,15 @@ impl OrdinaryIdentity {
                     self.store.replay_continuity(command.clone(), &budget)
                 };
                 match replayed {
-                    Ok(Some(_)) | Err(_) => true,
-                    Ok(None) => {
-                        let (result, not_ready) =
-                            self.decide_continuity_now(command.clone(), &budget);
-                        result.is_ok() || !not_ready
-                    }
+                    Ok(Some(_)) => true,
+                    Err(refusal) => crate::cli::retry::is_continuity_refusal(&refusal.code),
+                    Ok(None) => !self.decide_continuity_now(command.clone(), &budget, true).1,
                 }
             };
             if settled {
                 let _turn = self.writer.enter_foreground(&budget, self.clock.as_ref())?;
                 self.store
-                    .forget_continuity_claim(self.host_id, &command, &budget)?;
+                    .forget_continuity_claim(self.host_id, command, Some(&claim), &budget)?;
             }
         }
         Ok(())
@@ -430,47 +432,50 @@ impl OrdinaryIdentity {
     }
 
     /// One C1 decision against a fresh target read, and whether a refusal
-    /// only says the host evidence is not ready yet: the read failed before
-    /// any decision (other than the target not existing), or the deciding
-    /// transaction refused for reconciliation lag (`ServiceBusy`). Every other
-    /// refusal, a guard mismatch included, is definitive. The rule is the
-    /// refusal's site, not its code: the same code covers both kinds.
+    /// only says the evidence is not ready yet (the claim is kept): every
+    /// refusal the client would retry, as `cli::retry::is_continuity_refusal`
+    /// classifies it, so daemon and hook agree. Reconciliation lag, a failed,
+    /// superseded or raced host read, writer admission and budget are not
+    /// ready; no match, several matches, an owned or unusable target and an
+    /// invalid claim are definitive. `quiet` reads without requesting a lane
+    /// capture or waiting for one (the observation lane's own decisions).
     fn decide_continuity_now(
         &self,
         command: ContinuityCheckIn,
         budget: &CallBudget,
+        quiet: bool,
     ) -> (Result<CommandResult, ApiError>, bool) {
         let target = command.target.clone();
         let diagnostic = self.agent_session_diagnostic(&target, &command, budget);
-        let decided = std::cell::Cell::new(false);
-        let lagged = std::cell::Cell::new(false);
-        let result = self.with_observation(&target, budget, |_, observation| {
-            decided.set(true);
-            let guard =
-                ContinuityTargetGuard::try_new(&self.instance, self.host_id, &command, observation)
-                    .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
-            let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
-            let decision = self.store.decide_continuity(
-                ContinuityRequest {
-                    command,
-                    guard,
-                    diagnostic,
-                },
-                budget,
-            );
-            if matches!(&decision, Err(refusal) if refusal.code == ErrorCode::ServiceBusy) {
-                lagged.set(true);
-            }
-            decision
-        });
-        let not_ready = match &result {
-            Ok(_) => false,
-            Err(_) if decided.get() => lagged.get(),
-            Err(refusal) => !matches!(
-                refusal.code,
-                ErrorCode::NotFound | ErrorCode::InvalidRequest
-            ),
-        };
+        let result = self.with_read_inner(
+            &target,
+            budget,
+            |target, context| self.host.observe_current_target(target, context),
+            |observation| observation,
+            |_, observation| {
+                let guard = ContinuityTargetGuard::try_new(
+                    &self.instance,
+                    self.host_id,
+                    &command,
+                    observation,
+                )
+                .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
+                let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+                self.store.decide_continuity(
+                    ContinuityRequest {
+                        command,
+                        guard,
+                        diagnostic,
+                    },
+                    budget,
+                )
+            },
+            quiet,
+        );
+        let not_ready = result
+            .as_ref()
+            .err()
+            .is_some_and(|refusal| !crate::cli::retry::is_continuity_refusal(&refusal.code));
         (result, not_ready)
     }
 
@@ -578,6 +583,20 @@ impl OrdinaryIdentity {
         observation_of: impl Fn(&R) -> &HostObservation,
         decide: impl FnOnce(HostObservationAdmission, R) -> Result<T, ApiError>,
     ) -> Result<T, ApiError> {
+        self.with_read_inner(target, budget, read, observation_of, decide, false)
+    }
+
+    /// [`Self::with_read`]; `quiet` neither waits for nor requests a lane
+    /// capture (a decision made on the observation lane itself, ht-dtx0).
+    fn with_read_inner<T, R>(
+        &self,
+        target: &HostTargetId,
+        budget: &CallBudget,
+        read: impl Fn(&HostTargetId, &HostCallContext) -> Result<R, ApiError>,
+        observation_of: impl Fn(&R) -> &HostObservation,
+        decide: impl FnOnce(HostObservationAdmission, R) -> Result<T, ApiError>,
+        quiet: bool,
+    ) -> Result<T, ApiError> {
         let mut decide = Some(decide);
         let mut waited = false;
         loop {
@@ -601,6 +620,7 @@ impl OrdinaryIdentity {
                     // the read slot and lane lock released.
                     Ok(Observed::NeedsCapture(_))
                         if !waited
+                            && !quiet
                             && self.observation_pacer.is_some()
                             && !budget.is_exhausted(self.clock.as_ref()) =>
                     {
@@ -620,10 +640,12 @@ impl OrdinaryIdentity {
                 // Ask the lane for its own snapshot now, even inside a backoff
                 // wait (ht-p03.104): after a host restart this is the first
                 // contact, and the published boot only moves once the lane
-                // captures.
-                lane.request_explicit_capture();
-                if let Some(pacer) = &self.observation_pacer {
-                    pacer.kick_explicit();
+                // captures. A quiet read is the lane's own and asks nothing.
+                if !quiet {
+                    lane.request_explicit_capture();
+                    if let Some(pacer) = &self.observation_pacer {
+                        pacer.kick_explicit();
+                    }
                 }
                 (result, lane.completed_captures())
             };

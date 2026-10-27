@@ -73,22 +73,25 @@ guard is unchanged:
 
 ### D2. The daemon keeps a claim that arrived during the lag and decides it after reconciliation (closes G1, every harness)
 
-When `Identity::continuity` refuses a claim only because the evidence is not ready, the daemon stores the
-claim before answering. "Not ready" is decided by where the refusal happens, not by its error code, because one
-code covers both kinds of case. The rule is internal to the daemon; nothing about it is on the wire:
+When `Identity::continuity` refuses a claim only because the evidence is not ready, the daemon stores the claim
+before answering. "Not ready" means a refusal the hook itself would retry, as `cli::retry::is_continuity_refusal`
+classifies it, so the daemon and the client agree. The rule is internal to the daemon; nothing about it is on the
+wire:
 
-- **Kept** (transient): `decide_continuity` refuses with `ServiceBusy` because reconciliation lags, or the
-  fresh host read fails (Herdr frozen, unreachable, or answering for a newer boot or epoch than the daemon has
-  published).
-- **Not kept** (definitive): every other refusal, including a `ContinuityTargetGuard` mismatch, a structural-proof
-  mismatch, `NotFound`, `Conflict` and `TargetAlreadyOwned`.
+- **Kept** (transient): reconciliation lag (`ServiceBusy`); a host read that failed, was superseded or raced
+  (`HostUnavailable`, `StaleHostObservation`, including a guard race between the read and the transaction);
+  writer admission; budget.
+- **Not kept** (definitive): no match (`NotFound`), several matches (`Conflict`), an owned or unusable target, or
+  an invalid claim. Any kept copy of the claim is dropped.
 
 The stored claim is the exact command, including operation id, execution and liveness, in a new node table
 `kept_continuity_claims`:
 
 - keyed by (host, target, harness, native session), so claims from two sessions in one pane, such as a `/clear`
   successor, never overwrite each other; a repeated claim from the same session replaces its own row;
-- at most 256 rows in all; beyond that, the claim is answered but not kept.
+- at most 256 rows in all; beyond that, the claim is answered but not kept;
+- the age runs from the session's first claim on that target: a repeat replaces the command but keeps the
+  original `received_at`.
 
 The reply is unchanged (the same retryable error), so the wire does not change.
 
@@ -96,16 +99,18 @@ The observation worker re-submits every kept claim of its host through `Identity
 operation key, at most 16 per pass, oldest first. It does so after each completed reconciliation pass that
 recorded the marker for the current recovery boot and epoch, so `reconciliation_lags` is false. Each attempt is
 the ordinary C1 transaction against the canonical view (A2). Because the operation key is the same, the session's
-own later resubmission (hook or watch) replays the same result.
+own later resubmission (hook or watch) replays the same result. These reads are quiet: they request no extra lane
+capture and never wait for one, since the pass that triggered them has just captured.
 
 A kept row is removed:
 
 - on reattachment;
-- on a refusal from the deciding transaction other than lag (`NotFound`, `Conflict`, `TargetAlreadyOwned`,
-  `InvalidRequest`, a stale structural proof);
+- on a definitive refusal, as classified above;
 - when its liveness fingerprint's process is no longer alive (`LivenessFingerprint::is_alive`), checked before
   each attempt;
-- 1 h after it was received, whatever happened in between.
+- 1 h after it was first received, whatever happened in between.
+
+A drop removes only the row as it was loaded, never a newer claim from the same session that replaced it meanwhile.
 
 A transient failure during re-submission, such as a host read failure or a guard race between the read and the
 transaction, keeps the row for the next pass. So a claim that keeps failing costs at most one host read per pass
@@ -123,12 +128,13 @@ one, and the claim reaches it during its lag.
 
 ### D3. Doctor text by reason (ht-e0t7)
 
-`unresolved_seats_line` stops promising structural reconfirmation for `other` seats. New text, at most 256
-bytes (about 240 for a 2-digit count):
+`unresolved_seats_line` stops promising structural reconfirmation for `other` seats. Shipped text: 231 bytes for a
+1-digit count, 250 at most, inside the 256-byte bound. The earlier "lifecycle check-ins are refused until resolved"
+does not fit beside the split guidance.
 
-`unresolved seats: N; lifecycle check-ins are refused until resolved; host_invalidation seats reconfirm when a
-coherent snapshot shows their pane; other seats reattach when their session makes a C1 claim; else `seat rebind
-SEAT --pane PANE --operator``
+`unresolved seats: N; their check-ins are refused; host_invalidation seats reconfirm when a coherent snapshot shows
+their pane; other seats reattach when their session claims them (C1); else `seat rebind SEAT --pane PANE
+--operator``
 
 ### D1b. The watch ensures a daemon
 
@@ -222,7 +228,7 @@ or wake on heuristic evidence. A doctor suggestion is allowed, but it is not add
    - two unresolved candidates are refused, and the kept row is removed;
    - an agent-field match with no claim triggers nothing;
    - a kept claim whose process is dead is removed without a decision;
-   - a guard mismatch at intake is not kept.
+   - a definitive refusal at intake (no matching seat) keeps nothing.
 5. **D2 rules** (store-level tests):
    - per-session keying: claims from S and S' on one target both stay, then S reattaches and S' is removed;
    - the 256-row cap: the claim is answered but not kept;
