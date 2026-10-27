@@ -287,23 +287,27 @@ fifth of the retained history; accepted for now.
 
 `service::seat_publisher` (one task beside discovery, ended by the stop
 token) builds, for each local, published, nonretired seat
-(`store::local_seat_status::local_seats`, at most 512, oldest first):
+(`store::local_seat_status::local_seats`, at most 512, newest first, so past
+the cap the oldest are left out):
 
 | Field | Source | Bound |
 | --- | --- | --- |
 | `seat` | id | 64 bytes |
 | `presence` | `busy` = active (`bindings::seat_active`) and effective `ui_state` in {`active_turn`, `approval_or_question`, `human_input`}; `idle` = active otherwise; `offline` = not active. The local `active/inactive` column is unchanged. | 16 bytes |
-| `harness` | the open top-level binding's harness, else the latest binding's; opaque text (no harness branch in core) | 16 bytes |
+| `harness` | the open top-level binding's harness, else the latest binding's; opaque text (no harness branch in core) | 16 bytes; a longer id is dropped, never cut |
 | `activity_age_ms` | now − max(`DeliveryPullState::last_contact`, latest binding registration or disconnect) | u64 |
 | `workspace`, `tab`, `pane` | `SeatHostLabels` of the seat's host and target whose terminal is the seat's structural terminal (and whose incarnation, when the host reports one, is the seat's); the label, else the Herdr id | 64 bytes each, cut on a char boundary |
 
 `machine` is not sent: it is `node_directory.host_label`, already replicated.
 
 Cadence: every 5 s it rebuilds from the store and publishes when anything
-but the ages changed; every 60 s it re-reads the labels (one `api snapshot`
+but the ages changed (a publish the coordinator's queue refused is retried
+on the next check); every 60 s it re-reads the labels (one `api snapshot`
 per attached host through the new `HostPort::seat_labels`, default none;
-`NativeCli` answers with `participant_labels`) and publishes again even
-unchanged, which keeps receivers fresh. It runs only while some active link
+`NativeCli` answers with `participant_labels`; one 3 s budget for all hosts;
+a host that does not answer keeps its last labels) and publishes again even
+unchanged, which keeps receivers fresh. Read failures are logged once per
+run. `busy` uses the wake path's own rule (`effective::turn_in_progress`). It runs only while some active link
 negotiated `SEAT_STATUS_CAP` (`SyncHandle::seat_status_wanted`); the first
 listener gets a fresh snapshot at once. No change to the reconcile or
 observation lane. Test-support daemons take `HT_TEST_SEAT_CHECK_MS` and
@@ -341,31 +345,34 @@ pub struct SeatStatusEntry {   // every field #[serde(default)]
 Coordinator module `src/sync/coordinator/seat_status.rs`:
 
 - **Publish:** `SyncHandle::publish_seat_status` hands the entries to the
-  actor (never waits); a changed snapshot gets the next `rev`. Each publish
-  goes to every ready link (active, ranked, open, announced, with the cap); a
-  newly ready link first gets the own snapshot and every held one (except its
-  own node's).
+  actor (never waits; `false` when its queue is full). Every publish,
+  refreshes included, is the next `rev`. Each publish goes to every ready
+  link (active, ranked, open, announced, with the cap); a newly ready link
+  first gets the own snapshot and every held one (except its own node's).
 - **Frame bound:** a frame over the link's negotiated `max_frame` (as small
-  as 4 KiB) drops seats from the end, halving, until it fits.
-- **Ordering:** one held snapshot per origin. Same boot: a higher `rev`
-  replaces it; the same `rev` built more than 1 s later is a refresh (only
-  `built_at` moves); anything else is dropped. Another boot replaces it only
-  when built more than 1 s later. `built_at` = receipt time − `age_ms`; the
-  1 s margin keeps a snapshot coming back round a relay loop from looking
-  newer. Dropped snapshots are never relayed.
-- **Clone suspicion:** each boot's last delivery is remembered 180 s; when a
-  boot other than the held one delivered within it, the stored row carries
-  `other_boot_at` and the seats render `clone_suspected` (persisted, so the
-  rule needs no memory).
-- **Relay:** an accepted snapshot or refresh goes to every other ready link
-  except the sender and the origin's own node, with `age_ms` recomputed from
-  the held `built_at`.
-- **Guards:** a frame from a link without the cap, or with this node as
-  origin, is dropped; entries are bounded on receipt as on publish.
-- **Writes:** one pending update per origin (a refresh keeps pending
-  content), one batch in flight through
-  `SyncStorePort::record_remote_seat_status`; a failure keeps the updates
-  pending and logs once per run; shutdown flushes what is pending, bounded.
+  as 4 KiB) is cut to the share of seats that fits, from the end.
+- **Ordering:** one held snapshot per origin. Same boot: only a higher `rev`
+  replaces it, so a copy coming back round a relay loop always dies. Another
+  boot: replaces it only when built more than 1 s later (`built_at` =
+  receipt time − `age_ms`). Dropped snapshots are never relayed.
+- **Clone suspicion:** per origin and boot, the first and last build seen
+  (build times, not arrival, so a stale relayed copy moves nothing); boots
+  are forgotten 180 s after their last build. Another boot counts as live
+  only when it was built after the held boot's first build: two boots alive
+  at once, never a plain restart (whose old builds all precede the new). The
+  stored row then carries `other_boot_at` and the seats render
+  `clone_suspected`.
+- **Relay:** an accepted snapshot goes to every other ready link except the
+  sender and the origin's own node, with `age_ms` recomputed from `built_at`.
+- **Guards:** a frame from a link without the cap, with this node as origin,
+  or for an origin this node does not know (no log of it held and no contact,
+  direct or relayed by `seen`) is dropped; entries are bounded on receipt as
+  on publish (an empty presence becomes `-`).
+- **Writes:** always the whole snapshot, the newest per origin, one batch in
+  flight through `SyncStorePort::record_remote_seat_status`; a failure keeps
+  the updates pending unless newer ones arrived, backs off 10 s and is logged
+  once per run (and on recovery); a write in flight 60 s is logged once;
+  shutdown flushes what is pending, bounded.
 
 ### 5.3 Storage (migration `0007_remote_seat_status.sql`)
 
@@ -386,8 +393,10 @@ CREATE TABLE remote_seat_status (
 
 A snapshot replaces its origin's seat rows in one transaction; a seat is kept
 only when this node knows it as a remote seat (`state='remote'`) whose
-`home_node` is the origin (N4 guard, in the store). A refresh moves only the
-origin row. `remote_seat_origin.version` gives phase 3 the version of
+`home_node` is the origin (N4 guard, in the store), so a seat learned after a
+snapshot is taken by the next refresh. Rows equal to the stored ones are not
+rewritten (a refresh then moves only the origin row). `get` reads only seats
+still `remote`. `remote_seat_origin.version` gives phase 3 the version of
 relayed-only nodes.
 
 ### 5.4 Freshness (one store function)

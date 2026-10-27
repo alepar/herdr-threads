@@ -574,10 +574,7 @@ fn cooperative_authority(
     seat_attention: bool,
 ) -> Result<Option<ReservedWakeAuthority>, ApiError> {
     if observation.occupancy == "empty_shell"
-        || matches!(
-            observation.ui_state.as_str(),
-            "active_turn" | "approval_or_question" | "human_input"
-        )
+        || effective::turn_in_progress(&observation.ui_state)
         || observation.incarnation_source_kind.is_none()
     {
         return Ok(None);

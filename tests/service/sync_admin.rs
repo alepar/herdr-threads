@@ -1556,7 +1556,7 @@ fn remote_seat_snapshots_replace_by_origin_with_the_home_guard() {
     seed_remote_seat(&rig.node, "sQ0VnTDasAbY", peer_node());
     seed_remote_seat(&rig.node, "sQ0Vx1aB2cD3", peer_node());
     seed_remote_seat(&rig.node, "sK7m0aaaBBBB", other);
-    let update = |rev, seats: Option<Vec<_>>| RemoteSeatUpdate {
+    let update = |rev, seats: Vec<_>| RemoteSeatUpdate {
         origin: peer_node(),
         boot: uuid::Uuid::from_u128(1),
         rev,
@@ -1569,12 +1569,12 @@ fn remote_seat_snapshots_replace_by_origin_with_the_home_guard() {
         &rig.node,
         update(
             1,
-            Some(vec![
+            vec![
                 remote_seat("sQ0VnTDasAbY", "idle"),
                 remote_seat("sQ0Vx1aB2cD3", "busy"),
                 remote_seat("sK7m0aaaBBBB", "busy"), // another node's seat
                 remote_seat("sUnknown0000", "busy"), // unknown here
-            ]),
+            ],
         ),
     );
     let db = rig.node.store.context().open_writer().unwrap();
@@ -1586,14 +1586,32 @@ fn remote_seat_snapshots_replace_by_origin_with_the_home_guard() {
     assert_eq!(get(&db, "sK7m0aaaBBBB").unwrap(), None);
     record_seats(
         &rig.node,
-        update(2, Some(vec![remote_seat("sQ0VnTDasAbY", "busy")])),
+        update(2, vec![remote_seat("sQ0VnTDasAbY", "busy")]),
     );
     assert_eq!(count(&db), 1, "a seat the newer snapshot omits is gone");
-    record_seats(&rig.node, update(3, None));
+    // A refresh (same content, next rev) keeps the rows and moves the build.
+    record_seats(
+        &rig.node,
+        update(3, vec![remote_seat("sQ0VnTDasAbY", "busy")]),
+    );
     let row = get(&db, "sQ0VnTDasAbY")
         .unwrap()
         .expect("kept by a refresh");
     assert_eq!((row.seat.presence.as_str(), row.built_at), ("busy", 3_000));
+    // A seat the store learns of after the snapshot that named it is taken
+    // by the next refresh.
+    seed_remote_seat(&rig.node, "sQ0VlateSeat", peer_node());
+    record_seats(
+        &rig.node,
+        update(
+            4,
+            vec![
+                remote_seat("sQ0VnTDasAbY", "busy"),
+                remote_seat("sQ0VlateSeat", "idle"),
+            ],
+        ),
+    );
+    assert_eq!(count(&db), 2);
 }
 
 // Kills: presence shown for a seat whose home node is unreachable, a

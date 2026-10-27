@@ -4,7 +4,7 @@
 //! allows: once that node is unreachable the seat reads `Unreachable`, never
 //! a stale presence, and the last-known labels survive a restart.
 
-use crate::support::{self, P1};
+use crate::support::{self, P1, P2};
 use herdr_threads::store::remote_seat_status::{RemotePresence, get, presence_of};
 use herdr_threads::store::sync_contacts::{NodeReach, reach};
 use herdr_threads::test_support::multinode::{Cluster, ClusterOptions};
@@ -52,7 +52,7 @@ fn remote_seat_status_follows_its_node() {
         env.push((
             node,
             "HT_TEST_SEAT_REFRESH_MS".to_owned(),
-            "2000".to_owned(),
+            "60000".to_owned(),
         ));
     }
     let mut cluster = Cluster::start(
@@ -66,7 +66,7 @@ fn remote_seat_status_follows_its_node() {
         },
     );
     cluster.add_host(0, &[P1]);
-    cluster.add_host(1, &[P1]);
+    cluster.add_host(1, &[P1, P2]);
     let a = cluster.seat(0, P1);
     let b = cluster.seat(1, P1);
     support::wait_seats(&cluster, 0, 2);
@@ -88,6 +88,14 @@ fn remote_seat_status_follows_its_node() {
     assert_eq!(labels, "w1 / w1:t1 / w1:p1 claude");
     // Node 0 does not describe its own seat from a snapshot.
     assert!(view(&cluster, 0, &a.id, false).is_none());
+
+    // A change reaches node 0 within the check period, not the refresh: a
+    // second seat appears on node 1.
+    let c = cluster.seat(1, P2);
+    support::wait_seats(&cluster, 0, 3);
+    cluster.wait_until("node 0 to hold c's seat status", crate::WAIT, || {
+        view(&cluster, 0, &c.id, false).filter(|(p, _)| matches!(p, RemotePresence::Fresh { .. }))
+    });
 
     // Node 1 goes away. Past the reach threshold (aged; age_contact restarts
     // node 0) the seat is unreachable, never its stale presence, and its

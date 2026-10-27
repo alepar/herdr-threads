@@ -1560,8 +1560,8 @@ link gossip, never a journal fact, and carries no provenance (it attributes noth
 only for a seat it knows as remote with the snapshot's origin as its home node: a consistency guard (N4's author
 rule), not caller verification. Remote presence and labels never feed wake, routing, deadlines, availability,
 catch-up, seat resolution, attribution or retirement (C1, N5); a remote seat's availability stays `remote`.
-Its display is only as fresh as the home node's status allows: unreachable home node means unreachable, never a
-stale presence (`store::remote_seat_status::presence_of`). Peer node status (`node_info` version, stall flags,
+Any display of it is only as fresh as the home node's status allows: unreachable home node means unreachable,
+never a stale presence (`store::remote_seat_status::presence_of`, the one rule every reader uses). Peer node status (`node_info` version, stall flags,
 positions) is diagnostic the same way: it changes no link, dial, seat or binding decision.
 
 ## Accepted limits
@@ -2170,7 +2170,10 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   (180 s) old, can be wrong within that window, and is replaced by `unreachable since` (home node unreachable),
   `stale` (no snapshot within the window) or `clone_suspected` (two boots of the home node published within it)
   past it. Labels are cooperative peer text shown last-known, never identity; the peer version is a self-report
-  for diagnostics only (N13). Design `docs/superpowers/specs/2026-10-27-node-status-and-seat-directory-design.md`.
+  for diagnostics only (N13). A snapshot's origin, boot and rev are unsigned link data, unlike journal facts
+  (N2): any linked node can misdescribe another node's seats, or hold a too-high rev that hides that boot's
+  later snapshots until the origin restarts. In-contract (A1, same user, cooperative); receivers take only
+  origins they know, bound every field, and the data stays display-only. Design `docs/superpowers/specs/2026-10-27-node-status-and-seat-directory-design.md`.
 
 ## Decision record
 

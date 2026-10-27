@@ -42,6 +42,16 @@ pub struct EffectiveObservation {
     pub top_level_occupant: bool,
 }
 
+/// Whether an observed UI state means a turn is in progress (the agent is
+/// generating, asking or the human is typing): the wake path's "busy" and
+/// the seat-status `busy`.
+pub fn turn_in_progress(ui_state: &str) -> bool {
+    matches!(
+        ui_state,
+        "active_turn" | "approval_or_question" | "human_input"
+    )
+}
+
 pub fn effective_observation(
     db: &Connection,
     host: HostId,

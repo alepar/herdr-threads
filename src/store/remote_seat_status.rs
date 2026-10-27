@@ -31,8 +31,8 @@ pub struct RemoteSeat {
     pub pane: Option<String>,
 }
 
-/// An accepted snapshot of `origin`'s seats, or (`seats: None`) a refresh of
-/// the held one: same content, newer `built_at`.
+/// An accepted snapshot of `origin`'s seats (always whole: a refresh is a new
+/// `rev` with the same content).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteSeatUpdate {
     pub origin: NodeUuid,
@@ -43,17 +43,18 @@ pub struct RemoteSeatUpdate {
     pub version: Option<String>,
     /// The last time another boot of `origin` delivered a snapshot.
     pub other_boot_at: Option<u64>,
-    pub seats: Option<Vec<RemoteSeat>>,
+    pub seats: Vec<RemoteSeat>,
 }
 
 fn ms(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-/// Stores `updates` in order. A snapshot replaces its origin's seat rows; a
-/// seat is kept only when this node knows it as a remote seat whose home
-/// node is the origin (a consistency guard, N4: only the home node describes
-/// its seats). `now` stamps `updated_at`.
+/// Stores `updates` in order. A snapshot replaces its origin's seat rows (a
+/// seat is kept only when this node knows it as a remote seat whose home node
+/// is the origin: a consistency guard, N4, only the home node describes its
+/// seats); rows equal to the stored ones are not rewritten. `now` stamps
+/// `updated_at`.
 pub fn record(
     tx: &Transaction<'_>,
     updates: &[RemoteSeatUpdate],
@@ -78,9 +79,10 @@ pub fn record(
             ],
         )
         .map_err(store_error)?;
-        let Some(seats) = &update.seats else {
+        let seats = &update.seats;
+        if stored_seats(tx, &origin)? == kept(tx, &origin, seats)? {
             continue;
-        };
+        }
         tx.execute("DELETE FROM remote_seat_status WHERE origin=?1", [&origin])
             .map_err(store_error)?;
         let mut insert = tx
@@ -106,6 +108,58 @@ pub fn record(
         }
     }
     Ok(())
+}
+
+/// The stored rows of `origin`, by seat.
+fn stored_seats(conn: &Connection, origin: &str) -> Result<Vec<RemoteSeat>, ApiError> {
+    let mut statement = conn
+        .prepare_cached(
+            "SELECT seat_id,presence,harness,activity_at,workspace,tab,pane FROM remote_seat_status \
+             WHERE origin=?1 ORDER BY seat_id",
+        )
+        .map_err(store_error)?;
+    let rows = statement
+        .query_map([origin], |r| {
+            Ok(RemoteSeat {
+                seat: r.get(0)?,
+                presence: r.get(1)?,
+                harness: r.get(2)?,
+                activity_at: r
+                    .get::<_, Option<i64>>(3)?
+                    .map(|v| u64::try_from(v).unwrap_or(0)),
+                workspace: r.get(4)?,
+                tab: r.get(5)?,
+                pane: r.get(6)?,
+            })
+        })
+        .map_err(store_error)?;
+    rows.collect::<Result<_, _>>().map_err(store_error)
+}
+
+/// The entries of `seats` the home-node guard keeps, by seat, as they would
+/// be stored (activity clamped like the column).
+fn kept(
+    conn: &Connection,
+    origin: &str,
+    seats: &[RemoteSeat],
+) -> Result<Vec<RemoteSeat>, ApiError> {
+    let mut known = conn
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND is_local=0 AND state='remote' AND home_node=?2)",
+        )
+        .map_err(store_error)?;
+    let mut out = std::collections::BTreeMap::new();
+    for seat in seats {
+        let ok: bool = known
+            .query_row(params![seat.seat, origin], |r| r.get(0))
+            .map_err(store_error)?;
+        if ok {
+            let mut seat = seat.clone();
+            seat.activity_at = seat.activity_at.map(|at| ms(at) as u64);
+            out.insert(seat.seat.clone(), seat);
+        }
+    }
+    Ok(out.into_values().collect())
 }
 
 /// One remote seat's stored status with its snapshot's origin facts.
@@ -135,6 +189,7 @@ pub fn get(conn: &Connection, seat: &str) -> Result<Option<RemoteSeatRow>, ApiEr
             "SELECT s.origin,s.presence,s.harness,s.activity_at,s.workspace,s.tab,s.pane, \
                o.built_at,o.other_boot_at \
              FROM remote_seat_status s JOIN remote_seat_origin o ON o.origin=s.origin \
+             JOIN seats t ON t.id=s.seat_id AND t.state='remote' \
              WHERE s.seat_id=?1",
             [seat],
             |r| {

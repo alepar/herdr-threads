@@ -2298,7 +2298,7 @@ where
             // linked peer takes them; ends on the stop token like discovery.
             let (check_every, refresh_every) = factory_probe.seat_publisher_periods();
             let seats_join =
-                crate::service::seat_publisher::SeatPublisher::spawn(crate::service::seat_publisher::SeatPublisherDeps {
+                crate::service::seat_publisher::spawn(crate::service::seat_publisher::SeatPublisherDeps {
                     store: publisher_store,
                     sessions: Arc::clone(&host_sessions),
                     contacts: Arc::clone(&delivery_pull),
@@ -2307,6 +2307,10 @@ where
                     cancel: factory_stop.clone(),
                     check_every,
                     refresh_every,
+                    log: {
+                        let log = Arc::clone(&rate_limited_log);
+                        Arc::new(move |line: &str| log.write_line(line))
+                    },
                 });
             *factory_sync_slot
                 .lock()

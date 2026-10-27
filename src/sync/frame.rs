@@ -380,7 +380,7 @@ pub struct SeatStatusFrame {
 }
 
 fn nil_node() -> NodeUuid {
-    NodeUuid::from_u128(0)
+    NodeUuid::from_bytes([0; 16])
 }
 
 /// One seat of a [`SeatStatusFrame`].

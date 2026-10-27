@@ -37,11 +37,8 @@ pub const CHECK_EVERY: Duration = Duration::from_secs(5);
 /// snapshot is published again this often (it keeps receivers fresh: the
 /// freshness bound is three times this).
 pub const REFRESH_EVERY: Duration = Duration::from_secs(60);
-/// Budget of one store read or host label read (ms).
+/// Budget of one store read, and of one label read across every host (ms).
 const CALL_BUDGET_MS: u64 = 3_000;
-
-/// UI states that make a connected seat `busy`.
-const BUSY_UI: [&str; 3] = ["active_turn", "approval_or_question", "human_input"];
 
 pub struct SeatPublisherDeps {
     pub store: Arc<SqliteStore>,
@@ -54,6 +51,8 @@ pub struct SeatPublisherDeps {
     /// them.
     pub check_every: Duration,
     pub refresh_every: Duration,
+    /// One daemon.log line per run of read failures.
+    pub log: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
 /// Labels of one host target.
@@ -78,7 +77,7 @@ fn entry_of(
     } else if seat
         .ui_state
         .as_deref()
-        .is_some_and(|ui| BUSY_UI.contains(&ui))
+        .is_some_and(crate::store::effective::turn_in_progress)
     {
         "busy"
     } else {
@@ -100,12 +99,23 @@ fn entry_of(
     }
 }
 
-pub struct SeatPublisher;
+/// Spawns the publisher on the current tokio runtime.
+pub fn spawn(deps: SeatPublisherDeps) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(run(deps))
+}
 
-impl SeatPublisher {
-    pub fn spawn(deps: SeatPublisherDeps) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(run(deps))
-    }
+/// Whether two snapshots differ in anything but their ages (ages always
+/// move).
+fn same_but_ages(a: &[SeatStatusEntry], b: &[SeatStatusEntry]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            a.seat == b.seat
+                && a.presence == b.presence
+                && a.harness == b.harness
+                && a.workspace == b.workspace
+                && a.tab == b.tab
+                && a.pane == b.pane
+        })
 }
 
 async fn run(deps: SeatPublisherDeps) {
@@ -118,6 +128,7 @@ async fn run(deps: SeatPublisherDeps) {
     let mut labels: HashMap<(HostId, String), Labels> = HashMap::new();
     let mut labels_at: Option<MonoInstant> = None;
     let mut published: Option<(Vec<SeatStatusEntry>, MonoInstant)> = None;
+    let mut failing = false;
     let refresh_ms = u64::try_from(deps.refresh_every.as_millis()).unwrap_or(u64::MAX);
     loop {
         if deps.sync.seat_status_wanted() {
@@ -127,44 +138,53 @@ async fn run(deps: SeatPublisherDeps) {
             };
             if due(labels_at) {
                 let read = Arc::clone(&deps);
-                if let Ok(fresh) = tokio::task::spawn_blocking(move || read_labels(&read)).await {
+                let held = labels.clone();
+                if let Ok(fresh) =
+                    tokio::task::spawn_blocking(move || read_labels(&read, held)).await
+                {
                     labels = fresh;
                     labels_at = Some(now);
                 }
             }
             let read = Arc::clone(&deps);
-            let built = tokio::task::spawn_blocking(move || read_seats(&read)).await;
-            if let Ok(Ok(seats)) = built {
-                let now_ms = deps.clock.utc_now().0;
-                let entries: Vec<SeatStatusEntry> = seats
-                    .iter()
-                    .map(|seat| {
-                        let key = seat.host.zip(seat.target.clone());
-                        let contact = deps.contacts.last_contact(&seat.seat).map(|at| at.0);
-                        entry_of(
-                            seat,
-                            key.as_ref().and_then(|k| labels.get(k)),
-                            now_ms,
-                            contact,
-                        )
-                    })
-                    .collect();
-                // Ages always move: a change is a change of anything but them.
-                let same = |old: &[SeatStatusEntry]| {
-                    let strip = |e: &SeatStatusEntry| SeatStatusEntry {
-                        activity_age_ms: None,
-                        ..e.clone()
+            match tokio::task::spawn_blocking(move || read_seats(&read)).await {
+                Ok(Ok(seats)) => {
+                    if std::mem::take(&mut failing) {
+                        (deps.log)("seat status: local seat reads recovered");
+                    }
+                    let now_ms = deps.clock.utc_now().0;
+                    let entries: Vec<SeatStatusEntry> = seats
+                        .iter()
+                        .map(|seat| {
+                            let key = seat.host.zip(seat.target.clone());
+                            let contact = deps.contacts.last_contact(&seat.seat).map(|at| at.0);
+                            entry_of(
+                                seat,
+                                key.as_ref().and_then(|k| labels.get(k)),
+                                now_ms,
+                                contact,
+                            )
+                        })
+                        .collect();
+                    let publish = match &published {
+                        None => true,
+                        Some((old, at)) => !same_but_ages(old, &entries) || due(Some(*at)),
                     };
-                    old.len() == entries.len()
-                        && old.iter().zip(&entries).all(|(a, b)| strip(a) == strip(b))
-                };
-                let publish = match &published {
-                    None => true,
-                    Some((old, at)) => !same(old) || due(Some(*at)),
-                };
-                if publish {
-                    deps.sync.publish_seat_status(entries.clone());
-                    published = Some((entries, now));
+                    // A publish the coordinator's queue refused is tried
+                    // again on the next check, not at the next refresh.
+                    if publish && deps.sync.publish_seat_status(entries.clone()) {
+                        published = Some((entries, now));
+                    }
+                }
+                failed => {
+                    if !std::mem::replace(&mut failing, true) {
+                        let why = match failed {
+                            Ok(Err(e)) => format!("{:?}: {}", e.code, e.detail),
+                            Err(e) => format!("read task failed: {e}"),
+                            Ok(Ok(_)) => unreachable!("matched above"),
+                        };
+                        (deps.log)(&format!("seat status: local seat read failed: {why}"));
+                    }
                 }
             }
         } else {
@@ -190,12 +210,23 @@ fn read_seats(deps: &SeatPublisherDeps) -> Result<Vec<LocalSeat>, ApiError> {
         .sync_read(&budget(deps), |conn, _| local_seats(conn))
 }
 
-/// Every attached host's labels, by `(host, target)`. A host that does not
-/// answer contributes none; its seats are published without labels.
-fn read_labels(deps: &SeatPublisherDeps) -> HashMap<(HostId, String), Labels> {
+/// Every attached host's labels, by `(host, target)`, within one budget for
+/// all hosts. A host that does not answer keeps its labels from `held` (a
+/// blip never strips its seats' labels until the next refresh).
+fn read_labels(
+    deps: &SeatPublisherDeps,
+    held: HashMap<(HostId, String), Labels>,
+) -> HashMap<(HostId, String), Labels> {
+    let budget = budget(deps);
     let mut out = HashMap::new();
     for session in deps.sessions.attached() {
-        let Ok(found) = session.port().seat_labels(&budget(deps)) else {
+        let Ok(found) = session.port().seat_labels(&budget) else {
+            let host = session.host_id();
+            out.extend(
+                held.iter()
+                    .filter(|((h, _), _)| *h == host)
+                    .map(|(k, v)| (k.clone(), v.clone())),
+            );
             continue;
         };
         for label in found {

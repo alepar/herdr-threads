@@ -9,7 +9,7 @@
 //!   wakes and availability keep their own rules.
 //! - Role: read by `service::seat_publisher`.
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 
 use super::connection::store_error;
 use crate::ports::HostId;
@@ -35,7 +35,8 @@ pub struct LocalSeat {
     pub last_transition_at: Option<i64>,
 }
 
-/// Every local, published, nonretired seat, oldest first, at most
+/// Every local, published, nonretired seat, newest first (past the cap the
+/// oldest, likeliest idle, are the ones left out), at most
 /// [`MAX_SEAT_STATUS_SEATS`].
 pub fn local_seats(conn: &Connection) -> Result<Vec<LocalSeat>, ApiError> {
     type Row = (
@@ -49,7 +50,7 @@ pub fn local_seats(conn: &Connection) -> Result<Vec<LocalSeat>, ApiError> {
         let mut statement = conn
             .prepare_cached(
                 "SELECT id,host_id,target_id,structural_terminal_id,structural_incarnation FROM seats \
-                 WHERE is_local=1 AND published=1 AND state<>'retired' ORDER BY ordinal LIMIT ?1",
+                 WHERE is_local=1 AND published=1 AND state<>'retired' ORDER BY ordinal DESC LIMIT ?1",
             )
             .map_err(store_error)?;
         let mapped = statement
@@ -62,24 +63,20 @@ pub fn local_seats(conn: &Connection) -> Result<Vec<LocalSeat>, ApiError> {
     let mut out = Vec::with_capacity(rows.len());
     for (id, host, target, terminal, incarnation) in rows {
         let seat = SeatId::new(id);
-        let harness: Option<String> = conn
-            .query_row(
-                "SELECT harness FROM occupant_bindings WHERE seat_id=?1 \
-                 ORDER BY (ended_at IS NULL AND role='top_level') DESC, (ended_at IS NULL) DESC, \
-                   registered_at DESC LIMIT 1",
-                [seat.as_str()],
-                |r| r.get(0),
+        let (harness, last_transition_at): (Option<String>, Option<i64>) = conn
+            .prepare_cached(
+                "SELECT (SELECT harness FROM occupant_bindings WHERE seat_id=?1 \
+                   ORDER BY (ended_at IS NULL AND role='top_level') DESC, (ended_at IS NULL) DESC, \
+                     registered_at DESC LIMIT 1), \
+                 (SELECT MAX(max(coalesce(registered_at, 0), coalesce(disconnected_at, 0))) \
+                   FROM occupant_bindings WHERE seat_id=?1)",
             )
-            .optional()
+            .and_then(|mut statement| {
+                statement.query_row([seat.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))
+            })
             .map_err(store_error)?;
-        let last_transition_at: Option<i64> = conn
-            .query_row(
-                "SELECT MAX(max(registered_at, coalesce(disconnected_at, 0))) \
-                 FROM occupant_bindings WHERE seat_id=?1",
-                [seat.as_str()],
-                |r| r.get(0),
-            )
-            .map_err(store_error)?;
+        // No binding ever registered or disconnected: no transition.
+        let last_transition_at = last_transition_at.filter(|at| *at > 0);
         let host = host.map(HostId::from_row);
         let ui_state = match (host, target.as_deref()) {
             (Some(host), Some(target)) => {

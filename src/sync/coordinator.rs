@@ -612,10 +612,10 @@ impl SyncHandle {
     }
 
     /// Hand this node's own seats to the actor for `seat_status` (ht-xg88).
-    /// Never waits: a full request queue drops this one (the next publish
-    /// carries the same state).
-    pub fn publish_seat_status(&self, seats: Vec<SeatStatusEntry>) {
-        let _ = self.requests.try_send(Request::PublishSeats(seats));
+    /// Never waits: `false` when the request queue was full and nothing was
+    /// handed over (the caller tries again).
+    pub fn publish_seat_status(&self, seats: Vec<SeatStatusEntry>) -> bool {
+        self.requests.try_send(Request::PublishSeats(seats)).is_ok()
     }
 
     /// Links that are established or handshaking, inbound or dialed.
@@ -7780,8 +7780,8 @@ mod tests {
     }
 
     // Kills: own seats sent to a peer without the cap, not sent to a newly
-    // ready link, a rev bumped for an unchanged snapshot or kept for a
-    // changed one, and `seat_status_wanted` never set.
+    // ready link, a publish that reuses a rev (receivers would drop it as a
+    // repeat), and `seat_status_wanted` never set.
     #[tokio::test(start_paused = true)]
     async fn own_seats_go_to_cap_links_with_a_rev_per_change() {
         let (rig, _journal) = node(1, 0, 0);
@@ -7805,13 +7805,17 @@ mod tests {
             .iter()
             .map(|f| f.rev)
             .collect();
-        assert_eq!(revs, [1, 2], "unchanged keeps the rev, a change bumps it");
+        assert_eq!(
+            revs,
+            [2, 3],
+            "every publish, a refresh too, is the next rev"
+        );
         assert!(seat_frames(&without.pump(500).await).is_empty());
         // A link that becomes ready later gets the current snapshot.
         let mut late = connect(&rig, 2, &seat_hello(4)).await;
         late.expect_have().await;
         let got = seat_frames(&late.pump(1_500).await);
-        assert_eq!(got.iter().map(|f| f.rev).collect::<Vec<_>>(), [2]);
+        assert_eq!(got.iter().map(|f| f.rev).collect::<Vec<_>>(), [3]);
         stop(rig).await;
     }
 
@@ -7829,6 +7833,16 @@ mod tests {
         a.pump(1_500).await;
         b.pump(100).await;
         let origin = node_of(9);
+        // An origin this node has never heard of is not taken.
+        a.send(seat_frame(origin, 1, 5, 2_000)).await;
+        assert!(seat_frames(&b.pump(1_500).await).is_empty());
+        a.send(PeerFrame::Seen {
+            ages: vec![SeenAge {
+                node: origin,
+                age_ms: 0,
+            }],
+        })
+        .await;
         a.send(seat_frame(origin, 1, 5, 2_000)).await;
         a.send(seat_frame(origin, 1, 4, 0)).await; // older rev: dropped
         a.send(seat_frame(origin, 1, 5, 2_000)).await; // repeat: dropped
@@ -7846,21 +7860,27 @@ mod tests {
         assert_eq!(updates.len(), 1, "{updates:?}");
         assert_eq!(updates[0].origin, origin);
         assert_eq!(updates[0].rev, 5);
-        let seats = updates[0].seats.as_ref().expect("content");
-        assert_eq!(seats[0].seat, "sQ0VnTDasAbY");
+        assert_eq!(updates[0].seats[0].seat, "sQ0VnTDasAbY");
         assert_eq!(updates[0].other_boot_at, None);
-        // Another boot of the same origin, built later: it wins and the first
-        // boot is remembered as live.
+        // A restart: the new boot, built later, wins, and the old boot (all
+        // of whose builds precede it) is no clone.
         a.send(seat_frame(origin, 2, 1, 0)).await;
         b.pump(1_500).await;
         let updates = rig.store.inner.seat_updates();
         let last = updates.last().unwrap();
         assert_eq!((last.boot, last.rev), (Uuid::from_u128(2), 1));
-        assert!(last.other_boot_at.is_some(), "{last:?}");
-        // The older boot again, built earlier: dropped.
+        assert_eq!(last.other_boot_at, None, "{last:?}");
+        // A stale copy of the old boot arriving late: dropped, no clone.
         a.send(seat_frame(origin, 1, 6, 60_000)).await;
         b.pump(1_500).await;
         assert_eq!(rig.store.inner.seat_updates().len(), updates.len());
+        // The old boot alive again, built after the new one started: a
+        // clone; the newest build wins and carries the suspicion.
+        a.send(seat_frame(origin, 1, 7, 0)).await;
+        b.pump(1_500).await;
+        let last = rig.store.inner.seat_updates().last().unwrap().clone();
+        assert_eq!((last.boot, last.rev), (Uuid::from_u128(1), 7));
+        assert!(last.other_boot_at.is_some(), "{last:?}");
         stop(rig).await;
     }
 
