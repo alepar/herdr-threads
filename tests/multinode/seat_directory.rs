@@ -64,6 +64,7 @@ fn directory_shows_remote_seats_as_fresh_as_their_node() {
     assert!(row.ends_with(labels), "{row}");
     // Filters narrow to it, or away from it.
     assert!(seat_row(&cluster, 0, &["--node", &tag], &b.id).is_some());
+    assert!(seat_row(&cluster, 0, &["--node", &tag], &a.id).is_none());
     assert!(
         seat_row(
             &cluster,
@@ -112,7 +113,8 @@ fn directory_shows_remote_seats_as_fresh_as_their_node() {
         row.starts_with(&format!("{} {tag} unreachable since ", b.id)) && row.ends_with(labels),
         "{row}"
     );
-    let (_, text, _) = cluster.text_as(Some(&a), 0, &["thread", "participants", &thread]);
+    let (code, text, stderr) = cluster.text_as(Some(&a), 0, &["thread", "participants", &thread]);
+    assert_eq!(code, 0, "{stderr}");
     let line = text
         .lines()
         .find(|l| l.starts_with(&format!("{} ", b.id)))

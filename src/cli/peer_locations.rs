@@ -147,14 +147,13 @@ fn format_location(
         // its presence is not current; none from an older daemon or a node
         // without `seat.status.v1`.
         ContinuityStatus::Remote => {
-            return match location
-                .remote
-                .as_ref()
-                .and_then(|d| d.labels().map(|l| (d, l)))
-            {
+            let labels = location.remote.as_ref().and_then(|d| {
+                d.labels(|part| super::human::one_line(part, false, 64))
+                    .map(|labels| (d, labels))
+            });
+            return match labels {
                 Some((directory, labels)) => format!(
-                    "{} [advisory{}]",
-                    super::human::one_line(&labels, false, 200),
+                    "{labels} [advisory{}]",
                     if directory.last_known() {
                         ", last known"
                     } else {

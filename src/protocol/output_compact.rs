@@ -372,8 +372,9 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
         }
         CommandResult::Participants(page) => {
             out.push_str("participants\n");
+            let now = super::render_now().0;
             for participant in &page.items {
-                participant_row(participant, &mut out);
+                participant_row(participant, now, &mut out);
             }
             unreachable_lines(&page.items, &mut out);
             next("next", page, &mut out);
@@ -755,11 +756,13 @@ fn snake<T: serde::Serialize>(value: &T) -> String {
         .unwrap_or_default()
 }
 
-/// `SEAT STATE active|inactive [self] [required invitation=I requirement=R
-/// revision=N] [retired] [cleanup:S]`. `active` is the store's presence
+/// `SEAT STATE active|inactive|remote [self] [required invitation=I
+/// requirement=R revision=N] [retired] [cleanup:S][ PRESENCE HARNESS
+/// last=AGE]` (the last part for a remote seat whose home node's word is
+/// current; ` stale` / ` clone_suspected` alone otherwise). `active` is the store's presence
 /// (a connected binding); every row names one so neither group is implied
 /// by absence.
-fn participant_row(participant: &Participant, out: &mut String) {
+fn participant_row(participant: &Participant, now: i64, out: &mut String) {
     out.push_str(participant.seat.as_str());
     out.push(' ');
     out.push_str(&snake(&participant.effective_state));
@@ -778,12 +781,6 @@ fn participant_row(participant: &Participant, out: &mut String) {
             " inactive"
         },
     );
-    // A remote seat's advisory word (ht-xg88): about 17-25 bytes when its
-    // home node published it; nothing more when that node is unreachable (the
-    // `node TAG unreachable` line says it once per node).
-    if let Some(directory) = &participant.directory {
-        directory_suffix(directory, super::render_now().0, out);
-    }
     if participant.is_self {
         out.push_str(" self");
     }
@@ -805,12 +802,48 @@ fn participant_row(participant: &Participant, out: &mut String) {
     if let Some(cleanup) = &participant.cleanup_state {
         out.push_str(&format!(" cleanup:{}", snake(cleanup)));
     }
+    // A remote seat's advisory word (ht-xg88), last on the row: about 17-25
+    // bytes when its home node published it; nothing more when that node is
+    // unreachable (the `node TAG unreachable` line says it once per node).
+    if let Some(directory) = &participant.directory {
+        directory_suffix(directory, now, out);
+    }
     out.push('\n');
 }
 
-/// ` STATE HARNESS last=AGE` of a remote participant: ` idle claude
-/// last=12m`, or ` stale` / ` clone_suspected` alone; nothing when its home
-/// node is unreachable or never published.
+fn harness_of(directory: &SeatDirectory) -> String {
+    directory
+        .harness
+        .as_deref()
+        .map_or_else(|| "-".to_owned(), token)
+}
+
+fn age_or_dash(at: Option<UtcMillis>, now: i64) -> String {
+    at.map_or_else(|| "-".to_owned(), |at| age(now, at.0))
+}
+
+/// `TAG STATE HARNESS last=AGE`, the head every directory form shares.
+fn entry_head(directory: &SeatDirectory, now: i64) -> String {
+    format!(
+        "{} {} {} last={}",
+        token(&directory.node),
+        directory_state(directory),
+        harness_of(directory),
+        age_or_dash(directory.activity_at, now)
+    )
+}
+
+/// `: WS / TAB / PANE` with each peer label escaped on its own; empty
+/// without labels.
+fn labels_tail(directory: &SeatDirectory) -> String {
+    directory
+        .labels(one_line)
+        .map_or_else(String::new, |labels| format!(": {labels}"))
+}
+
+/// ` STATE HARNESS last=AGE` of a remote participant, at the end of its
+/// row: ` idle claude last=12m`, or ` stale` / ` clone_suspected` alone;
+/// nothing when its home node is unreachable or never published.
 fn directory_suffix(directory: &SeatDirectory, now: i64, out: &mut String) {
     match directory.state.as_str() {
         "unreachable" | "-" => {}
@@ -822,13 +855,8 @@ fn directory_suffix(directory: &SeatDirectory, now: i64, out: &mut String) {
             out.push_str(&format!(
                 " {} {} last={}",
                 token(state),
-                directory
-                    .harness
-                    .as_deref()
-                    .map_or_else(|| "-".to_owned(), token),
-                directory
-                    .activity_at
-                    .map_or_else(|| "-".to_owned(), |at| age(now, at.0))
+                harness_of(directory),
+                age_or_dash(directory.activity_at, now)
             ));
         }
     }
@@ -846,40 +874,30 @@ fn directory_state(directory: &SeatDirectory) -> String {
 }
 
 /// One `seat list` row (ht-xg88): `SEAT TAG STATE HARNESS last=AGE[
-/// retired][: WS / TAB / PANE]`, 30-40 bytes before the labels (at most
-/// 3×64 + 6 bytes after `: `, peer text escaped). An older daemon's row has
-/// no entry: `SEAT CONTINUITY active|inactive`.
+/// unresolved| retired][: WS / TAB / PANE]`; about 36 bytes for a local
+/// seat, 40-60 before the labels for a remote one (at most 3×64 + 6 bytes
+/// after `: `, each peer label escaped). An older daemon's row, or a pane
+/// lookup's, has no entry: `SEAT CONTINUITY active|inactive`. `--json`
+/// keeps every field.
 fn seat_row(seat: &SeatSummary, now: i64, out: &mut String) {
-    use std::fmt::Write as _;
+    use crate::protocol::results::ContinuityStatus;
     out.push_str(seat.seat.as_str());
     let Some(directory) = &seat.directory else {
-        let _ = writeln!(
-            out,
-            " {} {}",
+        out.push_str(&format!(
+            " {} {}\n",
             snake(&seat.continuity),
             if seat.active { "active" } else { "inactive" }
-        );
+        ));
         return;
     };
-    let _ = write!(
-        out,
-        " {} {} {} last={}",
-        token(&directory.node),
-        directory_state(directory),
-        directory
-            .harness
-            .as_deref()
-            .map_or_else(|| "-".to_owned(), token),
-        directory
-            .activity_at
-            .map_or_else(|| "-".to_owned(), |at| age(now, at.0))
-    );
-    if seat.retired_at.is_some() {
-        out.push_str(" retired");
+    out.push(' ');
+    out.push_str(&entry_head(directory, now));
+    match seat.continuity {
+        ContinuityStatus::Unresolved => out.push_str(" unresolved"),
+        ContinuityStatus::Retired => out.push_str(" retired"),
+        ContinuityStatus::Resolved | ContinuityStatus::Remote => {}
     }
-    if let Some(labels) = directory.labels() {
-        let _ = write!(out, ": {}", one_line(&labels));
-    }
+    out.push_str(&labels_tail(directory));
     out.push('\n');
 }
 
@@ -888,27 +906,12 @@ fn seat_row(seat: &SeatSummary, now: i64, out: &mut String) {
 /// seen=AGE[: WS / TAB / PANE]`.
 pub(super) fn inspect_directory_line(directory: &SeatDirectory) -> String {
     let now = super::render_now().0;
-    let mut out = format!(
-        "directory: {} {} {} last={} seen={}",
-        token(&directory.node),
-        directory_state(directory),
-        directory
-            .harness
-            .as_deref()
-            .map_or_else(|| "-".to_owned(), token),
-        directory
-            .activity_at
-            .map_or_else(|| "-".to_owned(), |at| age(now, at.0)),
-        directory
-            .seen_at
-            .map_or_else(|| "-".to_owned(), |at| age(now, at.0))
-    );
-    if let Some(labels) = directory.labels() {
-        out.push_str(": ");
-        out.push_str(&one_line(&labels));
-    }
-    out.push('\n');
-    out
+    format!(
+        "directory: {} seen={}{}\n",
+        entry_head(directory, now),
+        age_or_dash(directory.seen_at, now),
+        labels_tail(directory)
+    )
 }
 
 /// `node TAG unreachable since TIME` (`node TAG unreachable` when no contact
@@ -974,8 +977,9 @@ fn thread(details: &ThreadDetails, out: &mut String) {
         out.push('\n');
     }
     out.push_str("participants:\n");
+    let now = super::render_now().0;
     for participant in &details.participants.items {
-        participant_row(participant, out);
+        participant_row(participant, now, out);
     }
     unreachable_lines(&details.participants.items, out);
     next("participants.next", &details.participants, out);

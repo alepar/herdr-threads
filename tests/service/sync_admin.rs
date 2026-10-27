@@ -1830,6 +1830,58 @@ fn seat_list_carries_the_directory_and_filters_it() {
         .iter()
         .all(|s| !s.starts_with("sQ0V"))
     );
+    // A filtered page continues with its filter: the `next:` command keeps
+    // it (as `--flag=VALUE`) and its cursor resumes after the first row.
+    use crate::ports::{ReadContext, StorePort};
+    let query = |cursor: Option<String>| {
+        crate::protocol::commands::Command::Seats(crate::protocol::commands::SeatsQuery {
+            page: crate::protocol::pagination::PageRequest {
+                cursor,
+                limit: 1,
+                ..Default::default()
+            },
+            target: None,
+            include_retired: false,
+            filter: SeatFilter {
+                node: Some("zq7".into()),
+                ..SeatFilter::default()
+            },
+        })
+    };
+    let instance: String = rig
+        .node
+        .store
+        .context()
+        .open_writer()
+        .unwrap()
+        .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+        .unwrap();
+    let read = |command| {
+        let result = rig
+            .node
+            .store
+            .query(
+                &command,
+                &ReadContext {
+                    instance: instance.clone(),
+                    output: Default::default(),
+                    operation_scope: None,
+                },
+                &budget(),
+            )
+            .unwrap();
+        let crate::protocol::results::CommandResult::Seats(page) = result else {
+            panic!("{result:?}")
+        };
+        page
+    };
+    let first = read(query(None));
+    assert_eq!(first.items.len(), 1);
+    let argv = first.next_argv.clone().expect("a next page");
+    assert!(argv.iter().any(|a| a == "--node=zq7"), "{argv:?}");
+    let second = read(query(first.next_cursor.clone()));
+    assert_eq!(second.items.len(), 1);
+    assert_ne!(second.items[0].seat, first.items[0].seat);
 }
 
 // Kills: rows, suffixes and lines of the directory printed with the wrong
@@ -1913,4 +1965,185 @@ fn directory_rows_render_compactly() {
         "directory: Q0V idle claude last=12m seen=4s: office / main / claude\n"
     );
     assert_eq!(line.trim_end().len(), 67);
+}
+
+// Kills: a directory filter that does not narrow (each criterion, alone, on
+// an entry that fails only it), `--on` that misses the node tag, and
+// `--local` that keeps a remote seat.
+#[test]
+fn seat_filter_matches_each_criterion() {
+    use crate::protocol::commands::SeatFilter;
+    use crate::protocol::results::SeatDirectory;
+    use crate::store::seat_directory::matches;
+    let entry = SeatDirectory {
+        node: "Q0V".into(),
+        machine: Some("laptop".into()),
+        state: "idle".into(),
+        since: None,
+        harness: Some("claude".into()),
+        activity_at: None,
+        seen_at: None,
+        workspace: Some("Office".into()),
+        tab: None,
+        pane: None,
+    };
+    let f = |filter: SeatFilter| matches(&filter, Some(&entry), false);
+    assert!(f(SeatFilter::default()));
+    assert!(f(SeatFilter {
+        node: Some("q0v".into()),
+        ..Default::default()
+    }));
+    assert!(!f(SeatFilter {
+        node: Some("blk".into()),
+        ..Default::default()
+    }));
+    assert!(f(SeatFilter {
+        machine: Some("LAPTOP".into()),
+        ..Default::default()
+    }));
+    assert!(
+        f(SeatFilter {
+            machine: Some("Q0V".into()),
+            ..Default::default()
+        }),
+        "the tag too"
+    );
+    assert!(!f(SeatFilter {
+        machine: Some("desk".into()),
+        ..Default::default()
+    }));
+    assert!(!f(SeatFilter {
+        harness: Some("codex".into()),
+        ..Default::default()
+    }));
+    assert!(f(SeatFilter {
+        label: Some("offi".into()),
+        ..Default::default()
+    }));
+    assert!(!f(SeatFilter {
+        label: Some("lab".into()),
+        ..Default::default()
+    }));
+    assert!(!f(SeatFilter {
+        local: true,
+        ..Default::default()
+    }));
+    assert!(matches(
+        &SeatFilter {
+            local: true,
+            ..Default::default()
+        },
+        Some(&entry),
+        true
+    ));
+}
+
+// Kills: a local row without its state word or continuity marker, a
+// participant suffix shown for an unreachable or unknown node (or a word
+// only, without harness and age, for a current one), and a remote location
+// hint not escaped part by part or without its "last known" mark.
+#[test]
+fn local_rows_participant_suffix_and_location_hint() {
+    use crate::protocol::results::{
+        CommandResult, ContinuityStatus, MembershipStatus, Participant, SeatDirectory, SeatSummary,
+    };
+    let now = 1_793_092_323_481;
+    let entry = |state: &str| SeatDirectory {
+        node: "blk".into(),
+        machine: None,
+        state: state.into(),
+        since: None,
+        harness: Some("claude".into()),
+        activity_at: Some(UtcMillis(now - 4_000)),
+        seen_at: None,
+        workspace: None,
+        tab: None,
+        pane: None,
+    };
+    let summary = |continuity, d: SeatDirectory| SeatSummary {
+        seat: crate::protocol::ids::SeatId::new("snSGbl096JZZ"),
+        continuity,
+        target: None,
+        generation: 0,
+        created_at: UtcMillis(0),
+        retired_at: None,
+        active: true,
+        bindings: vec![],
+        availability: None,
+        directory: Some(Box::new(d)),
+    };
+    fn page<T>(items: Vec<T>) -> crate::protocol::pagination::Page<T> {
+        crate::protocol::pagination::Page {
+            items,
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 0,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: crate::protocol::pagination::StopReason::Complete,
+            consistency: crate::protocol::pagination::Consistency::BoundedLive,
+        }
+    }
+    let text = crate::protocol::output::with_render_now(UtcMillis(now), || {
+        render(CommandResult::Seats(page(vec![
+            summary(ContinuityStatus::Resolved, entry("busy")),
+            summary(ContinuityStatus::Unresolved, entry("offline")),
+        ])))
+    });
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[1], "snSGbl096JZZ blk busy claude last=4s");
+    assert_eq!(lines[1].len(), 36);
+    assert_eq!(
+        lines[2],
+        "snSGbl096JZZ blk offline claude last=4s unresolved"
+    );
+
+    let participant = |d: Option<SeatDirectory>| Participant {
+        seat: crate::protocol::ids::SeatId::new("sQ0VnTDasAbY"),
+        is_self: false,
+        requirement: None,
+        episode: 1,
+        joined: true,
+        retired: false,
+        physical_state: MembershipStatus::Joined,
+        effective_state: MembershipStatus::Joined,
+        joined_at: None,
+        left_at: None,
+        retirement_cutover: None,
+        cleanup_state: None,
+        accepted_invitation: None,
+        active: false,
+        bindings: vec![],
+        availability: Some(crate::protocol::results::PresenceAvailability::Remote),
+        home_unreachable: None,
+        directory: d.map(Box::new),
+    };
+    let rows = crate::protocol::output::with_render_now(UtcMillis(now), || {
+        render(CommandResult::Participants(page(vec![
+            participant(Some(entry("idle"))),
+            participant(Some(entry("unreachable"))),
+            participant(Some(entry("stale"))),
+            participant(Some(entry("-"))),
+            participant(None),
+        ])))
+    });
+    let rows: Vec<&str> = rows.lines().skip(1).collect();
+    assert_eq!(rows[0], "sQ0VnTDasAbY joined remote idle claude last=4s");
+    assert_eq!(rows[0].len() - "sQ0VnTDasAbY joined remote".len(), 20);
+    assert_eq!(rows[1], "sQ0VnTDasAbY joined remote");
+    assert_eq!(rows[2], "sQ0VnTDasAbY joined remote stale");
+    assert_eq!(rows[3], "sQ0VnTDasAbY joined remote");
+    assert_eq!(rows[4], "sQ0VnTDasAbY joined remote");
+
+    let labeled = SeatDirectory {
+        workspace: Some("a / b".into()),
+        pane: Some("p\nq".into()),
+        ..entry("idle")
+    };
+    assert_eq!(
+        labeled
+            .labels(|part| crate::cli::human::one_line(part, false, 64))
+            .unwrap(),
+        "a / b / - / p\\nq"
+    );
 }

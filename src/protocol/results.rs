@@ -1146,12 +1146,18 @@ impl SeatDirectory {
         !matches!(self.state.as_str(), "busy" | "idle" | "offline")
     }
 
-    /// `WS / TAB / PANE`, `-` for an absent part; `None` without any label.
-    pub fn labels(&self) -> Option<String> {
-        if self.workspace.is_none() && self.tab.is_none() && self.pane.is_none() {
+    /// Whether any label is present.
+    pub fn has_labels(&self) -> bool {
+        self.workspace.is_some() || self.tab.is_some() || self.pane.is_some()
+    }
+
+    /// `WS / TAB / PANE` with each part passed through `escape` (peer text)
+    /// and `-` for an absent part; `None` without any label.
+    pub fn labels(&self, escape: impl Fn(&str) -> String) -> Option<String> {
+        if !self.has_labels() {
             return None;
         }
-        let part = |p: &Option<String>| p.clone().unwrap_or_else(|| "-".into());
+        let part = |p: &Option<String>| p.as_deref().map_or_else(|| "-".to_owned(), &escape);
         Some(format!(
             "{} / {} / {}",
             part(&self.workspace),
@@ -1760,7 +1766,9 @@ pub struct SeatWakeStatus {
     #[serde(default, skip_serializing_if = "is_false")]
     pub first: bool,
 }
-/// Canonical seat mapping; topology labels are deliberately client-local.
+/// Canonical seat mapping. A local seat's topology labels are client-local
+/// (the CLI's own host read); a remote seat's come from its home node
+/// (`remote`, ht-xg88).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParticipantLocation {

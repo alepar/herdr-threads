@@ -31,9 +31,8 @@ const BOOT_MEMORY_MS: u64 = crate::store::sync_contacts::UNREACHABLE_AFTER_MS;
 const WRITE_RETRY_MS: u64 = 10_000;
 /// A write still in flight after this long is reported once (ms).
 const WRITE_STUCK_MS: u64 = 60_000;
-/// Longest seat id and presence word kept, in bytes.
+/// Longest seat id kept, in bytes.
 const MAX_SEAT_ID_BYTES: usize = 64;
-const MAX_PRESENCE_BYTES: usize = 16;
 
 /// One snapshot, this node's own or one held for another origin.
 struct Snapshot {
@@ -98,9 +97,10 @@ fn bounded(text: &str, max: usize) -> String {
 }
 
 /// The entries as this node keeps and sends them: at most
-/// [`MAX_SEAT_STATUS_SEATS`] with a usable seat id, labels bounded, an empty
-/// presence as `-`, a harness id too long to be one dropped (never cut into
-/// another id), empty labels absent.
+/// [`MAX_SEAT_STATUS_SEATS`] with a usable seat id, labels bounded, a
+/// presence other than `busy`/`idle`/`offline` as `-`, a harness id that is
+/// not one (too long, or other than `[A-Za-z0-9._-]`) dropped, never cut,
+/// empty labels absent.
 fn sanitize(seats: Vec<SeatStatusEntry>) -> Vec<SeatStatusEntry> {
     let label = |text: Option<String>| {
         text.map(|t| bounded(&t, MAX_SEAT_LABEL_BYTES))
@@ -111,13 +111,21 @@ fn sanitize(seats: Vec<SeatStatusEntry>) -> Vec<SeatStatusEntry> {
         .filter(|entry| !entry.seat.is_empty() && entry.seat.len() <= MAX_SEAT_ID_BYTES)
         .take(MAX_SEAT_STATUS_SEATS)
         .map(|entry| SeatStatusEntry {
-            presence: match bounded(&entry.presence, MAX_PRESENCE_BYTES) {
-                presence if presence.is_empty() => "-".to_owned(),
-                presence => presence,
+            // Only the published words: anything else (empty, unknown, or a
+            // word the display gives its own meaning, like `unreachable`)
+            // is `-`, so a peer never decides how fresh its seat looks.
+            presence: match entry.presence.as_str() {
+                presence @ ("busy" | "idle" | "offline") => presence.to_owned(),
+                _ => "-".to_owned(),
             },
-            harness: entry
-                .harness
-                .filter(|h| !h.is_empty() && h.len() <= MAX_SEAT_HARNESS_BYTES),
+            // An adapter id: short, `[A-Za-z0-9._-]` only, so it never
+            // reads as row punctuation (`:`) where it is shown.
+            harness: entry.harness.filter(|h| {
+                !h.is_empty()
+                    && h.len() <= MAX_SEAT_HARNESS_BYTES
+                    && h.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            }),
             workspace: label(entry.workspace),
             tab: label(entry.tab),
             pane: label(entry.pane),
@@ -494,6 +502,16 @@ mod tests {
         ]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].presence, "-");
+        // A display word a peer has no say in, and row punctuation.
+        let out = sanitize(vec![SeatStatusEntry {
+            presence: "unreachable".into(),
+            harness: Some("x:".into()),
+            ..out[0].clone()
+        }]);
+        assert_eq!(
+            (out[0].presence.as_str(), out[0].harness.as_deref()),
+            ("-", None)
+        );
         assert_eq!(out[0].harness, None);
         assert!(out[0].workspace.as_ref().unwrap().len() <= MAX_SEAT_LABEL_BYTES);
         assert_eq!(out[0].tab, None);

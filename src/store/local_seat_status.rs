@@ -1,13 +1,16 @@
-//! This node's own seats as `seat_status` publishes them (ht-xg88 phase 2).
+//! This node's own seats: what `seat_status` publishes and what the seat
+//! directory shows for them (ht-xg88).
 //!
 //! Responsibility (local_seat_status)
-//! - Owns: [`local_seats`], the read of each local, published, nonretired
-//!   seat's binding, connection and canonical UI state.
+//! - Owns: [`local_seats`] and [`local_seat`], the read of a local seat's
+//!   binding, connection and canonical UI state, and [`presence`], its
+//!   advisory word.
 //! - Hides: the binding choice (the open top-level binding, else the latest)
 //!   and the effective-observation lookup.
-//! - Must not: decide presence for any purpose but the advisory publication;
-//!   wakes and availability keep their own rules.
-//! - Role: read by `service::seat_publisher`.
+//! - Must not: decide anything but advisory display and publication; wakes
+//!   and availability keep their own rules (the busy rule is theirs,
+//!   `effective::turn_in_progress`).
+//! - Role: read by `service::seat_publisher` and `store::seat_directory`.
 
 use rusqlite::{Connection, OptionalExtension};
 

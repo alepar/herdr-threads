@@ -1557,8 +1557,21 @@ fn seats(
             break;
         };
         examined += 1;
-        let directory = super::seat_directory::directory(db, &id, now)?;
-        if !super::seat_directory::matches(&q.filter, directory.as_deref(), state != "remote") {
+        // The directory entry belongs to listings; a pane lookup (`target`,
+        // the hook's and caller resolution's path) never pays for one.
+        // Locality by the column, not the state word: a retired remote seat
+        // is `retired` too.
+        let local: bool = db
+            .query_row("SELECT is_local FROM seats WHERE id=?1", [&id], |r| {
+                r.get(0)
+            })
+            .map_err(|e| db.map_error(e))?;
+        let directory = if q.target.is_none() && !(q.filter.local && !local) {
+            super::seat_directory::directory(db, &id, now)?
+        } else {
+            None
+        };
+        if !super::seat_directory::matches(&q.filter, directory.as_deref(), local) {
             last = ordinal as u64;
             continue;
         }
@@ -3161,8 +3174,9 @@ fn seats_argv(cursor: &str, q: &SeatsQuery) -> Vec<String> {
         ("--harness", &q.filter.harness),
         ("--label", &q.filter.label),
     ] {
+        // `--flag=VALUE`, so a value starting with `-` reads back as one.
         if let Some(value) = value {
-            argv.extend([flag.to_owned(), value.clone()]);
+            argv.push(format!("{flag}={value}"));
         }
     }
     if q.filter.local {
@@ -6561,7 +6575,7 @@ fn participant_locations(
         };
         let remote = if continuity == crate::protocol::results::ContinuityStatus::Remote {
             super::seat_directory::directory(db, &seat, now)?
-                .filter(|d| d.labels().is_some())
+                .filter(|d| d.has_labels())
                 .map(|d| *d)
         } else {
             None

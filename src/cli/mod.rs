@@ -1452,21 +1452,16 @@ fn run_wire_result<C: LocalClient + ?Sized, W: Write>(
         Command::Inbox(query) | Command::InboxBatchV2(query) => query.seat.clone(),
         _ => None,
     };
-    // Directory filters (ht-xg88): an older daemon would ignore them and
-    // list everything, so they are sent only to one that has them.
+    // Directory filters (ht-xg88): an older daemon refuses the unknown
+    // field at decode and never answers, so they go only to one that has
+    // them.
     if let Command::Seats(query) = &command
         && !query.filter.is_empty()
-        && !matches!(
-            client.call(Command::Capabilities, &budget()),
-            Ok(CommandResult::Capabilities(list))
-                if list.capabilities.iter().any(|c| c == crate::protocol::capabilities::SEATS_DIRECTORY_V1)
-        )
+        && !client.supports_capability(crate::protocol::capabilities::SEATS_DIRECTORY_V1, &budget())
     {
-        return Err(ApiError::new(
-            crate::protocol::results::ErrorCode::InvalidRequest,
-            "seat list filters need a newer daemon (restart it: herdr-threads daemon stop)",
-        )
-        .into());
+        return Err(invalid_request(
+            "seat list filters unavailable; daemon requires seats.directory_v1",
+        ));
     }
     // Service recovery deliberately accepts only the default wire output.
     // Its result has no server-generated continuations, so render the user's

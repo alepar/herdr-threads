@@ -255,8 +255,9 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
                         ("unreachable", Some(since)) => {
                             format!("unreachable since {}", timestamp(since))
                         }
+                        ("unreachable", None) => "unreachable never".to_owned(),
                         ("stale", Some(since)) => format!("stale since {}", timestamp(since)),
-                        (state, _) => state.to_owned(),
+                        (state, _) => one_line(state, false, 16),
                     };
                     return vec![
                         seat.seat.as_str().to_owned(),

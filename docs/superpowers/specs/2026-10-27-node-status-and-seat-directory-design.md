@@ -436,10 +436,13 @@ New flags: `--node TAG`, `--on MACHINE` (host label or tag; `--machine` is
 the global machine-output flag), `--harness ID`, `--label TEXT`
 (case-insensitive substring of a remote seat's workspace/tab/pane), `--local`.
 Filters are AND, case-insensitive, evaluated in the daemon while it pages
-(rows examined count toward the page's work bound), kept in the cursor digest
-and in the `next:` command. The CLI sends them only to a daemon advertising
-`seats.directory_v1` (an older one would ignore them), else: `seat list
-filters need a newer daemon (restart it: herdr-threads daemon stop)`.
+(rows examined count toward the page's work bound; locality is the
+`is_local` column, so a retired remote seat is never `--local`), kept in the
+cursor digest and in the `next:` command as `--flag=VALUE`. The CLI sends
+them only to a daemon advertising `seats.directory_v1` (an older one refuses
+the unknown field and never answers), else: `seat list filters unavailable;
+daemon requires seats.directory_v1`. A pane lookup (`SeatsQuery.target`, the
+hook's and caller resolution's path) builds no directory entry.
 
 Compact form (new; it was the generic encoder):
 
@@ -452,10 +455,13 @@ sQ0Vtab0nTab Q0V stale 09:07Z claude last=12m: office / a: b\nc / claude
 next: herdr-threads seat list --cursor ...
 ```
 
-- Row grammar: `SEAT TAG STATE HARNESS last=AGE[ retired][: WS / TAB / PANE]`;
-  `STATE` as above with `unreachable since T` / `unreachable never` /
-  `stale T`. Peer labels only after `": "`, escaped with `one_line`.
-- Sizes (asserted): a local row ~36 bytes; the fresh remote row 61, the
+- Row grammar: `SEAT TAG STATE HARNESS last=AGE[ unresolved| retired][: WS /
+  TAB / PANE]`; `STATE` as above with `unreachable since T` / `unreachable
+  never` / `stale T`. Peer labels only after `": "`, each escaped with
+  `one_line`. Peer presence is one of `busy`/`idle`/`offline` (anything else
+  is stored as `-`) and a peer harness id `[A-Za-z0-9._-]{1,16}`, so neither
+  can fake row punctuation. `--json` keeps every field.
+- Sizes (asserted): a local row 36 bytes; the fresh remote row 61, the
   unreachable one 81 for 6-byte labels; labels add at most 3 x 64 + 6.
   Paging stays 20 rows / 16 KiB. An older daemon's row has no entry:
   `SEAT CONTINUITY active|inactive`.
@@ -465,8 +471,9 @@ next: herdr-threads seat list --cursor ...
 
 ### 6.2 `thread participants` / `thread show`
 
-- A remote row gains ` STATE HARNESS last=AGE` when its home node's word is
-  current (`b joined remote idle claude last=12m`, +17-25 bytes), ` stale` or
+- A remote row ends with ` STATE HARNESS last=AGE` when its home node's word
+  is current (`b joined remote idle claude last=4s`, +20 bytes asserted,
+  17-25 typical), after the existing flags, ` stale` or
   ` clone_suspected` alone, and nothing when the home node is unreachable or
   never published: the existing one-per-node `node TAG unreachable since T`
   line says it.
