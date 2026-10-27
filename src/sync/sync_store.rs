@@ -2,8 +2,9 @@
 //!
 //! Responsibility (SyncStorePort / MemorySyncStore)
 //! - Owns: the runtime's reads and writes of its own two tables:
-//!   [`SyncStorePort::enabled_targets`], [`SyncStorePort::record_transition`]
-//!   and [`SyncStorePort::record_contacts`]. Each write takes its own
+//!   [`SyncStorePort::enabled_targets`], [`SyncStorePort::record_transition`],
+//!   [`SyncStorePort::record_contacts`] and
+//!   [`SyncStorePort::record_peer_status`]. Each write takes its own
 //!   `FairWriter` background turn, because the writes are rare and small.
 //! - Hides: SQLite, the background turn and the store modules behind it.
 //! - Must not: grow into a general store API; `StorePort` and `JournalPort`
@@ -23,6 +24,7 @@ use crate::protocol::results::ApiError;
 use crate::protocol::time::{CallBudget, UtcMillis};
 use crate::store::sync_contacts::NodeContact;
 use crate::store::sync_dial_targets::{DialTarget, DialTransition, TargetId};
+use crate::store::sync_peer_status::PeerStatus;
 
 /// See the module documentation.
 pub trait SyncStorePort: Send + Sync {
@@ -45,6 +47,9 @@ pub trait SyncStorePort: Send + Sync {
         contacts: &[NodeContact],
         budget: &CallBudget,
     ) -> Result<(), ApiError>;
+
+    /// Upserts the peer nodes' last-known status (`store::sync_peer_status`).
+    fn record_peer_status(&self, rows: &[PeerStatus], budget: &CallBudget) -> Result<(), ApiError>;
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -63,11 +68,13 @@ mod memory {
     use crate::store::sync_dial_targets::{
         DialSource, DialState, DialTarget, DialTransition, TargetId,
     };
+    use crate::store::sync_peer_status::PeerStatus;
 
     #[derive(Default)]
     struct State {
         targets: Vec<DialTarget>,
         contacts: BTreeMap<NodeUuid, NodeContact>,
+        peers: BTreeMap<NodeUuid, PeerStatus>,
     }
 
     /// An in-memory [`SyncStorePort`] for coordinator and dialer tests. It
@@ -144,6 +151,11 @@ mod memory {
                 .copied()
                 .collect()
         }
+
+        /// Every recorded peer status, by node (the latest row per node).
+        pub fn peer_status(&self) -> Vec<PeerStatus> {
+            self.state.lock().unwrap().peers.values().cloned().collect()
+        }
     }
 
     impl SyncStorePort for MemorySyncStore {
@@ -190,6 +202,14 @@ mod memory {
                         state.contacts.insert(contact.node, *contact);
                     }
                 }
+            }
+            Ok(())
+        }
+
+        fn record_peer_status(&self, rows: &[PeerStatus], _: &CallBudget) -> Result<(), ApiError> {
+            let mut state = self.state.lock().unwrap();
+            for row in rows {
+                state.peers.insert(row.node, row.clone());
             }
             Ok(())
         }

@@ -41,6 +41,7 @@ pub mod service_substrate;
 pub mod summary;
 pub mod sync_contacts;
 pub mod sync_dial_targets;
+pub mod sync_peer_status;
 pub mod sync_status;
 pub mod thread_registers;
 pub mod topology_handoff;
@@ -1430,6 +1431,28 @@ impl crate::sync::sync_store::SyncStorePort for SqliteStore {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(store_error)?;
         sync_contacts::record(&tx, contacts, now)?;
+        tx.commit().map_err(store_error)
+    }
+
+    fn record_peer_status(
+        &self,
+        rows: &[sync_peer_status::PeerStatus],
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let _turn = self
+            .sync_admission
+            .as_ref()
+            .map(|writer| writer.enter_background(budget, self.context.clock()))
+            .transpose()?;
+        let now = u64::try_from(self.context.clock().utc_now().0).unwrap_or(0);
+        let mut writer = self.writer(budget)?;
+        let tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        sync_peer_status::record(&tx, rows, now)?;
         tx.commit().map_err(store_error)
     }
 }

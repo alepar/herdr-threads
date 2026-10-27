@@ -198,6 +198,7 @@ impl SyncNode {
             },
             CoordinatorOptions {
                 advertise_opaque: options.advertise_opaque,
+                ..CoordinatorOptions::default()
             },
         );
         let worker = IncarnationsWorker::start(WorkerDeps {

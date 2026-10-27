@@ -44,6 +44,10 @@ pub const FORK_CAP: &str = "fork.v1";
 /// `branch_entries` (entries whose signed layout the receiver may not
 /// understand). A sender never sends one to a peer that did not advertise it.
 pub const OPAQUE_CAP: &str = "envelope.opaque.v1";
+/// Capability: this node sends and reads [`PeerFrame::NodeInfo`].
+pub const NODE_INFO_CAP: &str = "node.info.v1";
+/// Longest `node_info.version` kept, in bytes; a longer one is ignored.
+pub const MAX_NODE_VERSION_BYTES: usize = 32;
 /// Most fork references in one `have` frame.
 pub const MAX_HAVE_FORKS: usize = 64;
 /// Longest `close.detail`, in bytes.
@@ -335,6 +339,13 @@ impl From<&StoredEntry> for WireItem {
     }
 }
 
+/// What [`PeerFrame::NodeInfo`] carries. Never compared or gated on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeInfo {
+    #[serde(default)]
+    pub version: String,
+}
+
 /// One peer wire frame. Every struct tolerates unknown fields and an unknown
 /// `t` decodes to [`PeerFrame::Unknown`], so peers add frames and fields
 /// compatibly; senders send a non-base frame only to a peer that advertised
@@ -416,6 +427,10 @@ pub enum PeerFrame {
     Seen {
         ages: Vec<SeenAge>,
     },
+    /// The sender's daemon version, for display only; sent once per link
+    /// right after it is established.
+    // cap: NODE_INFO_CAP
+    NodeInfo(NodeInfo),
     #[serde(other)]
     Unknown,
 }
@@ -697,6 +712,9 @@ mod tests {
                     age_ms: 1500,
                 }],
             },
+            PeerFrame::NodeInfo(NodeInfo {
+                version: "2.4.0".to_owned(),
+            }),
         ]
     }
 
@@ -707,7 +725,7 @@ mod tests {
     #[test]
     fn every_variant_round_trips() {
         let frames = all_frames();
-        assert_eq!(frames.len(), 13);
+        assert_eq!(frames.len(), 14);
         for frame in &frames {
             let bytes = frame.encode().unwrap();
             let back = PeerFrame::decode(&bytes).unwrap();
@@ -723,8 +741,20 @@ mod tests {
         assert_eq!(
             tags,
             [
-                "hello", "auth", "accept", "close", "close", "have", "want", "unwant", "entries",
-                "credit", "ping", "pong", "seen"
+                "hello",
+                "auth",
+                "accept",
+                "close",
+                "close",
+                "have",
+                "want",
+                "unwant",
+                "entries",
+                "credit",
+                "ping",
+                "pong",
+                "seen",
+                "node_info"
             ]
         );
         // The entry payload keeps its exact bytes.

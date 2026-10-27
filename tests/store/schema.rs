@@ -6769,7 +6769,7 @@ mod bytes_first {
 
         open_with(&db, schema::NODE_DELTAS).unwrap();
 
-        assert_eq!(user_version(&db), 5);
+        assert_eq!(user_version(&db), schema::NODE_LATEST_SCHEMA_VERSION);
         assert!(fk_on(&db), "foreign keys are back on");
         assert_eq!(fk_violations(&db), 0);
         assert_eq!(
@@ -6915,7 +6915,7 @@ mod bytes_first {
     fn fresh_store_reaches_schema_5_and_passes_audit() {
         let db = Connection::open_in_memory().unwrap();
         open_with(&db, schema::NODE_DELTAS).unwrap();
-        assert_eq!(user_version(&db), 5);
+        assert_eq!(user_version(&db), schema::NODE_LATEST_SCHEMA_VERSION);
         open_with(&db, schema::NODE_DELTAS).unwrap();
         for table in ["journal", "journal_forked"] {
             assert_eq!(

@@ -266,6 +266,18 @@ fn emitted_frames_decode_with_2_1_1_shadow() {
     }
 }
 
+// Kills: a node_info frame (ht-xg88, sent only to a peer advertising
+// node.info.v1) that a 2.1.1 peer would refuse instead of ignoring, were one
+// ever sent to it.
+#[test]
+fn node_info_is_unknown_to_2_1_1() {
+    let frame = PeerFrame::NodeInfo(herdr_threads::sync::frame::NodeInfo {
+        version: "2.4.0".into(),
+    });
+    let shadow = legacy::decode(&frame.encode().unwrap()).expect("2.1.1 decodes it");
+    assert!(matches!(shadow, legacy::PeerFrame::Unknown));
+}
+
 #[test]
 fn emitted_hello_envelope_is_one() {
     let mut seen = 0;

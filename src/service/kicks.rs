@@ -237,6 +237,8 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "journal_forked",
     // Reachability is read by queries, never by a lane (ht-5fr.5.4).
     "sync_node_contact",
+    // Peer status (ht-xg88) is display data read by `peer list` only.
+    "sync_peer_status",
     "thread_registers",
     // Passive inbox progress never schedules attention or deadlines.
     "lazy_recipients",

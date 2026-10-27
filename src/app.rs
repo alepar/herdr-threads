@@ -2124,7 +2124,7 @@ where
             {
                 return Err(io::Error::other("resync: salvage job could not be queued"));
             }
-            let (sync_handle, peer_intake, sync_join) = crate::sync::coordinator::SyncCoordinator::start(
+            let (sync_handle, peer_intake, sync_join) = crate::sync::coordinator::SyncCoordinator::start_with(
                 crate::sync::coordinator::CoordinatorDeps {
                     journal: sync_store.clone(),
                     sync_store,
@@ -2141,6 +2141,7 @@ where
                     resync_pin,
                     cancel: factory_stop.clone(),
                 },
+                crate::sync::coordinator::CoordinatorOptions::for_daemon(),
             );
             factory_peers.set_intake(peer_intake);
             let apply_epochs = Arc::clone(

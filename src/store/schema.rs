@@ -103,6 +103,11 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
             sql_after: include_str!("../../migrations/node/0005_bytes_first_journal_after.sql"),
         }),
     },
+    NodeDelta {
+        version: 6,
+        sql: include_str!("../../migrations/node/0006_peer_status.sql"),
+        rebuild: None,
+    },
 ];
 
 /// Latest `PRAGMA user_version` supported by this binary's production schema.

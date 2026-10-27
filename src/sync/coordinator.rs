@@ -70,8 +70,9 @@ use super::dialer::{DialConfig, DialShared, Dialer, DialerDeps};
 use super::envelope::{GENESIS_KIND, StoredEntry, hex_decode, hex_encode};
 use super::facts::GenesisPayload;
 use super::frame::{
-    BranchWant, CloseReason, FORK_CAP, ForkRef, HaveLog, MAX_HAVE_FORKS, MAX_HAVE_LOGS, OPAQUE_CAP,
-    PeerFrame, Role, SeenAge, WireItem, write_peer_frame,
+    BranchWant, CloseReason, FORK_CAP, ForkRef, HaveLog, MAX_HAVE_FORKS, MAX_HAVE_LOGS,
+    MAX_NODE_VERSION_BYTES, NODE_INFO_CAP, NodeInfo, OPAQUE_CAP, PeerFrame, Role, SeenAge,
+    WireItem, write_peer_frame,
 };
 use super::journal_port::{ForkEvidence, IngestOutcome, JournalPort};
 use super::link::{
@@ -90,8 +91,10 @@ use crate::service::workers::WorkerStatus;
 use crate::store::connection::{HoldSource, OwnHistoryHold};
 use crate::store::sync_contacts::NodeContact;
 use crate::store::sync_dial_targets::TargetId;
+use crate::store::sync_peer_status::PeerStatus;
 
 mod ingest;
+mod peer_status;
 mod routing;
 mod serve;
 
@@ -513,6 +516,37 @@ pub struct LinkStatus {
     /// entry it wants of the log is opaque (not a count of entries).
     pub withheld_logs: u64,
     pub last_error: Option<String>,
+    /// The last inbound frame of any kind, ping/pong included.
+    pub last_rx: UtcMillis,
+    /// The last frame the peer's coordinator sent (not the link's own
+    /// ping/pong/credit): application-level contact.
+    pub app_rx: UtcMillis,
+    /// The peer's self-reported daemon version (`node_info`); display only.
+    pub peer_version: Option<String>,
+    /// The capabilities negotiated on this link.
+    pub caps: Vec<String>,
+    /// `(acked, head)`: the peer holds `acked` of our active log (from its
+    /// `have`); `None` off an active link or before its first full `have`.
+    pub tx: Option<(u64, u64)>,
+    /// `(have, head)`: we hold `have` of the peer's active log, which it
+    /// advertises at `head`.
+    pub rx: Option<(u64, u64)>,
+    pub stalled: Stall,
+}
+
+/// Which parts of an active link stopped making progress (diagnostic only;
+/// no link, rank or dial decision reads it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stall {
+    /// No frame from the peer's coordinator for `APP_SILENT_AFTER_MS`,
+    /// although the link itself is alive.
+    pub app: bool,
+    /// Our active log is ahead of what the peer acknowledges and its
+    /// acknowledgement has not advanced for `STALL_AFTER_MS`.
+    pub tx: bool,
+    /// The peer advertises its active log ahead of what we hold and we have
+    /// not ingested any of it for `STALL_AFTER_MS`.
+    pub rx: bool,
 }
 
 /// The coordinator's state for `sync status`.
@@ -621,12 +655,52 @@ pub struct CoordinatorOptions {
     /// Advertise [`OPAQUE_CAP`] in the hello (default). Without it, peers
     /// withhold opaque entries from this node.
     pub advertise_opaque: bool,
+    /// The stall thresholds of node status.
+    pub timings: StallTimings,
 }
 
 impl Default for CoordinatorOptions {
     fn default() -> Self {
         Self {
             advertise_opaque: true,
+            timings: StallTimings::default(),
+        }
+    }
+}
+
+impl CoordinatorOptions {
+    /// The daemon's options. Test-support builds read shortened stall
+    /// thresholds from `HT_TEST_STALL_AFTER_MS` and
+    /// `HT_TEST_APP_SILENT_AFTER_MS` (multinode tests).
+    pub fn for_daemon() -> Self {
+        #[allow(unused_mut)]
+        let mut options = Self::default();
+        #[cfg(feature = "test-support")]
+        {
+            let ms = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
+            if let Some(v) = ms("HT_TEST_STALL_AFTER_MS") {
+                options.timings.stall_after_ms = v;
+            }
+            if let Some(v) = ms("HT_TEST_APP_SILENT_AFTER_MS") {
+                options.timings.app_silent_after_ms = v;
+            }
+        }
+        options
+    }
+}
+
+/// When a link counts as stalled (see [`Stall`]), in ms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StallTimings {
+    pub stall_after_ms: u64,
+    pub app_silent_after_ms: u64,
+}
+
+impl Default for StallTimings {
+    fn default() -> Self {
+        Self {
+            stall_after_ms: peer_status::STALL_AFTER_MS,
+            app_silent_after_ms: peer_status::APP_SILENT_AFTER_MS,
         }
     }
 }
@@ -694,6 +768,7 @@ impl SyncCoordinator {
         if options.advertise_opaque {
             hello.caps.push(OPAQUE_CAP.to_owned());
         }
+        hello.caps.push(NODE_INFO_CAP.to_owned());
         let me = Arc::new(hello);
         let actor = Actor {
             me,
@@ -727,6 +802,10 @@ impl SyncCoordinator {
             contacts,
             flushes: JoinSet::new(),
             pin,
+            timings: options.timings,
+            peer_flushed: BTreeMap::new(),
+            peer_flushed_at: None,
+            peer_flushes: JoinSet::new(),
         };
         let join = tokio::spawn(actor.run(Inputs {
             intake: intake_rx,
@@ -839,6 +918,22 @@ struct LinkEntry {
     /// The link's inbound frame count at the last contact poll (the link
     /// answers `ping`/`pong` itself, so only the count tells they arrived).
     polled_inbound: u64,
+    /// Wall time of the last inbound frame of any kind.
+    last_rx_wall: u64,
+    /// The last frame the peer's coordinator sent (see `peer_status`).
+    app_rx: MonoInstant,
+    app_rx_wall: u64,
+    /// The peer's `node_info` version.
+    peer_version: Option<String>,
+    /// A full `have` arrived in this activation, so `peer_vector` is the
+    /// peer's whole vector (unlike the round flag, a new round keeps it).
+    vector_known: bool,
+    /// The held counter last seen growing in each direction, and when it
+    /// last made progress (see `peer_status::track_progress`).
+    tx_mark: Option<u64>,
+    tx_progress_at: MonoInstant,
+    rx_mark: Option<u64>,
+    rx_progress_at: MonoInstant,
     /// Held so the transport's slot is released when the link is.
     _permit: Option<PeerPermit>,
 }
@@ -946,6 +1041,14 @@ struct Actor {
     flushes: JoinSet<FlushDone>,
     /// The resync rx pin while it holds.
     pin: Option<ActivePin>,
+    /// Node status stall thresholds.
+    timings: StallTimings,
+    /// The peer-status rows the store holds, by node.
+    peer_flushed: BTreeMap<NodeUuid, PeerStatus>,
+    /// When the last peer-status write started.
+    peer_flushed_at: Option<MonoInstant>,
+    /// `record_peer_status` calls in flight (at most one).
+    peer_flushes: JoinSet<peer_status::PeerFlushDone>,
 }
 
 /// A [`ResyncPin`] and when it took hold (the coordinator's monotonic
@@ -989,6 +1092,11 @@ impl Actor {
                 Some(joined) = self.flushes.join_next(), if !self.flushes.is_empty() => {
                     if let Ok(done) = joined {
                         self.on_flushed(done);
+                    }
+                }
+                Some(joined) = self.peer_flushes.join_next(), if !self.peer_flushes.is_empty() => {
+                    if let Ok(done) = joined {
+                        self.on_peer_status_flushed(done);
                     }
                 }
                 Some(done) = inputs.ingest.recv() => self.on_ingested(done),
@@ -1177,9 +1285,19 @@ impl Actor {
                         round: None,
                         seen_at: None,
                         polled_inbound: 0,
+                        last_rx_wall: self.wall(),
+                        app_rx: now,
+                        app_rx_wall: self.wall(),
+                        peer_version: None,
+                        vector_known: false,
+                        tx_mark: None,
+                        tx_progress_at: now,
+                        rx_mark: None,
+                        rx_progress_at: now,
                         _permit: permit,
                     },
                 );
+                self.send_node_info(link_id);
                 match older {
                     Some(older) => self.start_probe(link_id, older),
                     None => self.rank_link(link_id),
@@ -1359,6 +1477,7 @@ impl Actor {
         };
         entry.mode = LinkMode::Standby;
         entry.peer_vector = Vector::default();
+        entry.vector_known = false;
         entry.own_claims.clear();
         entry.have_pending = None;
         entry.announced = false;
@@ -1402,6 +1521,12 @@ impl Actor {
         entry.announced = false;
         entry.have_pending = Some(ask);
         entry.seen_at = None;
+        entry.app_rx = started;
+        entry.vector_known = false;
+        entry.tx_mark = None;
+        entry.tx_progress_at = started;
+        entry.rx_mark = None;
+        entry.rx_progress_at = started;
         entry.round = Some(RoundTrack {
             started,
             full_have: false,
@@ -1464,6 +1589,14 @@ impl Actor {
         let (node, usable) = (entry.handle.peer().node, entry.ranked && !entry.closing);
         let wall = self.wall();
         self.contacts.record_direct(node, wall);
+        let now = self.mono();
+        if let Some(entry) = self.links.get_mut(&link_id) {
+            // Every frame that reaches the actor came from the peer's
+            // coordinator: the link answers ping/pong/credit itself.
+            entry.app_rx = now;
+            entry.app_rx_wall = wall;
+            entry.last_rx_wall = wall;
+        }
         if matches!(
             frame,
             PeerFrame::Want { .. }
@@ -1479,6 +1612,10 @@ impl Actor {
         let frame = match frame {
             PeerFrame::BranchWant(want) => {
                 self.on_branch_want(link_id, want);
+                return;
+            }
+            PeerFrame::NodeInfo(info) => {
+                self.on_node_info(link_id, info);
                 return;
             }
             other => other,
@@ -1599,6 +1736,7 @@ impl Actor {
         if full && let Some(round) = entry.round.as_mut() {
             round.full_have = true;
         }
+        entry.vector_known |= full;
         let before = std::mem::take(&mut entry.peer_vector);
         let mut vector = if full {
             Vector::default()
@@ -1960,6 +2098,8 @@ impl Actor {
             self.send_seen_if_due(id, now);
         }
         self.flush_contacts();
+        self.track_progress();
+        self.flush_peer_status();
         self.update_own_history();
         self.update_rounds();
         if self.refresh.is_empty() && self.links.values().any(|l| l.have_pending.is_some()) {
@@ -2117,6 +2257,7 @@ impl Actor {
             let inbound = entry.handle.inbound_frames();
             if inbound > entry.polled_inbound {
                 entry.polled_inbound = inbound;
+                entry.last_rx_wall = wall;
                 self.contacts.record_direct(entry.handle.peer().node, wall);
             }
         }
@@ -2315,6 +2456,7 @@ impl Actor {
     fn on_request(&self, request: Request) {
         match request {
             Request::Snapshot(reply) => {
+                let mono_now = self.mono();
                 let links = self
                     .links
                     .iter()
@@ -2340,6 +2482,15 @@ impl Actor {
                             subscriptions: u32::try_from(entry.subs_out.len()).unwrap_or(u32::MAX),
                             withheld_logs: entry.withheld_logs.len() as u64,
                             last_error: None,
+                            last_rx: UtcMillis(
+                                i64::try_from(entry.last_rx_wall).unwrap_or(i64::MAX),
+                            ),
+                            app_rx: UtcMillis(i64::try_from(entry.app_rx_wall).unwrap_or(i64::MAX)),
+                            peer_version: entry.peer_version.clone(),
+                            caps: peer.caps.clone(),
+                            tx: self.link_positions(entry).0,
+                            rx: self.link_positions(entry).1,
+                            stalled: self.stall_of(entry, mono_now),
                         }
                     })
                     .collect();
@@ -2671,6 +2822,13 @@ mod tests {
                 ));
             }
             self.inner.record_contacts(contacts, budget)
+        }
+        fn record_peer_status(
+            &self,
+            rows: &[crate::store::sync_peer_status::PeerStatus],
+            budget: &CallBudget,
+        ) -> Result<(), ApiError> {
+            self.inner.record_peer_status(rows, budget)
         }
     }
 
@@ -5210,6 +5368,7 @@ mod tests {
             None,
             CoordinatorOptions {
                 advertise_opaque: false,
+                ..CoordinatorOptions::default()
             },
         );
         let peer = connect(&rig, 0, &opaque_hello(2)).await;
@@ -5536,6 +5695,7 @@ mod tests {
             None,
             CoordinatorOptions {
                 advertise_opaque: false,
+                ..CoordinatorOptions::default()
             },
         );
         let mut report = link_nodes(&a, &b).await;
@@ -7288,5 +7448,174 @@ mod tests {
             store.inner.contacts().iter().any(|c| c.node == node_of(3)),
             "node 3 reached the store at shutdown"
         );
+    }
+
+    // -- Node status (ht-xg88) ----------------------------------------------
+
+    fn info_hello(n: u8) -> LocalHello {
+        let mut hello = peer_hello(n);
+        hello.caps.push(NODE_INFO_CAP.to_owned());
+        hello
+    }
+
+    // Kills: node_info sent to a peer without the cap (an older peer sees a
+    // new frame), not sent to one with it, a peer version kept without the
+    // cap, and a version that never reaches the snapshot.
+    #[tokio::test(start_paused = true)]
+    async fn node_info_goes_only_to_a_peer_with_the_cap() {
+        let (rig, _journal) = node(1, 0, 0);
+        let mut with = connect(&rig, 0, &info_hello(2)).await;
+        match with.next().await {
+            PeerFrame::NodeInfo(info) => assert_eq!(info.version, env!("CARGO_PKG_VERSION")),
+            other => panic!("expected node_info, got {other:?}"),
+        }
+        with.expect_have().await;
+        with.send(PeerFrame::NodeInfo(NodeInfo {
+            version: "9.9.9".into(),
+        }))
+        .await;
+        let mut without = connect(&rig, 1, &peer_hello(3)).await;
+        // The first frame after the handshake is the activation have.
+        without.expect_have().await;
+        without
+            .send(PeerFrame::NodeInfo(NodeInfo {
+                version: "1.0.0".into(),
+            }))
+            .await;
+        with.pump(500).await;
+        assert!(
+            without
+                .pump(500)
+                .await
+                .iter()
+                .all(|f| !matches!(f, PeerFrame::NodeInfo(_)))
+        );
+        let snap = snapshot(&rig).await;
+        let version = |n: u8| {
+            snap.links
+                .iter()
+                .find(|l| l.node == node_of(n))
+                .and_then(|l| l.peer_version.clone())
+        };
+        assert_eq!(version(2).as_deref(), Some("9.9.9"));
+        assert_eq!(version(3), None, "ignored without the cap");
+        assert!(
+            snap.links
+                .iter()
+                .find(|l| l.node == node_of(2))
+                .is_some_and(|l| l.caps.iter().any(|c| c == NODE_INFO_CAP))
+        );
+        stop(rig).await;
+    }
+
+    // Kills: a stall reported while the peer is caught up or before the
+    // threshold, app contact advanced by ping/pong (a wedged coordinator
+    // behind a live link reads healthy), a tx or rx stall that never clears
+    // on progress, and positions missing from the snapshot.
+    #[tokio::test(start_paused = true)]
+    async fn stalls_are_reported_and_clear_on_progress() {
+        let journal = TestJournal::new(1);
+        let own = journal.inner.bootstrap();
+        journal
+            .inner
+            .author_raw("test.kind", payload(0, 0))
+            .unwrap();
+        let rig = start_node_full(
+            1,
+            journal.clone(),
+            None,
+            CoordinatorOptions {
+                timings: StallTimings {
+                    stall_after_ms: 6_000,
+                    app_silent_after_ms: 3_000,
+                },
+                ..CoordinatorOptions::default()
+            },
+        );
+        let head = open_vector_counter(&journal, &own);
+        assert!(head >= 2);
+        let mut peer = connect(&rig, 0, &peer_hello(2)).await;
+        peer.expect_have().await;
+        // The peer holds none of our log and advertises 5 of its own.
+        peer.send_have(true, false, vec![have_log(node_of(2), 1, 5)])
+            .await;
+        peer.pump(1_000).await;
+        let link = snapshot(&rig).await.links[0].clone();
+        assert_eq!(link.tx, Some((0, head)));
+        assert_eq!(link.rx, Some((0, 5)));
+        assert_eq!(link.stalled, Stall::default());
+
+        // Only ping/pong for longer than the app threshold (pump answers
+        // pings): the transport is alive, the coordinator is not.
+        peer.pump(3_500).await;
+        let link = snapshot(&rig).await.links[0].clone();
+        assert!(link.stalled.app, "{link:?}");
+        assert!(!link.stalled.tx && !link.stalled.rx, "{link:?}");
+        assert!(link.last_rx.0 > link.app_rx.0, "pings move last_rx only");
+
+        // Coordinator traffic again, but no acknowledgement and nothing
+        // ingested past the stall threshold.
+        for _ in 0..3 {
+            peer.send(PeerFrame::Seen { ages: vec![] }).await;
+            peer.pump(1_000).await;
+        }
+        let link = snapshot(&rig).await.links[0].clone();
+        assert_eq!(
+            link.stalled,
+            Stall {
+                app: false,
+                tx: true,
+                rx: true
+            }
+        );
+
+        // The peer acknowledges our head and stops advertising its log.
+        peer.send_have(true, false, vec![have_log(own.node, own.incarnation, head)])
+            .await;
+        peer.pump(1_500).await;
+        let link = snapshot(&rig).await.links[0].clone();
+        assert_eq!(link.tx, Some((head, head)));
+        assert_eq!(link.stalled, Stall::default(), "{link:?}");
+        stop(rig).await;
+    }
+
+    // Kills: no peer-status row for a linked node, a row that keeps
+    // `linked_since` after the link ended, and a missing version.
+    #[tokio::test(start_paused = true)]
+    async fn peer_status_rows_follow_the_link() {
+        let (rig, _journal) = node(1, 0, 0);
+        let mut peer = connect(&rig, 0, &info_hello(2)).await;
+        peer.next().await;
+        peer.expect_have().await;
+        peer.send(PeerFrame::NodeInfo(NodeInfo {
+            version: "2.4.0".into(),
+        }))
+        .await;
+        peer.pump(2_000).await;
+        let row = |store: &CountingStore| {
+            store
+                .inner
+                .peer_status()
+                .into_iter()
+                .find(|r| r.node == node_of(2))
+        };
+        let up = row(&rig.store).expect("a row once linked");
+        assert!(up.linked_since.is_some());
+        assert_eq!(up.version.as_deref(), Some("2.4.0"));
+        peer.end();
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if row(&rig.store).is_some_and(|r| r.linked_since.is_none()) {
+                break;
+            }
+        }
+        let down = row(&rig.store).unwrap();
+        assert_eq!(down.linked_since, None);
+        assert_eq!(
+            down.version.as_deref(),
+            Some("2.4.0"),
+            "kept after the link"
+        );
+        stop(rig).await;
     }
 }
