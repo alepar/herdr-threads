@@ -278,6 +278,31 @@ fn node_info_is_unknown_to_2_1_1() {
     assert!(matches!(shadow, legacy::PeerFrame::Unknown));
 }
 
+// Kills: a seat_status frame (ht-xg88, sent only to a peer advertising
+// seat.status.v1) that a 2.1.1 peer would refuse instead of ignoring.
+#[test]
+fn seat_status_is_unknown_to_2_1_1() {
+    use herdr_threads::sync::frame::{SeatStatusEntry, SeatStatusFrame};
+    let frame = PeerFrame::SeatStatus(SeatStatusFrame {
+        origin: herdr_threads::node::NodeUuid::from_u128(4),
+        boot: Uuid::from_u128(1),
+        rev: 1,
+        age_ms: 0,
+        version: "2.4.0".into(),
+        seats: vec![SeatStatusEntry {
+            seat: "sQ0VnTDasAbY".into(),
+            presence: "idle".into(),
+            harness: None,
+            activity_age_ms: None,
+            workspace: None,
+            tab: None,
+            pane: None,
+        }],
+    });
+    let shadow = legacy::decode(&frame.encode().unwrap()).expect("2.1.1 decodes it");
+    assert!(matches!(shadow, legacy::PeerFrame::Unknown));
+}
+
 #[test]
 fn emitted_hello_envelope_is_one() {
     let mut seen = 0;

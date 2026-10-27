@@ -239,6 +239,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "sync_node_contact",
     // Peer status (ht-xg88) is display data read by `peer list` only.
     "sync_peer_status",
+    // Seat status (ht-xg88) is display data read by seat listings only.
+    "remote_seat_origin",
+    "remote_seat_status",
     "thread_registers",
     // Passive inbox progress never schedules attention or deadlines.
     "lazy_recipients",

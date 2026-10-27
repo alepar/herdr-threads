@@ -18,6 +18,7 @@ pub mod invitation_content;
 pub mod invitation_due;
 pub mod journal;
 pub mod lazy_delivery;
+pub mod local_seat_status;
 pub mod materialization;
 pub mod materialize;
 pub mod messages;
@@ -31,6 +32,7 @@ pub(crate) mod public_ids;
 pub mod queries;
 pub mod read_cursors;
 pub mod receipts;
+pub mod remote_seat_status;
 pub mod retention;
 pub mod schema;
 pub mod seats;
@@ -1453,6 +1455,28 @@ impl crate::sync::sync_store::SyncStorePort for SqliteStore {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(store_error)?;
         sync_peer_status::record(&tx, rows, now)?;
+        tx.commit().map_err(store_error)
+    }
+
+    fn record_remote_seat_status(
+        &self,
+        updates: &[remote_seat_status::RemoteSeatUpdate],
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+        let _turn = self
+            .sync_admission
+            .as_ref()
+            .map(|writer| writer.enter_background(budget, self.context.clock()))
+            .transpose()?;
+        let now = u64::try_from(self.context.clock().utc_now().0).unwrap_or(0);
+        let mut writer = self.writer(budget)?;
+        let tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(store_error)?;
+        remote_seat_status::record(&tx, updates, now)?;
         tx.commit().map_err(store_error)
     }
 }

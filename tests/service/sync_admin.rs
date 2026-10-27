@@ -1513,3 +1513,142 @@ fn node_state_prefers_the_live_link() {
     assert_eq!(node_state(never, None), NodeState::Unreachable);
     assert_eq!(node_state(NodeReach::Reachable, None), NodeState::Reachable);
 }
+
+// -- Seat status store (ht-xg88 phase 2) -------------------------------------
+
+fn seed_remote_seat(node: &Node, seat: &str, home: NodeUuid) {
+    let db = node.store.context().open_writer().unwrap();
+    db.execute(
+        "INSERT INTO seats(id,instance_id,state,role,generation,created_at,home_node,is_local,remote_kind,host_id,published) \
+         VALUES (?1,(SELECT id FROM local_node),'remote','native',0,0,?2,0,'agent',NULL,1)",
+        rusqlite::params![seat, home.to_string()],
+    )
+    .unwrap();
+}
+
+fn remote_seat(seat: &str, presence: &str) -> crate::store::remote_seat_status::RemoteSeat {
+    crate::store::remote_seat_status::RemoteSeat {
+        seat: seat.into(),
+        presence: presence.into(),
+        harness: Some("claude".into()),
+        activity_at: Some(900),
+        workspace: Some("office".into()),
+        tab: Some("main".into()),
+        pane: Some("claude".into()),
+    }
+}
+
+fn record_seats(node: &Node, update: crate::store::remote_seat_status::RemoteSeatUpdate) {
+    let mut db = node.store.context().open_writer().unwrap();
+    let tx = db.transaction().unwrap();
+    crate::store::remote_seat_status::record(&tx, &[update], 1).unwrap();
+    tx.commit().unwrap();
+}
+
+// Kills: an entry kept for a seat whose home node is not the snapshot's
+// origin (or that this node does not know), a newer snapshot that keeps a
+// seat it no longer lists, and a refresh that wipes the seats.
+#[test]
+fn remote_seat_snapshots_replace_by_origin_with_the_home_guard() {
+    use crate::store::remote_seat_status::{RemoteSeatUpdate, get};
+    let rig = Rig::new(Node::new(SEED_A, 1));
+    let other = NodeUuid::from_u128(0x5eed);
+    seed_remote_seat(&rig.node, "sQ0VnTDasAbY", peer_node());
+    seed_remote_seat(&rig.node, "sQ0Vx1aB2cD3", peer_node());
+    seed_remote_seat(&rig.node, "sK7m0aaaBBBB", other);
+    let update = |rev, seats: Option<Vec<_>>| RemoteSeatUpdate {
+        origin: peer_node(),
+        boot: uuid::Uuid::from_u128(1),
+        rev,
+        built_at: 1_000 * rev,
+        version: Some("2.4.0".into()),
+        other_boot_at: None,
+        seats,
+    };
+    record_seats(
+        &rig.node,
+        update(
+            1,
+            Some(vec![
+                remote_seat("sQ0VnTDasAbY", "idle"),
+                remote_seat("sQ0Vx1aB2cD3", "busy"),
+                remote_seat("sK7m0aaaBBBB", "busy"), // another node's seat
+                remote_seat("sUnknown0000", "busy"), // unknown here
+            ]),
+        ),
+    );
+    let db = rig.node.store.context().open_writer().unwrap();
+    let count = |db: &rusqlite::Connection| -> i64 {
+        db.query_row("SELECT count(*) FROM remote_seat_status", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(count(&db), 2);
+    assert_eq!(get(&db, "sK7m0aaaBBBB").unwrap(), None);
+    record_seats(
+        &rig.node,
+        update(2, Some(vec![remote_seat("sQ0VnTDasAbY", "busy")])),
+    );
+    assert_eq!(count(&db), 1, "a seat the newer snapshot omits is gone");
+    record_seats(&rig.node, update(3, None));
+    let row = get(&db, "sQ0VnTDasAbY")
+        .unwrap()
+        .expect("kept by a refresh");
+    assert_eq!((row.seat.presence.as_str(), row.built_at), ("busy", 3_000));
+}
+
+// Kills: presence shown for a seat whose home node is unreachable, a
+// snapshot past the reach window shown fresh, a clone suspicion not shown,
+// and a live link overridden by the stored reach.
+#[test]
+fn remote_presence_is_only_as_fresh_as_its_node() {
+    use crate::store::remote_seat_status::{RemotePresence, RemoteSeatRow, presence_of};
+    use crate::store::sync_contacts::NodeReach;
+    let now = 1_000_000;
+    let row = |built_at, other_boot_at| RemoteSeatRow {
+        origin: peer_node(),
+        seat: remote_seat("sQ0VnTDasAbY", "idle"),
+        built_at,
+        other_boot_at,
+    };
+    let fresh = row(now - 30_000, None);
+    let gone = NodeReach::Unreachable { since: Some(5) };
+    assert_eq!(
+        presence_of(Some(&fresh), gone, false, now),
+        RemotePresence::Unreachable { since: Some(5) }
+    );
+    assert!(matches!(
+        presence_of(Some(&fresh), gone, true, now),
+        RemotePresence::Fresh { .. }
+    ));
+    assert_eq!(
+        presence_of(Some(&fresh), NodeReach::Reachable, false, now),
+        RemotePresence::Fresh {
+            presence: "idle".into(),
+            activity_at: Some(900)
+        }
+    );
+    assert_eq!(
+        presence_of(
+            Some(&row(now - 181_000, None)),
+            NodeReach::Reachable,
+            false,
+            now
+        ),
+        RemotePresence::Stale {
+            built_at: now - 181_000
+        }
+    );
+    assert_eq!(
+        presence_of(
+            Some(&row(now - 1_000, Some(now - 10_000))),
+            NodeReach::Reachable,
+            true,
+            now
+        ),
+        RemotePresence::CloneSuspected
+    );
+    assert_eq!(
+        presence_of(None, NodeReach::Reachable, true, now),
+        RemotePresence::Unknown
+    );
+}

@@ -108,6 +108,11 @@ pub(crate) const NODE_DELTAS: &[NodeDelta] = &[
         sql: include_str!("../../migrations/node/0006_peer_status.sql"),
         rebuild: None,
     },
+    NodeDelta {
+        version: 7,
+        sql: include_str!("../../migrations/node/0007_remote_seat_status.sql"),
+        rebuild: None,
+    },
 ];
 
 /// Latest `PRAGMA user_version` supported by this binary's production schema.

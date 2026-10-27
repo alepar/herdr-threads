@@ -71,8 +71,8 @@ use super::envelope::{GENESIS_KIND, StoredEntry, hex_decode, hex_encode};
 use super::facts::GenesisPayload;
 use super::frame::{
     BranchWant, CloseReason, FORK_CAP, ForkRef, HaveLog, MAX_HAVE_FORKS, MAX_HAVE_LOGS,
-    MAX_NODE_VERSION_BYTES, NODE_INFO_CAP, NodeInfo, OPAQUE_CAP, PeerFrame, Role, SeenAge,
-    WireItem, write_peer_frame,
+    MAX_NODE_VERSION_BYTES, NODE_INFO_CAP, NodeInfo, OPAQUE_CAP, PeerFrame, Role, SEAT_STATUS_CAP,
+    SeatStatusEntry, SeatStatusFrame, SeenAge, WireItem, write_peer_frame,
 };
 use super::journal_port::{ForkEvidence, IngestOutcome, JournalPort};
 use super::link::{
@@ -96,6 +96,7 @@ use crate::store::sync_peer_status::PeerStatus;
 mod ingest;
 mod peer_status;
 mod routing;
+mod seat_status;
 mod serve;
 
 use ingest::{IngestDone, IngestJob};
@@ -578,6 +579,8 @@ pub struct SyncSnapshot {
 
 enum Request {
     Snapshot(oneshot::Sender<SyncSnapshot>),
+    /// This node's own seats, to publish on `seat_status` (ht-xg88).
+    PublishSeats(Vec<SeatStatusEntry>),
 }
 
 /// The cloneable facade over the coordinator actor.
@@ -587,6 +590,8 @@ enum Request {
 #[derive(Clone)]
 pub struct SyncHandle {
     links: Arc<AtomicUsize>,
+    /// Some active link negotiated [`SEAT_STATUS_CAP`] (written by the actor).
+    seat_status_wanted: Arc<AtomicBool>,
     requests: mpsc::Sender<Request>,
     dialed: mpsc::Sender<DialedStream>,
     dial: Arc<DialShared>,
@@ -598,6 +603,19 @@ impl SyncHandle {
     /// The round-complete signal (written only by the actor).
     pub fn signals(&self) -> Arc<SyncSignals> {
         self.signals.clone()
+    }
+
+    /// Whether some active link negotiated `seat.status.v1`, so publishing
+    /// this node's seats reaches anyone.
+    pub fn seat_status_wanted(&self) -> bool {
+        self.seat_status_wanted.load(Ordering::Acquire)
+    }
+
+    /// Hand this node's own seats to the actor for `seat_status` (ht-xg88).
+    /// Never waits: a full request queue drops this one (the next publish
+    /// carries the same state).
+    pub fn publish_seat_status(&self, seats: Vec<SeatStatusEntry>) {
+        let _ = self.requests.try_send(Request::PublishSeats(seats));
     }
 
     /// Links that are established or handshaking, inbound or dialed.
@@ -770,8 +788,10 @@ impl SyncCoordinator {
             },
             deps.dial.clone(),
         );
+        let seat_status_wanted = Arc::new(AtomicBool::new(false));
         let handle = SyncHandle {
             links: links.clone(),
+            seat_status_wanted: seat_status_wanted.clone(),
             requests: requests_tx,
             dialed: dialed_tx,
             dial: dialer.shared(),
@@ -788,6 +808,7 @@ impl SyncCoordinator {
             hello.caps.push(OPAQUE_CAP.to_owned());
         }
         hello.caps.push(NODE_INFO_CAP.to_owned());
+        hello.caps.push(SEAT_STATUS_CAP.to_owned());
         let me = Arc::new(hello);
         let actor = Actor {
             me,
@@ -826,6 +847,7 @@ impl SyncCoordinator {
             peer_flushed_at: None,
             peer_flushes: JoinSet::new(),
             peer_flush: peer_status::FlushHealth::default(),
+            seats: seat_status::SeatStatusState::new(seat_status_wanted),
         };
         let join = tokio::spawn(actor.run(Inputs {
             intake: intake_rx,
@@ -949,6 +971,8 @@ struct LinkEntry {
     /// A full `have` arrived in this activation, so `peer_vector` is the
     /// peer's whole vector (unlike the round flag, a new round keeps it).
     vector_known: bool,
+    /// This activation was sent every held seat-status snapshot.
+    seat_status_sent: bool,
     /// The held counter last seen growing in each direction, and when it
     /// last made progress (see `peer_status::track_progress`).
     tx_mark: Option<(LogKey, u64)>,
@@ -1072,6 +1096,8 @@ struct Actor {
     peer_flushes: JoinSet<peer_status::PeerFlushDone>,
     /// Failure backoff and stuck-write reporting of those calls.
     peer_flush: peer_status::FlushHealth,
+    /// Own and relayed seat-status snapshots (ht-xg88).
+    seats: seat_status::SeatStatusState,
 }
 
 /// A [`ResyncPin`] and when it took hold (the coordinator's monotonic
@@ -1119,6 +1145,9 @@ impl Actor {
                 }
                 Some(joined) = self.peer_flushes.join_next(), if !self.peer_flushes.is_empty() => {
                     self.on_peer_status_joined(joined);
+                }
+                Some(joined) = self.seats.writes.join_next(), if !self.seats.writes.is_empty() => {
+                    self.on_seat_status_written(joined);
                 }
                 Some(done) = inputs.ingest.recv() => self.on_ingested(done),
                 Some(joined) = self.serve_jobs.join_next(), if !self.serve_jobs.is_empty() => {
@@ -1311,6 +1340,7 @@ impl Actor {
                         app_rx_wall: None,
                         peer_version: None,
                         vector_known: false,
+                        seat_status_sent: false,
                         tx_mark: None,
                         tx_progress_at: now,
                         rx_mark: None,
@@ -1544,6 +1574,7 @@ impl Actor {
         entry.seen_at = None;
         entry.app_rx = started;
         entry.vector_known = false;
+        entry.seat_status_sent = false;
         entry.tx_mark = None;
         entry.tx_progress_at = started;
         entry.rx_mark = None;
@@ -1702,6 +1733,7 @@ impl Actor {
             reply @ (PeerFrame::BranchEntries { .. } | PeerFrame::BranchNone { .. }) => {
                 self.on_branch_reply(link_id, reply, wire_len);
             }
+            PeerFrame::SeatStatus(frame) => self.on_seat_status(link_id, frame),
             _ => {}
         }
     }
@@ -2121,6 +2153,7 @@ impl Actor {
         self.flush_contacts();
         self.track_progress();
         self.flush_peer_status();
+        self.seat_status_tick();
         self.update_own_history();
         self.update_rounds();
         if self.refresh.is_empty() && self.links.values().any(|l| l.have_pending.is_some()) {
@@ -2474,8 +2507,9 @@ impl Actor {
         self.signals.publish(rounds);
     }
 
-    fn on_request(&self, request: Request) {
+    fn on_request(&mut self, request: Request) {
         match request {
+            Request::PublishSeats(seats) => self.on_publish_seats(seats),
             Request::Snapshot(reply) => {
                 let mono_now = self.mono();
                 let links = self
@@ -2585,6 +2619,7 @@ impl Actor {
         }
         self.final_flush().await;
         self.final_peer_status_flush().await;
+        self.final_seat_status_flush().await;
         self.dialer.shutdown().await;
         let leftover: Vec<u64> = self.links.keys().copied().collect();
         for link_id in leftover {
@@ -2863,6 +2898,13 @@ mod tests {
                 ));
             }
             self.inner.record_peer_status(rows, budget)
+        }
+        fn record_remote_seat_status(
+            &self,
+            updates: &[crate::store::remote_seat_status::RemoteSeatUpdate],
+            budget: &CallBudget,
+        ) -> Result<(), ApiError> {
+            self.inner.record_remote_seat_status(updates, budget)
         }
     }
 
@@ -3485,6 +3527,7 @@ mod tests {
         let (dialed_tx, _dialed_rx) = mpsc::channel(1);
         let stalled = SyncHandle {
             links: Arc::default(),
+            seat_status_wanted: Arc::default(),
             requests,
             dialed: dialed_tx,
             dial: rig.handle.dial.clone(),
@@ -7692,6 +7735,165 @@ mod tests {
             Some("2.4.0"),
             "kept after the link"
         );
+        stop(rig).await;
+    }
+
+    // -- Seat status (ht-xg88 phase 2) --------------------------------------
+
+    fn seat_hello(n: u8) -> LocalHello {
+        let mut hello = peer_hello(n);
+        hello.caps.push(SEAT_STATUS_CAP.to_owned());
+        hello
+    }
+
+    fn seat_entry(seat: &str, presence: &str) -> SeatStatusEntry {
+        SeatStatusEntry {
+            seat: seat.into(),
+            presence: presence.into(),
+            harness: Some("claude".into()),
+            activity_age_ms: Some(5_000),
+            workspace: Some("office".into()),
+            tab: Some("main".into()),
+            pane: Some("claude".into()),
+        }
+    }
+
+    fn seat_frame(origin: NodeUuid, boot: u128, rev: u64, age_ms: u64) -> PeerFrame {
+        PeerFrame::SeatStatus(SeatStatusFrame {
+            origin,
+            boot: Uuid::from_u128(boot),
+            rev,
+            age_ms,
+            version: "2.4.0".into(),
+            seats: vec![seat_entry("sQ0VnTDasAbY", "idle")],
+        })
+    }
+
+    fn seat_frames(frames: &[PeerFrame]) -> Vec<SeatStatusFrame> {
+        frames
+            .iter()
+            .filter_map(|f| match f {
+                PeerFrame::SeatStatus(frame) => Some(frame.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // Kills: own seats sent to a peer without the cap, not sent to a newly
+    // ready link, a rev bumped for an unchanged snapshot or kept for a
+    // changed one, and `seat_status_wanted` never set.
+    #[tokio::test(start_paused = true)]
+    async fn own_seats_go_to_cap_links_with_a_rev_per_change() {
+        let (rig, _journal) = node(1, 0, 0);
+        let mut with = connect(&rig, 0, &seat_hello(2)).await;
+        with.expect_have().await;
+        let mut without = connect(&rig, 1, &peer_hello(3)).await;
+        without.expect_have().await;
+        with.pump(1_500).await;
+        assert!(rig.handle.seat_status_wanted());
+        rig.handle
+            .publish_seat_status(vec![seat_entry("snSGbl096JZZ", "busy")]);
+        let first = seat_frames(&with.pump(1_500).await);
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!((first[0].origin, first[0].rev), (node_of(1), 1));
+        assert_eq!(first[0].seats[0].presence, "busy");
+        rig.handle
+            .publish_seat_status(vec![seat_entry("snSGbl096JZZ", "busy")]);
+        rig.handle
+            .publish_seat_status(vec![seat_entry("snSGbl096JZZ", "idle")]);
+        let revs: Vec<u64> = seat_frames(&with.pump(1_500).await)
+            .iter()
+            .map(|f| f.rev)
+            .collect();
+        assert_eq!(revs, [1, 2], "unchanged keeps the rev, a change bumps it");
+        assert!(seat_frames(&without.pump(500).await).is_empty());
+        // A link that becomes ready later gets the current snapshot.
+        let mut late = connect(&rig, 2, &seat_hello(4)).await;
+        late.expect_have().await;
+        let got = seat_frames(&late.pump(1_500).await);
+        assert_eq!(got.iter().map(|f| f.rev).collect::<Vec<_>>(), [2]);
+        stop(rig).await;
+    }
+
+    // Kills: a snapshot of this node's own origin accepted, an older or
+    // repeated one accepted or relayed, a newer one not stored or not
+    // relayed, a relay back to the sender or to the origin's own node, and
+    // a second live boot not recorded.
+    #[tokio::test(start_paused = true)]
+    async fn relayed_snapshots_are_ordered_relayed_and_stored() {
+        let (rig, _journal) = node(1, 0, 0);
+        let mut a = connect(&rig, 0, &seat_hello(2)).await;
+        a.expect_have().await;
+        let mut b = connect(&rig, 1, &seat_hello(3)).await;
+        b.expect_have().await;
+        a.pump(1_500).await;
+        b.pump(100).await;
+        let origin = node_of(9);
+        a.send(seat_frame(origin, 1, 5, 2_000)).await;
+        a.send(seat_frame(origin, 1, 4, 0)).await; // older rev: dropped
+        a.send(seat_frame(origin, 1, 5, 2_000)).await; // repeat: dropped
+        a.send(seat_frame(node_of(1), 1, 9, 0)).await; // our own origin
+        let relayed = seat_frames(&b.pump(1_500).await);
+        assert_eq!(relayed.len(), 1, "{relayed:?}");
+        assert_eq!((relayed[0].origin, relayed[0].rev), (origin, 5));
+        assert!(
+            relayed[0].age_ms >= 2_000,
+            "age accumulates: {}",
+            relayed[0].age_ms
+        );
+        assert!(seat_frames(&a.pump(200).await).is_empty(), "never back");
+        let updates = rig.store.inner.seat_updates();
+        assert_eq!(updates.len(), 1, "{updates:?}");
+        assert_eq!(updates[0].origin, origin);
+        assert_eq!(updates[0].rev, 5);
+        let seats = updates[0].seats.as_ref().expect("content");
+        assert_eq!(seats[0].seat, "sQ0VnTDasAbY");
+        assert_eq!(updates[0].other_boot_at, None);
+        // Another boot of the same origin, built later: it wins and the first
+        // boot is remembered as live.
+        a.send(seat_frame(origin, 2, 1, 0)).await;
+        b.pump(1_500).await;
+        let updates = rig.store.inner.seat_updates();
+        let last = updates.last().unwrap();
+        assert_eq!((last.boot, last.rev), (Uuid::from_u128(2), 1));
+        assert!(last.other_boot_at.is_some(), "{last:?}");
+        // The older boot again, built earlier: dropped.
+        a.send(seat_frame(origin, 1, 6, 60_000)).await;
+        b.pump(1_500).await;
+        assert_eq!(rig.store.inner.seat_updates().len(), updates.len());
+        stop(rig).await;
+    }
+
+    // Kills: a snapshot sent over a link's negotiated frame size (the peer
+    // would close the link) instead of truncated.
+    #[tokio::test(start_paused = true)]
+    async fn own_snapshot_fits_the_link_frame_size() {
+        let (rig, _journal) = node(1, 0, 0);
+        let mut hello = seat_hello(2);
+        hello.limits.max_frame = crate::sync::frame::MIN_PEER_MAX_FRAME;
+        let mut peer = connect(&rig, 0, &hello).await;
+        peer.expect_have().await;
+        peer.pump(1_500).await;
+        let big: Vec<SeatStatusEntry> = (0..200)
+            .map(|i| SeatStatusEntry {
+                workspace: Some("w".repeat(64)),
+                tab: Some("t".repeat(64)),
+                pane: Some("p".repeat(64)),
+                ..seat_entry(&format!("s{i:011}"), "idle")
+            })
+            .collect();
+        rig.handle.publish_seat_status(big);
+        let got = seat_frames(&peer.pump(1_500).await);
+        assert_eq!(got.len(), 1);
+        let size = PeerFrame::SeatStatus(got[0].clone())
+            .encode()
+            .unwrap()
+            .len();
+        assert!(
+            size <= crate::sync::frame::MIN_PEER_MAX_FRAME as usize,
+            "{size}"
+        );
+        assert!(!got[0].seats.is_empty() && got[0].seats.len() < 200);
         stop(rig).await;
     }
 }

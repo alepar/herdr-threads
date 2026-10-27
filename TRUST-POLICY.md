@@ -43,6 +43,9 @@ shows at another target (no seat, binding or receipt rule changes).
 Amended 2026-10-16 for cold-host startup (C2): an empty saved-seat recovery pass completes atomically with
 coherent publication; nonempty reconciliation and C1 pending/retry/enrollment guards remain unchanged.
 
+Amended 2026-10-27 for node status and seat status (ht-xg88): advisory peer and remote-seat status (N13 and the
+cross-node accepted limit "Remote presence is advisory and lags"); no new provenance value.
+
 ## Abstract
 
 herdr-threads gives coding agents in Herdr panes a durable mailbox: threads, invitations, messages that an
@@ -1550,6 +1553,17 @@ them. It never merges seats and never moves one on heuristic evidence (N5).
 `herdr_remote_process` dial targets reads only processes whose real uid is the daemon's; another local user's
 processes are skipped before their argv is read, so they never become dial targets (ht-5fr.18).
 
+**N13. Seat status is the home node's advisory word, never authority.** A node publishes its own local seats'
+presence (`busy`/`idle`/`offline`), harness, last activity and workspace, tab and pane labels on `seat_status`
+link frames (cap `seat.status.v1`); receivers relay them as given and keep the newest snapshot per origin. It is
+link gossip, never a journal fact, and carries no provenance (it attributes nothing). A receiver keeps an entry
+only for a seat it knows as remote with the snapshot's origin as its home node: a consistency guard (N4's author
+rule), not caller verification. Remote presence and labels never feed wake, routing, deadlines, availability,
+catch-up, seat resolution, attribution or retirement (C1, N5); a remote seat's availability stays `remote`.
+Its display is only as fresh as the home node's status allows: unreachable home node means unreachable, never a
+stale presence (`store::remote_seat_status::presence_of`). Peer node status (`node_info` version, stall flags,
+positions) is diagnostic the same way: it changes no link, dial, seat or binding decision.
+
 ## Accepted limits
 
 For the generic join frontier (excluding active direct-invitation acceptance above), pre-join lazy
@@ -2152,6 +2166,11 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   ingest, with the entries before it stored and no source penalised, and stalls its log on that node (logged
   once). Design `docs/superpowers/runs/2026-10-18-peer-wire-compat-hardening/2026-10-18-peer-wire-compat-hardening-design.md`,
   sections 2 and 3.
+- **Remote presence is advisory and lags.** A remote seat's shown presence is at most `UNREACHABLE_AFTER_MS`
+  (180 s) old, can be wrong within that window, and is replaced by `unreachable since` (home node unreachable),
+  `stale` (no snapshot within the window) or `clone_suspected` (two boots of the home node published within it)
+  past it. Labels are cooperative peer text shown last-known, never identity; the peer version is a self-report
+  for diagnostics only (N13). Design `docs/superpowers/specs/2026-10-27-node-status-and-seat-directory-design.md`.
 
 ## Decision record
 

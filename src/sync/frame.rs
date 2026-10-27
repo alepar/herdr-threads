@@ -48,6 +48,14 @@ pub const OPAQUE_CAP: &str = "envelope.opaque.v1";
 pub const NODE_INFO_CAP: &str = "node.info.v1";
 /// Longest `node_info.version` kept, in bytes; a longer one is ignored.
 pub const MAX_NODE_VERSION_BYTES: usize = 32;
+/// Capability: this node sends, reads and relays [`PeerFrame::SeatStatus`].
+pub const SEAT_STATUS_CAP: &str = "seat.status.v1";
+/// Most seats one `seat_status` frame carries.
+pub const MAX_SEAT_STATUS_SEATS: usize = 512;
+/// Longest seat label (workspace, tab, pane) kept, in bytes.
+pub const MAX_SEAT_LABEL_BYTES: usize = 64;
+/// Longest harness id kept, in bytes.
+pub const MAX_SEAT_HARNESS_BYTES: usize = 16;
 /// Most fork references in one `have` frame.
 pub const MAX_HAVE_FORKS: usize = 64;
 /// Longest `close.detail`, in bytes.
@@ -346,6 +354,57 @@ pub struct NodeInfo {
     pub version: String,
 }
 
+/// What [`PeerFrame::SeatStatus`] carries: the origin node's advisory status
+/// of its own seats (ht-xg88). Display data only: nothing routes, wakes or
+/// attributes by it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatStatusFrame {
+    /// The node whose seats these are.
+    #[serde(default = "nil_node")]
+    pub origin: NodeUuid,
+    /// The origin daemon's boot.
+    #[serde(default)]
+    pub boot: Uuid,
+    /// Per boot, one more for each changed snapshot.
+    #[serde(default)]
+    pub rev: u64,
+    /// How long ago the origin built it, accumulated by every relay.
+    #[serde(default)]
+    pub age_ms: u64,
+    /// The origin daemon's version (relayed nodes learn it here).
+    #[serde(default)]
+    pub version: String,
+    /// At most [`MAX_SEAT_STATUS_SEATS`].
+    #[serde(default)]
+    pub seats: Vec<SeatStatusEntry>,
+}
+
+fn nil_node() -> NodeUuid {
+    NodeUuid::from_u128(0)
+}
+
+/// One seat of a [`SeatStatusFrame`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatStatusEntry {
+    #[serde(default)]
+    pub seat: String,
+    /// `busy`, `idle` or `offline`; an unknown value renders as `-`.
+    #[serde(default)]
+    pub presence: String,
+    /// The harness id of the seat's binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// How long ago the seat last acted, at build time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_age_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
+}
+
 /// One peer wire frame. Every struct tolerates unknown fields and an unknown
 /// `t` decodes to [`PeerFrame::Unknown`], so peers add frames and fields
 /// compatibly; senders send a non-base frame only to a peer that advertised
@@ -431,6 +490,9 @@ pub enum PeerFrame {
     /// right after it is established.
     // cap: NODE_INFO_CAP
     NodeInfo(NodeInfo),
+    /// One origin node's whole advisory seat snapshot, relayed as is.
+    // cap: SEAT_STATUS_CAP
+    SeatStatus(SeatStatusFrame),
     #[serde(other)]
     Unknown,
 }
@@ -715,6 +777,22 @@ mod tests {
             PeerFrame::NodeInfo(NodeInfo {
                 version: "2.4.0".to_owned(),
             }),
+            PeerFrame::SeatStatus(SeatStatusFrame {
+                origin: node(4),
+                boot: Uuid::from_u128(7),
+                rev: 3,
+                age_ms: 1200,
+                version: "2.4.0".to_owned(),
+                seats: vec![SeatStatusEntry {
+                    seat: "sQ0VnTDasAbY".to_owned(),
+                    presence: "idle".to_owned(),
+                    harness: Some("claude".to_owned()),
+                    activity_age_ms: Some(720_000),
+                    workspace: Some("office".to_owned()),
+                    tab: Some("main".to_owned()),
+                    pane: None,
+                }],
+            }),
         ]
     }
 
@@ -725,7 +803,7 @@ mod tests {
     #[test]
     fn every_variant_round_trips() {
         let frames = all_frames();
-        assert_eq!(frames.len(), 14);
+        assert_eq!(frames.len(), 15);
         for frame in &frames {
             let bytes = frame.encode().unwrap();
             let back = PeerFrame::decode(&bytes).unwrap();
@@ -754,7 +832,8 @@ mod tests {
                 "ping",
                 "pong",
                 "seen",
-                "node_info"
+                "node_info",
+                "seat_status"
             ]
         );
         // The entry payload keeps its exact bytes.
