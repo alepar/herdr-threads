@@ -1122,6 +1122,7 @@ fn watch_claim_carries_pane_host() {
         active: false,
         bindings: Vec::new(),
         availability: None,
+        directory: None,
     };
     let connection = LazyConnection::new(|| {
         let summary = summary.clone();
@@ -1140,6 +1141,7 @@ fn watch_claim_carries_pane_host() {
                     retirement: None,
                     open_binding: None,
                     history: page(vec![], None),
+                    directory: None,
                 })),
                 other => panic!("unexpected command {other:?}"),
             }),

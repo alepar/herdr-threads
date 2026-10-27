@@ -419,73 +419,88 @@ render from local state as today.
 
 ## 6. Phase 3: directory and surfaces
 
+One store function builds every entry: `store::seat_directory::directory`
+(`SeatDirectory`: node tag, machine, state, since, harness, activity,
+snapshot build, labels). A local seat's comes from its bindings and
+observation (`local_seat_status`: presence by the same rule as the
+publisher, the latest binding change as activity) and carries no labels:
+labels of local seats stay the CLI's own host read (`--human`). A remote
+seat's comes from its home node's stored snapshot through
+`remote_seat_status::presence_of`: `busy`/`idle`/`offline`, else
+`unreachable` (since the last contact), `stale` (since the build),
+`clone_suspected` or `-`; harness, activity and labels stay last known.
+
 ### 6.1 `seat list`
 
-New flags: `--node TAG`, `--machine NAME` (host label or tag), `--harness ID`,
-`--label TEXT` (case-insensitive substring of workspace/tab/pane), `--local`.
-Filters are AND, evaluated in the daemon (paging stays correct). Remote seats
-are already in `seats()`; they now carry `directory: Option<SeatDirectory>`.
+New flags: `--node TAG`, `--on MACHINE` (host label or tag; `--machine` is
+the global machine-output flag), `--harness ID`, `--label TEXT`
+(case-insensitive substring of a remote seat's workspace/tab/pane), `--local`.
+Filters are AND, case-insensitive, evaluated in the daemon while it pages
+(rows examined count toward the page's work bound), kept in the cursor digest
+and in the `next:` command. The CLI sends them only to a daemon advertising
+`seats.directory_v1` (an older one would ignore them), else: `seat list
+filters need a newer daemon (restart it: herdr-threads daemon stop)`.
 
-New compact form (today it falls back to the generic encoder):
+Compact form (new; it was the generic encoder):
 
 ```
 seats
-snSGbl096JZZ blk busy claude last=4s: herdr-threads / dev / claude
+snSGbl096JZZ blk idle claude last=4s
 sQ0VnTDasAbY Q0V idle claude last=12m: office / main / claude
-sQ0Vx1aB2cD3 Q0V unreachable since 09:40 codex last=3d: office / api / codex
-sK7m0aaaBBBB K7m stale 09:58 - last=-: -
+sQ0Vx1aB2cD3 Q0V unreachable since 08:42Z claude last=12m: office / main / claude
+sQ0Vtab0nTab Q0V stale 09:07Z claude last=12m: office / a: b\nc / claude
 next: herdr-threads seat list --cursor ...
 ```
 
-- Row grammar: `SEAT TAG STATE HARNESS last=AGE[: WS / TAB / PANE]`.
-  - `STATE` is one of
-    `busy|idle|offline|unreachable since T|stale T|clone_suspected|-`.
-  - Peer-chosen labels come only after the first `": "` and go through
-    `one_line()` (output_compact convention).
-- Size: 31-33 fixed bytes plus `STATE` (4-24 bytes), harness, and labels
-  (at most 3×64 + 6 bytes).
-  - Typical rows run 60-80 bytes.
-  - Paging stays at the existing default of 20 rows / 16 KiB.
-- Human table: a `NODE` column is added and `SPACE TAB PANE` is filled for
-  remote rows.
-  - The existing advisory preface stays.
-  - Unreachable rows show `unreachable since T` in `PRESENCE`.
+- Row grammar: `SEAT TAG STATE HARNESS last=AGE[ retired][: WS / TAB / PANE]`;
+  `STATE` as above with `unreachable since T` / `unreachable never` /
+  `stale T`. Peer labels only after `": "`, escaped with `one_line`.
+- Sizes (asserted): a local row ~36 bytes; the fresh remote row 61, the
+  unreachable one 81 for 6-byte labels; labels add at most 3 x 64 + 6.
+  Paging stays 20 rows / 16 KiB. An older daemon's row has no entry:
+  `SEAT CONTINUITY active|inactive`.
+- Human table: a `NODE` column; a remote row shows its state (`unreachable
+  since T`, `stale since T`) under `PRESENCE` and its labels under
+  `SPACE TAB PANE`. The advisory preface stays.
 
 ### 6.2 `thread participants` / `thread show`
 
-- The compact remote row changes:
-  - before: `SEAT joined remote` (24 bytes)
-  - after, fresh: `SEAT joined remote idle claude last=12m` (+17-25 bytes)
-  - unreachable home: stays `SEAT joined remote`. The existing one-per-node
-    line `node Q0V unreachable since 09:40` already says it (no per-seat
-    repeat).
-- The location suffix for remote seats becomes
-  `location SEAT: office / main / claude [advisory]`, served by
-  `ParticipantLocations` from `remote_seat_status`, the same shape as local
-  seats. This replaces `remote; labels unavailable` (the line was 46 bytes
-  and stays roughly the same length).
-  - Stale or unreachable: the labels are still shown, with
-    `[advisory, last known]` (+12 bytes).
-- No new line for local seats. Default sends, check-ins and deliveries are
-  untouched: none of them render participants.
+- A remote row gains ` STATE HARNESS last=AGE` when its home node's word is
+  current (`b joined remote idle claude last=12m`, +17-25 bytes), ` stale` or
+  ` clone_suspected` alone, and nothing when the home node is unreachable or
+  never published: the existing one-per-node `node TAG unreachable since T`
+  line says it.
+- The CLI location hint for a remote seat becomes `WS / TAB / PANE
+  [advisory]`, or `[advisory, last known]` once the presence is not current
+  (+12 bytes), from `ParticipantLocation.remote`; `remote; labels unavailable`
+  stays for a seat whose node published none and with an older daemon.
+- Local rows and every delivery, hook and check-in are unchanged.
 
 ### 6.3 `seat inspect`
 
-It gains one line for remote seats:
-`directory: Q0V idle claude last=12m seen=4s: office / main / claude`
-(~67 bytes). `seen` is the snapshot age. Unreachable:
-`directory: Q0V unreachable since 09:40 claude last=3d: office / main / claude`.
+A remote seat gets one line, `directory: TAG STATE HARNESS last=AGE seen=AGE[:
+WS / TAB / PANE]` (67 bytes for the asserted example), in place of the raw
+`directory` field; `seen` is the snapshot's age.
 
 ### 6.4 Protocol
 
-`SeatSummary.directory`, `Participant.directory` and
-`ParticipantLocation.remote_labels` are added as `#[serde(default,
-skip_serializing_if = "Option::is_none")]` fields. A new daemon capability
-`seats.directory_v1` (in `src/protocol/capabilities.rs`) lets a newer CLI
-use the filters only against a daemon that has them; an older daemon gets
-the plain list and the CLI says `filters need a newer daemon`. Harness ids
-are opaque adapter ids from the binding. The core does not branch on them
-(harness-neutral).
+`SeatSummary.directory` and `Participant.directory` (`Option<Box<_>>`),
+`SeatInspection.directory` and `ParticipantLocation.remote`, and
+`SeatsQuery.filter` (`SeatFilter`), all `#[serde(default,
+skip_serializing_if)]`. Daemon capability `seats.directory_v1`. Harness ids
+are opaque text from the binding; the core does not branch on them.
+
+### 6.5 Skill
+
+`integrations/skill/SKILL.md` gains one paragraph on the `seat list` row and
+filters (about 480 bytes, once per session), including that remote presence
+and labels are advisory and never an address.
+
+### 6.6 Accepted limits of phase 3
+
+- Remote rows read `presence_of` with no live-link input: a link that just
+  came up shows its node unreachable until the contact flush (at most ~10 s).
+- `--label` matches remote seats only (local labels are the CLI's host read).
 
 ## 7. Timeouts and constants
 

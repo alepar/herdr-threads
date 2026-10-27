@@ -609,6 +609,7 @@ fn reads_render_remote_state_and_null_panes() {
             page: page(),
             target: None,
             include_retired: false,
+            filter: Default::default(),
         }),
     );
     let CommandResult::Seats(listing) = &seats else {
@@ -658,6 +659,7 @@ fn pane_listings_omit_remote() {
             page: page(),
             target: Some(HostTargetId::new("pane")),
             include_retired: true,
+            filter: Default::default(),
         }),
     ) else {
         panic!("wrong result")

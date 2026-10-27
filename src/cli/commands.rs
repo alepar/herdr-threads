@@ -1458,10 +1458,28 @@ enum ThreadSub {
 }
 #[derive(Subcommand)]
 enum SeatSub {
-    /// List current seats, newest first. Use --include-retired for history.
+    /// List current seats on every linked node, newest first, with each
+    /// seat's node, advisory presence, harness and labels. Use
+    /// --include-retired for history.
     List {
         #[arg(long, help = "Include retired seats in the list")]
         include_retired: bool,
+        /// Only seats homed on this node (tag).
+        #[arg(long, value_name = "TAG")]
+        node: Option<String>,
+        /// Only seats on this machine (host label or node tag).
+        #[arg(long = "on", value_name = "MACHINE")]
+        on: Option<String>,
+        /// Only seats of this harness id.
+        #[arg(long, value_name = "ID")]
+        harness: Option<String>,
+        /// Only seats whose workspace, tab or pane label contains TEXT
+        /// (case-insensitive; labels of remote seats).
+        #[arg(long, value_name = "TEXT")]
+        label: Option<String>,
+        /// Only this node's own seats.
+        #[arg(long)]
+        local: bool,
         #[command(flatten)]
         page: PageArgs,
     },
@@ -3207,11 +3225,23 @@ fn parse_cli_in_registry(
         Top::Seat { command } => match command {
             SeatSub::List {
                 include_retired,
+                node,
+                on,
+                harness,
+                label,
+                local,
                 page: args,
             } => CliAction::Wire(WireCommand::Seats(SeatsQuery {
                 page: page(args)?,
                 target: None,
                 include_retired,
+                filter: crate::protocol::commands::SeatFilter {
+                    node: node.map(|v| bounded(v, "--node")).transpose()?,
+                    machine: on.map(|v| bounded(v, "--on")).transpose()?,
+                    harness: harness.map(|v| bounded(v, "--harness")).transpose()?,
+                    label: label.map(|v| bounded(v, "--label")).transpose()?,
+                    local,
+                },
             })),
             SeatSub::Resolve {
                 selector,

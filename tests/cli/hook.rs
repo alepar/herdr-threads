@@ -2635,6 +2635,7 @@ mod pane_seat_selection {
             active: false,
             bindings: Vec::new(),
             availability: None,
+            directory: None,
         }
     }
 
@@ -2680,6 +2681,7 @@ mod pane_seat_selection {
                         retirement: None,
                         open_binding: None,
                         history: page(vec![], None),
+                        directory: None,
                     }))
                 }
                 other => panic!("unexpected {other:?}"),
@@ -3225,6 +3227,7 @@ mod continuity_gate {
                                 active: false,
                                 bindings: Vec::new(),
                                 availability: None,
+                                directory: None,
                             })
                             .collect(),
                         next_cursor: None,
@@ -7116,6 +7119,7 @@ mod enum_callback {
                 active: false,
                 bindings: Vec::new(),
                 availability: None,
+                directory: None,
             };
             match c {
                 Command::Seats(_) => {
@@ -7138,6 +7142,7 @@ mod enum_callback {
                     retirement: None,
                     open_binding: None,
                     history: empty(),
+                    directory: None,
                 })),
                 Command::Directory(_) => Ok(CommandResult::Directory(empty())),
                 Command::AttentionDigest(_) => {
@@ -7907,6 +7912,7 @@ mod registered_resume {
                 active: false,
                 bindings: Vec::new(),
                 availability: None,
+                directory: None,
             }
         }
     }
@@ -8000,6 +8006,7 @@ mod registered_resume {
                         retirement: None,
                         open_binding: None,
                         history: empty(),
+                        directory: None,
                     }))
                 }
                 Command::ContinuityCheckIn(c) => {

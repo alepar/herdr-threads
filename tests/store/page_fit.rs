@@ -100,6 +100,7 @@ fn seat(i: usize, rng: &mut Rng) -> SeatSummary {
         active: false,
         bindings: Vec::new(),
         availability: None,
+        directory: None,
     }
 }
 

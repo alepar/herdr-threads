@@ -475,6 +475,10 @@ fn encode_text(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, Api
             if is_command_field(name, fields) {
                 continue;
             }
+            // Shown as its own compact line below (ht-xg88).
+            if name == "directory" && matches!(result, CommandResult::SeatInspect(_)) {
+                continue;
+            }
             text.push_str(name);
             text.push_str(": ");
             text.push_str(&text_json(&without_commands(value)));
@@ -489,6 +493,11 @@ fn encode_text(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, Api
                 .is_some_and(|open| open.provenance == super::authority::MANAGED_LAUNCH_PROVENANCE)
         {
             text.push_str("open_binding_state: launched, not checked in\n");
+        }
+        if let CommandResult::SeatInspect(inspection) = result
+            && let Some(directory) = &inspection.directory
+        {
+            text.push_str(&compact::inspect_directory_line(directory));
         }
     } else {
         text.push_str("value: ");
@@ -653,6 +662,14 @@ pub fn format_command_argv(argv: &[String]) -> String {
 
 #[path = "output_compact.rs"]
 mod compact;
+
+/// The `seat inspect` directory line, for tests.
+#[cfg(test)]
+pub(crate) fn inspect_directory_line_for_test(
+    directory: &crate::protocol::results::SeatDirectory,
+) -> String {
+    compact::inspect_directory_line(directory)
+}
 
 #[cfg(test)]
 #[path = "../../tests/protocol/output.rs"]

@@ -1670,3 +1670,247 @@ fn remote_presence_is_only_as_fresh_as_its_node() {
         RemotePresence::Unknown
     );
 }
+
+// -- Seat directory (ht-xg88 phase 3) ----------------------------------------
+
+fn render(result: crate::protocol::results::CommandResult) -> String {
+    let bytes = crate::protocol::output::encode_selected(
+        &result,
+        &crate::protocol::output::OutputSpec {
+            format: crate::protocol::output::OutputFormat::Text,
+            context: Default::default(),
+        },
+    )
+    .unwrap();
+    String::from_utf8(bytes).unwrap()
+}
+
+fn seats_of(
+    rig: &Rig,
+    filter: crate::protocol::commands::SeatFilter,
+) -> Vec<crate::protocol::results::SeatSummary> {
+    use crate::ports::{ReadContext, StorePort};
+    let result = rig
+        .node
+        .store
+        .query(
+            &crate::protocol::commands::Command::Seats(crate::protocol::commands::SeatsQuery {
+                page: crate::protocol::pagination::PageRequest::default(),
+                target: None,
+                include_retired: false,
+                filter,
+            }),
+            &ReadContext {
+                instance: rig
+                    .node
+                    .store
+                    .context()
+                    .open_writer()
+                    .unwrap()
+                    .query_row("SELECT id FROM local_node", [], |r| r.get(0))
+                    .unwrap(),
+                output: Default::default(),
+                operation_scope: None,
+            },
+            &budget(),
+        )
+        .unwrap();
+    let crate::protocol::results::CommandResult::Seats(page) = result else {
+        panic!("{result:?}")
+    };
+    page.items
+}
+
+// Kills: a remote seat listed without its home node's presence and labels,
+// one on an unreachable node shown with a presence, filters that do not
+// narrow (node, machine, harness, label, local) or that drop matching rows.
+#[test]
+fn seat_list_carries_the_directory_and_filters_it() {
+    use crate::protocol::commands::SeatFilter;
+    let rig = Rig::new(Node::new(SEED_A, 1));
+    seed_peer_node(&rig.node, "Zq7");
+    seed_remote_seat(&rig.node, "sQ0VnTDasAbY", peer_node());
+    seed_remote_seat(&rig.node, "sQ0Vx1aB2cD3", peer_node());
+    let now = crate::protocol::time::Clock::utc_now(rig.node.clock.as_ref()).0 as u64;
+    let mut second = remote_seat("sQ0Vx1aB2cD3", "busy");
+    second.harness = Some("codex".into());
+    second.workspace = Some("lab".into());
+    record_seats(
+        &rig.node,
+        crate::store::remote_seat_status::RemoteSeatUpdate {
+            origin: peer_node(),
+            boot: uuid::Uuid::from_u128(1),
+            rev: 1,
+            built_at: now - 1_000,
+            version: None,
+            other_boot_at: None,
+            seats: vec![remote_seat("sQ0VnTDasAbY", "idle"), second],
+        },
+    );
+    // No contact yet: the home node is unreachable, never a presence.
+    let all = seats_of(&rig, SeatFilter::default());
+    let remote: Vec<_> = all
+        .iter()
+        .filter_map(|s| s.directory.as_deref())
+        .filter(|d| d.node == "Zq7")
+        .collect();
+    assert_eq!(remote.len(), 2);
+    assert!(
+        remote.iter().all(|d| d.state == "unreachable"),
+        "{remote:?}"
+    );
+    assert_eq!(
+        remote[0].pane.as_deref(),
+        Some("claude"),
+        "last-known labels"
+    );
+    // Fresh contact: the published presence.
+    let db = rig.node.store.context().open_writer().unwrap();
+    db.execute(
+        "INSERT INTO sync_node_contact(node_uuid,last_contact_at,via,updated_at) VALUES (?1,?2,'direct',?2)",
+        rusqlite::params![peer_node().to_string(), now as i64],
+    )
+    .unwrap();
+    let states = |filter: SeatFilter| -> Vec<(String, String)> {
+        seats_of(&rig, filter)
+            .into_iter()
+            .map(|s| {
+                (
+                    s.seat.as_str().to_owned(),
+                    s.directory.map_or_else(String::new, |d| d.state),
+                )
+            })
+            .collect()
+    };
+    let mut fresh = states(SeatFilter {
+        node: Some("zq7".into()),
+        ..SeatFilter::default()
+    });
+    fresh.sort();
+    assert_eq!(
+        fresh,
+        [
+            ("sQ0VnTDasAbY".to_owned(), "idle".to_owned()),
+            ("sQ0Vx1aB2cD3".to_owned(), "busy".to_owned())
+        ]
+    );
+    let only = |filter| {
+        states(filter)
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        only(SeatFilter {
+            harness: Some("CODEX".into()),
+            ..SeatFilter::default()
+        }),
+        ["sQ0Vx1aB2cD3"]
+    );
+    assert_eq!(
+        only(SeatFilter {
+            label: Some("LAB".into()),
+            ..SeatFilter::default()
+        }),
+        ["sQ0Vx1aB2cD3"]
+    );
+    assert_eq!(
+        only(SeatFilter {
+            machine: Some("laptop".into()),
+            harness: Some("claude".into()),
+            ..SeatFilter::default()
+        }),
+        ["sQ0VnTDasAbY"]
+    );
+    assert!(
+        only(SeatFilter {
+            local: true,
+            ..SeatFilter::default()
+        })
+        .iter()
+        .all(|s| !s.starts_with("sQ0V"))
+    );
+}
+
+// Kills: rows, suffixes and lines of the directory printed with the wrong
+// words or order, peer labels outside the `: ` tail, and byte sizes over
+// what the spec states.
+#[test]
+fn directory_rows_render_compactly() {
+    use crate::protocol::results::{CommandResult, SeatDirectory, SeatSummary};
+    let now = 1_793_092_323_481; // 2026-10-27T09:12:03.481Z
+    let directory = |state: &str, since: Option<i64>| SeatDirectory {
+        node: "Q0V".into(),
+        machine: Some("laptop".into()),
+        state: state.into(),
+        since: since.map(UtcMillis),
+        harness: Some("claude".into()),
+        activity_at: Some(UtcMillis(now - 12 * 60_000)),
+        seen_at: Some(UtcMillis(now - 4_000)),
+        workspace: Some("office".into()),
+        tab: Some("main".into()),
+        pane: Some("claude".into()),
+    };
+    let summary = |seat: &str, d: SeatDirectory| SeatSummary {
+        seat: crate::protocol::ids::SeatId::new(seat),
+        continuity: crate::protocol::results::ContinuityStatus::Remote,
+        target: None,
+        generation: 0,
+        created_at: UtcMillis(0),
+        retired_at: None,
+        active: false,
+        bindings: vec![],
+        availability: None,
+        directory: Some(Box::new(d)),
+    };
+    let page = crate::protocol::pagination::Page {
+        items: vec![
+            summary("sQ0VnTDasAbY", directory("idle", None)),
+            summary(
+                "sQ0Vx1aB2cD3",
+                directory("unreachable", Some(now - 30 * 60_000)),
+            ),
+            summary(
+                "sQ0Vtab0nTab",
+                SeatDirectory {
+                    tab: Some("a: b\nc".into()),
+                    ..directory("stale", Some(now - 5 * 60_000))
+                },
+            ),
+        ],
+        next_cursor: None,
+        next_argv: None,
+        high_water_ordinal: 0,
+        scope_revision: None,
+        has_more: false,
+        stop_reason: crate::protocol::pagination::StopReason::Complete,
+        consistency: crate::protocol::pagination::Consistency::BoundedLive,
+    };
+    let text = crate::protocol::output::with_render_now(UtcMillis(now), || {
+        render(CommandResult::Seats(page))
+    });
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "seats");
+    assert_eq!(
+        lines[1],
+        "sQ0VnTDasAbY Q0V idle claude last=12m: office / main / claude"
+    );
+    assert_eq!(lines[1].len(), 61);
+    assert_eq!(
+        lines[2],
+        "sQ0Vx1aB2cD3 Q0V unreachable since 08:42Z claude last=12m: office / main / claude"
+    );
+    assert_eq!(lines[2].len(), 81);
+    assert_eq!(
+        lines[3],
+        "sQ0Vtab0nTab Q0V stale 09:07Z claude last=12m: office / a: b\\nc / claude"
+    );
+    let line = crate::protocol::output::with_render_now(UtcMillis(now), || {
+        crate::protocol::output::inspect_directory_line_for_test(&directory("idle", None))
+    });
+    assert_eq!(
+        line,
+        "directory: Q0V idle claude last=12m seen=4s: office / main / claude\n"
+    );
+    assert_eq!(line.trim_end().len(), 67);
+}

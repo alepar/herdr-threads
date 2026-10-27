@@ -23,7 +23,7 @@ use crate::protocol::{
     results::{
         CheckInResult, CommandResult, InboxBatchItem, InboxBatchV2Item, InboxItem, MessageContent,
         MessageDetails, MessageKind, MessageSummary, Participant, PendingReceipt,
-        PresenceAvailability, ThreadDetails, WarningRef,
+        PresenceAvailability, SeatDirectory, SeatSummary, ThreadDetails, WarningRef,
     },
     service::EventAuthor,
     time::UtcMillis,
@@ -360,6 +360,14 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
         }
         CommandResult::PendingReceipts(page) => {
             pending_receipts(page, &mut out);
+            next("next", page, &mut out);
+        }
+        CommandResult::Seats(page) => {
+            out.push_str("seats\n");
+            let now = super::render_now().0;
+            for seat in &page.items {
+                seat_row(seat, now, &mut out);
+            }
             next("next", page, &mut out);
         }
         CommandResult::Participants(page) => {
@@ -770,6 +778,12 @@ fn participant_row(participant: &Participant, out: &mut String) {
             " inactive"
         },
     );
+    // A remote seat's advisory word (ht-xg88): about 17-25 bytes when its
+    // home node published it; nothing more when that node is unreachable (the
+    // `node TAG unreachable` line says it once per node).
+    if let Some(directory) = &participant.directory {
+        directory_suffix(directory, super::render_now().0, out);
+    }
     if participant.is_self {
         out.push_str(" self");
     }
@@ -792,6 +806,109 @@ fn participant_row(participant: &Participant, out: &mut String) {
         out.push_str(&format!(" cleanup:{}", snake(cleanup)));
     }
     out.push('\n');
+}
+
+/// ` STATE HARNESS last=AGE` of a remote participant: ` idle claude
+/// last=12m`, or ` stale` / ` clone_suspected` alone; nothing when its home
+/// node is unreachable or never published.
+fn directory_suffix(directory: &SeatDirectory, now: i64, out: &mut String) {
+    match directory.state.as_str() {
+        "unreachable" | "-" => {}
+        "stale" | "clone_suspected" => {
+            out.push(' ');
+            out.push_str(&directory.state);
+        }
+        state => {
+            out.push_str(&format!(
+                " {} {} last={}",
+                token(state),
+                directory
+                    .harness
+                    .as_deref()
+                    .map_or_else(|| "-".to_owned(), token),
+                directory
+                    .activity_at
+                    .map_or_else(|| "-".to_owned(), |at| age(now, at.0))
+            ));
+        }
+    }
+}
+
+/// `STATE` of a directory entry: `unreachable since T` (`unreachable
+/// never`), `stale T`, else the word.
+fn directory_state(directory: &SeatDirectory) -> String {
+    match (directory.state.as_str(), directory.since) {
+        ("unreachable", Some(since)) => format!("unreachable since {}", clock(since)),
+        ("unreachable", None) => "unreachable never".to_owned(),
+        ("stale", Some(since)) => format!("stale {}", clock(since)),
+        (state, _) => token(state),
+    }
+}
+
+/// One `seat list` row (ht-xg88): `SEAT TAG STATE HARNESS last=AGE[
+/// retired][: WS / TAB / PANE]`, 30-40 bytes before the labels (at most
+/// 3×64 + 6 bytes after `: `, peer text escaped). An older daemon's row has
+/// no entry: `SEAT CONTINUITY active|inactive`.
+fn seat_row(seat: &SeatSummary, now: i64, out: &mut String) {
+    use std::fmt::Write as _;
+    out.push_str(seat.seat.as_str());
+    let Some(directory) = &seat.directory else {
+        let _ = writeln!(
+            out,
+            " {} {}",
+            snake(&seat.continuity),
+            if seat.active { "active" } else { "inactive" }
+        );
+        return;
+    };
+    let _ = write!(
+        out,
+        " {} {} {} last={}",
+        token(&directory.node),
+        directory_state(directory),
+        directory
+            .harness
+            .as_deref()
+            .map_or_else(|| "-".to_owned(), token),
+        directory
+            .activity_at
+            .map_or_else(|| "-".to_owned(), |at| age(now, at.0))
+    );
+    if seat.retired_at.is_some() {
+        out.push_str(" retired");
+    }
+    if let Some(labels) = directory.labels() {
+        let _ = write!(out, ": {}", one_line(&labels));
+    }
+    out.push('\n');
+}
+
+/// The `directory:` line of `seat inspect` for a remote seat, about 50-70
+/// bytes before the labels: `directory: TAG STATE HARNESS last=AGE
+/// seen=AGE[: WS / TAB / PANE]`.
+pub(super) fn inspect_directory_line(directory: &SeatDirectory) -> String {
+    let now = super::render_now().0;
+    let mut out = format!(
+        "directory: {} {} {} last={} seen={}",
+        token(&directory.node),
+        directory_state(directory),
+        directory
+            .harness
+            .as_deref()
+            .map_or_else(|| "-".to_owned(), token),
+        directory
+            .activity_at
+            .map_or_else(|| "-".to_owned(), |at| age(now, at.0)),
+        directory
+            .seen_at
+            .map_or_else(|| "-".to_owned(), |at| age(now, at.0))
+    );
+    if let Some(labels) = directory.labels() {
+        out.push_str(": ");
+        out.push_str(&one_line(&labels));
+    }
+    out.push('\n');
+    out
 }
 
 /// `node TAG unreachable since TIME` (`node TAG unreachable` when no contact

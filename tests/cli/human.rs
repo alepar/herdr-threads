@@ -152,6 +152,7 @@ fn participants_are_a_list_marking_self() {
         bindings: Vec::new(),
         availability: None,
         home_unreachable: None,
+        directory: None,
     };
     let out = human(&CommandResult::Participants(page(vec![
         participant("seat-A", MembershipStatus::Joined, true),
@@ -442,6 +443,7 @@ impl crate::ports::LocalClient for HumanClient {
                     active: false,
                     bindings: Vec::new(),
                     availability: None,
+                    directory: None,
                 },
                 mapping: MappingStatus {
                     state: ContinuityStatus::Resolved,
@@ -456,6 +458,7 @@ impl crate::ports::LocalClient for HumanClient {
                 retirement: None,
                 open_binding: None,
                 history: page(vec![]),
+                directory: None,
             })),
             Command::CheckIn(c) | Command::OperatorCheckIn(c) => {
                 if self.lose_check_in.load(SeqCst) {

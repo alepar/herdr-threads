@@ -147,6 +147,7 @@ impl crate::ports::LocalClient for Client {
                     active: false,
                     bindings: Vec::new(),
                     availability: None,
+                    directory: None,
                 },
                 mapping: MappingStatus {
                     state: ContinuityStatus::Resolved,
@@ -157,6 +158,7 @@ impl crate::ports::LocalClient for Client {
                 retirement: None,
                 open_binding: None,
                 history: empty(),
+                directory: None,
             })),
             Command::CheckIn(c) => {
                 let mut context = c.claim;

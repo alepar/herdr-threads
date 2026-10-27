@@ -139,7 +139,7 @@ herdr-threads leave THREAD
 
 ## Seats
 
-`herdr-threads seat list` pages nonretired seats newest first; run `next:` for older seats. `--include-retired` persists in continuation commands. `--human` adds workspace/tab/pane labels for resolved seats; they never prove continuity. `--json` and machine text keep IDs, state and timestamps without host lookup; use `seat inspect SEAT` before operator repair.
+`herdr-threads seat list` pages nonretired seats of every linked node newest first, one row each: `SEAT NODE STATE HARNESS last=AGE[: WS / TAB / PANE]`; STATE is `busy`/`idle`/`offline`, or for a remote seat `unreachable since T`/`stale T`/`clone_suspected`/`-` when its node's status is not current (labels then last known). Narrow with `--node TAG`, `--on MACHINE`, `--harness ID`, `--label TEXT` or `--local`. Remote presence and labels are the home node's advisory word: never route or address by them. Run `next:` for older seats. `--include-retired` persists in continuation commands. `--human` adds workspace/tab/pane labels for resolved seats; they never prove continuity. `--json` and machine text keep IDs, state and timestamps without host lookup; use `seat inspect SEAT` before operator repair.
 
 ## Other machines
 

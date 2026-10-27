@@ -184,6 +184,7 @@ mod fixtures {
             bindings: presence_bindings(seat),
             availability: None,
             home_unreachable: None,
+            directory: None,
         }
     }
 

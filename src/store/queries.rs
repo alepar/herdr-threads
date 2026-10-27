@@ -366,13 +366,19 @@ fn query_inner(
             picker_directory::directory(&db, instance, q, store.clock().utc_now(), output)
         }
         Command::Participants(q) => participants(&db, instance, q, store.clock().utc_now(), output),
-        Command::ParticipantLocations(q) => participant_locations(&db, instance, q),
+        Command::ParticipantLocations(q) => {
+            participant_locations(&db, instance, q, store.clock().utc_now())
+        }
         Command::WakeStatus(q) => wake_status_seats(&db, instance, q),
-        Command::Seats(q) => seats(&db, instance, q, output),
+        Command::Seats(q) => seats(&db, instance, q, store.clock().utc_now(), output),
         Command::Diagnostics(q) => diagnostics(&db, instance, q, store.clock().utc_now(), output),
         Command::Recipients(q) => recipients(&db, instance, q, store.clock().utc_now(), output),
-        Command::SeatInspect(q) => seat_inspect(&db, instance, q, output, false),
-        Command::SeatInspectBindings(q) => seat_inspect(&db, instance, q, output, true),
+        Command::SeatInspect(q) => {
+            seat_inspect(&db, instance, q, store.clock().utc_now(), output, false)
+        }
+        Command::SeatInspectBindings(q) => {
+            seat_inspect(&db, instance, q, store.clock().utc_now(), output, true)
+        }
         Command::DeliveryInspect(q) => {
             delivery_inspect(&db, instance, q, store.clock().utc_now(), output)
         }
@@ -1138,11 +1144,18 @@ fn seat_inspect(
     db: &QueryConnection,
     instance: &str,
     q: &SeatInspectQuery,
+    now: UtcMillis,
     output: &OutputSpec,
     binding_details: bool,
 ) -> Result<CommandResult, ApiError> {
     type SeatRow = (String, Option<String>, i64, i64, Option<i64>);
     let row:SeatRow=db.query_row("SELECT state,target_id,generation,created_at,retired_at FROM seats WHERE id=?1 AND instance_id=?2",params![q.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(|e|db.map_error(e))?.ok_or_else(||api_error(ErrorCode::NotFound,"seat not found"))?;
+    // A remote seat's entry (ht-xg88); a local seat's state is the summary's.
+    let directory = if row.0 == "remote" {
+        super::seat_directory::directory(db, q.seat.as_str(), now)?
+    } else {
+        None
+    };
     let summary = seat_summary(
         q.seat.as_str(),
         &row.0,
@@ -1396,6 +1409,7 @@ fn seat_inspect(
                 retirement: retirement.clone(),
                 open_binding: open_binding.clone(),
                 history,
+                directory: directory.clone(),
             })
         },
     )?;
@@ -1428,6 +1442,7 @@ fn seat_inspect(
         retirement,
         open_binding,
         history: page(items, next, high, stop, output),
+        directory,
     });
     ensure_fit(&result, output, q.page.max_bytes)?;
     Ok(result)
@@ -1437,13 +1452,25 @@ fn seats(
     db: &QueryConnection,
     instance: &str,
     q: &SeatsQuery,
+    now: UtcMillis,
     output: &OutputSpec,
 ) -> Result<CommandResult, ApiError> {
-    let filter = digest(&(
-        "seats",
-        q.target.as_ref().map(HostTargetId::as_str),
-        q.include_retired,
-    ))?;
+    // The pre-directory digest when no directory filter is set, so a cursor
+    // of an older CLI page stays valid.
+    let filter = if q.filter.is_empty() {
+        digest(&(
+            "seats",
+            q.target.as_ref().map(HostTargetId::as_str),
+            q.include_retired,
+        ))?
+    } else {
+        digest(&(
+            "seats",
+            q.target.as_ref().map(HostTargetId::as_str),
+            q.include_retired,
+            &q.filter,
+        ))?
+    };
     let target = q.target.as_ref().map(|t| t.as_str().to_owned());
     let cursor = decode_cursor(
         &q.page,
@@ -1519,7 +1546,8 @@ fn seats(
         };
         row.map_err(|error| db.map_error(error))
     };
-    for _ in 0..CANDIDATE_LIMIT {
+    let mut examined = 0usize;
+    while examined < CANDIDATE_LIMIT {
         if items.len() == q.page.limit as usize {
             stop = StopReason::Rows;
             break;
@@ -1528,6 +1556,12 @@ fn seats(
         let Some((ordinal, id, state, target, generation, created_at, retired_at)) = row else {
             break;
         };
+        examined += 1;
+        let directory = super::seat_directory::directory(db, &id, now)?;
+        if !super::seat_directory::matches(&q.filter, directory.as_deref(), state != "remote") {
+            last = ordinal as u64;
+            continue;
+        }
         let mut item = seat_summary(
             &id,
             &state,
@@ -1543,6 +1577,7 @@ fn seats(
         } else {
             Some(availability_label(db, &id)?)
         };
+        item.directory = directory;
         let raw = cursor_for(
             instance,
             CursorScope::Seats,
@@ -1577,7 +1612,7 @@ fn seats(
         last = before;
         stop = StopReason::Bytes;
     }
-    if items.len() == CANDIDATE_LIMIT && stop == StopReason::Complete {
+    if examined == CANDIDATE_LIMIT && stop == StopReason::Complete && next_row(last)?.is_some() {
         stop = StopReason::Work;
     }
     let next = if stop == StopReason::Complete {
@@ -1632,6 +1667,7 @@ fn seat_summary(
         active: false,
         bindings: Vec::new(),
         availability: None,
+        directory: None,
     })
 }
 
@@ -1924,6 +1960,11 @@ fn participants(
                 availability_label(db, &seat)?
             }),
             home_unreachable: unreachable_home(db, &seat, now, &mut unreachable_seen)?,
+            directory: if seat_state == "remote" {
+                super::seat_directory::directory(db, &seat, now)?
+            } else {
+                None
+            },
         };
         let mut next_cursor = cursor_for(
             instance,
@@ -3113,6 +3154,19 @@ fn seats_argv(cursor: &str, q: &SeatsQuery) -> Vec<String> {
     let mut argv = vec!["herdr-threads".into(), "seat".into(), "list".into()];
     if q.include_retired {
         argv.push("--include-retired".into());
+    }
+    for (flag, value) in [
+        ("--node", &q.filter.node),
+        ("--on", &q.filter.machine),
+        ("--harness", &q.filter.harness),
+        ("--label", &q.filter.label),
+    ] {
+        if let Some(value) = value {
+            argv.extend([flag.to_owned(), value.clone()]);
+        }
+    }
+    if q.filter.local {
+        argv.push("--local".into());
     }
     argv.extend([
         "--cursor".into(),
@@ -6461,6 +6515,7 @@ fn participant_locations(
     db: &QueryConnection,
     instance: &str,
     q: &crate::protocol::commands::ParticipantLocationsQuery,
+    now: UtcMillis,
 ) -> Result<CommandResult, ApiError> {
     if q.seats.is_empty() || q.seats.len() > crate::protocol::commands::MAX_BATCH_ITEMS {
         return Err(api_error(
@@ -6504,12 +6559,20 @@ fn participant_locations(
                 ));
             }
         };
+        let remote = if continuity == crate::protocol::results::ContinuityStatus::Remote {
+            super::seat_directory::directory(db, &seat, now)?
+                .filter(|d| d.labels().is_some())
+                .map(|d| *d)
+        } else {
+            None
+        };
         locations.push(crate::protocol::results::ParticipantLocation {
             seat: SeatId::new(seat),
             continuity,
             target: target.map(HostTargetId::new),
             terminal,
             incarnation,
+            remote,
         });
     }
     Ok(CommandResult::ParticipantLocations(locations))

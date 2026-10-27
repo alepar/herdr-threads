@@ -29,6 +29,8 @@ pub const SAME_SESSION_CONTINUITY_V1: &str = "seat.continuity_same_session_v1";
 pub const SEAT_BINDING_DETAILS_V1: &str = "seat.binding_details_v1";
 pub const SEAT_MANAGED_LAUNCH: &str = "seat.managed_launch";
 pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
+/// `SeatsQuery.filter` and the seat directory entries (ht-xg88).
+pub const SEATS_DIRECTORY_V1: &str = "seats.directory_v1";
 /// `Command::WakeStatus`: per-seat wake blocks for the send warning and doctor.
 pub const WAKE_STATUS_V1: &str = "seat.wake_status_v1";
 
@@ -151,6 +153,7 @@ pub const ADVERTISED: &[&str] = &[
     DIRECT_THREADS_V1,
     ENSURE_CREATION_POLICY_V1,
     PARTICIPANT_LOCATIONS,
+    SEATS_DIRECTORY_V1,
     PICKER_DIRECTORY_V1,
     ATTENTION_NOTICE_DELIVERY,
     MESSAGE_DELIVERY_MODES,

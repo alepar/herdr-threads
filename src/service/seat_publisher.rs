@@ -72,17 +72,7 @@ fn entry_of(
     now_ms: i64,
     contact: Option<i64>,
 ) -> SeatStatusEntry {
-    let presence = if !seat.connected {
-        "offline"
-    } else if seat
-        .ui_state
-        .as_deref()
-        .is_some_and(crate::store::effective::turn_in_progress)
-    {
-        "busy"
-    } else {
-        "idle"
-    };
+    let presence = crate::store::local_seat_status::presence(seat);
     let labels = labels.filter(|l| {
         seat.terminal.as_deref() == Some(l.terminal.as_str())
             && (l.incarnation.is_none() || l.incarnation == seat.incarnation)

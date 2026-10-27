@@ -143,7 +143,27 @@ fn format_location(
         ContinuityStatus::Unresolved => {
             return format!("{target_text} unresolved; labels unavailable");
         }
-        ContinuityStatus::Remote => return "remote; labels unavailable".into(),
+        // A remote seat (ht-xg88): its home node's labels, last known once
+        // its presence is not current; none from an older daemon or a node
+        // without `seat.status.v1`.
+        ContinuityStatus::Remote => {
+            return match location
+                .remote
+                .as_ref()
+                .and_then(|d| d.labels().map(|l| (d, l)))
+            {
+                Some((directory, labels)) => format!(
+                    "{} [advisory{}]",
+                    super::human::one_line(&labels, false, 200),
+                    if directory.last_known() {
+                        ", last known"
+                    } else {
+                        ""
+                    }
+                ),
+                None => "remote; labels unavailable".into(),
+            };
+        }
         ContinuityStatus::Resolved => {}
     }
     let current = target

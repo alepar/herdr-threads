@@ -53,6 +53,7 @@ impl LocalClient for Client {
                             },
                             terminal: Some(format!("term{i}")),
                             incarnation: Some("server-old".into()),
+                            remote: None,
                         })
                         .collect(),
                 ))
@@ -82,6 +83,7 @@ fn result() -> CommandResult {
                 bindings: Vec::new(),
                 availability: None,
                 home_unreachable: None,
+                directory: None,
             })
             .collect(),
         next_cursor: None,

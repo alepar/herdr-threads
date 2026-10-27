@@ -41,6 +41,7 @@ impl LocalClient for Seats {
                     retirement: None,
                     open_binding: None,
                     history: page(vec![]),
+                    directory: None,
                 }))
             }
             other => panic!("unexpected {other:?}"),
@@ -59,6 +60,7 @@ fn seat(continuity: ContinuityStatus) -> SeatSummary {
         active: true,
         availability: None,
         bindings: Vec::new(),
+        directory: None,
     }
 }
 

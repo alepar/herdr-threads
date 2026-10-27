@@ -239,8 +239,39 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
                     crate::protocol::results::ContinuityStatus::Retired => "retired",
                     crate::protocol::results::ContinuityStatus::Remote => "remote",
                 };
+                let node = seat
+                    .directory
+                    .as_ref()
+                    .map_or_else(|| "-".to_owned(), |d| one_line(&d.node, false, 16));
+                // A remote seat: its home node's advisory word and labels.
+                if seat.continuity == crate::protocol::results::ContinuityStatus::Remote
+                    && let Some(d) = &seat.directory
+                {
+                    let label = |text: &Option<String>| {
+                        text.as_deref()
+                            .map_or_else(|| "-".to_owned(), |t| one_line(t, false, 40))
+                    };
+                    let presence = match (d.state.as_str(), d.since) {
+                        ("unreachable", Some(since)) => {
+                            format!("unreachable since {}", timestamp(since))
+                        }
+                        ("stale", Some(since)) => format!("stale since {}", timestamp(since)),
+                        (state, _) => state.to_owned(),
+                    };
+                    return vec![
+                        seat.seat.as_str().to_owned(),
+                        node,
+                        state.to_owned(),
+                        presence,
+                        timestamp(seat.created_at),
+                        label(&d.workspace),
+                        label(&d.tab),
+                        label(&d.pane),
+                    ];
+                }
                 vec![
                     seat.seat.as_str().to_owned(),
+                    node,
                     state.to_owned(),
                     format!(
                         "{}{}",
@@ -270,7 +301,7 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
     });
     table(
         &[
-            "SEAT", "STATE", "PRESENCE", "CREATED", "SPACE", "TAB", "PANE",
+            "SEAT", "NODE", "STATE", "PRESENCE", "CREATED", "SPACE", "TAB", "PANE",
         ],
         &rows,
         out,
@@ -313,6 +344,7 @@ mod seat_list_tests {
             active: false,
             bindings: Vec::new(),
             availability: None,
+            directory: None,
         })
         .collect();
         rows.push(SeatSummary {
@@ -325,6 +357,7 @@ mod seat_list_tests {
             active: false,
             bindings: Vec::new(),
             availability: None,
+            directory: None,
         });
         let page = Page {
             items: rows,
@@ -385,6 +418,7 @@ mod seat_list_tests {
                     )
                     .collect(),
                 availability: None,
+                directory: None,
             };
         let page = Page {
             items: vec![

@@ -57,6 +57,7 @@ fn seat_summary(seat: SeatId, target: Option<HostTargetId>) -> SeatSummary {
         active: false,
         bindings: Vec::new(),
         availability: None,
+        directory: None,
     }
 }
 
@@ -79,6 +80,7 @@ fn participant(seat: SeatId) -> Participant {
         bindings: Vec::new(),
         availability: None,
         home_unreachable: None,
+        directory: None,
     }
 }
 
@@ -170,6 +172,7 @@ impl Daemon {
                     retirement: None,
                     open_binding: None,
                     history: page(Vec::new()),
+                    directory: None,
                 })
             }
             _ => {

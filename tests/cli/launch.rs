@@ -1367,6 +1367,7 @@ fn inspection_with(
             active: false,
             bindings: Vec::new(),
             availability: None,
+            directory: None,
         },
         mapping: MappingStatus {
             state: ContinuityStatus::Resolved,
@@ -1390,6 +1391,7 @@ fn inspection_with(
             },
             consistency: Consistency::BoundedLive,
         },
+        directory: None,
     }
 }
 

@@ -59,6 +59,7 @@ impl LocalClient for Client {
                     active: true,
                     availability: None,
                     bindings: Vec::new(),
+                    directory: None,
                 },
                 mapping: MappingStatus {
                     state: ContinuityStatus::Resolved,
@@ -69,6 +70,7 @@ impl LocalClient for Client {
                 retirement: None,
                 open_binding: None,
                 history: empty(),
+                directory: None,
             })),
             Command::CheckIn(c) => {
                 let mut context = c.claim;

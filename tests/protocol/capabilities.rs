@@ -312,6 +312,7 @@ fn capability_constants_are_stable() {
             "thread.direct_v1",
             "direct_threads.ensure_creation_policy_v1",
             "participants.locations_v1",
+            "seats.directory_v1",
             "picker.directory_v1",
             "attention.notice_delivery_v1",
             "messages.delivery_modes_v1",
@@ -499,6 +500,7 @@ fn every_advertised_capability_has_a_handler() {
                 assert!(!ADVERTISED.contains(&AUTOMATIC_HANDOFF_V1));
             }
             PARTICIPANT_LOCATIONS => probe_participant_locations(),
+            SEATS_DIRECTORY_V1 => probe_seats_directory(),
             WAKE_STATUS_V1 => probe_wake_status(),
             PICKER_DIRECTORY_V1 => probe_picker_directory(),
             MESSAGE_DELIVERY_MODES => probe_message_delivery_modes(),
@@ -1072,6 +1074,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "thread.direct_v1",
             "direct_threads.ensure_creation_policy_v1",
             "participants.locations_v1",
+            "seats.directory_v1",
             "picker.directory_v1",
             "attention.notice_delivery_v1",
             "messages.delivery_modes_v1",
@@ -2083,6 +2086,59 @@ fn probe_picker_directory() {
     };
     assert!(page.items.is_empty());
     page.validate().unwrap();
+}
+
+/// `seats.directory_v1`: a filtered seat list round-trips and reaches the
+/// store's seat read (an empty store lists nothing).
+fn probe_seats_directory() {
+    use crate::{
+        ports::{ReadContext, StorePort},
+        protocol::{
+            commands::{SeatFilter, SeatsQuery},
+            output::OutputSpec,
+            pagination::PageRequest,
+        },
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let iso = TestIsolation::new("cap-seats-directory");
+    let context =
+        StoreContext::new(iso.state_root().join("store.db"), Arc::new(FixedClock)).with_test_host();
+    let store = SqliteStore::new(
+        context,
+        "34750f98bd59fcfc946da45aaabe933b",
+        StoreSettings::default(),
+    )
+    .unwrap();
+    let command = Command::Seats(SeatsQuery {
+        page: PageRequest::default(),
+        target: None,
+        include_retired: false,
+        filter: SeatFilter {
+            node: Some("Q0V".into()),
+            local: true,
+            ..SeatFilter::default()
+        },
+    });
+    assert_eq!(
+        serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+        command
+    );
+    let result = store
+        .query(
+            &command,
+            &ReadContext {
+                instance: "34750f98bd59fcfc946da45aaabe933b".into(),
+                output: OutputSpec::default(),
+                operation_scope: None,
+            },
+            &budget(),
+        )
+        .unwrap();
+    let CommandResult::Seats(page) = result else {
+        panic!("wrong seats route")
+    };
+    assert!(page.items.is_empty());
 }
 
 #[test]

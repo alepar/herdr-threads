@@ -3620,6 +3620,7 @@ fn seat_directory_pages_205_rows_without_offset() {
             page: page(cursor),
             target: None,
             include_retired: false,
+            filter: Default::default(),
         });
         let CommandResult::Seats(result) =
             query(&store, "34750f98bd59fcfc946da45aaabe933b", &q, &budget()).unwrap()
@@ -3652,6 +3653,7 @@ fn seat_directory_excludes_retired_and_freezes_newest_first_page() {
             },
             target: None,
             include_retired,
+            filter: Default::default(),
         });
         let CommandResult::Seats(result) =
             query(&store, "34750f98bd59fcfc946da45aaabe933b", &q, &budget()).unwrap()
@@ -3698,6 +3700,7 @@ fn seat_directory_excludes_retired_and_freezes_newest_first_page() {
         },
         target: None,
         include_retired: true,
+        filter: Default::default(),
     });
     assert_eq!(
         query(
@@ -3728,6 +3731,7 @@ fn seat_target_filter_finds_live_seat_after_many_retired_seats_in_one_request() 
             page: page(None),
             target: Some(HostTargetId::new(target)),
             include_retired: false,
+            filter: Default::default(),
         });
         let CommandResult::Seats(result) =
             query(&store, "34750f98bd59fcfc946da45aaabe933b", &q, &budget()).unwrap()
@@ -3752,6 +3756,7 @@ fn seat_target_filter_finds_live_seat_after_many_retired_seats_in_one_request() 
         },
         target: Some(HostTargetId::new("pane")),
         include_retired: true,
+        filter: Default::default(),
     });
     let CommandResult::Seats(page) = query(
         &store,
@@ -6258,6 +6263,7 @@ fn seat_list_reports_the_same() {
             page: page(None),
             target: None,
             include_retired: false,
+            filter: Default::default(),
         }),
         &budget(),
     )
@@ -6327,6 +6333,7 @@ fn presence_bounds_disconnected_subagent_bindings() {
             page: default_page.clone(),
             target: None,
             include_retired: false,
+            filter: Default::default(),
         }),
         &budget(),
     )

@@ -70,6 +70,7 @@ fn seat_in(name: &str, continuity: ContinuityStatus) -> SeatSummary {
         active: false,
         bindings: Vec::new(),
         availability: None,
+        directory: None,
     }
 }
 
@@ -92,6 +93,7 @@ fn participants() -> Page<Participant> {
         bindings: Vec::new(),
         availability: None,
         home_unreachable: None,
+        directory: None,
     }])
 }
 

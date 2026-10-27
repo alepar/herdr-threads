@@ -35,6 +35,7 @@ pub mod receipts;
 pub mod remote_seat_status;
 pub mod retention;
 pub mod schema;
+pub mod seat_directory;
 pub mod seats;
 pub mod service_controls;
 pub mod service_events;

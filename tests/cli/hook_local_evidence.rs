@@ -261,6 +261,7 @@ impl crate::ports::LocalService for Service {
             active: true,
             availability: None,
             bindings: Vec::new(),
+            directory: None,
         };
         match c {
             Command::Seats(_) => {
@@ -282,6 +283,7 @@ impl crate::ports::LocalService for Service {
                 retirement: None,
                 open_binding: None,
                 history: empty(),
+                directory: None,
             })),
             Command::Directory(_) => Ok(CommandResult::Directory(empty())),
             Command::AttentionDigest(_) => {

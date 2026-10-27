@@ -35,6 +35,7 @@ fn selected_service_mapping_rejects_wrong_target_and_repair_hold() {
             active: false,
             bindings: Vec::new(),
             availability: None,
+            directory: None,
         },
         mapping: MappingStatus {
             state: ContinuityStatus::Resolved,
@@ -54,6 +55,7 @@ fn selected_service_mapping_rejects_wrong_target_and_repair_hold() {
             stop_reason: StopReason::Complete,
             consistency: Consistency::BoundedLive,
         },
+        directory: None,
     };
     assert_eq!(
         crate::cli::selected_generation(&selection, &inspection).unwrap(),
@@ -150,6 +152,7 @@ fn selected_first_lifecycle_fixture(replace_human: bool) {
                         active: false,
                         bindings: Vec::new(),
                         availability: None,
+                        directory: None,
                     },
                     mapping: MappingStatus {
                         state: ContinuityStatus::Resolved,
@@ -160,6 +163,7 @@ fn selected_first_lifecycle_fixture(replace_human: bool) {
                     retirement: None,
                     open_binding: None,
                     history: empty(),
+                    directory: None,
                 })),
                 Command::CheckIn(c) => {
                     assert_eq!(
@@ -343,6 +347,7 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
                         active: false,
                         bindings: Vec::new(),
                         availability: None,
+                        directory: None,
                     },
                     mapping: MappingStatus {
                         state: ContinuityStatus::Resolved,
@@ -353,6 +358,7 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
                     retirement: None,
                     open_binding: None,
                     history: empty(),
+                    directory: None,
                 })),
                 Command::CheckIn(c) => {
                     if let Some((key, original)) = self.saved.lock().unwrap().as_ref()
@@ -2029,6 +2035,7 @@ fn recipient_panes_reads_do_not_allocate_and_invite_uses_guarded_resolution() {
                                 active: false,
                                 bindings: Vec::new(),
                                 availability: None,
+                                directory: None,
                             }]
                         },
                         next_cursor: None,
@@ -2216,6 +2223,7 @@ mod scoped_runtime {
                 active: false,
                 bindings: Vec::new(),
                 availability: None,
+                directory: None,
             }
         }
         fn inspection(&self) -> crate::protocol::results::SeatInspection {
@@ -2240,6 +2248,7 @@ mod scoped_runtime {
                         target: HostTargetId::new(self.target.as_deref().unwrap_or_default()),
                     }),
                 history: empty(),
+                directory: None,
             }
         }
     }

@@ -236,6 +236,7 @@ fn participants_and_seat_views_list_the_seat_once() {
         page: page(),
         target: None,
         include_retired: false,
+        filter: Default::default(),
     })) else {
         panic!("wrong result")
     };
@@ -373,6 +374,7 @@ fn seat_inspect_exposes_exact_binding_identity_and_liveness() {
             page: page(),
             target: None,
             include_retired: false,
+            filter: Default::default(),
         }),
         &budget(),
     )

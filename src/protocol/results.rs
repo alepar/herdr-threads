@@ -1098,6 +1098,67 @@ pub struct SeatSummary {
     /// Availability slot, filled by the liveness worker; absent until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub availability: Option<PresenceAvailability>,
+    /// The seat's directory entry (ht-xg88): node, advisory presence,
+    /// harness, last activity and, for a remote seat, its home node's
+    /// labels. Display only; absent from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<Box<SeatDirectory>>,
+}
+
+/// One seat's directory entry (ht-xg88). Every value is a display hint: a
+/// remote seat's comes from its home node's `seat_status` and is shown only
+/// as fresh as that node's status allows (`remote_seat_status::presence_of`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatDirectory {
+    /// The home node's tag, else its uuid prefix.
+    #[serde(default)]
+    pub node: String,
+    /// The home node's host label (machine), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
+    /// `busy`, `idle`, `offline`, `unreachable`, `stale`, `clone_suspected`
+    /// or `-` (unknown).
+    #[serde(default)]
+    pub state: String,
+    /// With `unreachable`: the last contact; with `stale`: the snapshot's
+    /// build time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<UtcMillis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_at: Option<UtcMillis>,
+    /// When the shown snapshot was built (remote seats only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_at: Option<UtcMillis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
+}
+
+impl SeatDirectory {
+    /// The presence is not current (`unreachable`, `stale`, unknown, clone):
+    /// labels then are last known.
+    pub fn last_known(&self) -> bool {
+        !matches!(self.state.as_str(), "busy" | "idle" | "offline")
+    }
+
+    /// `WS / TAB / PANE`, `-` for an absent part; `None` without any label.
+    pub fn labels(&self) -> Option<String> {
+        if self.workspace.is_none() && self.tab.is_none() && self.pane.is_none() {
+            return None;
+        }
+        let part = |p: &Option<String>| p.clone().unwrap_or_else(|| "-".into());
+        Some(format!(
+            "{} / {} / {}",
+            part(&self.workspace),
+            part(&self.tab),
+            part(&self.pane)
+        ))
+    }
 }
 /// The presence availability slot of a seat or participant row. On the wire it
 /// is the string `available`, `unavailable@<unix-ms>` (since when) or `remote`
@@ -1190,6 +1251,10 @@ pub struct SeatInspection {
     #[serde(default)]
     pub open_binding: Option<OpenBindingSummary>,
     pub history: Page<SeatHistoryItem>,
+    /// The seat's directory entry for a remote seat (ht-xg88); absent for a
+    /// local one and from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<Box<SeatDirectory>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
@@ -1704,6 +1769,10 @@ pub struct ParticipantLocation {
     pub target: Option<HostTargetId>,
     pub terminal: Option<String>,
     pub incarnation: Option<String>,
+    /// A remote seat's labels from its home node (ht-xg88); absent for a
+    /// local seat, for a remote seat with none, and from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<SeatDirectory>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1738,6 +1807,10 @@ pub struct Participant {
     /// reader prints one `node <tag> unreachable` line per node, not per seat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_unreachable: Option<UnreachableHome>,
+    /// A remote seat's directory entry (ht-xg88); absent for a local seat
+    /// and from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<Box<SeatDirectory>>,
 }
 /// A remote seat's home node that has had no sync contact for too long.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

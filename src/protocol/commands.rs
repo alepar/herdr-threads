@@ -420,6 +420,33 @@ pub struct SeatsQuery {
     /// Include retired seats in the directory. Absent means active only.
     #[serde(default, skip_serializing_if = "is_false")]
     pub include_retired: bool,
+    /// Directory filters (ht-xg88, `seats.directory_v1`), all AND: the home
+    /// node's tag; its machine (host label or tag); the harness id; a
+    /// case-insensitive substring of the workspace, tab or pane label; local
+    /// seats only.
+    #[serde(default, skip_serializing_if = "SeatFilter::is_empty")]
+    pub filter: SeatFilter,
+}
+
+/// See [`SeatsQuery::filter`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatFilter {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub local: bool,
+}
+
+impl SeatFilter {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
