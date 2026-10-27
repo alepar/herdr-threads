@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.4.0
+
+One-way store upgrade to node schema 7 (two new tables: `sync_peer_status`, migration 0006; `remote_seat_origin` and `remote_seat_status`, migration 0007). Older binaries then refuse the store, so back up the state directory first. The peer wire gains two capability-gated frames; peers of earlier releases see unchanged traffic apart from the new capability strings in our hello.
+
+- **Node status.** Link liveness is not node health: the link answers pings itself, so a peer whose coordinator or store is wedged used to read as linked. `peer list` now adds one row per known node: `node TAG linked|stalled PARTS|reachable seen=AGE app=AGE ...` or `node TAG unreachable since TIME|never`, then `v=VER rx=HAVE/HEAD tx=ACKED/HEAD` (40-99 bytes). A direction with pending work and no progress for 120 s is `stalled`; an unreachable node keeps its last-known version and positions. The peer's daemon version comes from a new `node_info` frame (cap `node.info.v1`). `sync status` link rows add `since`, `last_rx`, `app_rx`, `subs`, `peer_lag` and `stalled=` (about 45-58 bytes). Diagnostic only: no link, rank or dial decision reads it.
+- **Seat directory.** Each node publishes advisory status of its own seats (presence busy/idle/offline, harness, last activity, workspace/tab/pane labels) to linked peers on a new `seat_status` frame (cap `seat.status.v1`). `seat list` shows every known seat, one compact row `SEAT TAG STATE HARNESS last=AGE[: WS / TAB / PANE]`, with filters `--node`, `--on MACHINE`, `--harness`, `--label` (remote seats' labels) and `--local`; `thread participants`/`show` add a remote seat's state and its labels, and `seat inspect` a `directory:` line. A seat whose home node is unreachable reads `unreachable since T` with its last-known labels, never a stale presence. Remote status is the home node's advisory word, never authority (TRUST-POLICY N13). The skill gains one paragraph (~480 bytes, once per session); no delivery, hook or check-in text changes.
+- **Timestamped daemon log.** Every `daemon.log` line starts with its UTC time (`YYYY-MM-DDTHH:MM:SS.mmmZ `, 25 bytes), the daemon's own lines and child output included.
+- **Tests and CI.** The Ed25519 crates build optimized in dev and test profiles (a fact's signature took ~5 ms unoptimized), and CI runs the suite in five slices instead of four, which puts every slice back under the 300 s budget.
+
 ## v2.3.3
 
 Re-run `herdr-threads setup hermes` after upgrading. No node schema or peer wire change.
