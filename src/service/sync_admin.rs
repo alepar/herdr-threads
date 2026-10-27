@@ -35,7 +35,7 @@ use crate::store::incarnations::{self, ForkOrigin};
 use crate::store::sync_status::{self, node_label, resolve_node};
 use crate::store::{node_directory, sync_dial_targets};
 use crate::sync::LogKey;
-use crate::sync::coordinator::{LinkMode, LogFn, SyncHandle};
+use crate::sync::coordinator::{LinkMode, LinkStatus, LogFn, Stall, SyncHandle};
 use crate::sync::incarnations::IncarnationsSink;
 use crate::sync::resync::{self, RequestEnv};
 
@@ -97,12 +97,23 @@ impl SyncAdmin {
             SyncCommand::PeerForget { target } => self.peer_forget(&target, label, budget),
             SyncCommand::PeerList => {
                 let now = u64::try_from(self.clock.utc_now().0).unwrap_or(0);
-                let rows = self
-                    .store
-                    .sync_read(budget, |conn, _| sync_status::peers(conn, now))?;
+                // Without an answer from the coordinator no node is shown as
+                // linked: the stored rows give last-known values only.
+                let live: Vec<sync_status::LiveNode> = self
+                    .runtime
+                    .block_on(self.sync.snapshot(budget))
+                    .map(|snapshot| live_nodes(&snapshot.links))
+                    .unwrap_or_default();
+                let (rows, nodes) = self.store.sync_read(budget, |conn, _| {
+                    Ok((
+                        sync_status::peers(conn, now)?,
+                        sync_status::nodes(conn, now, &live)?,
+                    ))
+                })?;
                 Ok(SyncReply::Peers {
                     rows,
                     discovery: self.discovery_state(),
+                    nodes,
                 })
             }
             SyncCommand::Status { log } => self.status(log.as_deref(), budget),
@@ -247,6 +258,15 @@ impl SyncAdmin {
                     withheld_logs: link.withheld_logs,
                     dest: link.dest.clone(),
                     last_error,
+                    since: Some(link.since.0),
+                    last_rx: Some(link.last_rx.0),
+                    app_rx: Some(link.app_rx.0),
+                    subscriptions: link.subscriptions,
+                    peer_lag: link.tx.map(|(acked, head)| head.saturating_sub(acked)),
+                    stalled: stall_names(link.stalled)
+                        .iter()
+                        .map(|s| (*s).to_owned())
+                        .collect(),
                 }
             })
             .collect();
@@ -376,3 +396,29 @@ impl SyncAdmin {
 #[cfg(test)]
 #[path = "../../tests/service/sync_admin.rs"]
 mod tests;
+
+/// `app`, `tx`, `rx`: the parts of a link that stalled, in that order.
+fn stall_names(stall: Stall) -> Vec<&'static str> {
+    [("app", stall.app), ("tx", stall.tx), ("rx", stall.rx)]
+        .into_iter()
+        .filter_map(|(name, on)| on.then_some(name))
+        .collect()
+}
+
+/// One [`sync_status::LiveNode`] per node with an active, open link.
+fn live_nodes(links: &[LinkStatus]) -> Vec<sync_status::LiveNode> {
+    links
+        .iter()
+        .filter(|link| link.mode == LinkMode::Active)
+        .map(|link| sync_status::LiveNode {
+            node: link.node,
+            linked_since: link.since.0,
+            last_rx: link.last_rx.0,
+            app_seen_at: link.app_rx.0,
+            version: link.peer_version.clone(),
+            tx: link.tx,
+            rx: link.rx,
+            stalled: stall_names(link.stalled),
+        })
+        .collect()
+}

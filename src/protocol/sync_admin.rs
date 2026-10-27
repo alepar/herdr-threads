@@ -131,6 +131,48 @@ pub struct PeerRow {
     pub last_error: Option<String>,
 }
 
+/// One known peer node, as `peer list` shows it (ht-xg88 node status).
+/// Every field is display data: nothing routes, dials or attributes by it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeRow {
+    /// The node's tag, else its uuid prefix.
+    #[serde(default)]
+    pub node: String,
+    /// `linked`, `stalled`, `reachable` or `unreachable`.
+    #[serde(default)]
+    pub state: String,
+    /// With `stalled`: which of `app`, `tx`, `rx`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stalled: Vec<String>,
+    /// The last frame of any kind (unix ms); `None` when never heard from.
+    #[serde(default)]
+    pub last_contact_at: Option<i64>,
+    /// The last frame its coordinator sent (unix ms).
+    #[serde(default)]
+    pub app_seen_at: Option<i64>,
+    /// Since when it has an active link (unix ms).
+    #[serde(default)]
+    pub linked_since: Option<i64>,
+    /// Its self-reported daemon version, last known.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// `[acked, head]`: it holds `acked` of our active log, whose head is
+    /// `head` (last known).
+    #[serde(default)]
+    pub tx: Option<(u64, u64)>,
+    /// `[have, head]`: we hold `have` of its active log, which it advertised
+    /// at `head` (last known).
+    #[serde(default)]
+    pub rx: Option<(u64, u64)>,
+    /// Open clone evidence names this node.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub clone_suspected: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 fn is_zero(n: &u64) -> bool {
     *n == 0
 }
@@ -184,6 +226,25 @@ pub struct LinkRow {
     pub withheld_logs: u64,
     pub dest: Option<String>,
     pub last_error: Option<String>,
+    /// Since when the link is up (unix ms).
+    #[serde(default)]
+    pub since: Option<i64>,
+    /// The last inbound frame of any kind (unix ms).
+    #[serde(default)]
+    pub last_rx: Option<i64>,
+    /// The last frame the peer's coordinator sent (unix ms).
+    #[serde(default)]
+    pub app_rx: Option<i64>,
+    /// Logs the peer has armed a subscription for.
+    #[serde(default)]
+    pub subscriptions: u32,
+    /// How far the peer is behind on our active log (`None` off an active
+    /// link or before its first full `have`).
+    #[serde(default)]
+    pub peer_lag: Option<u64>,
+    /// Which of `app`, `tx`, `rx` stalled on this link.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stalled: Vec<String>,
 }
 
 /// One open clone-evidence row.
@@ -298,6 +359,9 @@ pub enum SyncReply {
         /// The discovery worker's state token; `None` without a worker.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         discovery: Option<String>,
+        /// Every known peer node's status (ht-xg88).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        nodes: Vec<NodeRow>,
     },
     Status(Box<StatusReply>),
     Verified {

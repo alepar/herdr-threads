@@ -681,6 +681,12 @@ fn status_reports_link_withheld_logs() {
         withheld_logs,
         dest: None,
         last_error: None,
+        since: None,
+        last_rx: None,
+        app_rx: None,
+        subscriptions: 0,
+        peer_lag: None,
+        stalled: vec![],
     };
     status.links = vec![link(0)];
     let plain = text(Reply::Status(Box::new(status.clone())));
@@ -1200,4 +1206,212 @@ fn sync_clone_cleared_single_restored_store_clears_and_rotation_runs() {
     });
     stop_worker(worker);
     drop(w.orig);
+}
+
+// -- Node status (ht-xg88) --------------------------------------------------
+
+fn peer_node() -> NodeUuid {
+    NodeUuid::from_u128(0xabcdef)
+}
+
+fn seed_peer_node(node: &Node, tag: &str) {
+    let db = node.store.context().open_writer().unwrap();
+    crate::store::node_directory::upsert(
+        &db,
+        &crate::store::node_directory::NodeDirectoryRow {
+            node_uuid: peer_node(),
+            tag: tag.parse().unwrap(),
+            tag_k: 0,
+            host_label: Some("laptop".into()),
+            first_seen_at: 0,
+            tag_hlc: None,
+        },
+    )
+    .unwrap();
+}
+
+fn record_peer(node: &Node, row: crate::store::sync_peer_status::PeerStatus) {
+    let mut db = node.store.context().open_writer().unwrap();
+    let tx = db.transaction().unwrap();
+    crate::store::sync_peer_status::record(&tx, &[row], 1).unwrap();
+    tx.commit().unwrap();
+}
+
+fn peer_status(version: Option<&str>, boot: u128) -> crate::store::sync_peer_status::PeerStatus {
+    crate::store::sync_peer_status::PeerStatus {
+        node: peer_node(),
+        version: version.map(str::to_owned),
+        caps: vec!["sync.v1".into(), "node.info.v1".into()],
+        boot: uuid::Uuid::from_u128(boot),
+        linked_since: None,
+        last_linked_at: 5,
+        tx: Some((7, 9)),
+        rx: Some((3, 5)),
+        app_seen_at: Some(4),
+    }
+}
+
+fn node_lines(rig: &Rig) -> Vec<String> {
+    text(rig.read(SyncCommand::PeerList).unwrap())
+        .lines()
+        .filter(|l| l.starts_with("node "))
+        .map(str::to_owned)
+        .collect()
+}
+
+// Kills: a known peer node missing from `peer list` while it has no link, a
+// lost last-known version or position, a never-heard node shown reachable,
+// a relayed-fresh node shown linked (no live link), and open clone evidence
+// not marked.
+#[test]
+fn peer_list_shows_last_known_node_status() {
+    let rig = Rig::new(Node::new(SEED_A, 1));
+    seed_peer_node(&rig.node, "Zq7");
+    record_peer(&rig.node, peer_status(Some("2.3.9"), 1));
+    // A row without a version or positions keeps the stored ones.
+    record_peer(
+        &rig.node,
+        crate::store::sync_peer_status::PeerStatus {
+            version: None,
+            tx: None,
+            rx: None,
+            ..peer_status(None, 1)
+        },
+    );
+    let lines = node_lines(&rig);
+    assert_eq!(lines, ["node Zq7 unreachable never v=2.3.9 rx=3/5 tx=7/9"]);
+    assert_eq!(lines[0].len(), 48);
+
+    // A newer boot without a version replaces the version.
+    record_peer(&rig.node, peer_status(None, 2));
+    assert_eq!(
+        node_lines(&rig),
+        ["node Zq7 unreachable never v=- rx=3/5 tx=7/9"]
+    );
+
+    // Fresh contact but no live link: reachable (relayed), never linked.
+    let now = crate::protocol::time::Clock::utc_now(rig.node.clock.as_ref()).0;
+    let db = rig.node.store.context().open_writer().unwrap();
+    db.execute(
+        "INSERT INTO sync_node_contact(node_uuid,last_contact_at,via,updated_at) VALUES (?1,?2,'relayed',?2)",
+        rusqlite::params![peer_node().to_string(), now - 4_000],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO sync_clone_evidence(subject,kind,detail,source_node,detected_at,last_seen_at) \
+         VALUES (?1,'third_party','two boots',NULL,0,0)",
+        [peer_node().to_string()],
+    )
+    .unwrap();
+    let lines = crate::protocol::output::with_render_now(UtcMillis(now), || node_lines(&rig));
+    // The stored app contact is at unix ms 4: days ago.
+    assert_eq!(
+        lines,
+        [format!(
+            "node Zq7 reachable seen=4s app={} v=- rx=3/5 tx=7/9 clone_suspected",
+            age_of(now, 4)
+        )]
+    );
+}
+
+fn age_of(now: i64, at: i64) -> String {
+    let secs = (now - at) / 1000;
+    match secs {
+        0..=119 => format!("{secs}s"),
+        120..=7_199 => format!("{}m", secs / 60),
+        7_200..=172_799 => format!("{}h", secs / 3_600),
+        _ => format!("{}d", secs / 86_400),
+    }
+}
+
+// Kills: node rows rendered with the wrong state words, the stall parts
+// missing, a linked row without its ages or link start, and an older
+// daemon's reply (no nodes) printing node lines.
+#[test]
+fn node_rows_render_compactly() {
+    use crate::protocol::sync_admin::NodeRow;
+    let now = 1_793_092_323_481; // 2026-10-27T09:12:03.481Z
+    let row = |state: &str, stalled: &[&str]| NodeRow {
+        node: "Q0V".into(),
+        state: state.into(),
+        stalled: stalled.iter().map(|s| (*s).to_owned()).collect(),
+        last_contact_at: Some(now - 4_000),
+        app_seen_at: Some(now - 6_000),
+        linked_since: Some(now - 3 * 3_600_000),
+        version: Some("2.4.0".into()),
+        tx: Some((1180, 1234)),
+        rx: Some((567, 567)),
+        clone_suspected: false,
+    };
+    let render = |nodes: Vec<NodeRow>| {
+        crate::protocol::output::with_render_now(UtcMillis(now), || {
+            text(Reply::Peers {
+                rows: vec![],
+                discovery: None,
+                nodes,
+            })
+        })
+    };
+    let linked = render(vec![row("linked", &[])]);
+    assert_eq!(
+        linked,
+        "peers\nempty\nnode Q0V linked seen=4s app=6s v=2.4.0 rx=567/567 tx=1180/1234 since=06:12Z\n"
+    );
+    let stalled = render(vec![NodeRow {
+        clone_suspected: true,
+        ..row("stalled", &["app", "tx"])
+    }]);
+    let line = stalled.lines().nth(2).unwrap();
+    assert_eq!(
+        line,
+        "node Q0V stalled app,tx seen=4s app=6s v=2.4.0 rx=567/567 tx=1180/1234 since=06:12Z clone_suspected"
+    );
+    assert_eq!(line.len(), 99);
+    let unreachable = render(vec![NodeRow {
+        linked_since: None,
+        ..row("unreachable", &[])
+    }]);
+    assert_eq!(
+        unreachable.lines().nth(2).unwrap(),
+        "node Q0V unreachable since 09:11Z v=2.4.0 rx=567/567 tx=1180/1234"
+    );
+    // An older daemon's reply has no `nodes`: no node lines.
+    let old: Reply =
+        serde_json::from_value(serde_json::json!({"op": "peers", "rows": []})).unwrap();
+    assert_eq!(text(old), "peers\nempty\n");
+}
+
+// Kills: the link liveness fields missing from a current daemon's link row,
+// or printed (as dashes) for an older daemon's reply that has none.
+#[test]
+fn status_link_row_shows_liveness() {
+    use crate::protocol::sync_admin::LinkRow;
+    let now = 1_793_092_323_481;
+    let rig = Rig::new(Node::new(SEED_A, 1));
+    let mut status = rig.status();
+    status.links = vec![LinkRow {
+        node: "Q0V".into(),
+        mode: "active".into(),
+        role: "dialer".into(),
+        rx_logs: 3,
+        unsolicited: 0,
+        withheld_logs: 0,
+        dest: None,
+        last_error: None,
+        since: Some(now - 60_000),
+        last_rx: Some(now - 2_000),
+        app_rx: Some(now - 6_000),
+        subscriptions: 3,
+        peer_lag: Some(54),
+        stalled: vec!["tx".into()],
+    }];
+    let rendered = crate::protocol::output::with_render_now(UtcMillis(now), || {
+        text(Reply::Status(Box::new(status)))
+    });
+    let line = rendered.lines().find(|l| l.starts_with("link ")).unwrap();
+    assert_eq!(
+        line,
+        "link Q0V active dialer rx_logs=3 unsolicited=0 since=09:11Z last_rx=2s app_rx=6s subs=3 peer_lag=54 stalled=tx"
+    );
+    assert_eq!(line.len(), 110);
 }

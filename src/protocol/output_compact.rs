@@ -17,7 +17,7 @@
 use super::{
     OutputSpec, detail_argv, format_command_argv, needs_terminal_escape, other_day, text_json,
 };
-use crate::protocol::sync_admin::{StatusReply, SyncReply};
+use crate::protocol::sync_admin::{NodeRow, StatusReply, SyncReply};
 use crate::protocol::{
     pagination::Page,
     results::{
@@ -1037,6 +1037,53 @@ fn age(now_ms: i64, at_ms: i64) -> String {
     }
 }
 
+/// One `peer list` node row (ht-xg88), about 60-95 bytes:
+/// `node TAG STATE[ PARTS] seen=AGE app=AGE v=VER rx=HAVE/HEAD tx=ACKED/HEAD
+/// [since=TIME][ clone_suspected]`, where an unreachable node shows
+/// `unreachable since TIME` (or `unreachable never`) instead of the two ages.
+/// The version is peer-chosen text, escaped to one token.
+fn node_row(node: &NodeRow, now: i64, out: &mut String) {
+    use std::fmt::Write as _;
+    let pair =
+        |p: Option<(u64, u64)>| p.map_or_else(|| "-".to_owned(), |(a, b)| format!("{a}/{b}"));
+    let _ = write!(out, "node {} {}", node.node, node.state);
+    if !node.stalled.is_empty() {
+        let _ = write!(out, " {}", node.stalled.join(","));
+    }
+    if node.state == "unreachable" {
+        match node.last_contact_at {
+            Some(at) => {
+                let _ = write!(out, " since {}", clock(UtcMillis(at)));
+            }
+            None => out.push_str(" never"),
+        }
+    } else {
+        let at = |v: Option<i64>| v.map_or_else(|| "-".to_owned(), |at| age(now, at));
+        let _ = write!(
+            out,
+            " seen={} app={}",
+            at(node.last_contact_at),
+            at(node.app_seen_at)
+        );
+    }
+    let _ = write!(
+        out,
+        " v={} rx={} tx={}",
+        node.version
+            .as_deref()
+            .map_or_else(|| "-".to_owned(), token),
+        pair(node.rx),
+        pair(node.tx)
+    );
+    if let Some(since) = node.linked_since {
+        let _ = write!(out, " since={}", clock(UtcMillis(since)));
+    }
+    if node.clone_suspected {
+        out.push_str(" clone_suspected");
+    }
+    out.push('\n');
+}
+
 /// `-` for an absent number.
 fn opt_num(value: Option<u64>) -> String {
     value.map_or_else(|| "-".to_owned(), |n| n.to_string())
@@ -1057,7 +1104,11 @@ fn sync_reply(reply: &SyncReply, spec: &OutputSpec, out: &mut String) {
         SyncReply::PeerForgotten { disabled } => {
             let _ = writeln!(out, "peer_forgotten {disabled}");
         }
-        SyncReply::Peers { rows, discovery } => {
+        SyncReply::Peers {
+            rows,
+            discovery,
+            nodes,
+        } => {
             out.push_str("peers\n");
             if let Some(state) = discovery {
                 let _ = writeln!(out, "discovery {state}");
@@ -1088,6 +1139,10 @@ fn sync_reply(reply: &SyncReply, spec: &OutputSpec, out: &mut String) {
                     let _ = write!(out, " err={}", one_line(error));
                 }
                 out.push('\n');
+            }
+            let now = super::render_now().0;
+            for node in nodes {
+                node_row(node, now, out);
             }
         }
         SyncReply::Status(status) => sync_status(status, out),
@@ -1225,6 +1280,25 @@ fn sync_status(status: &StatusReply, out: &mut String) {
         // At most 25 bytes, only on a link that parked a log.
         if link.withheld_logs > 0 {
             let _ = write!(out, " withheld_logs={}", link.withheld_logs);
+        }
+        // About 45 bytes: since, last frame, last coordinator frame,
+        // subscriptions and the peer's lag on our active log.
+        // An older daemon's reply has none of them.
+        if let Some(since) = link.since {
+            let at = |v: Option<i64>| v.map_or_else(|| "-".to_owned(), |at| age(now, at));
+            let _ = write!(
+                out,
+                " since={} last_rx={} app_rx={} subs={} peer_lag={}",
+                clock(UtcMillis(since)),
+                at(link.last_rx),
+                at(link.app_rx),
+                link.subscriptions,
+                opt_num(link.peer_lag)
+            );
+        }
+        // At most 19 bytes, only on a stalled link.
+        if !link.stalled.is_empty() {
+            let _ = write!(out, " stalled={}", link.stalled.join(","));
         }
         let mut sep = ":";
         if let Some(dest) = &link.dest {

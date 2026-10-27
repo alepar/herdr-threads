@@ -213,6 +213,9 @@ mod config_discovery;
 #[path = "multinode/config_delivery.rs"]
 mod config_delivery;
 
+#[path = "multinode/node_status.rs"]
+mod node_status;
+
 #[path = "multinode/config_restore.rs"]
 mod config_restore;
 

@@ -202,10 +202,15 @@ fn peer_add_refuses_control_chars_and_options() {
     assert!(option.contains("must not start with '-'"), "{option}");
     let listed = ok(&fx.run(&["peer", "list"]));
     assert!(listed.starts_with("peers\n"), "{listed}");
-    assert!(listed.ends_with("empty\n"), "{listed}");
+    assert!(listed.lines().any(|l| l == "empty"), "{listed}");
     assert!(
         listed.lines().all(|l| !l.starts_with("peer ")),
-        "no rows: {listed}"
+        "no target rows: {listed}"
+    );
+    // The known node is listed by node status, never heard from (ht-xg88).
+    assert!(
+        listed.ends_with("node Pq7 unreachable never v=- rx=- tx=-\n"),
+        "{listed}"
     );
 }
 
@@ -528,10 +533,15 @@ fn sync_resync_no_path_refused() {
     // The daemon is still serving.
     let listed = ok(&fx.run(&["peer", "list"]));
     assert!(listed.starts_with("peers\n"), "{listed}");
-    assert!(listed.ends_with("empty\n"), "{listed}");
+    assert!(listed.lines().any(|l| l == "empty"), "{listed}");
     assert!(
         listed.lines().all(|l| !l.starts_with("peer ")),
-        "no rows: {listed}"
+        "no target rows: {listed}"
+    );
+    // The known node is listed by node status, never heard from (ht-xg88).
+    assert!(
+        listed.ends_with("node Pq7 unreachable never v=- rx=- tx=-\n"),
+        "{listed}"
     );
 }
 

@@ -20,16 +20,20 @@
 //! - Role: pure functions over a query connection, plus the store doors.
 //!   Read-only by construction: nothing here opens a transaction that writes.
 
+use std::collections::BTreeMap;
+
 use rusqlite::{Connection, Transaction, params};
 use sha2::{Digest, Sha256};
 
 use crate::node::{NodeTag, NodeUuid};
 use crate::protocol::results::{ApiError, ErrorCode};
-use crate::protocol::sync_admin::{LogRow, PeerRow, UnappliedPage, UnappliedRow, ViolationRow};
+use crate::protocol::sync_admin::{
+    LogRow, NodeRow, PeerRow, UnappliedPage, UnappliedRow, ViolationRow,
+};
 use crate::protocol::time::CallBudget;
 use crate::store::apply::{self, ApplyLimits, ApplyState, ReplayScope};
 use crate::store::connection::{DecisionInstant, StoreContext, api_error, store_error};
-use crate::store::{node_directory, sync_contacts, sync_dial_targets};
+use crate::store::{node_directory, sync_contacts, sync_dial_targets, sync_peer_status};
 use crate::sync::envelope::StoredEntry;
 use crate::sync::journal_port::ApplyProgress;
 use crate::sync::{BatchLimits, LogKey};
@@ -319,6 +323,100 @@ pub fn peers(conn: &Connection, now_ms: u64) -> Result<Vec<PeerRow>, ApiError> {
             reach: reach.to_owned(),
             attempts: target.attempts,
             last_error: target.last_error,
+        });
+    }
+    Ok(out)
+}
+
+/// A node's live link, as the coordinator reports it (the daemon's view;
+/// absent when the node has no active link or the coordinator did not
+/// answer).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveNode {
+    pub node: NodeUuid,
+    pub linked_since: i64,
+    pub last_rx: i64,
+    pub app_seen_at: i64,
+    pub version: Option<String>,
+    pub tx: Option<(u64, u64)>,
+    pub rx: Option<(u64, u64)>,
+    /// Which of `app`, `tx`, `rx` stalled.
+    pub stalled: Vec<&'static str>,
+}
+
+/// The node-status rule (ht-xg88), the only place it is decided. First match
+/// wins: unreachable by `sync_contacts::reach`; `stalled` while its active
+/// link stalled; `linked` with an active link; else `reachable` (relayed).
+pub fn node_state(reach: sync_contacts::NodeReach, live: Option<&LiveNode>) -> &'static str {
+    match (reach, live) {
+        (sync_contacts::NodeReach::Unreachable { .. }, _) => "unreachable",
+        (_, Some(live)) if !live.stalled.is_empty() => "stalled",
+        (_, Some(_)) => "linked",
+        (_, None) => "reachable",
+    }
+}
+
+/// Every known peer node at `now_ms`: its state by [`node_state`], the live
+/// values of its active link where `live` has one, else the last-known ones
+/// from `sync_peer_status`.
+pub fn nodes(conn: &Connection, now_ms: u64, live: &[LiveNode]) -> Result<Vec<NodeRow>, ApiError> {
+    let known: Vec<String> = {
+        let mut statement = conn
+            .prepare_cached(
+                "SELECT node_uuid FROM node_directory \
+                 WHERE node_uuid NOT IN (SELECT id FROM local_node) ORDER BY tag, node_uuid",
+            )
+            .map_err(store_error)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(store_error)?;
+        rows.collect::<Result<_, _>>().map_err(store_error)?
+    };
+    let stored: BTreeMap<NodeUuid, sync_peer_status::PeerStatus> = sync_peer_status::list(conn)?
+        .into_iter()
+        .map(|row| (row.node, row))
+        .collect();
+    let mut clones = conn
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM sync_clone_evidence \
+             WHERE subject = ?1 AND cleared_at IS NULL)",
+        )
+        .map_err(store_error)?;
+    let at = |v: u64| i64::try_from(v).ok();
+    let mut out = Vec::new();
+    for text in known {
+        let uuid: NodeUuid = text
+            .parse()
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "malformed node uuid"))?;
+        let tag = node_directory::get(conn, uuid)
+            .map_err(store_error)?
+            .map(|row| row.tag.to_string());
+        let reach = sync_contacts::reach(conn, &uuid, now_ms)?;
+        let contact = sync_contacts::get(conn, &uuid)?;
+        let live = live.iter().find(|l| l.node == uuid);
+        let last = stored.get(&uuid);
+        let clone_suspected: bool = clones
+            .query_row([&text], |row| row.get(0))
+            .map_err(store_error)?;
+        out.push(NodeRow {
+            node: node_label(tag.as_deref(), &text),
+            state: node_state(reach, live).to_owned(),
+            stalled: live
+                .map(|l| l.stalled.iter().map(|s| (*s).to_owned()).collect())
+                .unwrap_or_default(),
+            last_contact_at: live
+                .map(|l| l.last_rx)
+                .or_else(|| contact.and_then(|c| at(c.last_contact_at))),
+            app_seen_at: live
+                .map(|l| l.app_seen_at)
+                .or_else(|| last.and_then(|r| r.app_seen_at.and_then(at))),
+            linked_since: live.map(|l| l.linked_since),
+            version: live
+                .and_then(|l| l.version.clone())
+                .or_else(|| last.and_then(|r| r.version.clone())),
+            tx: live.and_then(|l| l.tx).or_else(|| last.and_then(|r| r.tx)),
+            rx: live.and_then(|l| l.rx).or_else(|| last.and_then(|r| r.rx)),
+            clone_suspected,
         });
     }
     Ok(out)

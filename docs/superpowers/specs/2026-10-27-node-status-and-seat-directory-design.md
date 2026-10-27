@@ -152,47 +152,52 @@ present), `peer_version`, `caps`, `peer_has_ours: Option<u64>` =
 ```sql
 CREATE TABLE sync_peer_status (
     node_uuid TEXT PRIMARY KEY,
-    version TEXT,                 -- last NodeInfo, NULL if never sent
+    version TEXT,                 -- last node_info; a new boot replaces it
     caps TEXT NOT NULL,           -- negotiated, space-separated
     boot TEXT NOT NULL,           -- last hello boot
     linked_since INTEGER,         -- NULL while no active link
     last_linked_at INTEGER NOT NULL,
-    peer_has_ours INTEGER,        -- their acknowledged counter of our active log
+    tx_acked INTEGER, tx_head INTEGER,  -- their acknowledged view of our active log
+    rx_have INTEGER, rx_head INTEGER,   -- our view of their active log
     app_seen_at INTEGER,          -- last coordinator-originated frame
-    tx_progress_at INTEGER, rx_progress_at INTEGER,
     updated_at INTEGER NOT NULL
 ) STRICT;
 ```
 
-Written by the coordinator through `SyncStorePort`: on activation, on link
-end (`linked_since = NULL`), and when `peer_has_ours` advanced, at most every
-10 s per node (the `ContactBook` cadence). Last contact stays in
-`sync_node_contact`; `rx` positions come from `sync_logs`. One row per node,
-bounded by `node_directory`.
+Written by the coordinator through `SyncStorePort::record_peer_status`
+(module `src/sync/coordinator/peer_status.rs`, store `src/store/sync_peer_status.rs`):
+at once when a node's active link comes up or goes away or its version or
+boot changes, otherwise changed rows at most every 10 s (the `ContactBook`
+cadence), one write in flight. A missing version or position keeps the stored
+value. Last contact stays in `sync_node_contact`. One row per node, bounded by
+`node_directory`. The progress clocks are live state only: a stall is
+meaningful only on a live link, so they are not persisted.
 
 ### 4.4 Node state (one rule)
 
-Computed in one function in `store::sync_status` from `reach`, the
-`sync_peer_status` row and, while the daemon runs, the live `LinkStatus`
-(table only when the daemon is down, e.g. `doctor`). First match wins:
+`store::sync_status::node_state`, from `reach` and the live link the
+coordinator reports (no live link, or no answer from the coordinator: never
+`linked`/`stalled`). First match wins:
 
 1. `unreachable since <last_contact>` / `unreachable never`: `reach` says so.
-2. `stalled app` : direct link active and `now - app_seen_at > APP_SILENT_AFTER`
-   (30 s = three missed `Seen`); transport alive, coordinator silent.
-3. `stalled tx`: direct link active, `our_head > peer_has_ours` and
-   `now - tx_progress_at > STALL_AFTER` (120 s). The peer acknowledges none of
-   what we have to offer it (covers a wedged peer store).
-4. `stalled rx`: direct link active, the peer's advertised head of its own log
-   is ahead of our contiguous counter, and `now - rx_progress_at > STALL_AFTER`.
-   We are not ingesting (our side is the suspect; shown on both ends' views).
-5. `linked`: active direct link, none of the above.
-6. `reachable`: no direct link, contact fresh (relayed).
+2. `stalled` with the parts that hold, in the order `app`, `tx`, `rx`:
+   - `app`: `now - app_rx > APP_SILENT_AFTER` (30 s = three missed `seen`);
+     transport alive, coordinator silent. The threshold must exceed the 10 s
+     `seen` period, or a healthy link reads stalled between two `seen`s;
+   - `tx`: our active log's head is ahead of what the peer acknowledges and
+     that acknowledgement has not grown for `STALL_AFTER` (120 s);
+   - `rx`: the peer advertises its active log ahead of what we hold and we
+     have ingested none of it for `STALL_AFTER`.
+3. `linked`: active direct link, none of the above.
+4. `reachable`: no direct link, contact fresh (relayed).
 
-`stalled tx` and `stalled rx` may both hold; the row then shows `stalled tx,rx`.
-A peer that has nothing to move in a direction is never stalled in it
-(the progress clock is reset when caught up). Stall is diagnostic only: it
-changes no link, rank or dial decision in this design (a follow-up may let a
-stalled active link yield to a standby; not here).
+Progress is clocked on the 1 s housekeeping tick (`track_progress`): a
+direction that is caught up, or whose held counter grew, made progress at
+that tick. A direction is stalled only while its held counter still equals
+the one the last tick recorded, so a catch-up followed by new entries between
+two ticks never reads as a stall. Stall is diagnostic only: it changes no
+link, rank or dial decision (a follow-up may let a stalled active link yield
+to a standby; not here).
 
 Clone evidence: when `sync_clone_evidence` has an open (uncleared) row whose
 `subject` is the peer, its row adds ` clone_suspected` (16 bytes); the state
@@ -200,35 +205,56 @@ is computed as above, never hidden.
 
 ### 4.5 CLI
 
-`peer list` compact rows (one per known node, self excluded):
+`peer list` keeps its dial-target rows (`peer <target_id> ...`) and adds one
+row per known node (`node_directory`, self excluded) after them:
 
 ```
 peers
-peer Q0V linked seen=4s app=4s v=2.4.0 rx=567/567 tx=1234/1234 since=09:12
-peer Q0V stalled tx seen=2s app=6s v=2.4.0 rx=567/567 tx=1180/1234 since=09:12 clone_suspected
-peer K7m unreachable since 09:40 v=2.3.2 rx=88/88 tx=902/1234
+peer 1 linked explicit node=Q0V reach=reachable attempts=0: laptop
+node Q0V linked seen=4s app=6s v=2.4.0 rx=567/567 tx=1180/1234 since=06:12Z
+node Q0V stalled app,tx seen=4s app=6s v=2.4.0 rx=567/567 tx=1180/1234 since=06:12Z clone_suspected
+node K7m unreachable since 09:11Z v=2.4.0 rx=567/567 tx=1180/1234
+node Pq7 unreachable never v=- rx=- tx=-
 ```
 
 - `seen` is frame contact, `app` application contact (§D1).
 - `rx=A/B`: we hold A of their head B as last advertised; `tx=A/B`: they
-  acknowledged A of our head B. Unknown parts print `-`.
-- Sizes: linked row 73 bytes in this example (fixed ~49 plus tag, version and
-  counters); the stalled example 93 bytes (state +7..10, `clone_suspected` +16);
-  unreachable ~62 bytes.
+  acknowledged A of our head B; last-known values once the link is gone.
+  Unknown parts print `-`. The version is peer text, escaped to one token.
+- Sizes (the stalled and link rows asserted in `tests/service/sync_admin.rs`):
+  the linked row is 75 bytes in this example, the stalled one 99,
+  unreachable 65, never-heard 40; they grow only with the counters' digits
+  and the version text (at most 32 bytes).
+- JSON: `SyncReply::Peers.nodes: Vec<NodeRow>` (`#[serde(default)]`, omitted
+  when empty); an older daemon's reply has none and prints no node rows.
 
-`sync status` link rows add `since`, `last_rx`, `subs`, `peer_lag`:
+`sync status` link rows add `since`, `last_rx`, `app_rx`, `subs`, `peer_lag`
+and, on a stalled link, `stalled=`:
 
 ```
-link Q0V active dialer rx_logs=3 unsolicited=0 since=09:12 last_rx=2s app_rx=6s subs=3 peer_lag=54 stalled=tx
+link Q0V active dialer rx_logs=3 unsolicited=0 since=09:11Z last_rx=2s app_rx=6s subs=3 peer_lag=54 stalled=tx
 ```
 
-+45 bytes per link row (99 total in the example; `stalled=` only when set). `LinkRow` and `PeerRow`
-gain `#[serde(default)]` fields (`src/protocol/sync_admin.rs` is a wire file).
++58 bytes per link row in this example (110 total; `stalled=` only when set).
+An older daemon's reply lacks the fields and prints the row as before.
+`LinkRow` gains `#[serde(default)]` fields (`src/protocol/sync_admin.rs` is a
+wire file). Agent-facing only on explicit `peer list` / `sync status` calls;
+no delivery, hook or check-in text changes.
 
 ### 4.6 Daemon log timestamps
 
-The stderr sink (`logs.rs:84-90`) prefixes `2026-10-27T09:12:03.481Z ` (25
-bytes, UTC, ms). daemon.log is operator-facing, not model-visible.
+The daemon child's output reader (`ChildOwnedLogSink`, `src/daemon/mod.rs`),
+which already carries every byte the process writes to stdout/stderr into
+`daemon.log`, prefixes each line start with `2026-10-27T09:12:03.481Z ` (25
+bytes, UTC, ms, the reader's wall clock). Every line is stamped, panics and
+child output included, and CLI stderr is untouched. A line split across two
+reads is stamped once. daemon.log is operator-facing, not model-visible.
+
+### 4.7 Left out of ht-b3k6
+
+- Per-subscription listing: `subs` is a count; the log keys are not printed.
+- Lag history or trends: only the current positions and the stall verdict.
+- The live Q0V root cause (separate debug track).
 
 ## 5. Phase 2: seat status propagation
 

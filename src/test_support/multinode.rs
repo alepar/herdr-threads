@@ -133,8 +133,10 @@ pub struct Seat {
 /// auth, accept, the full `have`); after that a frame of node `X` waits while
 /// `ROOT/hold/X` exists. A link therefore completes its handshake and both
 /// sides learn each other's vectors, but a held node's `want`s and entries do
-/// not move.
-const RELAY: &str = r#"import os, subprocess, sys, threading, time
+/// not move. While `ROOT/drop/X` exists, a frame of node `X` past `FREE`
+/// whose `t` the file lists (comma-separated) is dropped instead: the link's
+/// own ping/pong keep flowing, so it stays up.
+const RELAY: &str = r#"import json, os, subprocess, sys, threading, time
 root, frm, to = sys.argv[1:4]
 cmd = sys.argv[5:]
 FREE = 4
@@ -171,6 +173,19 @@ def pump(src, dst, who, skip, close_dst):
             if passed >= FREE:
                 while os.path.exists(root + "/hold/" + who):
                     time.sleep(0.02)
+                try:
+                    with open(root + "/drop/" + who) as f:
+                        kinds = f.read().split(",")
+                except OSError:
+                    kinds = []
+                if kinds:
+                    try:
+                        kind = json.loads(body).get("t")
+                    except ValueError:
+                        kind = None
+                    if kind in kinds:
+                        passed += 1
+                        continue
             passed += 1
             write_all(dst, head + body)
     except OSError:
@@ -335,6 +350,7 @@ impl Cluster {
         );
         if options.gated {
             private_dir(&root.join("hold"));
+            private_dir(&root.join("drop"));
             write_private(&root.join("relay.py"), 0o600, RELAY.as_bytes());
         }
         let mut nodes = Vec::new();
@@ -1080,6 +1096,33 @@ impl Cluster {
             "hold_frames_from needs ClusterOptions::gated"
         );
         fs::write(flag, b"").expect("set the hold flag");
+    }
+
+    /// Drops `node`'s frames whose `t` is one of `kinds` on every link (after
+    /// each link's handshake and first `have`) until
+    /// [`Cluster::pass_frames_from`]; every other frame, ping and pong
+    /// included, passes. Needs [`ClusterOptions::gated`].
+    pub fn drop_frames_from(&self, node: usize, kinds: &[&str]) {
+        let flag = self
+            .iso
+            .path("cluster")
+            .join("drop")
+            .join(&self.nodes[node].name);
+        assert!(
+            flag.parent().is_some_and(Path::exists),
+            "drop_frames_from needs ClusterOptions::gated"
+        );
+        fs::write(flag, kinds.join(",")).expect("set the drop list");
+    }
+
+    /// Lifts [`Cluster::drop_frames_from`].
+    pub fn pass_frames_from(&self, node: usize) {
+        let _ = fs::remove_file(
+            self.iso
+                .path("cluster")
+                .join("drop")
+                .join(&self.nodes[node].name),
+        );
     }
 
     /// Lifts [`Cluster::hold_frames_from`]; the held frames flow.
