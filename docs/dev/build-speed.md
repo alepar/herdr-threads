@@ -438,3 +438,10 @@ shards): slices 1-4 go from 316/290/182/228 s to about 276/269/159/189 s. The re
 spread is slice imbalance: round-robin over the sorted test list puts a handful of heavy
 tests wherever they fall, and every added test shifts the split (the run 11 tests later
 measured 233/277/326/333 s).
+
+CI therefore runs five slices. The matrix list in `ci.yml` is the one place the count is
+set; every step reads it back as `strategy.job-total`. On the same per-test durations,
+`slice:N/5` projects 179/174/182/182/175 s, and about 210 s for the slowest slice with every
+duration 15% longer (the next run, 40446025838, was about 15% slower across unrelated tests).
+Each extra runner repeats the test build outside the timer; the repository is public, so
+the runner is free.
