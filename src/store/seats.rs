@@ -1754,8 +1754,13 @@ fn restored_pane_evidence(
         .map_err(store_error)?;
     let kept_claim: bool = conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM kept_continuity_claims k WHERE k.host_id=?1 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=?2 AND b.role='top_level' AND b.agent_id='' AND b.harness=k.harness AND b.native_session=k.native_session))",
-            params![host.get(), seat.as_str()],
+            // A claim past its TTL is dead even before `kept_continuity::due` prunes it.
+            "SELECT EXISTS(SELECT 1 FROM kept_continuity_claims k WHERE k.host_id=?1 AND k.received_at>=?3 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=?2 AND b.role='top_level' AND b.agent_id='' AND b.harness=k.harness AND b.native_session=k.native_session))",
+            params![
+                host.get(),
+                seat.as_str(),
+                now.saturating_sub(crate::store::kept_continuity::KEPT_CLAIM_TTL_MS)
+            ],
             |r| r.get(0),
         )
         .map_err(store_error)?;

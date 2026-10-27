@@ -35,7 +35,7 @@ transaction against the active publication P (A2):
    binding names T in this incarnation.
 2. **Closure.** P is a coherent, complete publication of the same boot and incarnation, and shows neither target A
    nor terminal T anywhere (a moved pane keeps T and is not a close, TRUST-POLICY "Moved panes").
-3. **No claim.** No kept continuity claim (ht-dtx0) on H names the harness and native session of any top-level
+3. **No claim.** No kept continuity claim (ht-dtx0) on H, received within `KEPT_CLAIM_TTL_MS`, names the harness and native session of any top-level
    binding of the seat, and no other seat's structural proof or binding names T.
 4. **Observed grace.** The daemon has observed the closure for at least `RESTORED_PANE_GRACE_MS` (10 min) of its
    own running time. Each pass that finds 1-3 true but the grace not yet served records the absence: it adds the

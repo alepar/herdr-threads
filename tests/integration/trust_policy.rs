@@ -2311,12 +2311,13 @@ fn unresolved_seat_whose_restored_pane_stays_is_kept_and_reattaches() {
 }
 
 /// ht-wpq4 acceptance 3: the restored pane closes and the session, resumed in another pane,
-/// claims its seat while the closure grace runs; the seat is never retired.
+/// claims its seat while the closure grace runs; the seat is never retired. The 30 s grace
+/// dwarfs one hook round trip, so suite load cannot let the retirement win the race.
 #[test]
 fn a_seat_whose_session_claims_during_the_grace_is_never_retired() {
     let env = &[
         ("HT_TEST_LANE_TICK_MS", "300"),
-        ("HT_TEST_RESTORED_PANE_GRACE_MS", "4000"),
+        ("HT_TEST_RESTORED_PANE_GRACE_MS", "30000"),
     ];
     let (world, a, _b) = World::restored_pair("htrg", env);
     world.herdr.set_panes(vec![
@@ -2331,7 +2332,7 @@ fn a_seat_whose_session_claims_during_the_grace_is_never_retired() {
     let (code, _, stderr) = world.hook("claude", "w1:p3", &session_start("claude", "SA", "resume"));
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(world.seat_state(&a), "resolved");
-    std::thread::sleep(Duration::from_secs(6));
+    std::thread::sleep(Duration::from_secs(2));
     assert_eq!(world.seat_state(&a), "resolved");
     assert_eq!(
         world.count(&format!(

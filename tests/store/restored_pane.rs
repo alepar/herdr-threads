@@ -4,9 +4,9 @@
 use super::*;
 use crate::identity::reconcile::plan_page;
 use crate::ports::{
-    EnumerationEvidence, EvidenceKind, ExecutionEvidence, HostObservation, HostSnapshot,
-    HostUiState, IncarnationEvidence, ObservationProvenance, ReconciliationOutcome, SnapshotHeader,
-    StructuralOccupancy,
+    EnumerationEvidence, EvidenceKind, ExecutionEvidence, GuardedSeatTransition, HostObservation,
+    HostSnapshot, HostUiState, IncarnationEvidence, ObservationProvenance, ReconciliationAction,
+    ReconciliationOutcome, SnapshotHeader, StructuralOccupancy,
 };
 use crate::protocol::ids::HostCallId;
 use crate::protocol::time::{Cancellation, Clock, MonoInstant};
@@ -30,6 +30,7 @@ struct Fx {
     conn: Connection,
     clock: Arc<TestClock>,
     sequence: u64,
+    epoch: u64,
     boot: &'static str,
     incarnation: &'static str,
 }
@@ -48,7 +49,7 @@ fn fixture() -> Fx {
         "herdr-restored-pane-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let clock = Arc::new(TestClock(AtomicI64::new(1_000)));
+    let clock = Arc::new(TestClock(AtomicI64::new(1_790_000_000_000)));
     let context = StoreContext::new(path, clock.clone()).with_test_host();
     let mut conn = context.open_writer().unwrap();
     crate::store::journal::open(
@@ -72,6 +73,7 @@ fn fixture() -> Fx {
         sequence: 0,
         boot: "b2",
         incarnation: "inc-2",
+        epoch: 1,
     }
 }
 
@@ -90,7 +92,7 @@ impl Fx {
         let boot = HostBootId::new(self.boot);
         let snapshot = HostSnapshot {
             boot: boot.clone(),
-            epoch: 1,
+            epoch: self.epoch,
             observation_sequence: sequence,
             complete: true,
             enumeration: EnumerationEvidence::CoherentVerified,
@@ -104,7 +106,7 @@ impl Fx {
                     focused: false,
                     target: HostTargetId::new(*target),
                     host_boot: boot.clone(),
-                    epoch: 1,
+                    epoch: self.epoch,
                     generation: 1,
                     observed_at_utc: UtcMillis(self.now()),
                     observed_at_mono: MonoInstant(100),
@@ -116,7 +118,7 @@ impl Fx {
                     incarnation: IncarnationEvidence::Unknown,
                     execution: ExecutionEvidence::Unknown,
                     call_id: HostCallId::new(format!("capture-{target}-{sequence}")),
-                    connection_epoch: 1,
+                    connection_epoch: self.epoch,
                     observation_sequence: sequence,
                     started_at_mono: MonoInstant(100),
                     completed_at_mono: MonoInstant(100),
@@ -329,4 +331,138 @@ fn released_targets_and_other_incarnations_start_no_closure() {
         RestoredPane::Observe
     );
     assert_eq!(fx.watch(), Some(("term-a3".into(), None, 0)));
+}
+
+/// A target the recovery baseline did not hold (the pane appeared later) is
+/// never watched, so its closure retires nothing.
+#[test]
+fn a_target_not_in_the_baseline_is_never_watched() {
+    let mut fx = fixture();
+    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::None);
+    assert_eq!(fx.publish_and_pass(OPEN), RestoredPane::None);
+    assert_eq!(fx.watch(), None);
+}
+
+/// A daemon restart after the closure (a new recovery epoch, its baseline
+/// retaken without the closed pane) keeps the watch and its observed time.
+#[test]
+fn the_watch_survives_a_new_recovery_epoch_after_the_closure() {
+    let mut fx = fixture();
+    fx.publish_and_pass(OPEN);
+    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::Absent);
+    fx.advance(STEP);
+    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::Absent);
+    let recorded: i64 = fx
+        .conn
+        .query_row(
+            "SELECT recorded_at FROM restored_pane_watch WHERE seat_id='s1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    fx.epoch = 2;
+    fx.advance(STEP);
+    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::Absent);
+    assert_eq!(
+        fx.watch().unwrap().2,
+        2 * STEP,
+        "observed time carries over"
+    );
+    let after: i64 = fx
+        .conn
+        .query_row(
+            "SELECT recorded_at FROM restored_pane_watch WHERE seat_id='s1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(after, recorded, "the same watch, not a new one");
+    while fx.state() == "unresolved" {
+        fx.advance(STEP);
+        fx.publish_and_pass(CLOSED);
+    }
+    assert_eq!(fx.state(), "retired");
+}
+
+/// The applier decides against the store as it is at commit (A2): a kept
+/// claim, a generation bump or a different target after the page read
+/// refuses the retirement.
+#[test]
+fn the_applier_refuses_a_retirement_whose_evidence_changed_after_the_page() {
+    let mut fx = fixture();
+    fx.publish_and_pass(OPEN);
+    fx.publish_and_pass(CLOSED);
+    for _ in 0..RESTORED_PANE_GRACE_MS / STEP - 1 {
+        fx.advance(STEP);
+        fx.publish_and_pass(CLOSED);
+    }
+    fx.advance(STEP);
+    let publication = fx.publish(CLOSED);
+    let page_budget = budget();
+    let planned = || {
+        let page = saved_seats_page(
+            &fx.context,
+            &fx.conn,
+            &publication.id,
+            0,
+            None,
+            16,
+            &page_budget,
+        )
+        .unwrap();
+        plan_page(&page)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.seat.as_str() == "s1")
+            .unwrap()
+    };
+    let retire = planned();
+    assert!(matches!(
+        retire.action,
+        ReconciliationAction::RetireRestoredPane { .. }
+    ));
+    let apply = |fx: &mut Fx, transition: GuardedSeatTransition| {
+        apply_reconciliation_transition(&fx.context, &mut fx.conn, transition, &budget()).unwrap()
+    };
+
+    // A kept claim for the seat's session arrives between page and apply.
+    let now = fx.now();
+    fx.conn.execute(
+        "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) VALUES ((SELECT min(host_id) FROM herdr_hosts),'w1:p7','claude','SA','{}',?1)",
+        [now],
+    ).unwrap();
+    assert_eq!(apply(&mut fx, retire.clone()), ReconciliationOutcome::Stale);
+    assert_eq!(fx.state(), "unresolved");
+    // A kept claim past its TTL no longer holds it off.
+    fx.conn
+        .execute(
+            "UPDATE kept_continuity_claims SET received_at=?1",
+            [now - crate::store::kept_continuity::KEPT_CLAIM_TTL_MS - 1],
+        )
+        .unwrap();
+
+    // Another target than the seat's.
+    let mut elsewhere = retire.clone();
+    elsewhere.action = ReconciliationAction::RetireRestoredPane {
+        absent_target: HostTargetId::new("w1:p2"),
+    };
+    assert_eq!(apply(&mut fx, elsewhere), ReconciliationOutcome::Stale);
+    assert_eq!(fx.state(), "unresolved");
+
+    // The seat's generation moved (a rebind or unresolve meanwhile).
+    fx.conn
+        .execute("UPDATE seats SET generation=generation+1 WHERE id='s1'", [])
+        .unwrap();
+    assert_eq!(apply(&mut fx, retire.clone()), ReconciliationOutcome::Stale);
+    assert_eq!(fx.state(), "unresolved");
+    fx.conn
+        .execute("UPDATE seats SET generation=generation-1 WHERE id='s1'", [])
+        .unwrap();
+
+    // Unchanged evidence retires.
+    assert!(matches!(
+        apply(&mut fx, retire),
+        ReconciliationOutcome::RetirementStarted(_)
+    ));
+    assert_eq!(fx.state(), "retired");
 }

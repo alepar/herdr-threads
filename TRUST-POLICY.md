@@ -251,7 +251,7 @@ is structural, same-incarnation evidence about the pane the current incarnation 
   incarnation, A, T, the seat's mapping generation). A watch of another incarnation or generation is void.
 - *Closure.* A later coherent publication of the same boot and incarnation shows neither A nor T (a moved pane
   keeps T, see Moved panes, and is not a close).
-- *No claim.* No kept continuity claim (C1) on that server names the harness and native session of any of the
+- *No claim.* No live kept continuity claim (C1, within its one-hour TTL) on that server names the harness and native session of any of the
   seat's top-level bindings, and no other seat's structural proof or binding names T. A decided claim rebinds
   the seat and bumps its generation, which voids the watch.
 - *Observed grace.* The daemon has observed the closure for 10 minutes of its own running time: each absent
