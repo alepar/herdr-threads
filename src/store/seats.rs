@@ -1752,19 +1752,28 @@ fn restored_pane_evidence(
             |r| r.get(0),
         )
         .map_err(store_error)?;
+    // Any kept row blocks, whatever its age: `kept_continuity::due` prunes
+    // expired rows only after a refusal-free pass, so while passes are refused
+    // an old row may be a live session's only claim (it never refreshes
+    // `received_at`). Failing safe here costs a delay, never a seat.
     let kept_claim: bool = conn
         .query_row(
-            // A claim past its TTL is dead even before `kept_continuity::due` prunes it.
-            "SELECT EXISTS(SELECT 1 FROM kept_continuity_claims k WHERE k.host_id=?1 AND k.received_at>=?3 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=?2 AND b.role='top_level' AND b.agent_id='' AND b.harness=k.harness AND b.native_session=k.native_session))",
-            params![
-                host.get(),
-                seat.as_str(),
-                now.saturating_sub(crate::store::kept_continuity::KEPT_CLAIM_TTL_MS)
-            ],
+            "SELECT EXISTS(SELECT 1 FROM kept_continuity_claims k WHERE k.host_id=?1 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=?2 AND b.role='top_level' AND b.agent_id='' AND b.harness=k.harness AND b.native_session=k.native_session))",
+            params![host.get(), seat.as_str()],
             |r| r.get(0),
         )
         .map_err(store_error)?;
-    let evidence = if shown || kept_claim || claimed_elsewhere(&terminal)? {
+    // The closure counts only while this recovery's reconciliation has
+    // completed (its marker names the current recovery boot/epoch), so C1
+    // claims, kept ones included, are being decided.
+    let reconciled: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM herdr_hosts WHERE host_id=?1 AND reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch)",
+            [host.get()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let evidence = if shown || kept_claim || !reconciled || claimed_elsewhere(&terminal)? {
         RestoredPane::Watching
     } else {
         RestoredPane::Absent

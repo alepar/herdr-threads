@@ -35,10 +35,14 @@ transaction against the active publication P (A2):
    binding names T in this incarnation.
 2. **Closure.** P is a coherent, complete publication of the same boot and incarnation, and shows neither target A
    nor terminal T anywhere (a moved pane keeps T and is not a close, TRUST-POLICY "Moved panes").
-3. **No claim.** No kept continuity claim (ht-dtx0) on H, received within `KEPT_CLAIM_TTL_MS`, names the harness and native session of any top-level
-   binding of the seat, and no other seat's structural proof or binding names T.
+3. **No claim.** No kept continuity claim (ht-dtx0) on H, of any age, names the harness and native session of any
+   top-level binding of the seat, and no other seat's structural proof or binding names T. Expired rows are pruned
+   only after a refusal-free pass, so while passes are refused an old row may be a live session's only claim
+   (review of ht-wpq4: a TTL bound here made retirement fail-unsafe during a long lag).
 4. **Observed grace.** The daemon has observed the closure for at least `RESTORED_PANE_GRACE_MS` (10 min) of its
-   own running time. Each pass that finds 1-3 true but the grace not yet served records the absence: it adds the
+   own running time, counted only while H's reconciliation marker names the current recovery boot and epoch (C1
+   claims are being decided; a lagging marker reads as Watching). Each pass that finds 1-3 true but the grace not
+   yet served records the absence: it adds the
    time since the previous absent pass, capped at `ABSENCE_STEP_CAP_MS` (30 s, the lane's backoff cap), to
    `absent_observed_ms`. A suspend, a clock step or daemon downtime therefore adds at most one step, never the
    gap. The first absent pass adds nothing. The grace runs from the observed closure, not from the watch record.
@@ -116,14 +120,16 @@ model- or operator-visible string.
 
 ## Accepted limits
 
-- **A session resumed in another pane loses its seat.** If the user resumed a seat's session by hand in a pane
-  other than the one watched at its address, and that session makes no C1 claim (none decided, none kept) during
-  the 10 min of observed closure of the watched pane, the seat retires. That session's next C1 claim finds no
-  match and goes through ordinary guards. Retirement is not undone.
-- **The watched pane is the one at A when the recovery began.** After a daemon restart inside one incarnation the
-  baseline is retaken, so a pane the user opened at A after the Herdr restore, while the seat was unwatched, can be
-  the watched one. Herdr does not retarget closed pane ids (v0.7.0), so this needs the restored pane to be gone
-  before the restart and a new pane to take its id; the outcome is the retirement an operator would do.
+- **A seat whose session lives elsewhere can lose it.** The seat retires, irreversibly, when the watched pane
+  closes and, during the 10 observed minutes after, no claim rebinds the seat and none for its sessions is kept.
+  That includes a claim refused outright (for example the session first enrolled a fresh seat in its new pane,
+  then `/resume`d: an owned target), a kept claim decided as a refusal or pruned undecided once past its TTL, and person seats, which have no C1 path.
+  Such a session's next C1 claim finds no match and goes through ordinary guards.
+- **The watched pane is whichever pane the current baseline held at A.** The baseline is retaken after every
+  daemon restart inside one incarnation, and the watch needs only that A was in it, unclaimed. So the watched pane
+  need not be one Herdr restored: when nothing was restored at A, or the restored pane was gone before the
+  restart, a pane Herdr later issued at A and held by the retaken baseline is watched, and its close retires the
+  seat.
 - **Terminal ids.** The rule relies on a moved pane keeping its terminal id (observed on Herdr 0.9.1-0.9.5,
   "Moved panes") and on terminal ids not being reused within one incarnation (assumed, as the existing pane-close
   rule does).

@@ -31,6 +31,9 @@ struct Fx {
     clock: Arc<TestClock>,
     sequence: u64,
     epoch: u64,
+    /// Record the reconciliation marker after a pass with no refused
+    /// transition, as the observation worker does.
+    record_marker: bool,
     boot: &'static str,
     incarnation: &'static str,
 }
@@ -74,6 +77,7 @@ fn fixture() -> Fx {
         boot: "b2",
         incarnation: "inc-2",
         epoch: 1,
+        record_marker: true,
     }
 }
 
@@ -180,7 +184,11 @@ impl Fx {
                 apply_reconciliation_transition(&self.context, &mut self.conn, transition, &budget)
                     .unwrap()
             })
-            .collect();
+            .collect::<Vec<_>>();
+        if self.record_marker && !outcomes.contains(&ReconciliationOutcome::Stale) {
+            record_reconciliation_pass(&self.context, &mut self.conn, publication, &budget)
+                .unwrap();
+        }
         (evidence, outcomes)
     }
     fn publish_and_pass(&mut self, panes: &[(&str, &str)]) -> RestoredPane {
@@ -362,6 +370,10 @@ fn the_watch_survives_a_new_recovery_epoch_after_the_closure() {
         .unwrap();
     fx.epoch = 2;
     fx.advance(STEP);
+    // The new recovery's first pass precedes its marker: nothing counts.
+    assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::Watching);
+    assert_eq!(fx.watch().unwrap().2, STEP);
+    fx.advance(STEP);
     assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::Absent);
     assert_eq!(
         fx.watch().unwrap().2,
@@ -433,12 +445,9 @@ fn the_applier_refuses_a_retirement_whose_evidence_changed_after_the_page() {
     ).unwrap();
     assert_eq!(apply(&mut fx, retire.clone()), ReconciliationOutcome::Stale);
     assert_eq!(fx.state(), "unresolved");
-    // A kept claim past its TTL no longer holds it off.
+    // Decided or pruned, the claim no longer holds it off.
     fx.conn
-        .execute(
-            "UPDATE kept_continuity_claims SET received_at=?1",
-            [now - crate::store::kept_continuity::KEPT_CLAIM_TTL_MS - 1],
-        )
+        .execute("DELETE FROM kept_continuity_claims", [])
         .unwrap();
 
     // Another target than the seat's.
@@ -465,4 +474,54 @@ fn the_applier_refuses_a_retirement_whose_evidence_changed_after_the_page() {
         ReconciliationOutcome::RetirementStarted(_)
     ));
     assert_eq!(fx.state(), "retired");
+}
+
+/// Review of ht-wpq4: while reconciliation lags, `kept_continuity::due` never
+/// prunes, so an old kept row may be a live session's only claim. It blocks
+/// whatever its age, and no closure time counts until the recovery's marker
+/// is current again; then the grace runs from there.
+#[test]
+fn an_expired_kept_claim_blocks_and_a_lagging_marker_counts_nothing() {
+    let mut fx = fixture();
+    fx.publish_and_pass(OPEN);
+    let expired = fx.now() - crate::store::kept_continuity::KEPT_CLAIM_TTL_MS - 1;
+    fx.conn.execute(
+        "INSERT INTO kept_continuity_claims(host_id,target_id,harness,native_session,command_json,received_at) VALUES ((SELECT min(host_id) FROM herdr_hosts),'w1:p7','claude','SA','{}',?1)",
+        [expired],
+    ).unwrap();
+    for _ in 0..2 * RESTORED_PANE_GRACE_MS / STEP {
+        fx.advance(STEP);
+        assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::Watching);
+    }
+    assert_eq!(fx.state(), "unresolved");
+    fx.conn
+        .execute("DELETE FROM kept_continuity_claims", [])
+        .unwrap();
+
+    // Reconciliation stops completing: the marker no longer names the
+    // current recovery.
+    fx.record_marker = false;
+    fx.conn
+        .execute(
+            "UPDATE herdr_hosts SET reconciled_boot=NULL,reconciled_epoch=NULL",
+            [],
+        )
+        .unwrap();
+    for _ in 0..2 * RESTORED_PANE_GRACE_MS / STEP {
+        fx.advance(STEP);
+        assert_eq!(fx.publish_and_pass(CLOSED), RestoredPane::Watching);
+    }
+    assert_eq!(fx.state(), "unresolved");
+    assert_eq!(fx.watch().unwrap().2, 0, "no closure time counted");
+
+    // Caught up again: the full grace is still owed.
+    fx.record_marker = true;
+    fx.publish_and_pass(CLOSED);
+    let mut passes = 0;
+    while fx.state() == "unresolved" {
+        fx.advance(STEP);
+        fx.publish_and_pass(CLOSED);
+        passes += 1;
+    }
+    assert!(passes >= RESTORED_PANE_GRACE_MS / STEP, "{passes}");
 }
