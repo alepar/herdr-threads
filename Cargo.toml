@@ -101,6 +101,15 @@ opt-level = 3
 [profile.dev.package.libsqlite3-sys]
 opt-level = 3
 
+# Every authored journal fact is signed (Ed25519). Unoptimized, one signature
+# costs ~5 ms, most of a fact's cost: a test authoring a thousand-thread
+# backlog spent 14 of its 18 s signing.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+
+[profile.dev.package.ed25519-dalek]
+opt-level = 3
+
 # Optimized test builds (below) make an edit far costlier than at -O0:
 # derived impls are #[inline], so each gets a copy in every codegen unit that
 # uses it, a line-shifting edit invalidates every unit holding a copy, and
